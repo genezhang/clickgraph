@@ -1,4 +1,24 @@
-## [0.6.2-dev] - 2026-02-19
+## [0.6.2-dev] - 2026-02-20
+
+### ⚙️ Architecture
+
+- **Scope-aware variable resolution for CTE/UNION rendering** (Feb 20, 2026, PR #120): Infrastructure for correct variable resolution across WITH barriers during SQL rendering.
+  - Extended `VariableSource::Cte` with `property_mapping` (Cypher property → CTE column name) for runtime column resolution
+  - Added `resolve()` to `VariableRegistry` for property lookup during SQL generation
+  - Populated property mappings in `build_chained_with_match_cte_plan` loop from scope CTE variables
+  - Wired `VariableRegistry` into SQL rendering via task-local `QueryContext`
+  - **Scope fixes**: UNION branch recursion in `rewrite_render_plan_with_scope`; WITH barrier scope clearing between WITH clauses; per-CTE registry save/restore in `Cte::to_sql()`
+  - **Evidence**: 2-WITH chain with bidirectional KNOWS now generates correct CTE alias references (`a_b.p1_b_id` instead of `b.p1_b_id`)
+  - **Files**: 10 files, +486/-28 lines
+  - **Tests**: 1,111 unit tests passing, LDBC 13/37 (35%) — no regression
+
+- **Clean join generation architecture with anchor-aware algorithm** (Feb 19, 2026, PR #117): Major refactoring of JOIN generation and ordering.
+  - **Core insight**: Traditional node-edge-node is the base case (2 JOINs); all other `JoinStrategy` variants are optimizations that skip some JOINs
+  - New generic algorithm: per-pattern loop → `generate_pattern_joins()` → VLP rewrites → optional marking → dedup → anchor selection → topological sort
+  - **Anchor-aware generation**: Handles 4 cases (neither/left/right/both available) — critical for OPTIONAL MATCH shared-node patterns
+  - Replaced ~1200 lines of per-strategy handler code with 64-line generic loop + clean 810-line module
+  - **Files**: 5 files, +1002/-1296 lines (**net -374 lines**)
+  - **Tests**: 1,040 unit tests passing, LDBC 13/37 (35%) — no regression
 
 ### 🐛 Bug Fixes
 

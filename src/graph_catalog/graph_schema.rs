@@ -91,6 +91,14 @@ pub struct NodeSchema {
 }
 
 impl NodeSchema {
+    /// Returns property_mappings as a sorted Vec for deterministic iteration.
+    /// Must be used whenever property order affects SQL output (CTE columns, SELECT items, etc.)
+    pub fn sorted_properties(&self) -> Vec<(&String, &PropertyValue)> {
+        let mut props: Vec<_> = self.property_mappings.iter().collect();
+        props.sort_by_key(|(k, _)| k.as_str());
+        props
+    }
+
     /// Determine if FINAL should be used for this node
     pub fn should_use_final(&self) -> bool {
         // 1. Check explicit override (user choice takes precedence)
@@ -622,6 +630,11 @@ impl GraphSchema {
                 .entry(type_name.to_string())
                 .or_default()
                 .push(composite_key.clone());
+        }
+
+        // Sort each Vec for deterministic ordering (HashMap iteration order is random)
+        for keys in index.values_mut() {
+            keys.sort();
         }
 
         index
@@ -1207,6 +1220,28 @@ impl GraphSchema {
         }
 
         None
+    }
+
+    /// Get ALL relationship schemas for a simple type name (e.g., "HAS_CREATOR").
+    /// Returns all schemas matching the type, not just the alphabetically first one.
+    /// For composite keys (e.g., "HAS_CREATOR::Comment::Person"), returns a single-element vec.
+    pub fn get_all_rel_schemas_for_type(&self, rel_type: &str) -> Vec<&RelationshipSchema> {
+        // Exact match (composite key)
+        if let Some(schema) = self.relationships.get(rel_type) {
+            return vec![schema];
+        }
+
+        // Simple type name — return ALL matching schemas
+        if !rel_type.contains("::") {
+            if let Some(composite_keys) = self.rel_type_index.get(rel_type) {
+                return composite_keys
+                    .iter()
+                    .filter_map(|key| self.relationships.get(key))
+                    .collect();
+            }
+        }
+
+        vec![]
     }
 
     /// Get the rel_type_index for debugging purposes

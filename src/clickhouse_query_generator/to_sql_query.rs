@@ -3019,6 +3019,18 @@ impl RenderExpr {
                         return raw_value.to_string();
                     }
 
+                    // CTE column names use p{N}_ prefix (e.g., p6_friend_lastName).
+                    // These are output aliases after GROUP BY/UNION and should NOT get
+                    // a heuristic table prefix.
+                    if raw_value.starts_with('p') {
+                        let rest = &raw_value[1..];
+                        if let Some(pos) = rest.find('_') {
+                            if pos > 0 && rest[..pos].chars().all(|c| c.is_ascii_digit()) {
+                                return raw_value.to_string();
+                            }
+                        }
+                    }
+
                     // ⚠️ TECHNICAL DEBT: Heuristic table alias inference (Temporary workaround)
                     //
                     // CONTEXT: This uses pattern matching on column names to infer the correct table alias.
@@ -3537,6 +3549,36 @@ impl RenderExpr {
                     return format!("concat({})", flattened.join(", "));
                 }
 
+                // Special handling for interval arithmetic with epoch-millis values
+                if (op.operator == Operator::Addition || op.operator == Operator::Subtraction)
+                    && rendered.len() == 2
+                {
+                    let has_interval = rendered.iter().any(|r| r.contains("toInterval"));
+                    if has_interval {
+                        let wrapped: Vec<String> = rendered
+                            .iter()
+                            .map(|r| {
+                                if r.contains("toInterval")
+                                    || r.contains("fromUnixTimestamp64Milli")
+                                    || r.contains("parseDateTime64BestEffort")
+                                    || r.contains("toDateTime")
+                                    || r.contains("now64")
+                                    || r.contains("now()")
+                                {
+                                    r.clone()
+                                } else {
+                                    format!("fromUnixTimestamp64Milli({})", r)
+                                }
+                            })
+                            .collect();
+                        let sql_op = op_str(op.operator);
+                        return format!(
+                            "toUnixTimestamp64Milli({} {} {})",
+                            &wrapped[0], sql_op, &wrapped[1]
+                        );
+                    }
+                }
+
                 let sql_op = op_str(op.operator);
 
                 match rendered.len() {
@@ -3809,6 +3851,36 @@ impl RenderExpr {
                     return format!("(position({}, {}) > 0)", &rendered[0], &rendered[1]);
                 }
 
+                // Special handling for interval arithmetic with epoch-millis values
+                if (op.operator == Operator::Addition || op.operator == Operator::Subtraction)
+                    && rendered.len() == 2
+                {
+                    let has_interval = rendered.iter().any(|r| r.contains("toInterval"));
+                    if has_interval {
+                        let wrapped: Vec<String> = rendered
+                            .iter()
+                            .map(|r| {
+                                if r.contains("toInterval")
+                                    || r.contains("fromUnixTimestamp64Milli")
+                                    || r.contains("parseDateTime64BestEffort")
+                                    || r.contains("toDateTime")
+                                    || r.contains("now64")
+                                    || r.contains("now()")
+                                {
+                                    r.clone()
+                                } else {
+                                    format!("fromUnixTimestamp64Milli({})", r)
+                                }
+                            })
+                            .collect();
+                        let sql_op = op_str(op.operator);
+                        return format!(
+                            "toUnixTimestamp64Milli({} {} {})",
+                            &wrapped[0], sql_op, &wrapped[1]
+                        );
+                    }
+                }
+
                 let sql_op = op_str(op.operator);
 
                 match rendered.len() {
@@ -3956,6 +4028,41 @@ impl ToSql for OperatorApplication {
                 .flat_map(flatten_addition_operands)
                 .collect();
             return format!("concat({})", flattened.join(", "));
+        }
+
+        // Special handling for interval arithmetic with epoch-millis values.
+        // When + or - has a toInterval* operand, the other operand must be DateTime64.
+        // Wrap non-interval operands with fromUnixTimestamp64Milli() and convert the
+        // final result back to Int64 millis with toUnixTimestamp64Milli() for safe
+        // comparisons with other Int64 timestamp columns.
+        if (self.operator == Operator::Addition || self.operator == Operator::Subtraction)
+            && rendered.len() == 2
+        {
+            let has_interval = rendered.iter().any(|r| r.contains("toInterval"));
+            if has_interval {
+                let wrapped: Vec<String> = rendered
+                    .iter()
+                    .map(|r| {
+                        if r.contains("toInterval")
+                            || r.contains("fromUnixTimestamp64Milli")
+                            || r.contains("parseDateTime64BestEffort")
+                            || r.contains("toDateTime")
+                            || r.contains("now64")
+                            || r.contains("now()")
+                        {
+                            r.clone()
+                        } else {
+                            format!("fromUnixTimestamp64Milli({})", r)
+                        }
+                    })
+                    .collect();
+                let sql_op = op_str(self.operator);
+                // Convert result back to epoch millis for consistent Int64 comparisons
+                return format!(
+                    "toUnixTimestamp64Milli({} {} {})",
+                    &wrapped[0], sql_op, &wrapped[1]
+                );
+            }
         }
 
         let sql_op = op_str(self.operator);

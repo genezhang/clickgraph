@@ -726,11 +726,17 @@ pub(super) fn render_expr_to_sql_string(
 }
 
 /// Helper to extract ID column name from ViewScan
+///
+/// For GraphRel, follows rel.right (end node) rather than rel.center (relationship table).
+/// This is correct because callers always pass graph_rel.left or graph_rel.right
+/// expecting a NODE's ID column, not a relationship table's FK column.
+/// For nested patterns like (a)-[:R1]->(b)-[:R2]->(c), extract_id_column(&outer.left)
+/// follows the inner GraphRel's right to get b's ID (the connection point).
 pub(super) fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
     match plan {
         LogicalPlan::ViewScan(view_scan) => Some(view_scan.id_column.clone()),
         LogicalPlan::GraphNode(node) => extract_id_column(&node.input),
-        LogicalPlan::GraphRel(rel) => extract_id_column(&rel.center),
+        LogicalPlan::GraphRel(rel) => extract_id_column(&rel.right),
         LogicalPlan::Filter(filter) => extract_id_column(&filter.input),
         LogicalPlan::Projection(proj) => extract_id_column(&proj.input),
         // For WithClause, recurse into input to get ID column from underlying node
@@ -1458,7 +1464,9 @@ pub(super) fn get_relationship_columns_by_table(table_name: &str) -> Option<(Str
     use crate::server::query_context::get_current_schema_with_fallback as get_current_schema;
 
     let schema = get_current_schema()?;
-    for (_key, rel_schema) in schema.get_relationships_schemas().iter() {
+    let mut sorted_rels: Vec<_> = schema.get_relationships_schemas().iter().collect();
+    sorted_rels.sort_by_key(|(k, _)| k.as_str());
+    for (_key, rel_schema) in sorted_rels {
         if rel_schema.table_name == table_name {
             return Some((rel_schema.from_id.to_string(), rel_schema.to_id.to_string()));
         }

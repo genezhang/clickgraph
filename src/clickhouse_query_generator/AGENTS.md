@@ -303,6 +303,9 @@ and clears them via `clear_all_render_contexts()` after. These contexts are:
 - **Relationship columns**: alias → (from_id_column, to_id_column) for IS NULL checks
 - **CTE property mappings**: cte_alias → (property → column) for property resolution
 - **Multi-type VLP aliases**: Cypher alias → CTE name for JSON extraction
+- **VariableRegistry** (PR #120): Per-CTE `VariableSource::Cte { property_mapping }` for
+  runtime property resolution during `PropertyAccessExp::to_sql()`. Set via
+  `set_current_registry()` in `query_context.rs`. Per-CTE save/restore in `Cte::to_sql()`.
 
 **If you skip clearing**: Context leaks to next query on same async task → wrong SQL.
 

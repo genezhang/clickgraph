@@ -56,8 +56,13 @@ pub fn generate_json_properties_sql(
         return "'{}'".to_string(); // Empty JSON object
     }
 
+    // Sort keys for deterministic SQL output across HashMap iteration orders
+    let mut sorted_keys: Vec<&String> = property_mappings.keys().collect();
+    sorted_keys.sort();
+
     let mut columns = Vec::new();
-    for (cypher_prop, prop_value) in property_mappings {
+    for cypher_prop in sorted_keys {
+        let prop_value = &property_mappings[cypher_prop];
         let column_name = match prop_value {
             PropertyValue::Column(col) => col.clone(),
             _ => continue, // Skip non-column property mappings (expressions, etc.)
@@ -124,8 +129,13 @@ pub fn generate_json_properties_without_aliases(
         return "'{}'".to_string();
     }
 
+    // Sort keys for deterministic SQL output across HashMap iteration orders
+    let mut sorted_keys: Vec<&String> = property_mappings.keys().collect();
+    sorted_keys.sort();
+
     let mut columns = Vec::new();
-    for prop_value in property_mappings.values() {
+    for key in sorted_keys {
+        let prop_value = &property_mappings[key];
         let column_name = match prop_value {
             PropertyValue::Column(col) => col.clone(),
             _ => continue,
@@ -171,9 +181,14 @@ pub fn generate_json_from_denormalized_properties(
         return "'{}'".to_string();
     }
 
-    let columns: Vec<String> = denorm_props
+    // Sort keys for deterministic SQL output
+    let mut sorted_keys: Vec<&String> = denorm_props.keys().collect();
+    sorted_keys.sort();
+
+    let columns: Vec<String> = sorted_keys
         .iter()
-        .map(|(cypher_name, physical_col)| {
+        .map(|cypher_name| {
+            let physical_col = &denorm_props[*cypher_name];
             format!(
                 "{}.{} AS {}{}",
                 table_alias, physical_col, key_prefix, cypher_name

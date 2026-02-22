@@ -1360,8 +1360,10 @@ pub fn extract_relationship_columns_from_table_with_schema(
     // Extract just the table name without database prefix for matching
     let table_only = table_name.rsplit('.').next().unwrap_or(table_name);
 
-    // Find relationship schema by table name
-    for rel_schema in schema.get_relationships_schemas().values() {
+    // Find relationship schema by table name (sorted for determinism)
+    let mut sorted_rels: Vec<_> = schema.get_relationships_schemas().iter().collect();
+    sorted_rels.sort_by_key(|(k, _)| k.as_str());
+    for (_, rel_schema) in sorted_rels {
         // Match both with full name (db.table) or just table name
         if rel_schema.table_name == table_name
             || rel_schema.table_name == table_only
@@ -2529,7 +2531,11 @@ pub fn extract_ctes_with_context(
                             );
                             // Get the node's ID column to skip it from properties
                             let start_id_column = start_node_schema.node_id.column();
-                            for (prop_name, prop_value) in &start_node_schema.property_mappings {
+                            // Sort keys for deterministic column ordering
+                            let mut sorted_props: Vec<_> =
+                                start_node_schema.property_mappings.iter().collect();
+                            sorted_props.sort_by_key(|(k, _)| k.as_str());
+                            for (prop_name, prop_value) in sorted_props {
                                 // Skip ID property - it's already added as start_id/end_id in CTE
                                 // Check DB column name (not Cypher property name) for schema-independence
                                 if prop_value.raw() == start_id_column {
@@ -2562,7 +2568,11 @@ pub fn extract_ctes_with_context(
                             );
                             // Get the node's ID column to skip it from properties
                             let end_id_column = end_node_schema.node_id.column();
-                            for (prop_name, prop_value) in &end_node_schema.property_mappings {
+                            // Sort keys for deterministic column ordering
+                            let mut sorted_props: Vec<_> =
+                                end_node_schema.property_mappings.iter().collect();
+                            sorted_props.sort_by_key(|(k, _)| k.as_str());
+                            for (prop_name, prop_value) in sorted_props {
                                 // Skip ID property - it's already added as start_id/end_id in CTE
                                 // Check DB column name (not Cypher property name) for schema-independence
                                 if prop_value.raw() == end_id_column {
@@ -5047,10 +5057,13 @@ fn extract_node_info(
         }
         LogicalPlan::GraphRel(rel) => {
             // Handle case where node_plan is a GraphRel (nested relationship pattern)
-            // Extract the actual node from the GraphRel's left connection
+            // Extract the boundary node from the GraphRel's RIGHT side
+            // For patterns like: (forum)-[:CONTAINER_OF]->(post)<-[:REPLY_OF*0..]-(message)
+            //   Inner GraphRel: left=forum, right=post → we want post (right side)
             // For patterns like: (person)<-[:HAS_CREATOR]-(message)-[:REPLY_OF*0..]->(post)
-            // When analyzing REPLY_OF, the left is HAS_CREATOR GraphRel, need to get message node
-            extract_node_info(&rel.left, schema_type, rel_center)
+            //   Inner GraphRel: left=person, right=message → we want message (right side)
+            // The shared/boundary node is always at the right end of the inner chain
+            extract_node_info(&rel.right, schema_type, rel_center)
         }
         _ => None,
     }

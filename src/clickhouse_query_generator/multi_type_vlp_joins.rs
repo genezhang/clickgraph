@@ -729,7 +729,10 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
 
                         // Only generate individual columns for single-type end nodes
                         if !is_multi_type {
-                            for (cypher_name, prop_val) in &node_schema.property_mappings {
+                            let mut sorted_props: Vec<_> =
+                                node_schema.property_mappings.iter().collect();
+                            sorted_props.sort_by_key(|(k, _)| k.as_str());
+                            for (cypher_name, prop_val) in sorted_props {
                                 if let PropertyValue::Column(db_col) = prop_val {
                                     items.push(format!(
                                         "{}.{} AS end_{}",
@@ -835,7 +838,10 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                             // Also generate individual columns for single-type start nodes
                             // (needed for WHERE/ORDER BY on specific properties)
                             if !is_multi_type_start {
-                                for (cypher_name, prop_val) in &node_schema.property_mappings {
+                                let mut sorted_props: Vec<_> =
+                                    node_schema.property_mappings.iter().collect();
+                                sorted_props.sort_by_key(|(k, _)| k.as_str());
+                                for (cypher_name, prop_val) in sorted_props {
                                     if let PropertyValue::Column(db_col) = prop_val {
                                         items.push(format!(
                                             "{}.{} AS start_{}",

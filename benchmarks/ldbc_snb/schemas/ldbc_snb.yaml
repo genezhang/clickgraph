@@ -260,7 +260,7 @@ graph_schema:
       database: ldbc
       table: Person_workAt_Organisation
       from_id: PersonId
-      to_id: CompanyId
+      to_id: OrganisationId
       from_node: Person
       to_node: Company
       property_mappings:

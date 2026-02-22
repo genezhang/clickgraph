@@ -1336,6 +1336,31 @@ impl<'a> VariableLengthCteGenerator<'a> {
     fn generate_zero_hop_base_case(&self) -> String {
         let path_edges_type = self.get_path_edges_array_type();
 
+        // For zero-hop, start = end (the node hasn't moved).
+        // When start and end tables differ (e.g., Comment vs Post in REPLY_OF*0..),
+        // we need to handle properties carefully: end properties may not exist on
+        // the start table (or vice versa). We collect column names available on
+        // the start table and use NULL/empty for missing end columns.
+        let cross_type = self.start_node_table != self.end_node_table;
+        let start_table_columns: std::collections::HashSet<String> = if cross_type {
+            let mut cols: std::collections::HashSet<String> = self
+                .properties
+                .iter()
+                .filter(|p| p.cypher_alias == self.start_cypher_alias)
+                .map(|p| p.column_name.clone())
+                .collect();
+            cols.insert(self.start_node_id_column.clone());
+            log::info!(
+                "🔧 VLP zero-hop cross-type: start_table={}, end_table={}, start_columns={:?}",
+                self.start_node_table,
+                self.end_node_table,
+                cols
+            );
+            cols
+        } else {
+            std::collections::HashSet::new() // Not needed when tables are same
+        };
+
         let mut select_items = vec![
             format!(
                 "{}.{} as start_id",
@@ -1378,10 +1403,20 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     continue;
                 }
 
-                select_items.push(format!(
-                    "{}.{} as end_{}",
-                    self.start_node_alias, prop.column_name, prop.alias
-                ));
+                // When start and end tables differ, end properties may not exist
+                // on the start table. Use the column if available, otherwise NULL.
+                if cross_type && !start_table_columns.contains(&prop.column_name) {
+                    log::info!(
+                        "🔧 VLP zero-hop: end property '{}' (column '{}') not on start table, using NULL",
+                        prop.alias, prop.column_name
+                    );
+                    select_items.push(format!("'' as end_{}", prop.alias));
+                } else {
+                    select_items.push(format!(
+                        "{}.{} as end_{}",
+                        self.start_node_alias, prop.column_name, prop.alias
+                    ));
+                }
             }
         }
 

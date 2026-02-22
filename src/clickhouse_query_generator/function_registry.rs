@@ -3,6 +3,30 @@
 /// Maps Neo4j function names to ClickHouse equivalents with optional argument transformations.
 use std::collections::HashMap;
 
+/// Wrap a temporal extraction argument with fromUnixTimestamp64Milli().
+///
+/// Schemas that store timestamps as Int64 epoch milliseconds (e.g., LDBC SNB)
+/// need conversion to DateTime64 before temporal extraction functions (toYear, etc.)
+/// can be applied. This function wraps the first argument unless it already
+/// contains a datetime conversion function (to avoid double-wrapping).
+fn wrap_epoch_millis_arg(args: &[String]) -> Vec<String> {
+    if args.is_empty() {
+        return args.to_vec();
+    }
+    let arg = &args[0];
+    // Skip wrapping if argument is already a datetime expression
+    let already_datetime = arg.contains("parseDateTime64BestEffort")
+        || arg.contains("fromUnixTimestamp64Milli")
+        || arg.contains("now64")
+        || arg.contains("now()")
+        || arg.contains("toDateTime");
+    if already_datetime {
+        args.to_vec()
+    } else {
+        vec![format!("fromUnixTimestamp64Milli({})", arg)]
+    }
+}
+
 /// Function mapping entry
 #[derive(Clone)]
 pub struct FunctionMapping {
@@ -679,74 +703,75 @@ lazy_static::lazy_static! {
         // date().year, datetime().month, etc. are property accesses
         // But Neo4j also has explicit functions:
 
-        // year(datetime) -> toYear(datetime)
+        // year(datetime) -> toYear(fromUnixTimestamp64Milli(datetime))
+        // Wraps argument with fromUnixTimestamp64Milli for epoch-millis Int64 columns
         m.insert("year", FunctionMapping {
             neo4j_name: "year",
             clickhouse_name: "toYear",
-            arg_transform: None,
+            arg_transform: Some(wrap_epoch_millis_arg),
         });
 
-        // month(datetime) -> toMonth(datetime)
+        // month(datetime) -> toMonth(fromUnixTimestamp64Milli(datetime))
         m.insert("month", FunctionMapping {
             neo4j_name: "month",
             clickhouse_name: "toMonth",
-            arg_transform: None,
+            arg_transform: Some(wrap_epoch_millis_arg),
         });
 
-        // day(datetime) -> toDayOfMonth(datetime)
+        // day(datetime) -> toDayOfMonth(fromUnixTimestamp64Milli(datetime))
         m.insert("day", FunctionMapping {
             neo4j_name: "day",
             clickhouse_name: "toDayOfMonth",
-            arg_transform: None,
+            arg_transform: Some(wrap_epoch_millis_arg),
         });
 
-        // hour(datetime) -> toHour(datetime)
+        // hour(datetime) -> toHour(fromUnixTimestamp64Milli(datetime))
         m.insert("hour", FunctionMapping {
             neo4j_name: "hour",
             clickhouse_name: "toHour",
-            arg_transform: None,
+            arg_transform: Some(wrap_epoch_millis_arg),
         });
 
-        // minute(datetime) -> toMinute(datetime)
+        // minute(datetime) -> toMinute(fromUnixTimestamp64Milli(datetime))
         m.insert("minute", FunctionMapping {
             neo4j_name: "minute",
             clickhouse_name: "toMinute",
-            arg_transform: None,
+            arg_transform: Some(wrap_epoch_millis_arg),
         });
 
-        // second(datetime) -> toSecond(datetime)
+        // second(datetime) -> toSecond(fromUnixTimestamp64Milli(datetime))
         m.insert("second", FunctionMapping {
             neo4j_name: "second",
             clickhouse_name: "toSecond",
-            arg_transform: None,
+            arg_transform: Some(wrap_epoch_millis_arg),
         });
 
-        // dayOfWeek(datetime) -> toDayOfWeek(datetime)
+        // dayOfWeek(datetime) -> toDayOfWeek(fromUnixTimestamp64Milli(datetime))
         m.insert("dayofweek", FunctionMapping {
             neo4j_name: "dayOfWeek",
             clickhouse_name: "toDayOfWeek",
-            arg_transform: None,
+            arg_transform: Some(wrap_epoch_millis_arg),
         });
 
-        // dayOfYear(datetime) -> toDayOfYear(datetime)
+        // dayOfYear(datetime) -> toDayOfYear(fromUnixTimestamp64Milli(datetime))
         m.insert("dayofyear", FunctionMapping {
             neo4j_name: "dayOfYear",
             clickhouse_name: "toDayOfYear",
-            arg_transform: None,
+            arg_transform: Some(wrap_epoch_millis_arg),
         });
 
-        // quarter(datetime) -> toQuarter(datetime)
+        // quarter(datetime) -> toQuarter(fromUnixTimestamp64Milli(datetime))
         m.insert("quarter", FunctionMapping {
             neo4j_name: "quarter",
             clickhouse_name: "toQuarter",
-            arg_transform: None,
+            arg_transform: Some(wrap_epoch_millis_arg),
         });
 
-        // week(datetime) -> toISOWeek(datetime)
+        // week(datetime) -> toISOWeek(fromUnixTimestamp64Milli(datetime))
         m.insert("week", FunctionMapping {
             neo4j_name: "week",
             clickhouse_name: "toISOWeek",
-            arg_transform: None,
+            arg_transform: Some(wrap_epoch_millis_arg),
         });
 
         // ===== ADDITIONAL STRING FUNCTIONS =====

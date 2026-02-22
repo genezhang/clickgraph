@@ -262,6 +262,11 @@ impl TypeInference {
 
                 // NOW infer labels for THIS level using updated plan_ctx from children
                 // Use UNIFIED constraint-based inference: gather all known facts, query schema together
+                let pre_infer_left_label = plan_ctx
+                    .get_table_ctx(&rel.left_connection)
+                    .ok()
+                    .and_then(|ctx| ctx.get_label_opt());
+
                 let (edge_types, left_label, mut right_label) = self.infer_pattern_types(
                     &rel.labels,
                     &rel.left_connection,
@@ -269,6 +274,34 @@ impl TypeInference {
                     plan_ctx,
                     graph_schema,
                 )?;
+
+                // CRITICAL: For VLP with min_hops=0 (e.g., *0..), the relationship should NOT
+                // narrow the start node type if it wasn't already typed. At zero hops, the
+                // start node IS the end node (no relationship traversal), so using the
+                // relationship to constrain it is wrong.
+                // E.g., (message)-[:REPLY_OF*0..]->(post:Post) — at hop 0, message IS post,
+                // so message could be Post, not just Comment.
+                let is_vlp_zero_hop = rel
+                    .variable_length
+                    .as_ref()
+                    .map_or(false, |vl| vl.min_hops == Some(0) || vl.min_hops.is_none());
+                let left_label = if is_vlp_zero_hop
+                    && pre_infer_left_label.is_none()
+                    && left_label.is_some()
+                {
+                    log::info!(
+                        "🔍 TypeInference: Reverting VLP*0.. left_label inference for '{}' (was {:?})",
+                        rel.left_connection,
+                        left_label
+                    );
+                    // Revert the label in plan_ctx too
+                    if let Ok(ctx) = plan_ctx.get_mut_table_ctx(&rel.left_connection) {
+                        ctx.set_labels(None);
+                    }
+                    None
+                } else {
+                    left_label
+                };
 
                 // Group Optimization for Connected Patterns (WIP)
                 // If we detected a connection earlier, now both patterns have been processed
@@ -1378,40 +1411,49 @@ impl TypeInference {
                     continue;
                 }
                 if rel_pattern.left_alias == *var_name {
+                    // VLP *0.. means at hop 0, the left node IS the right node
+                    // (no relationship traversal), so the relationship's from_node
+                    // constraint should NOT narrow the left variable's candidates.
+                    if rel_pattern.is_vlp_zero_hop {
+                        log::debug!(
+                            "🔍 Skipping VLP*0.. left constraint for '{}' by rel {:?}",
+                            var_name,
+                            rel_pattern.rel_types,
+                        );
+                        continue;
+                    }
+                    // GraphRel normalization ensures left=from_node, right=to_node
+                    // regardless of Cypher arrow direction. So always use from_node
+                    // for left alias constraints, ignoring the direction field.
                     let valid_types: HashSet<String> = rel_pattern
                         .rel_types
                         .iter()
-                        .filter_map(|rel_type| {
-                            graph_schema.get_rel_schema(rel_type).ok().and_then(|rs| {
-                                match rel_pattern.direction {
-                                    Direction::Outgoing => Some(rs.from_node.clone()),
-                                    Direction::Incoming => Some(rs.to_node.clone()),
-                                    Direction::Either => None,
-                                }
-                            })
+                        .flat_map(|rel_type| {
+                            graph_schema
+                                .get_all_rel_schemas_for_type(rel_type)
+                                .into_iter()
+                                .map(|rs| rs.from_node.clone())
                         })
                         .collect();
                     if !valid_types.is_empty() {
                         candidates.retain(|c| valid_types.contains(c));
                         log::debug!(
-                            "🔍 Constrained '{}' (left) by rel {:?}: valid={:?}",
+                            "🔍 Constrained '{}' (left/from_node) by rel {:?}: valid={:?}",
                             var_name,
                             rel_pattern.rel_types,
                             valid_types
                         );
                     }
                 } else if rel_pattern.right_alias == *var_name {
+                    // GraphRel normalization: right=to_node always
                     let valid_types: HashSet<String> = rel_pattern
                         .rel_types
                         .iter()
-                        .filter_map(|rel_type| {
-                            graph_schema.get_rel_schema(rel_type).ok().and_then(|rs| {
-                                match rel_pattern.direction {
-                                    Direction::Outgoing => Some(rs.to_node.clone()),
-                                    Direction::Incoming => Some(rs.from_node.clone()),
-                                    Direction::Either => None,
-                                }
-                            })
+                        .flat_map(|rel_type| {
+                            graph_schema
+                                .get_all_rel_schemas_for_type(rel_type)
+                                .into_iter()
+                                .map(|rs| rs.to_node.clone())
                         })
                         .collect();
                     if !valid_types.is_empty() {
@@ -1449,6 +1491,51 @@ impl TypeInference {
             if candidates.is_empty() {
                 log::warn!("🔍 No valid types for '{}' after constraints", var_name);
                 continue;
+            }
+
+            // Collapse polymorphic parent types: if type A's properties are a
+            // strict superset of type B's, keep only A. This handles cases like
+            // Message (view over Post+Comment) where Message has all properties
+            // of Post, making the Post candidate redundant.
+            if candidates.len() > 1 {
+                let mut to_remove = HashSet::new();
+                for i in 0..candidates.len() {
+                    if to_remove.contains(&i) {
+                        continue;
+                    }
+                    let props_i: HashSet<String> = graph_schema
+                        .node_schema(&candidates[i])
+                        .ok()
+                        .map(|s| s.property_mappings.keys().cloned().collect())
+                        .unwrap_or_default();
+                    for j in 0..candidates.len() {
+                        if i == j || to_remove.contains(&j) {
+                            continue;
+                        }
+                        let props_j: HashSet<String> = graph_schema
+                            .node_schema(&candidates[j])
+                            .ok()
+                            .map(|s| s.property_mappings.keys().cloned().collect())
+                            .unwrap_or_default();
+                        // If i is a strict superset of j, remove j
+                        if props_i.is_superset(&props_j) && props_i.len() > props_j.len() {
+                            log::debug!(
+                                "🔍 Collapsing '{}' into polymorphic parent '{}' (superset properties)",
+                                candidates[j],
+                                candidates[i]
+                            );
+                            to_remove.insert(j);
+                        }
+                    }
+                }
+                if !to_remove.is_empty() {
+                    let mut idx = 0;
+                    candidates.retain(|_| {
+                        let keep = !to_remove.contains(&idx);
+                        idx += 1;
+                        keep
+                    });
+                }
             }
 
             log::debug!(
@@ -1777,6 +1864,12 @@ impl TypeInference {
             })
             .collect();
 
+        // NOTE: matches come from HashMap iteration - order is non-deterministic.
+        // We intentionally do NOT sort here because the first match determines
+        // which schema is used for join column resolution, and changing the order
+        // can break existing working queries (e.g., bi-6 uses Message_hasTag_Tag
+        // table but needs the right from_id column for joins).
+
         log::debug!(
             "🔍 TypeInference: Found {} matching relationship(s) in schema",
             matches.len()
@@ -1796,12 +1889,13 @@ impl TypeInference {
         }
 
         // Check if too many edge types
-        let unique_edge_types: Vec<String> = matches
+        let mut unique_edge_types: Vec<String> = matches
             .iter()
             .map(|(key, _)| key.split("::").next().unwrap_or(key).to_string())
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
+        unique_edge_types.sort(); // Deterministic ordering
 
         if unique_edge_types.len() > plan_ctx.max_inferred_types && known_edge_types.is_none() {
             return Err(AnalyzerError::InvalidPlan(format!(
@@ -2001,18 +2095,28 @@ impl TypeInference {
                     combinations.clone(),
                 );
 
-                // Set first combination types in TableCtx for backward compatibility
+                // Set first combination types in TableCtx for backward compatibility.
+                // Only set labels where all combinations AGREE (unambiguous).
+                // Don't set ambiguous labels - let parent patterns narrow them down.
                 if let Some(first_combo) = combinations.first() {
-                    if inferred_left_label.is_none() && known_left_clone.is_none() {
+                    let all_from_same = combinations
+                        .iter()
+                        .all(|c| c.from_label == first_combo.from_label);
+                    if all_from_same && inferred_left_label.is_none() && known_left_clone.is_none()
+                    {
                         self.update_node_label_in_ctx(
                             left_connection,
                             &first_combo.from_label,
                             "from",
-                            "multi-type pattern",
+                            "multi-type pattern (unanimous)",
                             plan_ctx,
                         );
                     }
-                    if inferred_right_label.is_none() && known_right_clone.is_none() {
+                    let all_to_same = combinations
+                        .iter()
+                        .all(|c| c.to_label == first_combo.to_label);
+                    if all_to_same && inferred_right_label.is_none() && known_right_clone.is_none()
+                    {
                         self.update_node_label_in_ctx(
                             right_connection,
                             &first_combo.to_label,
@@ -3413,13 +3517,15 @@ fn check_relationship_exists_with_direction(
             check_relationship_exists_bidirectional(from_type, to_type, rel_type, graph_schema)
         }
         Direction::Outgoing | Direction::Incoming => {
-            // Directed pattern - must match schema direction exactly
-            if let Some(rel_schema) = graph_schema.get_relationships_schema_opt(rel_type) {
-                node_type_matches(&rel_schema.from_node, from_type)
-                    && node_type_matches(&rel_schema.to_node, to_type)
-            } else {
-                false
-            }
+            // Directed pattern - must match schema direction exactly.
+            // Check ALL schemas for this rel type, not just the first.
+            graph_schema
+                .get_all_rel_schemas_for_type(rel_type)
+                .iter()
+                .any(|rel_schema| {
+                    node_type_matches(&rel_schema.from_node, from_type)
+                        && node_type_matches(&rel_schema.to_node, to_type)
+                })
         }
     }
 }
@@ -3640,6 +3746,7 @@ struct RelationshipPattern {
     right_alias: String,
     rel_types: Vec<String>, // Empty means any relationship
     direction: Direction,
+    is_vlp_zero_hop: bool, // VLP *0.. — left node shouldn't be constrained by relationship
 }
 
 /// Extract all relationship patterns from the plan
@@ -3660,11 +3767,16 @@ fn extract_patterns_recursive(
 ) {
     match plan {
         LogicalPlan::GraphRel(rel) => {
+            let is_vlp_zero_hop = rel
+                .variable_length
+                .as_ref()
+                .map_or(false, |vl| vl.min_hops == Some(0) || vl.min_hops.is_none());
             patterns.push(RelationshipPattern {
                 left_alias: rel.left_connection.clone(),
                 right_alias: rel.right_connection.clone(),
                 rel_types: rel.labels.clone().unwrap_or_default(),
                 direction: rel.direction.clone(),
+                is_vlp_zero_hop,
             });
 
             // Recurse to children
@@ -3884,6 +3996,11 @@ fn is_valid_combination_with_direction(
     typed_nodes: &HashMap<String, String>,
 ) -> bool {
     for rel_pattern in relationships {
+        // VLP *0.. patterns are valid at hop 0 without relationship traversal,
+        // so don't use them to invalidate combinations.
+        if rel_pattern.is_vlp_zero_hop {
+            continue;
+        }
         // Get node types from combo (untyped) or typed_nodes (already typed)
         let from_type = match combo.get(&rel_pattern.left_alias) {
             Some(t) => t.as_str(),

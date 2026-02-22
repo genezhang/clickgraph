@@ -28,10 +28,6 @@ impl PropertiesBuilder for LogicalPlan {
         &self,
         alias: &str,
     ) -> PropertiesBuilderResult<(Vec<(String, String)>, Option<String>)> {
-        log::error!(
-            "🔍🔍🔍 TRACING: get_properties_with_table_alias called for '{}'",
-            alias
-        );
         match self {
             LogicalPlan::GraphNode(node) => {
                 // Check if this node's alias matches

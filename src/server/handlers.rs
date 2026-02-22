@@ -708,6 +708,9 @@ async fn query_handler_inner(
                 view_parameter_values
             );
 
+            // Reset global counters for deterministic SQL generation
+            crate::query_planner::logical_plan::reset_all_counters();
+
             let (logical_plan, plan_ctx) = match query_planner::evaluate_read_statement(
                 cypher_statement,
                 &graph_schema,

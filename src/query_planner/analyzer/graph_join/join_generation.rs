@@ -415,19 +415,31 @@ fn redistribute_conditions(joins: &mut [Join], duplicate: &Join) {
 /// Select the anchor (FROM) table from collected joins.
 /// Prefers non-optional FROM markers (INNER), falls back to optional (LEFT).
 pub fn select_anchor(joins: &[Join]) -> Option<String> {
-    // Prefer non-optional FROM marker
+    // Prefer non-optional FROM marker, picking alphabetically smallest for determinism
+    let mut best: Option<&str> = None;
     for join in joins {
         if join.joining_on.is_empty() && join.join_type != JoinType::Left {
-            return Some(join.table_alias.clone());
+            match best {
+                None => best = Some(&join.table_alias),
+                Some(b) if join.table_alias.as_str() < b => best = Some(&join.table_alias),
+                _ => {}
+            }
         }
     }
-    // Fall back to any FROM marker
+    if let Some(b) = best {
+        return Some(b.to_string());
+    }
+    // Fall back to any FROM marker (including Left), alphabetically smallest
     for join in joins {
         if join.joining_on.is_empty() {
-            return Some(join.table_alias.clone());
+            match best {
+                None => best = Some(&join.table_alias),
+                Some(b) if join.table_alias.as_str() < b => best = Some(&join.table_alias),
+                _ => {}
+            }
         }
     }
-    None
+    best.map(|s| s.to_string())
 }
 
 /// Topological sort of joins ensuring each JOIN only references already-available tables.
@@ -443,29 +455,44 @@ pub fn topo_sort_joins(
     let mut ordered: Vec<Join> = Vec::new();
     let mut remaining: Vec<Join> = Vec::new();
 
-    // Phase 1: FROM markers first (no dependencies)
+    // Phase 1: FROM markers first (no dependencies), sorted for determinism
+    let mut from_markers = Vec::new();
     for join in joins {
         if join.joining_on.is_empty() {
-            available.insert(join.table_alias.clone());
-            ordered.push(join);
+            from_markers.push(join);
         } else {
             remaining.push(join);
         }
     }
+    from_markers.sort_by(|a, b| a.table_alias.cmp(&b.table_alias));
+    for join in from_markers {
+        available.insert(join.table_alias.clone());
+        ordered.push(join);
+    }
 
-    // Phase 2: Greedy topological sort
+    // Phase 2: Greedy topological sort with deterministic tie-breaking.
+    // When multiple joins have their dependencies satisfied in the same round,
+    // sort them by table_alias to ensure deterministic ordering regardless of
+    // HashMap iteration order in upstream code.
     while !remaining.is_empty() {
         let before = remaining.len();
         let mut next_remaining = Vec::new();
+        let mut ready_this_round = Vec::new();
 
         for join in remaining {
             let deps = extract_join_dependencies(&join);
             if deps.is_subset(&available) {
-                available.insert(join.table_alias.clone());
-                ordered.push(join);
+                ready_this_round.push(join);
             } else {
                 next_remaining.push(join);
             }
+        }
+
+        // Sort ready joins by alias for deterministic ordering
+        ready_this_round.sort_by(|a, b| a.table_alias.cmp(&b.table_alias));
+        for join in ready_this_round {
+            available.insert(join.table_alias.clone());
+            ordered.push(join);
         }
 
         remaining = next_remaining;

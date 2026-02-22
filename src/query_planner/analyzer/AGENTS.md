@@ -62,13 +62,14 @@ mod.rs                       ← Pipeline orchestrator: initial → intermediate
     │ multi_type_vlp_expansion.rs (687) ← Enumerate valid multi-type VLP paths
     │ where_property_extractor.rs (282) ← Extract property refs from WHERE (AST-level)
     │
-    └─── graph_join/ Sub-Module (5,731 lines total) ─────────────────────────
-      mod.rs (57)             ← Public API, re-exports
-      inference.rs (4,049)    ← Core JOIN generation (THE BEAST)
-      metadata.rs (380)       ← PatternGraphMetadata builder
-      helpers.rs (494)        ← Join dedup, column resolution, utilities
-      cross_branch.rs (756)   ← Cross-branch JOIN detection, uniqueness constraints
-      tests.rs (1,374)        ← Comprehensive unit tests
+    └─── graph_join/ Sub-Module (7,225 lines total) ─────────────────────────
+      mod.rs (57)                ← Public API, re-exports
+      inference.rs (2,880)       ← Core JOIN inference — dispatches to join_generation.rs
+      join_generation.rs (890)   ← **NEW (PR #117)**: Generic anchor-aware JOIN generation algorithm
+      metadata.rs (379)          ← PatternGraphMetadata builder
+      helpers.rs (554)           ← Join dedup, column resolution, utilities
+      cross_branch.rs (776)      ← Cross-branch JOIN detection, uniqueness constraints
+      tests.rs (1,689)           ← Comprehensive unit tests (includes join_generation tests)
 ```
 
 ## Complete File List
@@ -76,21 +77,22 @@ mod.rs                       ← Pipeline orchestrator: initial → intermediate
 | File | Lines | Responsibility |
 |------|------:|----------------|
 | **type_inference.rs** | **4,238** | **UNIFIED type resolution (5 phases): label inference, UNION generation, direction validation, ViewScan resolution** |
-| graph_join/inference.rs | 4,049 | Core JOIN generation from graph patterns — THE most complex file |
+| graph_join/inference.rs | 2,880 | Core JOIN inference — delegates to join_generation.rs for pattern→JOIN conversion |
+| graph_join/join_generation.rs | 890 | **NEW (PR #117)**: Generic anchor-aware JOIN generation: `generate_pattern_joins()` handles 4 availability cases (neither/left/right/both nodes available), topological sort, OPTIONAL marking |
 | filter_tagging.rs | 3,122 | Property→column mapping, filter extraction, id() decoding |
-| graph_join/tests.rs | 1,374 | Unit tests for graph join inference |
+| graph_join/tests.rs | 1,689 | Unit tests for graph join inference + join generation |
 | variable_resolver.rs | 1,335 | Resolve variable references to CTE sources |
 | projection_tagging.rs | 1,327 | RETURN * expansion, property tagging, **count(*) semantics** |
 | bidirectional_union.rs | 1,236 | Undirected patterns → UNION ALL |
 | property_requirements_analyzer.rs | 1,095 | Determine required properties for pruning |
 | graph_traversal_planning.rs | 850 | Multi-hop CTE planning, [:A\|B] UNION |
 | match_type_inference.rs | 760 | MATCH clause type inference helpers |
-| graph_join/cross_branch.rs | 756 | Cross-branch JOIN detection, uniqueness constraints |
+| graph_join/cross_branch.rs | 776 | Cross-branch JOIN detection, uniqueness constraints |
 | multi_type_vlp_expansion.rs | 687 | Multi-type VLP path enumeration |
 | mod.rs | 614 | Pipeline orchestrator (initial/intermediate/final) |
 | group_by_building.rs | 614 | GROUP BY clause creation from aggregates |
 | cte_column_resolver.rs | 495 | Resolve PropertyAccess → CTE column names |
-| graph_join/helpers.rs | 494 | Join deduplication, column resolution |
+| graph_join/helpers.rs | 554 | Join deduplication, column resolution |
 | property_requirements.rs | 462 | PropertyRequirements data structure |
 | duplicate_scans_removing.rs | 459 | Deduplicate same-alias ViewScans |
 | graph_context.rs | 390 | GraphContext struct for pattern analysis |
@@ -169,8 +171,7 @@ Step 2: UnwindPropertyRewriter     — user.name → user.5 (tuple index access)
 
 ## The `graph_join/` Sub-Module Architecture
 
-This is the most complex sub-module (5,731 lines). It converts Cypher graph patterns
-into SQL JOINs.
+This is a complex sub-module (7,225 lines). It converts Cypher graph patterns into SQL JOINs.
 
 ### Core Data Flow
 
@@ -186,10 +187,8 @@ PatternGraphMetadata                             collected_graph_joins
     ▼                                                 │
 collect_graph_joins()  ──── infer_graph_join() ──────┘
     │                       │
-    │                       ├─ Standard pattern: FROM(a) + edge(r) + TO(b) → 2 JOINs
-    │                       ├─ FK-edge pattern: node + FK column → 1 JOIN
-    │                       ├─ Denormalized pattern: edge embeds node → 0-1 JOINs
-    │                       └─ VLP pattern: mark endpoints in JoinContext
+    │                       └─ Dispatches to join_generation.rs
+    │                          generate_pattern_joins(strategy, tables, available)
     │
     ├── cross_branch::generate_cross_branch_joins_from_metadata()
     │   (Phase 2: shared nodes in comma-separated patterns → JOINs)
@@ -197,6 +196,37 @@ collect_graph_joins()  ──── infer_graph_join() ──────┘
     └── cross_branch::generate_relationship_uniqueness_constraints()
         (Phase 4: r1.id != r2.id for bidirectional patterns)
 ```
+
+### join_generation.rs — Anchor-Aware Algorithm (PR #117)
+
+**Core insight**: Traditional node-edge-node is the base case requiring 2 JOINs. All
+other `JoinStrategy` variants are optimizations that skip some JOINs.
+
+```rust
+// Generic loop in inference.rs
+for each (a)-[r]->(b):
+    already_available = join_ctx.to_hashset()
+    joins += generate_pattern_joins(strategy, tables, already_available)
+    apply_vlp_rewrites(&mut joins)
+    apply_optional_marking(&mut joins)
+    collect_with_dedup(&mut all_joins, joins)
+anchor = select_anchor(&all_joins)
+ordered = topo_sort_joins(all_joins)
+```
+
+**4 anchor-availability cases** for Traditional strategy:
+| Case | Condition | Generated JOINs |
+|------|-----------|-----------------|
+| First pattern | Neither node available | `FROM left → JOIN edge ON left → JOIN right ON edge` |
+| Left available | Left already joined | `JOIN edge ON left → JOIN right ON edge` |
+| Right available | Right already joined | `JOIN edge ON right → JOIN left ON edge` (reversed) |
+| Both available | Both already joined | `JOIN edge ON left AND right` (correlation) |
+
+This is critical for OPTIONAL MATCH — the optional side shares a node with the required
+MATCH. Without anchor awareness, cartesian products (`ON 1 = 1`) were generated.
+
+**Replaced**: ~1200 lines of per-strategy handler code in inference.rs with a 64-line
+generic loop + this clean 890-line module. **Net -374 lines.**
 
 ### Key Types
 
