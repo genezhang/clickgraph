@@ -177,6 +177,45 @@ impl SchemaType {
             SchemaType::Uuid => "uuid",
         }
     }
+
+    /// Get the ClickHouse type name for this type
+    ///
+    /// Returns the appropriate ClickHouse type for use in CAST expressions.
+    /// For ID columns, this ensures proper type matching for UNION compatibility.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// assert_eq!(SchemaType::Integer.to_clickhouse_type(), "Int64");
+    /// assert_eq!(SchemaType::String.to_clickhouse_type(), "String");
+    /// assert_eq!(SchemaType::Uuid.to_clickhouse_type(), "UUID");
+    /// ```
+    pub fn to_clickhouse_type(&self) -> &'static str {
+        match self {
+            SchemaType::Integer => "Int64",          // Generic 64-bit integer
+            SchemaType::Float => "Float64",          // Generic 64-bit float
+            SchemaType::String => "String",          // Variable-length string
+            SchemaType::Boolean => "UInt8",          // ClickHouse uses UInt8 for boolean
+            SchemaType::DateTime => "DateTime64(3)", // DateTime with millisecond precision
+            SchemaType::Date => "Date32",            // Extended date range
+            SchemaType::Uuid => "UUID",              // UUID type
+        }
+    }
+
+    /// Get a default/placeholder value for this type
+    ///
+    /// Used for generating empty CTE placeholders that maintain type compatibility.
+    pub fn default_value(&self) -> &'static str {
+        match self {
+            SchemaType::Integer => "0",
+            SchemaType::Float => "0.0",
+            SchemaType::String => "''",
+            SchemaType::Boolean => "0",
+            SchemaType::DateTime => "'1970-01-01 00:00:00'",
+            SchemaType::Date => "'1970-01-01'",
+            SchemaType::Uuid => "'00000000-0000-0000-0000-000000000000'",
+        }
+    }
 }
 
 impl fmt::Display for SchemaType {
