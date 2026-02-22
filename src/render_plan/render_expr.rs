@@ -909,14 +909,32 @@ impl TryFrom<LogicalExpr> for RenderExpr {
 
                 // Cypher lists can mix types, but ClickHouse arrays must be homogeneous.
                 // When a list contains non-literal elements (property accesses, columns),
-                // we can't determine types at render time, so wrap all in toString()
-                // to ensure Array(String) compatibility.
-                // Pure literal lists (e.g., [1, 2, 3] for IN clauses, UNWIND) are left as-is.
+                // we can't determine types at render time, so wrap all elements in toString()
+                // to ensure Array(String) compatibility, even for single-element lists.
+                //
+                // Note: Parameters are treated as "literals" for this decision. Mixed
+                // parameter lists like [$stringParam, $intParam] will not get toString()
+                // wrapping here. This is acceptable because:
+                //   1) Parameters in lists are typically used for IN clauses or UNWIND,
+                //      where they should already be homogeneous.
+                //   2) The caller fully controls parameter types and can ensure they are
+                //      consistent (or convert them before passing).
+                //
+                // Tradeoffs of toString() wrapping:
+                //   - Type information is lost: integers, dates, booleans become strings.
+                //   - Comparison/sorting semantics become string-based (e.g., "10" < "9").
+                //   - Downstream operations expecting specific types must CAST back.
+                // This is acceptable for display-oriented use cases (e.g., LDBC complex-1
+                // collecting university/company info), but may surprise if arrays are used
+                // in calculations or type-sensitive predicates.
+                //
+                // Pure literal lists (e.g., [1, 2, 3] for IN clauses, UNWIND) are left as-is
+                // so they preserve their literal element types.
                 let has_non_literal = items
                     .iter()
                     .any(|e| !matches!(e, RenderExpr::Literal(_) | RenderExpr::Parameter(_)));
 
-                if has_non_literal && items.len() > 1 {
+                if has_non_literal {
                     RenderExpr::List(
                         items
                             .into_iter()
