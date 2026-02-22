@@ -904,11 +904,12 @@ impl ProjectionTagging {
                                     if let Some(labels) = table_ctx.get_labels() {
                                         if labels.len() > 1 {
                                             // Multi-type: VLP CTE produces path_relationships array.
-                                            // Resolve to r.path_relationships[1] which the VLP rewriter
-                                            // handles. Use PropertyAccess with special column name.
+                                            // IMPORTANT: VLP CTE uses alias 't', not the relationship alias 'r'.
+                                            // The CTE FROM clause is: FROM vlp_multi_type_xxx AS t
+                                            // So we must use table_alias='t' to reference CTE columns.
                                             item.expression = LogicalExpr::ArraySubscript {
                                                 array: Box::new(LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                                    table_alias: TableAlias(alias.clone()),
+                                                    table_alias: TableAlias("t".to_string()), // VLP CTE uses 't' alias
                                                     column: crate::graph_catalog::expression_parser::PropertyValue::Column("path_relationships".to_string()),
                                                 })),
                                                 index: Box::new(LogicalExpr::Literal(
