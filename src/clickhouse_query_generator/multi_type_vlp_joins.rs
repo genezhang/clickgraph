@@ -334,8 +334,8 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             // IMPORTANT: Empty CTE must have ALL columns that non-empty CTEs have for UNION compatibility
             // Columns: end_type, end_id, start_id, start_type, end_properties, start_properties,
             //          hop_count, path_relationships, rel_properties
-            // Use proper types for all columns to match the non-empty CTE
-            return Ok("SELECT '' AS end_type, CAST('', 'String') AS end_id, CAST('', 'String') AS start_id, '' AS start_type, '{}' AS end_properties, '{}' AS start_properties, 0 AS hop_count, CAST([], 'Array(String)') AS path_relationships, CAST([], 'Array(String)') AS rel_properties WHERE 0 = 1".to_string());
+            // Use native types for ID columns to match non-empty CTEs
+            return Ok("SELECT '' AS end_type, CAST(0, 'UInt64') AS end_id, CAST(0, 'UInt64') AS start_id, '' AS start_type, '{}' AS end_properties, '{}' AS start_properties, 0 AS hop_count, CAST([], 'Array(String)') AS path_relationships, CAST([], 'Array(String)') AS rel_properties WHERE 0 = 1".to_string());
         }
 
         log::error!(
@@ -611,7 +611,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         // Add type discriminator column
         items.push(format!("'{}' AS end_type", node_type));
 
-        // Add end node ID as String (handles UNION type compatibility)
+        // Add end node ID - use native type for WHERE clause compatibility
         if let Ok(node_schema) = self
             .schema
             .all_node_schemas()
@@ -620,13 +620,13 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         {
             let end_id_sql = format!(
                 "{} AS {}",
-                node_schema.node_id.id.to_pipe_joined_sql(node_alias),
+                node_schema.node_id.id.to_sql_native(node_alias),
                 VLP_END_ID_COLUMN
             );
             items.push(end_id_sql);
         }
 
-        // Add start node ID as String
+        // Add start node ID - use native type for WHERE clause compatibility
         if let Ok(start_type) = self.start_labels.first().ok_or("No start type") {
             if let Ok(node_schema) = self
                 .schema
@@ -636,7 +636,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             {
                 let start_id_sql = format!(
                     "{} AS {}",
-                    node_schema.node_id.id.to_pipe_joined_sql(start_alias_sql),
+                    node_schema.node_id.id.to_sql_native(start_alias_sql),
                     VLP_START_ID_COLUMN
                 );
                 items.push(start_id_sql);

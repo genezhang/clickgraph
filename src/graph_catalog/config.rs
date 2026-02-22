@@ -158,6 +158,29 @@ impl Identifier {
         }
     }
 
+    /// Get the ID column as SQL without toString() wrapper
+    /// Used when we need native type comparison (e.g., for WHERE clauses)
+    pub fn to_sql_native(&self, alias: &str) -> String {
+        match self {
+            Identifier::Single(col) => {
+                if alias.is_empty() {
+                    col.clone()
+                } else {
+                    format!("{}.{}", alias, col)
+                }
+            }
+            Identifier::Composite(cols) => {
+                // For composite IDs, we still need toString for concatenation
+                let qualify = |col: &str| format!("{}.{}", alias, col);
+                let parts: Vec<String> = cols
+                    .iter()
+                    .map(|c| format!("toString({})", qualify(c)))
+                    .collect();
+                format!("concat({})", parts.join(", '|', "))
+            }
+        }
+    }
+
     /// Get the first (or only) column name. Falls back to "id" if empty.
     pub fn first_column(&self) -> &str {
         match self {
