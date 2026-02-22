@@ -10964,13 +10964,10 @@ pub(crate) fn collapse_passthrough_with(
 ///
 /// This function:
 /// 1. Traverses the plan to find GraphJoins nodes
-/// 2. Identifies CTE-backed joins (alias in exported_aliases set)
-/// 3. Uses position-aware pruning strategy:
-///    - Prefix: CTE join is at the start of the chain → remove all joins up to
-///      and including the last CTE join (they are materialized in the CTE)
-///    - Suffix/middle: CTE join is at the end or middle → only remove the CTE
-///      join itself, keeping intermediate relationship joins that connect FROM
-///      to the CTE node
+/// 2. Builds an adjacency graph from join ON conditions (alias connectivity)
+/// 3. Seeds the removable set with CTE-backed aliases (exported_aliases)
+/// 4. Fixed-point expansion: non-CTE joins are removable if ALL neighbors are removable
+/// 5. Keeps joins whose alias is NOT in the removable set
 pub(crate) fn prune_joins_covered_by_cte(
     plan: &LogicalPlan,
     cte_name: &str,
@@ -10994,78 +10991,136 @@ pub(crate) fn prune_joins_covered_by_cte(
                 gj.anchor_table
             );
 
-            // Filter out joins that are fully covered by the CTE.
-            //
-            // Strategy: Find the CTE-backed join (alias in exported_aliases).
-            // If it's at the START of the chain (index 0 or all joins before it are
-            // pre-WITH nodes leading to the CTE), remove everything up to and including it.
-            // If it's at the END of the chain (post-WITH relationships connect TO the CTE),
-            // only remove the CTE join itself — the intermediate relationship joins are needed
-            // to connect the FROM node to the CTE.
-            let mut kept_joins = Vec::new();
-            let mut removed_joins = Vec::new();
+            // Build adjacency graph from join ON conditions, then use fixed-point
+            // expansion to find all joins fully internal to the CTE subgraph.
 
-            // Find all CTE join indices
-            let cte_join_indices: Vec<usize> = gj
-                .joins
-                .iter()
-                .enumerate()
-                .filter(|(_, join)| exported_aliases.contains(join.table_alias.as_str()))
-                .map(|(idx, _)| idx)
-                .collect();
-
-            if !cte_join_indices.is_empty() {
-                let last_cte_idx = *cte_join_indices.last().unwrap();
-                let first_cte_idx = *cte_join_indices.first().unwrap();
-
-                log::info!(
-                    "🔧 prune_joins_covered_by_cte: Found CTE join(s) at indices {:?} (first={}, last={})",
-                    cte_join_indices,
-                    first_cte_idx,
-                    last_cte_idx
-                );
-
-                // Determine pruning strategy based on CTE join position.
-                // This is a positional heuristic: if the CTE join appears in the first
-                // half of the chain, it's likely a prefix (pre-WITH nodes leading to CTE),
-                // so we remove everything up to and including it. If it appears in the
-                // second half, it's likely a suffix (post-WITH relationships connecting TO
-                // the CTE), so we only remove the CTE join itself.
-                //
-                // NOTE: This heuristic works for all known LDBC patterns but could produce
-                // incorrect results for chains where a CTE join is in the exact middle.
-                // A more robust approach would use structural analysis of join connectivity.
-                let is_prefix_cte = first_cte_idx == 0 || (last_cte_idx < gj.joins.len() / 2);
-
-                for (idx, join) in gj.joins.iter().enumerate() {
-                    let should_remove = if is_prefix_cte {
-                        // Prefix strategy: remove all up to and including last CTE join
-                        idx <= last_cte_idx
-                    } else {
-                        // Suffix/middle strategy: only remove the CTE join itself
-                        cte_join_indices.contains(&idx)
-                    };
-
-                    if should_remove {
-                        log::debug!(
-                            "🔧 prune_joins_covered_by_cte: REMOVING join {} to '{}'",
-                            idx,
-                            join.table_alias
-                        );
-                        removed_joins.push(join.clone());
-                    } else {
-                        log::info!(
-                            "🔧 prune_joins_covered_by_cte: KEEPING join {} to '{}'",
-                            idx,
-                            join.table_alias
-                        );
-                        kept_joins.push(join.clone());
+            // Helper: extract table aliases from join condition operands
+            fn extract_condition_aliases(
+                operands: &[crate::query_planner::logical_expr::LogicalExpr],
+                aliases: &mut std::collections::HashSet<String>,
+            ) {
+                for operand in operands {
+                    match operand {
+                        crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) => {
+                            aliases.insert(pa.table_alias.0.clone());
+                        }
+                        crate::query_planner::logical_expr::LogicalExpr::OperatorApplicationExp(
+                            nested,
+                        ) => {
+                            extract_condition_aliases(&nested.operands, aliases);
+                        }
+                        _ => {}
                     }
                 }
-            } else {
-                // No join aliases match CTE aliases - keep all joins
-                log::debug!("🔧 prune_joins_covered_by_cte: No join aliases match CTE aliases, keeping all joins");
-                kept_joins = gj.joins.clone();
+            }
+
+            // 1. Build adjacency graph from join conditions
+            let mut adjacency: std::collections::HashMap<
+                String,
+                std::collections::HashSet<String>,
+            > = std::collections::HashMap::new();
+
+            // Register all join aliases and anchor
+            if let Some(ref anchor) = gj.anchor_table {
+                adjacency
+                    .entry(anchor.clone())
+                    .or_insert_with(std::collections::HashSet::new);
+            }
+            for join in &gj.joins {
+                adjacency
+                    .entry(join.table_alias.clone())
+                    .or_insert_with(std::collections::HashSet::new);
+            }
+
+            // Add edges from join conditions
+            for join in &gj.joins {
+                let mut condition_aliases = std::collections::HashSet::new();
+                for op in &join.joining_on {
+                    extract_condition_aliases(&op.operands, &mut condition_aliases);
+                }
+                // Add bidirectional edges between join alias and all aliases in its conditions
+                for alias in &condition_aliases {
+                    if alias != &join.table_alias {
+                        adjacency
+                            .entry(join.table_alias.clone())
+                            .or_insert_with(std::collections::HashSet::new)
+                            .insert(alias.clone());
+                        adjacency
+                            .entry(alias.clone())
+                            .or_insert_with(std::collections::HashSet::new)
+                            .insert(join.table_alias.clone());
+                    }
+                }
+            }
+
+            log::info!(
+                "🔧 prune_joins_covered_by_cte: Adjacency graph: {:?}",
+                adjacency
+            );
+
+            // 2. Seed removable set with CTE-backed aliases
+            let mut removable = std::collections::HashSet::new();
+            for join in &gj.joins {
+                if exported_aliases.contains(join.table_alias.as_str()) {
+                    removable.insert(join.table_alias.clone());
+                }
+            }
+            if let Some(ref anchor) = gj.anchor_table {
+                if exported_aliases.contains(anchor.as_str()) {
+                    removable.insert(anchor.clone());
+                }
+            }
+
+            log::info!(
+                "🔧 prune_joins_covered_by_cte: Initial removable set (CTE-backed): {:?}",
+                removable
+            );
+
+            // 3. Fixed-point expansion: a non-CTE join is removable if ALL its neighbors
+            //    are already removable
+            loop {
+                let mut changed = false;
+                for join in &gj.joins {
+                    if removable.contains(&join.table_alias) {
+                        continue;
+                    }
+                    if let Some(neighbors) = adjacency.get(&join.table_alias) {
+                        if !neighbors.is_empty() && neighbors.iter().all(|n| removable.contains(n))
+                        {
+                            removable.insert(join.table_alias.clone());
+                            changed = true;
+                        }
+                    }
+                }
+                if !changed {
+                    break;
+                }
+            }
+
+            log::info!(
+                "🔧 prune_joins_covered_by_cte: Final removable set: {:?}",
+                removable
+            );
+
+            // 4. Partition joins into kept/removed
+            let mut kept_joins = Vec::new();
+            let mut removed_joins = Vec::new();
+            for (idx, join) in gj.joins.iter().enumerate() {
+                if removable.contains(&join.table_alias) {
+                    log::debug!(
+                        "🔧 prune_joins_covered_by_cte: REMOVING join {} to '{}'",
+                        idx,
+                        join.table_alias
+                    );
+                    removed_joins.push(join.clone());
+                } else {
+                    log::info!(
+                        "🔧 prune_joins_covered_by_cte: KEEPING join {} to '{}'",
+                        idx,
+                        join.table_alias
+                    );
+                    kept_joins.push(join.clone());
+                }
             }
 
             log::info!(
