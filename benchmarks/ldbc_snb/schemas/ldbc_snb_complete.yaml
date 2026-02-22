@@ -24,7 +24,8 @@ graph_schema:
         creationDate: creationDate
         locationIP: locationIP
         browserUsed: browserUsed
-        # speaks and email are arrays - available but may need special handling
+        email: email
+        speaks: speaks
 
     # -------------------------------------------------------------------------
     # Post - content created by a Person in a Forum

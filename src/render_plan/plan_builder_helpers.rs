@@ -3847,6 +3847,51 @@ pub(super) fn collect_schema_filters(
     filters
 }
 
+/// Collect schema filters with alias and id_column info for NULL-safe wrapping.
+/// Returns (filter_expr, alias, id_column) tuples so callers can wrap with OR IS NULL.
+pub(super) fn collect_schema_filters_with_alias(
+    plan: &LogicalPlan,
+    alias_hint: Option<&str>,
+) -> Vec<(RenderExpr, String, String)> {
+    let mut filters = Vec::new();
+    match plan {
+        LogicalPlan::ViewScan(scan) => {
+            if let Some(ref schema_filter) = scan.schema_filter {
+                let table_alias = alias_hint.unwrap_or(VLP_CTE_FROM_ALIAS);
+                if let Ok(sql) = schema_filter.to_sql(table_alias) {
+                    filters.push((
+                        RenderExpr::Raw(sql),
+                        table_alias.to_string(),
+                        scan.id_column.clone(),
+                    ));
+                }
+            }
+        }
+        LogicalPlan::GraphRel(gr) => {
+            filters.extend(collect_schema_filters_with_alias(
+                &gr.left,
+                Some(&gr.left_connection),
+            ));
+            filters.extend(collect_schema_filters_with_alias(
+                &gr.center,
+                Some(&gr.alias),
+            ));
+            filters.extend(collect_schema_filters_with_alias(
+                &gr.right,
+                Some(&gr.right_connection),
+            ));
+        }
+        LogicalPlan::GraphNode(gn) => {
+            filters.extend(collect_schema_filters_with_alias(
+                &gn.input,
+                Some(&gn.alias),
+            ));
+        }
+        _ => {}
+    }
+    filters
+}
+
 /// Combine multiple RenderExpr filters with AND operator.
 /// Returns None if empty, the single expr if one, or AND-combined if multiple.
 pub(super) fn combine_render_exprs_with_and(filters: Vec<RenderExpr>) -> Option<RenderExpr> {

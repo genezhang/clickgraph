@@ -3616,6 +3616,29 @@ impl RenderExpr {
                 }
             }
             RenderExpr::Case(case) => {
+                // Check if any branch returns a List (Array) — if so, NULL branches
+                // must be replaced with [] because ClickHouse can't find a supertype
+                // for Nullable(Nothing) and Array(T).
+                // Note: this checks top-level List variants only; nested lists inside
+                // function calls are not detected. This is acceptable because CASE
+                // branches that return arrays use direct List expressions in practice.
+                let has_list_branch = case
+                    .when_then
+                    .iter()
+                    .any(|(_, t)| matches!(t, RenderExpr::List(_)))
+                    || case
+                        .else_expr
+                        .as_ref()
+                        .is_some_and(|e| matches!(e.as_ref(), RenderExpr::List(_)));
+
+                let render_result = |expr: &RenderExpr| -> String {
+                    if has_list_branch && matches!(expr, RenderExpr::Literal(Literal::Null)) {
+                        "[]".to_string()
+                    } else {
+                        expr.to_sql()
+                    }
+                };
+
                 // For ClickHouse, use caseWithExpression for simple CASE expressions
                 if let Some(case_expr) = &case.expr {
                     // caseWithExpression(expr, val1, res1, val2, res2, ..., default)
@@ -3623,14 +3646,20 @@ impl RenderExpr {
 
                     for (when_expr, then_expr) in &case.when_then {
                         args.push(when_expr.to_sql());
-                        args.push(then_expr.to_sql());
+                        args.push(render_result(then_expr));
                     }
 
                     let else_expr = case
                         .else_expr
                         .as_ref()
-                        .map(|e| e.to_sql())
-                        .unwrap_or_else(|| "NULL".to_string());
+                        .map(|e| render_result(e))
+                        .unwrap_or_else(|| {
+                            if has_list_branch {
+                                "[]".to_string()
+                            } else {
+                                "NULL".to_string()
+                            }
+                        });
                     args.push(else_expr);
 
                     format!("caseWithExpression({})", args.join(", "))
@@ -3642,12 +3671,12 @@ impl RenderExpr {
                         sql.push_str(&format!(
                             " WHEN {} THEN {}",
                             when_expr.to_sql(),
-                            then_expr.to_sql()
+                            render_result(then_expr)
                         ));
                     }
 
                     if let Some(else_expr) = &case.else_expr {
-                        sql.push_str(&format!(" ELSE {}", else_expr.to_sql()));
+                        sql.push_str(&format!(" ELSE {}", render_result(else_expr)));
                     }
 
                     sql.push_str(" END");
