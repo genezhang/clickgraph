@@ -35,8 +35,8 @@ use std::{
 // Import metadata module types and functions
 use super::helpers;
 use super::metadata::{
-    plan_references_alias as metadata_plan_references_alias, PatternEdgeInfo, PatternGraphMetadata,
-    PatternNodeInfo,
+    expr_references_alias, plan_references_alias as metadata_plan_references_alias,
+    PatternEdgeInfo, PatternGraphMetadata, PatternNodeInfo,
 };
 
 use crate::{
@@ -1494,6 +1494,28 @@ impl GraphJoinInference {
                 let mut inner_metadata =
                     Self::build_pattern_metadata(with_clause.input.as_ref(), &inner_plan_ctx)
                         .unwrap_or_default();
+
+                // WITH items (e.g., count(reply) AS replyCount) reference aliases
+                // from the inner scope. build_pattern_metadata only checks
+                // with_clause.input, so nodes referenced solely in WITH items
+                // appear unreferenced, causing SingleTableScan to wrongly fire.
+                // Fix: also scan with_clause.items for alias references.
+                for item in &with_clause.items {
+                    for (alias, node_info) in inner_metadata.nodes.iter_mut() {
+                        if !node_info.is_referenced
+                            && expr_references_alias(&item.expression, alias)
+                        {
+                            node_info.is_referenced = true;
+                        }
+                    }
+                    for edge_info in inner_metadata.edges.iter_mut() {
+                        if !edge_info.is_referenced
+                            && expr_references_alias(&item.expression, &edge_info.alias)
+                        {
+                            edge_info.is_referenced = true;
+                        }
+                    }
+                }
 
                 // Step 2: Collect joins for the inner scope
                 let mut inner_joins = Vec::new();

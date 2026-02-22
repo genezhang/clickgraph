@@ -963,7 +963,7 @@ fn apply_direction_combination_inner(
                 labels: graph_rel.labels.clone(),
                 is_optional: graph_rel.is_optional,
                 anchor_connection: graph_rel.anchor_connection.clone(),
-                cte_references: std::collections::HashMap::new(),
+                cte_references: graph_rel.cte_references.clone(),
                 pattern_combinations: graph_rel.pattern_combinations.clone(),
                 was_undirected: if graph_rel.direction == Direction::Either {
                     Some(true)
