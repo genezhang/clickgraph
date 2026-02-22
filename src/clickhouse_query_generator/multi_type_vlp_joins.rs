@@ -331,7 +331,11 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             );
             // Return an empty-result CTE instead of an error so UNION branches
             // with no valid paths are silently skipped
-            return Ok("SELECT '' AS end_type, '' AS end_id, '' AS start_id, '' AS start_type, 0 AS hop_count WHERE 0 = 1".to_string());
+            // IMPORTANT: Empty CTE must have ALL columns that non-empty CTEs have for UNION compatibility
+            // Columns: end_type, end_id, start_id, start_type, end_properties, start_properties,
+            //          hop_count, path_relationships, rel_properties
+            // Use proper types for all columns to match the non-empty CTE
+            return Ok("SELECT '' AS end_type, CAST('', 'String') AS end_id, CAST('', 'String') AS start_id, '' AS start_type, '{}' AS end_properties, '{}' AS start_properties, 0 AS hop_count, CAST([], 'Array(String)') AS path_relationships, CAST([], 'Array(String)') AS rel_properties WHERE 0 = 1".to_string());
         }
 
         log::error!(
