@@ -216,14 +216,41 @@ impl FilterBuilder for LogicalPlan {
                     .collect();
 
                 // 🔒 Add schema-level filters from ViewScans
-                let schema_filters =
-                    collect_schema_filters(&LogicalPlan::GraphRel(graph_rel.clone()), None);
-                if !schema_filters.is_empty() {
-                    log::info!(
-                        "Adding {} schema filter(s) to WHERE clause",
-                        schema_filters.len()
+                // For OPTIONAL MATCH (LEFT JOIN), wrap filters with NULL-safety
+                // to avoid filtering out unmatched rows
+                if graph_rel.is_optional.unwrap_or(false) {
+                    let filters_with_alias = collect_schema_filters_with_alias(
+                        &LogicalPlan::GraphRel(graph_rel.clone()),
+                        None,
                     );
-                    all_predicates.extend(schema_filters);
+                    if !filters_with_alias.is_empty() {
+                        log::info!(
+                            "Adding {} NULL-safe schema filter(s) for OPTIONAL MATCH",
+                            filters_with_alias.len()
+                        );
+                        for (filter_expr, alias, id_col) in filters_with_alias {
+                            // Wrap: (original_filter OR alias.id_col IS NULL)
+                            let null_safe =
+                                RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                    operator: Operator::Or,
+                                    operands: vec![
+                                        filter_expr,
+                                        RenderExpr::Raw(format!("{}.{} IS NULL", alias, id_col)),
+                                    ],
+                                });
+                            all_predicates.push(null_safe);
+                        }
+                    }
+                } else {
+                    let schema_filters =
+                        collect_schema_filters(&LogicalPlan::GraphRel(graph_rel.clone()), None);
+                    if !schema_filters.is_empty() {
+                        log::info!(
+                            "Adding {} schema filter(s) to WHERE clause",
+                            schema_filters.len()
+                        );
+                        all_predicates.extend(schema_filters);
+                    }
                 }
 
                 // TODO: Add relationship uniqueness filters for undirected multi-hop patterns
