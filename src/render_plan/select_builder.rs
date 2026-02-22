@@ -1227,8 +1227,8 @@ impl LogicalPlan {
             _ => return, // Should not happen
         };
 
-        // 🔧 FIX: Check if this is a multi-type relationship (multiple labels) that uses a CTE
-        // Multi-type relationships generate a vlp_multi_type_{start}_{end} CTE with columns:
+        // 🔧 FIX: Check if this is a VLP relationship (variable_length) that uses a CTE
+        // VLP relationships generate a vlp_{start}_{end} CTE with columns:
         // - path_relationships: array of relationship types
         // - rel_properties: array of relationship property JSON objects
         // - end_type, end_id, start_id, end_properties, hop_count
@@ -1240,15 +1240,27 @@ impl LogicalPlan {
         // (VLP CTE) or pattern_combinations (pattern_union CTE).
         if let TypedVariable::Relationship(_) = typed_var {
             let graph_rel = self.find_graph_rel_by_rel_alias(alias);
-            let uses_cte = graph_rel.is_some_and(|gr| {
-                gr.variable_length.is_some() || gr.pattern_combinations.is_some()
-            });
-            if labels.len() > 1 && uses_cte {
-                // This is a multi-type relationship - properties come from CTE, not base table
+            let is_vlp = graph_rel
+                .as_ref()
+                .is_some_and(|gr| gr.variable_length.is_some());
+            let has_pattern_combinations = graph_rel
+                .as_ref()
+                .is_some_and(|gr| gr.pattern_combinations.is_some());
+            let uses_cte = is_vlp || has_pattern_combinations;
+
+            // VLP relationships (single-type or multi-type) use CTE columns
+            // Pattern combinations also use CTE columns
+            if uses_cte {
+                // Determine log message based on type count
+                let type_desc = if labels.len() > 1 {
+                    format!("multi-type ({} types)", labels.len())
+                } else {
+                    "single-type VLP".to_string()
+                };
                 log::info!(
-                    "🎯 Multi-type relationship '{}' detected ({} types), using CTE columns",
+                    "🎯 VLP relationship '{}' detected ({}), using CTE columns",
                     alias,
-                    labels.len()
+                    type_desc
                 );
 
                 // === PATTERNRESOLVER 2.0: Determine CTE alias ===
@@ -1262,7 +1274,7 @@ impl LogicalPlan {
                     );
                     alias // Pattern combinations use relationship alias
                 } else {
-                    "t" // Regular multi-type uses VLP_CTE_FROM_ALIAS
+                    "t" // VLP uses VLP_CTE_FROM_ALIAS
                 };
 
                 // Add all CTE columns needed to reconstruct the relationship
@@ -1274,13 +1286,30 @@ impl LogicalPlan {
                     col_alias: Some(ColumnAlias(format!("{}.type", alias))),
                 });
 
-                select_items.push(SelectItem {
-                    expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: RenderTableAlias(cte_alias.to_string()),
-                        column: PropertyValue::Column("rel_properties".to_string()),
-                    }),
-                    col_alias: Some(ColumnAlias(format!("{}.properties", alias))),
-                });
+                // Only add rel_properties for multi-type VLP or pattern_combinations
+                //
+                // IMPORTANT: Standard single-type VLP doesn't include rel_properties column.
+                // This is a known limitation: edge properties are not tracked in the CTE for
+                // single-type VLP patterns like (u)-[r:TYPE*1..2]->(n).
+                //
+                // The CTE for single-type VLP uses columns: start_id, end_id, path_edges,
+                // path_relationships, path_nodes - but NOT rel_properties.
+                //
+                // For multi-type VLP ([:TYPE1|TYPE2]) or pattern_combinations, the CTE
+                // generates rel_properties as a JSON array of relationship property objects.
+                //
+                // Users should not expect `RETURN r.some_property` to work with single-type VLP.
+                // Workaround: Use regular relationship patterns for property access:
+                //   MATCH (u)-[r:TYPE]->(n) RETURN r.property  (without *1..2)
+                if labels.len() > 1 || has_pattern_combinations {
+                    select_items.push(SelectItem {
+                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: RenderTableAlias(cte_alias.to_string()),
+                            column: PropertyValue::Column("rel_properties".to_string()),
+                        }),
+                        col_alias: Some(ColumnAlias(format!("{}.properties", alias))),
+                    });
+                }
 
                 select_items.push(SelectItem {
                     expression: RenderExpr::PropertyAccessExp(PropertyAccess {
@@ -1299,7 +1328,7 @@ impl LogicalPlan {
                 });
 
                 log::info!(
-                    "✅ Expanded multi-type relationship '{}' to {} CTE columns",
+                    "✅ Expanded VLP relationship '{}' to {} CTE columns",
                     alias,
                     select_items.len()
                 );
