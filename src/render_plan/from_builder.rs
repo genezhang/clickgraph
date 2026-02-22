@@ -1131,7 +1131,17 @@ impl LogicalPlan {
                 }
 
                 // A.3: Polymorphic edge - use the labeled node
-                if let LogicalPlan::GraphNode(left_node) = graph_rel.left.as_ref() {
+                // For nested GraphRel patterns (multi-hop), traverse recursively
+                // to find the leftmost GraphNode as FROM.
+                fn find_leftmost_graph_node(plan: &LogicalPlan) -> Option<&GraphNode> {
+                    match plan {
+                        LogicalPlan::GraphNode(gn) => Some(gn),
+                        LogicalPlan::GraphRel(gr) => find_leftmost_graph_node(&gr.left),
+                        _ => None,
+                    }
+                }
+
+                if let Some(left_node) = find_leftmost_graph_node(&graph_rel.left) {
                     if let LogicalPlan::ViewScan(scan) = left_node.input.as_ref() {
                         log::info!(
                             "🎯 POLYMORPHIC: Using left node '{}' as FROM",

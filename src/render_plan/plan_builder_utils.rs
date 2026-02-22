@@ -10632,7 +10632,12 @@ pub(crate) fn find_all_with_clauses_grouped(
                     std::mem::discriminant(graph_rel.right.as_ref()),
                     std::mem::discriminant(graph_rel.left.as_ref())
                 );
-                // NEW: Check for WithClause in right
+
+                // Track which branches we've already recursed into to avoid duplicates
+                let mut handled_right = false;
+                let mut handled_left = false;
+
+                // Check for WithClause in right
                 if let LogicalPlan::WithClause(wc) = graph_rel.right.as_ref() {
                     let key = generate_with_key_from_with_clause(wc);
                     let alias = if key == "with_var" {
@@ -10644,9 +10649,9 @@ pub(crate) fn find_all_with_clauses_grouped(
                                alias, graph_rel.right_connection);
                     results.push((graph_rel.right.as_ref().clone(), alias));
                     find_all_with_clauses_impl(&wc.input, results);
-                    return;
+                    handled_right = true;
                 }
-                // NEW: Check for WithClause in left
+                // Check for WithClause in left
                 if let LogicalPlan::WithClause(wc) = graph_rel.left.as_ref() {
                     let key = generate_with_key_from_with_clause(wc);
                     let alias = if key == "with_var" {
@@ -10658,44 +10663,52 @@ pub(crate) fn find_all_with_clauses_grouped(
                                alias, graph_rel.left_connection);
                     results.push((graph_rel.left.as_ref().clone(), alias));
                     find_all_with_clauses_impl(&wc.input, results);
-                    return;
+                    handled_left = true;
                 }
                 // Also check GraphJoins wrapped inside GraphRel
-                if let LogicalPlan::GraphJoins(gj) = graph_rel.right.as_ref() {
-                    // NEW: Check for WithClause in GraphJoins
-                    if let LogicalPlan::WithClause(wc) = gj.input.as_ref() {
-                        let key = generate_with_key_from_with_clause(wc);
-                        let alias = if key == "with_var" {
-                            graph_rel.right_connection.clone()
-                        } else {
-                            key
-                        };
-                        log::debug!("🔍 find_all_with_clauses_impl: Found WithClause in GraphJoins inside GraphRel.right, key='{}' (connection='{}')",
-                                   alias, graph_rel.right_connection);
-                        results.push((gj.input.as_ref().clone(), alias));
-                        find_all_with_clauses_impl(&wc.input, results);
-                        return;
+                if !handled_right {
+                    if let LogicalPlan::GraphJoins(gj) = graph_rel.right.as_ref() {
+                        if let LogicalPlan::WithClause(wc) = gj.input.as_ref() {
+                            let key = generate_with_key_from_with_clause(wc);
+                            let alias = if key == "with_var" {
+                                graph_rel.right_connection.clone()
+                            } else {
+                                key
+                            };
+                            log::debug!("🔍 find_all_with_clauses_impl: Found WithClause in GraphJoins inside GraphRel.right, key='{}' (connection='{}')",
+                                       alias, graph_rel.right_connection);
+                            results.push((gj.input.as_ref().clone(), alias));
+                            find_all_with_clauses_impl(&wc.input, results);
+                            handled_right = true;
+                        }
                     }
                 }
-                if let LogicalPlan::GraphJoins(gj) = graph_rel.left.as_ref() {
-                    // NEW: Check for WithClause in GraphJoins on left
-                    if let LogicalPlan::WithClause(wc) = gj.input.as_ref() {
-                        let key = generate_with_key_from_with_clause(wc);
-                        let alias = if key == "with_var" {
-                            graph_rel.left_connection.clone()
-                        } else {
-                            key
-                        };
-                        log::debug!("🔍 find_all_with_clauses_impl: Found WithClause in GraphJoins inside GraphRel.left, key='{}' (connection='{}')",
-                                   alias, graph_rel.left_connection);
-                        results.push((gj.input.as_ref().clone(), alias));
-                        find_all_with_clauses_impl(&wc.input, results);
-                        return;
+                if !handled_left {
+                    if let LogicalPlan::GraphJoins(gj) = graph_rel.left.as_ref() {
+                        if let LogicalPlan::WithClause(wc) = gj.input.as_ref() {
+                            let key = generate_with_key_from_with_clause(wc);
+                            let alias = if key == "with_var" {
+                                graph_rel.left_connection.clone()
+                            } else {
+                                key
+                            };
+                            log::debug!("🔍 find_all_with_clauses_impl: Found WithClause in GraphJoins inside GraphRel.left, key='{}' (connection='{}')",
+                                       alias, graph_rel.left_connection);
+                            results.push((gj.input.as_ref().clone(), alias));
+                            find_all_with_clauses_impl(&wc.input, results);
+                            handled_left = true;
+                        }
                     }
                 }
-                find_all_with_clauses_impl(&graph_rel.left, results);
+
+                // Continue traversal on branches not already handled
+                if !handled_left {
+                    find_all_with_clauses_impl(&graph_rel.left, results);
+                }
                 find_all_with_clauses_impl(&graph_rel.center, results);
-                find_all_with_clauses_impl(&graph_rel.right, results);
+                if !handled_right {
+                    find_all_with_clauses_impl(&graph_rel.right, results);
+                }
             }
             LogicalPlan::Projection(proj) => {
                 find_all_with_clauses_impl(&proj.input, results);
@@ -10976,37 +10989,62 @@ pub(crate) fn prune_joins_covered_by_cte(
                 gj.anchor_table
             );
 
-            // Filter out joins that are fully covered by the CTE
-            // Strategy: Remove all joins UP TO AND INCLUDING the last join whose alias is in exported_aliases
-            // This works because joins are ordered: a→t1→b, b→t2→c
-            // If "b" is in the CTE, then [a→t1→b] should all be removed
+            // Filter out joins that are fully covered by the CTE.
+            //
+            // Strategy: Find the CTE-backed join (alias in exported_aliases).
+            // If it's at the START of the chain (index 0 or all joins before it are
+            // pre-WITH nodes leading to the CTE), remove everything up to and including it.
+            // If it's at the END of the chain (post-WITH relationships connect TO the CTE),
+            // only remove the CTE join itself — the intermediate relationship joins are needed
+            // to connect the FROM node to the CTE.
             let mut kept_joins = Vec::new();
             let mut removed_joins = Vec::new();
 
-            // Find the index of the last join whose alias is in exported_aliases
-            let last_cte_join_idx = gj
+            // Find all CTE join indices
+            let cte_join_indices: Vec<usize> = gj
                 .joins
                 .iter()
                 .enumerate()
-                .rev() // Search from the end
-                .find(|(_, join)| exported_aliases.contains(join.table_alias.as_str()))
-                .map(|(idx, _)| idx);
+                .filter(|(_, join)| exported_aliases.contains(join.table_alias.as_str()))
+                .map(|(idx, _)| idx)
+                .collect();
 
-            if let Some(cutoff_idx) = last_cte_join_idx {
+            if !cte_join_indices.is_empty() {
+                let last_cte_idx = *cte_join_indices.last().unwrap();
+                let first_cte_idx = *cte_join_indices.first().unwrap();
+
                 log::info!(
-                    "🔧 prune_joins_covered_by_cte: Found last CTE join at index {} (alias '{}')",
-                    cutoff_idx,
-                    gj.joins[cutoff_idx].table_alias
+                    "🔧 prune_joins_covered_by_cte: Found CTE join(s) at indices {:?} (first={}, last={})",
+                    cte_join_indices,
+                    first_cte_idx,
+                    last_cte_idx
                 );
 
+                // Determine pruning strategy: if the CTE join is a prefix (first few joins
+                // lead to the CTE node), remove everything up to the CTE join.
+                // Otherwise (CTE join is in the middle or at the end), only remove
+                // the CTE join itself.
+                let is_prefix_cte = first_cte_idx == 0 || (last_cte_idx < gj.joins.len() / 2);
+
                 for (idx, join) in gj.joins.iter().enumerate() {
-                    if idx <= cutoff_idx {
-                        log::debug!("🔧 prune_joins_covered_by_cte: REMOVING join {} to '{}' (before/at cutoff)",
-                                   idx, join.table_alias);
+                    let should_remove = if is_prefix_cte {
+                        // Prefix strategy: remove all up to and including last CTE join
+                        idx <= last_cte_idx
+                    } else {
+                        // Suffix/middle strategy: only remove the CTE join itself
+                        cte_join_indices.contains(&idx)
+                    };
+
+                    if should_remove {
+                        log::debug!(
+                            "🔧 prune_joins_covered_by_cte: REMOVING join {} to '{}'",
+                            idx,
+                            join.table_alias
+                        );
                         removed_joins.push(join.clone());
                     } else {
                         log::info!(
-                            "🔧 prune_joins_covered_by_cte: KEEPING join {} to '{}' (after cutoff)",
+                            "🔧 prune_joins_covered_by_cte: KEEPING join {} to '{}'",
                             idx,
                             join.table_alias
                         );
