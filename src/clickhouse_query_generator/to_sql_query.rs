@@ -3636,18 +3636,38 @@ impl RenderExpr {
                     format!("caseWithExpression({})", args.join(", "))
                 } else {
                     // Searched CASE - use standard CASE syntax
+                    // Check if any branch returns a List (Array) — if so, NULL branches
+                    // must be replaced with [] because ClickHouse can't find a supertype
+                    // for Nullable(Nothing) and Array(T).
+                    let has_list_branch = case
+                        .when_then
+                        .iter()
+                        .any(|(_, t)| matches!(t, RenderExpr::List(_)))
+                        || case
+                            .else_expr
+                            .as_ref()
+                            .is_some_and(|e| matches!(e.as_ref(), RenderExpr::List(_)));
+
+                    let render_result = |expr: &RenderExpr| -> String {
+                        if has_list_branch && matches!(expr, RenderExpr::Literal(Literal::Null)) {
+                            "[]".to_string()
+                        } else {
+                            expr.to_sql()
+                        }
+                    };
+
                     let mut sql = String::from("CASE");
 
                     for (when_expr, then_expr) in &case.when_then {
                         sql.push_str(&format!(
                             " WHEN {} THEN {}",
                             when_expr.to_sql(),
-                            then_expr.to_sql()
+                            render_result(then_expr)
                         ));
                     }
 
                     if let Some(else_expr) = &case.else_expr {
-                        sql.push_str(&format!(" ELSE {}", else_expr.to_sql()));
+                        sql.push_str(&format!(" ELSE {}", render_result(else_expr)));
                     }
 
                     sql.push_str(" END");

@@ -901,12 +901,37 @@ impl TryFrom<LogicalExpr> for RenderExpr {
             LogicalExpr::ColumnAlias(alias) => RenderExpr::ColumnAlias(alias.try_into()?),
             LogicalExpr::Column(col) => RenderExpr::Column(col.try_into()?),
             LogicalExpr::Parameter(s) => RenderExpr::Parameter(s),
-            LogicalExpr::List(exprs) => RenderExpr::List(
-                exprs
+            LogicalExpr::List(exprs) => {
+                let items: Vec<RenderExpr> = exprs
                     .into_iter()
                     .map(RenderExpr::try_from)
-                    .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?,
-            ),
+                    .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?;
+
+                // Cypher lists can mix types, but ClickHouse arrays must be homogeneous.
+                // When a list contains non-literal elements (property accesses, columns),
+                // we can't determine types at render time, so wrap all in toString()
+                // to ensure Array(String) compatibility.
+                // Pure literal lists (e.g., [1, 2, 3] for IN clauses, UNWIND) are left as-is.
+                let has_non_literal = items
+                    .iter()
+                    .any(|e| !matches!(e, RenderExpr::Literal(_) | RenderExpr::Parameter(_)));
+
+                if has_non_literal && items.len() > 1 {
+                    RenderExpr::List(
+                        items
+                            .into_iter()
+                            .map(|e| {
+                                RenderExpr::ScalarFnCall(ScalarFnCall {
+                                    name: "toString".to_string(),
+                                    args: vec![e],
+                                })
+                            })
+                            .collect(),
+                    )
+                } else {
+                    RenderExpr::List(items)
+                }
+            }
             LogicalExpr::AggregateFnCall(agg) => RenderExpr::AggregateFnCall(agg.try_into()?),
             LogicalExpr::ScalarFnCall(fn_call) => RenderExpr::ScalarFnCall(fn_call.try_into()?),
             LogicalExpr::PropertyAccessExp(pa) => RenderExpr::PropertyAccessExp(pa.try_into()?),
