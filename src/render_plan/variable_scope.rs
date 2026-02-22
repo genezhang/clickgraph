@@ -539,7 +539,31 @@ fn rewrite_bare_variables(expr: &RenderExpr, scope: &VariableScope) -> RenderExp
                     expr.clone()
                 }
             } else {
-                expr.clone()
+                // Not a CTE variable — check if it's a node alias in the plan.
+                // Bare node references (e.g., `likerZombie` in `has(list, likerZombie)`)
+                // should resolve to `{alias}.{node_id_column}` (typically `{alias}.id`).
+                if let Some(label) = crate::query_planner::logical_expr::expression_rewriter::find_label_for_alias_in_plan(
+                    scope.plan(), alias_name,
+                ) {
+                    if let Some(node) = scope.schema().node_schema_opt(&label) {
+                        if let Ok(id_col) = node.node_id.column_or_error() {
+                            log::debug!(
+                                "rewrite_bare_variables: non-CTE node '{}' ({}) -> {}.{}",
+                                alias_name, label, alias_name, id_col
+                            );
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(alias_name.clone()),
+                                column: PropertyValue::Column(id_col.to_string()),
+                            })
+                        } else {
+                            expr.clone()
+                        }
+                    } else {
+                        expr.clone()
+                    }
+                } else {
+                    expr.clone()
+                }
             }
         }
         RenderExpr::Column(col) => {
