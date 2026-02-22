@@ -377,3 +377,81 @@ pub fn is_node_referenced(alias: &str, plan_ctx: &PlanCtx, logical_plan: &Logica
     crate::debug_print!("        DEBUG: '{}' is NOT referenced", alias);
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::query_planner::logical_expr::{
+        AggregateFnCall, LogicalExpr, PropertyAccess, TableAlias,
+    };
+
+    #[test]
+    fn expr_references_alias_finds_aggregate_arg() {
+        // count(reply) should reference "reply"
+        let expr = LogicalExpr::AggregateFnCall(AggregateFnCall {
+            name: "count".to_string(),
+            args: vec![LogicalExpr::TableAlias(TableAlias("reply".to_string()))],
+        });
+        assert!(expr_references_alias(&expr, "reply"));
+        assert!(!expr_references_alias(&expr, "message"));
+    }
+
+    #[test]
+    fn expr_references_alias_finds_property_access() {
+        // reply.creationDate should reference "reply"
+        let expr = LogicalExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: TableAlias("reply".to_string()),
+            column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                "creationDate".to_string(),
+            ),
+        });
+        assert!(expr_references_alias(&expr, "reply"));
+        assert!(!expr_references_alias(&expr, "message"));
+    }
+
+    #[test]
+    fn plan_references_alias_skips_with_clause_items() {
+        // Verifies that plan_references_alias on a WithClause only checks
+        // wc.input, NOT wc.items/where_clause/order_by. This is the
+        // pre-existing behavior that the inference.rs call-site fix
+        // compensates for.
+        use crate::query_planner::logical_plan::{
+            GraphNode, LogicalPlan, ProjectionItem, WithClause,
+        };
+        use std::sync::Arc;
+
+        let inner_node = Arc::new(LogicalPlan::GraphNode(GraphNode {
+            input: Arc::new(LogicalPlan::Empty),
+            alias: "message".to_string(),
+            label: Some("Message".to_string()),
+            is_denormalized: false,
+            projected_columns: None,
+            node_types: None,
+        }));
+        let wc = LogicalPlan::WithClause(WithClause {
+            input: inner_node,
+            items: vec![ProjectionItem {
+                expression: LogicalExpr::AggregateFnCall(AggregateFnCall {
+                    name: "count".to_string(),
+                    args: vec![LogicalExpr::TableAlias(TableAlias("reply".to_string()))],
+                }),
+                col_alias: None,
+            }],
+            distinct: false,
+            order_by: None,
+            skip: None,
+            limit: None,
+            where_clause: Some(LogicalExpr::TableAlias(TableAlias(
+                "filtered_node".to_string(),
+            ))),
+            exported_aliases: vec!["replyCount".to_string()],
+            cte_name: None,
+            cte_references: std::collections::HashMap::new(),
+            pattern_comprehensions: Vec::new(),
+        });
+        // "reply" is only in items — plan_references_alias won't find it
+        assert!(!plan_references_alias(&wc, "reply"));
+        // "filtered_node" is only in where_clause — also not found
+        assert!(!plan_references_alias(&wc, "filtered_node"));
+    }
+}
