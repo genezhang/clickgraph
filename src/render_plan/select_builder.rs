@@ -1287,7 +1287,20 @@ impl LogicalPlan {
                 });
 
                 // Only add rel_properties for multi-type VLP or pattern_combinations
-                // Standard single-type VLP doesn't have this column (edge properties not tracked in CTE)
+                //
+                // IMPORTANT: Standard single-type VLP doesn't include rel_properties column.
+                // This is a known limitation: edge properties are not tracked in the CTE for
+                // single-type VLP patterns like (u)-[r:TYPE*1..2]->(n).
+                //
+                // The CTE for single-type VLP uses columns: start_id, end_id, path_edges,
+                // path_relationships, path_nodes - but NOT rel_properties.
+                //
+                // For multi-type VLP ([:TYPE1|TYPE2]) or pattern_combinations, the CTE
+                // generates rel_properties as a JSON array of relationship property objects.
+                //
+                // Users should not expect `RETURN r.some_property` to work with single-type VLP.
+                // Workaround: Use regular relationship patterns for property access:
+                //   MATCH (u)-[r:TYPE]->(n) RETURN r.property  (without *1..2)
                 if labels.len() > 1 || has_pattern_combinations {
                     select_items.push(SelectItem {
                         expression: RenderExpr::PropertyAccessExp(PropertyAccess {

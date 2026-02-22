@@ -104,8 +104,12 @@ class TestVLPRelationshipReturn:
         assert 1 in hops, "Expected 1-hop paths"
         assert 2 in hops, "Expected 2-hop paths"
 
-    def test_vlp_relationship_properties(self):
-        """Test VLP with relationship properties."""
+    def test_regular_relationship_properties(self):
+        """Test regular (non-VLP) relationship with property access.
+        
+        This is a baseline test to verify regular relationship properties work.
+        For VLP relationship properties, see test_single_type_vlp_with_type_info.
+        """
         response = self.query(
             "MATCH (start:User)-[r:FOLLOWS]->(neighbor) "
             "WHERE start.user_id = 1 "
@@ -120,6 +124,30 @@ class TestVLPRelationshipReturn:
         result = data["results"][0]
         assert "neighbor.user_id" in result
         assert "r.created_at" in result
+
+    def test_single_type_vlp_with_type_info(self):
+        """Test single-type VLP returns relationship type info.
+        
+        NOTE: Single-type VLP uses CTE columns (path_relationships, start_id, end_id)
+        but does NOT include rel_properties. This is expected behavior - edge properties
+        are not tracked in the CTE for single-type VLP.
+        """
+        response = self.query(
+            "MATCH (start:User)-[r:FOLLOWS*1..1]->(neighbor) "
+            "WHERE start.user_id = 1 "
+            "RETURN neighbor.user_id, r.type, r.start_id, r.end_id "
+            "LIMIT 3"
+        )
+        assert response.status_code == 200, f"Query failed: {response.text}"
+        data = response.json()
+        assert len(data["results"]) > 0
+        
+        result = data["results"][0]
+        assert "neighbor.user_id" in result
+        # VLP provides type info via path_relationships
+        assert "r.type" in result
+        assert "r.start_id" in result
+        assert "r.end_id" in result
 
     def test_single_type_vlp_different_edge_type(self):
         """Test single-type VLP with different edge types."""
