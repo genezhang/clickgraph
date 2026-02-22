@@ -190,13 +190,30 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             .map(|node_schema| node_schema.node_id.dtype.clone())
     }
 
+    /// Check if a node label has a composite ID (multiple columns)
+    fn has_composite_id(&self, node_label: &str) -> bool {
+        self.schema
+            .all_node_schemas()
+            .get(node_label)
+            .is_some_and(|node_schema| node_schema.node_id.id.is_composite())
+    }
+
+    /// Check if any end node has a composite ID
+    fn any_end_has_composite_id(&self) -> bool {
+        self.end_labels
+            .iter()
+            .any(|label| self.has_composite_id(label))
+    }
+
     /// Check if heterogeneous end node types have incompatible ID types
     ///
-    /// Returns true if end nodes have different ID types (e.g., one Integer, one String)
-    /// and we need to convert all end_id values to String for UNION compatibility.
+    /// Returns true if:
+    /// 1. End nodes have different ID types (e.g., one Integer, one String), OR
+    /// 2. Any end node has a composite ID (which produces String via concat)
     fn needs_string_conversion_for_end_id(&self) -> bool {
         if self.end_labels.len() <= 1 {
-            return false;
+            // Still need to check for composite IDs even with single end type
+            return self.any_end_has_composite_id();
         }
 
         let types: Vec<_> = self
@@ -211,9 +228,12 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
 
         // Check if all types are the same
         let first = &types[0];
-        !types
+        let same_types = types
             .iter()
-            .all(|t| std::mem::discriminant(t) == std::mem::discriminant(first))
+            .all(|t| std::mem::discriminant(t) == std::mem::discriminant(first));
+
+        // Need string conversion if different types OR any composite ID
+        !same_types || self.any_end_has_composite_id()
     }
 
     /// Get a unified ID type for end nodes (for UNION compatibility)
@@ -241,6 +261,13 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
     fn generate_empty_cte_sql(&self) -> String {
         use crate::graph_catalog::schema_types::SchemaType;
 
+        // Check for composite IDs - these always produce String (concatenated)
+        let any_composite = self.any_end_has_composite_id()
+            || self
+                .start_labels
+                .first()
+                .is_some_and(|label| self.has_composite_id(label));
+
         // Get the start node's ID type
         let start_id_type = self
             .start_labels
@@ -252,8 +279,8 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         let end_id_type = self.get_unified_end_id_type();
 
         // Check if start_id needs String conversion for UNION compatibility
-        // (when end_id is String due to heterogeneous types)
-        let start_id_needs_string = self.needs_string_conversion_for_end_id();
+        // (when end_id is String due to heterogeneous types or composite IDs)
+        let start_id_needs_string = self.needs_string_conversion_for_end_id() || any_composite;
 
         let start_id_sql = if start_id_needs_string {
             "CAST('', 'String')".to_string()
@@ -265,11 +292,18 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             )
         };
 
-        let end_id_sql = format!(
-            "CAST({}, '{}')",
-            end_id_type.default_value(),
-            end_id_type.to_clickhouse_type()
-        );
+        // End ID needs String if heterogeneous types OR composite IDs
+        let end_id_needs_string = self.needs_string_conversion_for_end_id() || any_composite;
+
+        let end_id_sql = if end_id_needs_string {
+            "CAST('', 'String')".to_string()
+        } else {
+            format!(
+                "CAST({}, '{}')",
+                end_id_type.default_value(),
+                end_id_type.to_clickhouse_type()
+            )
+        };
 
         format!(
             "SELECT '' AS end_type, {} AS end_id, {} AS start_id, '' AS start_type, \
@@ -732,12 +766,12 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                         format!("toString({}.{}) AS {}", node_alias, col, VLP_END_ID_COLUMN)
                     }
                     Identifier::Composite(cols) => {
-                        // Composite ID: concatenate all parts with delimiter
+                        // Composite ID: concatenate all parts with '|' delimiter between them
                         let parts: Vec<String> = cols
                             .iter()
                             .map(|c| format!("toString({}.{})", node_alias, c))
                             .collect();
-                        format!("concat({}, '|') AS {}", parts.join(", "), VLP_END_ID_COLUMN)
+                        format!("concat({}) AS {}", parts.join(", '|', "), VLP_END_ID_COLUMN)
                     }
                 }
             } else {
@@ -769,13 +803,14 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                             )
                         }
                         Identifier::Composite(cols) => {
+                            // Composite ID: concatenate all parts with '|' delimiter between them
                             let parts: Vec<String> = cols
                                 .iter()
                                 .map(|c| format!("toString({}.{})", start_alias_sql, c))
                                 .collect();
                             format!(
-                                "concat({}, '|') AS {}",
-                                parts.join(", "),
+                                "concat({}) AS {}",
+                                parts.join(", '|', "),
                                 VLP_START_ID_COLUMN
                             )
                         }
