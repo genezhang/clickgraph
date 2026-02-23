@@ -4,6 +4,7 @@
 
 mod complex_feature_tests;
 mod cte_column_aliasing_tests;
+mod ldbc_regression_tests;
 mod parameter_function_test;
 mod path_variable_tests;
 mod with_where_having_tests;
