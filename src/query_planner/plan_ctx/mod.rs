@@ -115,6 +115,9 @@ pub struct PlanCtx {
     /// (e.g., `t.end_id` instead of `u2.user_id`)
     /// Populated by graph_join_inference.rs when VLP patterns are detected
     vlp_endpoints: HashMap<String, VlpEndpointInfo>,
+    /// Counter for generating unique per-VLP CTE outer aliases (vt0, vt1, vt2, ...).
+    /// Scoped to this PlanCtx (per-query), avoiding global static race conditions.
+    vlp_alias_counter: usize,
     /// **NEW (Jan 2026)**: Typed variable registry for unified variable tracking
     /// This is the single source of truth for variable types across the query.
     /// Replaces fragmented type tracking in TableCtx and ScopeContext.
@@ -509,6 +512,7 @@ impl PlanCtx {
             max_inferred_types: 20, // Increased for Neo4j Browser node expansion
             pattern_contexts: HashMap::new(),
             vlp_endpoints: HashMap::new(),
+            vlp_alias_counter: 0,
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
@@ -540,6 +544,7 @@ impl PlanCtx {
             max_inferred_types: 20, // Increased for Neo4j Browser node expansion
             pattern_contexts: HashMap::new(),
             vlp_endpoints: HashMap::new(),
+            vlp_alias_counter: 0,
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
@@ -601,6 +606,7 @@ impl PlanCtx {
             max_inferred_types,
             pattern_contexts: HashMap::new(),
             vlp_endpoints: HashMap::new(),
+            vlp_alias_counter: 0,
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
@@ -642,6 +648,7 @@ impl PlanCtx {
             max_inferred_types: parent.max_inferred_types,
             pattern_contexts: HashMap::new(), // New scope - patterns computed fresh
             vlp_endpoints: parent.vlp_endpoints.clone(), // Inherit VLP endpoint info from parent
+            vlp_alias_counter: parent.vlp_alias_counter, // Continue counter from parent scope
             variables: VariableRegistry::new(), // Fresh variable registry for new scope
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
@@ -676,6 +683,7 @@ impl PlanCtx {
             max_inferred_types: 4,
             pattern_contexts: HashMap::new(),
             vlp_endpoints: HashMap::new(),
+            vlp_alias_counter: 0,
             variables: VariableRegistry::new(),
             cte_alias_sources: HashMap::new(),
             where_property_requirements: HashMap::new(),
@@ -1187,6 +1195,15 @@ impl PlanCtx {
     /// Get all VLP endpoints (for debugging or bulk operations).
     pub fn get_vlp_endpoints(&self) -> &HashMap<String, VlpEndpointInfo> {
         &self.vlp_endpoints
+    }
+
+    /// Generate the next unique VLP CTE alias (vt0, vt1, vt2, ...).
+    /// Called once per VLP (not per endpoint) — both endpoints of the same VLP share the alias.
+    /// Scoped to this PlanCtx, so concurrent queries get independent counters.
+    pub fn next_vlp_alias(&mut self) -> String {
+        let idx = self.vlp_alias_counter;
+        self.vlp_alias_counter += 1;
+        format!("vt{}", idx)
     }
 
     /// Get the proper (table_alias, column) for a JOIN condition, accounting for VLP endpoints.

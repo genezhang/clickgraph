@@ -624,27 +624,36 @@ impl JoinBuilder for LogicalPlan {
 
                 // 🔧 FIX: When anchor_table is None, from_builder will use the first join as FROM.
                 // We need to skip that join here to avoid duplicate aliases.
-                // EXCEPTION: When a VLP CTE is used as FROM (join conditions reference vt0/vt1),
-                // the first join is NOT the FROM source — the VLP CTE is.
-                let first_join_references_vlp = graph_joins
+                // EXCEPTION: When a VLP CTE is the FROM source, the first join is a real JOIN
+                // and must NOT be skipped. We detect this by checking if the first join's
+                // conditions reference a VLP alias (vt0, vt1, etc.) or a VLP CTE table.
+                let input_has_vlp = graph_joins
                     .joins
-                    .first()
-                    .map(|j| {
-                        j.joining_on.iter().any(|op| {
-                            op.operands.iter().any(|operand| {
-                                if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) = operand {
-                                    pa.table_alias.0.starts_with("vt")
-                                } else {
-                                    false
-                                }
+                    .iter()
+                    .any(|j| j.table_name.starts_with("vlp_"))
+                    || graph_joins
+                        .joins
+                        .first()
+                        .map(|j| {
+                            j.joining_on.iter().any(|op| {
+                                op.operands.iter().any(|operand| {
+                                    if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) = operand {
+                                        // VLP aliases are generated as "vt{N}" by PlanCtx::next_vlp_alias()
+                                        let alias = &pa.table_alias.0;
+                                        alias.starts_with("vt")
+                                            && alias.len() > 2
+                                            && alias[2..].chars().all(|c| c.is_ascii_digit())
+                                    } else {
+                                        false
+                                    }
+                                })
                             })
                         })
-                    })
-                    .unwrap_or(false);
+                        .unwrap_or(false);
 
                 let first_join_alias_to_skip: Option<String> = if graph_joins.anchor_table.is_none()
                     && graph_joins.cte_references.is_empty()
-                    && !first_join_references_vlp
+                    && !input_has_vlp
                 {
                     graph_joins
                         .joins

@@ -203,6 +203,7 @@ impl PlanCtxBuilder {
             max_inferred_types: self.max_inferred_types,
             pattern_contexts: self.pattern_contexts,
             vlp_endpoints: self.vlp_endpoints,
+            vlp_alias_counter: 0,
             variables: self.variables,
             cte_alias_sources: self.cte_alias_sources,
             where_property_requirements: self.where_property_requirements,

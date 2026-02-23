@@ -3138,7 +3138,7 @@ pub fn extract_ctes_with_context(
                     log::info!("  rel_filters_sql: {:?}", rel_filters_sql);
 
                     // Generate VLP CTE via unified CteManager API
-                    let mut var_len_cte = generate_vlp_cte_via_manager(
+                    let var_len_cte = generate_vlp_cte_via_manager(
                         &pattern_ctx,
                         schema,
                         spec.clone(),
@@ -3156,14 +3156,13 @@ pub fn extract_ctes_with_context(
                         graph_rel.is_optional,
                     )?;
 
-                    // NOTE: Per-VLP unique aliases are assigned during inference (in
-                    // VlpEndpointInfo.vlp_alias) and used for join condition generation.
-                    // However, expression rendering (VLPExprRewriter, select_builder,
-                    // to_sql_query) still uses the hardcoded VLP_CTE_FROM_ALIAS ("t").
-                    // Until expression rendering is updated, we keep from_alias as "t"
-                    // and don't register per-VLP aliases in the query context.
-                    // Multi-VLP queries (bi-17) will need comprehensive render-phase
-                    // updates to use per-VLP aliases in expressions.
+                    // TODO(multi-vlp): Per-VLP unique aliases (vt0, vt1) are used in
+                    // inference-phase join conditions, but the render phase (VLPExprRewriter,
+                    // select_builder, to_sql_query, from_builder) still uses VLP_CTE_FROM_ALIAS
+                    // ("t") for FROM alias and expression rendering. Until all render-phase
+                    // code is updated to use per-VLP aliases, we keep from_alias as "t" and
+                    // don't call register_vlp_cte_outer_alias(). Wiring it up prematurely
+                    // would break t.start_id/t.end_id references in SELECT/JOIN clauses.
 
                     // Extract CTEs from BOTH child branches (left may contain other VLPs)
                     let mut child_ctes = extract_ctes_with_context(

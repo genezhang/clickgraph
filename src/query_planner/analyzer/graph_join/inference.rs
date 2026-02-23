@@ -79,9 +79,6 @@ impl AnalyzerPass for GraphJoinInference {
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
-        // Reset per-query VLP alias counter for deterministic output
-        crate::query_planner::join_context::reset_vlp_alias_counter();
-
         // Phase 1: Build pattern graph metadata (caches reference checks)
         let mut pattern_metadata = Self::build_pattern_metadata(&logical_plan, plan_ctx)?;
         log::debug!(
@@ -2623,7 +2620,7 @@ impl GraphJoinInference {
 
         // Phase 3: Check if we should skip this pattern due to VLP
         // JoinContext directly tracks VLP endpoints
-        if let Some(should_skip) = self.should_skip_for_vlp(graph_rel, join_ctx) {
+        if let Some(should_skip) = self.should_skip_for_vlp(graph_rel, join_ctx, plan_ctx) {
             if should_skip {
                 // CRITICAL: Store VLP endpoints in plan_ctx for subsequent JOIN condition generation
                 // This enables FkEdgeJoin handling to use t.end_id instead of u2.user_id
@@ -3006,6 +3003,7 @@ impl GraphJoinInference {
         &self,
         graph_rel: &GraphRel,
         join_ctx: &mut JoinContext,
+        plan_ctx: &mut PlanCtx,
     ) -> Option<bool> {
         let spec = graph_rel.variable_length.as_ref()?;
 
@@ -3032,7 +3030,7 @@ impl GraphJoinInference {
 
                 // Only mark the END node as VLP endpoint for optional VLP
                 // The START/anchor node stays as regular table
-                let vlp_alias = crate::query_planner::join_context::next_vlp_alias();
+                let vlp_alias = plan_ctx.next_vlp_alias();
                 join_ctx.mark_vlp_endpoint(
                     right_alias.clone(),
                     VlpEndpointInfo {
@@ -3063,7 +3061,7 @@ impl GraphJoinInference {
 
                 // Mark VLP endpoints with proper CTE access information
                 // This is the key fix: subsequent JOINs will now use t{N}.start_id/t{N}.end_id
-                let vlp_alias = crate::query_planner::join_context::next_vlp_alias();
+                let vlp_alias = plan_ctx.next_vlp_alias();
                 join_ctx.mark_vlp_endpoint(
                     left_alias.clone(),
                     VlpEndpointInfo {

@@ -65,8 +65,9 @@ pub struct QueryContext {
     /// For aliases that are multi-type VLP endpoints requiring JSON extraction
     pub multi_type_vlp_aliases: HashMap<String, String>,
 
-    /// VLP CTE outer-query aliases: cte_name → vlp_alias (e.g., "vlp_u1_u2" → "t0")
+    /// VLP CTE outer-query aliases: cte_name → vlp_alias (e.g., "vlp_u1_u2" → "vt0")
     /// Used by FROM/JOIN builders to assign unique aliases per VLP CTE.
+    /// NOTE: Currently not populated — see TODO(multi-vlp) in cte_extraction.rs.
     pub vlp_cte_outer_aliases: HashMap<String, String>,
 
     /// Current variable registry for SQL rendering.
@@ -339,8 +340,14 @@ pub fn get_relationship_cte_name(alias: &str) -> Option<String> {
         .flatten()
 }
 
-/// Register a VLP CTE's outer-query alias (e.g., "vlp_u1_u2" → "t0")
-/// Called during CTE extraction to assign unique aliases per VLP.
+/// Register a VLP CTE's outer-query alias (e.g., "vlp_u1_u2" → "vt0")
+///
+/// NOTE: Currently intentionally not called. The render phase (select_builder,
+/// to_sql_query, VLPExprRewriter) still uses hardcoded VLP_CTE_FROM_ALIAS ("t")
+/// for expression rendering. Until render-phase code is updated for per-VLP aliases,
+/// calling this would cause FROM alias / expression reference mismatches.
+/// See TODO(multi-vlp) in cte_extraction.rs.
+#[allow(dead_code)]
 pub fn register_vlp_cte_outer_alias(cte_name: &str, vlp_alias: &str) {
     let _ = QUERY_CONTEXT.try_with(|ctx| {
         ctx.borrow_mut()
