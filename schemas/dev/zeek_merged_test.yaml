@@ -1,0 +1,122 @@
+# Test Schema for Zeek Merged Logs (DNS + Connection)
+# 
+# Demonstrates "Coupled Edges" pattern: Multiple relationships from one table.
+#
+# From dns_log (2 coupled edges):
+#   - (src:IP)-[:REQUESTED]->(d:Domain)     "192.168.1.10 requested example.com"
+#   - (d:Domain)-[:RESOLVED_TO]->(rip:ResolvedIP)  "example.com resolved_to 93.184.216.34"
+#
+# From conn_log (1 edge):
+#   - (src:IP)-[:ACCESSED]->(dest:IP)       "192.168.1.10 accessed 93.184.216.34"
+
+name: zeek_merged_test
+version: "1.0"
+
+graph_schema:
+  nodes:
+    # IP node from dns_log (source of DNS requests)
+    - label: IP
+      database: zeek
+      table: dns_log
+      node_id: "id.orig_h"
+      property_mappings: {}
+      from_node_properties:
+        ip: "id.orig_h"
+      to_node_properties:
+        ip: "id.resp_h"
+
+    # IP node from conn_log (source/dest of connections)
+    - label: IP
+      database: zeek
+      table: conn_log
+      node_id: "id.orig_h"
+      property_mappings: {}
+      from_node_properties:
+        ip: "id.orig_h"
+        port: "id.orig_p"
+      to_node_properties:
+        ip: "id.resp_h"
+        port: "id.resp_p"
+
+    # Domain node (from dns_log query column)
+    - label: Domain
+      database: zeek
+      table: dns_log
+      node_id: query
+      property_mappings: {}
+      from_node_properties:
+        name: query
+      to_node_properties:
+        name: query
+
+    # ResolvedIP node (from dns_log answers array)
+    - label: ResolvedIP
+      database: zeek
+      table: dns_log
+      node_id: answers
+      property_mappings: {}
+      to_node_properties:
+        ip: answers
+
+  edges:
+    # ========================================
+    # Coupled Edges from dns_log table
+    # ========================================
+    
+    # Edge 1: REQUESTED - Source IP requested a domain lookup
+    - type: REQUESTED
+      database: zeek
+      table: dns_log
+      from_id: "id.orig_h"
+      to_id: query
+      from_node: IP
+      to_node: Domain
+      edge_id: uid
+      
+      property_mappings:
+        uid: uid
+        timestamp: ts
+        dns_server: "id.resp_h"
+        qtype: qtype_name
+        rcode: rcode_name
+        answers: answers
+
+    # Edge 2: RESOLVED_TO - Domain resolved to IP address(es)
+    # NOTE: answers is an array - creates multiple edges per DNS response
+    - type: RESOLVED_TO
+      database: zeek
+      table: dns_log
+      from_id: query
+      to_id: answers
+      from_node: Domain
+      to_node: ResolvedIP
+      edge_id: [uid, answers]
+      
+      property_mappings:
+        uid: uid
+        timestamp: ts
+        ttls: TTLs
+
+    # ========================================
+    # Connection edge from conn_log table
+    # ========================================
+    
+    # ACCESSED: Source IP accessed destination IP
+    - type: ACCESSED
+      database: zeek
+      table: conn_log
+      from_id: "id.orig_h"
+      to_id: "id.resp_h"
+      from_node: IP
+      to_node: IP
+      edge_id: uid
+      
+      property_mappings:
+        uid: uid
+        timestamp: ts
+        protocol: proto
+        service: service
+        duration: duration
+        orig_bytes: orig_bytes
+        resp_bytes: resp_bytes
+        conn_state: conn_state

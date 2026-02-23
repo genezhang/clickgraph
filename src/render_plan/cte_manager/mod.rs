@@ -692,15 +692,16 @@ impl FkEdgeCteStrategy {
             String::new()
         };
 
-        // Build complete CTE
+        // Build complete CTE - return just "cte_name AS (...)" without WITH RECURSIVE prefix
+        // The WITH RECURSIVE is added by Ctes::to_sql() at the top level
         let cte_name = format!(
             "vlp_{}_{}_{}",
             self.pattern_ctx.left_node_alias, self.pattern_ctx.right_node_alias, min_hops
         );
 
         Ok(format!(
-            "WITH RECURSIVE {} AS (\n{}{}\n) SELECT * FROM {}",
-            cte_name, base_case, recursive_case, cte_name
+            "{} AS (\n{}{}\n)",
+            cte_name, base_case, recursive_case
         ))
     }
 
@@ -969,15 +970,16 @@ impl TraditionalCteStrategy {
             String::new()
         };
 
-        // Build complete CTE
+        // Build complete CTE - return just "cte_name AS (...)" without WITH RECURSIVE prefix
+        // The WITH RECURSIVE is added by Ctes::to_sql() at the top level
         let cte_name = format!(
             "vlp_{}_{}_{}",
             self.pattern_ctx.left_node_alias, self.pattern_ctx.right_node_alias, min_hops
         );
 
         Ok(format!(
-            "WITH RECURSIVE {} AS (\n{}{}\n) SELECT * FROM {}",
-            cte_name, base_case, recursive_case, cte_name
+            "{} AS (\n{}{}\n)",
+            cte_name, base_case, recursive_case
         ))
     }
 
@@ -1542,18 +1544,17 @@ impl DenormalizedCteStrategy {
             }
             let where_clause = where_conditions.join(" AND ");
 
-            // Outer CTE selects from inner and applies end filter
-            // Match format of other strategies: WITH RECURSIVE ... SELECT *
+            // Return TWO CTEs without WITH RECURSIVE prefix (added by Ctes::to_sql())
+            // Format: inner_cte AS (...), outer_cte AS (SELECT ... WHERE ...)
             Ok(format!(
-                "WITH RECURSIVE {},\n{} AS (\n    SELECT * FROM {} WHERE {}\n) SELECT * FROM {}",
-                inner_cte, cte_name, recursive_cte_name, where_clause, cte_name
+                "{},\n{} AS (\n    SELECT * FROM {} WHERE {}\n)",
+                inner_cte, cte_name, recursive_cte_name, where_clause
             ))
         } else {
-            // No end filter: simple single CTE
-            // Match format of other strategies: WITH RECURSIVE ... SELECT *
+            // No end filter: simple single CTE without WITH RECURSIVE prefix
             Ok(format!(
-                "WITH RECURSIVE {} AS (\n{}{}\n) SELECT * FROM {}",
-                recursive_cte_name, base_case, recursive_case, recursive_cte_name
+                "{} AS (\n{}{}\n)",
+                recursive_cte_name, base_case, recursive_case
             ))
         }
     }
@@ -1873,8 +1874,8 @@ impl MixedAccessCteStrategy {
         );
 
         Ok(format!(
-            "WITH RECURSIVE {} AS (\n{}{}\n) SELECT * FROM {}",
-            cte_name, base_case, recursive_case, cte_name
+            "{} AS (\n{}{}\n)",
+            cte_name, base_case, recursive_case
         ))
     }
 
@@ -2298,8 +2299,8 @@ impl EdgeToEdgeCteStrategy {
         );
 
         Ok(format!(
-            "WITH RECURSIVE {} AS (\n{}{}\n) SELECT * FROM {}",
-            cte_name, base_case, recursive_case, cte_name
+            "{} AS (\n{}{}\n)",
+            cte_name, base_case, recursive_case
         ))
     }
 
