@@ -1444,13 +1444,17 @@ impl LogicalPlan {
             &actual_table_alias
         };
 
-        match self.get_properties_with_table_alias(lookup_alias) {
-            Ok((properties, _)) if !properties.is_empty() => {
+        // Use plan_ctx-aware method to handle coupled edges
+        match self.get_properties_with_plan_ctx(lookup_alias, plan_ctx) {
+            Ok((properties, resolved_table_alias)) if !properties.is_empty() => {
+                // For coupled edges, resolved_table_alias may differ from actual_table_alias
+                let table_alias_to_use =
+                    resolved_table_alias.unwrap_or_else(|| actual_table_alias.clone());
                 let prop_count = properties.len();
                 for (prop_name, col_name) in properties {
                     select_items.push(SelectItem {
                         expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: RenderTableAlias(actual_table_alias.clone()),
+                            table_alias: RenderTableAlias(table_alias_to_use.clone()),
                             column: PropertyValue::Column(col_name),
                         }),
                         col_alias: Some(ColumnAlias(format!("{}.{}", alias, prop_name))),
@@ -1460,7 +1464,7 @@ impl LogicalPlan {
                     "✅ Expanded base table '{}' (lookup: '{}', table: '{}') to {} properties",
                     alias,
                     lookup_alias,
-                    actual_table_alias,
+                    table_alias_to_use,
                     prop_count
                 );
             }
@@ -1661,12 +1665,25 @@ impl LogicalPlan {
         select_items: &mut Vec<SelectItem>,
     ) {
         // Base table logic
-        let mapped_alias = crate::render_plan::get_denormalized_alias_mapping(&table_alias.0)
-            .unwrap_or_else(|| table_alias.0.clone());
-
-        let (properties, table_alias_for_render) =
-            match self.get_properties_with_table_alias(&mapped_alias) {
-                Ok((props, _)) if !props.is_empty() => (Some(props), mapped_alias),
+        // First, get the properties for the original node alias
+        let (properties, resolved_table_alias) =
+            match self.get_properties_with_table_alias(&table_alias.0) {
+                Ok((props, Some(edge_alias))) if !props.is_empty() => {
+                    // Got properties and an edge alias from plan tree traversal
+                    // But for coupled edges, we need to check task-local context for unified_alias
+                    if let Some(unified_alias) =
+                        crate::render_plan::get_denormalized_alias_mapping(&table_alias.0)
+                    {
+                        // Override with the unified alias for coupled edges
+                        (Some(props), unified_alias)
+                    } else {
+                        (Some(props), edge_alias)
+                    }
+                }
+                Ok((props, None)) if !props.is_empty() => {
+                    // Properties found but no edge alias override needed
+                    (Some(props), table_alias.0.clone())
+                }
                 _ => (None, table_alias.0.clone()),
             };
 
@@ -1674,7 +1691,7 @@ impl LogicalPlan {
             for (prop_name, col_name) in properties {
                 select_items.push(SelectItem {
                     expression: RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: RenderTableAlias(table_alias_for_render.clone()),
+                        table_alias: RenderTableAlias(resolved_table_alias.clone()),
                         column: PropertyValue::Column(col_name),
                     }),
                     col_alias: Some(ColumnAlias(format!("{}.{}", table_alias.0, prop_name))),

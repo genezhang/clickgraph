@@ -662,6 +662,7 @@ fn register_if_embedded(
     plan_ctx: &mut PlanCtx,
 ) {
     if let NodeAccessStrategy::EmbeddedInEdge { is_from_node, .. } = strategy {
+        // Register in PlanCtx (for query planning phase)
         plan_ctx.register_denormalized_alias(
             node_alias.to_string(),
             edge_alias.to_string(),
@@ -669,6 +670,9 @@ fn register_if_embedded(
             String::new(),
             rel_type.to_string(),
         );
+        // ALSO register in task-local context (for rendering phase)
+        // This is critical for coupled edges where edge_alias is the unified_alias
+        crate::server::query_context::register_denormalized_alias(node_alias, edge_alias);
     }
 }
 

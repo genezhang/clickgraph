@@ -6,6 +6,7 @@
 
 use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_plan::LogicalPlan;
+use crate::query_planner::plan_ctx::PlanCtx;
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::plan_builder_utils::extract_sorted_properties;
 
@@ -20,6 +21,14 @@ pub trait PropertiesBuilder {
     fn get_properties_with_table_alias(
         &self,
         alias: &str,
+    ) -> PropertiesBuilderResult<(Vec<(String, String)>, Option<String>)>;
+
+    /// Get properties with PlanCtx for coupled edge alias resolution.
+    /// For coupled edges, uses the unified_alias from PatternSchemaContext.
+    fn get_properties_with_plan_ctx(
+        &self,
+        alias: &str,
+        plan_ctx: Option<&PlanCtx>,
     ) -> PropertiesBuilderResult<(Vec<(String, String)>, Option<String>)>;
 }
 
@@ -277,7 +286,11 @@ impl PropertiesBuilder for LogicalPlan {
                                 } else {
                                     // Non-VLP: For denormalized nodes, properties are stored on the edge table
                                     // The edge table is aliased as rel.alias in the FROM clause
-                                    return Ok((properties, Some(rel.alias.clone())));
+                                    // BUT for coupled edges, check task-local context for unified_alias
+                                    let edge_alias =
+                                        crate::render_plan::get_denormalized_alias_mapping(alias)
+                                            .unwrap_or_else(|| rel.alias.clone());
+                                    return Ok((properties, Some(edge_alias)));
                                 }
                             }
                         }
@@ -304,7 +317,11 @@ impl PropertiesBuilder for LogicalPlan {
                                 } else {
                                     // Non-VLP: For fully denormalized edges (both nodes on edge), use relationship alias
                                     // because the edge table is aliased with rel.alias in the FROM clause
-                                    return Ok((properties, Some(rel.alias.clone())));
+                                    // BUT for coupled edges, check task-local context for unified_alias
+                                    let edge_alias =
+                                        crate::render_plan::get_denormalized_alias_mapping(alias)
+                                            .unwrap_or_else(|| rel.alias.clone());
+                                    return Ok((properties, Some(edge_alias)));
                                 }
                             }
                         }
@@ -418,5 +435,41 @@ impl PropertiesBuilder for LogicalPlan {
             }
             _ => Ok((vec![], None)), // No properties found
         }
+    }
+
+    fn get_properties_with_plan_ctx(
+        &self,
+        alias: &str,
+        plan_ctx: Option<&PlanCtx>,
+    ) -> PropertiesBuilderResult<(Vec<(String, String)>, Option<String>)> {
+        // First, get properties using the standard method
+        let (properties, initial_table_alias) = self.get_properties_with_table_alias(alias)?;
+
+        // If no PlanCtx or no table alias override needed, return as-is
+        let Some(ctx) = plan_ctx else {
+            return Ok((properties, initial_table_alias));
+        };
+
+        // If properties exist and we have a table alias from denormalized node,
+        // check PlanCtx for the correct edge_alias (for coupled edges)
+        if !properties.is_empty() {
+            if let Some(ref table_alias) = initial_table_alias {
+                // Check if PlanCtx has a different edge_alias for this node
+                // This happens for coupled edges where we need the unified_alias
+                if let Some(strategy) = ctx.get_node_strategy(alias, None) {
+                    if let Some(correct_alias) = strategy.property_source_alias() {
+                        if correct_alias != table_alias {
+                            log::info!(
+                                "🔧 get_properties_with_plan_ctx: Coupled edge fix - alias '{}' using edge_alias '{}' (was '{}')",
+                                alias, correct_alias, table_alias
+                            );
+                            return Ok((properties, Some(correct_alias.to_string())));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok((properties, initial_table_alias))
     }
 }
