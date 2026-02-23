@@ -1483,28 +1483,164 @@ impl<'a> VariableLengthCteGenerator<'a> {
             // Build edge tuple for the base case
             let edge_tuple = self.build_edge_tuple_base();
 
+            // Helper to convert comma-separated column string to Identifier
+            let parse_id_cols = |cols: &str| -> Identifier {
+                let parts: Vec<&str> = cols.split(',').map(|s| s.trim()).collect();
+                if parts.len() == 1 {
+                    Identifier::Single(parts[0].to_string())
+                } else {
+                    Identifier::Composite(parts.iter().map(|s| s.to_string()).collect())
+                }
+            };
+
+            // Parse ID identifiers
+            let start_id_identifier = parse_id_cols(&self.start_node_id_column);
+            let end_id_identifier = parse_id_cols(&self.end_node_id_column);
+
+            // Generate start_id selection with composite ID support
+            let start_id_selection = match &start_id_identifier {
+                Identifier::Single(col) => {
+                    format!(
+                        "{}.{} as start_id",
+                        self.start_node_alias,
+                        crate::clickhouse_query_generator::quote_identifier(col)
+                    )
+                }
+                Identifier::Composite(cols) => {
+                    let concat_parts: Vec<String> = cols
+                        .iter()
+                        .map(|c| {
+                            format!(
+                                "toString({}.{})",
+                                self.start_node_alias,
+                                crate::clickhouse_query_generator::quote_identifier(c)
+                            )
+                        })
+                        .collect();
+                    format!(
+                        "concat({}, '|', {}) as start_id",
+                        concat_parts[0],
+                        concat_parts[1..].join(", '|', ")
+                    )
+                }
+            };
+
+            // Generate end_id selection with composite ID support
+            let end_id_selection = match &end_id_identifier {
+                Identifier::Single(col) => {
+                    format!(
+                        "{}.{} as end_id",
+                        self.end_node_alias,
+                        crate::clickhouse_query_generator::quote_identifier(col)
+                    )
+                }
+                Identifier::Composite(cols) => {
+                    let concat_parts: Vec<String> = cols
+                        .iter()
+                        .map(|c| {
+                            format!(
+                                "toString({}.{})",
+                                self.end_node_alias,
+                                crate::clickhouse_query_generator::quote_identifier(c)
+                            )
+                        })
+                        .collect();
+                    format!(
+                        "concat({}, '|', {}) as end_id",
+                        concat_parts[0],
+                        concat_parts[1..].join(", '|', ")
+                    )
+                }
+            };
+
+            // Generate path_nodes selection with composite ID support
+            let path_nodes_selection = match (&start_id_identifier, &end_id_identifier) {
+                (Identifier::Single(start_col), Identifier::Single(end_col)) => {
+                    format!(
+                        "[{}.{}, {}.{}] as path_nodes",
+                        self.start_node_alias, start_col, self.end_node_alias, end_col
+                    )
+                }
+                (Identifier::Composite(start_cols), Identifier::Composite(end_cols)) => {
+                    // For composite IDs, store pipe-joined strings
+                    let start_concat: Vec<String> = start_cols
+                        .iter()
+                        .map(|c| {
+                            format!(
+                                "toString({}.{})",
+                                self.start_node_alias,
+                                crate::clickhouse_query_generator::quote_identifier(c)
+                            )
+                        })
+                        .collect();
+                    let end_concat: Vec<String> = end_cols
+                        .iter()
+                        .map(|c| {
+                            format!(
+                                "toString({}.{})",
+                                self.end_node_alias,
+                                crate::clickhouse_query_generator::quote_identifier(c)
+                            )
+                        })
+                        .collect();
+                    format!(
+                        "[concat({}, '|', {}), concat({}, '|', {})] as path_nodes",
+                        start_concat[0],
+                        start_concat[1..].join(", '|', "),
+                        end_concat[0],
+                        end_concat[1..].join(", '|', ")
+                    )
+                }
+                _ => {
+                    // Mixed case - shouldn't happen for normal patterns
+                    "[] as path_nodes".to_string()
+                }
+            };
+
             // Build property selections
             let mut select_items = vec![
-                format!(
-                    "{}.{} as start_id",
-                    self.start_node_alias, self.start_node_id_column
-                ),
-                format!(
-                    "{}.{} as end_id",
-                    self.end_node_alias, self.end_node_id_column
-                ),
+                start_id_selection,
+                end_id_selection,
                 "1 as hop_count".to_string(),
                 format!("[{}] as path_edges", edge_tuple), // Track edge IDs, not node IDs
                 self.generate_relationship_type_for_hop(1), // path_relationships for single hop
-                // Add path_nodes array for UNWIND nodes(p) support
-                format!(
-                    "[{}.{}, {}.{}] as path_nodes",
-                    self.start_node_alias,
-                    self.start_node_id_column,
-                    self.end_node_alias,
-                    self.end_node_id_column
-                ),
+                path_nodes_selection,
             ];
+
+            // For composite IDs, add individual ID component columns
+            // This allows queries like RETURN dest.bank_id, dest.account_number
+            if let Identifier::Composite(cols) = &start_id_identifier {
+                for (i, col) in cols.iter().enumerate() {
+                    select_items.push(format!(
+                        "{}.{} as start_{}",
+                        self.start_node_alias,
+                        crate::clickhouse_query_generator::quote_identifier(col),
+                        col // Use column name as alias (e.g., "bank_id")
+                    ));
+                }
+            }
+            if let Identifier::Composite(cols) = &end_id_identifier {
+                for (i, col) in cols.iter().enumerate() {
+                    select_items.push(format!(
+                        "{}.{} as end_{}",
+                        self.end_node_alias,
+                        crate::clickhouse_query_generator::quote_identifier(col),
+                        col // Use column name as alias (e.g., "bank_id")
+                    ));
+                }
+            }
+
+            // Parse ID columns to check for composite ID components
+            let start_id_cols: Vec<&str> = self
+                .start_node_id_column
+                .split(',')
+                .map(|s| s.trim())
+                .collect();
+            let end_id_cols: Vec<&str> = self
+                .end_node_id_column
+                .split(',')
+                .map(|s| s.trim())
+                .collect();
 
             // Add properties for start and end nodes
             // CRITICAL: Use separate if statements (not else-if) for self-loops
@@ -1512,7 +1648,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             // Safety check: Skip ID column based on DB column name (schema-independent)
             for prop in &self.properties {
                 if prop.cypher_alias == self.start_cypher_alias
-                    && prop.column_name != self.start_node_id_column
+                    && !start_id_cols.contains(&prop.column_name.as_str())
                 {
                     // Property belongs to start node (and is not the ID column)
                     select_items.push(format!(
@@ -1521,7 +1657,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     ));
                 }
                 if prop.cypher_alias == self.end_cypher_alias
-                    && prop.column_name != self.end_node_id_column
+                    && !end_id_cols.contains(&prop.column_name.as_str())
                 {
                     // Property belongs to end node (and is not the ID column)
                     select_items.push(format!(
@@ -1533,20 +1669,46 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
             let select_clause = select_items.join(",\n        ");
 
+            // Helper to convert comma-separated column string to Identifier
+            let parse_id_cols = |cols: &str| -> Identifier {
+                let parts: Vec<&str> = cols.split(',').map(|s| s.trim()).collect();
+                if parts.len() == 1 {
+                    Identifier::Single(parts[0].to_string())
+                } else {
+                    Identifier::Composite(parts.iter().map(|s| s.to_string()).collect())
+                }
+            };
+
+            // Parse column identifiers for composite ID support
+            let start_id_identifier = parse_id_cols(&self.start_node_id_column);
+            let end_id_identifier = parse_id_cols(&self.end_node_id_column);
+            let rel_from_identifier = parse_id_cols(&self.relationship_from_column);
+            let rel_to_identifier = parse_id_cols(&self.relationship_to_column);
+
+            // Generate JOIN ON clauses with composite ID support
+            let join_on_rel = start_id_identifier.to_sql_equality(
+                &self.start_node_alias,
+                &rel_from_identifier,
+                &self.relationship_alias,
+            );
+            let join_on_end = rel_to_identifier.to_sql_equality(
+                &self.relationship_alias,
+                &end_id_identifier,
+                &self.end_node_alias,
+            );
+
             // Build the base query without WHERE clause
             let mut query = format!(
-                "    SELECT \n        {select}\n    FROM {start_table} AS {start}\n    JOIN {rel_table} AS {rel} ON {start}.{start_id_col} = {rel}.{from_col}\n    JOIN {end_table} AS {end} ON {rel}.{to_col} = {end}.{end_id_col}",
+                "    SELECT \n        {select}\n    FROM {start_table} AS {start}\n    JOIN {rel_table} AS {rel} ON {join_on_rel}\n    JOIN {end_table} AS {end} ON {join_on_end}",
                 select = select_clause,
                 start = self.start_node_alias,
-                start_id_col = self.start_node_id_column,
                 end = self.end_node_alias,
-                end_id_col = self.end_node_id_column,
                 rel = self.relationship_alias,
                 start_table = self.format_table_name(&self.start_node_table),
                 rel_table = self.format_table_name(&self.relationship_table),
-                from_col = self.relationship_from_column,
-                to_col = self.relationship_to_column,
-                end_table = self.format_table_name(&self.end_node_table)
+                end_table = self.format_table_name(&self.end_node_table),
+                join_on_rel = join_on_rel,
+                join_on_end = join_on_end
             );
 
             // Add WHERE clause with start and end node filters
@@ -1637,13 +1799,80 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Build edge tuple for recursive case
         let edge_tuple_recursive = self.build_edge_tuple_recursive(&self.relationship_alias);
 
+        // Helper to convert comma-separated column string to Identifier
+        let parse_id_cols = |cols: &str| -> Identifier {
+            let parts: Vec<&str> = cols.split(',').map(|s| s.trim()).collect();
+            if parts.len() == 1 {
+                Identifier::Single(parts[0].to_string())
+            } else {
+                Identifier::Composite(parts.iter().map(|s| s.to_string()).collect())
+            }
+        };
+
+        // Parse end node ID identifier
+        let end_id_identifier = parse_id_cols(&self.end_node_id_column);
+
+        // Generate end_id selection with composite ID support
+        let end_id_selection = match &end_id_identifier {
+            Identifier::Single(col) => {
+                format!(
+                    "{}.{} as end_id",
+                    self.end_node_alias,
+                    crate::clickhouse_query_generator::quote_identifier(col)
+                )
+            }
+            Identifier::Composite(cols) => {
+                let concat_parts: Vec<String> = cols
+                    .iter()
+                    .map(|c| {
+                        format!(
+                            "toString({}.{})",
+                            self.end_node_alias,
+                            crate::clickhouse_query_generator::quote_identifier(c)
+                        )
+                    })
+                    .collect();
+                format!(
+                    "concat({}, '|', {}) as end_id",
+                    concat_parts[0],
+                    concat_parts[1..].join(", '|', ")
+                )
+            }
+        };
+
+        // Generate path_nodes selection with composite ID support
+        let path_nodes_selection = match &end_id_identifier {
+            Identifier::Single(col) => {
+                format!(
+                    "arrayConcat(vp.path_nodes, [{}.{}]) as path_nodes",
+                    self.end_node_alias,
+                    crate::clickhouse_query_generator::quote_identifier(col)
+                )
+            }
+            Identifier::Composite(cols) => {
+                // For composite IDs, store the pipe-joined string in path_nodes
+                let concat_parts: Vec<String> = cols
+                    .iter()
+                    .map(|c| {
+                        format!(
+                            "toString({}.{})",
+                            self.end_node_alias,
+                            crate::clickhouse_query_generator::quote_identifier(c)
+                        )
+                    })
+                    .collect();
+                format!(
+                    "arrayConcat(vp.path_nodes, [concat({}, '|', {})]) as path_nodes",
+                    concat_parts[0],
+                    concat_parts[1..].join(", '|', ")
+                )
+            }
+        };
+
         // Build property selections for recursive case
         let mut select_items = vec![
             "vp.start_id".to_string(),
-            format!(
-                "{}.{} as end_id",
-                self.end_node_alias, self.end_node_id_column
-            ),
+            end_id_selection,
             "vp.hop_count + 1 as hop_count".to_string(),
             format!(
                 "arrayConcat(vp.path_edges, [{}]) as path_edges",
@@ -1654,25 +1883,51 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 self.get_relationship_type_array()
             ),
             // Add path_nodes array for UNWIND nodes(p) support
-            format!(
-                "arrayConcat(vp.path_nodes, [{}.{}]) as path_nodes",
-                self.end_node_alias, self.end_node_id_column
-            ),
+            path_nodes_selection,
         ];
+
+        // For composite IDs, add individual ID component columns
+        // Pass through start ID components from vp, add end ID components from joined node
+        if let Identifier::Composite(cols) = &end_id_identifier {
+            for col in cols.iter() {
+                // Start ID components pass through from vp
+                select_items.push(format!("vp.start_{} as start_{}", col, col));
+                // End ID components come from newly joined node
+                select_items.push(format!(
+                    "{}.{} as end_{}",
+                    self.end_node_alias,
+                    crate::clickhouse_query_generator::quote_identifier(col),
+                    col
+                ));
+            }
+        }
 
         // Add properties: start properties come from CTE, end properties from new joined node
         // CRITICAL: Use separate if statements (not else-if) for self-loops
         // When start_cypher_alias == end_cypher_alias, both conditions are true
         // Safety check: Skip ID column based on DB column name (schema-independent)
+
+        // Parse ID columns to check for composite ID components
+        let start_id_cols: Vec<&str> = self
+            .start_node_id_column
+            .split(',')
+            .map(|s| s.trim())
+            .collect();
+        let end_id_cols: Vec<&str> = self
+            .end_node_id_column
+            .split(',')
+            .map(|s| s.trim())
+            .collect();
+
         for prop in &self.properties {
             if prop.cypher_alias == self.start_cypher_alias
-                && prop.column_name != self.start_node_id_column
+                && !start_id_cols.contains(&prop.column_name.as_str())
             {
                 // Start node properties pass through from CTE
                 select_items.push(format!("vp.start_{} as start_{}", prop.alias, prop.alias));
             }
             if prop.cypher_alias == self.end_cypher_alias
-                && prop.column_name != self.end_node_id_column
+                && !end_id_cols.contains(&prop.column_name.as_str())
             {
                 // End node properties come from the newly joined node
                 select_items.push(format!(
@@ -1732,20 +1987,72 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let where_clause = where_conditions.join("\n      AND ");
 
+        // Helper to convert comma-separated column string to Identifier
+        let parse_id_cols = |cols: &str| -> Identifier {
+            let parts: Vec<&str> = cols.split(',').map(|s| s.trim()).collect();
+            if parts.len() == 1 {
+                Identifier::Single(parts[0].to_string())
+            } else {
+                Identifier::Composite(parts.iter().map(|s| s.to_string()).collect())
+            }
+        };
+
+        // Parse column identifiers for composite ID support
+        let end_id_identifier = parse_id_cols(&self.end_node_id_column);
+        let rel_from_identifier = parse_id_cols(&self.relationship_from_column);
+        let rel_to_identifier = parse_id_cols(&self.relationship_to_column);
+
+        // Generate JOIN ON clauses with composite ID support
+        // For VLP recursion, the CTE's end_id is a pipe-joined string.
+        // For composite relationship from_id, we need to convert to pipe-joined format for comparison.
+        let join_on_rel = match &rel_from_identifier {
+            Identifier::Single(col) => {
+                // Single column: direct comparison
+                format!(
+                    "vp.end_id = {}.{}",
+                    &self.relationship_alias,
+                    crate::clickhouse_query_generator::quote_identifier(col)
+                )
+            }
+            Identifier::Composite(cols) => {
+                // Composite: convert relationship columns to pipe-joined string
+                let concat_parts: Vec<String> = cols
+                    .iter()
+                    .map(|c| {
+                        format!(
+                            "toString({}.{})",
+                            &self.relationship_alias,
+                            crate::clickhouse_query_generator::quote_identifier(c)
+                        )
+                    })
+                    .collect();
+                format!(
+                    "vp.end_id = concat({}, '|', {})",
+                    concat_parts[0],
+                    concat_parts[1..].join(", '|', ")
+                )
+            }
+        };
+
+        let join_on_end = rel_to_identifier.to_sql_equality(
+            &self.relationship_alias,
+            &end_id_identifier,
+            &self.end_node_alias,
+        );
+
         // PERF: Removed redundant current_node JOIN - vp.end_id already contains the ID
         // we need to join with the relationship table. The extra JOIN was causing
         // ClickHouse to hang on recursive CTEs due to inefficient query planning.
         format!(
-            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {rel_table} AS {rel} ON vp.end_id = {rel}.{from_col}\n    JOIN {end_table} AS {end} ON {rel}.{to_col} = {end}.{end_id_col}\n    WHERE {where_clause}",
+            "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {rel_table} AS {rel} ON {join_on_rel}\n    JOIN {end_table} AS {end} ON {join_on_end}\n    WHERE {where_clause}",
             select = select_clause,
             end = self.end_node_alias,
-            end_id_col = self.end_node_id_column,
             cte_name = cte_name, // Use the passed parameter instead of self.cte_name
             rel_table = self.format_table_name(&self.relationship_table),
-            from_col = self.relationship_from_column,
-            to_col = self.relationship_to_column,
             rel = self.relationship_alias,
             end_table = self.format_table_name(&self.end_node_table),
+            join_on_rel = join_on_rel,
+            join_on_end = join_on_end,
             where_clause = where_clause
         )
     }
@@ -3199,6 +3506,22 @@ impl ChainedJoinGenerator {
         sql.push_str(&self.format_table_name(&self.start_node_table));
         sql.push_str(" s\n");
 
+        // Helper to convert comma-separated column string to Identifier
+        let parse_id_cols = |cols: &str| -> Identifier {
+            let parts: Vec<&str> = cols.split(',').map(|s| s.trim()).collect();
+            if parts.len() == 1 {
+                Identifier::Single(parts[0].to_string())
+            } else {
+                Identifier::Composite(parts.iter().map(|s| s.to_string()).collect())
+            }
+        };
+
+        // Parse column identifiers for composite ID support
+        let start_id_identifier = parse_id_cols(&self.start_node_id_column);
+        let end_id_identifier = parse_id_cols(&self.end_node_id_column);
+        let rel_from_identifier = parse_id_cols(&self.relationship_from_column);
+        let rel_to_identifier = parse_id_cols(&self.relationship_to_column);
+
         // Generate chain of JOINs
         for hop in 1..=self.hop_count {
             let rel_alias = format!("r{}", hop);
@@ -3214,36 +3537,38 @@ impl ChainedJoinGenerator {
                 format!("m{}", hop - 1)
             };
 
-            // Add relationship JOIN
+            // Determine which ID columns to use for this hop
+            let (node_id_identifier, rel_to_identifier) = if hop == self.hop_count {
+                (&end_id_identifier, &rel_to_identifier)
+            } else {
+                // Intermediate nodes use start node's ID columns
+                (&start_id_identifier, &rel_to_identifier)
+            };
+
+            // Add relationship JOIN - use to_sql_equality for composite ID support
+            let join_on_rel =
+                start_id_identifier.to_sql_equality(&prev_node, &rel_from_identifier, &rel_alias);
             sql.push_str(&format!(
-                "JOIN {} {} ON {}.{} = {}.{}\n",
+                "JOIN {} {} ON {}\n",
                 self.format_table_name(&self.relationship_table),
                 rel_alias,
-                prev_node,
-                self.start_node_id_column,
-                rel_alias,
-                self.relationship_from_column
+                join_on_rel
             ));
 
-            // Add node JOIN
+            // Add node JOIN - use to_sql_equality for composite ID support
             let node_table = if hop == self.hop_count {
                 &self.end_node_table
             } else {
                 &self.start_node_table // Intermediate nodes are same type as start
             };
 
+            let join_on_node =
+                rel_to_identifier.to_sql_equality(&rel_alias, node_id_identifier, &node_alias);
             sql.push_str(&format!(
-                "JOIN {} {} ON {}.{} = {}.{}\n",
+                "JOIN {} {} ON {}\n",
                 self.format_table_name(node_table),
                 node_alias,
-                rel_alias,
-                self.relationship_to_column,
-                node_alias,
-                if hop == self.hop_count {
-                    &self.end_node_id_column
-                } else {
-                    &self.start_node_id_column
-                }
+                join_on_node
             ));
         }
 
