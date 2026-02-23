@@ -17,6 +17,7 @@ mod view_scan;
 #[cfg(test)]
 mod where_clause_tests;
 
+pub use common::{qualified_column, quote_identifier};
 pub use errors::ClickhouseQueryGeneratorError;
 pub use function_translator::{
     get_ch_function_name, get_supported_functions, is_ch_aggregate_function, is_ch_passthrough,

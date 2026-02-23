@@ -166,12 +166,25 @@ impl Identifier {
                 if alias.is_empty() {
                     col.clone()
                 } else {
-                    format!("{}.{}", alias, col)
+                    // Quote column name if it contains dots or special characters
+                    let quoted_col = if col.contains('.') || col.contains(' ') || col.contains('-') {
+                        format!("`{}`", col)
+                    } else {
+                        col.clone()
+                    };
+                    format!("{}.{}", alias, quoted_col)
                 }
             }
             Identifier::Composite(cols) => {
                 // For composite IDs, we still need toString for concatenation
-                let qualify = |col: &str| format!("{}.{}", alias, col);
+                let qualify = |col: &str| {
+                    let quoted_col = if col.contains('.') || col.contains(' ') || col.contains('-') {
+                        format!("`{}`", col)
+                    } else {
+                        col.to_string()
+                    };
+                    format!("{}.{}", alias, quoted_col)
+                };
                 let parts: Vec<String> = cols
                     .iter()
                     .map(|c| format!("toString({})", qualify(c)))
