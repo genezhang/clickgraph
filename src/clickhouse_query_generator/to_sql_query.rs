@@ -509,9 +509,12 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
 
     // Also rewrite UNION branches — each may have its own VLP CTE
     // (e.g., undirected patterns create separate CTEs for each direction)
+    // Pass parent CTEs so branches can find VLP CTE info (path_variable, start/end aliases)
+    // when their own branch.ctes is empty (VLP CTEs live in the parent plan)
+    let parent_ctes = plan.ctes.0.clone();
     if let Some(ref mut union) = plan.union.0 {
         for branch in union.input.iter_mut() {
-            rewrite_vlp_branch_select(branch);
+            rewrite_vlp_branch_select(branch, &parent_ctes);
         }
     }
 
@@ -520,7 +523,8 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
 
 /// Rewrite VLP SELECT aliases for a single UNION branch RenderPlan.
 /// Same logic as the main rewrite_vlp_select_aliases but operates on a branch.
-fn rewrite_vlp_branch_select(branch: &mut RenderPlan) {
+/// `parent_ctes` provides VLP CTE info from the parent plan when the branch has none.
+fn rewrite_vlp_branch_select(branch: &mut RenderPlan, parent_ctes: &[crate::render_plan::Cte]) {
     // Skip if FROM is a generated CTE (WITH clause)
     if let Some(from_ref) = &branch.from.0 {
         if is_generated_cte_name(&from_ref.name) {
@@ -541,7 +545,7 @@ fn rewrite_vlp_branch_select(branch: &mut RenderPlan) {
     }
 
     // Find VLP CTE info from branch's own CTEs (may be empty for child branches)
-    // Fall back to inferring from the plan context
+    // Fall back to parent CTEs when branch has none (VLP CTEs live at parent level)
     let vlp_cte = branch
         .ctes
         .0
@@ -555,14 +559,32 @@ fn rewrite_vlp_branch_select(branch: &mut RenderPlan) {
             vlp_cte.vlp_path_variable.clone(),
         )
     } else {
-        // No VLP CTE in branch.ctes - infer from filter expressions
-        // Look for property accesses like "u.user_id" in filters to determine start alias
-        let start_alias = if let Some(ref filter) = branch.filters.0 {
-            extract_alias_from_filter(filter)
+        // No VLP CTE in branch.ctes - look up from parent CTEs using the branch's FROM name
+        let from_name = branch
+            .from
+            .0
+            .as_ref()
+            .map(|f| f.name.as_str())
+            .unwrap_or("");
+        let parent_vlp = parent_ctes
+            .iter()
+            .find(|cte| cte.cte_name == from_name && cte.vlp_cypher_start_alias.is_some());
+        if let Some(parent_cte) = parent_vlp {
+            // The parent VLP CTE has the correct aliases for this branch's direction
+            (
+                parent_cte.vlp_cypher_start_alias.clone(),
+                parent_cte.vlp_cypher_end_alias.clone(),
+                parent_cte.vlp_path_variable.clone(),
+            )
         } else {
-            None
-        };
-        (start_alias, None, None)
+            // Last resort: infer from filter expressions
+            let start_alias = if let Some(ref filter) = branch.filters.0 {
+                extract_alias_from_filter(filter)
+            } else {
+                None
+            };
+            (start_alias, None, None)
+        }
     };
 
     // Skip rewriting if we couldn't determine start_alias
