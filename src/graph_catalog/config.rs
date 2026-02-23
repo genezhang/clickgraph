@@ -167,7 +167,8 @@ impl Identifier {
                     col.clone()
                 } else {
                     // Quote column name if it contains dots or special characters
-                    let quoted_col = if col.contains('.') || col.contains(' ') || col.contains('-') {
+                    let quoted_col = if col.contains('.') || col.contains(' ') || col.contains('-')
+                    {
                         format!("`{}`", col)
                     } else {
                         col.clone()
@@ -178,7 +179,8 @@ impl Identifier {
             Identifier::Composite(cols) => {
                 // For composite IDs, we still need toString for concatenation
                 let qualify = |col: &str| {
-                    let quoted_col = if col.contains('.') || col.contains(' ') || col.contains('-') {
+                    let quoted_col = if col.contains('.') || col.contains(' ') || col.contains('-')
+                    {
                         format!("`{}`", col)
                     } else {
                         col.to_string()
