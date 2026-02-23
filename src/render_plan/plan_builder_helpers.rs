@@ -973,7 +973,7 @@ pub(super) fn find_anchor_node(
     // We must prioritize 'n' (required) even though it appears on both sides.
 
     // Strategy 0: Collect all unique nodes (left and right)
-    let mut all_nodes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut all_nodes: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for (left, right, _) in connections {
         all_nodes.insert(left.clone());
         all_nodes.insert(right.clone());
@@ -1005,7 +1005,7 @@ pub(super) fn find_anchor_node(
 
     if !required_nodes.is_empty() {
         // We have required nodes - prefer one that's truly leftmost (left-only)
-        let right_nodes: std::collections::HashSet<_> = connections
+        let right_nodes: std::collections::BTreeSet<_> = connections
             .iter()
             .map(|(_, right, _)| right.clone())
             .collect();
@@ -1047,7 +1047,7 @@ pub(super) fn find_anchor_node(
     }
 
     // Strategy 2: No required nodes found - all optional. Use traditional leftmost logic.
-    let right_nodes: std::collections::HashSet<_> = connections
+    let right_nodes: std::collections::BTreeSet<_> = connections
         .iter()
         .map(|(_, right, _)| right.clone())
         .collect();
