@@ -32,6 +32,17 @@ fn quote_column_name(name: &str) -> String {
     }
 }
 
+/// Quote a JSON key name for use inside formatRowNoNewline.
+/// JSON keys with dots need to be quoted to avoid ClickHouse interpreting them as tuple access.
+fn quote_json_key(name: &str) -> String {
+    if name.contains('.') || name.contains(' ') || name.contains('-') {
+        // Use backticks for JSON keys containing special characters
+        format!("`{}`", name)
+    } else {
+        name.to_string()
+    }
+}
+
 /// Generate SQL for type-preserving JSON properties using formatRowNoNewline
 ///
 /// This function generates ClickHouse SQL that produces a JSON string with proper types
@@ -78,13 +89,15 @@ pub fn generate_json_properties_sql(
             _ => continue, // Skip non-column property mappings (expressions, etc.)
         };
 
-        // Format: table_alias.column_name AS cypher_property_name
+        // Format: table_alias.column_name AS json_key
         // The AS clause ensures the JSON uses Cypher property names, not ClickHouse column names
         // Quote column name if it contains dots or other special characters
+        // Also quote the JSON key if it contains dots (to avoid tuple access interpretation)
         let quoted_column = quote_column_name(&column_name);
+        let quoted_key = quote_json_key(cypher_prop);
         columns.push(format!(
             "{}.{} AS {}",
-            table_alias, quoted_column, cypher_prop
+            table_alias, quoted_column, quoted_key
         ));
     }
 

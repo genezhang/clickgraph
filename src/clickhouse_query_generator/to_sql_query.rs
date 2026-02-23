@@ -755,6 +755,9 @@ fn rewrite_expr_for_vlp(
         // The CTE columns are: start_email, start_name, etc. (using Cypher property names)
         // But PropertyAccess gives us database names like email_address, full_name
         // We need to match these by deriving the property name.
+        //
+        // Special case: For ID columns (e.g., "id.orig_h"), use t.start_id or t.end_id directly
+        // since the CTE has "start_id" column containing the full ID value.
         RenderExpr::PropertyAccessExp(prop) => {
             log::error!(
                 "🔧🔧🔧 rewrite_expr_for_vlp: Processing PropertyAccessExp {}.{}",
@@ -768,10 +771,25 @@ fn rewrite_expr_for_vlp(
                         return expr.clone();
                     }
                     log::error!("🔧🔧🔧 rewrite_expr_for_vlp: MATCHED start alias '{}' - rewriting to t.start_xxx", start);
+
+                    // Check if this is the ID column (contains "id" or matches known ID column patterns)
+                    let col_raw = prop.column.raw();
+                    if col_raw == "id"
+                        || col_raw.starts_with("id.")
+                        || col_raw.ends_with("_id")
+                        || col_raw.contains(".orig_")
+                        || col_raw.contains(".resp_")
+                    {
+                        // This is the ID column - use t.start_id directly
+                        return RenderExpr::Column(Column(PropertyValue::Column(
+                            "t.start_id".to_string(),
+                        )));
+                    }
+
                     // This is accessing start node property
                     // Create Column with the full table.column format to prevent heuristic inference
                     // The FROM clause has the CTE aliased as 't', so use t.start_xxx
-                    let prop_name = derive_cypher_property_name(prop.column.raw());
+                    let prop_name = derive_cypher_property_name(col_raw);
                     return RenderExpr::Column(Column(PropertyValue::Column(format!(
                         "t.start_{}",
                         prop_name
@@ -781,8 +799,22 @@ fn rewrite_expr_for_vlp(
 
             if let Some(end) = end_alias {
                 if &prop.table_alias.0 == end {
+                    // Check if this is the ID column
+                    let col_raw = prop.column.raw();
+                    if col_raw == "id"
+                        || col_raw.starts_with("id.")
+                        || col_raw.ends_with("_id")
+                        || col_raw.contains(".orig_")
+                        || col_raw.contains(".resp_")
+                    {
+                        // This is the ID column - use t.end_id directly
+                        return RenderExpr::Column(Column(PropertyValue::Column(
+                            "t.end_id".to_string(),
+                        )));
+                    }
+
                     // This is accessing end node property
-                    let prop_name = derive_cypher_property_name(prop.column.raw());
+                    let prop_name = derive_cypher_property_name(col_raw);
                     return RenderExpr::Column(Column(PropertyValue::Column(format!(
                         "t.end_{}",
                         prop_name

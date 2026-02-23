@@ -1135,9 +1135,16 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                         // Reconstruct the relationship alias used in FROM clause
                         let rel_alias = if is_fk_edge {
                             // FK-edge: alias is the end node alias
+                            // Must match the logic in generate_path_branch_sql (lines 585-595)
                             format!(
                                 "{}{}",
-                                Self::node_alias_prefix(&hop.to_node_type),
+                                if hop.to_node_type == "User" {
+                                    "u"
+                                } else if hop.to_node_type == "Post" {
+                                    "p"
+                                } else {
+                                    "n"
+                                },
                                 hop_num + 1
                             )
                         } else {
