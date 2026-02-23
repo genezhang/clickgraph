@@ -624,8 +624,27 @@ impl JoinBuilder for LogicalPlan {
 
                 // 🔧 FIX: When anchor_table is None, from_builder will use the first join as FROM.
                 // We need to skip that join here to avoid duplicate aliases.
+                // EXCEPTION: When a VLP CTE is used as FROM (join conditions reference vt0/vt1),
+                // the first join is NOT the FROM source — the VLP CTE is.
+                let first_join_references_vlp = graph_joins
+                    .joins
+                    .first()
+                    .map(|j| {
+                        j.joining_on.iter().any(|op| {
+                            op.operands.iter().any(|operand| {
+                                if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) = operand {
+                                    pa.table_alias.0.starts_with("vt")
+                                } else {
+                                    false
+                                }
+                            })
+                        })
+                    })
+                    .unwrap_or(false);
+
                 let first_join_alias_to_skip: Option<String> = if graph_joins.anchor_table.is_none()
                     && graph_joins.cte_references.is_empty()
+                    && !first_join_references_vlp
                 {
                     graph_joins
                         .joins

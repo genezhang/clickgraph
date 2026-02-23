@@ -914,10 +914,19 @@ impl GraphJoinInference {
                 // (like client_ip) rather than internal node aliases (like src2).
                 let deduped_joins = helpers::deduplicate_joins(collected_graph_joins.clone());
 
+                // Collect VLP CTE aliases as pre-available tables for topo_sort.
+                // VLP CTEs (e.g., vt0, vt1) are top-level recursive CTEs that are always
+                // available — joins depending on them should not be considered unresolvable.
+                let vlp_available: HashSet<String> = plan_ctx
+                    .get_vlp_endpoints()
+                    .values()
+                    .map(|info| info.vlp_alias.clone())
+                    .collect();
+
                 // Reorder JOINs using clean topological sort
                 let anchor_table = super::join_generation::select_anchor(&deduped_joins);
                 let reordered_joins =
-                    super::join_generation::topo_sort_joins(deduped_joins, &HashSet::new())?;
+                    super::join_generation::topo_sort_joins(deduped_joins, &vlp_available)?;
 
                 // Extract predicates for optional aliases and attach them to LEFT JOINs
                 let joins_with_pre_filter = Self::attach_pre_filters_to_joins(

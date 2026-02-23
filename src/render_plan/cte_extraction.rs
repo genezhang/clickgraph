@@ -2655,14 +2655,21 @@ pub fn extract_ctes_with_context(
                         // Fall through to CTE generation below
                     }
 
-                    // Extract CTEs from child plans (if any)
-                    let child_ctes = extract_ctes_with_context(
-                        &graph_rel.right,
+                    // Extract CTEs from BOTH child branches (left may contain other VLPs)
+                    let mut child_ctes = extract_ctes_with_context(
+                        &graph_rel.left,
                         last_node_alias,
                         context,
                         schema,
                         plan_ctx,
                     )?;
+                    child_ctes.extend(extract_ctes_with_context(
+                        &graph_rel.right,
+                        last_node_alias,
+                        context,
+                        schema,
+                        plan_ctx,
+                    )?);
 
                     return Ok(child_ctes);
                 } else {
@@ -2909,14 +2916,21 @@ pub fn extract_ctes_with_context(
                                     cte_name
                                 );
 
-                                // Extract CTEs from child plans
+                                // Extract CTEs from BOTH child branches (left may contain other VLPs)
                                 let mut child_ctes = extract_ctes_with_context(
-                                    &graph_rel.right,
+                                    &graph_rel.left,
                                     last_node_alias,
                                     context,
                                     schema,
                                     plan_ctx,
                                 )?;
+                                child_ctes.extend(extract_ctes_with_context(
+                                    &graph_rel.right,
+                                    last_node_alias,
+                                    context,
+                                    schema,
+                                    plan_ctx,
+                                )?);
                                 child_ctes.push(cte);
 
                                 return Ok(child_ctes);
@@ -3151,14 +3165,21 @@ pub fn extract_ctes_with_context(
                     // Multi-VLP queries (bi-17) will need comprehensive render-phase
                     // updates to use per-VLP aliases in expressions.
 
-                    // Also extract CTEs from child plans
+                    // Extract CTEs from BOTH child branches (left may contain other VLPs)
                     let mut child_ctes = extract_ctes_with_context(
-                        &graph_rel.right,
+                        &graph_rel.left,
                         last_node_alias,
                         context,
                         schema,
                         plan_ctx,
                     )?;
+                    child_ctes.extend(extract_ctes_with_context(
+                        &graph_rel.right,
+                        last_node_alias,
+                        context,
+                        schema,
+                        plan_ctx,
+                    )?);
                     child_ctes.push(var_len_cte);
 
                     return Ok(child_ctes);
