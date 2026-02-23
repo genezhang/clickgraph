@@ -763,13 +763,21 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 // Handle both single and composite IDs
                 match &node_schema.node_id.id {
                     Identifier::Single(col) => {
-                        format!("toString({}.{}) AS {}", node_alias, col, VLP_END_ID_COLUMN)
+                        let quoted_col = crate::clickhouse_query_generator::quote_identifier(col);
+                        format!(
+                            "toString({}.{}) AS {}",
+                            node_alias, quoted_col, VLP_END_ID_COLUMN
+                        )
                     }
                     Identifier::Composite(cols) => {
                         // Composite ID: concatenate all parts with '|' delimiter between them
                         let parts: Vec<String> = cols
                             .iter()
-                            .map(|c| format!("toString({}.{})", node_alias, c))
+                            .map(|c| {
+                                let quoted_col =
+                                    crate::clickhouse_query_generator::quote_identifier(c);
+                                format!("toString({}.{})", node_alias, quoted_col)
+                            })
                             .collect();
                         format!("concat({}) AS {}", parts.join(", '|', "), VLP_END_ID_COLUMN)
                     }
@@ -797,16 +805,22 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                     // Convert to String for UNION compatibility
                     match &node_schema.node_id.id {
                         Identifier::Single(col) => {
+                            let quoted_col =
+                                crate::clickhouse_query_generator::quote_identifier(col);
                             format!(
                                 "toString({}.{}) AS {}",
-                                start_alias_sql, col, VLP_START_ID_COLUMN
+                                start_alias_sql, quoted_col, VLP_START_ID_COLUMN
                             )
                         }
                         Identifier::Composite(cols) => {
                             // Composite ID: concatenate all parts with '|' delimiter between them
                             let parts: Vec<String> = cols
                                 .iter()
-                                .map(|c| format!("toString({}.{})", start_alias_sql, c))
+                                .map(|c| {
+                                    let quoted_col =
+                                        crate::clickhouse_query_generator::quote_identifier(c);
+                                    format!("toString({}.{})", start_alias_sql, quoted_col)
+                                })
                                 .collect();
                             format!(
                                 "concat({}) AS {}",
@@ -879,9 +893,12 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 );
 
                 for prop_info in properties {
+                    // Quote column name if it contains dots or special characters
+                    let quoted_col =
+                        crate::clickhouse_query_generator::quote_identifier(&prop_info.db_column);
                     items.push(format!(
                         "{}.{} AS end_{}",
-                        node_alias, prop_info.db_column, prop_info.cypher_property
+                        node_alias, quoted_col, prop_info.cypher_property
                     ));
                 }
             }
@@ -921,9 +938,12 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                             sorted_props.sort_by_key(|(k, _)| k.as_str());
                             for (cypher_name, prop_val) in sorted_props {
                                 if let PropertyValue::Column(db_col) = prop_val {
+                                    // Quote column name if it contains dots or special characters
+                                    let quoted_col =
+                                        crate::clickhouse_query_generator::quote_identifier(db_col);
                                     items.push(format!(
                                         "{}.{} AS end_{}",
-                                        node_alias, db_col, cypher_name
+                                        node_alias, quoted_col, cypher_name
                                     ));
                                 }
                             }
@@ -1115,9 +1135,16 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                         // Reconstruct the relationship alias used in FROM clause
                         let rel_alias = if is_fk_edge {
                             // FK-edge: alias is the end node alias
+                            // Must match the logic in generate_path_branch_sql (lines 585-595)
                             format!(
                                 "{}{}",
-                                Self::node_alias_prefix(&hop.to_node_type),
+                                if hop.to_node_type == "User" {
+                                    "u"
+                                } else if hop.to_node_type == "Post" {
+                                    "p"
+                                } else {
+                                    "n"
+                                },
                                 hop_num + 1
                             )
                         } else {

@@ -12,3 +12,45 @@
 //
 // Future Improvement: Create a unified Literal trait that both types implement,
 // enabling a single render_literal() function in this module.
+
+/// Quote a ClickHouse identifier (column name, table name) if it contains special characters.
+///
+/// ClickHouse requires backtick quoting for identifiers that contain:
+/// - Dots (.)
+/// - Spaces
+/// - Hyphens (-)
+/// - Other special characters
+///
+/// # Examples
+/// ```
+/// use clickgraph::clickhouse_query_generator::quote_identifier;
+/// assert_eq!(quote_identifier("user_id"), "user_id");
+/// assert_eq!(quote_identifier("id.orig_h"), "`id.orig_h`");
+/// assert_eq!(quote_identifier("user-name"), "`user-name`");
+/// ```
+pub fn quote_identifier(name: &str) -> String {
+    if name.contains('.')
+        || name.contains(' ')
+        || name.contains('-')
+        || name.contains('(')
+        || name.contains(')')
+    {
+        format!("`{}`", name)
+    } else {
+        name.to_string()
+    }
+}
+
+/// Format a qualified column reference: table_alias.column_name
+///
+/// This function properly quotes the column name if it contains special characters.
+///
+/// # Examples
+/// ```
+/// use clickgraph::clickhouse_query_generator::qualified_column;
+/// assert_eq!(qualified_column("t1", "user_id"), "t1.user_id");
+/// assert_eq!(qualified_column("t1", "id.orig_h"), "t1.`id.orig_h`");
+/// ```
+pub fn qualified_column(table_alias: &str, column_name: &str) -> String {
+    format!("{}.{}", table_alias, quote_identifier(column_name))
+}

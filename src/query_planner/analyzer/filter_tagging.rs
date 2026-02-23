@@ -1058,8 +1058,8 @@ impl FilterTagging {
                         // This is critical for multi-hop patterns where a node appears in multiple edges
                         if let Some(crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { edge_alias, is_from_node, .. }) =
                             plan_ctx.get_node_strategy(&property_access.table_alias.0, None) {
-                            println!(
-                                "FilterTagging: Node '{}' is embedded in edge '{}', is_from={}",
+                            log::info!(
+                                "FilterTagging: Node '{}' is embedded in edge '{}' (from strategy), is_from={}",
                                 property_access.table_alias.0, edge_alias, is_from_node
                             );
                             // Use the owning edge info to find the correct property

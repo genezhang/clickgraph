@@ -2433,8 +2433,12 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
             // For denormalized nodes, remap the table alias to the edge alias
             // Example: PropertyAccess { table_alias: "src", column: "id.orig_h" }
             //       -> PropertyAccess { table_alias: "ad62047b83", column: "id.orig_h" }
-            if let Some((rel_alias, _id_column)) =
-                get_denormalized_node_id_reference(&prop.table_alias.0, plan)
+            //
+            // CRITICAL: Use task-local context (populated during planning) instead of
+            // traversing the plan tree. This ensures coupled edges get the unified_alias.
+            // See join_generation.rs::register_denormalized_aliases for where the mapping is set.
+            if let Some(rel_alias) =
+                crate::render_plan::get_denormalized_alias_mapping(&prop.table_alias.0)
             {
                 prop.table_alias = TableAlias(rel_alias);
             }

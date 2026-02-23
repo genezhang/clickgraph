@@ -641,6 +641,42 @@ impl PatternSchemaContext {
             prev_edge_info,
         );
 
+        // 6. FIX: For CoupledSameRow, update node strategies to use unified_alias
+        // When edges are coupled, both edges exist in the same row, so nodes should
+        // reference the first edge's alias (unified_alias) instead of their own rel_alias
+        let (left_node, right_node) = if let JoinStrategy::CoupledSameRow { ref unified_alias } =
+            join_strategy
+        {
+            log::info!(
+                    "🔧 CoupledSameRow detected: rel_alias='{}', unified_alias='{}', left_node_alias='{}', right_node_alias='{}'",
+                    rel_alias, unified_alias, left_node_alias, right_node_alias
+                );
+            let update_edge_alias = |strategy: NodeAccessStrategy| -> NodeAccessStrategy {
+                match strategy {
+                    NodeAccessStrategy::EmbeddedInEdge {
+                        properties,
+                        is_from_node,
+                        ..
+                    } => {
+                        log::info!(
+                            "  → Updating EmbeddedInEdge edge_alias from '{}' to '{}'",
+                            rel_alias,
+                            unified_alias
+                        );
+                        NodeAccessStrategy::EmbeddedInEdge {
+                            edge_alias: unified_alias.clone(),
+                            properties,
+                            is_from_node,
+                        }
+                    }
+                    other => other,
+                }
+            };
+            (update_edge_alias(left_node), update_edge_alias(right_node))
+        } else {
+            (left_node, right_node)
+        };
+
         Ok(PatternSchemaContext {
             left_node_alias: left_node_alias.to_string(),
             right_node_alias: right_node_alias.to_string(),

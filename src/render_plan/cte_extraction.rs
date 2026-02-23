@@ -1557,12 +1557,24 @@ fn apply_property_mapping_to_expr_with_context(
         RenderExpr::TableAlias(alias) => {
             // For denormalized nodes, convert TableAlias to PropertyAccess with the ID column
             // This is especially important for GROUP BY expressions
-            if let Some((rel_alias, id_column)) = get_denormalized_node_id_reference(&alias.0, plan)
-            {
-                *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: super::render_expr::TableAlias(rel_alias),
-                    column: PropertyValue::Column(id_column),
-                });
+            //
+            // CRITICAL: Use task-local context (populated during planning) instead of
+            // traversing the plan tree. This ensures coupled edges get the unified_alias.
+            if let Some(rel_alias) = crate::render_plan::get_denormalized_alias_mapping(&alias.0) {
+                // We have the correct edge alias from task-local context
+                // Now find the ID column from the plan (still need to traverse)
+                if let Some((_, id_column)) = get_denormalized_node_id_reference(&alias.0, plan) {
+                    *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: super::render_expr::TableAlias(rel_alias),
+                        column: PropertyValue::Column(id_column),
+                    });
+                } else {
+                    // Fallback: use "id" as ID column
+                    *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: super::render_expr::TableAlias(rel_alias),
+                        column: PropertyValue::Column("id".to_string()),
+                    });
+                }
             }
         }
         RenderExpr::OperatorApplicationExp(op) => {

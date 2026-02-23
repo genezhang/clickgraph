@@ -228,46 +228,215 @@ schemas:
   - name: denormalized_flights
     graph_schema:
       nodes:
-        # Airport is a virtual node - all data comes from the flights table
         - label: Airport
-          database: test_integration
-          table: flights
-          node_id: code  # Logical property name for the ID
-          property_mappings: {}  # Empty - all properties are denormalized
-          
-          # Denormalized origin (from_node) properties
+          database: db_denormalized
+          table: flights_denorm
+          node_id: code
+          property_mappings: {}
           from_node_properties:
-            code: Origin  # Airport.code (the ID) → flights.Origin
-            city: OriginCityName
-            state: OriginState
-          
-          # Denormalized destination (to_node) properties
+            code: origin_code
+            city: origin_city
+            state: origin_state
           to_node_properties:
-            code: Dest  # Airport.code (the ID) → flights.Dest
-            city: DestCityName
-            state: DestState
-
+            code: dest_code
+            city: dest_city
+            state: dest_state
       edges:
-        # FLIGHT relationship - node properties declared above
         - type: FLIGHT
-          database: test_integration
-          table: flights
-          from_id: Origin
-          to_id: Dest
+          database: db_denormalized
+          table: flights_denorm
+          from_id: origin_code
+          to_id: dest_code
           from_node: Airport
           to_node: Airport
-          
-          # Composite edge ID (flights can have same route multiple times per day)
-          # This demonstrates cycle prevention with composite IDs
           edge_id: [flight_id, flight_number]
-          
-          # Edge properties
           property_mappings:
+            flight_id: flight_id
             flight_num: flight_number
-            carrier: airline
-            departure_time: dep_time
-            arrival_time: arr_time
-            distance: distance_miles
+            carrier: carrier
+            departure_time: departure_time
+            arrival_time: arrival_time
+            distance: distance
+
+  # ==========================================================================
+  # Schema Variations for Testing (db_xxx databases)
+  # ==========================================================================
+  
+  - name: standard
+    graph_schema:
+      nodes:
+        - label: User
+          database: db_standard
+          table: users
+          node_id: user_id
+          property_mappings:
+            user_id: user_id
+            name: full_name
+            email: email_address
+            registration_date: registration_date
+            is_active: is_active
+            country: country
+            city: city
+        - label: Post
+          database: db_standard
+          table: posts
+          node_id: post_id
+          property_mappings:
+            post_id: post_id
+            content: content
+            date: created_at
+      edges:
+        - type: FOLLOWS
+          database: db_standard
+          table: user_follows
+          from_id: follower_id
+          to_id: followed_id
+          from_node: User
+          to_node: User
+          property_mappings:
+            follow_date: follow_date
+        - type: AUTHORED
+          database: db_standard
+          table: posts
+          from_id: user_id
+          to_id: post_id
+          edge_id: post_id
+          from_node: User
+          to_node: Post
+          property_mappings: {}
+        - type: LIKED
+          database: db_standard
+          table: post_likes
+          from_id: user_id
+          to_id: post_id
+          from_node: User
+          to_node: Post
+          property_mappings:
+            like_date: liked_at
+        - type: FRIENDS_WITH
+          database: db_standard
+          table: friendships
+          from_id: user_id_1
+          to_id: user_id_2
+          edge_id: [user_id_1, user_id_2]
+          from_node: User
+          to_node: User
+          property_mappings:
+            since_date: since
+
+  - name: fk_edge
+    graph_schema:
+      nodes:
+        - label: Order
+          database: db_fk_edge
+          table: orders_fk
+          node_id: order_id
+          property_mappings:
+            order_id: order_id
+            order_date: order_date
+            total_amount: total_amount
+        - label: Customer
+          database: db_fk_edge
+          table: customers_fk
+          node_id: customer_id
+          property_mappings:
+            customer_id: customer_id
+            name: name
+            email: email
+      edges:
+        - type: PLACED_BY
+          database: db_fk_edge
+          table: orders_fk
+          from_id: order_id
+          to_id: customer_id
+          from_node: Order
+          to_node: Customer
+
+  - name: polymorphic
+    graph_schema:
+      nodes:
+        - label: User
+          database: db_polymorphic
+          table: users
+          node_id: user_id
+          property_mappings:
+            user_id: user_id
+            name: full_name
+            email: email_address
+        - label: Post
+          database: db_polymorphic
+          table: posts
+          node_id: post_id
+          property_mappings:
+            post_id: post_id
+            content: content
+            created: created_at
+      edges:
+        - polymorphic: true
+          database: db_polymorphic
+          table: interactions
+          from_id: from_id
+          to_id: to_id
+          type_column: interaction_type
+          from_label_column: from_type
+          to_label_column: to_type
+          type_values:
+            - FOLLOWS
+            - LIKES
+            - AUTHORED
+            - COMMENTED
+            - SHARED
+          edge_id: [from_id, to_id, interaction_type, timestamp]
+          property_mappings:
+            created_at: timestamp
+            weight: interaction_weight
+
+  - name: composite_id
+    graph_schema:
+      nodes:
+        - label: Account
+          database: db_composite_id
+          table: accounts
+          node_id: [bank_id, account_number]
+          property_mappings:
+            bank_id: bank_id
+            account_number: account_number
+            holder_name: holder_name
+            account_type: account_type
+            balance: balance
+            opened_date: opened_date
+        - label: Customer
+          database: db_composite_id
+          table: customers
+          node_id: customer_id
+          property_mappings:
+            customer_id: customer_id
+            name: name
+            email: email
+            city: city
+      edges:
+        - type: OWNS
+          database: db_composite_id
+          table: account_ownership
+          from_id: customer_id
+          to_id: [bank_id, account_number]
+          from_node: Customer
+          to_node: Account
+          property_mappings:
+            role: role
+            since: since
+        - type: TRANSFERRED
+          database: db_composite_id
+          table: transfers
+          from_id: [from_bank_id, from_account_number]
+          to_id: [to_bank_id, to_account_number]
+          from_node: Account
+          to_node: Account
+          edge_id: transfer_id
+          property_mappings:
+            transfer_id: transfer_id
+            amount: amount
+            transfer_date: transfer_date
 
   - name: pattern_comp
     graph_schema:
@@ -326,3 +495,101 @@ schemas:
         #   to_id: id.resp_h
         #   from_node: IP
         #   to_node: IP
+
+  - name: zeek_merged_test
+    graph_schema:
+      nodes:
+        # IP node from dns_log
+        - label: IP
+          database: zeek
+          table: dns_log
+          node_id: "id.orig_h"
+          property_mappings: {}
+          from_node_properties:
+            ip: "id.orig_h"
+          to_node_properties:
+            ip: "id.resp_h"
+        
+        # IP node from conn_log
+        - label: IP
+          database: zeek
+          table: conn_log
+          node_id: "id.orig_h"
+          property_mappings: {}
+          from_node_properties:
+            ip: "id.orig_h"
+            port: "id.orig_p"
+          to_node_properties:
+            ip: "id.resp_h"
+            port: "id.resp_p"
+        
+        # Domain node
+        - label: Domain
+          database: zeek
+          table: dns_log
+          node_id: query
+          property_mappings: {}
+          from_node_properties:
+            name: query
+          to_node_properties:
+            name: query
+        
+        # ResolvedIP node (from answers array)
+        - label: ResolvedIP
+          database: zeek
+          table: dns_log
+          node_id: answers
+          property_mappings: {}
+          to_node_properties:
+            ip: answers
+      
+      edges:
+        # Coupled Edge 1: REQUESTED (from dns_log)
+        - type: REQUESTED
+          database: zeek
+          table: dns_log
+          from_id: "id.orig_h"
+          to_id: query
+          from_node: IP
+          to_node: Domain
+          edge_id: uid
+          property_mappings:
+            uid: uid
+            timestamp: ts
+            dns_server: "id.resp_h"
+            qtype: qtype_name
+            rcode: rcode_name
+            answers: answers
+        
+        # Coupled Edge 2: RESOLVED_TO (from dns_log)
+        - type: RESOLVED_TO
+          database: zeek
+          table: dns_log
+          from_id: query
+          to_id: answers
+          from_node: Domain
+          to_node: ResolvedIP
+          edge_id: [uid, answers]
+          property_mappings:
+            uid: uid
+            timestamp: ts
+            ttls: TTLs
+        
+        # ACCESSED edge (from conn_log)
+        - type: ACCESSED
+          database: zeek
+          table: conn_log
+          from_id: "id.orig_h"
+          to_id: "id.resp_h"
+          from_node: IP
+          to_node: IP
+          edge_id: uid
+          property_mappings:
+            uid: uid
+            timestamp: ts
+            protocol: proto
+            service: service
+            duration: duration
+            orig_bytes: orig_bytes
+            resp_bytes: resp_bytes
+            conn_state: conn_state
