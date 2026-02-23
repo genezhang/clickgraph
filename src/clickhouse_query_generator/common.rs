@@ -23,7 +23,7 @@
 ///
 /// # Examples
 /// ```
-/// use clickhouse_query_generator::common::quote_identifier;
+/// use clickgraph::clickhouse_query_generator::quote_identifier;
 /// assert_eq!(quote_identifier("user_id"), "user_id");
 /// assert_eq!(quote_identifier("id.orig_h"), "`id.orig_h`");
 /// assert_eq!(quote_identifier("user-name"), "`user-name`");
@@ -47,7 +47,7 @@ pub fn quote_identifier(name: &str) -> String {
 ///
 /// # Examples
 /// ```
-/// use clickhouse_query_generator::common::qualified_column;
+/// use clickgraph::clickhouse_query_generator::qualified_column;
 /// assert_eq!(qualified_column("t1", "user_id"), "t1.user_id");
 /// assert_eq!(qualified_column("t1", "id.orig_h"), "t1.`id.orig_h`");
 /// ```
