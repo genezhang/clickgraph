@@ -950,7 +950,10 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                 .find(|(cypher, _)| *cypher == prop.table_alias.0)
                 .map(|(_, cte)| cte.clone())
                 .unwrap_or_else(|| prop.table_alias.0.clone());
-            format!("{}.{}", table_alias, prop.column.raw())
+            // Quote column name if it contains dots or special characters
+            let quoted_column =
+                crate::clickhouse_query_generator::quote_identifier(prop.column.raw());
+            format!("{}.{}", table_alias, quoted_column)
         }
         RenderExpr::OperatorApplicationExp(op) => {
             // Special handling for IS NULL / IS NOT NULL with wildcard property access (e.g., r.*)
@@ -971,7 +974,8 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
 
                     // Use from_id as the representative column for null check
                     // (LEFT JOIN makes all columns NULL together, so checking one is sufficient)
-                    vec![format!("{}.from_id", table_alias)]
+                    // Quote column name in case it contains dots
+                    vec![format!("{}.`from_id`", table_alias)]
                 } else {
                     op.operands
                         .iter()
@@ -2551,8 +2555,9 @@ pub fn extract_ctes_with_context(
                                 "🔧 BUG #7: Found start node schema with {} properties",
                                 start_node_schema.property_mappings.len()
                             );
-                            // Get the node's ID column to skip it from properties
-                            let start_id_column = start_node_schema.node_id.column();
+                            // Get the node's ID columns to skip them from properties
+                            // Use columns() for composite ID support
+                            let start_id_columns = start_node_schema.node_id.columns();
                             // Sort keys for deterministic column ordering
                             let mut sorted_props: Vec<_> =
                                 start_node_schema.property_mappings.iter().collect();
@@ -2560,7 +2565,8 @@ pub fn extract_ctes_with_context(
                             for (prop_name, prop_value) in sorted_props {
                                 // Skip ID property - it's already added as start_id/end_id in CTE
                                 // Check DB column name (not Cypher property name) for schema-independence
-                                if prop_value.raw() == start_id_column {
+                                // For composite IDs, skip all ID columns
+                                if start_id_columns.contains(&prop_value.raw()) {
                                     log::debug!(
                                         "Skipping ID property '{}' → '{}' (already added as start_id)",
                                         prop_name, prop_value.raw()
@@ -2588,8 +2594,9 @@ pub fn extract_ctes_with_context(
                                 "🔧 BUG #7: Found end node schema with {} properties",
                                 end_node_schema.property_mappings.len()
                             );
-                            // Get the node's ID column to skip it from properties
-                            let end_id_column = end_node_schema.node_id.column();
+                            // Get the node's ID columns to skip them from properties
+                            // Use columns() for composite ID support
+                            let end_id_columns = end_node_schema.node_id.columns();
                             // Sort keys for deterministic column ordering
                             let mut sorted_props: Vec<_> =
                                 end_node_schema.property_mappings.iter().collect();
@@ -2597,7 +2604,8 @@ pub fn extract_ctes_with_context(
                             for (prop_name, prop_value) in sorted_props {
                                 // Skip ID property - it's already added as start_id/end_id in CTE
                                 // Check DB column name (not Cypher property name) for schema-independence
-                                if prop_value.raw() == end_id_column {
+                                // For composite IDs, skip all ID columns
+                                if end_id_columns.contains(&prop_value.raw()) {
                                     log::debug!(
                                         "Skipping ID property '{}' → '{}' (already added as end_id)",
                                         prop_name, prop_value.raw()

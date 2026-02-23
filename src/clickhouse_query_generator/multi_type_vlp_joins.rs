@@ -530,12 +530,20 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
 
         // Add start filters — strip predicates referencing columns not in start node's table
         if let Some(ref filters) = self.start_filters {
-            let start_filter = filters
+            let mut start_filter = filters
                 .replace("start_node.", &format!("{}.", start_alias_sql))
                 .replace(
                     &format!("{}.", self.start_alias),
                     &format!("{}.", start_alias_sql),
                 );
+
+            // For denormalized schemas, the filter may use relationship alias (e.g., "r.")
+            // but in multi-type VLP, the relationship table is joined with explicit aliases (r1, r2, etc.)
+            // or the start node table is used directly (ip_1)
+            // Replace relationship alias references with start node alias
+            // This handles filters like "r.`id.orig_h` = 'value'" for denormalized schemas
+            start_filter = start_filter.replace("r.", &format!("{}.", start_alias_sql));
+
             let validated =
                 self.strip_invalid_column_predicates(&start_filter, start_type, &start_alias_sql);
             if !validated.is_empty() {
@@ -896,9 +904,11 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                     // Quote column name if it contains dots or special characters
                     let quoted_col =
                         crate::clickhouse_query_generator::quote_identifier(&prop_info.db_column);
+                    // Replace dots in alias with underscores (dots are not allowed in column aliases)
+                    let safe_alias = prop_info.cypher_property.replace('.', "_");
                     items.push(format!(
                         "{}.{} AS end_{}",
-                        node_alias, quoted_col, prop_info.cypher_property
+                        node_alias, quoted_col, safe_alias
                     ));
                 }
             }
@@ -941,9 +951,11 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                                     // Quote column name if it contains dots or special characters
                                     let quoted_col =
                                         crate::clickhouse_query_generator::quote_identifier(db_col);
+                                    // Replace dots in alias with underscores (dots are not allowed in column aliases)
+                                    let safe_alias = cypher_name.replace('.', "_");
                                     items.push(format!(
                                         "{}.{} AS end_{}",
-                                        node_alias, quoted_col, cypher_name
+                                        node_alias, quoted_col, safe_alias
                                     ));
                                 }
                             }
@@ -1022,9 +1034,15 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                     }
 
                     for prop_info in properties {
+                        // Quote column name if it contains dots or special characters
+                        let quoted_col = crate::clickhouse_query_generator::quote_identifier(
+                            &prop_info.db_column,
+                        );
+                        // Replace dots in alias with underscores (dots are not allowed in column aliases)
+                        let safe_alias = prop_info.cypher_property.replace('.', "_");
                         items.push(format!(
                             "{}.{} AS start_{}",
-                            start_alias_sql, prop_info.db_column, prop_info.cypher_property
+                            start_alias_sql, quoted_col, safe_alias
                         ));
                     }
                 }
@@ -1063,9 +1081,16 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                                 sorted_props.sort_by_key(|(k, _)| k.as_str());
                                 for (cypher_name, prop_val) in sorted_props {
                                     if let PropertyValue::Column(db_col) = prop_val {
+                                        // Quote column name if it contains dots or special characters
+                                        let quoted_col =
+                                            crate::clickhouse_query_generator::quote_identifier(
+                                                db_col,
+                                            );
+                                        // Replace dots in alias with underscores (dots are not allowed in column aliases)
+                                        let safe_alias = cypher_name.replace('.', "_");
                                         items.push(format!(
                                             "{}.{} AS start_{}",
-                                            start_alias_sql, db_col, cypher_name
+                                            start_alias_sql, quoted_col, safe_alias
                                         ));
                                     }
                                 }
