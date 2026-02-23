@@ -395,6 +395,27 @@ async fn ldbc_bi_7() {
 }
 
 #[tokio::test]
+async fn ldbc_bi_8() {
+    let schema = load_ldbc_schema();
+    let sql = generate_sql(
+        &schema,
+        "benchmarks/ldbc_snb/queries/adapted/bi-8-workaround.cypher",
+    )
+    .await;
+    assert!(!sql.is_empty());
+    assert!(sql.contains("SELECT"));
+    // Verify 2 CTEs are generated (person scores + friend scores)
+    assert!(
+        sql.contains("with_person_score_cte"),
+        "bi-8 should generate person score CTE"
+    );
+    assert!(
+        sql.contains("with_friend_friendScore_person_score_cte"),
+        "bi-8 should generate friend score CTE"
+    );
+}
+
+#[tokio::test]
 async fn ldbc_bi_9() {
     let schema = load_ldbc_schema();
     let sql = generate_sql(
