@@ -3125,7 +3125,9 @@ mod tests {
         assert!(generation_result.recursive);
         assert!(generation_result.cte_name.starts_with("vlp_u1_u2_"));
         assert!(!generation_result.sql.is_empty());
-        assert!(generation_result.sql.contains("WITH RECURSIVE"));
+        // WITH RECURSIVE is added by Ctes::to_sql() at the top level, not in generator output
+        // The generator returns just "cte_name AS (...)"
+        assert!(generation_result.sql.contains("AS (SELECT")); // CTE structure
         assert!(generation_result.sql.contains("users_bench"));
         assert!(generation_result.sql.contains("user_follows_bench"));
     }
@@ -3209,7 +3211,8 @@ mod tests {
         assert!(generation_result.recursive);
         assert!(generation_result.cte_name.starts_with("vlp_f1_"));
         assert!(!generation_result.sql.is_empty());
-        assert!(generation_result.sql.contains("WITH RECURSIVE"));
+        // WITH RECURSIVE is added by Ctes::to_sql() at the top level, not in generator output
+        assert!(generation_result.sql.contains("AS (SELECT")); // CTE structure
         assert!(generation_result.sql.contains("flights"));
         assert!(generation_result.sql.contains("Origin"));
         assert!(generation_result.sql.contains("Dest"));
@@ -3324,7 +3327,8 @@ mod tests {
         assert!(generation_result.recursive);
         assert!(generation_result.cte_name.starts_with("vlp_parent_child_"));
         assert!(!generation_result.sql.is_empty());
-        assert!(generation_result.sql.contains("WITH RECURSIVE"));
+        // WITH RECURSIVE is added by Ctes::to_sql() at the top level, not in generator output
+        assert!(generation_result.sql.contains("AS (SELECT")); // CTE structure
         assert!(generation_result.sql.contains("files"));
         assert!(generation_result.sql.contains("parent_id"));
         assert!(generation_result.sql.contains("id"));
@@ -3408,7 +3412,8 @@ mod tests {
         assert_eq!(result.cte_name, "vlp_u_p_1");
 
         // Verify SQL contains expected elements
-        assert!(result.sql.contains("WITH RECURSIVE vlp_u_p_1 AS"));
+        // WITH RECURSIVE is added by Ctes::to_sql() at the top level, not in generator output
+        assert!(result.sql.contains("vlp_u_p_1 AS")); // CTE definition
         assert!(result.sql.contains("user_posts r"));
         assert!(result.sql.contains("JOIN users u ON u.user_id = r.user_id"));
         assert!(result.sql.contains("u.full_name as start_name"));
@@ -3492,7 +3497,8 @@ mod tests {
         assert!(generation_result.recursive);
         assert!(generation_result.cte_name.starts_with("vlp_f1_f2_"));
         assert!(!generation_result.sql.is_empty());
-        assert!(generation_result.sql.contains("WITH RECURSIVE"));
+        // WITH RECURSIVE is added by Ctes::to_sql() at the top level, not in generator output
+        assert!(generation_result.sql.contains("AS (SELECT")); // CTE structure
     }
 
     #[test]
