@@ -2343,6 +2343,12 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 Ok(base_plan)
             }
+            LogicalPlan::Unwind(u) => {
+                let mut render_plan = u.input.to_render_plan(schema)?;
+                let array_joins = RenderPlanBuilder::extract_array_join(self)?;
+                render_plan.array_join = ArrayJoinItem(array_joins);
+                Ok(render_plan)
+            }
             LogicalPlan::Empty => {
                 // Empty plan represents a pruned branch (e.g., no types matched a property filter)
                 // Return an empty RenderPlan that will generate no rows
@@ -2428,6 +2434,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 LogicalPlan::Skip(s) => contains_graph_joins(&s.input),
                 LogicalPlan::OrderBy(o) => contains_graph_joins(&o.input),
                 LogicalPlan::Filter(f) => contains_graph_joins(&f.input),
+                LogicalPlan::Unwind(u) => contains_graph_joins(&u.input),
                 _ => false,
             }
         }
@@ -2442,6 +2449,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 LogicalPlan::Filter(f) => core_is_empty(&f.input),
                 LogicalPlan::Projection(p) => core_is_empty(&p.input),
                 LogicalPlan::GraphJoins(gj) => core_is_empty(&gj.input),
+                LogicalPlan::Unwind(u) => core_is_empty(&u.input),
                 LogicalPlan::GraphNode(gn) => {
                     log::debug!("core_is_empty: GraphNode, checking input");
                     core_is_empty(&gn.input)
@@ -2472,6 +2480,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 LogicalPlan::Skip(s) => is_return_only_query(&s.input),
                 LogicalPlan::OrderBy(o) => is_return_only_query(&o.input),
                 LogicalPlan::Filter(f) => is_return_only_query(&f.input),
+                LogicalPlan::Unwind(u) => is_return_only_query(&u.input),
 
                 // GraphJoins wraps both RETURN-only and pruned-MATCH queries.
                 // Distinguish by Projection items: a pruned MATCH returns graph
@@ -2558,6 +2567,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 LogicalPlan::OrderBy(o) => contains_union(&o.input),
                 LogicalPlan::Filter(f) => contains_union(&f.input),
                 LogicalPlan::Projection(p) => contains_union(&p.input),
+                LogicalPlan::Unwind(u) => contains_union(&u.input),
                 _ => false,
             }
         }
@@ -2678,6 +2688,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 LogicalPlan::Limit(l) => contains_graph_rel(&l.input),
                                 LogicalPlan::Skip(s) => contains_graph_rel(&s.input),
                                 LogicalPlan::OrderBy(o) => contains_graph_rel(&o.input),
+                                LogicalPlan::Unwind(u) => contains_graph_rel(&u.input),
                                 _ => false,
                             }
                         }
@@ -2700,6 +2711,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 LogicalPlan::OrderBy(o) => returns_whole_entity(&o.input),
                                 LogicalPlan::Filter(f) => returns_whole_entity(&f.input),
                                 LogicalPlan::GraphJoins(gj) => returns_whole_entity(&gj.input),
+                                LogicalPlan::Unwind(u) => returns_whole_entity(&u.input),
                                 _ => false,
                             }
                         }

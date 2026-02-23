@@ -6649,6 +6649,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
             LogicalPlan::Limit(lim) => 1 + count_plan_depth(&lim.input),
             LogicalPlan::Skip(skip) => 1 + count_plan_depth(&skip.input),
             LogicalPlan::GraphJoins(gj) => 1 + count_plan_depth(&gj.input),
+            LogicalPlan::Unwind(u) => 1 + count_plan_depth(&u.input),
             LogicalPlan::Union(u) => {
                 1 + u
                     .inputs
@@ -7651,11 +7652,40 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         // Performance optimization: Wrap non-ID columns with ANY() when aggregating
                         // This allows GROUP BY to only include ID column (more efficient)
 
+                        // Extract UNWIND alias from plan if present — UNWIND aliases are simple
+                        // ARRAY JOIN column references, not table aliases to expand.
+                        // Must recurse through wrapping nodes (Filter, Projection, etc.)
+                        // since UNWIND may not be at the top level.
+                        fn find_unwind_alias(plan: &LogicalPlan) -> Option<&str> {
+                            match plan {
+                                LogicalPlan::Unwind(u) => Some(u.alias.as_str()),
+                                LogicalPlan::Filter(f) => find_unwind_alias(&f.input),
+                                LogicalPlan::Projection(p) => find_unwind_alias(&p.input),
+                                LogicalPlan::OrderBy(ob) => find_unwind_alias(&ob.input),
+                                LogicalPlan::Limit(lim) => find_unwind_alias(&lim.input),
+                                LogicalPlan::Skip(s) => find_unwind_alias(&s.input),
+                                LogicalPlan::GroupBy(gb) => find_unwind_alias(&gb.input),
+                                _ => None,
+                            }
+                        }
+                        let unwind_alias = find_unwind_alias(plan_to_render);
+
                         let select_items: Vec<SelectItem> = items.iter()
                                     .flat_map(|item| {
                                         // Check if this is a TableAlias that needs expansion to ALL columns
                                         match &item.expression {
                                             crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
+                                                // UNWIND aliases are ARRAY JOIN columns — emit a simple column reference
+                                                if unwind_alias == Some(alias.0.as_str()) {
+                                                    log::debug!("🔧 build_chained_with_match_cte_plan: UNWIND alias '{}' — simple column reference", alias.0);
+                                                    return vec![SelectItem {
+                                                        expression: super::render_expr::RenderExpr::ColumnAlias(
+                                                            super::render_expr::ColumnAlias(alias.0.clone()),
+                                                        ),
+                                                        col_alias: Some(ColumnAlias(alias.0.clone())),
+                                                    }];
+                                                }
+
                                                 // Use unified expansion helper (Dec 2025)
                                                 // CRITICAL: Use cte_references_for_rendering (includes ALL previous CTEs),
                                                 // NOT with_cte_refs (only includes CTEs visible in this WITH's immediate input)
@@ -8252,12 +8282,17 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         &current_plan,
                         augmented_scope,
                     );
-                    super::variable_scope::fix_orphan_table_aliases(&mut rendered, &aug_scope);
-                    super::variable_scope::rewrite_cte_property_columns(&mut rendered, &aug_scope);
+                    // Order matters: rewrite_bare_variables converts bare TableAlias/ColumnAlias
+                    // (e.g., "score") into PropertyAccessExp (e.g., "composite_alias.score").
+                    // Then fix_orphan_table_aliases rewrites the composite alias to the actual
+                    // FROM/JOIN alias (e.g., "person1.score"). Running fix_orphan first would
+                    // miss expressions that rewrite_bare_variables creates later.
                     super::variable_scope::rewrite_bare_variables_in_plan(
                         &mut rendered,
                         &aug_scope,
                     );
+                    super::variable_scope::fix_orphan_table_aliases(&mut rendered, &aug_scope);
+                    super::variable_scope::rewrite_cte_property_columns(&mut rendered, &aug_scope);
                 }
 
                 rendered_plans.push(rendered);
