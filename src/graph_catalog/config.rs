@@ -109,7 +109,12 @@ impl Identifier {
         left_cols
             .iter()
             .zip(right_cols.iter())
-            .map(|(l, r)| format!("{}.{} = {}.{}", left_alias, l, right_alias, r))
+            .map(|(l, r)| {
+                // Quote column names if they contain dots or special characters
+                let quoted_l = crate::clickhouse_query_generator::quote_identifier(l);
+                let quoted_r = crate::clickhouse_query_generator::quote_identifier(r);
+                format!("{}.{} = {}.{}", left_alias, quoted_l, right_alias, quoted_r)
+            })
             .collect::<Vec<_>>()
             .join(" AND ")
     }
@@ -119,11 +124,17 @@ impl Identifier {
     /// For composite: vec!["alias.col1 AS as_name_1", "alias.col2 AS as_name_2"]
     pub fn to_sql_select(&self, alias: &str, as_prefix: &str) -> Vec<String> {
         match self {
-            Identifier::Single(col) => vec![format!("{}.{} AS {}", alias, col, as_prefix)],
+            Identifier::Single(col) => {
+                let quoted = crate::clickhouse_query_generator::quote_identifier(col);
+                vec![format!("{}.{} AS {}", alias, quoted, as_prefix)]
+            }
             Identifier::Composite(cols) => cols
                 .iter()
                 .enumerate()
-                .map(|(i, c)| format!("{}.{} AS {}_{}", alias, c, as_prefix, i + 1))
+                .map(|(i, c)| {
+                    let quoted = crate::clickhouse_query_generator::quote_identifier(c);
+                    format!("{}.{} AS {}_{}", alias, quoted, as_prefix, i + 1)
+                })
                 .collect(),
         }
     }
@@ -134,10 +145,11 @@ impl Identifier {
     /// For single non-composite IDs without alias, just returns the column name (no toString).
     pub fn to_pipe_joined_sql(&self, alias: &str) -> String {
         let qualify = |col: &str| -> String {
+            let quoted = crate::clickhouse_query_generator::quote_identifier(col);
             if alias.is_empty() {
-                col.to_string()
+                quoted
             } else {
-                format!("{}.{}", alias, col)
+                format!("{}.{}", alias, quoted)
             }
         };
         match self {
@@ -166,26 +178,15 @@ impl Identifier {
                 if alias.is_empty() {
                     col.clone()
                 } else {
-                    // Quote column name if it contains dots or special characters
-                    let quoted_col = if col.contains('.') || col.contains(' ') || col.contains('-')
-                    {
-                        format!("`{}`", col)
-                    } else {
-                        col.clone()
-                    };
-                    format!("{}.{}", alias, quoted_col)
+                    let quoted = crate::clickhouse_query_generator::quote_identifier(col);
+                    format!("{}.{}", alias, quoted)
                 }
             }
             Identifier::Composite(cols) => {
                 // For composite IDs, we still need toString for concatenation
                 let qualify = |col: &str| {
-                    let quoted_col = if col.contains('.') || col.contains(' ') || col.contains('-')
-                    {
-                        format!("`{}`", col)
-                    } else {
-                        col.to_string()
-                    };
-                    format!("{}.{}", alias, quoted_col)
+                    let quoted = crate::clickhouse_query_generator::quote_identifier(col);
+                    format!("{}.{}", alias, quoted)
                 };
                 let parts: Vec<String> = cols
                     .iter()
