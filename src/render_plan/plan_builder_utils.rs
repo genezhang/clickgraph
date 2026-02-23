@@ -3288,6 +3288,34 @@ fn rewrite_table_alias_in_render_plan(
                     .collect();
                 RenderExpr::ScalarFnCall(f)
             }
+            RenderExpr::AggregateFnCall(mut f) => {
+                f.args = f
+                    .args
+                    .into_iter()
+                    .map(|a| rewrite_expr(a, old, new))
+                    .collect();
+                RenderExpr::AggregateFnCall(f)
+            }
+            RenderExpr::Case(mut c) => {
+                if let Some(e) = c.expr {
+                    c.expr = Some(Box::new(rewrite_expr(*e, old, new)));
+                }
+                c.when_then = c
+                    .when_then
+                    .into_iter()
+                    .map(|(w, t)| (rewrite_expr(w, old, new), rewrite_expr(t, old, new)))
+                    .collect();
+                if let Some(e) = c.else_expr {
+                    c.else_expr = Some(Box::new(rewrite_expr(*e, old, new)));
+                }
+                RenderExpr::Case(c)
+            }
+            RenderExpr::List(items) => RenderExpr::List(
+                items
+                    .into_iter()
+                    .map(|i| rewrite_expr(i, old, new))
+                    .collect(),
+            ),
             other => other,
         }
     }
@@ -3322,6 +3350,19 @@ fn rewrite_table_alias_in_render_plan(
     // ORDER BY
     for item in &mut plan.order_by.0 {
         item.expression = rewrite_expr(item.expression.clone(), old_alias, new_alias);
+    }
+
+    // GROUP BY
+    plan.group_by.0 = plan
+        .group_by
+        .0
+        .iter()
+        .map(|e| rewrite_expr(e.clone(), old_alias, new_alias))
+        .collect();
+
+    // HAVING
+    if let Some(having) = &plan.having_clause {
+        plan.having_clause = Some(rewrite_expr(having.clone(), old_alias, new_alias));
     }
 
     // UNION branches
@@ -6895,14 +6936,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
             // Use the snapshot from PREVIOUS iterations only (not including current alias)
             log::debug!("🔧 build_chained_with_match_cte_plan: Updating cte_references for {} plans before rendering. Using previous CTEs: {:?}", with_plans.len(), cte_references_for_rendering);
 
-            // DEBUG: Check what cte_references exist in with_plans BEFORE update
-            for (idx, plan) in with_plans.iter().enumerate() {
-                if let LogicalPlan::WithClause(wc) = plan {
-                    eprintln!("🔍🔍🔍 BEFORE update_graph_joins_cte_refs: with_plans[{}] WithClause has {} cte_references: {:?}",
-                              idx, wc.cte_references.len(), wc.cte_references);
-                }
-            }
-
             let with_plans: Vec<LogicalPlan> = with_plans
                 .into_iter()
                 .map(|plan| {
@@ -6913,14 +6946,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-
-            // DEBUG: Check what cte_references exist in with_plans AFTER update
-            for (idx, plan) in with_plans.iter().enumerate() {
-                if let LogicalPlan::WithClause(wc) = plan {
-                    eprintln!("🔍🔍🔍 AFTER update_graph_joins_cte_refs: with_plans[{}] WithClause has {} cte_references: {:?}",
-                              idx, wc.cte_references.len(), wc.cte_references);
-                }
-            }
 
             // Collect aliases from the pre-WITH scope (inside the WITH clauses)
             // These aliases should be filtered out from the outer query's joins
@@ -10013,6 +10038,15 @@ pub(crate) fn build_chained_with_match_cte_plan(
         }
     }
 
+    // Fix orphan composite aliases in the outer query.
+    // After WITH→CTE processing, the outer plan may still reference composite aliases
+    // (e.g., "person_score.score") instead of the FROM alias ("person.score").
+    // fix_orphan_table_aliases handles all expression types (AggregateFnCall, GROUP BY, etc.)
+    // and rewrites them to match the actual FROM/JOIN aliases.
+    if !scope_cte_variables.is_empty() {
+        super::variable_scope::fix_orphan_table_aliases(&mut render_plan, &final_scope);
+    }
+
     // Add all CTEs (innermost first, which is correct order for SQL)
     all_ctes.extend(render_plan.ctes.0);
     render_plan.ctes = CteItems(all_ctes);
@@ -10840,15 +10874,6 @@ pub(crate) fn find_all_with_clauses_grouped(
     let mut grouped: HashMap<String, Vec<LogicalPlan>> = HashMap::new();
     for (plan, alias) in all_withs {
         grouped.entry(alias).or_default().push(plan);
-    }
-
-    log::debug!(
-        "🔍 find_all_with_clauses_grouped: Found {} unique aliases with {} total WITH clauses",
-        grouped.len(),
-        grouped.values().map(|v| v.len()).sum::<usize>()
-    );
-    for (alias, plans) in &grouped {
-        log::debug!("🔍   alias '{}': {} WITH clause(s)", alias, plans.len());
     }
 
     grouped

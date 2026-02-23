@@ -86,41 +86,41 @@ impl DuplicateScansRemoving {
 
                 let left_alias = &graph_rel.left_connection;
 
-                log::debug!(
-                    "DuplicateScansRemoving: Processing GraphRel, left_alias='{}', traversed contains it: {}",
-                    left_alias,
-                    traversed.contains(left_alias)
-                );
+                // Check if left subtree contains a WithClause.
+                // WithClause appears at the top level of query structure (alongside
+                // MATCH/OPTIONAL MATCH), so only plan nodes that can wrap those
+                // constructs need traversal.
+                fn left_has_with(p: &LogicalPlan) -> bool {
+                    match p {
+                        LogicalPlan::WithClause(_) => true,
+                        LogicalPlan::GraphRel(gr) => {
+                            left_has_with(&gr.left) || left_has_with(&gr.right)
+                        }
+                        LogicalPlan::Filter(f) => left_has_with(&f.input),
+                        LogicalPlan::GraphJoins(gj) => left_has_with(&gj.input),
+                        LogicalPlan::GraphNode(gn) => left_has_with(&gn.input),
+                        LogicalPlan::Projection(p) => left_has_with(&p.input),
+                        LogicalPlan::CartesianProduct(cp) => {
+                            left_has_with(&cp.left) || left_has_with(&cp.right)
+                        }
+                        _ => false,
+                    }
+                }
 
                 let left_tf = if traversed.contains(left_alias) {
                     let is_optional = plan_ctx.is_optional(left_alias);
-                    log::debug!(
-                        "DuplicateScansRemoving: left_alias='{}' is in traversed set, is_optional={}",
-                        left_alias,
-                        is_optional
-                    );
 
-                    // NEW: Check if this alias is optional before removing
-                    if is_optional {
-                        log::debug!(
-                            "DuplicateScansRemoving: Keeping left node for OPTIONAL MATCH (alias='{}')",
-                            left_alias
-                        );
-                        // Keep the node for OPTIONAL MATCH JOIN generation
+                    // CRITICAL: Never replace a subtree containing a WithClause with Empty!
+                    // WithClause boundaries must be preserved for CTE generation.
+                    let left_contains_with = left_has_with(&graph_rel.left);
+                    if left_contains_with || is_optional {
                         Self::remove_duplicate_scans(graph_rel.left.clone(), traversed, plan_ctx)?
                     } else {
-                        log::debug!(
-                            "DuplicateScansRemoving: Removing duplicate left node (alias='{}')",
-                            left_alias
-                        );
-                        // Remove duplicate for regular MATCH
                         Transformed::Yes(Arc::new(LogicalPlan::Empty))
                     }
                 } else {
                     Self::remove_duplicate_scans(graph_rel.left.clone(), traversed, plan_ctx)?
                 };
-
-                // let left_tf = Self::remove_duplicate_scans(graph_rel.left.clone(), traversed);
 
                 graph_rel.rebuild_or_clone(left_tf, center_tf, right_tf, logical_plan.clone())
             }
