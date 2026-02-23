@@ -241,13 +241,19 @@ pub fn initial_analyzing(
     // Enables property resolution passes to use explicit role information (from/to)
     log::info!("🔍 ANALYZER: Running GraphJoinInference (Phase 0: moved to Step 4)");
     let graph_join_inference = GraphJoinInference::new();
-    let plan = if let Ok(transformed_plan) =
-        graph_join_inference.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)
-    {
-        transformed_plan.get_plan()
-    } else {
-        log::warn!("⚠️  GraphJoinInference failed, continuing with original plan");
-        plan
+    let plan = match graph_join_inference.analyze_with_graph_schema(
+        plan.clone(),
+        plan_ctx,
+        current_graph_schema,
+    ) {
+        Ok(transformed_plan) => transformed_plan.get_plan(),
+        Err(e) => {
+            log::warn!(
+                "⚠️  GraphJoinInference failed: {:?}, continuing with original plan",
+                e
+            );
+            plan
+        }
     };
 
     // Step 5: Projected Columns Resolver - pre-compute projected columns for GraphNodes

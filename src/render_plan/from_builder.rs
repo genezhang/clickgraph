@@ -39,6 +39,13 @@ use crate::utils::cte_naming::{extract_cte_base_name, is_generated_cte_name};
 use log::debug;
 use std::sync::Arc;
 
+/// Get the outer-query alias for a VLP CTE, using query context registry first,
+/// then falling back to the default VLP_CTE_FROM_ALIAS constant.
+fn vlp_cte_alias_for(cte_name: &str) -> String {
+    crate::server::query_context::get_vlp_cte_outer_alias(cte_name)
+        .unwrap_or_else(|| VLP_CTE_FROM_ALIAS.to_string())
+}
+
 use super::errors::RenderBuildError;
 use super::plan_builder_helpers::{
     extract_rel_and_node_tables, extract_table_name, find_anchor_node, find_table_name_for_alias,
@@ -319,8 +326,8 @@ impl LogicalPlan {
 
                 return Ok(Some(ViewTableRef {
                     source: Arc::new(LogicalPlan::Empty),
-                    name: cte_name,
-                    alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
+                    name: cte_name.clone(),
+                    alias: Some(vlp_cte_alias_for(&cte_name)),
                     use_final: false,
                 }));
             }
@@ -372,8 +379,8 @@ impl LogicalPlan {
 
             return Ok(Some(ViewTableRef {
                 source: Arc::new(LogicalPlan::Empty),
-                name: cte_name,
-                alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
+                name: cte_name.clone(),
+                alias: Some(vlp_cte_alias_for(&cte_name)),
                 use_final: false,
             }));
         }
@@ -681,8 +688,8 @@ impl LogicalPlan {
 
             return Ok(Some(ViewTableRef {
                 source: Arc::new(LogicalPlan::Empty),
-                name: cte_name,
-                alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
+                name: cte_name.clone(),
+                alias: Some(vlp_cte_alias_for(&cte_name)),
                 use_final: false,
             }));
         }
@@ -805,8 +812,8 @@ impl LogicalPlan {
 
             return Ok(Some(ViewTableRef {
                 source: Arc::new(LogicalPlan::Empty),
-                name: cte_name,
-                alias: Some(VLP_CTE_FROM_ALIAS.to_string()), // Standard VLP alias "t"
+                name: cte_name.clone(),
+                alias: Some(vlp_cte_alias_for(&cte_name)),
                 use_final: false,
             }));
         }
@@ -843,8 +850,8 @@ impl LogicalPlan {
                     );
                     return Ok(Some(ViewTableRef {
                         source: Arc::new(LogicalPlan::Empty),
-                        name: registered_name,
-                        alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
+                        name: registered_name.clone(),
+                        alias: Some(vlp_cte_alias_for(&registered_name)),
                         use_final: false,
                     }));
                 }
@@ -855,8 +862,8 @@ impl LogicalPlan {
                 );
                 return Ok(Some(ViewTableRef {
                     source: Arc::new(LogicalPlan::Empty),
-                    name: cte_name,
-                    alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
+                    name: cte_name.clone(),
+                    alias: Some(vlp_cte_alias_for(&cte_name)),
                     use_final: false,
                 }));
             }
@@ -1103,8 +1110,8 @@ impl LogicalPlan {
 
                         return Ok(Some(ViewTableRef {
                             source: Arc::new(LogicalPlan::Empty),
-                            name: cte_name,
-                            alias: Some(VLP_CTE_FROM_ALIAS.to_string()), // Standard VLP alias
+                            name: cte_name.clone(),
+                            alias: Some(vlp_cte_alias_for(&cte_name)),
                             use_final: false,
                         }));
                     }
@@ -1257,8 +1264,8 @@ impl LogicalPlan {
 
             return Ok(Some(ViewTableRef {
                 source: Arc::new(LogicalPlan::Empty),
-                name: cte_name,
-                alias: Some(VLP_CTE_FROM_ALIAS.to_string()), // Standard VLP alias
+                name: cte_name.clone(),
+                alias: Some(vlp_cte_alias_for(&cte_name)),
                 use_final: false,
             }));
         }
@@ -1298,8 +1305,8 @@ impl LogicalPlan {
 
             return Ok(Some(ViewTableRef {
                 source: Arc::new(LogicalPlan::Empty),
-                name: cte_name,
-                alias: Some(VLP_CTE_FROM_ALIAS.to_string()), // Standard VLP alias
+                name: cte_name.clone(),
+                alias: Some(vlp_cte_alias_for(&cte_name)),
                 use_final: false,
             }));
         }
