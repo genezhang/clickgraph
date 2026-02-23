@@ -1483,15 +1483,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
             // Build edge tuple for the base case
             let edge_tuple = self.build_edge_tuple_base();
 
-            // Helper to convert comma-separated column string to Identifier
-            let parse_id_cols = |cols: &str| -> Identifier {
-                let parts: Vec<&str> = cols.split(',').map(|s| s.trim()).collect();
-                if parts.len() == 1 {
-                    Identifier::Single(parts[0].to_string())
-                } else {
-                    Identifier::Composite(parts.iter().map(|s| s.to_string()).collect())
-                }
-            };
+            // Parse comma-separated column string to Identifier
+            let parse_id_cols = Identifier::from_comma_separated;
 
             // Parse ID identifiers
             let start_id_identifier = parse_id_cols(&self.start_node_id_column);
@@ -1610,7 +1603,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             // For composite IDs, add individual ID component columns
             // This allows queries like RETURN dest.bank_id, dest.account_number
             if let Identifier::Composite(cols) = &start_id_identifier {
-                for (i, col) in cols.iter().enumerate() {
+                for col in cols.iter() {
                     select_items.push(format!(
                         "{}.{} as start_{}",
                         self.start_node_alias,
@@ -1620,7 +1613,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 }
             }
             if let Identifier::Composite(cols) = &end_id_identifier {
-                for (i, col) in cols.iter().enumerate() {
+                for col in cols.iter() {
                     select_items.push(format!(
                         "{}.{} as end_{}",
                         self.end_node_alias,
@@ -1669,15 +1662,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
             let select_clause = select_items.join(",\n        ");
 
-            // Helper to convert comma-separated column string to Identifier
-            let parse_id_cols = |cols: &str| -> Identifier {
-                let parts: Vec<&str> = cols.split(',').map(|s| s.trim()).collect();
-                if parts.len() == 1 {
-                    Identifier::Single(parts[0].to_string())
-                } else {
-                    Identifier::Composite(parts.iter().map(|s| s.to_string()).collect())
-                }
-            };
+            // Parse comma-separated column string to Identifier
+            let parse_id_cols = Identifier::from_comma_separated;
 
             // Parse column identifiers for composite ID support
             let start_id_identifier = parse_id_cols(&self.start_node_id_column);
@@ -1799,15 +1785,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Build edge tuple for recursive case
         let edge_tuple_recursive = self.build_edge_tuple_recursive(&self.relationship_alias);
 
-        // Helper to convert comma-separated column string to Identifier
-        let parse_id_cols = |cols: &str| -> Identifier {
-            let parts: Vec<&str> = cols.split(',').map(|s| s.trim()).collect();
-            if parts.len() == 1 {
-                Identifier::Single(parts[0].to_string())
-            } else {
-                Identifier::Composite(parts.iter().map(|s| s.to_string()).collect())
-            }
-        };
+        // Parse comma-separated column string to Identifier
+        let parse_id_cols = Identifier::from_comma_separated;
 
         // Parse end node ID identifier
         let end_id_identifier = parse_id_cols(&self.end_node_id_column);
@@ -1987,15 +1966,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let where_clause = where_conditions.join("\n      AND ");
 
-        // Helper to convert comma-separated column string to Identifier
-        let parse_id_cols = |cols: &str| -> Identifier {
-            let parts: Vec<&str> = cols.split(',').map(|s| s.trim()).collect();
-            if parts.len() == 1 {
-                Identifier::Single(parts[0].to_string())
-            } else {
-                Identifier::Composite(parts.iter().map(|s| s.to_string()).collect())
-            }
-        };
+        // Parse comma-separated column string to Identifier
+        let parse_id_cols = Identifier::from_comma_separated;
 
         // Parse column identifiers for composite ID support
         let end_id_identifier = parse_id_cols(&self.end_node_id_column);
@@ -3506,15 +3478,8 @@ impl ChainedJoinGenerator {
         sql.push_str(&self.format_table_name(&self.start_node_table));
         sql.push_str(" s\n");
 
-        // Helper to convert comma-separated column string to Identifier
-        let parse_id_cols = |cols: &str| -> Identifier {
-            let parts: Vec<&str> = cols.split(',').map(|s| s.trim()).collect();
-            if parts.len() == 1 {
-                Identifier::Single(parts[0].to_string())
-            } else {
-                Identifier::Composite(parts.iter().map(|s| s.to_string()).collect())
-            }
-        };
+        // Parse comma-separated column string to Identifier
+        let parse_id_cols = Identifier::from_comma_separated;
 
         // Parse column identifiers for composite ID support
         let start_id_identifier = parse_id_cols(&self.start_node_id_column);

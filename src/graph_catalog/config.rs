@@ -46,6 +46,22 @@ pub enum Identifier {
 }
 
 impl Identifier {
+    /// Parse a comma-separated column string into an Identifier.
+    ///
+    /// - Single column: `"user_id"` → `Identifier::Single("user_id")`
+    /// - Composite: `"bank_id, account_number"` → `Identifier::Composite(["bank_id", "account_number"])`
+    ///
+    /// Empty strings return `Identifier::Single("")` to match historical behavior,
+    /// though schemas should always have at least one ID column.
+    pub fn from_comma_separated(cols: &str) -> Self {
+        let parts: Vec<&str> = cols.split(',').map(|s| s.trim()).collect();
+        if parts.len() == 1 {
+            Identifier::Single(parts[0].to_string())
+        } else {
+            Identifier::Composite(parts.iter().map(|s| s.to_string()).collect())
+        }
+    }
+
     /// Get all columns in the identifier
     pub fn columns(&self) -> Vec<&str> {
         match self {
