@@ -3127,7 +3127,7 @@ mod tests {
         assert!(!generation_result.sql.is_empty());
         // WITH RECURSIVE is added by Ctes::to_sql() at the top level, not in generator output
         // The generator returns just "cte_name AS (...)"
-        assert!(generation_result.sql.contains("AS (SELECT")); // CTE structure
+        assert!(generation_result.sql.contains(" AS (\n")); // CTE structure with newline
         assert!(generation_result.sql.contains("users_bench"));
         assert!(generation_result.sql.contains("user_follows_bench"));
     }
@@ -3212,7 +3212,7 @@ mod tests {
         assert!(generation_result.cte_name.starts_with("vlp_f1_"));
         assert!(!generation_result.sql.is_empty());
         // WITH RECURSIVE is added by Ctes::to_sql() at the top level, not in generator output
-        assert!(generation_result.sql.contains("AS (SELECT")); // CTE structure
+        assert!(generation_result.sql.contains(" AS (\n")); // CTE structure with newline
         assert!(generation_result.sql.contains("flights"));
         assert!(generation_result.sql.contains("Origin"));
         assert!(generation_result.sql.contains("Dest"));
@@ -3328,7 +3328,7 @@ mod tests {
         assert!(generation_result.cte_name.starts_with("vlp_parent_child_"));
         assert!(!generation_result.sql.is_empty());
         // WITH RECURSIVE is added by Ctes::to_sql() at the top level, not in generator output
-        assert!(generation_result.sql.contains("AS (SELECT")); // CTE structure
+        assert!(generation_result.sql.contains(" AS (\n")); // CTE structure with newline
         assert!(generation_result.sql.contains("files"));
         assert!(generation_result.sql.contains("parent_id"));
         assert!(generation_result.sql.contains("id"));
@@ -3498,7 +3498,7 @@ mod tests {
         assert!(generation_result.cte_name.starts_with("vlp_f1_f2_"));
         assert!(!generation_result.sql.is_empty());
         // WITH RECURSIVE is added by Ctes::to_sql() at the top level, not in generator output
-        assert!(generation_result.sql.contains("AS (SELECT")); // CTE structure
+        assert!(generation_result.sql.contains(" AS (\n")); // CTE structure with newline
     }
 
     #[test]
