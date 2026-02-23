@@ -4714,6 +4714,8 @@ fn detect_vlp_endpoint_from_plan(plan: &LogicalPlan, alias: &str) -> Option<VlpE
                         position: VlpPosition::Start,
                         other_endpoint_alias: rel.right_connection.clone(),
                         rel_alias: rel.alias.clone(),
+                        vlp_alias: crate::query_planner::join_context::VLP_CTE_FROM_ALIAS
+                            .to_string(),
                     });
                 }
 
@@ -4728,6 +4730,8 @@ fn detect_vlp_endpoint_from_plan(plan: &LogicalPlan, alias: &str) -> Option<VlpE
                         position: VlpPosition::End,
                         other_endpoint_alias: rel.left_connection.clone(),
                         rel_alias: rel.alias.clone(),
+                        vlp_alias: crate::query_planner::join_context::VLP_CTE_FROM_ALIAS
+                            .to_string(),
                     });
                 }
             }

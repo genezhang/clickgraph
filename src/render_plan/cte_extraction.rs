@@ -1848,10 +1848,20 @@ pub fn extract_ctes_with_context(
             )
         }
         LogicalPlan::GraphRel(graph_rel) => {
+            log::debug!(
+                "🔍 CTE extraction: GraphRel alias='{}' left='{}' right='{}' vlp={:?}",
+                graph_rel.alias,
+                graph_rel.left_connection,
+                graph_rel.right_connection,
+                graph_rel.variable_length.is_some(),
+            );
             // Handle variable-length paths with context
             if let Some(spec) = &graph_rel.variable_length {
                 log::debug!(
-                    "🔧 VLP ENTRY: Entering variable-length path handling for spec={:?}",
+                    "🔧 VLP ENTRY: alias='{}' left='{}' right='{}' spec={:?}",
+                    graph_rel.alias,
+                    graph_rel.left_connection,
+                    graph_rel.right_connection,
                     spec
                 );
                 log::debug!("🔧 VLP: Entering variable-length path handling");
@@ -2645,14 +2655,21 @@ pub fn extract_ctes_with_context(
                         // Fall through to CTE generation below
                     }
 
-                    // Extract CTEs from child plans (if any)
-                    let child_ctes = extract_ctes_with_context(
-                        &graph_rel.right,
+                    // Extract CTEs from BOTH child branches (left may contain other VLPs)
+                    let mut child_ctes = extract_ctes_with_context(
+                        &graph_rel.left,
                         last_node_alias,
                         context,
                         schema,
                         plan_ctx,
                     )?;
+                    child_ctes.extend(extract_ctes_with_context(
+                        &graph_rel.right,
+                        last_node_alias,
+                        context,
+                        schema,
+                        plan_ctx,
+                    )?);
 
                     return Ok(child_ctes);
                 } else {
@@ -2899,14 +2916,21 @@ pub fn extract_ctes_with_context(
                                     cte_name
                                 );
 
-                                // Extract CTEs from child plans
+                                // Extract CTEs from BOTH child branches (left may contain other VLPs)
                                 let mut child_ctes = extract_ctes_with_context(
-                                    &graph_rel.right,
+                                    &graph_rel.left,
                                     last_node_alias,
                                     context,
                                     schema,
                                     plan_ctx,
                                 )?;
+                                child_ctes.extend(extract_ctes_with_context(
+                                    &graph_rel.right,
+                                    last_node_alias,
+                                    context,
+                                    schema,
+                                    plan_ctx,
+                                )?);
                                 child_ctes.push(cte);
 
                                 return Ok(child_ctes);
@@ -3132,14 +3156,29 @@ pub fn extract_ctes_with_context(
                         graph_rel.is_optional,
                     )?;
 
-                    // Also extract CTEs from child plans
+                    // TODO(multi-vlp): Per-VLP unique aliases (vt0, vt1) are used in
+                    // inference-phase join conditions, but the render phase (VLPExprRewriter,
+                    // select_builder, to_sql_query, from_builder) still uses VLP_CTE_FROM_ALIAS
+                    // ("t") for FROM alias and expression rendering. Until all render-phase
+                    // code is updated to use per-VLP aliases, we keep from_alias as "t" and
+                    // don't call register_vlp_cte_outer_alias(). Wiring it up prematurely
+                    // would break t.start_id/t.end_id references in SELECT/JOIN clauses.
+
+                    // Extract CTEs from BOTH child branches (left may contain other VLPs)
                     let mut child_ctes = extract_ctes_with_context(
-                        &graph_rel.right,
+                        &graph_rel.left,
                         last_node_alias,
                         context,
                         schema,
                         plan_ctx,
                     )?;
+                    child_ctes.extend(extract_ctes_with_context(
+                        &graph_rel.right,
+                        last_node_alias,
+                        context,
+                        schema,
+                        plan_ctx,
+                    )?);
                     child_ctes.push(var_len_cte);
 
                     return Ok(child_ctes);
@@ -3717,13 +3756,19 @@ pub fn extract_ctes_with_context(
                 plan_ctx,
             )
         }
-        LogicalPlan::GraphJoins(graph_joins) => extract_ctes_with_context(
-            &graph_joins.input,
-            last_node_alias,
-            context,
-            schema,
-            plan_ctx,
-        ),
+        LogicalPlan::GraphJoins(graph_joins) => {
+            log::debug!(
+                "🔍 CTE extraction: GraphJoins input type: {:?}",
+                std::mem::discriminant(graph_joins.input.as_ref())
+            );
+            extract_ctes_with_context(
+                &graph_joins.input,
+                last_node_alias,
+                context,
+                schema,
+                plan_ctx,
+            )
+        }
         LogicalPlan::GroupBy(group_by) => {
             log::info!("🔍 CTE extraction: Delegating from GroupBy to input plan");
             extract_ctes_with_context(&group_by.input, last_node_alias, context, schema, plan_ctx)
@@ -3765,11 +3810,15 @@ pub fn extract_ctes_with_context(
             extract_ctes_with_context(&u.input, last_node_alias, context, schema, plan_ctx)
         }
         LogicalPlan::CartesianProduct(cp) => {
-            println!("DEBUG CTE Extraction: Processing CartesianProduct");
+            log::debug!(
+                "🔍 CTE extraction: CartesianProduct - left={:?}, right={:?}",
+                std::mem::discriminant(cp.left.as_ref()),
+                std::mem::discriminant(cp.right.as_ref()),
+            );
             let mut ctes =
                 extract_ctes_with_context(&cp.left, last_node_alias, context, schema, plan_ctx)?;
-            println!(
-                "DEBUG CTE Extraction: CartesianProduct left side returned {} CTEs",
+            log::debug!(
+                "🔍 CTE extraction: CartesianProduct left returned {} CTEs",
                 ctes.len()
             );
             ctes.append(&mut extract_ctes_with_context(
@@ -3779,8 +3828,8 @@ pub fn extract_ctes_with_context(
                 schema,
                 plan_ctx,
             )?);
-            println!(
-                "DEBUG CTE Extraction: CartesianProduct total {} CTEs",
+            log::debug!(
+                "🔍 CTE extraction: CartesianProduct total {} CTEs",
                 ctes.len()
             );
             Ok(ctes)
