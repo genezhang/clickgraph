@@ -2852,6 +2852,7 @@ impl ToSql for Cte {
 
                     cte_body.push_str(&plan.from.to_sql());
                     cte_body.push_str(&plan.joins.to_sql());
+                    cte_body.push_str(&plan.array_join.to_sql());
                     cte_body.push_str(&plan.filters.to_sql());
                     cte_body.push_str(&plan.group_by.to_sql());
 
@@ -3551,14 +3552,53 @@ impl RenderExpr {
                                 let id_sql = format!("{}.{}", table_alias, from_id);
                                 return format!("{} {}", id_sql, op_str);
                             } else {
-                                // ERROR: r.* wildcard is ALWAYS for relationships
-                                // If alias not in map = bug in planning (missing from_id_column population)
-                                panic!(
-                                    "Internal error: Relationship alias '{}' not found in column mapping. \
-                                     This indicates a bug in query planning - relationship JOINs should populate \
-                                     from_id_column during creation. Check graph_join_inference.rs line ~2547.",
-                                    table_alias
-                                )
+                                // Not a relationship — likely a node alias from OPTIONAL MATCH
+                                // (e.g., CASE WHEN c IS NULL ... where c is a Comment node).
+                                // Resolve to the node's ID column for the null check.
+                                //
+                                // We check ALL node schemas for consensus on the ID column name.
+                                // If all nodes agree, we use that column. If they disagree, we log
+                                // an error since we cannot determine the specific node type from
+                                // the alias at this stage.
+                                let id_col = {
+                                    use crate::server::query_context::get_current_schema;
+                                    use std::collections::BTreeSet;
+                                    let mut unique_id_cols = BTreeSet::new();
+                                    if let Some(schema) = get_current_schema() {
+                                        for ns in schema.all_node_schemas().values() {
+                                            let cols = ns.node_id.columns();
+                                            if cols.len() == 1 {
+                                                if let Some(first_col) = cols.first() {
+                                                    unique_id_cols.insert(first_col.to_string());
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if unique_id_cols.len() == 1 {
+                                        unique_id_cols.into_iter().next().unwrap()
+                                    } else if unique_id_cols.is_empty() {
+                                        log::error!(
+                                            "Node wildcard null check for alias '{}': no node schemas found with single-column ID. Defaulting to 'id'.",
+                                            table_alias
+                                        );
+                                        String::from("id")
+                                    } else {
+                                        log::error!(
+                                            "Node wildcard null check for alias '{}': node schemas disagree on ID column name ({:?}). Cannot determine specific node type at SQL generation stage. Defaulting to 'id'.",
+                                            table_alias,
+                                            unique_id_cols
+                                        );
+                                        String::from("id")
+                                    }
+                                };
+                                log::debug!(
+                                    "Node wildcard null check: {}.{} {}",
+                                    table_alias,
+                                    id_col,
+                                    op_str
+                                );
+                                let id_sql = format!("{}.{}", table_alias, id_col);
+                                return format!("{} {}", id_sql, op_str);
                             }
                         }
                     }
