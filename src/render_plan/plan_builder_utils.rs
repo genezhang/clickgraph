@@ -6649,6 +6649,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
             LogicalPlan::Limit(lim) => 1 + count_plan_depth(&lim.input),
             LogicalPlan::Skip(skip) => 1 + count_plan_depth(&skip.input),
             LogicalPlan::GraphJoins(gj) => 1 + count_plan_depth(&gj.input),
+            LogicalPlan::Unwind(u) => 1 + count_plan_depth(&u.input),
             LogicalPlan::Union(u) => {
                 1 + u
                     .inputs
@@ -7652,11 +7653,22 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         // This allows GROUP BY to only include ID column (more efficient)
 
                         // Extract UNWIND alias from plan if present — UNWIND aliases are simple
-                        // ARRAY JOIN column references, not table aliases to expand
-                        let unwind_alias = match plan_to_render {
-                            LogicalPlan::Unwind(u) => Some(u.alias.as_str()),
-                            _ => None,
-                        };
+                        // ARRAY JOIN column references, not table aliases to expand.
+                        // Must recurse through wrapping nodes (Filter, Projection, etc.)
+                        // since UNWIND may not be at the top level.
+                        fn find_unwind_alias(plan: &LogicalPlan) -> Option<&str> {
+                            match plan {
+                                LogicalPlan::Unwind(u) => Some(u.alias.as_str()),
+                                LogicalPlan::Filter(f) => find_unwind_alias(&f.input),
+                                LogicalPlan::Projection(p) => find_unwind_alias(&p.input),
+                                LogicalPlan::OrderBy(ob) => find_unwind_alias(&ob.input),
+                                LogicalPlan::Limit(lim) => find_unwind_alias(&lim.input),
+                                LogicalPlan::Skip(s) => find_unwind_alias(&s.input),
+                                LogicalPlan::GroupBy(gb) => find_unwind_alias(&gb.input),
+                                _ => None,
+                            }
+                        }
+                        let unwind_alias = find_unwind_alias(plan_to_render);
 
                         let select_items: Vec<SelectItem> = items.iter()
                                     .flat_map(|item| {
