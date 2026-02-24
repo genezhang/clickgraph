@@ -499,6 +499,29 @@ impl LogicalPlan {
                 }));
             }
 
+            // If anchor is NOT CTE-backed, but the OTHER connection IS CTE-backed,
+            // prefer the CTE-backed node as FROM. This happens in reverse
+            // BidirectionalUnion branches where the CTE-backed node gets swapped
+            // to the non-anchor side. Using the non-CTE anchor as FROM would
+            // produce broken JOIN conditions referencing CTE columns on a raw table.
+            let other_alias = if anchor_alias == &graph_rel.left_connection {
+                &graph_rel.right_connection
+            } else {
+                &graph_rel.left_connection
+            };
+            if let Some(cte_name) = graph_rel.cte_references.get(other_alias.as_str()) {
+                log::info!(
+                    "  ✓ Anchor '{}' is NOT CTE-backed, but other '{}' IS (CTE '{}') - using CTE as FROM",
+                    anchor_alias, other_alias, cte_name
+                );
+                return Ok(Some(ViewTableRef {
+                    source: Arc::new(LogicalPlan::Empty),
+                    name: cte_name.clone(),
+                    alias: Some(other_alias.clone()),
+                    use_final: false,
+                }));
+            }
+
             // The anchor_connection contains the ALIAS of the node that should be FROM.
             // We need to find which actual GraphNode has that alias.
 
@@ -571,6 +594,43 @@ impl LogicalPlan {
                     return Ok(from_table_to_view_ref(graph_rel.right.extract_from()?));
                 }
             }
+        }
+
+        // CTE-PREFERRED FROM: When one connection is CTE-backed and the other isn't,
+        // prefer the CTE-backed connection as FROM. This is critical for reverse
+        // BidirectionalUnion branches where the CTE-backed node (e.g., "person" from a
+        // previous WITH) gets swapped to the right side. Without this, the raw table node
+        // becomes FROM and JOIN conditions incorrectly reference CTE columns on the raw table.
+        if !graph_rel.cte_references.is_empty() {
+            let left_is_cte = graph_rel
+                .cte_references
+                .contains_key(&graph_rel.left_connection);
+            let right_is_cte = graph_rel
+                .cte_references
+                .contains_key(&graph_rel.right_connection);
+
+            if right_is_cte && !left_is_cte {
+                // Right connection is CTE-backed, left is not → use CTE as FROM.
+                // Use extract_from on the right subtree to get the proper CTE reference
+                // with the correct alias (matching the outgoing branch's FROM alias).
+                log::info!(
+                    "🔧 extract_from_graph_rel: Right '{}' is CTE-backed, left '{}' is raw → using right as FROM",
+                    graph_rel.right_connection, graph_rel.left_connection
+                );
+                if let Ok(Some(from_table)) = graph_rel.right.extract_from() {
+                    return Ok(from_table_to_view_ref(Some(from_table)));
+                }
+                // Fallback: construct manually if extract_from fails
+                let cte_name = &graph_rel.cte_references[&graph_rel.right_connection];
+                return Ok(Some(ViewTableRef {
+                    source: Arc::new(LogicalPlan::Empty),
+                    name: cte_name.clone(),
+                    alias: Some(graph_rel.right_connection.clone()),
+                    use_final: false,
+                }));
+            }
+            // Note: left_is_cte && !right_is_cte falls through to default left-first behavior,
+            // which already picks the correct CTE-backed node via extract_from + post-processing.
         }
 
         let (primary_from, fallback_from) = (

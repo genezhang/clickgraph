@@ -254,6 +254,14 @@ fn rewrite_with_pattern_comprehensions<'a>(
                 correlation_var, correlation_label, direction, rel_types, agg_type, result_alias
             );
 
+            // Extract full pattern info for correlated subquery generation
+            let correlation_vars_info =
+                extract_all_correlation_variables_from_pattern(&pattern, plan_ctx);
+            let pattern_hops_info = extract_connected_pattern_info(&pattern);
+            let pc_where_clause = _where_clause
+                .as_ref()
+                .and_then(|w| LogicalExpr::try_from(w.as_ref().clone()).ok());
+
             all_metas.push(
                 crate::query_planner::logical_plan::PatternComprehensionMeta {
                     correlation_var: correlation_var.clone(),
@@ -264,6 +272,10 @@ fn rewrite_with_pattern_comprehensions<'a>(
                     result_alias: result_alias.clone(),
                     target_label: None,
                     target_property: None,
+                    correlation_vars: correlation_vars_info,
+                    pattern_hops: pattern_hops_info,
+                    where_clause: pc_where_clause,
+                    position_index: pc_counter,
                 },
             );
 
@@ -577,5 +589,126 @@ pub(crate) fn extract_direction_and_rel_types(
             extract_direction_and_rel_types(inner)
         }
         _ => (Direction::Either, None),
+    }
+}
+
+/// Extract ALL correlation variables from a pattern (not just the first one).
+/// A correlation variable is a named node that already exists in the outer scope (plan_ctx).
+/// Returns a Vec with position info for each correlated variable.
+fn extract_all_correlation_variables_from_pattern(
+    pattern: &crate::open_cypher_parser::ast::PathPattern<'_>,
+    plan_ctx: &PlanCtx,
+) -> Vec<crate::query_planner::logical_plan::CorrelationVarInfo> {
+    use crate::open_cypher_parser::ast::PathPattern;
+    use crate::query_planner::logical_plan::{CorrelationVarInfo, PatternPosition};
+
+    let mut result = Vec::new();
+
+    match pattern {
+        PathPattern::Node(node) => {
+            if let Some(name) = node.name {
+                if plan_ctx.get_table_ctx(name).is_ok() {
+                    let label = plan_ctx
+                        .get_table_ctx(name)
+                        .ok()
+                        .and_then(|ctx| ctx.get_labels().cloned())
+                        .and_then(|labels| labels.into_iter().next())
+                        .unwrap_or_default();
+                    result.push(CorrelationVarInfo {
+                        var_name: name.to_string(),
+                        label,
+                        pattern_position: PatternPosition::StartOfHop(0),
+                    });
+                }
+            }
+        }
+        PathPattern::ConnectedPattern(connected) => {
+            for (hop_idx, conn) in connected.iter().enumerate() {
+                let start_node = conn.start_node.borrow();
+                if let Some(name) = start_node.name {
+                    if plan_ctx.get_table_ctx(name).is_ok() {
+                        let label = plan_ctx
+                            .get_table_ctx(name)
+                            .ok()
+                            .and_then(|ctx| ctx.get_labels().cloned())
+                            .and_then(|labels| labels.into_iter().next())
+                            .unwrap_or_else(|| {
+                                // Fall back to pattern label
+                                start_node.first_label().unwrap_or("").to_string()
+                            });
+                        // Avoid duplicates (same var can appear as end of hop N-1 and start of hop N)
+                        if !result.iter().any(|r| r.var_name == name) {
+                            result.push(CorrelationVarInfo {
+                                var_name: name.to_string(),
+                                label,
+                                pattern_position: PatternPosition::StartOfHop(hop_idx),
+                            });
+                        }
+                    }
+                }
+                let end_node = conn.end_node.borrow();
+                if let Some(name) = end_node.name {
+                    if plan_ctx.get_table_ctx(name).is_ok() {
+                        let label = plan_ctx
+                            .get_table_ctx(name)
+                            .ok()
+                            .and_then(|ctx| ctx.get_labels().cloned())
+                            .and_then(|labels| labels.into_iter().next())
+                            .unwrap_or_else(|| end_node.first_label().unwrap_or("").to_string());
+                        if !result.iter().any(|r| r.var_name == name) {
+                            result.push(CorrelationVarInfo {
+                                var_name: name.to_string(),
+                                label,
+                                pattern_position: PatternPosition::EndOfHop(hop_idx),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        PathPattern::ShortestPath(inner) | PathPattern::AllShortestPaths(inner) => {
+            return extract_all_correlation_variables_from_pattern(inner, plan_ctx);
+        }
+    }
+
+    result
+}
+
+/// Convert AST PathPattern into serializable ConnectedPatternInfo vec.
+/// Preserves labels, aliases, directions, and relationship types for each hop.
+fn extract_connected_pattern_info(
+    pattern: &crate::open_cypher_parser::ast::PathPattern<'_>,
+) -> Vec<crate::query_planner::logical_plan::ConnectedPatternInfo> {
+    use crate::open_cypher_parser::ast::PathPattern;
+    use crate::query_planner::logical_plan::ConnectedPatternInfo;
+
+    match pattern {
+        PathPattern::ConnectedPattern(connected) => connected
+            .iter()
+            .map(|conn| {
+                let start_node = conn.start_node.borrow();
+                let end_node = conn.end_node.borrow();
+                ConnectedPatternInfo {
+                    start_label: start_node.first_label().map(|s| s.to_string()),
+                    start_alias: start_node.name.map(|s| s.to_string()),
+                    rel_type: conn
+                        .relationship
+                        .labels
+                        .as_ref()
+                        .and_then(|l| l.first())
+                        .map(|s| s.to_string()),
+                    rel_alias: conn.relationship.name.map(|s| s.to_string()),
+                    direction: crate::query_planner::logical_expr::Direction::from(
+                        conn.relationship.direction.clone(),
+                    ),
+                    end_label: end_node.first_label().map(|s| s.to_string()),
+                    end_alias: end_node.name.map(|s| s.to_string()),
+                }
+            })
+            .collect(),
+        PathPattern::ShortestPath(inner) | PathPattern::AllShortestPaths(inner) => {
+            extract_connected_pattern_info(inner)
+        }
+        PathPattern::Node(_) => vec![],
     }
 }

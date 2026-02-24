@@ -381,8 +381,38 @@ pub enum AggregationType {
     Max,
 }
 
+/// Position of a correlation variable within the pattern hop chain
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PatternPosition {
+    /// Start node of hop N (0-indexed)
+    StartOfHop(usize),
+    /// End node of hop N (0-indexed)
+    EndOfHop(usize),
+}
+
+/// Info about a single correlation variable (outer scope variable referenced in pattern)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CorrelationVarInfo {
+    pub var_name: String,
+    pub label: String,
+    pub pattern_position: PatternPosition,
+}
+
+/// Serializable representation of a single hop in a connected pattern
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectedPatternInfo {
+    pub start_label: Option<String>,
+    pub start_alias: Option<String>,
+    pub rel_type: Option<String>,
+    pub rel_alias: Option<String>,
+    pub direction: Direction,
+    pub end_label: Option<String>,
+    pub end_alias: Option<String>,
+}
+
 /// Metadata for a pattern comprehension extracted during logical planning.
-/// Consumed at render time to generate CTE + LEFT JOIN SQL.
+/// Consumed at render time to generate CTE + LEFT JOIN SQL (simple cases)
+/// or inline correlated subqueries (multi-hop/multi-correlation cases).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PatternComprehensionMeta {
     /// Correlation variable from outer scope (e.g., "a" in `[(a)--() | 1]`)
@@ -401,6 +431,14 @@ pub struct PatternComprehensionMeta {
     pub target_label: Option<String>,
     /// Property name from the projection (e.g., "name" in `| b.name`)
     pub target_property: Option<String>,
+    /// ALL outer variables correlated from pattern (multi-correlation support)
+    pub correlation_vars: Vec<CorrelationVarInfo>,
+    /// Full multi-hop pattern chain (serializable form of ConnectedPattern)
+    pub pattern_hops: Vec<ConnectedPatternInfo>,
+    /// WHERE clause inside the pattern comprehension (serialized as LogicalExpr)
+    pub where_clause: Option<LogicalExpr>,
+    /// DFS order position for matching count(*) placeholders
+    pub position_index: usize,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

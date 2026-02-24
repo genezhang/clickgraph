@@ -483,6 +483,10 @@ fn rewrite_pattern_comprehensions<'a>(
                     result_alias: result_alias.clone(),
                     target_label,
                     target_property,
+                    correlation_vars: vec![],
+                    pattern_hops: vec![],
+                    where_clause: None,
+                    position_index: pc_counter,
                 },
             );
 
