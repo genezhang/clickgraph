@@ -6233,13 +6233,9 @@ fn clear_stale_joins_for_cte_aliases(
                             op.operands.iter().any(|operand| {
                                 if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) = operand {
                                     let alias = &pa.table_alias.0;
-                                    // Skip CTE table names (they're valid references)
-                                    // Also skip VLP CTE FROM alias ("t") and VLP CTE names ("vlp_*")
-                                    // which are render-time aliases not present in the logical plan tree
-                                    !alias.starts_with("with_")
-                                        && alias.as_str() != crate::query_planner::join_context::VLP_CTE_FROM_ALIAS
-                                        && !alias.starts_with("vlp_")
-                                        && !alias.starts_with("vt")
+                                    // Skip VLP/CTE aliases (they're valid render-time
+                                    // references not present in the logical plan tree)
+                                    !crate::query_planner::join_context::is_vlp_or_cte_alias(alias)
                                         && !live_aliases.contains(alias.as_str())
                                 } else {
                                     false

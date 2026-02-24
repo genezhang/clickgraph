@@ -81,6 +81,11 @@ async fn ldbc_short_2() {
     .await;
     assert!(!sql.is_empty());
     assert!(sql.contains("SELECT"));
+    // Regression: VLP column expansion must produce valid CTE references
+    assert!(
+        sql.contains("vlp_"),
+        "short-2 should generate VLP CTE for variable-length path"
+    );
 }
 
 #[tokio::test]
