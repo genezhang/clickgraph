@@ -2193,39 +2193,55 @@ impl JoinBuilder for LogicalPlan {
                         })
                 } else {
                     // Single hop: extract ID column from the node ViewScan
-                    let extracted = extract_id_column(&graph_rel.left);
-                    let col = extracted.unwrap_or_else(|| {
-                        // For CTE-referenced nodes, table name is a CTE name (e.g., "with_a_cte_0")
-                        // which won't be found in schema. Use the node label to find the actual ID column.
-                        if graph_rel.cte_references.contains_key(&graph_rel.left_connection) {
-                            let label = extract_node_label_from_viewscan(&graph_rel.left);
-                            if let Some(label) = &label {
-                                let label_table = super::cte_extraction::label_to_table_name(label);
-                                let col = table_to_id_column(&label_table);
-                                log::info!("🔍 start_id_col: CTE-referenced node '{}', using label '{}' -> table '{}' -> id_col '{}'",
-                                    graph_rel.left_connection, label, label_table, col);
-                                return col;
-                            }
+                    // CRITICAL: For CTE-backed nodes, the ViewScan's id_column may reflect
+                    // the CTE's primary node (e.g., tag's p3_tag_id), not this node's actual ID.
+                    // Check cte_references FIRST and use label-based resolution for CTE nodes.
+                    if graph_rel
+                        .cte_references
+                        .contains_key(&graph_rel.left_connection)
+                    {
+                        let label = extract_node_label_from_viewscan(&graph_rel.left);
+                        if let Some(label) = &label {
+                            let label_table = super::cte_extraction::label_to_table_name(label);
+                            let col = table_to_id_column(&label_table);
+                            log::info!("🔍 start_id_col: CTE-referenced node '{}', using label '{}' -> table '{}' -> id_col '{}'",
+                                graph_rel.left_connection, label, label_table, col);
+                            col
+                        } else {
+                            // No label found — UNWIND scalar or labelless CTE-backed node.
+                            // Use generic "id"; rewrite_join_conditions_for_cte_aliases will
+                            // map (alias, "id") → correct CTE column via property_mapping.
+                            log::info!("🔍 start_id_col: CTE-referenced node '{}' has no label, using generic 'id'",
+                                graph_rel.left_connection);
+                            "id".to_string()
                         }
-                        table_to_id_column(&start_table)
-                    });
-                    col
+                    } else {
+                        let extracted = extract_id_column(&graph_rel.left);
+                        extracted.unwrap_or_else(|| table_to_id_column(&start_table))
+                    }
                 };
                 let end_id_col = {
-                    let extracted = extract_id_column(&graph_rel.right);
-                    extracted.unwrap_or_else(|| {
-                        if graph_rel.cte_references.contains_key(&graph_rel.right_connection) {
-                            let label = extract_node_label_from_viewscan(&graph_rel.right);
-                            if let Some(label) = &label {
-                                let label_table = super::cte_extraction::label_to_table_name(label);
-                                let col = table_to_id_column(&label_table);
-                                log::info!("🔍 end_id_col: CTE-referenced node '{}', using label '{}' -> table '{}' -> id_col '{}'",
-                                    graph_rel.right_connection, label, label_table, col);
-                                return col;
-                            }
+                    if graph_rel
+                        .cte_references
+                        .contains_key(&graph_rel.right_connection)
+                    {
+                        let label = extract_node_label_from_viewscan(&graph_rel.right);
+                        if let Some(label) = &label {
+                            let label_table = super::cte_extraction::label_to_table_name(label);
+                            let col = table_to_id_column(&label_table);
+                            log::info!("🔍 end_id_col: CTE-referenced node '{}', using label '{}' -> table '{}' -> id_col '{}'",
+                                graph_rel.right_connection, label, label_table, col);
+                            col
+                        } else {
+                            // No label found — UNWIND scalar or labelless CTE-backed node.
+                            log::info!("🔍 end_id_col: CTE-referenced node '{}' has no label, using generic 'id'",
+                                graph_rel.right_connection);
+                            "id".to_string()
                         }
-                        table_to_id_column(&end_table)
-                    })
+                    } else {
+                        let extracted = extract_id_column(&graph_rel.right);
+                        extracted.unwrap_or_else(|| table_to_id_column(&end_table))
+                    }
                 };
 
                 // Get relationship columns
@@ -2357,27 +2373,20 @@ impl JoinBuilder for LogicalPlan {
                 log::info!("🔍 extract_joins: left_connection='{}', right_connection='{}', cte_references={:?}",
                            graph_rel.left_connection, graph_rel.right_connection, graph_rel.cte_references);
 
-                // Helper: Resolve table alias and column for CTE references
-                // When a node connection (e.g., "b") references a CTE, we need to use
-                // the CTE alias (e.g., "a_b") instead of the node alias ("b")
+                // Helper: Resolve table alias and column for CTE references.
+                // CTE-backed nodes use raw column names here (e.g., "id").
+                // rewrite_join_conditions_for_cte_aliases runs later and maps
+                // (alias, raw_column) → correct CTE column via property_mapping.
                 let resolve_cte_reference = |node_alias: &str, column: &str| -> (String, String) {
                     if let Some(cte_name) = graph_rel.cte_references.get(node_alias) {
-                        // The node alias IS the table alias for the CTE
-                        // e.g., CTE is: with_o_cte_0 AS (...) and FROM uses: FROM with_o_cte_0 AS o
-                        // So we reference columns as: o.o_user_id
-                        let cte_alias = node_alias;
-
-                        let cte_column = cte_column_name(node_alias, column);
-
                         log::info!(
-                            "🔧 Resolved CTE reference: {} -> CTE '{}' (alias '{}'), column '{}'",
+                            "🔧 CTE reference: {} -> CTE '{}', keeping raw column '{}'",
                             node_alias,
                             cte_name,
-                            cte_alias,
-                            cte_column
+                            column
                         );
-
-                        (cte_alias.to_string(), cte_column)
+                        // Pass through raw column; post-processing handles CTE column mapping
+                        (node_alias.to_string(), column.to_string())
                     } else {
                         // Not a CTE reference, use as-is
                         (node_alias.to_string(), column.to_string())
@@ -2536,6 +2545,123 @@ impl JoinBuilder for LogicalPlan {
 
                     log::info!(
                         "  ✅ Anchor-aware joins: {} → {} (reversed), {} total joins",
+                        graph_rel.alias,
+                        graph_rel.left_connection,
+                        joins.len()
+                    );
+                    return Ok(joins);
+                }
+
+                // CTE-REVERSED JOINS: When right_connection is CTE-backed and
+                // left_connection is NOT, the FROM was overridden to use the CTE
+                // (right_connection) in from_builder. Generate reversed join order:
+                //   JOIN 1: rel.to_id = right(CTE).id  (connect rel to FROM/CTE)
+                //   JOIN 2: left.id = rel.from_id       (connect raw left node to rel)
+                // rewrite_join_conditions_for_cte_aliases will fix CTE column names,
+                // and fix_orphan_table_aliases will fix table aliases.
+                let right_is_cte_backed = graph_rel
+                    .cte_references
+                    .contains_key(&graph_rel.right_connection);
+                let left_is_cte_backed = graph_rel
+                    .cte_references
+                    .contains_key(&graph_rel.left_connection);
+
+                if right_is_cte_backed && !left_is_cte_backed && !is_bidirectional {
+                    log::info!(
+                        "🔧 CTE-REVERSED JOINS: right '{}' is CTE-backed, left '{}' is raw",
+                        graph_rel.right_connection,
+                        graph_rel.left_connection
+                    );
+
+                    // JOIN 1: Relationship → CTE (right_connection = FROM)
+                    // rel.to_id = right_cte.id
+                    let rel_to_cte_conditions = build_identifier_join_conditions(
+                        &graph_rel.alias,
+                        &rel_cols.to_id,
+                        &graph_rel.right_connection,
+                        &end_node_id,
+                    );
+                    let rel_join_cond = wrap_conditions_and(rel_to_cte_conditions);
+
+                    // Edge constraints compilation
+                    let mut reversed_pre_filter = rel_pre_filter.clone();
+                    if let Some(labels_vec) = &graph_rel.labels {
+                        if let Some(rel_type) = labels_vec.first() {
+                            if let Some(rel_schema) = schema.get_relationships_schema_opt(rel_type)
+                            {
+                                if let Some(ref constraint_expr) = rel_schema.constraints {
+                                    if let (Some(sl), Some(el)) = (&start_label, &end_label) {
+                                        if let (Some(from_ns), Some(to_ns)) =
+                                            (schema.node_schema_opt(sl), schema.node_schema_opt(el))
+                                        {
+                                            match crate::graph_catalog::constraint_compiler::compile_constraint(
+                                                constraint_expr,
+                                                from_ns,
+                                                to_ns,
+                                                &graph_rel.left_connection,
+                                                &graph_rel.right_connection,
+                                            ) {
+                                                Ok(compiled_sql) => {
+                                                    let ce = RenderExpr::Raw(compiled_sql);
+                                                    reversed_pre_filter = match reversed_pre_filter {
+                                                        Some(existing) => Some(
+                                                            RenderExpr::OperatorApplicationExp(
+                                                                OperatorApplication {
+                                                                    operator: Operator::And,
+                                                                    operands: vec![existing, ce],
+                                                                },
+                                                            ),
+                                                        ),
+                                                        None => Some(ce),
+                                                    };
+                                                }
+                                                Err(e) => log::warn!(
+                                                    "⚠️ constraint compile error: {}",
+                                                    e
+                                                ),
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    joins.push(Join {
+                        table_name: rel_table.clone(),
+                        table_alias: graph_rel.alias.clone(),
+                        joining_on: vec![rel_join_cond],
+                        join_type: join_type.clone(),
+                        pre_filter: reversed_pre_filter,
+                        from_id_column: Some(rel_cols.from_id.to_string()),
+                        to_id_column: Some(rel_cols.to_id.to_string()),
+                        graph_rel: None,
+                    });
+
+                    // JOIN 2: Left node (raw table) → relationship
+                    // left.id = rel.from_id
+                    let left_to_rel_conditions = build_identifier_join_conditions(
+                        &graph_rel.left_connection,
+                        &start_node_id,
+                        &graph_rel.alias,
+                        &rel_cols.from_id,
+                    );
+                    let left_join_cond = wrap_conditions_and(left_to_rel_conditions);
+
+                    joins.push(Join {
+                        table_name: start_table.clone(),
+                        table_alias: graph_rel.left_connection.clone(),
+                        joining_on: vec![left_join_cond],
+                        join_type: join_type.clone(),
+                        pre_filter: left_node_pre_filter,
+                        from_id_column: None,
+                        to_id_column: None,
+                        graph_rel: None,
+                    });
+
+                    log::info!(
+                        "  ✅ CTE-reversed joins: {} → {} → {}, {} total",
+                        graph_rel.right_connection,
                         graph_rel.alias,
                         graph_rel.left_connection,
                         joins.len()

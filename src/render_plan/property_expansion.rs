@@ -524,17 +524,25 @@ pub fn expand_collect_to_group_array(
         })
         .collect();
 
-    // Create tuple(...) expression
-    let tuple_expr = LogicalExpr::ScalarFnCall(ScalarFnCall {
-        name: "tuple".to_string(),
-        args: prop_exprs,
-    });
-
-    // Wrap in groupArray
-    LogicalExpr::AggregateFnCall(AggregateFnCall {
-        name: "groupArray".to_string(),
-        args: vec![tuple_expr],
-    })
+    if prop_exprs.len() == 1 {
+        // Single property: groupArray(prop) — no tuple needed.
+        // Avoids Array(Tuple(T)) vs Array(T) type mismatch when the collected
+        // array is later concatenated with another groupArray(prop) result.
+        LogicalExpr::AggregateFnCall(AggregateFnCall {
+            name: "groupArray".to_string(),
+            args: prop_exprs,
+        })
+    } else {
+        // Multiple properties: groupArray(tuple(prop1, prop2, ...))
+        let tuple_expr = LogicalExpr::ScalarFnCall(ScalarFnCall {
+            name: "tuple".to_string(),
+            args: prop_exprs,
+        });
+        LogicalExpr::AggregateFnCall(AggregateFnCall {
+            name: "groupArray".to_string(),
+            args: vec![tuple_expr],
+        })
+    }
 }
 
 #[cfg(test)]
@@ -853,6 +861,27 @@ mod tests {
             } else {
                 panic!("Expected tuple ScalarFnCall");
             }
+        } else {
+            panic!("Expected groupArray AggregateFnCall");
+        }
+    }
+
+    #[test]
+    fn test_expand_collect_to_group_array_single_property_no_tuple() {
+        let properties = vec![("id".to_string(), "id".to_string())];
+
+        let expr = expand_collect_to_group_array("f", properties, None);
+
+        // Single property: should be groupArray(prop) without tuple wrapper
+        if let LogicalExpr::AggregateFnCall(agg) = &expr {
+            assert_eq!(agg.name, "groupArray");
+            assert_eq!(agg.args.len(), 1);
+            // First arg should be PropertyAccessExp, NOT a tuple ScalarFnCall
+            assert!(
+                matches!(&agg.args[0], LogicalExpr::PropertyAccessExp(_)),
+                "Expected PropertyAccessExp for single-property collect, got {:?}",
+                agg.args[0]
+            );
         } else {
             panic!("Expected groupArray AggregateFnCall");
         }

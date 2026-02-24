@@ -3251,6 +3251,16 @@ fn rewrite_join_conditions_for_cte_aliases(
             }
         }
     }
+
+    // CRITICAL: Also rewrite UNION branches' joins and FROM
+    // BidirectionalUnion creates UNION branches that are rendered independently.
+    // Their join conditions reference base table columns (e.g., person.id) which
+    // need CTE column rewriting just like the main plan's joins.
+    if let super::UnionItems(Some(ref mut union)) = plan.union {
+        for branch in &mut union.input {
+            rewrite_join_conditions_for_cte_aliases(branch, cte_references, cte_schemas);
+        }
+    }
 }
 
 /// Rewrite all occurrences of `old_alias` → `new_alias` in PropertyAccessExp table_alias
@@ -5501,6 +5511,14 @@ pub(crate) fn expand_table_alias_to_group_by_id_only(
                     table_alias: TableAlias(from_alias.to_string()),
                     column: PropertyValue::Column(id_col.clone()),
                 })];
+            } else if meta.column_names.contains(&alias.to_string()) {
+                // Fallback: CTE has a direct column matching alias (e.g. UNWIND scalar)
+                let from_alias = extract_from_alias_from_cte_name(cte_name);
+                log::info!("🔧 expand_table_alias_to_group_by_id_only: Using bare column '{}' from CTE '{}' for alias '{}', FROM alias '{}'", alias, cte_name, alias, from_alias);
+                return vec![RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(from_alias.to_string()),
+                    column: PropertyValue::Column(alias.to_string()),
+                })];
             } else {
                 log::warn!("⚠️ expand_table_alias_to_group_by_id_only: CTE '{}' does not have ID mapping for alias '{}'", cte_name, alias);
             }
@@ -7639,16 +7657,38 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                 // Extract pattern comprehension aliases to skip in WITH item projection
                 // (their results come from CTE LEFT JOINs, not from regular WITH item processing)
-                let pc_result_aliases: std::collections::HashSet<String> = with_plans
+                // NOTE: Only skip items for LEGACY CTE+JOIN path. For the new correlated subquery
+                // path (pattern_hops populated), keep items so count(*) can be replaced inline.
+                let (pc_result_aliases, pc_correlated_aliases): (
+                    std::collections::HashSet<String>,
+                    std::collections::HashSet<String>,
+                ) = with_plans
                     .first()
                     .and_then(|plan| match plan {
                         LogicalPlan::WithClause(wc) if !wc.pattern_comprehensions.is_empty() => {
-                            Some(
-                                wc.pattern_comprehensions
+                            // If any PC has pattern_hops, use correlated subquery path → don't skip
+                            let has_pattern_hops = wc
+                                .pattern_comprehensions
+                                .iter()
+                                .any(|pc| !pc.pattern_hops.is_empty());
+                            if has_pattern_hops {
+                                // Correlated subquery path: collect aliases that contain count(*)
+                                // placeholders — these will be replaced with scalar subqueries,
+                                // so they should NOT trigger has_aggregation.
+                                let correlated: std::collections::HashSet<String> = wc
+                                    .pattern_comprehensions
                                     .iter()
                                     .map(|pc| pc.result_alias.clone())
-                                    .collect(),
-                            )
+                                    .collect();
+                                Some((std::collections::HashSet::new(), correlated))
+                            } else {
+                                let legacy: std::collections::HashSet<String> = wc
+                                    .pattern_comprehensions
+                                    .iter()
+                                    .map(|pc| pc.result_alias.clone())
+                                    .collect();
+                                Some((legacy, std::collections::HashSet::new()))
+                            }
                         }
                         _ => None,
                     })
@@ -7700,6 +7740,14 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     });
 
                     let has_aggregation = items.iter().any(|item| {
+                        // Skip items that are pattern comprehension correlated subquery
+                        // placeholders (count(*)) — they will be replaced with scalar
+                        // subqueries and should not trigger aggregate mode.
+                        if let Some(ref alias) = item.col_alias {
+                            if pc_correlated_aliases.contains(&alias.0) {
+                                return false;
+                            }
+                        }
                         /// Recursively check if an expression contains an aggregate function
                         fn contains_aggregate(
                             expr: &crate::query_planner::logical_expr::LogicalExpr,
@@ -8649,154 +8697,370 @@ pub(crate) fn build_chained_with_match_cte_plan(
             // These need to be hoisted to the top level before the WITH CTE
             hoist_nested_ctes(&mut with_cte_render, &mut all_ctes);
 
-            // ===== Pattern Comprehension CTE + LEFT JOIN generation =====
-            // If this WithClause has pattern comprehensions, generate CTE(s) for them
-            // and add LEFT JOIN(s) to the WITH CTE render plan.
+            // ===== Pattern Comprehension: Correlated Subquery or CTE+LEFT JOIN =====
+            // If this WithClause has pattern comprehensions, handle them.
+            // NEW: If pattern_hops are populated (multi-hop/multi-correlation patterns),
+            // generate inline correlated subqueries. Otherwise fall back to CTE+LEFT JOIN.
             if !pattern_comprehensions.is_empty() {
-                log::info!(
-                    "🔧 Generating {} pattern comprehension CTE(s) for WITH alias '{}'",
-                    pattern_comprehensions.len(),
-                    with_alias
-                );
+                // Check if any PC has full pattern info for correlated subquery approach
+                let has_pattern_hops = pattern_comprehensions
+                    .iter()
+                    .any(|pc| !pc.pattern_hops.is_empty());
 
-                for (pc_idx, pc_meta) in pattern_comprehensions.iter().enumerate() {
-                    let pc_cte_name = format!("pattern_comp_{}_{}", with_alias, pc_idx);
+                if has_pattern_hops {
+                    // ===== NEW: Correlated subquery approach =====
+                    log::info!(
+                        "🔧 Generating {} correlated subquery pattern comprehension(s) for WITH alias '{}'",
+                        pattern_comprehensions.len(),
+                        with_alias
+                    );
 
-                    // Build raw SQL for the pattern comprehension CTE
-                    if let Some(pc_sql) = build_pattern_comprehension_sql(
-                        &pc_meta.correlation_label,
-                        &pc_meta.direction,
-                        &pc_meta.rel_types,
-                        &pc_meta.agg_type,
-                        schema,
-                        pc_meta.target_label.as_deref(),
-                        pc_meta.target_property.as_deref(),
+                    // Generate and replace correlated subqueries.
+                    // For UNION plans (BidirectionalUnion), each branch has different
+                    // FROM/JOIN structure, so we need per-branch column maps and subqueries.
+                    fn generate_and_replace_pc_subqueries(
+                        plan: &mut RenderPlan,
+                        pattern_comprehensions: &[crate::query_planner::logical_plan::PatternComprehensionMeta],
+                        schema: &GraphSchema,
+                        cte_name: &str,
                     ) {
-                        log::info!(
-                            "🔧 Pattern comp CTE '{}': SQL = {}",
-                            pc_cte_name,
-                            &pc_sql[..pc_sql.len().min(200)]
-                        );
-
-                        // Add the pattern comp CTE to the CTE list (before the WITH CTE)
-                        let pc_cte =
-                            Cte::new(pc_cte_name.clone(), CteContent::RawSql(pc_sql), false);
-                        all_ctes.push(pc_cte);
-
-                        // Find the ID column for the correlation variable in the WITH CTE's FROM table
-                        // For denormalized Union wrapped as subquery, the JOIN references
-                        // __union alias with renamed columns instead of the original table alias
-                        use crate::graph_catalog::expression_parser::PropertyValue;
-                        use crate::render_plan::render_expr::{
-                            ColumnAlias, Operator, PropertyAccess, RenderExpr,
-                            TableAlias as RenderTableAlias,
-                        };
-
-                        let lhs_expr = if with_cte_render.union.0.is_some()
-                            && with_cte_render.from.0.is_none()
-                        {
-                            // Denormalized Union: use __union alias with prefixed column name
-                            let id_column = find_node_id_column_from_schema(
-                                &pc_meta.correlation_var,
-                                &pc_meta.correlation_label,
-                                schema,
-                            );
-                            let node_alias = with_plans
-                                .first()
-                                .and_then(|p| match p {
-                                    LogicalPlan::WithClause(wc) => {
-                                        wc.exported_aliases.first().cloned()
-                                    }
-                                    _ => None,
-                                })
-                                .unwrap_or_else(|| pc_meta.correlation_var.clone());
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: RenderTableAlias("__union".to_string()),
-                                column: PropertyValue::Column(cte_column_name(
-                                    &node_alias,
-                                    &id_column,
-                                )),
-                            })
-                        } else {
-                            // Normal case: use composite-aware helper
-                            build_node_id_expr_for_join(
-                                &pc_meta.correlation_var,
-                                &pc_meta.correlation_label,
-                                schema,
-                            )
-                        };
-
-                        // Add LEFT JOIN to the WITH CTE render plan
-                        let pc_alias = format!("__pc_{}", pc_idx);
-
-                        let on_clause = crate::render_plan::render_expr::OperatorApplication {
-                            operator: Operator::Equal,
-                            operands: vec![
-                                lhs_expr,
-                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: RenderTableAlias(pc_alias.clone()),
-                                    column: PropertyValue::Column("node_id".to_string()),
-                                }),
-                            ],
-                        };
-
-                        let join = Join {
-                            table_name: pc_cte_name.clone(),
-                            table_alias: pc_alias.clone(),
-                            joining_on: vec![on_clause],
-                            join_type: JoinType::Left,
-                            pre_filter: None,
-                            from_id_column: None,
-                            to_id_column: None,
-                            graph_rel: None,
-                        };
-                        with_cte_render.joins.0.push(join);
-
-                        // For denormalized Union: add __union.* to pass through all UNION columns
-                        if with_cte_render.union.0.is_some()
-                            && with_cte_render.from.0.is_none()
-                            && with_cte_render.select.items.is_empty()
-                        {
-                            with_cte_render.select.items.push(SelectItem {
-                                expression: RenderExpr::Column(
-                                    crate::render_plan::render_expr::Column(PropertyValue::Column(
-                                        "__union.*".to_string(),
-                                    )),
-                                ),
-                                col_alias: None,
-                            });
+                        if let UnionItems(Some(ref mut union)) = plan.union {
+                            // UNION plan: process each branch independently
+                            for (bi, branch) in union.input.iter_mut().enumerate() {
+                                generate_and_replace_pc_subqueries(
+                                    branch,
+                                    pattern_comprehensions,
+                                    schema,
+                                    cte_name,
+                                );
+                            }
                         }
 
-                        // Add SELECT item for the aggregation result
-                        let result_col_alias = pc_meta.result_alias.clone();
-                        let result_expr = RenderExpr::ScalarFnCall(
-                            crate::render_plan::render_expr::ScalarFnCall {
+                        // Try replacing in this plan's own select items
+                        if !plan.select.items.is_empty() {
+                            let cte_col_map = build_cte_column_map(plan, cte_name);
+                            // Also include direct JOINs as available references
+                            // (e.g., friend from Person JOIN is directly available as friend.id)
+                            let mut branch_col_map = cte_col_map;
+                            for join in &plan.joins.0 {
+                                let join_alias = &join.table_alias;
+                                branch_col_map
+                                    .entry((join_alias.clone(), "id".to_string()))
+                                    .or_insert_with(|| format!("{}.id", join_alias));
+                            }
+                            // Scan FROM's ViewScan property_mapping for CTE-backed columns.
+                            // When FROM is a CTE, the property_mapping values contain CTE column
+                            // names in p{N}_{alias}_{property} format that we can parse.
+                            if let FromTableItem(Some(ref from)) = plan.from {
+                                if let Some(ref from_alias) = from.alias {
+                                    if let LogicalPlan::ViewScan(ref scan) = from.source.as_ref() {
+                                        for (_prop, col_value) in &scan.property_mapping {
+                                            if let crate::graph_catalog::expression_parser::PropertyValue::Column(ref col_name) = col_value {
+                                                if let Some((parsed_alias, parsed_property)) =
+                                                    parse_cte_column(col_name)
+                                                {
+                                                    let qualified =
+                                                        format!("{}.{}", from_alias, col_name);
+                                                    branch_col_map
+                                                        .entry((parsed_alias, parsed_property))
+                                                        .or_insert(qualified);
+                                                }
+                                                // Also add bare column references (non-p{N} like "person", "score")
+                                                else {
+                                                    let qualified =
+                                                        format!("{}.\"{}\"", from_alias, col_name);
+                                                    branch_col_map
+                                                        .entry((col_name.clone(), "id".to_string()))
+                                                        .or_insert(qualified.clone());
+                                                    branch_col_map
+                                                        .entry((col_name.clone(), col_name.clone()))
+                                                        .or_insert(qualified);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            log::info!(
+                                "🔧 Branch column map keys: {:?}",
+                                branch_col_map.keys().collect::<Vec<_>>()
+                            );
+
+                            let mut pc_subqueries: Vec<String> = Vec::new();
+                            for pc_meta in pattern_comprehensions {
+                                if let Some(subquery_sql) =
+                                    generate_pattern_comprehension_correlated_subquery(
+                                        pc_meta,
+                                        schema,
+                                        &branch_col_map,
+                                    )
+                                {
+                                    log::info!(
+                                        "🔧 PC correlated subquery: {}",
+                                        &subquery_sql[..subquery_sql.len().min(200)]
+                                    );
+                                    pc_subqueries.push(subquery_sql);
+                                } else {
+                                    log::warn!(
+                                        "⚠️ Could not generate correlated subquery for PC — falling back to 0"
+                                    );
+                                    pc_subqueries.push("0".to_string());
+                                }
+                            }
+                            replace_count_star_placeholders_in_select(
+                                &mut plan.select.items,
+                                &pc_subqueries,
+                            );
+                        }
+                    }
+                    generate_and_replace_pc_subqueries(
+                        &mut with_cte_render,
+                        &pattern_comprehensions,
+                        schema,
+                        &cte_name,
+                    );
+
+                    // ClickHouse limitation: correlated subqueries cannot exist inside
+                    // UNION ALL branches (error: "Cannot clone ... plan step").
+                    // Fix: split each UNION branch into its own CTE, then the main CTE
+                    // becomes a simple UNION ALL of the branch CTEs (no correlated subqueries
+                    // inside UNION branches).
+                    fn select_has_raw_subquery(items: &[SelectItem]) -> bool {
+                        fn expr_has_raw_subquery(expr: &RenderExpr) -> bool {
+                            match expr {
+                                RenderExpr::Raw(s) => s.contains("(SELECT"),
+                                RenderExpr::OperatorApplicationExp(op) => {
+                                    op.operands.iter().any(expr_has_raw_subquery)
+                                }
+                                RenderExpr::ScalarFnCall(f) => {
+                                    f.args.iter().any(expr_has_raw_subquery)
+                                }
+                                _ => false,
+                            }
+                        }
+                        items
+                            .iter()
+                            .any(|item| expr_has_raw_subquery(&item.expression))
+                    }
+
+                    if with_cte_render.union.0.is_some()
+                        && select_has_raw_subquery(&with_cte_render.select.items)
+                    {
+                        log::info!(
+                            "🔧 Splitting UNION + correlated subquery CTE '{}' into branch CTEs",
+                            cte_name
+                        );
+
+                        // Build branch 0 (first branch) from the main plan's FROM/JOINs.
+                        // Move fields from with_cte_render into a new branch plan.
+                        let branch0_name = format!("{}_br0", cte_name);
+                        let branch0_plan = {
+                            let mut bp = with_cte_render.clone();
+                            bp.union = UnionItems(None);
+                            bp.group_by = GroupByExpressions(vec![]);
+                            bp.order_by = OrderByItems(vec![]);
+                            bp.limit = LimitItem(None);
+                            bp.skip = SkipItem(None);
+                            bp.having_clause = None;
+                            bp.ctes = CteItems(vec![]);
+                            bp
+                        };
+                        all_ctes.push(Cte::new(
+                            branch0_name.clone(),
+                            CteContent::Structured(Box::new(branch0_plan)),
+                            false,
+                        ));
+
+                        // Build branch CTEs from UNION branches
+                        let mut branch_cte_names = vec![branch0_name];
+                        if let UnionItems(Some(union)) =
+                            std::mem::replace(&mut with_cte_render.union, UnionItems(None))
+                        {
+                            for (bi, mut branch) in union.input.into_iter().enumerate() {
+                                let br_name = format!("{}_br{}", cte_name, bi + 1);
+                                // CRITICAL: Override branch SELECT with the main plan's
+                                // SELECT (which has the correlated subqueries from PC
+                                // replacement). UNION branches may have different SELECT
+                                // items from BidirectionalUnion expansion.
+                                branch.select = with_cte_render.select.clone();
+                                all_ctes.push(Cte::new(
+                                    br_name.clone(),
+                                    CteContent::Structured(Box::new(branch)),
+                                    false,
+                                ));
+                                branch_cte_names.push(br_name);
+                            }
+                        }
+
+                        // Rebuild the main CTE as:
+                        //   SELECT * FROM branch0 UNION ALL SELECT * FROM branch1
+                        // Use RawSql to keep it simple and avoid ClickHouse inline subquery
+                        // limitation.
+                        let union_sql = branch_cte_names
+                            .iter()
+                            .map(|name| format!("SELECT * FROM {}", name))
+                            .collect::<Vec<_>>()
+                            .join("\nUNION ALL\n");
+                        // Store the raw UNION SQL so it's picked up at CTE creation time.
+                        with_cte_render.select = SelectItems {
+                            items: vec![],
+                            distinct: false,
+                        };
+                        with_cte_render.from = FromTableItem(None);
+                        with_cte_render.joins = JoinItems(vec![]);
+                        with_cte_render.filters = FilterItems(None);
+                        with_cte_render.union = UnionItems(None);
+                        // Store the UNION SQL in a tagged CTE so the downstream CTE builder
+                        // can emit RawSql instead of rendering the empty Structured plan.
+                        with_cte_render.ctes = CteItems(vec![Cte::new(
+                            "__pc_union_sql__".to_string(),
+                            CteContent::RawSql(union_sql),
+                            false,
+                        )]);
+
+                        log::info!(
+                            "✅ Split into {} branch CTEs for '{}'",
+                            branch_cte_names.len(),
+                            cte_name
+                        );
+                    }
+
+                    // NOTE: When has_aggregation was false (because PC count(*) placeholders
+                    // were excluded), no GROUP BY or anyLast() wrapping was applied, so nothing
+                    // to clean up. The correlated subqueries produce scalar values directly.
+
+                    log::info!(
+                        "✅ Pattern comprehension correlated subqueries applied for '{}'",
+                        with_alias
+                    );
+                } else {
+                    // ===== LEGACY: CTE + LEFT JOIN approach (simple single-hop, single-correlation) =====
+                    log::info!(
+                        "🔧 Generating {} pattern comprehension CTE(s) for WITH alias '{}' (legacy path)",
+                        pattern_comprehensions.len(),
+                        with_alias
+                    );
+
+                    for (pc_idx, pc_meta) in pattern_comprehensions.iter().enumerate() {
+                        let pc_cte_name = format!("pattern_comp_{}_{}", with_alias, pc_idx);
+
+                        if let Some(pc_sql) = build_pattern_comprehension_sql(
+                            &pc_meta.correlation_label,
+                            &pc_meta.direction,
+                            &pc_meta.rel_types,
+                            &pc_meta.agg_type,
+                            schema,
+                            pc_meta.target_label.as_deref(),
+                            pc_meta.target_property.as_deref(),
+                        ) {
+                            log::info!(
+                                "🔧 Pattern comp CTE '{}': SQL = {}",
+                                pc_cte_name,
+                                &pc_sql[..pc_sql.len().min(200)]
+                            );
+
+                            let pc_cte =
+                                Cte::new(pc_cte_name.clone(), CteContent::RawSql(pc_sql), false);
+                            all_ctes.push(pc_cte);
+
+                            use crate::graph_catalog::expression_parser::PropertyValue;
+
+                            let lhs_expr = if with_cte_render.union.0.is_some()
+                                && with_cte_render.from.0.is_none()
+                            {
+                                let id_column = find_node_id_column_from_schema(
+                                    &pc_meta.correlation_var,
+                                    &pc_meta.correlation_label,
+                                    schema,
+                                );
+                                let node_alias = with_plans
+                                    .first()
+                                    .and_then(|p| match p {
+                                        LogicalPlan::WithClause(wc) => {
+                                            wc.exported_aliases.first().cloned()
+                                        }
+                                        _ => None,
+                                    })
+                                    .unwrap_or_else(|| pc_meta.correlation_var.clone());
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias("__union".to_string()),
+                                    column: PropertyValue::Column(cte_column_name(
+                                        &node_alias,
+                                        &id_column,
+                                    )),
+                                })
+                            } else {
+                                build_node_id_expr_for_join(
+                                    &pc_meta.correlation_var,
+                                    &pc_meta.correlation_label,
+                                    schema,
+                                )
+                            };
+
+                            let pc_alias = format!("__pc_{}", pc_idx);
+
+                            let on_clause = OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    lhs_expr,
+                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(pc_alias.clone()),
+                                        column: PropertyValue::Column("node_id".to_string()),
+                                    }),
+                                ],
+                            };
+
+                            let join = Join {
+                                table_name: pc_cte_name.clone(),
+                                table_alias: pc_alias.clone(),
+                                joining_on: vec![on_clause],
+                                join_type: JoinType::Left,
+                                pre_filter: None,
+                                from_id_column: None,
+                                to_id_column: None,
+                                graph_rel: None,
+                            };
+                            with_cte_render.joins.0.push(join);
+
+                            if with_cte_render.union.0.is_some()
+                                && with_cte_render.from.0.is_none()
+                                && with_cte_render.select.items.is_empty()
+                            {
+                                with_cte_render.select.items.push(SelectItem {
+                                    expression: RenderExpr::Column(Column(PropertyValue::Column(
+                                        "__union.*".to_string(),
+                                    ))),
+                                    col_alias: None,
+                                });
+                            }
+
+                            let result_col_alias = pc_meta.result_alias.clone();
+                            let result_expr = RenderExpr::ScalarFnCall(ScalarFnCall {
                                 name: "coalesce".to_string(),
                                 args: vec![
                                     RenderExpr::PropertyAccessExp(PropertyAccess {
-                                        table_alias: RenderTableAlias(pc_alias.clone()),
+                                        table_alias: TableAlias(pc_alias.clone()),
                                         column: PropertyValue::Column("result".to_string()),
                                     }),
-                                    RenderExpr::Literal(
-                                        crate::render_plan::render_expr::Literal::Integer(0),
-                                    ),
+                                    RenderExpr::Literal(Literal::Integer(0)),
                                 ],
-                            },
-                        );
-                        with_cte_render.select.items.push(SelectItem {
-                            expression: result_expr,
-                            col_alias: Some(ColumnAlias(result_col_alias)),
-                        });
+                            });
+                            with_cte_render.select.items.push(SelectItem {
+                                expression: result_expr,
+                                col_alias: Some(ColumnAlias(result_col_alias)),
+                            });
 
-                        log::info!(
-                            "✅ Added pattern comp CTE '{}' with LEFT JOIN to WITH CTE",
-                            pc_cte_name
-                        );
-                    } else {
-                        log::debug!(
-                            "⚠️ Could not generate pattern comp SQL for label '{}' — no matching edges in schema",
-                            pc_meta.correlation_label
-                        );
+                            log::info!(
+                                "✅ Added pattern comp CTE '{}' with LEFT JOIN to WITH CTE",
+                                pc_cte_name
+                            );
+                        } else {
+                            log::debug!(
+                                "⚠️ Could not generate pattern comp SQL for label '{}' — no matching edges in schema",
+                                pc_meta.correlation_label
+                            );
+                        }
                     }
                 }
             }
@@ -8944,12 +9208,25 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 })
                 .unwrap_or_default();
 
-            // Create the CTE with column metadata
-            let mut with_cte = Cte::new(
-                cte_name.clone(),
-                CteContent::Structured(Box::new(with_cte_render.clone())),
-                false,
-            );
+            // Create the CTE with column metadata.
+            // If the UNION + correlated subquery split happened, use RawSql content.
+            let pc_union_sql = with_cte_render
+                .ctes
+                .0
+                .iter()
+                .find(|c| c.cte_name == "__pc_union_sql__")
+                .and_then(|c| match &c.content {
+                    CteContent::RawSql(sql) => Some(sql.clone()),
+                    _ => None,
+                });
+            let cte_content = if let Some(union_sql) = pc_union_sql {
+                // Clear the marker CTE
+                with_cte_render.ctes = CteItems(vec![]);
+                CteContent::RawSql(union_sql)
+            } else {
+                CteContent::Structured(Box::new(with_cte_render.clone()))
+            };
+            let mut with_cte = Cte::new(cte_name.clone(), cte_content, false);
             with_cte.columns = cte_columns;
             with_cte.with_exported_aliases = original_exported_aliases.clone();
 
@@ -8994,6 +9271,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 cte_name, alias, prev_id, prev_cte_name
                             );
                             alias_to_id_column.insert(alias.clone(), prev_id.clone());
+                        } else if meta.column_names.contains(alias) {
+                            // Fallback: CTE has a direct column matching alias (e.g. UNWIND scalar)
+                            log::info!(
+                                "📊 WITH CTE '{}': ID for alias '{}' -> '{}' (bare column from CTE '{}')",
+                                cte_name, alias, alias, prev_cte_name
+                            );
+                            alias_to_id_column.insert(alias.clone(), alias.clone());
                         }
                     }
                 }
@@ -9024,6 +9308,21 @@ pub(crate) fn build_chained_with_match_cte_plan(
             );
             for ((alias, property), cte_column) in property_mapping.iter() {
                 log::debug!("🔧   AFTER: ({}, {}) → {}", alias, property, cte_column);
+            }
+
+            // Cross-reference: for bare column aliases (e.g. UNWIND scalar `person`),
+            // add (alias, "id") → alias so `person.id` resolves to the "person" column
+            for (alias, id_col) in &alias_to_id_column {
+                if id_col == alias {
+                    property_mapping
+                        .entry((alias.clone(), "id".to_string()))
+                        .or_insert_with(|| alias.clone());
+                    log::info!(
+                        "🔧 property_mapping cross-ref: ({}, id) → {} (bare column alias)",
+                        alias,
+                        alias
+                    );
+                }
             }
 
             log::debug!(
@@ -12521,6 +12820,758 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
         }
 
         other => Ok(other.clone()),
+    }
+}
+
+/// Build a column map from a WITH CTE render plan's SELECT items.
+/// Maps (cypher_alias, cypher_property) → "cte_from_alias.cte_column_name"
+/// Used to resolve outer-scope variable references inside correlated subqueries.
+fn build_cte_column_map(
+    render_plan: &RenderPlan,
+    cte_from_alias: &str,
+) -> HashMap<(String, String), String> {
+    let mut map = HashMap::new();
+
+    // Use the actual FROM alias for column qualification, not the CTE name.
+    // Within a CTE body, correlated subqueries reference the FROM table alias
+    // (e.g., person_tag.p3_tag_id), not the CTE being defined
+    // (e.g., with_person_score_tag_cte_1.p3_tag_id).
+    let effective_alias = if let FromTableItem(Some(ref from)) = render_plan.from {
+        from.alias.as_deref().unwrap_or(cte_from_alias).to_string()
+    } else {
+        cte_from_alias.to_string()
+    };
+
+    // Determine the source of SELECT items to scan
+    let select_items_list: Vec<&Vec<SelectItem>> =
+        if let UnionItems(Some(ref union)) = render_plan.union {
+            // For UNION, scan all branches
+            union.input.iter().map(|b| &b.select.items).collect()
+        } else {
+            vec![&render_plan.select.items]
+        };
+
+    for select_items in &select_items_list {
+        for item in *select_items {
+            if let Some(ref col_alias) = item.col_alias {
+                let cte_col_name = &col_alias.0;
+                if let Some((parsed_alias, parsed_property)) = parse_cte_column(cte_col_name) {
+                    let qualified = format!("{}.{}", effective_alias, cte_col_name);
+                    map.insert((parsed_alias, parsed_property), qualified);
+                } else {
+                    // Non-p{N} columns: treat the alias itself as a bare variable
+                    let qualified = format!("{}.\"{}\"", effective_alias, cte_col_name);
+                    map.insert((cte_col_name.clone(), "id".to_string()), qualified.clone());
+                    map.insert((cte_col_name.clone(), cte_col_name.clone()), qualified);
+                }
+            }
+        }
+    }
+
+    // Also scan FROM table to find CTE-backed columns
+    // For UNION branches, scan each branch's FROM
+    let from_tables: Vec<&RenderPlan> = if let UnionItems(Some(ref union)) = render_plan.union {
+        union.input.iter().collect()
+    } else {
+        vec![render_plan]
+    };
+
+    for branch in &from_tables {
+        if let FromTableItem(Some(ref from)) = branch.from {
+            if let Some(ref from_alias) = from.alias {
+                // If FROM is a CTE reference, scan its SELECT items for p{N} columns
+                // The from_alias is what's used in the SQL body
+                for item in &branch.select.items {
+                    if let Some(ref col_alias) = item.col_alias {
+                        let cte_col_name = &col_alias.0;
+                        if let Some((parsed_alias, parsed_property)) =
+                            parse_cte_column(cte_col_name)
+                        {
+                            // Map the parsed alias/property to the FROM alias qualified reference
+                            let qualified = format!("{}.{}", from_alias, cte_col_name);
+                            map.entry((parsed_alias, parsed_property))
+                                .or_insert(qualified);
+                        }
+                    }
+                    // Also look for PropertyAccess expressions that reference FROM alias
+                    scan_expr_for_aliases(&item.expression, from_alias, &mut map);
+                }
+
+                // Scan JOINs for table aliases (e.g., friend from Person table)
+                for join in &branch.joins.0 {
+                    let join_alias = &join.table_alias;
+                    // Map join alias to itself (it's directly available in scope)
+                    map.entry((join_alias.clone(), "id".to_string()))
+                        .or_insert_with(|| format!("{}.id", join_alias));
+                }
+            }
+        }
+    }
+
+    map
+}
+
+/// Scan a RenderExpr for PropertyAccess patterns that reference a FROM alias,
+/// and add them to the column map for correlated subquery resolution.
+fn scan_expr_for_aliases(
+    expr: &RenderExpr,
+    from_alias: &str,
+    map: &mut HashMap<(String, String), String>,
+) {
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => {
+            if pa.table_alias.0 == from_alias {
+                if let crate::graph_catalog::expression_parser::PropertyValue::Column(ref col) =
+                    pa.column
+                {
+                    // This is a reference like `from_alias.some_cte_column`
+                    if let Some((parsed_alias, parsed_property)) = parse_cte_column(col) {
+                        let qualified = format!("{}.{}", from_alias, col);
+                        map.entry((parsed_alias, parsed_property))
+                            .or_insert(qualified);
+                    }
+                }
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in &op.operands {
+                scan_expr_for_aliases(operand, from_alias, map);
+            }
+        }
+        RenderExpr::ScalarFnCall(f) => {
+            for arg in &f.args {
+                scan_expr_for_aliases(arg, from_alias, map);
+            }
+        }
+        RenderExpr::AggregateFnCall(a) => {
+            for arg in &a.args {
+                scan_expr_for_aliases(arg, from_alias, map);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Generate a correlated subquery SQL string for a single pattern comprehension.
+///
+/// For a pattern like `(tag)<-[:HAS_INTEREST]-(person)`:
+/// ```sql
+/// (SELECT COUNT(*) FROM ldbc.Person_hasInterest_Tag
+///  WHERE TagId = cte_alias.p3_tag_id AND PersonId = cte_alias.p6_person_id)
+/// ```
+///
+/// For multi-hop like `(tag)<-[:HAS_TAG]-(message:Message)-[:HAS_CREATOR]->(person)`:
+/// ```sql
+/// (SELECT COUNT(*) FROM ldbc.Message_hasTag_Tag AS __r0
+///  INNER JOIN ldbc.Message_hasCreator_Person AS __r1 ON __r0.MessageId = __r1.MessageId
+///  INNER JOIN ldbc.Message AS __m0 ON __m0.id = __r0.MessageId
+///  WHERE __r0.TagId = cte_alias.p3_tag_id AND __r1.PersonId = cte_alias.p6_person_id
+///    AND $startDate < __m0.creationDate AND __m0.creationDate < $endDate)
+/// ```
+fn generate_pattern_comprehension_correlated_subquery(
+    pc_meta: &crate::query_planner::logical_plan::PatternComprehensionMeta,
+    schema: &GraphSchema,
+    cte_column_map: &HashMap<(String, String), String>,
+) -> Option<String> {
+    use crate::query_planner::logical_plan::{ConnectedPatternInfo, PatternPosition};
+
+    if pc_meta.pattern_hops.is_empty() {
+        return None;
+    }
+
+    log::info!(
+        "🔧 generate_pc_correlated_subquery: {} hops, {} correlation vars, where={:?}",
+        pc_meta.pattern_hops.len(),
+        pc_meta.correlation_vars.len(),
+        pc_meta.where_clause.is_some()
+    );
+
+    // For each hop, find the matching edge table in schema
+    let mut edge_tables: Vec<(String, String, &ConnectedPatternInfo)> = Vec::new(); // (db_table, alias, hop_info)
+
+    for (hop_idx, hop) in pc_meta.pattern_hops.iter().enumerate() {
+        let rel_alias = format!("__r{}", hop_idx);
+
+        // Determine from/to labels based on direction
+        let (from_label, to_label) = match hop.direction {
+            crate::query_planner::logical_expr::Direction::Incoming => {
+                // Incoming: (end)<-[:REL]-(start) → in schema terms from=start, to=end
+                // But pattern writes it as (end_alias)<-[:REL]-(start_alias)
+                // The start_label in AST is actually the "to" node in schema terms for Incoming
+                (hop.end_label.as_deref(), hop.start_label.as_deref())
+            }
+            _ => {
+                // Outgoing or Either: (start)-[:REL]->(end)
+                (hop.start_label.as_deref(), hop.end_label.as_deref())
+            }
+        };
+
+        let rel_type = hop.rel_type.as_deref();
+
+        // Find matching edge table
+        let db_table = find_edge_table_in_schema(schema, rel_type, from_label, to_label);
+
+        if let Some(table) = db_table {
+            edge_tables.push((table, rel_alias, hop));
+        } else {
+            log::warn!(
+                "⚠️ No edge table found for hop {}: rel_type={:?}, from={:?}, to={:?}",
+                hop_idx,
+                rel_type,
+                from_label,
+                to_label
+            );
+            return None;
+        }
+    }
+
+    // Build FROM + JOINs for the edge chain
+    let mut from_clause = String::new();
+    let mut join_clauses: Vec<String> = Vec::new();
+    let mut where_conditions: Vec<String> = Vec::new();
+
+    for (idx, (db_table, alias, hop)) in edge_tables.iter().enumerate() {
+        if idx == 0 {
+            from_clause = format!("{} AS {}", db_table, alias);
+        } else {
+            // Join this hop to the previous one through the shared node
+            // The previous hop's to_id connects to this hop's from_id
+            let prev_alias = &edge_tables[idx - 1].1;
+            let prev_hop = edge_tables[idx - 1].2;
+
+            // Find the join column: prev hop's "to" side = this hop's "from" side
+            let prev_to_col = find_edge_id_column(schema, &edge_tables[idx - 1].0, false, prev_hop);
+            let curr_from_col = find_edge_id_column(schema, db_table, true, hop);
+
+            join_clauses.push(format!(
+                "INNER JOIN {} AS {} ON {}.{} = {}.{}",
+                db_table, alias, prev_alias, prev_to_col, alias, curr_from_col
+            ));
+        }
+    }
+
+    // Add WHERE conditions for each correlation variable
+    for cv in &pc_meta.correlation_vars {
+        // Find which hop and which side (from/to) this variable connects to
+        let (hop_idx, is_start) = match &cv.pattern_position {
+            PatternPosition::StartOfHop(idx) => (*idx, true),
+            PatternPosition::EndOfHop(idx) => (*idx, false),
+        };
+
+        if hop_idx >= edge_tables.len() {
+            continue;
+        }
+
+        let (_, edge_alias, hop_info) = &edge_tables[hop_idx];
+
+        // Determine which edge column to use for this correlation variable
+        let edge_col = if is_start {
+            find_edge_id_column(schema, &edge_tables[hop_idx].0, true, hop_info)
+        } else {
+            find_edge_id_column(schema, &edge_tables[hop_idx].0, false, hop_info)
+        };
+
+        // Find the CTE column for this correlation variable's ID
+        let cte_col =
+            find_cte_column_for_correlation_var(&cv.var_name, &cv.label, schema, cte_column_map);
+
+        if let Some(cte_ref) = cte_col {
+            where_conditions.push(format!("{}.{} = {}", edge_alias, edge_col, cte_ref));
+        } else {
+            log::warn!(
+                "⚠️ Could not find CTE column for correlation var '{}' (label='{}')",
+                cv.var_name,
+                cv.label
+            );
+        }
+    }
+
+    // Handle WHERE clause from pattern comprehension
+    if let Some(ref where_expr) = pc_meta.where_clause {
+        if let Some(where_sql) = render_pc_where_clause(
+            where_expr,
+            &pc_meta.pattern_hops,
+            &edge_tables,
+            schema,
+            &mut join_clauses,
+        ) {
+            where_conditions.push(where_sql);
+        }
+    }
+
+    // Build final SQL
+    let where_str = if where_conditions.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", where_conditions.join(" AND "))
+    };
+
+    let joins_str = if join_clauses.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", join_clauses.join(" "))
+    };
+
+    Some(format!(
+        "(SELECT COUNT(*) FROM {}{}{})",
+        from_clause, joins_str, where_str
+    ))
+}
+
+/// Find an edge table in schema matching the given rel_type, from_label, and to_label.
+/// Returns fully qualified table name (database.table).
+fn find_edge_table_in_schema(
+    schema: &GraphSchema,
+    rel_type: Option<&str>,
+    from_label: Option<&str>,
+    to_label: Option<&str>,
+) -> Option<String> {
+    let mut sorted_rels: Vec<_> = schema.get_relationships_schemas().iter().collect();
+    sorted_rels.sort_by_key(|(k, _)| k.as_str());
+
+    let mut best_match: Option<String> = None;
+
+    for (rel_key, rel_schema) in &sorted_rels {
+        let key_rel_name = rel_key.split("::").next().unwrap_or(rel_key);
+
+        // Filter by relationship type
+        if let Some(rt) = rel_type {
+            if !key_rel_name.eq_ignore_ascii_case(rt) {
+                continue;
+            }
+        }
+
+        let db_table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+
+        // If from_label/to_label specified, match them
+        let from_matches = from_label.is_none()
+            || from_label.is_some_and(|fl| {
+                rel_schema.from_node.eq_ignore_ascii_case(fl) || rel_schema.from_node == "$any"
+            });
+        let to_matches = to_label.is_none()
+            || to_label.is_some_and(|tl| {
+                rel_schema.to_node.eq_ignore_ascii_case(tl) || rel_schema.to_node == "$any"
+            });
+
+        if from_matches && to_matches {
+            // Prefer exact match over $any
+            let is_exact = from_label
+                .is_some_and(|fl| rel_schema.from_node.eq_ignore_ascii_case(fl))
+                && to_label.is_some_and(|tl| rel_schema.to_node.eq_ignore_ascii_case(tl));
+
+            if is_exact {
+                return Some(db_table);
+            }
+            if best_match.is_none() {
+                best_match = Some(db_table);
+            }
+        }
+    }
+
+    best_match
+}
+
+/// Find the from_id or to_id column name for an edge table.
+/// `is_from` = true → from_id column, false → to_id column.
+fn find_edge_id_column(
+    schema: &GraphSchema,
+    db_table: &str,
+    is_from: bool,
+    hop: &crate::query_planner::logical_plan::ConnectedPatternInfo,
+) -> String {
+    let sorted_rels: Vec<_> = schema.get_relationships_schemas().iter().collect();
+
+    for (_, rel_schema) in &sorted_rels {
+        let table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+        if table == db_table {
+            // Account for direction: for Incoming, the AST start is actually the schema's to
+            let effective_is_from = match hop.direction {
+                crate::query_planner::logical_expr::Direction::Incoming => !is_from,
+                _ => is_from,
+            };
+
+            return if effective_is_from {
+                rel_schema.from_id.first_column().to_string()
+            } else {
+                rel_schema.to_id.first_column().to_string()
+            };
+        }
+    }
+
+    // Fallback
+    if is_from {
+        "from_id".to_string()
+    } else {
+        "to_id".to_string()
+    }
+}
+
+/// Find the CTE column reference for a correlation variable.
+/// Looks up in cte_column_map by (var_name, "id") pattern.
+fn find_cte_column_for_correlation_var(
+    var_name: &str,
+    label: &str,
+    schema: &GraphSchema,
+    cte_column_map: &HashMap<(String, String), String>,
+) -> Option<String> {
+    // Try common ID column patterns
+    let id_col = if let Ok(ns) = schema.node_schema(label) {
+        ns.node_id.id.first_column().to_string()
+    } else {
+        "id".to_string()
+    };
+
+    // Look up (var_name, id_col) in the CTE column map
+    if let Some(cte_ref) = cte_column_map.get(&(var_name.to_string(), id_col.clone())) {
+        return Some(cte_ref.clone());
+    }
+
+    // Also try just "id"
+    if id_col != "id" {
+        if let Some(cte_ref) = cte_column_map.get(&(var_name.to_string(), "id".to_string())) {
+            return Some(cte_ref.clone());
+        }
+    }
+
+    log::debug!(
+        "🔍 CTE column map lookup failed for var='{}', id_col='{}'. Map keys: {:?}",
+        var_name,
+        id_col,
+        cte_column_map.keys().collect::<Vec<_>>()
+    );
+
+    None
+}
+
+/// Render a WHERE clause from a LogicalExpr for use inside a correlated subquery.
+/// Resolves property accesses to schema-mapped column names on edge table aliases.
+/// May add additional JOINs for intermediate node tables referenced in the WHERE clause.
+fn render_pc_where_clause(
+    expr: &crate::query_planner::logical_expr::LogicalExpr,
+    pattern_hops: &[crate::query_planner::logical_plan::ConnectedPatternInfo],
+    edge_tables: &[(
+        String,
+        String,
+        &crate::query_planner::logical_plan::ConnectedPatternInfo,
+    )],
+    schema: &GraphSchema,
+    join_clauses: &mut Vec<String>,
+) -> Option<String> {
+    use crate::query_planner::logical_expr::LogicalExpr;
+
+    // Build a map of alias → (label, node table alias) for intermediate nodes in the pattern
+    // that might be referenced in the WHERE clause
+    let mut node_alias_map: HashMap<String, (String, String)> = HashMap::new(); // alias → (label, sql_alias)
+    let mut node_joins_added: HashSet<String> = HashSet::new();
+
+    for (hop_idx, hop) in pattern_hops.iter().enumerate() {
+        // Check start node
+        if let (Some(ref alias), Some(ref label)) = (&hop.start_alias, &hop.start_label) {
+            if !node_alias_map.contains_key(alias.as_str()) {
+                let sql_alias = format!("__n{}s", hop_idx);
+                node_alias_map.insert(alias.clone(), (label.clone(), sql_alias));
+            }
+        }
+        // Check end node
+        if let (Some(ref alias), Some(ref label)) = (&hop.end_alias, &hop.end_label) {
+            if !node_alias_map.contains_key(alias.as_str()) {
+                let sql_alias = format!("__n{}e", hop_idx);
+                node_alias_map.insert(alias.clone(), (label.clone(), sql_alias));
+            }
+        }
+    }
+
+    let sql = render_logical_expr_to_sql(
+        expr,
+        &node_alias_map,
+        pattern_hops,
+        edge_tables,
+        schema,
+        join_clauses,
+        &mut node_joins_added,
+    );
+
+    if sql.is_empty() {
+        None
+    } else {
+        Some(sql)
+    }
+}
+
+/// Recursively render a LogicalExpr to SQL for use in a correlated subquery WHERE clause.
+fn render_logical_expr_to_sql(
+    expr: &crate::query_planner::logical_expr::LogicalExpr,
+    node_alias_map: &HashMap<String, (String, String)>,
+    pattern_hops: &[crate::query_planner::logical_plan::ConnectedPatternInfo],
+    edge_tables: &[(
+        String,
+        String,
+        &crate::query_planner::logical_plan::ConnectedPatternInfo,
+    )],
+    schema: &GraphSchema,
+    join_clauses: &mut Vec<String>,
+    node_joins_added: &mut HashSet<String>,
+) -> String {
+    use crate::query_planner::logical_expr::LogicalExpr;
+
+    match expr {
+        LogicalExpr::PropertyAccessExp(pa) => {
+            let alias = &pa.table_alias.0;
+            let prop_name = match &pa.column {
+                crate::graph_catalog::expression_parser::PropertyValue::Column(col) => col.clone(),
+                other => format!("{:?}", other),
+            };
+
+            // Look up alias in node_alias_map to find the label and SQL alias
+            if let Some((label, sql_alias)) = node_alias_map.get(alias) {
+                // Add JOIN for this node table if not already added
+                if !node_joins_added.contains(alias) {
+                    if let Ok(ns) = schema.node_schema(label) {
+                        let node_table = format!("{}.{}", ns.database, ns.table_name);
+                        let node_id_col = ns.node_id.id.first_column();
+
+                        // Find which edge table connects to this node
+                        if let Some(join_condition) = find_node_edge_join_condition(
+                            alias,
+                            pattern_hops,
+                            edge_tables,
+                            node_id_col,
+                            sql_alias,
+                            schema,
+                        ) {
+                            join_clauses.push(format!(
+                                "INNER JOIN {} AS {} ON {}",
+                                node_table, sql_alias, join_condition
+                            ));
+                            node_joins_added.insert(alias.clone());
+                        }
+                    }
+                }
+
+                // Resolve property name through schema
+                let db_col = if let Ok(ns) = schema.node_schema(label) {
+                    ns.property_mappings
+                        .get(&prop_name)
+                        .map(|pv| pv.raw().to_string())
+                        .unwrap_or(prop_name)
+                } else {
+                    prop_name
+                };
+
+                format!("{}.{}", sql_alias, db_col)
+            } else {
+                // Not a pattern node - might be an outer reference, use raw
+                format!("{}.{}", alias, prop_name)
+            }
+        }
+        LogicalExpr::OperatorApplicationExp(op) => {
+            let op_str = match op.operator {
+                crate::query_planner::logical_expr::Operator::And => " AND ",
+                crate::query_planner::logical_expr::Operator::Or => " OR ",
+                crate::query_planner::logical_expr::Operator::LessThan => " < ",
+                crate::query_planner::logical_expr::Operator::GreaterThan => " > ",
+                crate::query_planner::logical_expr::Operator::Equal => " = ",
+                crate::query_planner::logical_expr::Operator::NotEqual => " <> ",
+                crate::query_planner::logical_expr::Operator::LessThanEqual => " <= ",
+                crate::query_planner::logical_expr::Operator::GreaterThanEqual => " >= ",
+                _ => " ?? ",
+            };
+
+            if op.operands.len() == 2 {
+                let left = render_logical_expr_to_sql(
+                    &op.operands[0],
+                    node_alias_map,
+                    pattern_hops,
+                    edge_tables,
+                    schema,
+                    join_clauses,
+                    node_joins_added,
+                );
+                let right = render_logical_expr_to_sql(
+                    &op.operands[1],
+                    node_alias_map,
+                    pattern_hops,
+                    edge_tables,
+                    schema,
+                    join_clauses,
+                    node_joins_added,
+                );
+                format!("{}{}{}", left, op_str, right)
+            } else {
+                let rendered: Vec<String> = op
+                    .operands
+                    .iter()
+                    .map(|o| {
+                        render_logical_expr_to_sql(
+                            o,
+                            node_alias_map,
+                            pattern_hops,
+                            edge_tables,
+                            schema,
+                            join_clauses,
+                            node_joins_added,
+                        )
+                    })
+                    .collect();
+                rendered.join(op_str)
+            }
+        }
+        LogicalExpr::Literal(lit) => match lit {
+            crate::query_planner::logical_expr::Literal::Integer(i) => i.to_string(),
+            crate::query_planner::logical_expr::Literal::Float(f) => f.to_string(),
+            crate::query_planner::logical_expr::Literal::String(s) => format!("'{}'", s),
+            crate::query_planner::logical_expr::Literal::Boolean(b) => {
+                if *b {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                }
+            }
+            _ => "NULL".to_string(),
+        },
+        LogicalExpr::Parameter(p) => format!("${}", p),
+        _ => {
+            log::warn!(
+                "⚠️ Unhandled LogicalExpr variant in PC WHERE clause: {:?}",
+                expr
+            );
+            String::new()
+        }
+    }
+}
+
+/// Find the JOIN condition to connect a node table to an edge table in the pattern.
+fn find_node_edge_join_condition(
+    node_alias: &str,
+    pattern_hops: &[crate::query_planner::logical_plan::ConnectedPatternInfo],
+    edge_tables: &[(
+        String,
+        String,
+        &crate::query_planner::logical_plan::ConnectedPatternInfo,
+    )],
+    node_id_col: &str,
+    node_sql_alias: &str,
+    schema: &GraphSchema,
+) -> Option<String> {
+    for (hop_idx, hop) in pattern_hops.iter().enumerate() {
+        if hop_idx >= edge_tables.len() {
+            continue;
+        }
+        let (ref db_table, ref edge_alias, _) = edge_tables[hop_idx];
+
+        // Check if this node is the start or end of this hop
+        let is_start = hop.start_alias.as_deref() == Some(node_alias);
+        let is_end = hop.end_alias.as_deref() == Some(node_alias);
+
+        if is_start || is_end {
+            let edge_col = find_edge_id_column_for_node(schema, db_table, hop, is_start);
+            return Some(format!(
+                "{}.{} = {}.{}",
+                node_sql_alias, node_id_col, edge_alias, edge_col
+            ));
+        }
+    }
+    None
+}
+
+/// Find the edge ID column that corresponds to a node position (start/end) in a hop.
+fn find_edge_id_column_for_node(
+    schema: &GraphSchema,
+    db_table: &str,
+    hop: &crate::query_planner::logical_plan::ConnectedPatternInfo,
+    is_start: bool,
+) -> String {
+    let sorted_rels: Vec<_> = schema.get_relationships_schemas().iter().collect();
+
+    for (_, rel_schema) in &sorted_rels {
+        let table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+        if table == db_table {
+            // For Incoming direction, start/end are swapped relative to schema from/to
+            let effective_is_from = match hop.direction {
+                crate::query_planner::logical_expr::Direction::Incoming => !is_start,
+                _ => is_start,
+            };
+
+            return if effective_is_from {
+                rel_schema.from_id.first_column().to_string()
+            } else {
+                rel_schema.to_id.first_column().to_string()
+            };
+        }
+    }
+
+    if is_start {
+        "from_id".to_string()
+    } else {
+        "to_id".to_string()
+    }
+}
+
+/// Replace count(*) placeholder expressions in a RenderPlan's SELECT items
+/// with correlated subquery SQL strings.
+///
+/// Walks SELECT items in order, finds AggregateFnCall("count", [Star|Raw("*")])
+/// expressions that were placeholder replacements from pattern comprehension rewriting,
+/// and replaces them with Raw(subquery_sql).
+fn replace_count_star_placeholders_in_select(
+    select_items: &mut [SelectItem],
+    pc_subqueries: &[String],
+) {
+    let mut pc_idx = 0;
+
+    for item in select_items.iter_mut() {
+        replace_count_star_in_expr(&mut item.expression, pc_subqueries, &mut pc_idx);
+    }
+}
+
+/// Recursively find and replace count(*) placeholders in a RenderExpr tree.
+fn replace_count_star_in_expr(expr: &mut RenderExpr, pc_subqueries: &[String], pc_idx: &mut usize) {
+    match expr {
+        RenderExpr::AggregateFnCall(agg) => {
+            let is_count_star = agg.name.eq_ignore_ascii_case("count") && agg.args.len() == 1 && {
+                let arg = &agg.args[0];
+                matches!(arg, RenderExpr::Star)
+                    || matches!(arg, RenderExpr::Raw(s) if s == "*")
+                    || matches!(arg, RenderExpr::Literal(Literal::String(s)) if s == "*")
+            };
+
+            if is_count_star && *pc_idx < pc_subqueries.len() {
+                log::info!(
+                    "🔧 Replacing count(*) placeholder #{} with correlated subquery",
+                    pc_idx
+                );
+                *expr = RenderExpr::Raw(pc_subqueries[*pc_idx].clone());
+                *pc_idx += 1;
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in &mut op.operands {
+                replace_count_star_in_expr(operand, pc_subqueries, pc_idx);
+            }
+        }
+        RenderExpr::ScalarFnCall(f) => {
+            for arg in &mut f.args {
+                replace_count_star_in_expr(arg, pc_subqueries, pc_idx);
+            }
+        }
+        RenderExpr::Case(case) => {
+            if let Some(ref mut e) = case.expr {
+                replace_count_star_in_expr(e, pc_subqueries, pc_idx);
+            }
+            for (ref mut when, ref mut then) in &mut case.when_then {
+                replace_count_star_in_expr(when, pc_subqueries, pc_idx);
+                replace_count_star_in_expr(then, pc_subqueries, pc_idx);
+            }
+            if let Some(ref mut e) = case.else_expr {
+                replace_count_star_in_expr(e, pc_subqueries, pc_idx);
+            }
+        }
+        RenderExpr::List(items) => {
+            for item in items {
+                replace_count_star_in_expr(item, pc_subqueries, pc_idx);
+            }
+        }
+        _ => {}
     }
 }
 
