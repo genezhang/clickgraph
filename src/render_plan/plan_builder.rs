@@ -3745,7 +3745,10 @@ fn remap_select_item_aliases(
                 alias_mapping
             );
             // Check if the column alias starts with a source alias
-            for (source_alias, output_alias) in alias_mapping.iter() {
+            // Sort by key for deterministic iteration (HashMap order is non-deterministic)
+            let mut sorted_mapping: Vec<_> = alias_mapping.iter().collect();
+            sorted_mapping.sort_by_key(|(k, _)| k.clone());
+            for (source_alias, output_alias) in sorted_mapping {
                 // Handle dot format: "u.name"
                 let prefix_dot = format!("{}.", source_alias);
 

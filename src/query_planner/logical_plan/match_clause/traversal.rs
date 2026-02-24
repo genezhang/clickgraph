@@ -217,9 +217,12 @@ fn traverse_connected_pattern_with_mode<'a>(
                 let graph_schema = plan_ctx.schema();
                 let mut expanded_labels = Vec::new();
 
-                // Get node labels for semantic expansion
-                let from_label = start_node_label.as_deref();
-                let to_label = end_node_label.as_deref();
+                // Account for direction: for Incoming patterns, swap from/to labels
+                // to match the relationship's semantic direction in the schema
+                let (from_label_for_expansion, to_label_for_expansion) =
+                    compute_rel_node_labels(&rel.direction, &start_node_label, &end_node_label);
+                let from_label = from_label_for_expansion.as_deref();
+                let to_label = to_label_for_expansion.as_deref();
 
                 for label in labels.iter() {
                     let variants =

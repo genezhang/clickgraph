@@ -638,11 +638,9 @@ impl JoinBuilder for LogicalPlan {
                             j.joining_on.iter().any(|op| {
                                 op.operands.iter().any(|operand| {
                                     if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) = operand {
-                                        // VLP aliases are generated as "vt{N}" by PlanCtx::next_vlp_alias()
                                         let alias = &pa.table_alias.0;
-                                        alias.starts_with("vt")
-                                            && alias.len() > 2
-                                            && alias[2..].chars().all(|c| c.is_ascii_digit())
+                                        crate::query_planner::join_context::is_vlp_planning_alias(alias)
+                                            || alias.as_str() == crate::query_planner::join_context::VLP_CTE_FROM_ALIAS
                                     } else {
                                         false
                                     }

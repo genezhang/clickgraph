@@ -30,6 +30,20 @@ use std::collections::{HashMap, HashSet};
 // VLP CTE NAMING CONVENTIONS - SINGLE SOURCE OF TRUTH
 // =============================================================================
 
+/// Returns true if alias matches the "vt{N}" pattern (planning-time VLP aliases).
+pub fn is_vlp_planning_alias(alias: &str) -> bool {
+    alias.starts_with("vt") && alias.len() > 2 && alias[2..].chars().all(|c| c.is_ascii_digit())
+}
+
+/// Returns true if the alias is a VLP or CTE-generated alias that should not
+/// be treated as a stale/dead reference during plan cleanup.
+pub fn is_vlp_or_cte_alias(alias: &str) -> bool {
+    alias.starts_with("with_")
+        || alias == VLP_CTE_FROM_ALIAS
+        || alias.starts_with("vlp_")
+        || is_vlp_planning_alias(alias)
+}
+
 /// Default FROM alias used for VLP CTEs in outer query.
 /// Example: `FROM vlp_u1_u2 AS t` - the "t" is this constant.
 ///
@@ -445,5 +459,24 @@ mod tests {
         let back = ctx.to_hashset();
         assert!(back.contains("a"));
         assert!(back.contains("b"));
+    }
+
+    #[test]
+    fn test_is_vlp_planning_alias() {
+        assert!(is_vlp_planning_alias("vt0"));
+        assert!(is_vlp_planning_alias("vt12"));
+        assert!(!is_vlp_planning_alias("vt")); // too short
+        assert!(!is_vlp_planning_alias("vtx")); // non-digit suffix
+        assert!(!is_vlp_planning_alias("other"));
+    }
+
+    #[test]
+    fn test_is_vlp_or_cte_alias() {
+        assert!(is_vlp_or_cte_alias("with_foo_cte"));
+        assert!(is_vlp_or_cte_alias(VLP_CTE_FROM_ALIAS)); // "t"
+        assert!(is_vlp_or_cte_alias("vlp_u1_u2"));
+        assert!(is_vlp_or_cte_alias("vt0"));
+        assert!(!is_vlp_or_cte_alias("person"));
+        assert!(!is_vlp_or_cte_alias("u1"));
     }
 }

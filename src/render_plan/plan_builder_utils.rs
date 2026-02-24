@@ -5055,6 +5055,83 @@ pub(crate) fn expand_table_alias_to_select_items(
                     alias, cte_name, filtered_items.len(), cte_alias
                 );
                 return filtered_items;
+            } else if cte_name.starts_with("vlp_") {
+                // VLP CTE columns use start_*/end_* naming, not alias_* prefix.
+                // Determine VLP position from metadata, then generate all properties
+                // from base schema with the correct VLP column prefix.
+                let mut vlp_position_prefix: Option<(String, String)> = None; // (prefix, from_alias)
+                if let Some(vlp_metadata) = _vlp_cte_metadata {
+                    if let Some((vlp_from_alias, col_metadata)) = vlp_metadata.get(cte_name) {
+                        // Find the VLP position for this alias from any matching column
+                        for col_meta in col_metadata {
+                            if col_meta.cypher_alias == alias {
+                                if let Some(pos) = &col_meta.vlp_position {
+                                    let prefix = match pos {
+                                        super::cte_manager::VlpColumnPosition::Start => "start_",
+                                        super::cte_manager::VlpColumnPosition::End => "end_",
+                                    };
+                                    vlp_position_prefix =
+                                        Some((prefix.to_string(), vlp_from_alias.clone()));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some((prefix, from_alias)) = vlp_position_prefix {
+                    // Get property list from base schema, filtered to only those
+                    // actually propagated in the VLP CTE (start_*/end_* columns).
+                    // Use property requirements to determine what's needed.
+                    if let Ok((properties, _)) = plan.get_properties_with_table_alias(alias) {
+                        if !properties.is_empty() {
+                            // Use property requirements to filter if available
+                            let required_props: Option<&std::collections::HashSet<String>> =
+                                plan_ctx
+                                    .and_then(|ctx| ctx.get_property_requirements())
+                                    .and_then(|reqs| reqs.get_requirements(alias));
+
+                            let vlp_items: Vec<SelectItem> = properties
+                                .iter()
+                                .filter(|(cypher_prop, _db_col)| {
+                                    // Always include 'id' property; if requirements exist,
+                                    // only include required ones; otherwise include all
+                                    *cypher_prop == "id"
+                                        || required_props
+                                            .map_or(true, |r| r.contains(cypher_prop.as_str()))
+                                })
+                                .map(|(cypher_prop, db_col)| {
+                                    // VLP CTE column: prefix + db_column (e.g., start_content)
+                                    let vlp_col = format!("{}{}", prefix, db_col);
+                                    let expr = RenderExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(from_alias.clone()),
+                                        column: PropertyValue::Column(vlp_col),
+                                    });
+                                    let col_alias_name =
+                                        crate::utils::cte_column_naming::cte_column_name(
+                                            alias,
+                                            cypher_prop,
+                                        );
+                                    SelectItem {
+                                        expression: expr,
+                                        col_alias: Some(ColumnAlias(col_alias_name)),
+                                    }
+                                })
+                                .collect();
+                            if !vlp_items.is_empty() {
+                                log::info!(
+                                    "🔧 expand_table_alias_to_select_items: VLP CTE '{}' → {} columns for alias '{}' (prefix={})",
+                                    cte_name, vlp_items.len(), alias, prefix
+                                );
+                                return vlp_items;
+                            }
+                        }
+                    }
+                }
+                log::warn!(
+                    "⚠️ expand_table_alias_to_select_items: VLP CTE '{}' — could not determine position for alias '{}', falling through",
+                    cte_name, alias
+                );
+                // Continue to fallback as recovery attempt
             } else {
                 // CTE exists but no columns matched the alias prefix
                 // This is an INTERNAL ERROR - analyzer said this alias is from this CTE,
@@ -6156,8 +6233,10 @@ fn clear_stale_joins_for_cte_aliases(
                             op.operands.iter().any(|operand| {
                                 if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(pa) = operand {
                                     let alias = &pa.table_alias.0;
-                                    // Skip CTE table names (they're valid references)
-                                    !alias.starts_with("with_") && !live_aliases.contains(alias.as_str())
+                                    // Skip VLP/CTE aliases (they're valid render-time
+                                    // references not present in the logical plan tree)
+                                    !crate::query_planner::join_context::is_vlp_or_cte_alias(alias)
+                                        && !live_aliases.contains(alias.as_str())
                                 } else {
                                     false
                                 }
@@ -7795,7 +7874,35 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                 };
 
                                                 let expr_result: Result<RenderExpr, _> = expanded_expr.try_into();
-                                                expr_result.ok().map(|expr| {
+                                                expr_result.ok().map(|mut expr| {
+                                                    // 🔧 FIX: VLP CTE column rewriting for non-TableAlias WITH items
+                                                    // When FROM is a VLP/multi-type CTE, PropertyAccess references
+                                                    // (e.g., message.content) must be rewritten to CTE columns
+                                                    // (e.g., t.start_content)
+                                                    if let Some(from_ref) = &rendered.from.0 {
+                                                        if from_ref.name.starts_with("vlp_") {
+                                                            let from_alias = from_ref.alias.as_deref().unwrap_or("t");
+                                                            // Build mappings: cypher_alias → "start_node" or "end_node"
+                                                            if let Some((_from_alias_meta, col_metadata)) = vlp_cte_metadata.get(&from_ref.name) {
+                                                                let mut mappings: HashMap<String, String> = HashMap::new();
+                                                                for col_meta in col_metadata {
+                                                                    if !mappings.contains_key(&col_meta.cypher_alias) {
+                                                                        if let Some(pos) = &col_meta.vlp_position {
+                                                                            let internal_alias = match pos {
+                                                                                super::cte_manager::VlpColumnPosition::Start => "start_node".to_string(),
+                                                                                super::cte_manager::VlpColumnPosition::End => "end_node".to_string(),
+                                                                            };
+                                                                            mappings.insert(col_meta.cypher_alias.clone(), internal_alias);
+                                                                        }
+                                                                    }
+                                                                }
+                                                                if !mappings.is_empty() {
+                                                                    log::debug!("🔧 VLP WITH item rewrite: mappings={:?}, from_alias={}", mappings, from_alias);
+                                                                    rewrite_render_expr_for_vlp_with_from_alias(&mut expr, &mappings, from_alias);
+                                                                }
+                                                            }
+                                                        }
+                                                    }
                                                     SelectItem {
                                                         expression: expr,
                                                         col_alias: item.col_alias.as_ref().map(|a| crate::render_plan::render_expr::ColumnAlias(a.0.clone())),

@@ -8,7 +8,7 @@
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 use super::config::Identifier;
@@ -536,19 +536,19 @@ impl ProcessedNodeMetadata {
 pub struct GraphSchema {
     version: u32,
     database: String,
-    nodes: HashMap<String, NodeSchema>,
-    relationships: HashMap<String, RelationshipSchema>,
+    nodes: BTreeMap<String, NodeSchema>,
+    relationships: BTreeMap<String, RelationshipSchema>,
 
     /// Denormalized node metadata (computed at schema load)
     /// Maps node label -> metadata
     #[serde(skip)]
-    denormalized_nodes: HashMap<String, ProcessedNodeMetadata>,
+    denormalized_nodes: BTreeMap<String, ProcessedNodeMetadata>,
 
     /// Secondary index: relationship type name -> composite keys
     /// Enables O(1) lookup of all relationships by type without scanning
     /// Example: "HAS_TAG" -> ["HAS_TAG::Post::Tag", "HAS_TAG::Comment::Tag", "HAS_TAG::Message::Tag"]
     #[serde(skip)]
-    rel_type_index: HashMap<String, Vec<String>>,
+    rel_type_index: BTreeMap<String, Vec<String>>,
 }
 
 impl GraphSchema {
@@ -564,6 +564,11 @@ impl GraphSchema {
         nodes: HashMap<String, NodeSchema>,
         relationships: HashMap<String, RelationshipSchema>,
     ) -> GraphSchema {
+        // Convert to BTreeMap for deterministic iteration order
+        let nodes: BTreeMap<String, NodeSchema> = nodes.into_iter().collect();
+        let relationships: BTreeMap<String, RelationshipSchema> =
+            relationships.into_iter().collect();
+
         // Build denormalized node metadata
         let denormalized_nodes = Self::build_denormalized_metadata(&relationships);
 
@@ -588,9 +593,9 @@ impl GraphSchema {
     /// the config.rs inserts both for backward compatibility, but we only want to
     /// resolve to ONE actual table.
     fn build_rel_type_index(
-        relationships: &HashMap<String, RelationshipSchema>,
-    ) -> HashMap<String, Vec<String>> {
-        let mut index: HashMap<String, Vec<String>> = HashMap::new();
+        relationships: &BTreeMap<String, RelationshipSchema>,
+    ) -> BTreeMap<String, Vec<String>> {
+        let mut index: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
         // First pass: collect all composite keys (those containing "::")
         // Skip simple keys that have a corresponding composite key
@@ -643,9 +648,9 @@ impl GraphSchema {
     /// Build denormalized node metadata from relationships
     /// Scans all relationships to find denormalized node properties
     fn build_denormalized_metadata(
-        relationships: &HashMap<String, RelationshipSchema>,
-    ) -> HashMap<String, ProcessedNodeMetadata> {
-        let mut metadata_map: HashMap<String, ProcessedNodeMetadata> = HashMap::new();
+        relationships: &BTreeMap<String, RelationshipSchema>,
+    ) -> BTreeMap<String, ProcessedNodeMetadata> {
+        let mut metadata_map: BTreeMap<String, ProcessedNodeMetadata> = BTreeMap::new();
 
         // Collect all actual relationship types (extract from composite keys)
         // Composite keys are in format "TYPE::FROM::TO"
@@ -1180,11 +1185,11 @@ impl GraphSchema {
         false
     }
 
-    pub fn get_relationships_schemas(&self) -> &HashMap<String, RelationshipSchema> {
+    pub fn get_relationships_schemas(&self) -> &BTreeMap<String, RelationshipSchema> {
         &self.relationships
     }
 
-    pub fn all_node_schemas(&self) -> &HashMap<String, NodeSchema> {
+    pub fn all_node_schemas(&self) -> &BTreeMap<String, NodeSchema> {
         &self.nodes
     }
 
@@ -1245,7 +1250,7 @@ impl GraphSchema {
     }
 
     /// Get the rel_type_index for debugging purposes
-    pub fn get_rel_type_index(&self) -> &HashMap<String, Vec<String>> {
+    pub fn get_rel_type_index(&self) -> &BTreeMap<String, Vec<String>> {
         &self.rel_type_index
     }
 

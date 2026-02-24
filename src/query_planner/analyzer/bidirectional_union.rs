@@ -87,6 +87,17 @@ fn transform_bidirectional(
                     return Ok(Transformed::Yes(new_graph_rel));
                 }
 
+                // Skip Union split when an undirected edge has a nested GraphRel as its
+                // left subtree. The Incoming branch swap would restructure the FROM/JOIN
+                // chain, producing broken SQL. Instead, keep Direction::Either and let the
+                // join builder handle both directions with an OR condition.
+                if has_nested_undirected_edge(plan) {
+                    crate::debug_print!(
+                        "🔄 BidirectionalUnion: Nested undirected edge detected, skipping Union split — join builder handles both directions with OR"
+                    );
+                    return Ok(Transformed::No(plan.clone()));
+                }
+
                 crate::debug_print!(
                     "🔄 BidirectionalUnion: Found {} undirected edge(s) in path, generating {} UNION branches",
                     undirected_count,
@@ -181,6 +192,14 @@ fn transform_bidirectional(
                     return Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(
                         new_proj,
                     ))));
+                }
+
+                // Skip Union split for nested undirected edges (same as GraphRel case)
+                if has_nested_undirected_edge(&proj.input) {
+                    crate::debug_print!(
+                        "🔄 BidirectionalUnion: Nested undirected edge in Projection subtree, skipping Union split"
+                    );
+                    return Ok(Transformed::No(plan.clone()));
                 }
 
                 crate::debug_print!(
@@ -496,6 +515,28 @@ fn count_undirected_edges(plan: &Arc<LogicalPlan>) -> usize {
         }
         LogicalPlan::Filter(filter) => count_undirected_edges(&filter.input),
         _ => 0,
+    }
+}
+
+/// Check if any undirected edge in the plan has a nested GraphRel as its left subtree.
+/// When this is the case, the UNION branch swap for the Incoming direction would
+/// destructively restructure the FROM/JOIN chain, causing broken SQL (wrong FROM table,
+/// duplicate aliases, joins referencing tables before declaration).
+/// Instead, these patterns should keep Direction::Either and let the join builder
+/// handle both directions with an OR condition.
+fn has_nested_undirected_edge(plan: &Arc<LogicalPlan>) -> bool {
+    match plan.as_ref() {
+        LogicalPlan::GraphRel(gr) => {
+            if gr.direction == Direction::Either
+                && matches!(gr.left.as_ref(), LogicalPlan::GraphRel(_))
+            {
+                return true;
+            }
+            has_nested_undirected_edge(&gr.left) || has_nested_undirected_edge(&gr.right)
+        }
+        LogicalPlan::Projection(p) => has_nested_undirected_edge(&p.input),
+        LogicalPlan::Filter(f) => has_nested_undirected_edge(&f.input),
+        _ => false,
     }
 }
 
@@ -1144,74 +1185,80 @@ mod tests {
     use crate::query_planner::logical_plan::ViewScan;
     use std::collections::HashMap;
 
-    #[test]
-    fn test_bidirectional_detection() {
-        // Create a simple bidirectional GraphRel
-        let left_scan = Arc::new(LogicalPlan::ViewScan(Arc::new(ViewScan::new(
-            "users".to_string(),
+    fn make_test_node(table: &str, alias: &str, label: &str) -> Arc<LogicalPlan> {
+        let scan = Arc::new(LogicalPlan::ViewScan(Arc::new(ViewScan::new(
+            table.to_string(),
             None,
             HashMap::new(),
             "id".to_string(),
             vec![],
             vec![],
         ))));
-
-        let center_scan = Arc::new(LogicalPlan::ViewScan(Arc::new(ViewScan::new(
-            "follows".to_string(),
-            None,
-            HashMap::new(),
-            "id".to_string(),
-            vec![],
-            vec![],
-        ))));
-
-        let right_scan = Arc::new(LogicalPlan::ViewScan(Arc::new(ViewScan::new(
-            "users".to_string(),
-            None,
-            HashMap::new(),
-            "id".to_string(),
-            vec![],
-            vec![],
-        ))));
-
-        let left_node = Arc::new(LogicalPlan::GraphNode(GraphNode {
-            input: left_scan,
-            alias: "a".to_string(),
-            label: Some("User".to_string()),
+        Arc::new(LogicalPlan::GraphNode(GraphNode {
+            input: scan,
+            alias: alias.to_string(),
+            label: Some(label.to_string()),
             is_denormalized: false,
             projected_columns: None,
             node_types: None,
-        }));
+        }))
+    }
 
-        let right_node = Arc::new(LogicalPlan::GraphNode(GraphNode {
-            input: right_scan,
-            alias: "b".to_string(),
-            label: Some("User".to_string()),
-            is_denormalized: false,
-            projected_columns: None,
-            node_types: None,
-        }));
-
-        let graph_rel = GraphRel {
-            left: left_node,
-            center: center_scan,
-            right: right_node,
-            alias: "r".to_string(),
-            direction: Direction::Either,
-            left_connection: "a".to_string(),
-            right_connection: "b".to_string(),
+    fn make_test_graph_rel(
+        left: Arc<LogicalPlan>,
+        right: Arc<LogicalPlan>,
+        rel_alias: &str,
+        rel_table: &str,
+        left_conn: &str,
+        right_conn: &str,
+        direction: Direction,
+        label: &str,
+    ) -> GraphRel {
+        let center = Arc::new(LogicalPlan::ViewScan(Arc::new(ViewScan::new(
+            rel_table.to_string(),
+            None,
+            HashMap::new(),
+            "id".to_string(),
+            vec![],
+            vec![],
+        ))));
+        GraphRel {
+            left,
+            center,
+            right,
+            alias: rel_alias.to_string(),
+            direction,
+            left_connection: left_conn.to_string(),
+            right_connection: right_conn.to_string(),
             is_rel_anchor: false,
             variable_length: None,
             shortest_path_mode: None,
             path_variable: None,
             where_predicate: None,
-            labels: Some(vec!["FOLLOWS".to_string()]),
+            labels: Some(vec![label.to_string()]),
             is_optional: None,
             anchor_connection: None,
             cte_references: std::collections::HashMap::new(),
             pattern_combinations: None,
             was_undirected: None,
-        };
+        }
+    }
+
+    #[test]
+    fn test_bidirectional_detection() {
+        let left_node = make_test_node("users", "a", "User");
+        let right_node = make_test_node("users", "b", "User");
+
+        let graph_rel = make_test_graph_rel(
+            left_node,
+            right_node,
+            "r",
+            "follows",
+            "a",
+            "b",
+            Direction::Either,
+            "FOLLOWS",
+        );
 
         let plan = Arc::new(LogicalPlan::GraphRel(graph_rel));
         let mut plan_ctx = PlanCtx::new_empty();
@@ -1269,5 +1316,74 @@ mod tests {
             }
             Transformed::No(_) => panic!("Expected transformation to occur"),
         }
+    }
+
+    #[test]
+    fn test_nested_undirected_edge_detected() {
+        // Build nested (a)-[r1]-(b)-[r2]-(c): inner GraphRel as left of outer
+        let node_a = make_test_node("users", "a", "User");
+        let node_b = make_test_node("users", "b", "User");
+        let node_c = make_test_node("users", "c", "User");
+
+        let inner_rel = make_test_graph_rel(
+            node_a,
+            node_b,
+            "r1",
+            "follows",
+            "a",
+            "b",
+            Direction::Either,
+            "FOLLOWS",
+        );
+        let inner_plan = Arc::new(LogicalPlan::GraphRel(inner_rel));
+
+        let outer_rel = make_test_graph_rel(
+            inner_plan,
+            node_c,
+            "r2",
+            "follows",
+            "b",
+            "c",
+            Direction::Either,
+            "FOLLOWS",
+        );
+        let plan = Arc::new(LogicalPlan::GraphRel(outer_rel));
+
+        // Nested undirected edges should be detected
+        assert!(has_nested_undirected_edge(&plan));
+
+        // transform_bidirectional should skip (return No) for nested undirected
+        let mut plan_ctx = PlanCtx::new_empty();
+        let graph_schema =
+            GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+        let result = transform_bidirectional(&plan, &mut plan_ctx, &graph_schema).unwrap();
+        assert!(
+            matches!(result, Transformed::No(_)),
+            "Nested undirected edges should not be transformed by simple UNION split"
+        );
+    }
+
+    #[test]
+    fn test_simple_undirected_edge_not_nested() {
+        // Build single (a)-[r]-(b): left is GraphNode, not GraphRel
+        let node_a = make_test_node("users", "a", "User");
+        let node_b = make_test_node("users", "b", "User");
+
+        let rel = make_test_graph_rel(
+            node_a,
+            node_b,
+            "r",
+            "follows",
+            "a",
+            "b",
+            Direction::Either,
+            "FOLLOWS",
+        );
+        let plan = Arc::new(LogicalPlan::GraphRel(rel));
+
+        assert!(
+            !has_nested_undirected_edge(&plan),
+            "Single undirected edge should not be detected as nested"
+        );
     }
 }

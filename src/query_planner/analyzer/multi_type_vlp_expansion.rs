@@ -28,7 +28,7 @@ use crate::graph_catalog::graph_schema::{GraphSchema, RelationshipSchema};
 use std::collections::HashSet;
 
 /// Represents a single hop in a path with type information
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PathHop {
     /// Relationship type (e.g., "FOLLOWS", "AUTHORED")
     pub rel_type: String,
@@ -42,7 +42,7 @@ pub struct PathHop {
 }
 
 /// Represents a complete path enumeration (sequence of hops)
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PathEnumeration {
     pub hops: Vec<PathHop>,
 }
@@ -169,8 +169,11 @@ fn enumerate_vlp_paths_with_direction(
     }
 
     // Deduplicate paths (same sequence of hops may be generated multiple ways)
+    // Sort for deterministic output ordering
     let unique_paths: HashSet<PathEnumeration> = all_paths.into_iter().collect();
-    unique_paths.into_iter().collect()
+    let mut result: Vec<_> = unique_paths.into_iter().collect();
+    result.sort();
+    result
 }
 
 /// Generate all valid paths of a specific length
