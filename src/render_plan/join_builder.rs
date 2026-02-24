@@ -22,7 +22,7 @@ use crate::render_plan::render_expr::{
     Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
 };
 use crate::render_plan::{ArrayJoin, Join, JoinType};
-use crate::utils::cte_column_naming::cte_column_name;
+use crate::utils::cte_column_naming::{cte_column_name, is_cte_column};
 use std::sync::Arc;
 
 // Helper function imports from plan_builder_helpers
@@ -162,6 +162,29 @@ fn wrap_conditions_and(conditions: Vec<OperatorApplication>) -> OperatorApplicat
                 .map(RenderExpr::OperatorApplicationExp)
                 .collect(),
         }
+    }
+}
+
+/// Map a node Identifier to CTE column form, guarding against double-naming.
+/// When the column is already CTE-named (e.g. `p1_c_id`), returns it as-is.
+fn cte_safe_identifier(alias: &str, id: &Identifier) -> Identifier {
+    match id {
+        Identifier::Single(col) => Identifier::Single(if is_cte_column(col) {
+            col.clone()
+        } else {
+            cte_column_name(alias, col)
+        }),
+        Identifier::Composite(cols) => Identifier::Composite(
+            cols.iter()
+                .map(|c| {
+                    if is_cte_column(c) {
+                        c.clone()
+                    } else {
+                        cte_column_name(alias, c)
+                    }
+                })
+                .collect(),
+        ),
     }
 }
 
@@ -2733,29 +2756,55 @@ impl JoinBuilder for LogicalPlan {
                                 .and_then(|lbl| schema.node_schema_opt(lbl))
                                 .map(|ns| ns.node_id.id.clone())
                                 .unwrap_or_else(|| Identifier::Single(shared_id_col));
-                            let conditions = build_identifier_join_conditions(
-                                shared_alias,
-                                &shared_node_id,
-                                &graph_rel.alias,
-                                &rel_cols.to_id,
-                            );
-                            let shared_join_condition = wrap_conditions_and(conditions);
 
-                            joins.push(Join {
-                                table_name,
-                                table_alias: shared_alias.clone(),
-                                joining_on: vec![shared_join_condition],
-                                join_type: join_type.clone(),
-                                pre_filter: None,
-                                from_id_column: None,
-                                to_id_column: None,
-                                graph_rel: None,
-                            });
+                            // CTE-backed shared node: fold condition into outer rel JOIN
+                            // instead of adding a separate table JOIN.
+                            if graph_rel.cte_references.contains_key(shared_alias) {
+                                let anchor_alias = graph_rel
+                                    .anchor_connection
+                                    .as_deref()
+                                    .unwrap_or(&graph_rel.left_connection);
+                                let cte_end_id = cte_safe_identifier(shared_alias, &shared_node_id);
+                                let extra = build_identifier_join_conditions(
+                                    &graph_rel.alias,
+                                    &rel_cols.to_id,
+                                    anchor_alias,
+                                    &cte_end_id,
+                                );
+                                if let Some(rel_join) = joins.last_mut() {
+                                    for cond in extra {
+                                        rel_join.joining_on.push(cond);
+                                    }
+                                }
+                                log::info!(
+                                    "  ✓ Shared node '{}' is CTE-backed -> folded into rel JOIN",
+                                    shared_alias
+                                );
+                            } else {
+                                let conditions = build_identifier_join_conditions(
+                                    shared_alias,
+                                    &shared_node_id,
+                                    &graph_rel.alias,
+                                    &rel_cols.to_id,
+                                );
+                                let shared_join_condition = wrap_conditions_and(conditions);
 
-                            println!(
-                                "  ✅ Added JOIN for shared node '{}' connecting to outer rel '{}'",
-                                shared_alias, graph_rel.alias
-                            );
+                                joins.push(Join {
+                                    table_name,
+                                    table_alias: shared_alias.clone(),
+                                    joining_on: vec![shared_join_condition],
+                                    join_type: join_type.clone(),
+                                    pre_filter: None,
+                                    from_id_column: None,
+                                    to_id_column: None,
+                                    graph_rel: None,
+                                });
+
+                                println!(
+                                    "  ✅ Added JOIN for shared node '{}' connecting to outer rel '{}'",
+                                    shared_alias, graph_rel.alias
+                                );
+                            }
                         }
                     }
 
@@ -2764,6 +2813,53 @@ impl JoinBuilder for LogicalPlan {
                         graph_rel.alias,
                         joins.len()
                     );
+                    return Ok(joins);
+                }
+
+                // CTE-backed right endpoint: fold end-node condition into rel JOIN,
+                // skip the separate end-node table JOIN (its ID is on the CTE FROM source).
+                if !is_bidirectional
+                    && graph_rel
+                        .cte_references
+                        .contains_key(&graph_rel.right_connection)
+                {
+                    let anchor_alias = graph_rel
+                        .anchor_connection
+                        .as_deref()
+                        .unwrap_or(&graph_rel.left_connection);
+
+                    let cte_end_id = cte_safe_identifier(&graph_rel.right_connection, &end_node_id);
+
+                    let extra = build_identifier_join_conditions(
+                        &graph_rel.alias,
+                        &rel_cols.to_id,
+                        anchor_alias,
+                        &cte_end_id,
+                    );
+                    if let Some(rel_join) = joins.last_mut() {
+                        for cond in extra {
+                            rel_join.joining_on.push(cond);
+                        }
+                        // Preserve right-node pre_filter (schema filters + user predicates)
+                        // that would normally go on the end-node JOIN we're eliding.
+                        if right_node_pre_filter.is_some() {
+                            rel_join.pre_filter = match rel_join.pre_filter.take() {
+                                Some(existing) => {
+                                    Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                        operator: Operator::And,
+                                        operands: vec![existing, right_node_pre_filter.unwrap()],
+                                    }))
+                                }
+                                None => right_node_pre_filter.clone(),
+                            };
+                        }
+                    }
+
+                    log::info!(
+                        "  ✓ Right endpoint '{}' is CTE-backed -> folded into rel JOIN, skipping end-node table JOIN",
+                        graph_rel.right_connection
+                    );
+
                     return Ok(joins);
                 }
 
