@@ -1213,13 +1213,22 @@ impl PlanCtx {
     /// - For VLP endpoints: returns ("t", "start_id"/"end_id")
     pub fn get_vlp_join_reference(&self, alias: &str, default_column: &str) -> (String, String) {
         if let Some(vlp_info) = self.vlp_endpoints.get(alias) {
+            // Use VLP_CTE_FROM_ALIAS ("t") instead of per-VLP alias ("vt0", "vt1")
+            // because the render phase always aliases VLP CTEs as "t" in FROM clauses.
+            // TODO(multi-vlp): When render phase supports per-VLP aliases, use vlp_info.vlp_alias
             (
-                vlp_info.vlp_alias.clone(),
+                crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string(),
                 vlp_info.cte_column().to_string(),
             )
         } else {
             (alias.to_string(), default_column.to_string())
         }
+    }
+
+    /// Clear VLP endpoints (used when creating inner scope for WITH clause processing
+    /// to prevent outer scope VLP endpoints from leaking into inner scope).
+    pub fn clear_vlp_endpoints(&mut self) {
+        self.vlp_endpoints.clear();
     }
 
     /// Register a CTE alias source mapping for variable renaming

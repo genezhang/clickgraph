@@ -2762,7 +2762,11 @@ pub fn extract_ctes_with_context(
                                     }
                                 }
 
-                                rel_types = all_rel_types.into_iter().collect();
+                                rel_types = {
+                                    let mut v: Vec<_> = all_rel_types.into_iter().collect();
+                                    v.sort();
+                                    v
+                                };
                                 log::info!(
                                     "🎯 CTE: Inferred {} relationship types: {:?}",
                                     rel_types.len(),
@@ -2808,8 +2812,12 @@ pub fn extract_ctes_with_context(
                             }
 
                             if possible_end_types.len() > 1 {
-                                // Multiple possible end types - use all of them
-                                end_labels = possible_end_types.into_iter().collect();
+                                // Multiple possible end types - use all of them (sorted for determinism)
+                                end_labels = {
+                                    let mut v: Vec<_> = possible_end_types.into_iter().collect();
+                                    v.sort();
+                                    v
+                                };
                                 log::info!(
                                     "🎯 CTE: Expanded end_labels from relationships: {:?}",
                                     end_labels

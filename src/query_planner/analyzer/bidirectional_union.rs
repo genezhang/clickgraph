@@ -87,6 +87,17 @@ fn transform_bidirectional(
                     return Ok(Transformed::Yes(new_graph_rel));
                 }
 
+                // Skip Union split when an undirected edge has a nested GraphRel as its
+                // left subtree. The Incoming branch swap would restructure the FROM/JOIN
+                // chain, producing broken SQL. Instead, keep Direction::Either and let the
+                // join builder handle both directions with an OR condition.
+                if has_nested_undirected_edge(plan) {
+                    crate::debug_print!(
+                        "🔄 BidirectionalUnion: Nested undirected edge detected, skipping Union split — join builder handles both directions with OR"
+                    );
+                    return Ok(Transformed::No(plan.clone()));
+                }
+
                 crate::debug_print!(
                     "🔄 BidirectionalUnion: Found {} undirected edge(s) in path, generating {} UNION branches",
                     undirected_count,
@@ -181,6 +192,14 @@ fn transform_bidirectional(
                     return Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(
                         new_proj,
                     ))));
+                }
+
+                // Skip Union split for nested undirected edges (same as GraphRel case)
+                if has_nested_undirected_edge(&proj.input) {
+                    crate::debug_print!(
+                        "🔄 BidirectionalUnion: Nested undirected edge in Projection subtree, skipping Union split"
+                    );
+                    return Ok(Transformed::No(plan.clone()));
                 }
 
                 crate::debug_print!(
@@ -496,6 +515,28 @@ fn count_undirected_edges(plan: &Arc<LogicalPlan>) -> usize {
         }
         LogicalPlan::Filter(filter) => count_undirected_edges(&filter.input),
         _ => 0,
+    }
+}
+
+/// Check if any undirected edge in the plan has a nested GraphRel as its left subtree.
+/// When this is the case, the UNION branch swap for the Incoming direction would
+/// destructively restructure the FROM/JOIN chain, causing broken SQL (wrong FROM table,
+/// duplicate aliases, joins referencing tables before declaration).
+/// Instead, these patterns should keep Direction::Either and let the join builder
+/// handle both directions with an OR condition.
+fn has_nested_undirected_edge(plan: &Arc<LogicalPlan>) -> bool {
+    match plan.as_ref() {
+        LogicalPlan::GraphRel(gr) => {
+            if gr.direction == Direction::Either
+                && matches!(gr.left.as_ref(), LogicalPlan::GraphRel(_))
+            {
+                return true;
+            }
+            has_nested_undirected_edge(&gr.left) || has_nested_undirected_edge(&gr.right)
+        }
+        LogicalPlan::Projection(p) => has_nested_undirected_edge(&p.input),
+        LogicalPlan::Filter(f) => has_nested_undirected_edge(&f.input),
+        _ => false,
     }
 }
 

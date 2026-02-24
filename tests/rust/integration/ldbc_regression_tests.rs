@@ -464,6 +464,14 @@ async fn ldbc_bi_13() {
 }
 
 #[tokio::test]
+async fn ldbc_bi_14() {
+    let schema = load_ldbc_schema();
+    let sql = generate_sql(&schema, "benchmarks/ldbc_snb/queries/adapted/bi-14.cypher").await;
+    assert!(!sql.is_empty());
+    assert!(sql.contains("SELECT"));
+}
+
+#[tokio::test]
 async fn ldbc_bi_17() {
     let schema = load_ldbc_schema();
     let sql = generate_sql(&schema, "benchmarks/ldbc_snb/queries/adapted/bi-17.cypher").await;

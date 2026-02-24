@@ -912,13 +912,20 @@ impl GraphJoinInference {
                 let deduped_joins = helpers::deduplicate_joins(collected_graph_joins.clone());
 
                 // Collect VLP CTE aliases as pre-available tables for topo_sort.
-                // VLP CTEs (e.g., vt0, vt1) are top-level recursive CTEs that are always
-                // available — joins depending on them should not be considered unresolvable.
-                let vlp_available: HashSet<String> = plan_ctx
+                // VLP CTEs are top-level recursive CTEs that are always available —
+                // joins depending on them should not be considered unresolvable.
+                // Use VLP_CTE_FROM_ALIAS ("t") to match what the render phase uses.
+                // Also include per-VLP aliases (vt0, vt1) for compatibility with
+                // optional VLP patterns that use unique aliases in JOIN table_alias.
+                let mut vlp_available: HashSet<String> = plan_ctx
                     .get_vlp_endpoints()
                     .values()
                     .map(|info| info.vlp_alias.clone())
                     .collect();
+                if !vlp_available.is_empty() {
+                    vlp_available
+                        .insert(crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string());
+                }
 
                 // Reorder JOINs using clean topological sort
                 let anchor_table = super::join_generation::select_anchor(&deduped_joins);
@@ -1492,6 +1499,13 @@ impl GraphJoinInference {
 
                 // Step 1: Build pattern metadata for the inner scope
                 let mut inner_plan_ctx = plan_ctx.clone();
+
+                // CRITICAL: Clear VLP endpoints from the inner scope.
+                // VLP endpoints are scoped to the MATCH clause that created them.
+                // Without clearing, the inner scope's join conditions get incorrectly
+                // rewritten (e.g., message.id → t.start_id) by apply_vlp_rewrites,
+                // causing topo_sort failures.
+                inner_plan_ctx.clear_vlp_endpoints();
 
                 // CRITICAL: Clear CTE references for aliases that are fresh table scans
                 // in this inner scope. register_with_cte_references (called before traversal)

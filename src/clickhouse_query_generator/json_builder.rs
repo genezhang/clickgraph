@@ -253,7 +253,7 @@ pub fn generate_json_from_denormalized_properties(
 /// LIMIT 25
 /// ```
 pub fn generate_multi_type_union_sql(
-    all_node_schemas: &HashMap<String, NodeSchema>,
+    all_node_schemas: &std::collections::BTreeMap<String, NodeSchema>,
     limit: Option<usize>,
 ) -> String {
     let mut branches = Vec::new();
