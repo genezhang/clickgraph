@@ -481,6 +481,24 @@ impl LogicalPlan {
                 graph_rel.right_connection
             );
 
+            // CTE-backed anchor: use CTE as FROM directly.
+            // Mirrors the GraphJoins cte_references check in extract_from_graph_joins().
+            // For multi-hop chains the anchor GraphNode is nested 3+ levels deep;
+            // the search below only reaches 2.
+            if let Some(cte_name) = graph_rel.cte_references.get(anchor_alias.as_str()) {
+                log::info!(
+                    "  ✓ Anchor '{}' is CTE-backed -> using CTE '{}' as FROM",
+                    anchor_alias,
+                    cte_name
+                );
+                return Ok(Some(ViewTableRef {
+                    source: Arc::new(LogicalPlan::Empty),
+                    name: cte_name.clone(),
+                    alias: Some(anchor_alias.clone()),
+                    use_final: false,
+                }));
+            }
+
             // The anchor_connection contains the ALIAS of the node that should be FROM.
             // We need to find which actual GraphNode has that alias.
 
