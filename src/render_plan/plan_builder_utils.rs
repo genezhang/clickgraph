@@ -8725,8 +8725,11 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         cte_name: &str,
                     ) {
                         if let UnionItems(Some(ref mut union)) = plan.union {
-                            // UNION plan: process each branch independently
-                            for (bi, branch) in union.input.iter_mut().enumerate() {
+                            // UNION plan: process each branch independently.
+                            // Return early — the parent plan's SELECT items will be
+                            // overridden with branch SELECTs during UNION branch CTE
+                            // splitting, so we must not also replace in the parent.
+                            for branch in union.input.iter_mut() {
                                 generate_and_replace_pc_subqueries(
                                     branch,
                                     pattern_comprehensions,
@@ -8734,6 +8737,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                     cte_name,
                                 );
                             }
+                            return;
                         }
 
                         // Try replacing in this plan's own select items
@@ -12986,6 +12990,18 @@ fn generate_pattern_comprehension_correlated_subquery(
         pc_meta.where_clause.is_some()
     );
 
+    // Check if any hop uses Direction::Either (undirected edge).
+    // For undirected edges, we need to generate a UNION of both directions.
+    let has_either_direction = pc_meta
+        .pattern_hops
+        .iter()
+        .any(|h| h.direction == crate::query_planner::logical_expr::Direction::Either);
+
+    if has_either_direction {
+        // Delegate to specialized handler that generates UNION for undirected hops
+        return generate_pc_correlated_subquery_with_either(pc_meta, schema, cte_column_map);
+    }
+
     // For each hop, find the matching edge table in schema
     let mut edge_tables: Vec<(String, String, &ConnectedPatternInfo)> = Vec::new(); // (db_table, alias, hop_info)
 
@@ -13001,7 +13017,7 @@ fn generate_pattern_comprehension_correlated_subquery(
                 (hop.end_label.as_deref(), hop.start_label.as_deref())
             }
             _ => {
-                // Outgoing or Either: (start)-[:REL]->(end)
+                // Outgoing: (start)-[:REL]->(end)
                 (hop.start_label.as_deref(), hop.end_label.as_deref())
             }
         };
@@ -13116,6 +13132,271 @@ fn generate_pattern_comprehension_correlated_subquery(
         "(SELECT COUNT(*) FROM {}{}{})",
         from_clause, joins_str, where_str
     ))
+}
+
+/// Generate a correlated subquery for pattern comprehensions that contain
+/// `Direction::Either` (undirected) hops. For each undirected hop, we generate
+/// two subqueries (forward and reverse direction) and UNION ALL them, then
+/// wrap with an outer SELECT COUNT(*).
+///
+/// For a single-hop pattern like `(person)-[:KNOWS]-(friend)`:
+/// ```sql
+/// (SELECT COUNT(*) FROM (
+///     SELECT 1 FROM ldbc.Person_knows_Person AS __r0
+///     WHERE __r0.Person1Id = cte.person_id
+///   UNION ALL
+///     SELECT 1 FROM ldbc.Person_knows_Person AS __r0
+///     WHERE __r0.Person2Id = cte.person_id
+/// ) AS __u)
+/// ```
+fn generate_pc_correlated_subquery_with_either(
+    pc_meta: &crate::query_planner::logical_plan::PatternComprehensionMeta,
+    schema: &GraphSchema,
+    cte_column_map: &HashMap<(String, String), String>,
+) -> Option<String> {
+    use crate::query_planner::logical_plan::PatternPosition;
+
+    // For Direction::Either, we create two copies of the pattern:
+    // one treating it as Outgoing, one as Incoming.
+    // Both share the same edge table but use different from/to ID columns.
+    let mut direction_variants: Vec<Vec<crate::query_planner::logical_expr::Direction>> =
+        vec![vec![]];
+
+    for hop in &pc_meta.pattern_hops {
+        if hop.direction == crate::query_planner::logical_expr::Direction::Either {
+            // Fork: each existing variant gets duplicated with Outgoing and Incoming
+            let mut new_variants = Vec::new();
+            for variant in &direction_variants {
+                let mut v_out = variant.clone();
+                v_out.push(crate::query_planner::logical_expr::Direction::Outgoing);
+                new_variants.push(v_out);
+
+                let mut v_in = variant.clone();
+                v_in.push(crate::query_planner::logical_expr::Direction::Incoming);
+                new_variants.push(v_in);
+            }
+            direction_variants = new_variants;
+        } else {
+            for variant in &mut direction_variants {
+                variant.push(hop.direction.clone());
+            }
+        }
+    }
+
+    log::info!(
+        "🔧 Direction::Either expansion: {} direction variants for {} hops",
+        direction_variants.len(),
+        pc_meta.pattern_hops.len()
+    );
+
+    let mut union_parts: Vec<String> = Vec::new();
+
+    for directions in &direction_variants {
+        // Build edge_tables for this direction variant
+        let mut edge_tables: Vec<(
+            String,
+            String,
+            &crate::query_planner::logical_plan::ConnectedPatternInfo,
+            crate::query_planner::logical_expr::Direction,
+        )> = Vec::new();
+
+        let mut all_found = true;
+        for (hop_idx, (hop, dir)) in pc_meta
+            .pattern_hops
+            .iter()
+            .zip(directions.iter())
+            .enumerate()
+        {
+            let rel_alias = format!("__r{}", hop_idx);
+
+            let (from_label, to_label) = match dir {
+                crate::query_planner::logical_expr::Direction::Incoming => {
+                    (hop.end_label.as_deref(), hop.start_label.as_deref())
+                }
+                _ => (hop.start_label.as_deref(), hop.end_label.as_deref()),
+            };
+
+            let rel_type = hop.rel_type.as_deref();
+            let db_table = find_edge_table_in_schema(schema, rel_type, from_label, to_label);
+
+            if let Some(table) = db_table {
+                edge_tables.push((table, rel_alias, hop, dir.clone()));
+            } else {
+                // Try reversed labels for Either direction that couldn't find forward match
+                if *dir == crate::query_planner::logical_expr::Direction::Outgoing {
+                    let db_table_rev =
+                        find_edge_table_in_schema(schema, rel_type, to_label, from_label);
+                    if let Some(table) = db_table_rev {
+                        // Found with reversed labels — treat as Incoming for this variant
+                        edge_tables.push((
+                            table,
+                            format!("__r{}", hop_idx),
+                            hop,
+                            crate::query_planner::logical_expr::Direction::Incoming,
+                        ));
+                        continue;
+                    }
+                }
+                log::warn!(
+                    "⚠️ No edge table for Either hop {}: rel={:?}, from={:?}, to={:?}",
+                    hop_idx,
+                    rel_type,
+                    from_label,
+                    to_label
+                );
+                all_found = false;
+                break;
+            }
+        }
+
+        if !all_found {
+            continue;
+        }
+
+        // Build FROM + JOINs + WHERE for this direction variant
+        let mut from_clause = String::new();
+        let mut join_clauses: Vec<String> = Vec::new();
+        let mut where_conditions: Vec<String> = Vec::new();
+
+        for (idx, (db_table, alias, _hop, _dir)) in edge_tables.iter().enumerate() {
+            if idx == 0 {
+                from_clause = format!("{} AS {}", db_table, alias);
+            } else {
+                let prev_alias = &edge_tables[idx - 1].1;
+                let prev_hop = edge_tables[idx - 1].2;
+                let prev_dir = &edge_tables[idx - 1].3;
+
+                // Create a temporary ConnectedPatternInfo with the effective direction
+                let prev_to_col = find_edge_id_column_with_direction(
+                    schema,
+                    &edge_tables[idx - 1].0,
+                    false,
+                    prev_hop,
+                    prev_dir,
+                );
+                let curr_from_col =
+                    find_edge_id_column_with_direction(schema, db_table, true, _hop, _dir);
+
+                join_clauses.push(format!(
+                    "INNER JOIN {} AS {} ON {}.{} = {}.{}",
+                    db_table, alias, prev_alias, prev_to_col, alias, curr_from_col
+                ));
+            }
+        }
+
+        // WHERE conditions for correlation variables
+        for cv in &pc_meta.correlation_vars {
+            let (hop_idx, is_start) = match &cv.pattern_position {
+                PatternPosition::StartOfHop(idx) => (*idx, true),
+                PatternPosition::EndOfHop(idx) => (*idx, false),
+            };
+
+            if hop_idx >= edge_tables.len() {
+                continue;
+            }
+
+            let (_, edge_alias, hop_info, dir) = &edge_tables[hop_idx];
+            let edge_col = find_edge_id_column_with_direction(
+                schema,
+                &edge_tables[hop_idx].0,
+                is_start,
+                hop_info,
+                dir,
+            );
+
+            let cte_col = find_cte_column_for_correlation_var(
+                &cv.var_name,
+                &cv.label,
+                schema,
+                cte_column_map,
+            );
+
+            if let Some(cte_ref) = cte_col {
+                where_conditions.push(format!("{}.{} = {}", edge_alias, edge_col, cte_ref));
+            }
+        }
+
+        // WHERE clause from pattern comprehension
+        if let Some(ref where_expr) = pc_meta.where_clause {
+            if let Some(where_sql) = render_pc_where_clause(
+                where_expr,
+                &pc_meta.pattern_hops,
+                &edge_tables
+                    .iter()
+                    .map(|(t, a, h, _)| (t.clone(), a.clone(), *h))
+                    .collect::<Vec<_>>(),
+                schema,
+                &mut join_clauses,
+            ) {
+                where_conditions.push(where_sql);
+            }
+        }
+
+        let where_str = if where_conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", where_conditions.join(" AND "))
+        };
+
+        let joins_str = if join_clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", join_clauses.join(" "))
+        };
+
+        union_parts.push(format!(
+            "SELECT 1 FROM {}{}{}",
+            from_clause, joins_str, where_str
+        ));
+    }
+
+    if union_parts.is_empty() {
+        return None;
+    }
+
+    if union_parts.len() == 1 {
+        // Single variant (no Either hops were actually encountered, shouldn't happen but safe)
+        Some(format!(
+            "(SELECT COUNT(*) FROM ({}) AS __u)",
+            union_parts[0]
+        ))
+    } else {
+        let union_sql = union_parts.join(" UNION ALL ");
+        Some(format!("(SELECT COUNT(*) FROM ({}) AS __u)", union_sql))
+    }
+}
+
+/// Like `find_edge_id_column` but takes an explicit direction parameter
+/// instead of reading from the hop's direction field. Used by the Either
+/// direction handler which overrides the hop's original direction.
+fn find_edge_id_column_with_direction(
+    schema: &GraphSchema,
+    db_table: &str,
+    is_from: bool,
+    _hop: &crate::query_planner::logical_plan::ConnectedPatternInfo,
+    direction: &crate::query_planner::logical_expr::Direction,
+) -> String {
+    for (_, rel_schema) in schema.get_relationships_schemas() {
+        let table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+        if table == db_table {
+            let effective_is_from = match direction {
+                crate::query_planner::logical_expr::Direction::Incoming => !is_from,
+                _ => is_from,
+            };
+
+            return if effective_is_from {
+                rel_schema.from_id.first_column().to_string()
+            } else {
+                rel_schema.to_id.first_column().to_string()
+            };
+        }
+    }
+
+    if is_from {
+        "from_id".to_string()
+    } else {
+        "to_id".to_string()
+    }
 }
 
 /// Find an edge table in schema matching the given rel_type, from_label, and to_label.
@@ -13257,8 +13538,6 @@ fn render_pc_where_clause(
     schema: &GraphSchema,
     join_clauses: &mut Vec<String>,
 ) -> Option<String> {
-    use crate::query_planner::logical_expr::LogicalExpr;
-
     // Build a map of alias → (label, node table alias) for intermediate nodes in the pattern
     // that might be referenced in the WHERE clause
     let mut node_alias_map: HashMap<String, (String, String)> = HashMap::new(); // alias → (label, sql_alias)
@@ -13365,17 +13644,94 @@ fn render_logical_expr_to_sql(
             }
         }
         LogicalExpr::OperatorApplicationExp(op) => {
+            use crate::query_planner::logical_expr::Operator as Op;
             let op_str = match op.operator {
-                crate::query_planner::logical_expr::Operator::And => " AND ",
-                crate::query_planner::logical_expr::Operator::Or => " OR ",
-                crate::query_planner::logical_expr::Operator::LessThan => " < ",
-                crate::query_planner::logical_expr::Operator::GreaterThan => " > ",
-                crate::query_planner::logical_expr::Operator::Equal => " = ",
-                crate::query_planner::logical_expr::Operator::NotEqual => " <> ",
-                crate::query_planner::logical_expr::Operator::LessThanEqual => " <= ",
-                crate::query_planner::logical_expr::Operator::GreaterThanEqual => " >= ",
-                _ => " ?? ",
+                Op::And => " AND ",
+                Op::Or => " OR ",
+                Op::LessThan => " < ",
+                Op::GreaterThan => " > ",
+                Op::Equal => " = ",
+                Op::NotEqual => " <> ",
+                Op::LessThanEqual => " <= ",
+                Op::GreaterThanEqual => " >= ",
+                Op::Addition => " + ",
+                Op::Subtraction => " - ",
+                Op::Multiplication => " * ",
+                Op::Division => " / ",
+                Op::ModuloDivision => " % ",
+                Op::Exponentiation => " ^ ",
+                Op::In => " IN ",
+                Op::NotIn => " NOT IN ",
+                Op::StartsWith | Op::EndsWith | Op::Contains | Op::RegexMatch => {
+                    // These are function-like operators handled specially below
+                    ""
+                }
+                Op::Not => "NOT ",
+                Op::IsNull => " IS NULL",
+                Op::IsNotNull => " IS NOT NULL",
+                Op::Distinct => " ?? ",
             };
+
+            // Handle function-like operators
+            if matches!(
+                op.operator,
+                Op::StartsWith | Op::EndsWith | Op::Contains | Op::RegexMatch
+            ) && op.operands.len() == 2
+            {
+                let left = render_logical_expr_to_sql(
+                    &op.operands[0],
+                    node_alias_map,
+                    pattern_hops,
+                    edge_tables,
+                    schema,
+                    join_clauses,
+                    node_joins_added,
+                );
+                let right = render_logical_expr_to_sql(
+                    &op.operands[1],
+                    node_alias_map,
+                    pattern_hops,
+                    edge_tables,
+                    schema,
+                    join_clauses,
+                    node_joins_added,
+                );
+                return match op.operator {
+                    Op::StartsWith => format!("startsWith({}, {})", left, right),
+                    Op::EndsWith => format!("endsWith({}, {})", left, right),
+                    Op::Contains => format!("position({}, {}) > 0", left, right),
+                    Op::RegexMatch => format!("match({}, {})", left, right),
+                    _ => unreachable!(),
+                };
+            }
+
+            // Unary postfix operators (IS NULL, IS NOT NULL)
+            if matches!(op.operator, Op::IsNull | Op::IsNotNull) && op.operands.len() == 1 {
+                let operand = render_logical_expr_to_sql(
+                    &op.operands[0],
+                    node_alias_map,
+                    pattern_hops,
+                    edge_tables,
+                    schema,
+                    join_clauses,
+                    node_joins_added,
+                );
+                return format!("{}{}", operand, op_str);
+            }
+
+            // Unary prefix operator (NOT)
+            if op.operator == Op::Not && op.operands.len() == 1 {
+                let operand = render_logical_expr_to_sql(
+                    &op.operands[0],
+                    node_alias_map,
+                    pattern_hops,
+                    edge_tables,
+                    schema,
+                    join_clauses,
+                    node_joins_added,
+                );
+                return format!("{}{}", op_str, operand);
+            }
 
             if op.operands.len() == 2 {
                 let left = render_logical_expr_to_sql(
@@ -13419,7 +13775,9 @@ fn render_logical_expr_to_sql(
         LogicalExpr::Literal(lit) => match lit {
             crate::query_planner::logical_expr::Literal::Integer(i) => i.to_string(),
             crate::query_planner::logical_expr::Literal::Float(f) => f.to_string(),
-            crate::query_planner::logical_expr::Literal::String(s) => format!("'{}'", s),
+            crate::query_planner::logical_expr::Literal::String(s) => {
+                format!("'{}'", s.replace('\'', "\\'"))
+            }
             crate::query_planner::logical_expr::Literal::Boolean(b) => {
                 if *b {
                     "true".to_string()
