@@ -14,6 +14,10 @@ use tokio::io::AsyncBufReadExt;
 use crate::{
     clickhouse_query_generator,
     graph_catalog::graph_schema::GraphSchemaElement,
+    graph_catalog::{
+        DraftOptions, DraftRequest, EdgeHint, FkEdgeHint, IntrospectResponse, NodeHint,
+        SchemaDiscovery, Suggestion,
+    },
     open_cypher_parser::{self, ast::CypherStatement},
     query_planner::{self, types::QueryType},
     render_plan::plan_builder::RenderPlanBuilder,
@@ -1309,4 +1313,67 @@ fn extract_result_count(_response: &axum::response::Response) -> Option<usize> {
     // 2. Parsing the response body (complex with streaming)
     // For now, we return None
     None
+}
+
+// Schema discovery endpoints
+
+#[derive(Deserialize)]
+pub struct IntrospectRequest {
+    pub database: String,
+}
+
+pub async fn introspect_handler(
+    State(app_state): State<Arc<AppState>>,
+    Json(payload): Json<IntrospectRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    log::info!("Introspecting database: {}", payload.database);
+    
+    match SchemaDiscovery::introspect(
+        &app_state.clickhouse_client,
+        &payload.database,
+    )
+    .await
+    {
+        Ok(response) => Ok(Json(serde_json::to_value(response).unwrap())),
+        Err(e) => {
+            log::error!("Introspect failed: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e })),
+            ))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct DraftRequestPayload {
+    pub database: String,
+    pub schema_name: String,
+    pub nodes: Vec<NodeHint>,
+    pub edges: Option<Vec<EdgeHint>>,
+    pub fk_edges: Option<Vec<FkEdgeHint>>,
+    pub options: Option<DraftOptions>,
+}
+
+pub async fn draft_handler(
+    State(_app_state): State<Arc<AppState>>,
+    Json(payload): Json<DraftRequestPayload>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    log::info!("Generating draft for schema: {}", payload.schema_name);
+    
+    let request = DraftRequest {
+        database: payload.database,
+        schema_name: payload.schema_name,
+        nodes: payload.nodes,
+        edges: payload.edges.unwrap_or_default(),
+        fk_edges: payload.fk_edges.unwrap_or_default(),
+        options: payload.options,
+    };
+    
+    let yaml = SchemaDiscovery::generate_draft(&request);
+    
+    Ok(Json(serde_json::json!({
+        "yaml": yaml,
+        "message": "Review and edit the YAML before loading with /schemas/load"
+    })))
 }

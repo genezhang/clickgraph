@@ -10,6 +10,7 @@ pub mod filter_parser;
 pub mod graph_schema;
 pub mod node_classification;
 pub mod pattern_schema;
+pub mod schema_discovery;
 pub mod schema_types;
 pub mod schema_validator;
 
@@ -23,6 +24,11 @@ mod composite_id_tests;
 // Note: These are public re-exports for library users
 #[allow(unused_imports)]
 pub use column_info::{query_table_columns, ColumnInfo};
+#[allow(unused_imports)]
+pub use schema_discovery::{
+    ColumnMetadata, DraftOptions, DraftRequest, EdgeHint, FkEdgeHint, IntrospectResponse,
+    NodeHint, SchemaDiscovery, Suggestion, TableMetadata,
+};
 #[allow(unused_imports)]
 pub use composite_key_utils::{
     build_composite_key, extract_type_name, is_composite_key, CompositeKey, CompositeKeyError,
