@@ -7089,6 +7089,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
             // Render each WITH clause plan
             let mut rendered_plans: Vec<RenderPlan> = Vec::new();
             let mut inner_plans_for_id: Vec<LogicalPlan> = Vec::new();
+            let mut has_optional_match_input = false;
             for with_plan in with_plans.iter() {
                 log::debug!("🔧 build_chained_with_match_cte_plan: Rendering WITH plan for '{}' - plan type: {:?}",
                            with_alias, std::mem::discriminant(with_plan));
@@ -7274,6 +7275,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                 // Save plan_to_render for ID column computation (used after loop)
                 inner_plans_for_id.push(plan_to_render.clone());
+
+                // Track whether this WITH clause's input contains an OPTIONAL MATCH.
+                // This is used later for deterministic CTE body restructuring.
+                if plan_to_render.is_optional_pattern() {
+                    has_optional_match_input = true;
+                }
 
                 // Render the plan (even if it contains nested WITHs)
                 // Instead of calling to_render_plan recursively (which causes infinite loops),
@@ -7902,9 +7909,25 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                                 Ok((props, _actual_alias)) if !props.is_empty() => {
                                                                     log::debug!("🔧 Found {} properties for alias '{}', expanding", props.len(), alias.0);
 
+                                                                    // For collect(node), only collect the ID property to produce groupArray(id).
+                                                                    // Semantically, collect(node) gathers node identities, and groupArray(id)
+                                                                    // is compatible with downstream IN/has() checks (Array(T) vs scalar T).
+                                                                    // groupArray(tuple(...)) would produce Array(Tuple) which fails has() type checks.
+                                                                    let id_only_props: Vec<_> = props.iter()
+                                                                        .filter(|(prop_name, _)| prop_name == "id")
+                                                                        .cloned()
+                                                                        .collect();
+                                                                    let collect_props = if id_only_props.is_empty() {
+                                                                        log::debug!("🔧 collect({}): no 'id' property found, using all {} properties", alias.0, props.len());
+                                                                        props
+                                                                    } else {
+                                                                        log::debug!("🔧 collect({}): using ID-only for groupArray (compatible with IN/has())", alias.0);
+                                                                        id_only_props
+                                                                    };
+
                                                                     // Use centralized expansion utility with property requirements
                                                                     use crate::render_plan::property_expansion::expand_collect_to_group_array;
-                                                                    expand_collect_to_group_array(&alias.0, props, property_requirements)
+                                                                    expand_collect_to_group_array(&alias.0, collect_props, property_requirements)
                                                                 }
                                                                 _ => {
                                                                     log::warn!("⚠️  Could not expand collect({}) in WITH - no properties found, keeping as-is", alias.0);
@@ -9211,6 +9234,422 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     }
                 })
                 .unwrap_or_default();
+
+            // ==========================================================================
+            // FIX: Post-WITH OPTIONAL MATCH CTE body restructuring
+            // ==========================================================================
+            // When a post-WITH pattern uses OPTIONAL MATCH, the CTE body renders as:
+            //   FROM pattern_table CROSS JOIN cte LEFT JOIN ...
+            // This is semantically wrong: FROM should be the CTE (to preserve all rows
+            // for OPTIONAL MATCH / LEFT JOIN semantics), and pattern tables should LEFT JOIN.
+            //
+            // Guard: Only applies when is_optional_pattern() was true on the input plan
+            //   (deterministic — set from LogicalPlan::GraphRel.is_optional flag).
+            // Structural requirements:
+            //   - FROM is a regular table (not already a CTE or VLP)
+            //   - A CTE CROSS JOIN exists in the join list (added by fix_orphan_table_aliases)
+            // Transformation:
+            //   1. Make CTE the FROM
+            //   2. Find the "bridge join" (LEFT JOIN whose ON references the CTE alias)
+            //   3. Restructure join chain: CTE → bridge_table → old_FROM → rest
+            //   4. Embed WHERE predicate into countIf() aggregate
+            // ==========================================================================
+            if has_optional_match_input {
+                if let FromTableItem(Some(ref from_ref)) = with_cte_render.from {
+                    if !from_ref.name.starts_with("with_") && !from_ref.name.starts_with("vlp_") {
+                        // Find a CTE CROSS JOIN anywhere in the join list
+                        // fix_orphan_table_aliases adds JoinType::Join (renders as CROSS JOIN)
+                        let cte_cross_join_idx = with_cte_render.joins.0.iter().position(|j| {
+                            j.table_name.starts_with("with_")
+                                && (matches!(j.join_type, super::JoinType::Inner)
+                                    || matches!(j.join_type, super::JoinType::Join))
+                        });
+
+                        if let Some(cte_idx) = cte_cross_join_idx {
+                            log::info!("🔧 OPTIONAL MATCH CTE body restructuring: has_optional_match_input=true, FROM='{}', CTE cross-join at idx {}",
+                                from_ref.name, cte_idx);
+
+                            let cte_join = with_cte_render.joins.0.remove(cte_idx);
+                            let cte_table_name = cte_join.table_name.clone();
+                            let cte_alias_str = cte_join.table_alias.clone();
+
+                            // Find the "bridge join" — the LEFT JOIN whose ON condition references the CTE alias
+                            let bridge_idx = with_cte_render.joins.0.iter().position(|j| {
+                                j.joining_on.iter().any(|op| {
+                                    op.operands.iter().any(|operand| {
+                                        if let RenderExpr::PropertyAccessExp(pa) = operand {
+                                            pa.table_alias.0 == cte_alias_str
+                                        } else {
+                                            false
+                                        }
+                                    })
+                                })
+                            });
+
+                            if let Some(bridge_idx) = bridge_idx {
+                                let bridge_join = with_cte_render.joins.0.remove(bridge_idx);
+                                log::info!("🔧 OPTIONAL MATCH CTE body restructuring: bridge join '{}' connects CTE to pattern",
+                                bridge_join.table_alias);
+
+                                // Extract CTE column and pattern column from bridge join ON condition
+                                let mut cte_col: Option<String> = None;
+                                let mut pattern_alias: Option<String> = None;
+                                let mut pattern_col: Option<String> = None;
+                                for op in &bridge_join.joining_on {
+                                    for operand in &op.operands {
+                                        if let RenderExpr::PropertyAccessExp(pa) = operand {
+                                            if pa.table_alias.0 == cte_alias_str {
+                                                cte_col = Some(pa.column.raw().to_string());
+                                            } else {
+                                                pattern_alias = Some(pa.table_alias.0.clone());
+                                                pattern_col = Some(pa.column.raw().to_string());
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if let (Some(cte_col), Some(pattern_alias), Some(pattern_col)) =
+                                    (cte_col, pattern_alias, pattern_col)
+                                {
+                                    // Save old FROM info
+                                    let old_from = with_cte_render.from.0.take().unwrap();
+                                    let old_from_alias = old_from
+                                        .alias
+                                        .clone()
+                                        .unwrap_or_else(|| old_from.name.clone());
+
+                                    // Set FROM to CTE
+                                    with_cte_render.from =
+                                        FromTableItem(Some(super::ViewTableRef {
+                                            source: std::sync::Arc::new(LogicalPlan::Empty),
+                                            name: cte_table_name.clone(),
+                                            alias: Some(cte_alias_str.clone()),
+                                            use_final: false,
+                                        }));
+
+                                    // Find the pattern table join that was referenced in the bridge
+                                    let pattern_join_idx = with_cte_render
+                                        .joins
+                                        .0
+                                        .iter()
+                                        .position(|j| j.table_alias == pattern_alias);
+
+                                    if let Some(pidx) = pattern_join_idx {
+                                        // Find FK column pointing to the old FROM table
+                                        let mut fk_col_to_old_from: Option<String> = None;
+                                        for op in &with_cte_render.joins.0[pidx].joining_on {
+                                            for operand in &op.operands {
+                                                if let RenderExpr::PropertyAccessExp(pa) = operand {
+                                                    if pa.table_alias.0 == pattern_alias {
+                                                        fk_col_to_old_from =
+                                                            Some(pa.column.raw().to_string());
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // Rewrite pattern join ON condition to reference CTE
+                                        with_cte_render.joins.0[pidx].joining_on =
+                                            vec![OperatorApplication {
+                                                operator: Operator::Equal,
+                                                operands: vec![
+                                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                        table_alias: TableAlias(
+                                                            pattern_alias.clone(),
+                                                        ),
+                                                        column: PropertyValue::Column(
+                                                            pattern_col.clone(),
+                                                        ),
+                                                    }),
+                                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                        table_alias: TableAlias(
+                                                            cte_alias_str.clone(),
+                                                        ),
+                                                        column: PropertyValue::Column(
+                                                            cte_col.clone(),
+                                                        ),
+                                                    }),
+                                                ],
+                                            }];
+
+                                        // Reorder: move pattern join to position 0
+                                        let pjoin = with_cte_render.joins.0.remove(pidx);
+                                        with_cte_render.joins.0.insert(0, pjoin);
+
+                                        // Add old FROM as LEFT JOIN after pattern join
+                                        let old_from_join = super::Join {
+                                            table_name: old_from.name.clone(),
+                                            table_alias: old_from_alias.clone(),
+                                            joining_on: vec![OperatorApplication {
+                                                operator: Operator::Equal,
+                                                operands: vec![
+                                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                        table_alias: TableAlias(
+                                                            old_from_alias.clone(),
+                                                        ),
+                                                        column: PropertyValue::Column(
+                                                            "id".to_string(),
+                                                        ),
+                                                    }),
+                                                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                        table_alias: TableAlias(
+                                                            pattern_alias.clone(),
+                                                        ),
+                                                        column: PropertyValue::Column(
+                                                            fk_col_to_old_from.unwrap_or_else(
+                                                                || "PostId".to_string(),
+                                                            ),
+                                                        ),
+                                                    }),
+                                                ],
+                                            }],
+                                            join_type: super::JoinType::Left,
+                                            pre_filter: None,
+                                            from_id_column: None,
+                                            to_id_column: None,
+                                            graph_rel: None,
+                                        };
+                                        with_cte_render.joins.0.insert(1, old_from_join);
+
+                                        // Embed WHERE predicate into count() as countIf()
+                                        // ClickHouse rejects complex LEFT JOIN ON expressions with join_use_nulls.
+                                        // Instead of `count(x) WHERE cond`, use `countIf(x, cond)` with no WHERE.
+                                        if let FilterItems(Some(where_expr)) =
+                                            &with_cte_render.filters
+                                        {
+                                            let where_clone = where_expr.clone();
+                                            // Find count() aggregate in SELECT and convert to countIf()
+                                            for item in with_cte_render.select.items.iter_mut() {
+                                                if let RenderExpr::AggregateFnCall(agg) =
+                                                    &mut item.expression
+                                                {
+                                                    if agg.name == "count" && !agg.args.is_empty() {
+                                                        log::info!("🔧 OPTIONAL MATCH CTE body restructuring: converting count() to countIf() with WHERE filter");
+                                                        agg.name = "countIf".to_string();
+                                                        agg.args.push(where_clone.clone());
+                                                    }
+                                                }
+                                            }
+                                            with_cte_render.filters = FilterItems(None);
+                                        }
+
+                                        // Remove redundant joins: bridge target table (Forum)
+                                        with_cte_render
+                                            .joins
+                                            .0
+                                            .retain(|j| j.table_alias != bridge_join.table_alias);
+
+                                        // Remove spurious VLP CROSS JOINs
+                                        with_cte_render.joins.0.retain(|j| {
+                                            !(j.table_name.starts_with("vlp_")
+                                                && (matches!(j.join_type, super::JoinType::Inner)
+                                                    || matches!(
+                                                        j.join_type,
+                                                        super::JoinType::Join
+                                                    )))
+                                        });
+
+                                        // Remove Person join if only used for IN/has() check — use FK instead.
+                                        // The Person node (e.g., otherPerson2) is only needed to provide
+                                        // its ID for the IN check. We can use the relationship table's FK
+                                        // column (e.g., Post_hasCreator_Person.PersonId) directly.
+                                        let person_join_idx = with_cte_render.joins.0.iter().position(|j| {
+                                        matches!(j.join_type, super::JoinType::Left)
+                                            && j.table_alias != old_from_alias
+                                            && j.table_alias != pattern_alias
+                                            // Node tables: "ldbc.Person" (contains '.' but not '_' after the db prefix)
+                                            && j.table_name.split('.').last().map_or(false, |n| !n.contains('_'))
+                                            && j.joining_on.iter().any(|op| {
+                                                op.operands.iter().any(|operand| {
+                                                    if let RenderExpr::PropertyAccessExp(pa) = operand {
+                                                        pa.table_alias.0 == j.table_alias
+                                                            && pa.column.raw() == "id"
+                                                    } else {
+                                                        false
+                                                    }
+                                                })
+                                            })
+                                    });
+                                        if let Some(pidx2) = person_join_idx {
+                                            let person_alias =
+                                                with_cte_render.joins.0[pidx2].table_alias.clone();
+                                            let mut select_aliases =
+                                                std::collections::HashSet::new();
+                                            for item in &with_cte_render.select.items {
+                                                collect_aliases_from_single_render_expr(
+                                                    &item.expression,
+                                                    &mut select_aliases,
+                                                );
+                                            }
+                                            let person_still_needed =
+                                                select_aliases.contains(&person_alias);
+                                            if !person_still_needed {
+                                                // Find the FK column that joins this Person to the relationship table
+                                                // e.g., otherPerson2.id = t2.PersonId → FK is "PersonId" on alias "t2"
+                                                let mut fk_info: Option<(String, String)> = None; // (rel_alias, fk_col)
+                                                for op in &with_cte_render.joins.0[pidx2].joining_on
+                                                {
+                                                    for operand in &op.operands {
+                                                        if let RenderExpr::PropertyAccessExp(pa) =
+                                                            operand
+                                                        {
+                                                            if pa.table_alias.0 != person_alias {
+                                                                fk_info = Some((
+                                                                    pa.table_alias.0.clone(),
+                                                                    pa.column.raw().to_string(),
+                                                                ));
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                // Rewrite IN operator references from person.id to rel.FK
+                                                // At this stage, IN is OperatorApplication(In), not ScalarFnCall("has")
+                                                if let Some((rel_alias, fk_col)) = &fk_info {
+                                                    for j in with_cte_render.joins.0.iter_mut() {
+                                                        for op in j.joining_on.iter_mut() {
+                                                            // Check if this is an IN operator with person_alias ref
+                                                            if matches!(op.operator, Operator::In)
+                                                                && op.operands.len() == 2
+                                                            {
+                                                                if let RenderExpr::PropertyAccessExp(
+                                                                pa,
+                                                            ) = &op.operands[0]
+                                                            {
+                                                                if pa.table_alias.0 == person_alias
+                                                                {
+                                                                    op.operands[0] = RenderExpr::PropertyAccessExp(
+                                                                        PropertyAccess {
+                                                                            table_alias: TableAlias(rel_alias.clone()),
+                                                                            column: PropertyValue::Column(fk_col.clone()),
+                                                                        }
+                                                                    );
+                                                                    log::info!("🔧 OPTIONAL MATCH CTE body restructuring: rewrote IN to use {}.{}", rel_alias, fk_col);
+                                                                }
+                                                            }
+                                                            }
+                                                            // Also handle ScalarFnCall("has") form
+                                                            for operand in op.operands.iter_mut() {
+                                                                if let RenderExpr::ScalarFnCall(
+                                                                    fn_call,
+                                                                ) = operand
+                                                                {
+                                                                    if fn_call.name == "has"
+                                                                        && fn_call.args.len() == 2
+                                                                    {
+                                                                        if let RenderExpr::PropertyAccessExp(pa) = &fn_call.args[1] {
+                                                                        if pa.table_alias.0 == person_alias {
+                                                                            fn_call.args[1] = RenderExpr::PropertyAccessExp(
+                                                                                PropertyAccess {
+                                                                                    table_alias: TableAlias(rel_alias.clone()),
+                                                                                    column: PropertyValue::Column(fk_col.clone()),
+                                                                                }
+                                                                            );
+                                                                            log::info!("🔧 OPTIONAL MATCH CTE body restructuring: rewrote has() to use FK column");
+                                                                        }
+                                                                    }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    // Also rewrite person alias references in SELECT items
+                                                    // (e.g., inside countIf args where the WHERE filter was moved)
+                                                    fn rewrite_person_to_fk(
+                                                        expr: &mut RenderExpr,
+                                                        person_alias: &str,
+                                                        rel_alias: &str,
+                                                        fk_col: &str,
+                                                    )
+                                                    {
+                                                        match expr {
+                                                            RenderExpr::PropertyAccessExp(pa)
+                                                                if pa.table_alias.0
+                                                                    == person_alias =>
+                                                            {
+                                                                pa.table_alias = TableAlias(
+                                                                    rel_alias.to_string(),
+                                                                );
+                                                                pa.column = PropertyValue::Column(
+                                                                    fk_col.to_string(),
+                                                                );
+                                                            }
+                                                            RenderExpr::AggregateFnCall(agg) => {
+                                                                for arg in agg.args.iter_mut() {
+                                                                    rewrite_person_to_fk(
+                                                                        arg,
+                                                                        person_alias,
+                                                                        rel_alias,
+                                                                        fk_col,
+                                                                    );
+                                                                }
+                                                            }
+                                                            RenderExpr::ScalarFnCall(f) => {
+                                                                for arg in f.args.iter_mut() {
+                                                                    rewrite_person_to_fk(
+                                                                        arg,
+                                                                        person_alias,
+                                                                        rel_alias,
+                                                                        fk_col,
+                                                                    );
+                                                                }
+                                                            }
+                                                            RenderExpr::OperatorApplicationExp(
+                                                                op,
+                                                            ) => {
+                                                                for operand in
+                                                                    op.operands.iter_mut()
+                                                                {
+                                                                    rewrite_person_to_fk(
+                                                                        operand,
+                                                                        person_alias,
+                                                                        rel_alias,
+                                                                        fk_col,
+                                                                    );
+                                                                }
+                                                            }
+                                                            RenderExpr::List(items) => {
+                                                                for item in items.iter_mut() {
+                                                                    rewrite_person_to_fk(
+                                                                        item,
+                                                                        person_alias,
+                                                                        rel_alias,
+                                                                        fk_col,
+                                                                    );
+                                                                }
+                                                            }
+                                                            _ => {}
+                                                        }
+                                                    }
+                                                    for item in
+                                                        with_cte_render.select.items.iter_mut()
+                                                    {
+                                                        rewrite_person_to_fk(
+                                                            &mut item.expression,
+                                                            &person_alias,
+                                                            rel_alias,
+                                                            fk_col,
+                                                        );
+                                                    }
+                                                    log::info!("🔧 OPTIONAL MATCH CTE body restructuring: rewrote person refs in SELECT items");
+                                                }
+                                                with_cte_render.joins.0.remove(pidx2);
+                                                log::info!("🔧 OPTIONAL MATCH CTE body restructuring: removed redundant Person join '{}'", person_alias);
+                                            }
+                                        }
+
+                                        log::info!("🔧 OPTIONAL MATCH CTE body restructuring: complete. FROM='{}', {} joins",
+                                        cte_table_name, with_cte_render.joins.0.len());
+                                    }
+                                }
+                            } else {
+                                // No bridge join found — put the CTE join back
+                                with_cte_render.joins.0.insert(0, cte_join);
+                            }
+                        }
+                    }
+                }
+            }
 
             // Create the CTE with column metadata.
             // If the UNION + correlated subquery split happened, use RawSql content.
