@@ -859,10 +859,71 @@ impl GraphJoinInference {
                             graph_schema,
                             captured_cte_refs,
                         )?;
-                        if matches!(result, Transformed::Yes(_)) {
+
+                        let was_transformed = matches!(result, Transformed::Yes(_));
+                        let branch_plan = result.get_plan();
+
+                        // If the branch has no Projection (and thus no GraphJoins wrapper),
+                        // but we collected joins, we need to wrap it with GraphJoins explicitly.
+                        // This happens when UnionDistribution hoists Union above Projection,
+                        // leaving raw GraphRel/Filter chains in each branch.
+                        let has_graph_joins = {
+                            fn check(p: &LogicalPlan) -> bool {
+                                match p {
+                                    LogicalPlan::GraphJoins(_) => true,
+                                    LogicalPlan::Filter(f) => check(&f.input),
+                                    LogicalPlan::GraphNode(gn) => check(&gn.input),
+                                    LogicalPlan::GraphRel(gr) => {
+                                        check(&gr.left) || check(&gr.right)
+                                    }
+                                    _ => false,
+                                }
+                            }
+                            check(branch_plan.as_ref())
+                        };
+
+                        // Only wrap branches that are complex (from UnionDistribution),
+                        // not simple GraphRel branches from BidirectionalUnion.
+                        // BidirectionalUnion produces Union(GraphRel, GraphRel) — simple edges
+                        // that are rendered correctly by existing CTE/scope handling.
+                        // UnionDistribution produces Union(Filter(...), Filter(...)) or
+                        // Union(CartesianProduct(...), ...) — complex branches needing GraphJoins.
+                        let is_complex_branch = !matches!(
+                            branch_plan.as_ref(),
+                            LogicalPlan::GraphRel(_) | LogicalPlan::GraphNode(_)
+                        );
+
+                        if !has_graph_joins && !branch_joins.is_empty() && is_complex_branch {
                             any_transformed = true;
+                            log::info!(
+                                "🔄 Union branch: wrapping with GraphJoins ({} joins, no inner Projection)",
+                                branch_joins.len()
+                            );
+                            let deduped = helpers::deduplicate_joins(branch_joins);
+                            let anchor_table =
+                                super::join_generation::select_anchor(&deduped);
+                            let reordered =
+                                super::join_generation::topo_sort_joins(deduped, &HashSet::new())?;
+                            let mut cte_references = std::collections::HashMap::new();
+                            for (alias, table_ctx) in plan_ctx.iter_table_contexts() {
+                                if let Some(cte_name) = table_ctx.get_cte_name() {
+                                    cte_references.insert(alias.clone(), cte_name.clone());
+                                }
+                            }
+                            Ok(Arc::new(LogicalPlan::GraphJoins(GraphJoins {
+                                input: branch_plan,
+                                joins: reordered,
+                                optional_aliases: optional_aliases.clone(),
+                                anchor_table,
+                                cte_references,
+                                correlation_predicates: vec![],
+                            })))
+                        } else {
+                            if was_transformed {
+                                any_transformed = true;
+                            }
+                            Ok(branch_plan)
                         }
-                        Ok(result.get_plan())
                     })
                     .collect();
 
@@ -958,6 +1019,31 @@ impl GraphJoinInference {
                         "🔍 GraphJoinInference: Separated {} NOT PathPattern predicates to WHERE",
                         where_predicates.len()
                     );
+                }
+
+                // Skip outer GraphJoins wrapper when joins are empty and input is a Union
+                // with GraphJoins branches. The Union branches already have their own
+                // GraphJoins from UnionDistribution processing. An empty outer GraphJoins
+                // produces FROM=None which breaks CTE cross-join logic.
+                fn input_is_union_with_graph_joins(plan: &LogicalPlan) -> bool {
+                    match plan {
+                        LogicalPlan::Union(u) => u
+                            .inputs
+                            .iter()
+                            .all(|b| matches!(b.as_ref(), LogicalPlan::GraphJoins(_))),
+                        LogicalPlan::GroupBy(gb) => input_is_union_with_graph_joins(&gb.input),
+                        LogicalPlan::Projection(p) => input_is_union_with_graph_joins(&p.input),
+                        _ => false,
+                    }
+                }
+
+                if joins_with_pre_filter.is_empty()
+                    && input_is_union_with_graph_joins(&new_projection)
+                {
+                    log::info!(
+                        "🔍 GraphJoinInference: Skipping outer GraphJoins (0 joins, Union with GraphJoins branches)"
+                    );
+                    return Ok(Transformed::Yes(new_projection));
                 }
 
                 // wrap the outer projection i.e. first occurance in the tree walk with Graph joins

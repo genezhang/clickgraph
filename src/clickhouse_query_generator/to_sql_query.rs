@@ -249,8 +249,8 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
         .iter()
         .find(|cte| cte.vlp_cypher_start_alias.is_some());
 
-    log::error!(
-        "🔍🔍🔍 TRACING: Checking for VLP CTEs. Found {} CTEs",
+    log::debug!(
+        "🔍 TRACING: Checking for VLP CTEs. Found {} CTEs",
         plan.ctes.0.len()
     );
     for (i, cte) in plan.ctes.0.iter().enumerate() {
@@ -294,7 +294,25 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                 );
             }
         } else {
-            log::debug!("🔍 TRACING: No FROM ref found");
+            // FROM is None — likely a Union shell where branches have their own FROM.
+            // Check if any Union branch FROM uses the VLP CTE. If not, the VLP CTE
+            // is consumed by a WITH CTE (not by the main query) — skip rewriting.
+            let any_branch_uses_vlp = plan.union.0.as_ref().map_or(false, |union| {
+                union.input.iter().any(|branch| {
+                    branch
+                        .from
+                        .0
+                        .as_ref()
+                        .map_or(false, |f| f.name.starts_with("vlp_"))
+                })
+            });
+            if !any_branch_uses_vlp {
+                log::info!(
+                    "🔍 VLP rewriting: FROM=None and no Union branch uses VLP CTE - skipping rewriting"
+                );
+                return plan;
+            }
+            log::debug!("🔍 TRACING: No FROM ref found but Union branches use VLP");
         }
 
         let mut start_alias = vlp_cte.vlp_cypher_start_alias.clone();
@@ -781,18 +799,18 @@ fn rewrite_expr_for_vlp(
         // Special case: For ID columns (e.g., "id.orig_h"), use t.start_id or t.end_id directly
         // since the CTE has "start_id" column containing the full ID value.
         RenderExpr::PropertyAccessExp(prop) => {
-            log::error!(
-                "🔧🔧🔧 rewrite_expr_for_vlp: Processing PropertyAccessExp {}.{}",
+            log::trace!(
+                "🔧 rewrite_expr_for_vlp: Processing PropertyAccessExp {}.{}",
                 prop.table_alias.0,
                 prop.column.raw()
             );
             if let Some(start) = start_alias {
                 if &prop.table_alias.0 == start {
                     if skip_start_alias {
-                        log::error!("🔧🔧🔧 rewrite_expr_for_vlp: MATCHED start alias '{}' but skipping for OPTIONAL VLP", start);
+                        log::debug!("🔧 rewrite_expr_for_vlp: MATCHED start alias '{}' but skipping for OPTIONAL VLP", start);
                         return expr.clone();
                     }
-                    log::error!("🔧🔧🔧 rewrite_expr_for_vlp: MATCHED start alias '{}' - rewriting to t.start_xxx", start);
+                    log::debug!("🔧 rewrite_expr_for_vlp: MATCHED start alias '{}' - rewriting to t.start_xxx", start);
 
                     // Check if this is the ID column (contains "id" or matches known ID column patterns)
                     let col_raw = prop.column.raw();

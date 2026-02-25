@@ -9459,9 +9459,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 &pre_with_aliases,
                 &cte_schemas,
             )?;
-            log::debug!(
+            log::info!(
                 "🔧 build_chained_with_match_cte_plan: AFTER replacement - plan discriminant: {:?}",
                 std::mem::discriminant(&current_plan)
+            );
+            log::debug!(
+                "🔀 UNION_TRACE after replace_v2: has_union={}",
+                current_plan.has_union_anywhere()
             );
 
             log::debug!("🔧 PLAN STRUCTURE AFTER REPLACEMENT:");
@@ -9670,6 +9674,11 @@ pub(crate) fn build_chained_with_match_cte_plan(
         log::debug!("🔧 build_chained_with_match_cte_plan: Iteration {} complete, checking for more WITH clauses", iteration);
     }
 
+    log::debug!(
+        "🔀 UNION_TRACE after all WITH iterations: has_union={}",
+        current_plan.has_union_anywhere()
+    );
+
     // Verify that all WITH clauses were actually processed
     // If any remain, it means we failed to process them and should not continue
     // to avoid triggering a fresh recursive call that loses our accumulated CTEs
@@ -9691,6 +9700,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
     }
 
     log::debug!("🔧 build_chained_with_match_cte_plan: All WITH clauses processed ({} CTEs), rendering final plan", all_ctes.len());
+
+    // DEBUG: Log the full plan structure before rendering
+    log::debug!("🐛 DEBUG FINAL PLAN structure (after WITH processing):");
+    show_plan_structure(&current_plan, 0);
 
     // DEBUG: Log the current_plan structure before rendering
     log::debug!(
@@ -9770,6 +9783,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
             // Now we need to prune joins from GraphJoins that are covered by this CTE
             // AND update any GraphNode that matches an exported alias to reference the CTE
+            log::debug!(
+                "🔀 UNION_TRACE before prune_joins: has_union={}",
+                current_plan.has_union_anywhere()
+            );
             current_plan = prune_joins_covered_by_cte(
                 &current_plan,
                 last_cte_name,
@@ -9939,9 +9956,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 );
             }
         }
-    } else if matches!(render_plan.from, FromTableItem(None)) && !all_ctes.is_empty() {
+    } else if matches!(render_plan.from, FromTableItem(None))
+        && !all_ctes.is_empty()
+        && render_plan.union.0.is_none()
+    {
         // FALLBACK: If FROM is None but we have CTEs, set FROM to the last CTE
         // This happens when WITH clauses are chained and all table references have been replaced with CTEs
+        // Skip when Union branches exist — each branch has its own FROM
         if let Some(last_with_cte) = all_ctes
             .iter()
             .rev()
@@ -10263,11 +10284,23 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     }
                 }
 
-                // Create the JOIN
+                // Create the JOIN (use ON 1=1 for scalar CTEs with no correlation conditions)
+                let cte_join_conditions = if join_conditions.is_empty() {
+                    use crate::render_plan::render_expr::Literal as RenderLiteral;
+                    vec![OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::Literal(RenderLiteral::Integer(1)),
+                            RenderExpr::Literal(RenderLiteral::Integer(1)),
+                        ],
+                    }]
+                } else {
+                    join_conditions.clone()
+                };
                 let cte_join = super::Join {
                     table_name: cte_name.clone(),
                     table_alias: cte_alias.clone(),
-                    joining_on: join_conditions,
+                    joining_on: cte_join_conditions,
                     join_type: super::JoinType::Inner,
                     pre_filter: None,
                     from_id_column: None,
@@ -10310,7 +10343,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 // Incoming branches in union.input[] need their own JOIN.
                 if let Some(ref mut union) = render_plan.union.0 {
                     for branch in union.input.iter_mut() {
-                        // Check if this branch's FROM is a VLP CTE
+                        // Skip if this branch already has the CTE join
+                        let branch_already_has =
+                            branch.joins.0.iter().any(|j| j.table_alias == cte_alias);
+                        if branch_already_has {
+                            continue;
+                        }
+
                         if let FromTableItem(Some(ref branch_from)) = branch.from {
                             if branch_from.name.starts_with("vlp_") {
                                 // Find the VLP CTE metadata to determine the correct join column
@@ -10434,6 +10473,36 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                         "🔧 build_chained_with_match_cte_plan: Rewrote Union branch SELECT via scope for CTE"
                                     );
                                 }
+                            } else {
+                                // Non-VLP branch (regular table FROM): add CTE as cross-join (ON 1=1)
+                                // This handles post-WITH MATCH patterns with undirected edges
+                                // where UnionDistribution created Union branches with regular table FROM
+                                use crate::render_plan::render_expr::Literal as RenderLiteral;
+                                let branch_cte_join = super::Join {
+                                    table_name: cte_name.clone(),
+                                    table_alias: cte_alias.clone(),
+                                    joining_on: if join_conditions.is_empty() {
+                                        vec![OperatorApplication {
+                                            operator: Operator::Equal,
+                                            operands: vec![
+                                                RenderExpr::Literal(RenderLiteral::Integer(1)),
+                                                RenderExpr::Literal(RenderLiteral::Integer(1)),
+                                            ],
+                                        }]
+                                    } else {
+                                        join_conditions.clone()
+                                    },
+                                    join_type: super::JoinType::Inner,
+                                    pre_filter: None,
+                                    from_id_column: None,
+                                    to_id_column: None,
+                                    graph_rel: None,
+                                };
+                                branch.joins.0.insert(0, branch_cte_join);
+                                log::info!(
+                                    "🔧 build_chained_with_match_cte_plan: Added CTE cross-JOIN to non-VLP Union branch FROM '{}'",
+                                    branch_from.name
+                                );
                             }
                         }
                     }
@@ -10445,6 +10514,53 @@ pub(crate) fn build_chained_with_match_cte_plan(
             log::debug!(
                 "🔧 build_chained_with_match_cte_plan: Rewriting SELECT items for CTE references"
             );
+        }
+    }
+
+    // When FROM is None (Union shell) but CTE references exist, add CTE cross-joins
+    // to each Union branch directly. This handles the case where Direct Union rendering
+    // moved all branches into union.input (for aggregation/GROUP BY).
+    if render_plan.from.0.is_none() && !cte_references.is_empty() {
+        if let Some(ref mut union_data) = render_plan.union.0 {
+            for (alias, cte_name) in &cte_references {
+                let cte_alias = if let Some(stripped) = cte_name.strip_prefix("with_") {
+                    if let Some(cte_pos) = stripped.rfind("_cte") {
+                        stripped[..cte_pos].to_string()
+                    } else {
+                        stripped.to_string()
+                    }
+                } else {
+                    cte_name.clone()
+                };
+
+                for branch in union_data.input.iter_mut() {
+                    let already_has = branch.joins.0.iter().any(|j| j.table_alias == cte_alias);
+                    if !already_has {
+                        use crate::render_plan::render_expr::Literal as RenderLiteral;
+                        let cte_join = super::Join {
+                            table_name: cte_name.clone(),
+                            table_alias: cte_alias.clone(),
+                            joining_on: vec![OperatorApplication {
+                                operator: Operator::Equal,
+                                operands: vec![
+                                    RenderExpr::Literal(RenderLiteral::Integer(1)),
+                                    RenderExpr::Literal(RenderLiteral::Integer(1)),
+                                ],
+                            }],
+                            join_type: super::JoinType::Inner,
+                            pre_filter: None,
+                            from_id_column: None,
+                            to_id_column: None,
+                            graph_rel: None,
+                        };
+                        branch.joins.0.insert(0, cte_join);
+                        log::info!(
+                            "🔧 build_chained_with_match_cte_plan: Added CTE cross-JOIN '{}' AS '{}' to Union branch (FROM=None shell)",
+                            cte_name, cte_alias
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -12402,6 +12518,10 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
         }
 
         LogicalPlan::Projection(proj) => {
+            log::info!(
+                "🔀 replace_v2: Processing Projection, input type: {:?}",
+                std::mem::discriminant(proj.input.as_ref())
+            );
             let new_input = replace_with_clause_with_cte_reference_v2(
                 &proj.input,
                 with_alias,
@@ -12409,6 +12529,10 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                 pre_with_aliases,
                 cte_schemas,
             )?;
+            log::info!(
+                "🔀 replace_v2: Projection new_input type: {:?}",
+                std::mem::discriminant(&new_input)
+            );
 
             // CRITICAL: Check if new_input is a CTE reference (GraphNode wrapping ViewScan for CTE)
             // If so, remap PropertyAccess expressions in projection items to use CTE column names
@@ -12713,10 +12837,21 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
         }
 
         LogicalPlan::Union(union) => {
+            log::info!(
+                "🔀 replace_v2: Processing Union with {} branches for alias '{}'",
+                union.inputs.len(),
+                with_alias
+            );
             let new_inputs: Vec<Arc<LogicalPlan>> = union
                 .inputs
                 .iter()
-                .map(|input| {
+                .enumerate()
+                .map(|(i, input)| {
+                    log::info!(
+                        "🔀 replace_v2: Processing Union branch {} type: {:?}",
+                        i,
+                        std::mem::discriminant(input.as_ref())
+                    );
                     replace_with_clause_with_cte_reference_v2(
                         input,
                         with_alias,
@@ -12727,6 +12862,10 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                     .map(Arc::new)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            log::info!(
+                "🔀 replace_v2: Union result has {} branches",
+                new_inputs.len()
+            );
             Ok(LogicalPlan::Union(Union {
                 inputs: new_inputs,
                 union_type: union.union_type.clone(),

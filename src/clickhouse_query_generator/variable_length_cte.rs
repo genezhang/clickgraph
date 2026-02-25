@@ -2015,6 +2015,20 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // PERF: Removed redundant current_node JOIN - vp.end_id already contains the ID
         // we need to join with the relationship table. The extra JOIN was causing
         // ClickHouse to hang on recursive CTEs due to inefficient query planning.
+        //
+        // Cross-type VLP (e.g., Message→Post via REPLY_OF): the recursive step must
+        // traverse through the START type (Message) to allow intermediate hops through
+        // Comments. The Post constraint is enforced by the outer query's JOIN.
+        let recursive_end_table = if self.start_node_table != self.end_node_table {
+            log::info!(
+                "VLP cross-type recursion: using {} instead of {} for intermediate hops",
+                self.start_node_table,
+                self.end_node_table
+            );
+            self.format_table_name(&self.start_node_table)
+        } else {
+            self.format_table_name(&self.end_node_table)
+        };
         format!(
             "    SELECT\n        {select}\n    FROM {cte_name} vp\n    JOIN {rel_table} AS {rel} ON {join_on_rel}\n    JOIN {end_table} AS {end} ON {join_on_end}\n    WHERE {where_clause}",
             select = select_clause,
@@ -2022,7 +2036,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             cte_name = cte_name, // Use the passed parameter instead of self.cte_name
             rel_table = self.format_table_name(&self.relationship_table),
             rel = self.relationship_alias,
-            end_table = self.format_table_name(&self.end_node_table),
+            end_table = recursive_end_table,
             join_on_rel = join_on_rel,
             join_on_end = join_on_end,
             where_clause = where_clause

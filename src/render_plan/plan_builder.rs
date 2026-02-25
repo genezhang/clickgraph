@@ -711,17 +711,24 @@ impl RenderPlanBuilder for LogicalPlan {
         schema: &GraphSchema,
         plan_ctx: Option<&PlanCtx>,
     ) -> RenderPlanBuilderResult<Option<Union>> {
-        // Unwrap Limit/Skip/OrderBy wrappers to find GraphJoins
-        let graph_joins_node = match self {
-            LogicalPlan::GraphJoins(_) => self,
-            LogicalPlan::Limit(l) => l.input.as_ref(),
-            LogicalPlan::Skip(s) => s.input.as_ref(),
-            LogicalPlan::OrderBy(o) => o.input.as_ref(),
-            _ => {
-                log::debug!("🔀 extract_union_with_ctx: Not GraphJoins or wrapper, returning None");
-                return Ok(None);
+        // Unwrap nested Limit/Skip/OrderBy/GroupBy wrappers to find GraphJoins
+        let mut current_node = self;
+        loop {
+            match current_node {
+                LogicalPlan::GraphJoins(_) => break,
+                LogicalPlan::Limit(l) => current_node = l.input.as_ref(),
+                LogicalPlan::Skip(s) => current_node = s.input.as_ref(),
+                LogicalPlan::OrderBy(o) => current_node = o.input.as_ref(),
+                LogicalPlan::GroupBy(gb) => current_node = gb.input.as_ref(),
+                _ => {
+                    log::debug!(
+                        "🔀 extract_union_with_ctx: Not GraphJoins or wrapper, returning None"
+                    );
+                    return Ok(None);
+                }
             }
-        };
+        }
+        let graph_joins_node = current_node;
 
         // For GraphJoins, check if Union is nested inside (possibly wrapped in GraphNode, Projection, GroupBy, etc.)
         if let LogicalPlan::GraphJoins(gj) = graph_joins_node {
@@ -756,6 +763,10 @@ impl RenderPlanBuilder for LogicalPlan {
 
                         // Move first branch into union.input (same logic as extract_union)
                         return Ok(move_first_branch_into_union(union_render_plan));
+                    }
+                    LogicalPlan::Filter(f) => {
+                        log::debug!("🔀 extract_union_with_ctx: Found Filter, recursing...");
+                        current = f.input.as_ref();
                     }
                     other => {
                         log::debug!(
@@ -2435,6 +2446,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 LogicalPlan::OrderBy(o) => contains_graph_joins(&o.input),
                 LogicalPlan::Filter(f) => contains_graph_joins(&f.input),
                 LogicalPlan::Unwind(u) => contains_graph_joins(&u.input),
+                LogicalPlan::GroupBy(gb) => contains_graph_joins(&gb.input),
                 _ => false,
             }
         }
@@ -2568,6 +2580,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 LogicalPlan::Filter(f) => contains_union(&f.input),
                 LogicalPlan::Projection(p) => contains_union(&p.input),
                 LogicalPlan::Unwind(u) => contains_union(&u.input),
+                LogicalPlan::GroupBy(gb) => contains_union(&gb.input),
+                LogicalPlan::GraphJoins(gj) => contains_union(&gj.input),
                 _ => false,
             }
         }
@@ -2586,14 +2600,22 @@ impl RenderPlanBuilder for LogicalPlan {
             );
 
             if !has_graph_joins {
-                // Unwrap Limit/Skip/OrderBy to find Union
-                let union_node = match self {
-                    LogicalPlan::Union(_) => self,
-                    LogicalPlan::Limit(l) => l.input.as_ref(),
-                    LogicalPlan::Skip(s) => s.input.as_ref(),
-                    LogicalPlan::OrderBy(o) => o.input.as_ref(),
-                    _ => self,
-                };
+                // Unwrap all wrapper nodes to find Union
+                let mut union_node = self;
+                loop {
+                    match union_node {
+                        LogicalPlan::Union(_) => break,
+                        LogicalPlan::Limit(l) => union_node = l.input.as_ref(),
+                        LogicalPlan::Skip(s) => union_node = s.input.as_ref(),
+                        LogicalPlan::OrderBy(o) => union_node = o.input.as_ref(),
+                        LogicalPlan::GroupBy(gb) => union_node = gb.input.as_ref(),
+                        LogicalPlan::Projection(p) => union_node = p.input.as_ref(),
+                        LogicalPlan::Filter(f) => union_node = f.input.as_ref(),
+                        LogicalPlan::Unwind(u) => union_node = u.input.as_ref(),
+                        LogicalPlan::GraphJoins(gj) => union_node = gj.input.as_ref(),
+                        _ => break,
+                    }
+                }
 
                 if let LogicalPlan::Union(union) = union_node {
                     log::debug!("🔀 to_render_plan_with_ctx: Direct Union (no top-level GraphJoins), rendering branches with plan_ctx");
@@ -2992,15 +3014,16 @@ impl RenderPlanBuilder for LogicalPlan {
                         }));
                     }
 
-                    // Apply Limit/OrderBy/Skip from wrapper nodes
+                    // Apply Limit/OrderBy/Skip/GroupBy/Projection from wrapper nodes
                     fn apply_wrappers(
                         plan: &LogicalPlan,
                         render: &mut RenderPlan,
+                        plan_ctx: Option<&PlanCtx>,
                     ) -> Result<(), RenderBuildError> {
                         match plan {
                             LogicalPlan::Limit(l) => {
                                 render.limit = LimitItem(Some(l.count));
-                                apply_wrappers(&l.input, render)?;
+                                apply_wrappers(&l.input, render, plan_ctx)?;
                             }
                             LogicalPlan::OrderBy(ob) => {
                                 let order_by_items: Result<Vec<OrderByItem>, _> = ob
@@ -3009,17 +3032,88 @@ impl RenderPlanBuilder for LogicalPlan {
                                     .map(|item| item.clone().try_into())
                                     .collect();
                                 render.order_by = OrderByItems(order_by_items?);
-                                apply_wrappers(&ob.input, render)?;
+                                apply_wrappers(&ob.input, render, plan_ctx)?;
                             }
                             LogicalPlan::Skip(s) => {
                                 render.skip = SkipItem(Some(s.count));
-                                apply_wrappers(&s.input, render)?;
+                                apply_wrappers(&s.input, render, plan_ctx)?;
+                            }
+                            LogicalPlan::GroupBy(gb) => {
+                                render.group_by = GroupByExpressions(
+                                    <LogicalPlan as GroupByBuilder>::extract_group_by(plan)?,
+                                );
+                                render.having_clause =
+                                    super::plan_builder_utils::extract_having(plan)?;
+                                apply_wrappers(&gb.input, render, plan_ctx)?;
+                            }
+                            LogicalPlan::Projection(_) => {
+                                // Extract SELECT items from the full plan (self) which
+                                // traverses through all wrappers to find Projection
+                                render.select = SelectItems {
+                                    items: <LogicalPlan as SelectBuilder>::extract_select_items(
+                                        plan, plan_ctx,
+                                    )?,
+                                    distinct: FilterBuilder::extract_distinct(plan),
+                                };
+                                // Don't recurse — Union is below Projection
                             }
                             _ => {}
                         }
                         Ok(())
                     }
-                    apply_wrappers(self, &mut base_render)?;
+                    apply_wrappers(self, &mut base_render, plan_ctx)?;
+
+                    // When GROUP BY is present (aggregation), the SQL generator's UNION
+                    // aggregation path only iterates union.input[], not the base render.
+                    // Move the first branch into union.input and make base a shell.
+                    if !base_render.group_by.0.is_empty() {
+                        if let Some(ref mut union_data) = base_render.union.0 {
+                            // Extract the first branch's render components
+                            let first_branch = RenderPlan {
+                                ctes: CteItems(vec![]),
+                                select: SelectItems {
+                                    items: vec![],
+                                    distinct: false,
+                                },
+                                from: std::mem::replace(&mut base_render.from, FromTableItem(None)),
+                                joins: std::mem::replace(
+                                    &mut base_render.joins,
+                                    JoinItems::new(vec![]),
+                                ),
+                                array_join: std::mem::replace(
+                                    &mut base_render.array_join,
+                                    ArrayJoinItem(vec![]),
+                                ),
+                                filters: std::mem::replace(
+                                    &mut base_render.filters,
+                                    FilterItems(None),
+                                ),
+                                group_by: GroupByExpressions(vec![]),
+                                having_clause: None,
+                                order_by: OrderByItems(vec![]),
+                                skip: SkipItem(None),
+                                limit: LimitItem(None),
+                                union: UnionItems(None),
+                                fixed_path_info: None,
+                                is_multi_label_scan: false,
+                                variable_registry: None,
+                            };
+                            union_data.input.insert(0, first_branch);
+                            log::info!(
+                                "🔀 Direct Union + GROUP BY: moved first branch into union.input ({} total branches)",
+                                union_data.input.len()
+                            );
+                        }
+                    }
+
+                    // Apply anyLast wrapping for GROUP BY if needed
+                    if !base_render.group_by.0.is_empty() {
+                        base_render.select.items = apply_anylast_wrapping_for_group_by(
+                            base_render.select.items,
+                            &base_render.group_by.0,
+                            self,
+                        )?;
+                    }
 
                     // Apply scope-based property resolution to UNION render plans.
                     // This must happen here because this path returns early, bypassing
@@ -3078,7 +3172,7 @@ impl RenderPlanBuilder for LogicalPlan {
             let skip = SkipItem(super::plan_builder_utils::extract_skip(self));
             let limit = LimitItem(super::plan_builder_utils::extract_limit(self));
             // Use extract_union_with_ctx to pass plan_ctx through to Union branches
-            let union = UnionItems(self.extract_union_with_ctx(schema, plan_ctx)?);
+            let mut union = UnionItems(self.extract_union_with_ctx(schema, plan_ctx)?);
 
             // Extract CTEs from the inner plan
             let cte_input = match self {

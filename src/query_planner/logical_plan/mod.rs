@@ -1480,6 +1480,32 @@ impl LogicalPlan {
             _ => false,
         }
     }
+
+    /// Check if this plan tree contains a Union node at any depth.
+    pub fn has_union_anywhere(&self) -> bool {
+        match self {
+            LogicalPlan::Union(_) => true,
+            LogicalPlan::Limit(l) => l.input.has_union_anywhere(),
+            LogicalPlan::Skip(s) => s.input.has_union_anywhere(),
+            LogicalPlan::OrderBy(o) => o.input.has_union_anywhere(),
+            LogicalPlan::Filter(f) => f.input.has_union_anywhere(),
+            LogicalPlan::Projection(p) => p.input.has_union_anywhere(),
+            LogicalPlan::GroupBy(gb) => gb.input.has_union_anywhere(),
+            LogicalPlan::GraphJoins(gj) => gj.input.has_union_anywhere(),
+            LogicalPlan::GraphNode(gn) => gn.input.has_union_anywhere(),
+            LogicalPlan::GraphRel(gr) => {
+                gr.left.has_union_anywhere()
+                    || gr.center.has_union_anywhere()
+                    || gr.right.has_union_anywhere()
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                cp.left.has_union_anywhere() || cp.right.has_union_anywhere()
+            }
+            LogicalPlan::WithClause(wc) => wc.input.has_union_anywhere(),
+            LogicalPlan::Unwind(u) => u.input.has_union_anywhere(),
+            _ => false,
+        }
+    }
 }
 
 impl LogicalPlan {

@@ -483,6 +483,17 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         // Step 2: Generate SQL for each path branch
         let mut branch_sqls = Vec::new();
         for (idx, path) in paths.iter().enumerate() {
+            if path.hops.is_empty() {
+                // Zero-hop path: start_node = end_node (same node, no traversal)
+                match self.generate_zero_hop_branch_sql() {
+                    Ok(sql) => branch_sqls.push(sql),
+                    Err(e) => {
+                        log::debug!("Failed to generate zero-hop SQL: {}", e);
+                        continue;
+                    }
+                }
+                continue;
+            }
             match self.generate_path_branch_sql(path, idx) {
                 Ok(sql) => branch_sqls.push(sql),
                 Err(e) => {
@@ -501,6 +512,154 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
 
         // Return just the CTE body (not wrapped in WITH) - the caller handles WITH
         Ok(union_sql)
+    }
+
+    /// Generate SQL for a zero-hop path branch (start_node = end_node)
+    ///
+    /// Zero-hop means no traversal: the start node IS the end node.
+    /// Only valid when start_type matches one of the end_labels.
+    fn generate_zero_hop_branch_sql(&self) -> Result<String, String> {
+        // Zero-hop: we need a start label that matches an end label
+        let start_type = self
+            .start_labels
+            .first()
+            .ok_or("No start label for zero-hop")?;
+        let start_table = self.get_node_table_with_db(start_type)?;
+        let start_alias_sql = format!("{}_1", self.start_alias);
+
+        let needs_string_conversion = self.needs_string_conversion_for_end_id();
+
+        let mut items = Vec::new();
+
+        // end_type = start_type (same node)
+        items.push(format!("'{}' AS end_type", start_type));
+
+        // end_id = start_id (same node)
+        if let Some(node_schema) = self.schema.all_node_schemas().get(start_type.as_str()) {
+            let id_sql = if needs_string_conversion {
+                match &node_schema.node_id.id {
+                    Identifier::Single(col) => {
+                        let quoted = crate::clickhouse_query_generator::quote_identifier(col);
+                        format!(
+                            "toString({}.{}) AS {}",
+                            start_alias_sql, quoted, VLP_END_ID_COLUMN
+                        )
+                    }
+                    Identifier::Composite(cols) => {
+                        let parts: Vec<String> = cols
+                            .iter()
+                            .map(|c| {
+                                let q = crate::clickhouse_query_generator::quote_identifier(c);
+                                format!("toString({}.{})", start_alias_sql, q)
+                            })
+                            .collect();
+                        format!("concat({}) AS {}", parts.join(", '|', "), VLP_END_ID_COLUMN)
+                    }
+                }
+            } else {
+                format!(
+                    "{} AS {}",
+                    node_schema.node_id.id.to_sql_native(&start_alias_sql),
+                    VLP_END_ID_COLUMN
+                )
+            };
+            items.push(id_sql);
+
+            // start_id = same as end_id
+            let start_id_sql = if needs_string_conversion {
+                match &node_schema.node_id.id {
+                    Identifier::Single(col) => {
+                        let quoted = crate::clickhouse_query_generator::quote_identifier(col);
+                        format!(
+                            "toString({}.{}) AS {}",
+                            start_alias_sql, quoted, VLP_START_ID_COLUMN
+                        )
+                    }
+                    Identifier::Composite(cols) => {
+                        let parts: Vec<String> = cols
+                            .iter()
+                            .map(|c| {
+                                let q = crate::clickhouse_query_generator::quote_identifier(c);
+                                format!("toString({}.{})", start_alias_sql, q)
+                            })
+                            .collect();
+                        format!(
+                            "concat({}) AS {}",
+                            parts.join(", '|', "),
+                            VLP_START_ID_COLUMN
+                        )
+                    }
+                }
+            } else {
+                format!(
+                    "{} AS {}",
+                    node_schema.node_id.id.to_sql_native(&start_alias_sql),
+                    VLP_START_ID_COLUMN
+                )
+            };
+            items.push(start_id_sql);
+        }
+
+        // start_type
+        items.push(format!("'{}' AS start_type", start_type));
+
+        // Properties: end_properties = start_properties (same node)
+        if let Some(node_schema) = self.schema.all_node_schemas().get(start_type.as_str()) {
+            if !node_schema.property_mappings.is_empty() {
+                use crate::clickhouse_query_generator::json_builder::generate_json_properties_from_schema;
+                let json_sql = generate_json_properties_from_schema(node_schema, &start_alias_sql);
+                items.push(format!("{} AS end_properties", json_sql));
+            } else {
+                items.push("'{}' AS end_properties".to_string());
+            }
+        } else {
+            items.push("'{}' AS end_properties".to_string());
+        }
+
+        // start_properties
+        if let Some(node_schema) = self.schema.all_node_schemas().get(start_type.as_str()) {
+            if !node_schema.property_mappings.is_empty() {
+                let json_sql = generate_json_properties_from_schema_without_aliases(
+                    node_schema,
+                    &start_alias_sql,
+                );
+                items.push(format!("{} AS start_properties", json_sql));
+            } else {
+                items.push("'{}' AS start_properties".to_string());
+            }
+        } else {
+            items.push("'{}' AS start_properties".to_string());
+        }
+
+        // hop_count = 0
+        items.push("0 AS hop_count".to_string());
+        // empty path
+        items.push("CAST([], 'Array(String)') AS path_relationships".to_string());
+        items.push("CAST([], 'Array(String)') AS rel_properties".to_string());
+
+        let mut sql = format!(
+            "SELECT {}\nFROM {} {}",
+            items.join(", "),
+            start_table,
+            start_alias_sql
+        );
+
+        // Apply start filters
+        if let Some(ref filters) = self.start_filters {
+            let start_filter = filters
+                .replace("start_node.", &format!("{}.", start_alias_sql))
+                .replace(
+                    &format!("{}.", self.start_alias),
+                    &format!("{}.", start_alias_sql),
+                );
+            let validated =
+                self.strip_invalid_column_predicates(&start_filter, start_type, &start_alias_sql);
+            if !validated.is_empty() {
+                sql.push_str(&format!("\nWHERE {}", validated));
+            }
+        }
+
+        Ok(sql)
     }
 
     /// Generate SQL for a single path branch
@@ -528,28 +687,8 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         let start_alias_sql = format!("{}_1", self.start_alias);
         from_clauses.push(format!("{} {}", start_table, start_alias_sql));
 
-        // Add start filters — strip predicates referencing columns not in start node's table
-        if let Some(ref filters) = self.start_filters {
-            let mut start_filter = filters
-                .replace("start_node.", &format!("{}.", start_alias_sql))
-                .replace(
-                    &format!("{}.", self.start_alias),
-                    &format!("{}.", start_alias_sql),
-                );
-
-            // For denormalized schemas, the filter may use relationship alias (e.g., "r.")
-            // but in multi-type VLP, the relationship table is joined with explicit aliases (r1, r2, etc.)
-            // or the start node table is used directly (ip_1)
-            // Replace relationship alias references with start node alias
-            // This handles filters like "r.`id.orig_h` = 'value'" for denormalized schemas
-            start_filter = start_filter.replace("r.", &format!("{}.", start_alias_sql));
-
-            let validated =
-                self.strip_invalid_column_predicates(&start_filter, start_type, &start_alias_sql);
-            if !validated.is_empty() {
-                where_clauses.push(validated);
-            }
-        }
+        // Start filters are applied after the hop loop so end_node alias is available
+        // for filters involving both start and end (e.g., OR clauses)
 
         // Generate JOINs for each hop
         let mut current_alias = start_alias_sql.clone();
@@ -684,6 +823,33 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
 
             // Update current_alias for next hop
             current_alias = end_node_alias.clone();
+        }
+
+        // Add start filters — apply after hop loop so end_node alias is available
+        // for filters involving both start and end nodes (e.g., OR clauses)
+        if let Some(ref filters) = self.start_filters {
+            let mut start_filter = filters
+                .replace("start_node.", &format!("{}.", start_alias_sql))
+                .replace(
+                    &format!("{}.", self.start_alias),
+                    &format!("{}.", start_alias_sql),
+                );
+            // Also replace end_node. references (for filters with OR involving both start and end)
+            if !end_node_alias.is_empty() {
+                start_filter = start_filter.replace("end_node.", &format!("{}.", end_node_alias));
+                start_filter = start_filter.replace(
+                    &format!("{}.", self.end_alias),
+                    &format!("{}.", end_node_alias),
+                );
+            }
+            // Replace denormalized schema relationship alias references
+            start_filter = start_filter.replace("r.", &format!("{}.", start_alias_sql));
+
+            let validated =
+                self.strip_invalid_column_predicates(&start_filter, start_type, &start_alias_sql);
+            if !validated.is_empty() {
+                where_clauses.push(validated);
+            }
         }
 
         // Add end filters — strip predicates referencing columns not in end node's table
@@ -1473,7 +1639,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
 }
 
 /// Split a SQL expression on top-level " AND " (respecting parentheses depth).
-fn split_top_level_and(sql: &str) -> Vec<&str> {
+pub fn split_top_level_and(sql: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut depth = 0;
     let mut start = 0;
