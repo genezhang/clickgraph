@@ -103,7 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         ":load" => {
                             if let Some(file_path) = arg {
-                                match load_schema_from_file(&client, &args.url, file_path).await {
+                                match load_schema_from_file(&client, &args.url, &file_path).await {
                                     Ok(response) => {
                                         println!("\n{}\n", serde_json::to_string_pretty(&response).unwrap_or_default());
                                     }
@@ -294,12 +294,13 @@ async fn run_design_wizard(
                 .unwrap_or_else(|| format!("{}_id", table));
             
             let label = to_label(table);
+            let node_id_for_print = node_id.clone();
             nodes.push(NodeHint {
                 table: table.to_string(),
                 label,
                 node_id,
             });
-            println!("  Added node: {} (label: {}, id: {})", table, to_label(table), node_id);
+            println!("  Added node: {} (label: {}, id: {})", table, to_label(table), node_id_for_print);
         }
     }
     println!();
@@ -402,12 +403,11 @@ async fn run_design_wizard(
             println!("\nTo load this schema, use :load command or POST to /schemas/load");
             println!("Or copy the YAML and load manually.\n");
         }
+        Ok(())
     } else {
         let text = response.text().await.unwrap_or_default();
         Err(text)
     }
-
-    Ok(())
 }
 
 fn to_label(table: &str) -> String {
