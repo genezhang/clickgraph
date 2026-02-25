@@ -1,10 +1,26 @@
 // Q5. New groups (adapted)
-// Simplified: removes collect(otherPerson)/IN pattern and OPTIONAL MATCH
-// Uses direct join pattern instead
-MATCH (person:Person {id: $personId})-[:KNOWS*1..2]-(otherPerson:Person)
-WHERE person.id <> otherPerson.id
+// Same as official but with explicit node labels in OPTIONAL MATCH pattern
+// to avoid multi-type expansion issues with HAS_CREATOR (Comment vs Post)
+MATCH (person:Person { id: $personId })-[:KNOWS*1..2]-(otherPerson)
+WHERE
+    person <> otherPerson
 WITH DISTINCT otherPerson
-MATCH (forum:Forum)-[:CONTAINER_OF]->(post:Post)-[:HAS_CREATOR]->(otherPerson)
-RETURN forum.id AS forumId, forum.title AS forumName, count(post) AS postCount
-ORDER BY postCount DESC, forumId ASC
+MATCH (otherPerson)<-[membership:HAS_MEMBER]-(forum:Forum)
+WHERE
+    membership.creationDate > $minDate
+WITH
+    forum,
+    collect(otherPerson) AS otherPersons
+OPTIONAL MATCH (otherPerson2:Person)<-[:HAS_CREATOR]-(post:Post)<-[:CONTAINER_OF]-(forum)
+WHERE
+    otherPerson2 IN otherPersons
+WITH
+    forum,
+    count(post) AS postCount
+RETURN
+    forum.title AS forumName,
+    postCount
+ORDER BY
+    postCount DESC,
+    forum.id ASC
 LIMIT 20
