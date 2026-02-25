@@ -100,16 +100,51 @@ fn recreate_pattern_schema_context(
         RenderBuildError::MissingTableInfo(format!("Could not get right node schema: {}", e))
     })?;
 
-    // Get relationship schema with node context for precise matching
-    let rel_schema = schema
-        .get_rel_schema_with_nodes(
-            rel_types.first().unwrap(),
-            Some(&left_label),
-            Some(&right_label),
-        )
-        .map_err(|e| {
-            RenderBuildError::MissingTableInfo(format!("Could not get relationship schema: {}", e))
-        })?;
+    // Get relationship schema with node context for precise matching.
+    // For VLP with different start/end labels (e.g., Message→Post), the recursive
+    // traversal needs a union view (e.g., Message_replyOf_Message) that covers all
+    // intermediate hops. Try (start, start) lookup first in that case.
+    let is_vlp = graph_rel.variable_length.is_some();
+    let rel_schema = if is_vlp && left_label != right_label {
+        log::info!(
+            "VLP cross-type: trying ({}, {}) lookup for rel type {:?}",
+            left_label,
+            left_label,
+            rel_types.first()
+        );
+        schema
+            .get_rel_schema_with_nodes(
+                rel_types.first().unwrap(),
+                Some(&left_label),
+                Some(&left_label),
+            )
+            .or_else(|_| {
+                schema.get_rel_schema_with_nodes(
+                    rel_types.first().unwrap(),
+                    Some(&left_label),
+                    Some(&right_label),
+                )
+            })
+            .map_err(|e| {
+                RenderBuildError::MissingTableInfo(format!(
+                    "Could not get relationship schema: {}",
+                    e
+                ))
+            })?
+    } else {
+        schema
+            .get_rel_schema_with_nodes(
+                rel_types.first().unwrap(),
+                Some(&left_label),
+                Some(&right_label),
+            )
+            .map_err(|e| {
+                RenderBuildError::MissingTableInfo(format!(
+                    "Could not get relationship schema: {}",
+                    e
+                ))
+            })?
+    };
 
     // Recreate PatternSchemaContext using the same analysis logic
     PatternSchemaContext::analyze(
@@ -1919,15 +1954,37 @@ pub fn extract_ctes_with_context(
                     table
                 };
 
-                // Also extract labels for filter categorization and property extraction
-                // These are optional - not all nodes have labels (e.g., CTEs)
-                // ✅ FIX: Use schema-aware label extraction to support multi-schema queries
-                let start_label =
-                    extract_node_label_from_viewscan_with_schema(&graph_rel.left, schema)
-                        .unwrap_or_default();
-                let end_label =
-                    extract_node_label_from_viewscan_with_schema(&graph_rel.right, schema)
-                        .unwrap_or_default();
+                // Extract labels for filter categorization and property extraction.
+                // CRITICAL: left_connection/right_connection are direction-swapped (traversal order)
+                // but graph_rel.left/right are NOT swapped (Cypher order). So we must extract
+                // labels using the connection aliases (via plan_ctx) to ensure start_label
+                // matches start_alias and end_label matches end_alias.
+                // Fallback to endpoint extraction from the plan tree for nested chains.
+                let start_label = plan_ctx
+                    .and_then(|ctx| {
+                        ctx.get_table_ctx(&graph_rel.left_connection)
+                            .ok()
+                            .and_then(|tc| tc.get_label_str().ok())
+                    })
+                    .or_else(|| extract_endpoint_node_label_with_schema(&graph_rel.left, schema))
+                    .or_else(|| extract_endpoint_node_label_with_schema(&graph_rel.right, schema))
+                    .unwrap_or_default();
+                let end_label = plan_ctx
+                    .and_then(|ctx| {
+                        ctx.get_table_ctx(&graph_rel.right_connection)
+                            .ok()
+                            .and_then(|tc| tc.get_label_str().ok())
+                    })
+                    .or_else(|| extract_endpoint_node_label_with_schema(&graph_rel.right, schema))
+                    .or_else(|| extract_endpoint_node_label_with_schema(&graph_rel.left, schema))
+                    .unwrap_or_default();
+                log::info!(
+                    "🔍 VLP labels: start_label={}, end_label={}, left_conn={}, right_conn={}",
+                    start_label,
+                    end_label,
+                    graph_rel.left_connection,
+                    graph_rel.right_connection
+                );
 
                 // 🔧 PARAMETERIZED VIEW FIX: Get rel_table with parameterized view syntax if applicable
                 // First try to extract parameterized table from ViewScan, fallback to schema lookup
@@ -1942,70 +1999,85 @@ pub fn extract_ctes_with_context(
                 };
                 log::info!("🔍 VLP: Center plan = {}", center_plan_desc);
 
-                let rel_table = match graph_rel.center.as_ref() {
-                    LogicalPlan::ViewScan(_) => {
-                        // Use extract_parameterized_rel_table for parameterized view support
-                        let result = extract_parameterized_rel_table(graph_rel.center.as_ref());
+                let rel_table = {
+                    let rel_type = if let Some(labels) = &graph_rel.labels {
+                        labels.first().unwrap_or(&graph_rel.alias)
+                    } else {
+                        &graph_rel.alias
+                    };
+
+                    // For VLP with different start/end labels (e.g., Message→Post),
+                    // the traversal planner may have picked the wrong relationship table
+                    // (e.g., Comment_replyOf_Comment) because no single schema entry
+                    // matches both node types exactly. Override with start→start lookup
+                    // to get the union view (e.g., Message_replyOf_Message).
+                    let cross_type_override = !start_label.is_empty()
+                        && !end_label.is_empty()
+                        && start_label != end_label;
+
+                    if cross_type_override {
                         log::info!(
-                            "🔍 VLP: extract_parameterized_rel_table returned: {:?}",
-                            result
+                            "🔍 VLP cross-type override: {}→{}. Using {}→{} schema lookup for recursive traversal",
+                            start_label, end_label, start_label, start_label
                         );
-                        result.unwrap_or_else(|| {
-                            log::debug!("Failed to extract parameterized rel table from ViewScan");
-                            "unknown_rel_table".to_string()
-                        })
-                    }
-                    _ => {
-                        // Schema-based lookup with node types for polymorphic relationships
-                        let rel_type = if let Some(labels) = &graph_rel.labels {
-                            labels.first().unwrap_or(&graph_rel.alias)
-                        } else {
-                            &graph_rel.alias
-                        };
-
-                        // For VLP with different start/end labels (e.g., Message→Post),
-                        // the recursive traversal should use start→start relationship (Message→Message)
-                        // Only the initial base case needs start→end
-                        let (lookup_from, lookup_to) = if !start_label.is_empty()
-                            && !end_label.is_empty()
-                            && start_label != end_label
-                        {
-                            // Different labels: use start→start for recursive traversal
-                            log::info!("🔍 VLP with different labels: {}→{}. Using {}→{} for recursive traversal",
-                                start_label, end_label, start_label, start_label);
-                            (Some(start_label.as_str()), Some(start_label.as_str()))
-                        } else {
-                            // Same label or missing: use as-is
-                            (Some(start_label.as_str()), Some(end_label.as_str()))
-                        };
-
-                        // 🔧 PARAMETERIZED VIEW FIX: Extract view_parameter_values from node ViewScans
-                        // The node ViewScans have the parameter values; use them for the relationship table too
                         let view_params = extract_view_parameter_values(&graph_rel.left)
                             .or_else(|| extract_view_parameter_values(&graph_rel.right))
                             .unwrap_or_default();
-
-                        // Use schema lookup with node types and parameterized view support
-                        // 🔧 FIX: Use the schema parameter directly instead of context.schema()
                         if !view_params.is_empty() {
-                            log::info!(
-                                "🔧 VLP: Using parameterized view lookup with params: {:?}",
-                                view_params
-                            );
                             rel_type_to_table_name_with_nodes_and_params(
                                 rel_type,
-                                lookup_from,
-                                lookup_to,
+                                Some(start_label.as_str()),
+                                Some(start_label.as_str()),
                                 schema,
                                 &view_params,
                             )
                         } else {
                             rel_type_to_table_name_with_nodes(
                                 rel_type,
-                                lookup_from,
-                                lookup_to,
+                                Some(start_label.as_str()),
+                                Some(start_label.as_str()),
                                 schema,
                             )
+                        }
+                    } else {
+                        match graph_rel.center.as_ref() {
+                            LogicalPlan::ViewScan(_) => {
+                                let result =
+                                    extract_parameterized_rel_table(graph_rel.center.as_ref());
+                                log::info!(
+                                    "🔍 VLP: extract_parameterized_rel_table returned: {:?}",
+                                    result
+                                );
+                                result.unwrap_or_else(|| {
+                                    log::debug!(
+                                        "Failed to extract parameterized rel table from ViewScan"
+                                    );
+                                    "unknown_rel_table".to_string()
+                                })
+                            }
+                            _ => {
+                                let (lookup_from, lookup_to) =
+                                    (Some(start_label.as_str()), Some(end_label.as_str()));
+                                let view_params = extract_view_parameter_values(&graph_rel.left)
+                                    .or_else(|| extract_view_parameter_values(&graph_rel.right))
+                                    .unwrap_or_default();
+                                if !view_params.is_empty() {
+                                    rel_type_to_table_name_with_nodes_and_params(
+                                        rel_type,
+                                        lookup_from,
+                                        lookup_to,
+                                        schema,
+                                        &view_params,
+                                    )
+                                } else {
+                                    rel_type_to_table_name_with_nodes(
+                                        rel_type,
+                                        lookup_from,
+                                        lookup_to,
+                                        schema,
+                                    )
+                                }
+                            }
                         }
                     }
                 };
@@ -2699,6 +2771,19 @@ pub fn extract_ctes_with_context(
 
                     // 🎯 CHECK FOR MULTI-TYPE VLP (Part 1D implementation)
                     let mut rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
+                    // Strip composite key suffixes (e.g., "HAS_TYPE::Tag::TagClass" -> "HAS_TYPE")
+                    // Type inference may add ::From::To to distinguish ambiguous relationship types,
+                    // but the multi-type VLP generator resolves types via schema from/to node matching
+                    rel_types = rel_types
+                        .into_iter()
+                        .map(|rt| {
+                            if rt.contains("::") {
+                                rt.split("::").next().unwrap_or(&rt).to_string()
+                            } else {
+                                rt
+                            }
+                        })
+                        .collect();
                     log::info!("🔍 VLP: rel_types={:?}", rel_types);
 
                     let is_multi_type_check =
@@ -2715,12 +2800,46 @@ pub fn extract_ctes_with_context(
                         // Extract start labels from graph pattern
                         let start_labels =
                             extract_node_labels(&graph_rel.left).unwrap_or_else(|| {
-                                // Fallback: extract from ViewScan
-                                vec![extract_node_label_from_viewscan_with_schema(
+                                // Fallback 1: extract from ViewScan
+                                if let Some(label) = extract_node_label_from_viewscan_with_schema(
                                     &graph_rel.left,
                                     schema,
-                                )
-                                .unwrap_or_else(|| "UnknownStartType".to_string())]
+                                ) {
+                                    return vec![label];
+                                }
+                                // Fallback 2: look up from plan context using left_connection alias
+                                if let Some(ctx) = plan_ctx {
+                                    if let Ok(table_ctx) =
+                                        ctx.get_table_ctx(&graph_rel.left_connection)
+                                    {
+                                        if let Ok(label) = table_ctx.get_label_str() {
+                                            log::info!(
+                                                "🔧 VLP: Derived start label '{}' from plan context for alias '{}'",
+                                                label, graph_rel.left_connection
+                                            );
+                                            return vec![label];
+                                        }
+                                    }
+                                }
+                                // Fallback 3: derive from schema relationships
+                                let mut from_types: Vec<String> = rel_types
+                                    .iter()
+                                    .filter_map(|rt| {
+                                        schema.get_all_rel_schemas_for_type(rt).first().map(|rs| {
+                                            rs.from_node.clone()
+                                        })
+                                    })
+                                    .collect();
+                                from_types.sort();
+                                from_types.dedup();
+                                if !from_types.is_empty() {
+                                    log::info!(
+                                        "🔧 VLP: Derived start labels {:?} from schema relationships",
+                                        from_types
+                                    );
+                                    return from_types;
+                                }
+                                vec!["UnknownStartType".to_string()]
                             });
 
                         // For multi-type VLP, we need ALL possible end types from the relationship schema
@@ -2854,8 +2973,71 @@ pub fn extract_ctes_with_context(
                         // Create the generator
                         use crate::clickhouse_query_generator::MultiTypeVlpJoinGenerator;
 
-                        // For multi-type VLP, we use start_filters_sql and end_filters_sql directly
-                        // The schema filters are handled differently in JOIN expansion
+                        // For multi-type VLP, sanitize filters:
+                        // 1. Strip predicates referencing external variables (e.g., `IN tags`
+                        //    from WITH clause output). These belong in the outer query.
+                        // 2. Filters involving both start and end aliases (OR) are kept in
+                        //    start_filters with end_node. alias replacement done per branch.
+                        let mt_start_filters = start_filters_sql.as_ref().map(|f| {
+                            // Strip outer wrapping parens to get clean predicates
+                            let inner = f.trim();
+                            let inner = {
+                                let mut s = inner;
+                                // Peel matching outer parens
+                                while s.starts_with('(') && s.ends_with(')') {
+                                    let mut depth = 0i32;
+                                    let mut wraps_all = true;
+                                    for (i, ch) in s.chars().enumerate() {
+                                        match ch {
+                                            '(' => depth += 1,
+                                            ')' => {
+                                                depth -= 1;
+                                                if depth == 0 && i < s.len() - 1 {
+                                                    wraps_all = false;
+                                                    break;
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    if wraps_all {
+                                        s = &s[1..s.len() - 1];
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                s
+                            };
+                            // Split on top-level " AND " (respecting paren depth)
+                            let parts = crate::clickhouse_query_generator::multi_type_vlp_joins::split_top_level_and(inner);
+                            let valid: Vec<&str> = parts
+                                .into_iter()
+                                .filter(|p| {
+                                    // Strip predicates referencing bare identifiers (external variables)
+                                    let trimmed = p.trim();
+                                    if trimmed.contains(" IN ") {
+                                        let after_in = trimmed.split(" IN ").last().unwrap_or("");
+                                        let after_in = after_in.trim().trim_end_matches(')');
+                                        if !after_in.contains('.') && !after_in.starts_with('(')
+                                            && !after_in.starts_with('[')
+                                        {
+                                            log::info!(
+                                                "🔧 VLP: Stripping cross-scope predicate from CTE filter: {}",
+                                                trimmed
+                                            );
+                                            return false;
+                                        }
+                                    }
+                                    true
+                                })
+                                .collect();
+                            if valid.is_empty() {
+                                String::new()
+                            } else {
+                                valid.join(" AND ")
+                            }
+                        }).filter(|f| !f.is_empty());
+
                         let is_undirected = graph_rel.was_undirected.unwrap_or(false);
                         let generator = MultiTypeVlpJoinGenerator::new(
                             schema,
@@ -2865,7 +3047,7 @@ pub fn extract_ctes_with_context(
                             spec.clone(),
                             start_alias.clone(),
                             end_alias.clone(),
-                            start_filters_sql.clone(),
+                            mt_start_filters,
                             end_filters_sql.clone(),
                             rel_filters_sql.clone(),
                             view_parameter_values,
@@ -5190,6 +5372,27 @@ pub fn get_shortest_path_mode(
         LogicalPlan::Cte(cte) => get_shortest_path_mode(&cte.input),
         LogicalPlan::Unwind(u) => get_shortest_path_mode(&u.input),
         _ => None,
+    }
+}
+
+/// Extract the **endpoint** node label from a plan subtree — the node directly
+/// connected to the current relationship. For a nested GraphRel chain like
+/// `(forum:Forum)-[:CONTAINER_OF]->(post:Post)`, this returns "Post" (the
+/// rightmost/endpoint node), not "Forum" (the leftmost).
+///
+/// This is critical for VLP label extraction where `graph_rel.left` may be an
+/// entire chain and we need the node actually connected to the VLP.
+pub fn extract_endpoint_node_label_with_schema(
+    plan: &LogicalPlan,
+    schema: &GraphSchema,
+) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphRel(gr) => {
+            // In a chain, the endpoint is the RIGHT side (the node at the end of the chain)
+            extract_endpoint_node_label_with_schema(&gr.right, schema)
+        }
+        // For all other plan types, delegate to the standard extraction
+        _ => extract_node_label_from_viewscan_with_schema(plan, schema),
     }
 }
 

@@ -75,6 +75,7 @@ use crate::{
             query_validation::QueryValidation,
             // SchemaInference REMOVED (Feb 16, 2026) - Merged into TypeInference
             type_inference::TypeInference,
+            union_distribution::UnionDistribution,
             variable_resolver::VariableResolver,
             vlp_transitivity_check::VlpTransitivityCheck,
         },
@@ -109,6 +110,7 @@ mod projection_tagging;
 mod query_validation;
 // mod schema_inference;  // REMOVED (Feb 16, 2026) - Fully merged into TypeInference
 mod type_inference;
+mod union_distribution;
 mod unwind_property_rewriter;
 mod unwind_tuple_enricher;
 mod variable_resolver;
@@ -235,6 +237,58 @@ pub fn initial_analyzing(
         }
     };
 
+    // Step 3.6: UnionDistribution - Hoist Union from inside GraphRel/CartesianProduct chains
+    // After BidirectionalUnion creates Union for undirected edges, it may be buried inside
+    // GraphRel/CartesianProduct (from post-WITH MATCH patterns). This pass hoists Union above
+    // these wrapping nodes so GraphJoinInference can process each branch independently.
+    log::info!("🔍 ANALYZER: Running UnionDistribution (before GraphJoinInference)");
+    let union_distribution = UnionDistribution;
+    let plan = match union_distribution.analyze_with_graph_schema(
+        plan.clone(),
+        plan_ctx,
+        current_graph_schema,
+    ) {
+        Ok(transformed_plan) => transformed_plan.get_plan(),
+        Err(e) => {
+            log::warn!(
+                "⚠️  UnionDistribution failed: {:?}, continuing with original plan",
+                e
+            );
+            plan
+        }
+    };
+
+    // Helper to check if a plan contains Union at any depth
+    fn has_union_anywhere(plan: &LogicalPlan) -> bool {
+        match plan {
+            LogicalPlan::Union(_) => true,
+            LogicalPlan::Limit(l) => has_union_anywhere(&l.input),
+            LogicalPlan::Skip(s) => has_union_anywhere(&s.input),
+            LogicalPlan::OrderBy(o) => has_union_anywhere(&o.input),
+            LogicalPlan::Filter(f) => has_union_anywhere(&f.input),
+            LogicalPlan::Projection(p) => has_union_anywhere(&p.input),
+            LogicalPlan::GroupBy(gb) => has_union_anywhere(&gb.input),
+            LogicalPlan::GraphJoins(gj) => has_union_anywhere(&gj.input),
+            LogicalPlan::GraphNode(gn) => has_union_anywhere(&gn.input),
+            LogicalPlan::GraphRel(gr) => {
+                has_union_anywhere(&gr.left)
+                    || has_union_anywhere(&gr.center)
+                    || has_union_anywhere(&gr.right)
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                has_union_anywhere(&cp.left) || has_union_anywhere(&cp.right)
+            }
+            LogicalPlan::WithClause(wc) => has_union_anywhere(&wc.input),
+            LogicalPlan::Unwind(u) => has_union_anywhere(&u.input),
+            _ => false,
+        }
+    }
+
+    log::info!(
+        "🔀 UNION_TRACE after UnionDistribution: has_union={}",
+        has_union_anywhere(&plan)
+    );
+
     // Step 4: Graph Join Inference - analyze graph patterns and create PatternSchemaContext
     // MOVED UP from Step 15 to make PatternSchemaContext available for downstream passes
     // This is a pure analysis pass that only needs: GraphSchema, node/edge schemas, pattern structure
@@ -255,6 +309,11 @@ pub fn initial_analyzing(
             plan
         }
     };
+
+    log::info!(
+        "🔀 UNION_TRACE after GraphJoinInference: has_union={}",
+        has_union_anywhere(&plan)
+    );
 
     // Step 5: Projected Columns Resolver - pre-compute projected columns for GraphNodes
     // Now can use PatternSchemaContext from PlanCtx for explicit role information
@@ -277,6 +336,11 @@ pub fn initial_analyzing(
         query_validation.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)?;
     let plan = transformed_plan.get_plan();
 
+    log::info!(
+        "🔀 UNION_TRACE after ProjectedColumnsResolver+QueryValidation: has_union={}",
+        has_union_anywhere(&plan)
+    );
+
     // Step 7: Property Mapping - map Cypher properties to database columns (ONCE)
     // NOTE: FilterTagging now PRESERVES cross-table filters (those referencing WITH aliases
     // and having CartesianProduct descendants) instead of extracting them. This allows
@@ -285,6 +349,11 @@ pub fn initial_analyzing(
     let transformed_plan =
         filter_tagging.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)?;
     let plan = transformed_plan.get_plan();
+
+    log::info!(
+        "🔀 UNION_TRACE after FilterTagging: has_union={}",
+        has_union_anywhere(&plan)
+    );
 
     // Step 3.5: CartesianJoinExtraction - extract cross-pattern filters into join_condition
     // CRITICAL: This runs AFTER FilterTagging to get property-mapped predicates.
@@ -300,6 +369,11 @@ pub fn initial_analyzing(
         }
     };
 
+    log::info!(
+        "🔀 UNION_TRACE after CartesianJoinExtraction: has_union={}",
+        has_union_anywhere(&plan)
+    );
+
     // Step 4: Projection Tagging - tag projections into plan_ctx (NO mapping, just tagging)
     let projection_tagging = ProjectionTagging::new();
     let transformed_plan = projection_tagging.analyze_with_graph_schema(
@@ -309,10 +383,20 @@ pub fn initial_analyzing(
     )?;
     let plan = transformed_plan.get_plan();
 
+    log::info!(
+        "🔀 UNION_TRACE after ProjectionTagging: has_union={}",
+        has_union_anywhere(&plan)
+    );
+
     // Step 5: Group By Building
     let group_by_building = GroupByBuilding::new();
     let transformed_plan = group_by_building.analyze(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
+
+    log::info!(
+        "🔀 UNION_TRACE after GroupByBuilding: has_union={}",
+        has_union_anywhere(&plan)
+    );
 
     Ok(plan)
 }
@@ -325,6 +409,37 @@ pub fn intermediate_analyzing(
     // Note: SchemaInference and QueryValidation already ran in initial_analyzing
     // This pass focuses on graph-specific planning and optimizations
 
+    // Reuse has_union_anywhere from initial_analyzing scope
+    fn has_union_anywhere_im(plan: &LogicalPlan) -> bool {
+        match plan {
+            LogicalPlan::Union(_) => true,
+            LogicalPlan::Limit(l) => has_union_anywhere_im(&l.input),
+            LogicalPlan::Skip(s) => has_union_anywhere_im(&s.input),
+            LogicalPlan::OrderBy(o) => has_union_anywhere_im(&o.input),
+            LogicalPlan::Filter(f) => has_union_anywhere_im(&f.input),
+            LogicalPlan::Projection(p) => has_union_anywhere_im(&p.input),
+            LogicalPlan::GroupBy(gb) => has_union_anywhere_im(&gb.input),
+            LogicalPlan::GraphJoins(gj) => has_union_anywhere_im(&gj.input),
+            LogicalPlan::GraphNode(gn) => has_union_anywhere_im(&gn.input),
+            LogicalPlan::GraphRel(gr) => {
+                has_union_anywhere_im(&gr.left)
+                    || has_union_anywhere_im(&gr.center)
+                    || has_union_anywhere_im(&gr.right)
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                has_union_anywhere_im(&cp.left) || has_union_anywhere_im(&cp.right)
+            }
+            LogicalPlan::WithClause(wc) => has_union_anywhere_im(&wc.input),
+            LogicalPlan::Unwind(u) => has_union_anywhere_im(&u.input),
+            _ => false,
+        }
+    }
+
+    log::info!(
+        "🔀 UNION_TRACE intermediate_analyzing ENTRY: has_union={}",
+        has_union_anywhere_im(&plan)
+    );
+
     let graph_traversal_planning = GraphTRaversalPlanning::new();
     let transformed_plan = graph_traversal_planning.analyze_with_graph_schema(
         plan.clone(),
@@ -332,6 +447,11 @@ pub fn intermediate_analyzing(
         current_graph_schema,
     )?;
     let plan = transformed_plan.get_plan();
+
+    log::info!(
+        "🔀 UNION_TRACE after GraphTraversalPlanning: has_union={}",
+        has_union_anywhere_im(&plan)
+    );
 
     // NOTE: SchemaInference removed (Feb 16, 2026)
     // ViewScan resolution now handled by TypeInference Phase 3
@@ -341,6 +461,11 @@ pub fn intermediate_analyzing(
     let duplicate_scans_removing = DuplicateScansRemoving::new();
     let transformed_plan = duplicate_scans_removing.analyze(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
+
+    log::info!(
+        "🔀 UNION_TRACE after DuplicateScansRemoving: has_union={}",
+        has_union_anywhere_im(&plan)
+    );
 
     // NOTE: BidirectionalUnion has been moved to initial_analyzing() to run BEFORE GraphJoinInference
     // This ensures undirected patterns are expanded to UNION ALL before GraphRel is converted to GraphJoins

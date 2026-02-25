@@ -34,7 +34,7 @@
 //! - Week 6: group_by_builder.rs (planned)
 
 use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
-use crate::query_planner::logical_plan::LogicalPlan;
+use crate::query_planner::logical_plan::{GraphRel, LogicalPlan};
 use crate::utils::cte_naming::{extract_cte_base_name, is_generated_cte_name};
 use log::debug;
 use std::sync::Arc;
@@ -44,6 +44,14 @@ use std::sync::Arc;
 fn vlp_cte_alias_for(cte_name: &str) -> String {
     crate::server::query_context::get_vlp_cte_outer_alias(cte_name)
         .unwrap_or_else(|| VLP_CTE_FROM_ALIAS.to_string())
+}
+
+/// Check if a GraphRel with variable_length is a fixed-length VLP (*2..2, *3..3)
+/// that uses inline chained JOINs instead of a recursive CTE.
+pub(super) fn is_fixed_length_vlp(graph_rel: &GraphRel) -> bool {
+    graph_rel.variable_length.as_ref().map_or(false, |spec| {
+        spec.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none()
+    })
 }
 
 use super::errors::RenderBuildError;
@@ -263,8 +271,6 @@ impl LogicalPlan {
         &self,
         graph_rel: &crate::query_planner::logical_plan::GraphRel,
     ) -> RenderPlanBuilderResult<Option<ViewTableRef>> {
-        use crate::query_planner::logical_plan::GraphRel;
-
         // DENORMALIZED EDGE TABLE CHECK
         // For denormalized patterns, both nodes are virtual - use relationship table as FROM
         let left_is_denormalized = is_node_denormalized(&graph_rel.left);
@@ -300,7 +306,8 @@ impl LogicalPlan {
 
         // VARIABLE-LENGTH PATH CHECK
         // For variable-length paths, use the CTE name as FROM UNLESS it's optional
-        if graph_rel.variable_length.is_some() {
+        // Skip fixed-length VLPs (*2..2, *3..3) — they use inline chained JOINs, no CTE
+        if graph_rel.variable_length.is_some() && !is_fixed_length_vlp(graph_rel) {
             let is_optional = graph_rel.is_optional.unwrap_or(false);
 
             if is_optional {
@@ -814,7 +821,7 @@ impl LogicalPlan {
         &self,
         graph_joins: &crate::query_planner::logical_plan::GraphJoins,
     ) -> RenderPlanBuilderResult<Option<ViewTableRef>> {
-        use crate::query_planner::logical_plan::{CartesianProduct, GraphNode, GraphRel};
+        use crate::query_planner::logical_plan::{CartesianProduct, GraphNode};
 
         // ============================================================================
         // CLEAN DESIGN: FROM table determination for GraphJoins
@@ -848,8 +855,8 @@ impl LogicalPlan {
         // === PATTERNRESOLVER 2.0: Check for pattern_combinations FIRST ===
         log::debug!("PatternResolver 2.0: Checking for pattern_combinations...");
         if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
-            log::error!(
-                "🔥 Found GraphRel, alias='{}', checking pattern_combinations: {:?}",
+            log::debug!(
+                "🔍 Found GraphRel, alias='{}', checking pattern_combinations: {:?}",
                 graph_rel.alias,
                 graph_rel.pattern_combinations.as_ref().map(|c| c.len())
             );
@@ -908,7 +915,7 @@ impl LogicalPlan {
                 .unwrap_or(false);
             let is_optional = graph_rel.is_optional.unwrap_or(false);
 
-            if !is_implicit_one_hop && !is_optional {
+            if !is_implicit_one_hop && !is_optional && !is_fixed_length_vlp(graph_rel) {
                 let start_alias = &graph_rel.left_connection;
                 let end_alias = &graph_rel.right_connection;
                 let cte_name = if graph_rel.pattern_combinations.is_some() {
@@ -1128,7 +1135,7 @@ impl LogicalPlan {
                 let is_true_vlp = !is_implicit_one_hop;
                 let is_optional = graph_rel.is_optional.unwrap_or(false);
 
-                if is_true_vlp {
+                if is_true_vlp && !is_fixed_length_vlp(graph_rel) {
                     if is_optional {
                         // OPTIONAL VLP: Don't use VLP CTE as FROM. Instead, find the anchor node
                         // (from required MATCH) and use it as FROM. The VLP CTE will be added
@@ -1357,36 +1364,43 @@ impl LogicalPlan {
         // inside chained patterns. find_graph_rel only finds the outermost GraphRel.
         if let Some(graph_rel) = find_vlp_graph_rel(&graph_joins.input) {
             // find_vlp_graph_rel already checks variable_length.is_some()
-            let start_alias = &graph_rel.left_connection;
-            let end_alias = &graph_rel.right_connection;
-
-            // Check if this is a multi-type pattern (has pattern_combinations)
-            let cte_name = if graph_rel.pattern_combinations.is_some() {
-                // Multi-type VLP: vlp_multi_type_{start}_{end}
-                format!("vlp_multi_type_{}_{}", start_alias, end_alias)
+            // Skip fixed-length VLPs — they use inline chained JOINs, no CTE
+            if is_fixed_length_vlp(graph_rel) {
+                log::debug!(
+                    "✓ Fixed-length VLP: skipping CTE as FROM, using normal FROM resolution"
+                );
             } else {
-                // Single-type VLP: vlp_{start}_{end}
-                format!("vlp_{}_{}", start_alias, end_alias)
-            };
+                let start_alias = &graph_rel.left_connection;
+                let end_alias = &graph_rel.right_connection;
 
-            log::debug!(
-                "✓ Using chained VLP CTE '{}' (multi-type: {})",
-                cte_name,
-                graph_rel.pattern_combinations.is_some()
-            );
+                // Check if this is a multi-type pattern (has pattern_combinations)
+                let cte_name = if graph_rel.pattern_combinations.is_some() {
+                    // Multi-type VLP: vlp_multi_type_{start}_{end}
+                    format!("vlp_multi_type_{}_{}", start_alias, end_alias)
+                } else {
+                    // Single-type VLP: vlp_{start}_{end}
+                    format!("vlp_{}_{}", start_alias, end_alias)
+                };
 
-            log::info!(
+                log::debug!(
+                    "✓ Using chained VLP CTE '{}' (multi-type: {})",
+                    cte_name,
+                    graph_rel.pattern_combinations.is_some()
+                );
+
+                log::info!(
                 "🎯 VLP + CHAINED: Using CTE '{}' as FROM (anchor was '{:?}' but is part of VLP)",
                 cte_name,
                 graph_joins.anchor_table
             );
 
-            return Ok(Some(ViewTableRef {
-                source: Arc::new(LogicalPlan::Empty),
-                name: cte_name.clone(),
-                alias: Some(vlp_cte_alias_for(&cte_name)),
-                use_final: false,
-            }));
+                return Ok(Some(ViewTableRef {
+                    source: Arc::new(LogicalPlan::Empty),
+                    name: cte_name.clone(),
+                    alias: Some(vlp_cte_alias_for(&cte_name)),
+                    use_final: false,
+                }));
+            } // end else (not fixed-length)
         }
 
         if let Some(anchor_alias) = &graph_joins.anchor_table {

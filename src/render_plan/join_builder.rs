@@ -111,6 +111,44 @@ fn extract_end_node_label(plan: &LogicalPlan) -> Option<String> {
     }
 }
 
+/// Check if a non-optional VLP in the input plan tree would cause from_builder
+/// to use the VLP CTE as FROM instead of the anchor table.
+/// This mirrors the logic in from_builder::extract_from_graph_joins lines 910-918.
+fn vlp_overrides_from(plan: &LogicalPlan) -> bool {
+    use crate::query_planner::logical_plan::*;
+    fn find_vlp(plan: &LogicalPlan) -> Option<&GraphRel> {
+        match plan {
+            LogicalPlan::GraphRel(gr) => {
+                if gr.variable_length.is_some() {
+                    return Some(gr);
+                }
+                if let Some(vlp) = find_vlp(&gr.left) {
+                    return Some(vlp);
+                }
+                find_vlp(&gr.right)
+            }
+            LogicalPlan::Projection(proj) => find_vlp(&proj.input),
+            LogicalPlan::Filter(filter) => find_vlp(&filter.input),
+            LogicalPlan::GroupBy(group_by) => find_vlp(&group_by.input),
+            LogicalPlan::Unwind(u) => find_vlp(&u.input),
+            LogicalPlan::GraphJoins(gj) => find_vlp(&gj.input),
+            LogicalPlan::GraphNode(gn) => find_vlp(&gn.input),
+            _ => None,
+        }
+    }
+    if let Some(gr) = find_vlp(plan) {
+        let is_implicit_one_hop = gr
+            .variable_length
+            .as_ref()
+            .map(|spec| spec.min_hops == Some(1) && spec.max_hops == Some(1))
+            .unwrap_or(false);
+        let is_optional = gr.is_optional.unwrap_or(false);
+        !is_implicit_one_hop && !is_optional && !super::from_builder::is_fixed_length_vlp(gr)
+    } else {
+        false
+    }
+}
+
 /// Build JOIN equality condition(s) for an Identifier pair.
 /// For single IDs: creates one `left.col = right.col` condition.
 /// For composite IDs: creates AND of per-column equalities.
@@ -713,10 +751,23 @@ impl JoinBuilder for LogicalPlan {
                             .map(|a| a == &logical_join.table_alias)
                             .unwrap_or(false);
 
-                        if is_from_table {
+                        // Check if VLP CTE took over as the actual FROM (not OPTIONAL VLP).
+                        // from_builder overrides the anchor table with VLP CTE when a
+                        // non-optional, non-fixed-length VLP exists in the input plan.
+                        // In that case, the original anchor table should become a JOIN, not FROM.
+                        let vlp_is_from = vlp_overrides_from(&graph_joins.input);
+
+                        if is_from_table && !vlp_is_from {
                             // This is the FROM table, skip it (will be rendered by extract_from)
                             log::debug!("🔧 Skipping FROM marker '{}'", logical_join.table_alias);
                             continue;
+                        }
+                        if is_from_table && vlp_is_from {
+                            log::info!(
+                                "🔧 VLP is FROM: converting original anchor '{}' to JOIN ON 1=1",
+                                logical_join.table_alias
+                            );
+                            // Fall through to JOIN ON 1=1 rendering below
                         }
 
                         // This is an entry point with empty joining_on (not the FROM table)
