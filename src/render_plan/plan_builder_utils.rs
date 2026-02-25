@@ -6326,268 +6326,6 @@ fn clear_stale_joins_for_cte_aliases(
     clear_recursive(plan, cte_aliases, &live_aliases)
 }
 
-// distribute_cartesian_over_union moved to analyzer/union_distribution.rs
-// (runs as analyzer pass before GraphJoinInference)
-
-#[allow(dead_code)]
-fn _distribute_cartesian_over_union_removed(_plan: &LogicalPlan) -> LogicalPlan {
-    unreachable!("Moved to analyzer/union_distribution.rs")
-}
-
-// --- BEGIN DEAD CODE (kept for reference, will be cleaned up) ---
-#[cfg(any())] // never compiled
-fn _old_distribute_cartesian_over_union(plan: &LogicalPlan) -> LogicalPlan {
-    match plan {
-        LogicalPlan::CartesianProduct(cp) => {
-            log::info!(
-                "distribute_cartesian_over_union: CP left={:?}, right={:?}",
-                std::mem::discriminant(cp.left.as_ref()),
-                std::mem::discriminant(cp.right.as_ref())
-            );
-            if let LogicalPlan::Union(union) = cp.right.as_ref() {
-                // CP(left, Union(br0, br1)) → Union(CP(left, br0), CP(left, br1))
-                let new_left = distribute_cartesian_over_union(&cp.left);
-                let branches = union
-                    .inputs
-                    .iter()
-                    .map(|branch| {
-                        let dist_branch = distribute_cartesian_over_union(branch);
-                        Arc::new(LogicalPlan::CartesianProduct(CartesianProduct {
-                            left: Arc::new(new_left.clone()),
-                            right: Arc::new(dist_branch),
-                            is_optional: cp.is_optional,
-                            join_condition: cp.join_condition.clone(),
-                        }))
-                    })
-                    .collect();
-                log::debug!(
-                    "distribute_cartesian_over_union: distributed CP(_, Union) -> Union(CP, CP)"
-                );
-                return LogicalPlan::Union(Union {
-                    inputs: branches,
-                    union_type: union.union_type.clone(),
-                });
-            }
-            if let LogicalPlan::Union(union) = cp.left.as_ref() {
-                // CP(Union(br0, br1), right) → Union(CP(br0, right), CP(br1, right))
-                let new_right = distribute_cartesian_over_union(&cp.right);
-                let branches = union
-                    .inputs
-                    .iter()
-                    .map(|branch| {
-                        let dist_branch = distribute_cartesian_over_union(branch);
-                        Arc::new(LogicalPlan::CartesianProduct(CartesianProduct {
-                            left: Arc::new(dist_branch),
-                            right: Arc::new(new_right.clone()),
-                            is_optional: cp.is_optional,
-                            join_condition: cp.join_condition.clone(),
-                        }))
-                    })
-                    .collect();
-                log::debug!(
-                    "distribute_cartesian_over_union: distributed CP(Union, _) -> Union(CP, CP)"
-                );
-                return LogicalPlan::Union(Union {
-                    inputs: branches,
-                    union_type: union.union_type.clone(),
-                });
-            }
-            // No Union child — recurse into both sides
-            LogicalPlan::CartesianProduct(CartesianProduct {
-                left: Arc::new(distribute_cartesian_over_union(&cp.left)),
-                right: Arc::new(distribute_cartesian_over_union(&cp.right)),
-                is_optional: cp.is_optional,
-                join_condition: cp.join_condition.clone(),
-            })
-        }
-        LogicalPlan::Filter(f) => {
-            let new_input = distribute_cartesian_over_union(&f.input);
-            // If input became Union after distribution, distribute Filter over it too
-            if let LogicalPlan::Union(union) = &new_input {
-                log::debug!(
-                    "distribute_cartesian_over_union: distributing Filter over Union branches"
-                );
-                LogicalPlan::Union(Union {
-                    inputs: union
-                        .inputs
-                        .iter()
-                        .map(|branch| {
-                            Arc::new(LogicalPlan::Filter(Filter {
-                                input: branch.clone(),
-                                predicate: f.predicate.clone(),
-                            }))
-                        })
-                        .collect(),
-                    union_type: union.union_type.clone(),
-                })
-            } else {
-                LogicalPlan::Filter(Filter {
-                    input: Arc::new(new_input),
-                    predicate: f.predicate.clone(),
-                })
-            }
-        }
-        // Recurse through wrapper nodes but do NOT distribute them over Union
-        LogicalPlan::Projection(p) => LogicalPlan::Projection(Projection {
-            input: Arc::new(distribute_cartesian_over_union(&p.input)),
-            items: p.items.clone(),
-            distinct: p.distinct,
-            pattern_comprehensions: p.pattern_comprehensions.clone(),
-        }),
-        LogicalPlan::GroupBy(gb) => LogicalPlan::GroupBy(GroupBy {
-            input: Arc::new(distribute_cartesian_over_union(&gb.input)),
-            expressions: gb.expressions.clone(),
-            having_clause: gb.having_clause.clone(),
-            is_materialization_boundary: gb.is_materialization_boundary,
-            exposed_alias: gb.exposed_alias.clone(),
-        }),
-        LogicalPlan::GraphJoins(gj) => LogicalPlan::GraphJoins(GraphJoins {
-            input: Arc::new(distribute_cartesian_over_union(&gj.input)),
-            joins: gj.joins.clone(),
-            optional_aliases: gj.optional_aliases.clone(),
-            anchor_table: gj.anchor_table.clone(),
-            cte_references: gj.cte_references.clone(),
-            correlation_predicates: gj.correlation_predicates.clone(),
-        }),
-        LogicalPlan::OrderBy(o) => LogicalPlan::OrderBy(OrderBy {
-            input: Arc::new(distribute_cartesian_over_union(&o.input)),
-            items: o.items.clone(),
-        }),
-        LogicalPlan::Limit(l) => LogicalPlan::Limit(Limit {
-            input: Arc::new(distribute_cartesian_over_union(&l.input)),
-            count: l.count,
-        }),
-        LogicalPlan::Skip(s) => LogicalPlan::Skip(Skip {
-            input: Arc::new(distribute_cartesian_over_union(&s.input)),
-            count: s.count,
-        }),
-        LogicalPlan::Unwind(u) => LogicalPlan::Unwind(Unwind {
-            input: Arc::new(distribute_cartesian_over_union(&u.input)),
-            expression: u.expression.clone(),
-            alias: u.alias.clone(),
-            label: u.label.clone(),
-            tuple_properties: u.tuple_properties.clone(),
-        }),
-        LogicalPlan::GraphRel(gr) => {
-            let new_left = distribute_cartesian_over_union(&gr.left);
-            log::info!(
-                "distribute_cartesian_over_union: GraphRel left result type: {:?}, alias={}, left_conn={}, right_conn={}",
-                std::mem::discriminant(&new_left),
-                gr.alias,
-                gr.left_connection,
-                gr.right_connection
-            );
-            // If left became Union after distribution, distribute GraphRel over it
-            if let LogicalPlan::Union(union) = &new_left {
-                log::info!(
-                    "distribute_cartesian_over_union: distributing GraphRel '{}' over Union with {} branches",
-                    gr.alias,
-                    union.inputs.len()
-                );
-                LogicalPlan::Union(Union {
-                    inputs: union
-                        .inputs
-                        .iter()
-                        .map(|branch| {
-                            Arc::new(LogicalPlan::GraphRel(GraphRel {
-                                left: branch.clone(),
-                                center: gr.center.clone(),
-                                right: gr.right.clone(),
-                                alias: gr.alias.clone(),
-                                direction: gr.direction.clone(),
-                                left_connection: gr.left_connection.clone(),
-                                right_connection: gr.right_connection.clone(),
-                                is_rel_anchor: gr.is_rel_anchor,
-                                variable_length: gr.variable_length.clone(),
-                                shortest_path_mode: gr.shortest_path_mode.clone(),
-                                path_variable: gr.path_variable.clone(),
-                                where_predicate: gr.where_predicate.clone(),
-                                labels: gr.labels.clone(),
-                                is_optional: gr.is_optional,
-                                anchor_connection: gr.anchor_connection.clone(),
-                                cte_references: gr.cte_references.clone(),
-                                pattern_combinations: gr.pattern_combinations.clone(),
-                                was_undirected: gr.was_undirected,
-                            }))
-                        })
-                        .collect(),
-                    union_type: union.union_type.clone(),
-                })
-            } else {
-                // Also check right side for Union
-                let new_right = distribute_cartesian_over_union(&gr.right);
-                if let LogicalPlan::Union(union) = &new_right {
-                    log::info!(
-                        "distribute_cartesian_over_union: distributing GraphRel '{}' over Union (right) with {} branches",
-                        gr.alias,
-                        union.inputs.len()
-                    );
-                    LogicalPlan::Union(Union {
-                        inputs: union
-                            .inputs
-                            .iter()
-                            .map(|branch| {
-                                Arc::new(LogicalPlan::GraphRel(GraphRel {
-                                    left: Arc::new(new_left.clone()),
-                                    center: gr.center.clone(),
-                                    right: branch.clone(),
-                                    alias: gr.alias.clone(),
-                                    direction: gr.direction.clone(),
-                                    left_connection: gr.left_connection.clone(),
-                                    right_connection: gr.right_connection.clone(),
-                                    is_rel_anchor: gr.is_rel_anchor,
-                                    variable_length: gr.variable_length.clone(),
-                                    shortest_path_mode: gr.shortest_path_mode.clone(),
-                                    path_variable: gr.path_variable.clone(),
-                                    where_predicate: gr.where_predicate.clone(),
-                                    labels: gr.labels.clone(),
-                                    is_optional: gr.is_optional,
-                                    anchor_connection: gr.anchor_connection.clone(),
-                                    cte_references: gr.cte_references.clone(),
-                                    pattern_combinations: gr.pattern_combinations.clone(),
-                                    was_undirected: gr.was_undirected,
-                                }))
-                            })
-                            .collect(),
-                        union_type: union.union_type.clone(),
-                    })
-                } else {
-                    LogicalPlan::GraphRel(GraphRel {
-                        left: Arc::new(new_left),
-                        center: gr.center.clone(),
-                        right: Arc::new(new_right),
-                        alias: gr.alias.clone(),
-                        direction: gr.direction.clone(),
-                        left_connection: gr.left_connection.clone(),
-                        right_connection: gr.right_connection.clone(),
-                        is_rel_anchor: gr.is_rel_anchor,
-                        variable_length: gr.variable_length.clone(),
-                        shortest_path_mode: gr.shortest_path_mode.clone(),
-                        path_variable: gr.path_variable.clone(),
-                        where_predicate: gr.where_predicate.clone(),
-                        labels: gr.labels.clone(),
-                        is_optional: gr.is_optional,
-                        anchor_connection: gr.anchor_connection.clone(),
-                        cte_references: gr.cte_references.clone(),
-                        pattern_combinations: gr.pattern_combinations.clone(),
-                        was_undirected: gr.was_undirected,
-                    })
-                }
-            }
-        }
-        LogicalPlan::GraphNode(gn) => LogicalPlan::GraphNode(GraphNode {
-            input: Arc::new(distribute_cartesian_over_union(&gn.input)),
-            alias: gn.alias.clone(),
-            label: gn.label.clone(),
-            is_denormalized: gn.is_denormalized,
-            projected_columns: gn.projected_columns.clone(),
-            node_types: gn.node_types.clone(),
-        }),
-        // Leaf nodes — no transformation needed
-        other => other.clone(),
-    }
-}
-
 /// Expand TableAlias expressions in a LogicalPlan's Projection/Selection
 /// This is needed when the final SELECT has `RETURN a` where `a` is from a CTE
 /// The to_render_plan() method doesn't know about CTEs, so we expand here first.
@@ -9725,34 +9463,9 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 "🔧 build_chained_with_match_cte_plan: AFTER replacement - plan discriminant: {:?}",
                 std::mem::discriminant(&current_plan)
             );
-            // Check if Union survived replacement
-            fn check_union_after_replace(plan: &LogicalPlan) -> bool {
-                match plan {
-                    LogicalPlan::Union(_) => true,
-                    LogicalPlan::Limit(l) => check_union_after_replace(&l.input),
-                    LogicalPlan::Skip(s) => check_union_after_replace(&s.input),
-                    LogicalPlan::OrderBy(o) => check_union_after_replace(&o.input),
-                    LogicalPlan::GroupBy(gb) => check_union_after_replace(&gb.input),
-                    LogicalPlan::Projection(p) => check_union_after_replace(&p.input),
-                    LogicalPlan::Filter(f) => check_union_after_replace(&f.input),
-                    LogicalPlan::GraphJoins(gj) => check_union_after_replace(&gj.input),
-                    LogicalPlan::GraphNode(gn) => check_union_after_replace(&gn.input),
-                    LogicalPlan::CartesianProduct(cp) => {
-                        check_union_after_replace(&cp.left) || check_union_after_replace(&cp.right)
-                    }
-                    LogicalPlan::WithClause(wc) => check_union_after_replace(&wc.input),
-                    LogicalPlan::Unwind(u) => check_union_after_replace(&u.input),
-                    LogicalPlan::GraphRel(gr) => {
-                        check_union_after_replace(&gr.left)
-                            || check_union_after_replace(&gr.center)
-                            || check_union_after_replace(&gr.right)
-                    }
-                    _ => false,
-                }
-            }
-            log::info!(
+            log::debug!(
                 "🔀 UNION_TRACE after replace_v2: has_union={}",
-                check_union_after_replace(&current_plan)
+                current_plan.has_union_anywhere()
             );
 
             log::debug!("🔧 PLAN STRUCTURE AFTER REPLACEMENT:");
@@ -9961,37 +9674,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
         log::debug!("🔧 build_chained_with_match_cte_plan: Iteration {} complete, checking for more WITH clauses", iteration);
     }
 
-    // Check Union presence after all WITH iterations
-    {
-        fn has_union_deep(plan: &LogicalPlan) -> bool {
-            match plan {
-                LogicalPlan::Union(_) => true,
-                LogicalPlan::Limit(l) => has_union_deep(&l.input),
-                LogicalPlan::Skip(s) => has_union_deep(&s.input),
-                LogicalPlan::OrderBy(o) => has_union_deep(&o.input),
-                LogicalPlan::GroupBy(gb) => has_union_deep(&gb.input),
-                LogicalPlan::Projection(p) => has_union_deep(&p.input),
-                LogicalPlan::Filter(f) => has_union_deep(&f.input),
-                LogicalPlan::GraphJoins(gj) => has_union_deep(&gj.input),
-                LogicalPlan::GraphNode(gn) => has_union_deep(&gn.input),
-                LogicalPlan::CartesianProduct(cp) => {
-                    has_union_deep(&cp.left) || has_union_deep(&cp.right)
-                }
-                LogicalPlan::WithClause(wc) => has_union_deep(&wc.input),
-                LogicalPlan::Unwind(u) => has_union_deep(&u.input),
-                LogicalPlan::GraphRel(gr) => {
-                    has_union_deep(&gr.left)
-                        || has_union_deep(&gr.center)
-                        || has_union_deep(&gr.right)
-                }
-                _ => false,
-            }
-        }
-        log::info!(
-            "🔀 UNION_TRACE after all WITH iterations: has_union={}",
-            has_union_deep(&current_plan)
-        );
-    }
+    log::debug!(
+        "🔀 UNION_TRACE after all WITH iterations: has_union={}",
+        current_plan.has_union_anywhere()
+    );
 
     // Verify that all WITH clauses were actually processed
     // If any remain, it means we failed to process them and should not continue
@@ -10016,7 +9702,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
     log::debug!("🔧 build_chained_with_match_cte_plan: All WITH clauses processed ({} CTEs), rendering final plan", all_ctes.len());
 
     // DEBUG: Log the full plan structure before rendering
-    log::info!("🐛 DEBUG FINAL PLAN structure (after WITH processing):");
+    log::debug!("🐛 DEBUG FINAL PLAN structure (after WITH processing):");
     show_plan_structure(&current_plan, 0);
 
     // DEBUG: Log the current_plan structure before rendering
@@ -10097,34 +9783,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
             // Now we need to prune joins from GraphJoins that are covered by this CTE
             // AND update any GraphNode that matches an exported alias to reference the CTE
-            {
-                fn has_union_deep2(plan: &LogicalPlan) -> bool {
-                    match plan {
-                        LogicalPlan::Union(_) => true,
-                        LogicalPlan::Limit(l) => has_union_deep2(&l.input),
-                        LogicalPlan::Skip(s) => has_union_deep2(&s.input),
-                        LogicalPlan::OrderBy(o) => has_union_deep2(&o.input),
-                        LogicalPlan::GroupBy(gb) => has_union_deep2(&gb.input),
-                        LogicalPlan::Projection(p) => has_union_deep2(&p.input),
-                        LogicalPlan::Filter(f) => has_union_deep2(&f.input),
-                        LogicalPlan::GraphJoins(gj) => has_union_deep2(&gj.input),
-                        LogicalPlan::GraphNode(gn) => has_union_deep2(&gn.input),
-                        LogicalPlan::CartesianProduct(cp) => {
-                            has_union_deep2(&cp.left) || has_union_deep2(&cp.right)
-                        }
-                        LogicalPlan::GraphRel(gr) => {
-                            has_union_deep2(&gr.left)
-                                || has_union_deep2(&gr.center)
-                                || has_union_deep2(&gr.right)
-                        }
-                        _ => false,
-                    }
-                }
-                log::info!(
-                    "🔀 UNION_TRACE before prune_joins: has_union={}",
-                    has_union_deep2(&current_plan)
-                );
-            }
+            log::debug!(
+                "🔀 UNION_TRACE before prune_joins: has_union={}",
+                current_plan.has_union_anywhere()
+            );
             current_plan = prune_joins_covered_by_cte(
                 &current_plan,
                 last_cte_name,

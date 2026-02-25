@@ -87,6 +87,36 @@ fn has_any_union(plan: &LogicalPlan) -> bool {
     }
 }
 
+/// Clone a GraphRel with overridden left/center/right children.
+fn graph_rel_with(
+    gr: &GraphRel,
+    left: Arc<LogicalPlan>,
+    center: Arc<LogicalPlan>,
+    right: Arc<LogicalPlan>,
+) -> GraphRel {
+    GraphRel {
+        left,
+        center,
+        right,
+        ..gr.clone()
+    }
+}
+
+/// Distribute Union over the branches of a parent node, producing `Union(parent(br0), parent(br1), ...)`.
+fn distribute_over_union<F>(union: &Union, make_branch: F) -> LogicalPlan
+where
+    F: Fn(Arc<LogicalPlan>) -> LogicalPlan,
+{
+    LogicalPlan::Union(Union {
+        inputs: union
+            .inputs
+            .iter()
+            .map(|branch| Arc::new(make_branch(branch.clone())))
+            .collect(),
+        union_type: union.union_type.clone(),
+    })
+}
+
 /// Recursively distribute wrapping nodes (GraphRel, CartesianProduct, Filter)
 /// over Union, hoisting Union upward. Stops at GroupBy/Projection boundaries.
 fn distribute_union(plan: &LogicalPlan) -> LogicalPlan {
@@ -104,97 +134,33 @@ fn distribute_union(plan: &LogicalPlan) -> LogicalPlan {
                     gr.alias,
                     union.inputs.len()
                 );
-                return LogicalPlan::Union(Union {
-                    inputs: union
-                        .inputs
-                        .iter()
-                        .map(|branch| {
-                            Arc::new(LogicalPlan::GraphRel(GraphRel {
-                                left: branch.clone(),
-                                center: Arc::new(new_center.clone()),
-                                right: Arc::new(new_right.clone()),
-                                alias: gr.alias.clone(),
-                                direction: gr.direction.clone(),
-                                left_connection: gr.left_connection.clone(),
-                                right_connection: gr.right_connection.clone(),
-                                is_rel_anchor: gr.is_rel_anchor,
-                                variable_length: gr.variable_length.clone(),
-                                shortest_path_mode: gr.shortest_path_mode.clone(),
-                                path_variable: gr.path_variable.clone(),
-                                where_predicate: gr.where_predicate.clone(),
-                                labels: gr.labels.clone(),
-                                is_optional: gr.is_optional,
-                                anchor_connection: gr.anchor_connection.clone(),
-                                cte_references: gr.cte_references.clone(),
-                                pattern_combinations: gr.pattern_combinations.clone(),
-                                was_undirected: gr.was_undirected,
-                            }))
-                        })
-                        .collect(),
-                    union_type: union.union_type.clone(),
+                let center = Arc::new(new_center);
+                let right = Arc::new(new_right);
+                return distribute_over_union(union, |branch| {
+                    LogicalPlan::GraphRel(graph_rel_with(gr, branch, center.clone(), right.clone()))
                 });
             }
 
             // If right became Union after distribution, distribute GraphRel over it
-            // This happens when undirected edges (Union from BidirectionalUnion) appear
-            // on the right side of a GraphRel (e.g., the friend/person end of a chain)
             if let LogicalPlan::Union(union) = &new_right {
                 log::debug!(
                     "🔀 UnionDistribution: distributing GraphRel '{}' over right Union ({} branches)",
                     gr.alias,
                     union.inputs.len()
                 );
-                return LogicalPlan::Union(Union {
-                    inputs: union
-                        .inputs
-                        .iter()
-                        .map(|branch| {
-                            Arc::new(LogicalPlan::GraphRel(GraphRel {
-                                left: Arc::new(new_left.clone()),
-                                center: Arc::new(new_center.clone()),
-                                right: branch.clone(),
-                                alias: gr.alias.clone(),
-                                direction: gr.direction.clone(),
-                                left_connection: gr.left_connection.clone(),
-                                right_connection: gr.right_connection.clone(),
-                                is_rel_anchor: gr.is_rel_anchor,
-                                variable_length: gr.variable_length.clone(),
-                                shortest_path_mode: gr.shortest_path_mode.clone(),
-                                path_variable: gr.path_variable.clone(),
-                                where_predicate: gr.where_predicate.clone(),
-                                labels: gr.labels.clone(),
-                                is_optional: gr.is_optional,
-                                anchor_connection: gr.anchor_connection.clone(),
-                                cte_references: gr.cte_references.clone(),
-                                pattern_combinations: gr.pattern_combinations.clone(),
-                                was_undirected: gr.was_undirected,
-                            }))
-                        })
-                        .collect(),
-                    union_type: union.union_type.clone(),
+                let left = Arc::new(new_left);
+                let center = Arc::new(new_center);
+                return distribute_over_union(union, |branch| {
+                    LogicalPlan::GraphRel(graph_rel_with(gr, left.clone(), center.clone(), branch))
                 });
             }
 
-            LogicalPlan::GraphRel(GraphRel {
-                left: Arc::new(new_left),
-                center: Arc::new(new_center),
-                right: Arc::new(new_right),
-                alias: gr.alias.clone(),
-                direction: gr.direction.clone(),
-                left_connection: gr.left_connection.clone(),
-                right_connection: gr.right_connection.clone(),
-                is_rel_anchor: gr.is_rel_anchor,
-                variable_length: gr.variable_length.clone(),
-                shortest_path_mode: gr.shortest_path_mode.clone(),
-                path_variable: gr.path_variable.clone(),
-                where_predicate: gr.where_predicate.clone(),
-                labels: gr.labels.clone(),
-                is_optional: gr.is_optional,
-                anchor_connection: gr.anchor_connection.clone(),
-                cte_references: gr.cte_references.clone(),
-                pattern_combinations: gr.pattern_combinations.clone(),
-                was_undirected: gr.was_undirected,
-            })
+            LogicalPlan::GraphRel(graph_rel_with(
+                gr,
+                Arc::new(new_left),
+                Arc::new(new_center),
+                Arc::new(new_right),
+            ))
         }
 
         LogicalPlan::CartesianProduct(cp) => {
@@ -207,20 +173,14 @@ fn distribute_union(plan: &LogicalPlan) -> LogicalPlan {
                     "🔀 UnionDistribution: distributing CP over right Union ({} branches)",
                     union.inputs.len()
                 );
-                return LogicalPlan::Union(Union {
-                    inputs: union
-                        .inputs
-                        .iter()
-                        .map(|branch| {
-                            Arc::new(LogicalPlan::CartesianProduct(CartesianProduct {
-                                left: Arc::new(new_left.clone()),
-                                right: branch.clone(),
-                                is_optional: cp.is_optional,
-                                join_condition: cp.join_condition.clone(),
-                            }))
-                        })
-                        .collect(),
-                    union_type: union.union_type.clone(),
+                let left = Arc::new(new_left);
+                return distribute_over_union(union, |branch| {
+                    LogicalPlan::CartesianProduct(CartesianProduct {
+                        left: left.clone(),
+                        right: branch,
+                        is_optional: cp.is_optional,
+                        join_condition: cp.join_condition.clone(),
+                    })
                 });
             }
             // CP(Union(br0, br1), right) → Union(CP(br0, right), CP(br1, right))
@@ -229,20 +189,14 @@ fn distribute_union(plan: &LogicalPlan) -> LogicalPlan {
                     "🔀 UnionDistribution: distributing CP over left Union ({} branches)",
                     union.inputs.len()
                 );
-                return LogicalPlan::Union(Union {
-                    inputs: union
-                        .inputs
-                        .iter()
-                        .map(|branch| {
-                            Arc::new(LogicalPlan::CartesianProduct(CartesianProduct {
-                                left: branch.clone(),
-                                right: Arc::new(new_right.clone()),
-                                is_optional: cp.is_optional,
-                                join_condition: cp.join_condition.clone(),
-                            }))
-                        })
-                        .collect(),
-                    union_type: union.union_type.clone(),
+                let right = Arc::new(new_right);
+                return distribute_over_union(union, |branch| {
+                    LogicalPlan::CartesianProduct(CartesianProduct {
+                        left: branch,
+                        right: right.clone(),
+                        is_optional: cp.is_optional,
+                        join_condition: cp.join_condition.clone(),
+                    })
                 });
             }
 
@@ -262,18 +216,11 @@ fn distribute_union(plan: &LogicalPlan) -> LogicalPlan {
                     "🔀 UnionDistribution: distributing Filter over Union ({} branches)",
                     union.inputs.len()
                 );
-                return LogicalPlan::Union(Union {
-                    inputs: union
-                        .inputs
-                        .iter()
-                        .map(|branch| {
-                            Arc::new(LogicalPlan::Filter(Filter {
-                                input: branch.clone(),
-                                predicate: f.predicate.clone(),
-                            }))
-                        })
-                        .collect(),
-                    union_type: union.union_type.clone(),
+                return distribute_over_union(union, |branch| {
+                    LogicalPlan::Filter(Filter {
+                        input: branch,
+                        predicate: f.predicate.clone(),
+                    })
                 });
             }
             LogicalPlan::Filter(Filter {
@@ -290,22 +237,15 @@ fn distribute_union(plan: &LogicalPlan) -> LogicalPlan {
                     "🔀 UnionDistribution: distributing GraphNode '{}' over Union",
                     gn.alias
                 );
-                return LogicalPlan::Union(Union {
-                    inputs: union
-                        .inputs
-                        .iter()
-                        .map(|branch| {
-                            Arc::new(LogicalPlan::GraphNode(GraphNode {
-                                input: branch.clone(),
-                                alias: gn.alias.clone(),
-                                label: gn.label.clone(),
-                                projected_columns: gn.projected_columns.clone(),
-                                is_denormalized: gn.is_denormalized,
-                                node_types: gn.node_types.clone(),
-                            }))
-                        })
-                        .collect(),
-                    union_type: union.union_type.clone(),
+                return distribute_over_union(union, |branch| {
+                    LogicalPlan::GraphNode(GraphNode {
+                        input: branch,
+                        alias: gn.alias.clone(),
+                        label: gn.label.clone(),
+                        projected_columns: gn.projected_columns.clone(),
+                        is_denormalized: gn.is_denormalized,
+                        node_types: gn.node_types.clone(),
+                    })
                 });
             }
             LogicalPlan::GraphNode(GraphNode {

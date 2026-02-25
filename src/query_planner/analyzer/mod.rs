@@ -258,35 +258,9 @@ pub fn initial_analyzing(
         }
     };
 
-    // Helper to check if a plan contains Union at any depth
-    fn has_union_anywhere(plan: &LogicalPlan) -> bool {
-        match plan {
-            LogicalPlan::Union(_) => true,
-            LogicalPlan::Limit(l) => has_union_anywhere(&l.input),
-            LogicalPlan::Skip(s) => has_union_anywhere(&s.input),
-            LogicalPlan::OrderBy(o) => has_union_anywhere(&o.input),
-            LogicalPlan::Filter(f) => has_union_anywhere(&f.input),
-            LogicalPlan::Projection(p) => has_union_anywhere(&p.input),
-            LogicalPlan::GroupBy(gb) => has_union_anywhere(&gb.input),
-            LogicalPlan::GraphJoins(gj) => has_union_anywhere(&gj.input),
-            LogicalPlan::GraphNode(gn) => has_union_anywhere(&gn.input),
-            LogicalPlan::GraphRel(gr) => {
-                has_union_anywhere(&gr.left)
-                    || has_union_anywhere(&gr.center)
-                    || has_union_anywhere(&gr.right)
-            }
-            LogicalPlan::CartesianProduct(cp) => {
-                has_union_anywhere(&cp.left) || has_union_anywhere(&cp.right)
-            }
-            LogicalPlan::WithClause(wc) => has_union_anywhere(&wc.input),
-            LogicalPlan::Unwind(u) => has_union_anywhere(&u.input),
-            _ => false,
-        }
-    }
-
-    log::info!(
+    log::debug!(
         "🔀 UNION_TRACE after UnionDistribution: has_union={}",
-        has_union_anywhere(&plan)
+        plan.has_union_anywhere()
     );
 
     // Step 4: Graph Join Inference - analyze graph patterns and create PatternSchemaContext
@@ -312,7 +286,7 @@ pub fn initial_analyzing(
 
     log::info!(
         "🔀 UNION_TRACE after GraphJoinInference: has_union={}",
-        has_union_anywhere(&plan)
+        plan.has_union_anywhere()
     );
 
     // Step 5: Projected Columns Resolver - pre-compute projected columns for GraphNodes
@@ -338,7 +312,7 @@ pub fn initial_analyzing(
 
     log::info!(
         "🔀 UNION_TRACE after ProjectedColumnsResolver+QueryValidation: has_union={}",
-        has_union_anywhere(&plan)
+        plan.has_union_anywhere()
     );
 
     // Step 7: Property Mapping - map Cypher properties to database columns (ONCE)
@@ -352,7 +326,7 @@ pub fn initial_analyzing(
 
     log::info!(
         "🔀 UNION_TRACE after FilterTagging: has_union={}",
-        has_union_anywhere(&plan)
+        plan.has_union_anywhere()
     );
 
     // Step 3.5: CartesianJoinExtraction - extract cross-pattern filters into join_condition
@@ -371,7 +345,7 @@ pub fn initial_analyzing(
 
     log::info!(
         "🔀 UNION_TRACE after CartesianJoinExtraction: has_union={}",
-        has_union_anywhere(&plan)
+        plan.has_union_anywhere()
     );
 
     // Step 4: Projection Tagging - tag projections into plan_ctx (NO mapping, just tagging)
@@ -385,7 +359,7 @@ pub fn initial_analyzing(
 
     log::info!(
         "🔀 UNION_TRACE after ProjectionTagging: has_union={}",
-        has_union_anywhere(&plan)
+        plan.has_union_anywhere()
     );
 
     // Step 5: Group By Building
@@ -395,7 +369,7 @@ pub fn initial_analyzing(
 
     log::info!(
         "🔀 UNION_TRACE after GroupByBuilding: has_union={}",
-        has_union_anywhere(&plan)
+        plan.has_union_anywhere()
     );
 
     Ok(plan)
@@ -409,35 +383,9 @@ pub fn intermediate_analyzing(
     // Note: SchemaInference and QueryValidation already ran in initial_analyzing
     // This pass focuses on graph-specific planning and optimizations
 
-    // Reuse has_union_anywhere from initial_analyzing scope
-    fn has_union_anywhere_im(plan: &LogicalPlan) -> bool {
-        match plan {
-            LogicalPlan::Union(_) => true,
-            LogicalPlan::Limit(l) => has_union_anywhere_im(&l.input),
-            LogicalPlan::Skip(s) => has_union_anywhere_im(&s.input),
-            LogicalPlan::OrderBy(o) => has_union_anywhere_im(&o.input),
-            LogicalPlan::Filter(f) => has_union_anywhere_im(&f.input),
-            LogicalPlan::Projection(p) => has_union_anywhere_im(&p.input),
-            LogicalPlan::GroupBy(gb) => has_union_anywhere_im(&gb.input),
-            LogicalPlan::GraphJoins(gj) => has_union_anywhere_im(&gj.input),
-            LogicalPlan::GraphNode(gn) => has_union_anywhere_im(&gn.input),
-            LogicalPlan::GraphRel(gr) => {
-                has_union_anywhere_im(&gr.left)
-                    || has_union_anywhere_im(&gr.center)
-                    || has_union_anywhere_im(&gr.right)
-            }
-            LogicalPlan::CartesianProduct(cp) => {
-                has_union_anywhere_im(&cp.left) || has_union_anywhere_im(&cp.right)
-            }
-            LogicalPlan::WithClause(wc) => has_union_anywhere_im(&wc.input),
-            LogicalPlan::Unwind(u) => has_union_anywhere_im(&u.input),
-            _ => false,
-        }
-    }
-
-    log::info!(
+    log::debug!(
         "🔀 UNION_TRACE intermediate_analyzing ENTRY: has_union={}",
-        has_union_anywhere_im(&plan)
+        plan.has_union_anywhere()
     );
 
     let graph_traversal_planning = GraphTRaversalPlanning::new();
@@ -450,7 +398,7 @@ pub fn intermediate_analyzing(
 
     log::info!(
         "🔀 UNION_TRACE after GraphTraversalPlanning: has_union={}",
-        has_union_anywhere_im(&plan)
+        plan.has_union_anywhere()
     );
 
     // NOTE: SchemaInference removed (Feb 16, 2026)
@@ -464,7 +412,7 @@ pub fn intermediate_analyzing(
 
     log::info!(
         "🔀 UNION_TRACE after DuplicateScansRemoving: has_union={}",
-        has_union_anywhere_im(&plan)
+        plan.has_union_anywhere()
     );
 
     // NOTE: BidirectionalUnion has been moved to initial_analyzing() to run BEFORE GraphJoinInference
