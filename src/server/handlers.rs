@@ -1320,21 +1320,32 @@ fn extract_result_count(_response: &axum::response::Response) -> Option<usize> {
 #[derive(Deserialize)]
 pub struct IntrospectRequest {
     pub database: String,
+    #[serde(default)]
+    pub use_nlp: bool,
 }
 
 pub async fn introspect_handler(
     State(app_state): State<Arc<AppState>>,
     Json(payload): Json<IntrospectRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    log::info!("Introspecting database: {}", payload.database);
+    log::info!("Introspecting database: {} (nlp: {})", payload.database, payload.use_nlp);
     
-    match SchemaDiscovery::introspect(
-        &app_state.clickhouse_client,
-        &payload.database,
-    )
-    .await
-    {
-        Ok(response) => Ok(Json(serde_json::to_value(response).unwrap())),
+    let response = if payload.use_nlp {
+        SchemaDiscovery::introspect_with_nlp(
+            &app_state.clickhouse_client,
+            &payload.database,
+        )
+        .await
+    } else {
+        SchemaDiscovery::introspect(
+            &app_state.clickhouse_client,
+            &payload.database,
+        )
+        .await
+    };
+    
+    match response {
+        Ok(resp) => Ok(Json(serde_json::to_value(resp).unwrap())),
         Err(e) => {
             log::error!("Introspect failed: {}", e);
             Err((

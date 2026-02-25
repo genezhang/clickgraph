@@ -3,6 +3,10 @@
 //! This module provides functionality to discover table structures in ClickHouse databases
 //! and generate graph schema suggestions.
 
+#[cfg(feature = "gliner")]
+use crate::graph_catalog::gliner_nlp::{
+    try_create_nlp, TableSchemaInfo, ColumnInfo as NlpColumnInfo, TableSuggestion,
+};
 use clickhouse::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -120,6 +124,89 @@ impl SchemaDiscovery {
             suggestions,
         })
     }
+    
+    /// Introspect a database with GLiNER-powered suggestions
+    #[cfg(feature = "gliner")]
+    pub async fn introspect_with_nlp(
+        client: &Client,
+        database: &str,
+    ) -> Result<IntrospectResponse, String> {
+        use crate::graph_catalog::gliner_nlp::{TableSchemaInfo, ColumnInfo as NlpColumnInfo};
+        
+        let tables = Self::list_tables(client, database).await?;
+        
+        let mut table_metadata = Vec::new();
+        let mut suggestions = Vec::new();
+        
+        // Try to create GLiNER model
+        let nlp = try_create_nlp();
+        
+        for table_name in tables {
+            let columns = Self::get_columns(client, database, &table_name).await?;
+            let row_count = Self::get_row_count(client, database, &table_name).await.ok();
+            let sample = Self::get_sample_data(client, database, &table_name).await.unwrap_or_default();
+            
+            // Generate basic suggestions (always available)
+            let table_suggestions = Self::generate_suggestions(&table_name, &columns);
+            suggestions.extend(table_suggestions);
+            
+            // If GLiNER is available, add NLP-powered suggestions
+            if let Some(ref nlp_model) = nlp {
+                let table_info = TableSchemaInfo {
+                    name: table_name.clone(),
+                    columns: columns.iter().map(|c| NlpColumnInfo {
+                        name: c.name.clone(),
+                        is_pk: c.is_primary_key,
+                    }).collect(),
+                };
+                
+                match nlp_model.suggest_from_tables(&[table_info]) {
+                    Ok(nlp_suggestions) => {
+                        for sugg in nlp_suggestions {
+                            // Add NLP suggestion with confidence
+                            let nlp_reason = format!(
+                                "[NLP] {} (confidence: {:.2}) - {}",
+                                sugg.suggestion_type, sugg.confidence, sugg.reason
+                            );
+                            suggestions.push(Suggestion {
+                                table: sugg.table_name,
+                                suggestion_type: format!("nlp_{}", sugg.suggestion_type),
+                                reason: nlp_reason,
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("GLiNER suggestion failed for {}: {}", table_name, e);
+                    }
+                }
+            }
+            
+            table_metadata.push(TableMetadata {
+                name: table_name,
+                columns,
+                row_count,
+                sample,
+            });
+        }
+        
+        Ok(IntrospectResponse {
+            database: database.to_string(),
+            tables: table_metadata,
+            suggestions,
+        })
+    }
+    
+    /// Introspect a database with GLiNER-powered suggestions (stub when GLiNER not enabled)
+    #[cfg(not(feature = "gliner"))]
+    pub async fn introspect_with_nlp(
+        _client: &Client,
+        database: &str,
+    ) -> Result<IntrospectResponse, String> {
+        // When GLiNER is not enabled, just call regular introspect
+        Self::introspect(_client, database).await
+    }
+    
+    /// List all tables in a database
     
     /// List all tables in a database
     async fn list_tables(client: &Client, database: &str) -> Result<Vec<String>, String> {
