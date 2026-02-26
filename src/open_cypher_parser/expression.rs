@@ -652,6 +652,42 @@ fn parse_comparison_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_
         match op_result {
             Ok((new_input, op)) => {
                 let (new_input, rhs) = parse_additive_expression(new_input)?;
+
+                // Chained comparison desugaring: `a > b >= c` → `(a > b) AND (b >= c)`
+                // When the LHS is itself a comparison, extract the middle operand
+                // and split into two comparisons joined by AND.
+                let is_comparison = |o: &Operator| {
+                    matches!(
+                        o,
+                        Operator::LessThan
+                            | Operator::LessThanEqual
+                            | Operator::GreaterThan
+                            | Operator::GreaterThanEqual
+                            | Operator::Equal
+                    )
+                };
+                if is_comparison(&op) {
+                    if let Expression::OperatorApplicationExp(ref prev_op) = final_expression {
+                        if is_comparison(&prev_op.operator) && prev_op.operands.len() == 2 {
+                            // prev: (a op1 b), current op2 with rhs c
+                            // Desugar to: (a op1 b) AND (b op2 c)
+                            let middle = prev_op.operands[1].clone();
+                            let new_comp =
+                                Expression::OperatorApplicationExp(OperatorApplication {
+                                    operator: op,
+                                    operands: vec![middle, rhs],
+                                });
+                            final_expression =
+                                Expression::OperatorApplicationExp(OperatorApplication {
+                                    operator: Operator::And,
+                                    operands: vec![final_expression, new_comp],
+                                });
+                            remaining_input = new_input;
+                            continue;
+                        }
+                    }
+                }
+
                 final_expression = Expression::OperatorApplicationExp(OperatorApplication {
                     operator: op,
                     operands: vec![final_expression, rhs],
