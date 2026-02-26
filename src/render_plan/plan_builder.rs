@@ -356,6 +356,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Skip CTE reference ViewScans (source_table starts with "with_") — these
                 // are replacement nodes for WITH-processed aliases, not real graph nodes.
                 // Their id_column is a meaningless default and shouldn't be used for GROUP BY.
+                // See `generate_cte_base_name()` in src/utils/cte_naming.rs for the "with_" naming convention.
                 if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
                     if !scan.source_table.starts_with("with_") {
                         return Ok(scan.id_column.clone());
