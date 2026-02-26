@@ -652,6 +652,49 @@ fn parse_comparison_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_
         match op_result {
             Ok((new_input, op)) => {
                 let (new_input, rhs) = parse_additive_expression(new_input)?;
+
+                // Chained comparison desugaring: `a > b >= c` → `(a > b) AND (b >= c)`
+                // When the LHS is itself a comparison, extract the middle operand
+                // and split into two comparisons joined by AND.
+                // Note: Only handles double chains (2 operators). Triple chains like
+                // `a > b >= c > d` produce `((a > b) AND (b >= c)) > d` because the
+                // desugared AND doesn't match the comparison guard on the 3rd iteration.
+                // Triple chains are not used in practice (not in LDBC or standard Cypher).
+                //
+                // NotEqual (<>, !=) is excluded — `a <> b <> c` is not a meaningful
+                // mathematical chain, unlike ordered comparisons.
+                let is_comparison = |o: &Operator| {
+                    matches!(
+                        o,
+                        Operator::LessThan
+                            | Operator::LessThanEqual
+                            | Operator::GreaterThan
+                            | Operator::GreaterThanEqual
+                            | Operator::Equal
+                    )
+                };
+                if is_comparison(&op) {
+                    if let Expression::OperatorApplicationExp(ref prev_op) = final_expression {
+                        if is_comparison(&prev_op.operator) && prev_op.operands.len() == 2 {
+                            // prev: (a op1 b), current op2 with rhs c
+                            // Desugar to: (a op1 b) AND (b op2 c)
+                            let middle = prev_op.operands[1].clone();
+                            let new_comp =
+                                Expression::OperatorApplicationExp(OperatorApplication {
+                                    operator: op,
+                                    operands: vec![middle, rhs],
+                                });
+                            final_expression =
+                                Expression::OperatorApplicationExp(OperatorApplication {
+                                    operator: Operator::And,
+                                    operands: vec![final_expression, new_comp],
+                                });
+                            remaining_input = new_input;
+                            continue;
+                        }
+                    }
+                }
+
                 final_expression = Expression::OperatorApplicationExp(OperatorApplication {
                     operator: op,
                     operands: vec![final_expression, rhs],
@@ -1681,6 +1724,74 @@ mod tests {
                 }
             }
             Err(e) => panic!("Should parse temporal arithmetic: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_chained_comparison_desugaring() {
+        // `a > b >= c` should desugar to `(a > b) AND (b >= c)`
+        let input = "a > b >= c";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::OperatorApplicationExp(op) = &expr {
+            assert_eq!(op.operator, Operator::And);
+            assert_eq!(op.operands.len(), 2);
+            // LHS: a > b
+            if let Expression::OperatorApplicationExp(lhs) = &op.operands[0] {
+                assert_eq!(lhs.operator, Operator::GreaterThan);
+            } else {
+                panic!("Expected LHS to be GreaterThan comparison");
+            }
+            // RHS: b >= c
+            if let Expression::OperatorApplicationExp(rhs) = &op.operands[1] {
+                assert_eq!(rhs.operator, Operator::GreaterThanEqual);
+            } else {
+                panic!("Expected RHS to be GreaterThanEqual comparison");
+            }
+        } else {
+            panic!("Expected AND expression, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_chained_comparison_with_properties() {
+        // `$endDate > m.creationDate >= $startDate` — the LDBC complex-3 pattern
+        let input = "$endDate > m.creationDate >= $startDate";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::OperatorApplicationExp(op) = &expr {
+            assert_eq!(op.operator, Operator::And);
+            assert_eq!(op.operands.len(), 2);
+        } else {
+            panic!("Expected AND expression, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_non_chained_comparison_unchanged() {
+        // `a > b` should stay as a simple comparison (no desugaring)
+        let input = "a > b";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::OperatorApplicationExp(op) = &expr {
+            assert_eq!(op.operator, Operator::GreaterThan);
+            assert_eq!(op.operands.len(), 2);
+        } else {
+            panic!("Expected GreaterThan comparison, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_not_equal_not_chained() {
+        // `a <> b <> c` should NOT be desugared (NotEqual excluded)
+        let input = "a <> b <> c";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::OperatorApplicationExp(op) = &expr {
+            // Should be a nested NotEqual, not AND
+            assert_eq!(op.operator, Operator::NotEqual);
+        } else {
+            panic!("Expected NotEqual expression, got {:?}", expr);
         }
     }
 

@@ -6613,7 +6613,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
         "build_chained_with_match_cte_plan ENTRY: plan_ctx available: {}",
         plan_ctx.is_some()
     );
-
     // Safety limit to prevent infinite loops due to excessive plan tree depth
     // Complex queries with many nested structures (projections, filters, WITH clauses, etc.)
     // can create deep plan trees that require many iterations to process
@@ -7219,8 +7218,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             "🔧 build_chained_with_match_cte_plan: CTE refs from WithClause: {:?}",
                             input_cte_refs
                         );
-                        log::debug!("🔧 build_chained_with_match_cte_plan: wc has {} items, order_by={:?}, skip={:?}, limit={:?}, where={:?}",
-                                   wc.items.len(), wc.order_by.is_some(), wc.skip, wc.limit, wc.where_clause.is_some());
                         // Debug: if it's GraphJoins, log the joins
                         if let LogicalPlan::GraphJoins(gj) = wc.input.as_ref() {
                             log::debug!("🔧 build_chained_with_match_cte_plan: wc.input is GraphJoins with {} joins", gj.joins.len());
@@ -11001,6 +10998,14 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 }
             }
         }
+    }
+
+    // Apply bare variable rewriting to the final (outer) render plan.
+    // This resolves bare node aliases (e.g., `b` → `b.id`, `a` → `cte.p1_a_id`)
+    // in JOIN conditions, WHERE clauses, and SELECT expressions of the outer query.
+    // Must run AFTER CTE JOINs are added (above) so JOIN conditions are rewritten too.
+    if !scope_cte_variables.is_empty() {
+        super::variable_scope::rewrite_bare_variables_in_plan(&mut render_plan, &final_scope);
     }
 
     // Fix orphan composite aliases in the outer query.

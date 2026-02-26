@@ -399,32 +399,55 @@ impl FilterBuilder for LogicalPlan {
             LogicalPlan::PageRank(_) => None,
             LogicalPlan::Unwind(u) => u.input.extract_filters()?,
             LogicalPlan::CartesianProduct(cp) => {
-                // Combine filters from both sides with AND
+                // Combine filters from both sides AND the join_condition with AND
                 let left_filters = cp.left.extract_filters()?;
                 let right_filters = cp.right.extract_filters()?;
 
-                // DEBUG: Log what we're extracting
-                log::info!("🔍 CartesianProduct extract_filters:");
-                log::info!("  Left filters: {:?}", left_filters);
-                log::info!("  Right filters: {:?}", right_filters);
+                // Also extract join_condition — this holds WHERE predicates that span
+                // both sides of the CartesianProduct (e.g., `country IN [countryX, countryY]`
+                // where country is from the right GraphRel and countryX/countryY are CTE vars)
+                let jc_filter = if let Some(ref jc) = cp.join_condition {
+                    match RenderExpr::try_from(jc.clone()) {
+                        Ok(expr) => {
+                            log::info!("🔍 CartesianProduct extract_filters: extracted join_condition as filter: {:?}", expr);
+                            Some(expr)
+                        }
+                        Err(e) => {
+                            log::warn!("🔍 CartesianProduct extract_filters: failed to convert join_condition: {:?}", e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
 
-                match (left_filters, right_filters) {
-                    (None, None) => None,
-                    (Some(l), None) => {
-                        log::info!("  ✅ Returning left filters only");
-                        Some(l)
-                    }
-                    (None, Some(r)) => {
-                        log::info!("  ✅ Returning right filters only");
-                        Some(r)
-                    }
-                    (Some(l), Some(r)) => {
-                        log::warn!("  ⚠️ BOTH sides have filters - combining with AND!");
-                        log::warn!("  ⚠️ This may cause duplicates if filters are the same!");
-                        Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
-                            operator: Operator::And,
-                            operands: vec![l, r],
-                        }))
+                // Combine all filter sources with AND
+                let mut all_filters: Vec<RenderExpr> = Vec::new();
+                if let Some(l) = left_filters {
+                    all_filters.push(l);
+                }
+                if let Some(r) = right_filters {
+                    all_filters.push(r);
+                }
+                if let Some(jc) = jc_filter {
+                    all_filters.push(jc);
+                }
+
+                match all_filters.len() {
+                    0 => None,
+                    1 => Some(all_filters.into_iter().next().unwrap()),
+                    _ => {
+                        // Fold into nested ANDs
+                        let combined = all_filters
+                            .into_iter()
+                            .reduce(|acc, f| {
+                                RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                    operator: Operator::And,
+                                    operands: vec![acc, f],
+                                })
+                            })
+                            .unwrap();
+                        Some(combined)
                     }
                 }
             }
