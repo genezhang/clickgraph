@@ -41,7 +41,7 @@ pub struct Suggestion {
 pub struct IntrospectResponse {
     pub database: String,
     pub tables: Vec<TableMetadata>,
-    pub suggestions: Vec<Suggestion>,
+    pub next_step: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,7 +114,7 @@ impl SchemaDiscovery {
             // Analyze sample data values for additional insights
             if !sample.is_empty() {
                 let value_suggestions = Self::analyze_sample_values(&table_name, &columns, &sample);
-                suggestions.extend(value_suggestions);
+                // Skip adding value suggestions - unreliable
             }
             
             table_metadata.push(TableMetadata {
@@ -124,14 +124,25 @@ impl SchemaDiscovery {
                 sample,
             });
         }
-        
+
+        let help = format!(
+            "Review tables and columns above, then create your schema.\n\
+To generate YAML draft:\n\
+curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/json' -d '{{\n\
+  \"database\": \"{}\",\n\
+  \"schema_name\": \"my_graph\",\n\
+  \"nodes\": [{{\"table\": \"users\", \"label\": \"User\", \"node_id\": \"user_id\"}}],\n\
+  \"edges\": [{{\"table\": \"follows\", \"type\": \"FOLLOWS\", \"from_node\": \"User\", \"to_node\": \"User\", \"from_id\": \"follower_id\", \"to_id\": \"followed_id\"}}]\n}}'",
+            database
+        );
+
         Ok(IntrospectResponse {
             database: database.to_string(),
             tables: table_metadata,
-            suggestions,
+            next_step: help,
         })
     }
-    
+
     /// Introspect a database with GLiNER-powered suggestions
     #[cfg(feature = "gliner")]
     pub async fn introspect_with_nlp(
@@ -195,11 +206,23 @@ impl SchemaDiscovery {
                 sample,
             });
         }
-        
+
+        // For now, skip all suggestions - unreliable. Just return tables.
+        let help = format!(
+            "Review tables and columns above, then create your schema.\n\
+To generate YAML draft:\n\
+curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/json' -d '{{\n\
+  \"database\": \"{}\",\n\
+  \"schema_name\": \"my_graph\",\n\
+  \"nodes\": [{{\"table\": \"users\", \"label\": \"User\", \"node_id\": \"user_id\"}}],\n\
+  \"edges\": [{{\"table\": \"follows\", \"type\": \"FOLLOWS\", \"from_node\": \"User\", \"to_node\": \"User\", \"from_id\": \"follower_id\", \"to_id\": \"followed_id\"}}]\n}}'",
+            database
+        );
+
         Ok(IntrospectResponse {
             database: database.to_string(),
             tables: table_metadata,
-            suggestions,
+            next_step: help,
         })
     }
     
