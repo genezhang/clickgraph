@@ -10,6 +10,7 @@ use crate::graph_catalog::gliner_nlp::{
 use clickhouse::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tokio::io::AsyncBufReadExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnMetadata {
@@ -109,6 +110,12 @@ impl SchemaDiscovery {
             // Generate suggestions
             let table_suggestions = Self::generate_suggestions(&table_name, &columns);
             suggestions.extend(table_suggestions);
+            
+            // Analyze sample data values for additional insights
+            if !sample.is_empty() {
+                let value_suggestions = Self::analyze_sample_values(&table_name, &columns, &sample);
+                suggestions.extend(value_suggestions);
+            }
             
             table_metadata.push(TableMetadata {
                 name: table_name,
@@ -363,6 +370,86 @@ impl SchemaDiscovery {
                 suggestion_type: "polymorphic_candidate".to_string(),
                 reason: "has type column - possible polymorphic edge table".to_string(),
             });
+        }
+        
+        suggestions
+    }
+    
+    /// Analyze sample data values to detect patterns (emails, URLs, FKs, categories)
+    fn analyze_sample_values(
+        table_name: &str,
+        columns: &[ColumnMetadata],
+        sample_rows: &[serde_json::Value],
+    ) -> Vec<Suggestion> {
+        let mut suggestions = Vec::new();
+        
+        if sample_rows.is_empty() {
+            return suggestions;
+        }
+        
+        for col in columns {
+            let values: Vec<&str> = sample_rows.iter()
+                .filter_map(|row| row.get(&col.name).and_then(|v| v.as_str()))
+                .collect();
+            
+            if values.is_empty() {
+                continue;
+            }
+            
+            let sample = values.first().copied().unwrap_or("");
+            
+            // Email pattern
+            if sample.contains('@') && sample.contains('.') && !sample.contains(' ') {
+                suggestions.push(Suggestion {
+                    table: table_name.to_string(),
+                    suggestion_type: "value_email".to_string(),
+                    reason: format!("column '{}' contains email: {}", col.name, sample),
+                });
+            }
+            
+            // URL pattern
+            if sample.starts_with("http://") || sample.starts_with("https://") {
+                suggestions.push(Suggestion {
+                    table: table_name.to_string(),
+                    suggestion_type: "value_url".to_string(),
+                    reason: format!("column '{}' contains URL: {}", col.name, sample),
+                });
+            }
+            
+            // UUID pattern
+            if sample.len() == 36 && sample.matches('-').count() == 4 {
+                suggestions.push(Suggestion {
+                    table: table_name.to_string(),
+                    suggestion_type: "value_uuid".to_string(),
+                    reason: format!("column '{}' contains UUID", col.name),
+                });
+            }
+            
+            // Low cardinality = category
+            let unique: std::collections::HashSet<_> = values.iter().collect();
+            if unique.len() <= 5 && unique.len() > 1 {
+                let cats: Vec<_> = unique.iter().take(3).collect();
+                suggestions.push(Suggestion {
+                    table: table_name.to_string(),
+                    suggestion_type: "value_category".to_string(),
+                    reason: format!("column '{}' has {} categories: {:?}", col.name, unique.len(), cats),
+                });
+            }
+            
+            // Unique numeric ID (potential FK)
+            if unique.len() == values.len() && values.len() > 1 {
+                let name_lower = col.name.to_lowercase();
+                if name_lower.ends_with("_id") || name_lower.ends_with("_key") {
+                    if !col.is_primary_key {
+                        let base = name_lower.trim_end_matches("_id").trim_end_matches("_key");
+                        suggestions.push(Suggestion {
+                            table: table_name.to_string(),
+                            suggestion_type: "value_potential_fk".to_string(),
+                            reason: format!("column '{}' unique values, may reference {} table", col.name, base),
+                        });
+                    }
+                }
+            }
         }
         
         suggestions
