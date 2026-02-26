@@ -284,16 +284,59 @@ impl SchemaDiscovery {
         Ok(count)
     }
     
-    /// Get sample data (1-3 rows) for a table
+    /// Get sample data (3 rows) for a table
     /// Returns sample as array of column_name:value maps
     async fn get_sample_data(
-        _client: &Client,
-        _database: &str,
-        _table: &str,
+        client: &Client,
+        database: &str,
+        table: &str,
     ) -> Result<Vec<serde_json::Value>, String> {
-        // Sample data retrieval requires careful handling of ClickHouse JSON formats
-        // Returning empty for now - can be enhanced later
-        Ok(vec![])
+        // First get column names
+        #[derive(Debug, Clone, serde::Deserialize, clickhouse::Row)]
+        struct ColName {
+            name: String,
+        }
+        
+        let columns: Vec<String> = client
+            .query(&format!(
+                "SELECT name FROM system.columns WHERE database = '{}' AND table = '{}' ORDER BY position",
+                database, table
+            ))
+            .fetch_all()
+            .await
+            .map_err(|e| format!("Failed to fetch columns: {}", e))?
+            .iter()
+            .map(|row: &ColName| row.name.clone())
+            .collect();
+        
+        if columns.is_empty() {
+            return Ok(vec![]);
+        }
+        
+        // Query sample data using JSONEachRow format
+        let query = format!(
+            "SELECT {} FROM {}.{} LIMIT 3",
+            columns.join(", "),
+            database,
+            table
+        );
+        
+        // Use fetch_bytes for JSONEachRow format
+        let mut lines = client
+            .query(&query)
+            .fetch_bytes("JSONEachRow")
+            .map_err(|e| format!("Failed to fetch sample: {}", e))?
+            .lines();
+        
+        let mut result = Vec::new();
+        while let Some(line) = lines.next_line().await.map_err(|e| format!("Row error: {}", e))? {
+            match serde_json::de::from_str::<serde_json::Value>(&line) {
+                Ok(value) => result.push(value),
+                Err(_) => {}
+            }
+        }
+        
+        Ok(result)
     }
     
     /// Generate suggestions based on table structure
@@ -375,7 +418,7 @@ impl SchemaDiscovery {
         suggestions
     }
     
-    /// Analyze sample data values to detect patterns (emails, URLs, FKs, categories)
+    /// Analyze sample data values to detect patterns (emails, URLs - rare but useful)
     fn analyze_sample_values(
         table_name: &str,
         columns: &[ColumnMetadata],
@@ -398,7 +441,7 @@ impl SchemaDiscovery {
             
             let sample = values.first().copied().unwrap_or("");
             
-            // Email pattern
+            // Email pattern - rare but useful if found
             if sample.contains('@') && sample.contains('.') && !sample.contains(' ') {
                 suggestions.push(Suggestion {
                     table: table_name.to_string(),
@@ -407,7 +450,7 @@ impl SchemaDiscovery {
                 });
             }
             
-            // URL pattern
+            // URL pattern - rare but useful if found
             if sample.starts_with("http://") || sample.starts_with("https://") {
                 suggestions.push(Suggestion {
                     table: table_name.to_string(),
@@ -416,39 +459,13 @@ impl SchemaDiscovery {
                 });
             }
             
-            // UUID pattern
+            // UUID pattern - could indicate FK to UUID-based tables
             if sample.len() == 36 && sample.matches('-').count() == 4 {
                 suggestions.push(Suggestion {
                     table: table_name.to_string(),
                     suggestion_type: "value_uuid".to_string(),
                     reason: format!("column '{}' contains UUID", col.name),
                 });
-            }
-            
-            // Low cardinality = category
-            let unique: std::collections::HashSet<_> = values.iter().collect();
-            if unique.len() <= 5 && unique.len() > 1 {
-                let cats: Vec<_> = unique.iter().take(3).collect();
-                suggestions.push(Suggestion {
-                    table: table_name.to_string(),
-                    suggestion_type: "value_category".to_string(),
-                    reason: format!("column '{}' has {} categories: {:?}", col.name, unique.len(), cats),
-                });
-            }
-            
-            // Unique numeric ID (potential FK)
-            if unique.len() == values.len() && values.len() > 1 {
-                let name_lower = col.name.to_lowercase();
-                if name_lower.ends_with("_id") || name_lower.ends_with("_key") {
-                    if !col.is_primary_key {
-                        let base = name_lower.trim_end_matches("_id").trim_end_matches("_key");
-                        suggestions.push(Suggestion {
-                            table: table_name.to_string(),
-                            suggestion_type: "value_potential_fk".to_string(),
-                            reason: format!("column '{}' unique values, may reference {} table", col.name, base),
-                        });
-                    }
-                }
             }
         }
         
