@@ -934,7 +934,19 @@ impl TryFrom<LogicalExpr> for RenderExpr {
                     .iter()
                     .any(|e| !matches!(e, RenderExpr::Literal(_) | RenderExpr::Parameter(_)));
 
-                if has_non_literal {
+                // Skip toString() wrapping when all non-literal elements are bare aliases
+                // (TableAlias, ColumnAlias, or wildcard PropertyAccessExp). These represent
+                // node variables that will be resolved to ID columns by rewrite_bare_variables.
+                let all_non_literal_are_aliases = items
+                    .iter()
+                    .filter(|e| !matches!(e, RenderExpr::Literal(_) | RenderExpr::Parameter(_)))
+                    .all(|e| match e {
+                        RenderExpr::TableAlias(_) | RenderExpr::ColumnAlias(_) => true,
+                        RenderExpr::PropertyAccessExp(pa) if pa.column.raw() == "*" => true,
+                        _ => false,
+                    });
+
+                if has_non_literal && !all_non_literal_are_aliases {
                     RenderExpr::List(
                         items
                             .into_iter()

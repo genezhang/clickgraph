@@ -329,4 +329,62 @@ mod tests {
             Err(e) => panic!("Expected successful parse, got error: {:?}", e),
         }
     }
+
+    #[test]
+    fn test_parse_with_where_subsequent_match() {
+        // Bug: WITH friend WHERE cond MATCH ... — the MATCH should be captured as subsequent_match
+        let input = "WITH friend WHERE friend.id <> 1 MATCH (friend)<-[:HAS_CREATOR]-(m:Post) RETURN friend.id";
+        let res = parse_with_clause(input);
+        match res {
+            Ok((remaining, with_clause)) => {
+                println!("Remaining: '{}'", remaining);
+                println!("where_clause: {:?}", with_clause.where_clause.is_some());
+                println!(
+                    "subsequent_match: {:?}",
+                    with_clause.subsequent_match.is_some()
+                );
+                assert!(
+                    with_clause.where_clause.is_some(),
+                    "WHERE clause should be captured"
+                );
+                assert!(
+                    with_clause.subsequent_match.is_some(),
+                    "subsequent MATCH should be captured after WHERE"
+                );
+                // RETURN should remain as unparsed
+                assert!(
+                    remaining.trim().starts_with("RETURN"),
+                    "RETURN should be remaining, got: '{}'",
+                    remaining
+                );
+            }
+            Err(e) => panic!("Expected successful parse, got error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_with_where_param_subsequent_match() {
+        // Test with $ parameter syntax — reproduces the actual query pattern
+        let input = "WITH friend WHERE friend.id <> $personId\nMATCH (friend)<-[:HAS_CREATOR]-(message:Post)\nRETURN friend.id AS friendId, count(message) AS cnt\nORDER BY cnt DESC LIMIT 20";
+        let res = parse_with_clause(input);
+        match res {
+            Ok((remaining, with_clause)) => {
+                println!("Remaining: '{}'", remaining);
+                println!("where_clause: {:?}", with_clause.where_clause.is_some());
+                println!(
+                    "subsequent_match: {:?}",
+                    with_clause.subsequent_match.is_some()
+                );
+                assert!(
+                    with_clause.where_clause.is_some(),
+                    "WHERE clause should be captured"
+                );
+                assert!(
+                    with_clause.subsequent_match.is_some(),
+                    "subsequent MATCH should be captured after WHERE with $param"
+                );
+            }
+            Err(e) => panic!("Expected successful parse, got error: {:?}", e),
+        }
+    }
 }

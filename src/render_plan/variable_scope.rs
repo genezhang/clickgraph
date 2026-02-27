@@ -432,7 +432,52 @@ pub fn rewrite_bare_variables_in_plan(plan: &mut RenderPlan, scope: &VariableSco
 /// to qualified CTE column references, leaving PropertyAccessExp untouched.
 fn rewrite_bare_variables(expr: &RenderExpr, scope: &VariableScope) -> RenderExpr {
     match expr {
-        // Leave PropertyAccessExp untouched — fix_orphan_table_aliases handles these
+        // Wildcard PropertyAccessExp (alias.*) = bare node reference from ProjectionTagging.
+        // Resolve to node ID column, same as TableAlias handling below.
+        RenderExpr::PropertyAccessExp(pa) if pa.column.raw() == "*" => {
+            let alias_name = &pa.table_alias.0;
+            if let Some(cte_info) = scope.get_cte_info(alias_name) {
+                let from_alias = cte_info.effective_from_alias();
+                if cte_info.property_mapping.is_empty() {
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(from_alias),
+                        column: PropertyValue::Column(alias_name.clone()),
+                    })
+                } else if let Some(id_col) = cte_info.property_mapping.get("id") {
+                    RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(from_alias),
+                        column: PropertyValue::Column(id_col.clone()),
+                    })
+                } else {
+                    expr.clone()
+                }
+            } else {
+                // Not a CTE variable — check if it's a node alias in the plan.
+                if let Some(label) = crate::query_planner::logical_expr::expression_rewriter::find_label_for_alias_in_plan(
+                    scope.plan(), alias_name,
+                ) {
+                    if let Some(node) = scope.schema().node_schema_opt(&label) {
+                        if let Ok(id_col) = node.node_id.column_or_error() {
+                            log::debug!(
+                                "rewrite_bare_variables: wildcard PropertyAccessExp '{}.*' ({}) -> {}.{}",
+                                alias_name, label, alias_name, id_col
+                            );
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(alias_name.clone()),
+                                column: PropertyValue::Column(id_col.to_string()),
+                            })
+                        } else {
+                            expr.clone()
+                        }
+                    } else {
+                        expr.clone()
+                    }
+                } else {
+                    expr.clone()
+                }
+            }
+        }
+        // Leave other PropertyAccessExp untouched — fix_orphan_table_aliases handles these
         RenderExpr::PropertyAccessExp(_) => expr.clone(),
         // Recurse into compound expressions
         RenderExpr::OperatorApplicationExp(oa) => {
@@ -846,6 +891,11 @@ fn fix_orphan_table_aliases_impl(
                 continue;
             }
             if seen_cte_names.contains(&cte_info.cte_name) {
+                continue;
+            }
+            // Skip VLP CTEs — they should only appear when explicitly referenced
+            // through VLP Union branches, not as spurious CROSS JOINs in downstream CTEs.
+            if cte_info.cte_name.starts_with("vlp_") {
                 continue;
             }
             let from_alias = cte_info.effective_from_alias();

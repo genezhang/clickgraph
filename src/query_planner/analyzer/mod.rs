@@ -75,6 +75,7 @@ use crate::{
             query_validation::QueryValidation,
             // SchemaInference REMOVED (Feb 16, 2026) - Merged into TypeInference
             type_inference::TypeInference,
+            union_distribution::UnionDistribution,
             variable_resolver::VariableResolver,
             vlp_transitivity_check::VlpTransitivityCheck,
         },
@@ -109,6 +110,7 @@ mod projection_tagging;
 mod query_validation;
 // mod schema_inference;  // REMOVED (Feb 16, 2026) - Fully merged into TypeInference
 mod type_inference;
+mod union_distribution;
 mod unwind_property_rewriter;
 mod unwind_tuple_enricher;
 mod variable_resolver;
@@ -235,6 +237,32 @@ pub fn initial_analyzing(
         }
     };
 
+    // Step 3.6: UnionDistribution - Hoist Union from inside GraphRel/CartesianProduct chains
+    // After BidirectionalUnion creates Union for undirected edges, it may be buried inside
+    // GraphRel/CartesianProduct (from post-WITH MATCH patterns). This pass hoists Union above
+    // these wrapping nodes so GraphJoinInference can process each branch independently.
+    log::info!("🔍 ANALYZER: Running UnionDistribution (before GraphJoinInference)");
+    let union_distribution = UnionDistribution;
+    let plan = match union_distribution.analyze_with_graph_schema(
+        plan.clone(),
+        plan_ctx,
+        current_graph_schema,
+    ) {
+        Ok(transformed_plan) => transformed_plan.get_plan(),
+        Err(e) => {
+            log::warn!(
+                "⚠️  UnionDistribution failed: {:?}, continuing with original plan",
+                e
+            );
+            plan
+        }
+    };
+
+    log::debug!(
+        "🔀 UNION_TRACE after UnionDistribution: has_union={}",
+        plan.has_union_anywhere()
+    );
+
     // Step 4: Graph Join Inference - analyze graph patterns and create PatternSchemaContext
     // MOVED UP from Step 15 to make PatternSchemaContext available for downstream passes
     // This is a pure analysis pass that only needs: GraphSchema, node/edge schemas, pattern structure
@@ -255,6 +283,11 @@ pub fn initial_analyzing(
             plan
         }
     };
+
+    log::info!(
+        "🔀 UNION_TRACE after GraphJoinInference: has_union={}",
+        plan.has_union_anywhere()
+    );
 
     // Step 5: Projected Columns Resolver - pre-compute projected columns for GraphNodes
     // Now can use PatternSchemaContext from PlanCtx for explicit role information
@@ -277,6 +310,11 @@ pub fn initial_analyzing(
         query_validation.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)?;
     let plan = transformed_plan.get_plan();
 
+    log::info!(
+        "🔀 UNION_TRACE after ProjectedColumnsResolver+QueryValidation: has_union={}",
+        plan.has_union_anywhere()
+    );
+
     // Step 7: Property Mapping - map Cypher properties to database columns (ONCE)
     // NOTE: FilterTagging now PRESERVES cross-table filters (those referencing WITH aliases
     // and having CartesianProduct descendants) instead of extracting them. This allows
@@ -285,6 +323,11 @@ pub fn initial_analyzing(
     let transformed_plan =
         filter_tagging.analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)?;
     let plan = transformed_plan.get_plan();
+
+    log::info!(
+        "🔀 UNION_TRACE after FilterTagging: has_union={}",
+        plan.has_union_anywhere()
+    );
 
     // Step 3.5: CartesianJoinExtraction - extract cross-pattern filters into join_condition
     // CRITICAL: This runs AFTER FilterTagging to get property-mapped predicates.
@@ -300,6 +343,11 @@ pub fn initial_analyzing(
         }
     };
 
+    log::info!(
+        "🔀 UNION_TRACE after CartesianJoinExtraction: has_union={}",
+        plan.has_union_anywhere()
+    );
+
     // Step 4: Projection Tagging - tag projections into plan_ctx (NO mapping, just tagging)
     let projection_tagging = ProjectionTagging::new();
     let transformed_plan = projection_tagging.analyze_with_graph_schema(
@@ -309,10 +357,20 @@ pub fn initial_analyzing(
     )?;
     let plan = transformed_plan.get_plan();
 
+    log::info!(
+        "🔀 UNION_TRACE after ProjectionTagging: has_union={}",
+        plan.has_union_anywhere()
+    );
+
     // Step 5: Group By Building
     let group_by_building = GroupByBuilding::new();
     let transformed_plan = group_by_building.analyze(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
+
+    log::info!(
+        "🔀 UNION_TRACE after GroupByBuilding: has_union={}",
+        plan.has_union_anywhere()
+    );
 
     Ok(plan)
 }
@@ -325,6 +383,11 @@ pub fn intermediate_analyzing(
     // Note: SchemaInference and QueryValidation already ran in initial_analyzing
     // This pass focuses on graph-specific planning and optimizations
 
+    log::debug!(
+        "🔀 UNION_TRACE intermediate_analyzing ENTRY: has_union={}",
+        plan.has_union_anywhere()
+    );
+
     let graph_traversal_planning = GraphTRaversalPlanning::new();
     let transformed_plan = graph_traversal_planning.analyze_with_graph_schema(
         plan.clone(),
@@ -332,6 +395,11 @@ pub fn intermediate_analyzing(
         current_graph_schema,
     )?;
     let plan = transformed_plan.get_plan();
+
+    log::info!(
+        "🔀 UNION_TRACE after GraphTraversalPlanning: has_union={}",
+        plan.has_union_anywhere()
+    );
 
     // NOTE: SchemaInference removed (Feb 16, 2026)
     // ViewScan resolution now handled by TypeInference Phase 3
@@ -341,6 +409,11 @@ pub fn intermediate_analyzing(
     let duplicate_scans_removing = DuplicateScansRemoving::new();
     let transformed_plan = duplicate_scans_removing.analyze(plan.clone(), plan_ctx)?;
     let plan = transformed_plan.get_plan();
+
+    log::info!(
+        "🔀 UNION_TRACE after DuplicateScansRemoving: has_union={}",
+        plan.has_union_anywhere()
+    );
 
     // NOTE: BidirectionalUnion has been moved to initial_analyzing() to run BEFORE GraphJoinInference
     // This ensures undirected patterns are expanded to UNION ALL before GraphRel is converted to GraphJoins

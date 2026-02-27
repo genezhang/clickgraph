@@ -25,6 +25,8 @@ pub fn parse_optional_match_clause(
     input: &'_ str,
 ) -> IResult<&'_ str, OptionalMatchClause<'_>, OpenCypherParsingError<'_>> {
     // Parse "OPTIONAL MATCH" as two separate keywords
+    // multispace0 handles leading whitespace (e.g., after WITH ... WHERE ... expression)
+    let (input, _) = multispace0(input)?;
     let (input, _) = tag_no_case("OPTIONAL").parse(input)?;
     let (input, _) = multispace1.parse(input)?; // Require whitespace between OPTIONAL and MATCH
     let (input, _) = tag_no_case("MATCH").parse(input)?;

@@ -3805,6 +3805,10 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
             // Recurse into input to collect any other predicates
             predicates.extend(collect_graphrel_predicates(&f.input));
         }
+        LogicalPlan::CartesianProduct(cp) => {
+            predicates.extend(collect_graphrel_predicates(&cp.left));
+            predicates.extend(collect_graphrel_predicates(&cp.right));
+        }
         LogicalPlan::ViewScan(_scan) => {
             // ViewScan.view_filter should be empty after CleanupViewScanFilters optimizer
         }
@@ -3845,6 +3849,10 @@ pub(super) fn collect_schema_filters(
         }
         LogicalPlan::GraphNode(gn) => {
             filters.extend(collect_schema_filters(&gn.input, Some(&gn.alias)));
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            filters.extend(collect_schema_filters(&cp.left, alias_hint));
+            filters.extend(collect_schema_filters(&cp.right, alias_hint));
         }
         _ => {}
     }
@@ -3890,6 +3898,10 @@ pub(super) fn collect_schema_filters_with_alias(
                 &gn.input,
                 Some(&gn.alias),
             ));
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            filters.extend(collect_schema_filters_with_alias(&cp.left, alias_hint));
+            filters.extend(collect_schema_filters_with_alias(&cp.right, alias_hint));
         }
         _ => {}
     }
