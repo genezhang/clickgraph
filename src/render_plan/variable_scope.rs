@@ -893,6 +893,11 @@ fn fix_orphan_table_aliases_impl(
             if seen_cte_names.contains(&cte_info.cte_name) {
                 continue;
             }
+            // Skip VLP CTEs — they should only appear when explicitly referenced
+            // through VLP Union branches, not as spurious CROSS JOINs in downstream CTEs.
+            if cte_info.cte_name.starts_with("vlp_") {
+                continue;
+            }
             let from_alias = cte_info.effective_from_alias();
             // Don't add if from_alias collides with an existing valid alias
             if valid_aliases.contains(&from_alias) {
