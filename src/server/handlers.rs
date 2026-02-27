@@ -1328,22 +1328,18 @@ pub async fn introspect_handler(
     State(app_state): State<Arc<AppState>>,
     Json(payload): Json<IntrospectRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    log::info!("Introspecting database: {} (nlp: {})", payload.database, payload.use_nlp);
-    
+    log::info!(
+        "Introspecting database: {} (nlp: {})",
+        payload.database,
+        payload.use_nlp
+    );
+
     let response = if payload.use_nlp {
-        SchemaDiscovery::introspect_with_nlp(
-            &app_state.clickhouse_client,
-            &payload.database,
-        )
-        .await
+        SchemaDiscovery::introspect_with_nlp(&app_state.clickhouse_client, &payload.database).await
     } else {
-        SchemaDiscovery::introspect(
-            &app_state.clickhouse_client,
-            &payload.database,
-        )
-        .await
+        SchemaDiscovery::introspect(&app_state.clickhouse_client, &payload.database).await
     };
-    
+
     match response {
         Ok(resp) => Ok(Json(serde_json::to_value(resp).unwrap())),
         Err(e) => {
@@ -1371,7 +1367,7 @@ pub async fn draft_handler(
     Json(payload): Json<DraftRequestPayload>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     log::info!("Generating draft for schema: {}", payload.schema_name);
-    
+
     let request = DraftRequest {
         database: payload.database,
         schema_name: payload.schema_name,
@@ -1380,9 +1376,9 @@ pub async fn draft_handler(
         fk_edges: payload.fk_edges.unwrap_or_default(),
         options: payload.options,
     };
-    
+
     let yaml = SchemaDiscovery::generate_draft(&request);
-    
+
     Ok(Json(serde_json::json!({
         "yaml": yaml,
         "message": "Review and edit the YAML before loading with /schemas/load"

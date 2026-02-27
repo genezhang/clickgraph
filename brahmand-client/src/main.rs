@@ -82,30 +82,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 println!("Usage: :design <database>");
                             }
                         }
-                        ":schemas" | ":s" => {
-                            match list_schemas(&client, &args.url).await {
-                                Ok(response) => {
-                                    println!("\n=== Loaded Schemas ===\n");
-                                    if let Some(schemas) = response.get("schemas").and_then(|s| s.as_array()) {
-                                        for schema in schemas {
-                                            let name = schema.get("name").and_then(|n| n.as_str()).unwrap_or("?");
-                                            let nodes = schema.get("node_count").and_then(|n| n.as_u64()).unwrap_or(0);
-                                            let edges = schema.get("relationship_count").and_then(|r| r.as_u64()).unwrap_or(0);
-                                            println!("  {}: {} nodes, {} edges", name, nodes, edges);
-                                        }
+                        ":schemas" | ":s" => match list_schemas(&client, &args.url).await {
+                            Ok(response) => {
+                                println!("\n=== Loaded Schemas ===\n");
+                                if let Some(schemas) =
+                                    response.get("schemas").and_then(|s| s.as_array())
+                                {
+                                    for schema in schemas {
+                                        let name = schema
+                                            .get("name")
+                                            .and_then(|n| n.as_str())
+                                            .unwrap_or("?");
+                                        let nodes = schema
+                                            .get("node_count")
+                                            .and_then(|n| n.as_u64())
+                                            .unwrap_or(0);
+                                        let edges = schema
+                                            .get("relationship_count")
+                                            .and_then(|r| r.as_u64())
+                                            .unwrap_or(0);
+                                        println!("  {}: {} nodes, {} edges", name, nodes, edges);
                                     }
-                                    println!("");
                                 }
-                                Err(e) => {
-                                    eprintln!("Error: {}", e);
-                                }
+                                println!("");
                             }
-                        }
+                            Err(e) => {
+                                eprintln!("Error: {}", e);
+                            }
+                        },
                         ":load" => {
                             if let Some(file_path) = arg {
                                 match load_schema_from_file(&client, &args.url, &file_path).await {
                                     Ok(response) => {
-                                        println!("\n{}\n", serde_json::to_string_pretty(&response).unwrap_or_default());
+                                        println!(
+                                            "\n{}\n",
+                                            serde_json::to_string_pretty(&response)
+                                                .unwrap_or_default()
+                                        );
                                     }
                                     Err(e) => {
                                         eprintln!("Error: {}", e);
@@ -116,7 +129,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         _ => {
-                            println!("Unknown command: {}. Type :help for available commands.", cmd);
+                            println!(
+                                "Unknown command: {}. Type :help for available commands.",
+                                cmd
+                            );
                         }
                     }
                     continue;
@@ -151,7 +167,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn print_introspect_result(response: &Value) {
-    let db = response.get("database").and_then(|d| d.as_str()).unwrap_or("?");
+    let db = response
+        .get("database")
+        .and_then(|d| d.as_str())
+        .unwrap_or("?");
     println!("\n=== Database: {} ===\n", db);
 
     if let Some(tables) = response.get("tables").and_then(|t| t.as_array()) {
@@ -159,11 +178,16 @@ fn print_introspect_result(response: &Value) {
             let name = table.get("name").and_then(|n| n.as_str()).unwrap_or("?");
             let row_count = table.get("row_count").and_then(|r| r.as_u64()).unwrap_or(0);
             print!("  {} ({} rows)", name, row_count);
-            
+
             // Show columns
             if let Some(cols) = table.get("columns").and_then(|c| c.as_array()) {
-                let pk_cols: Vec<_> = cols.iter()
-                    .filter(|c| c.get("is_primary_key").and_then(|v| v.as_bool()).unwrap_or(false))
+                let pk_cols: Vec<_> = cols
+                    .iter()
+                    .filter(|c| {
+                        c.get("is_primary_key")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                    })
                     .map(|c| c.get("name").and_then(|n| n.as_str()).unwrap_or("?"))
                     .collect();
                 if !pk_cols.is_empty() {
@@ -232,14 +256,18 @@ async fn run_design_wizard(
                 .filter_map(|t| {
                     Some(TableInfo {
                         name: t.get("name")?.as_str()?.to_string(),
-                        columns: t.get("columns")
+                        columns: t
+                            .get("columns")
                             .and_then(|c| c.as_array())
                             .map(|cols| {
                                 cols.iter()
                                     .filter_map(|c| {
                                         Some(ColumnInfo {
                                             name: c.get("name")?.as_str()?.to_string(),
-                                            is_pk: c.get("is_primary_key").and_then(|v| v.as_bool()).unwrap_or(false),
+                                            is_pk: c
+                                                .get("is_primary_key")
+                                                .and_then(|v| v.as_bool())
+                                                .unwrap_or(false),
                                         })
                                     })
                                     .collect()
@@ -271,17 +299,18 @@ async fn run_design_wizard(
     println!("Step 2: Define nodes");
     println!("  Enter table names to create nodes (comma-separated), or press Enter to skip:");
     println!("  Suggested: ");
-    let node_suggestions: Vec<_> = suggestions.iter()
+    let node_suggestions: Vec<_> = suggestions
+        .iter()
         .filter(|s| s.stype == "node_candidate")
         .collect();
     for s in &node_suggestions {
         print!("    {} ", s.table);
     }
     println!("\n");
-    
+
     let readline = rl.readline("nodes> ");
     let nodes_input = readline.map_err(|e| e.to_string())?;
-    
+
     let mut nodes: Vec<NodeHint> = Vec::new();
     if !nodes_input.trim().is_empty() {
         for part in nodes_input.split(',') {
@@ -292,7 +321,7 @@ async fn run_design_wizard(
                 .and_then(|t| t.columns.iter().find(|c| c.is_pk))
                 .map(|c| c.name.clone())
                 .unwrap_or_else(|| format!("{}_id", table));
-            
+
             let label = to_label(table);
             let node_id_for_print = node_id.clone();
             nodes.push(NodeHint {
@@ -300,7 +329,12 @@ async fn run_design_wizard(
                 label,
                 node_id,
             });
-            println!("  Added node: {} (label: {}, id: {})", table, to_label(table), node_id_for_print);
+            println!(
+                "  Added node: {} (label: {}, id: {})",
+                table,
+                to_label(table),
+                node_id_for_print
+            );
         }
     }
     println!();
@@ -310,17 +344,18 @@ async fn run_design_wizard(
     println!("  Enter edges as: <table>:<type>:<from_node>:<to_node>:<from_id>:<to_id>");
     println!("  Example: user_follows:FOLLOWS:User:User:follower_id:followed_id");
     println!("  Suggested: ");
-    let edge_suggestions: Vec<_> = suggestions.iter()
+    let edge_suggestions: Vec<_> = suggestions
+        .iter()
         .filter(|s| s.stype == "edge_candidate")
         .collect();
     for s in &edge_suggestions {
         println!("    {} ({})", s.table, s.reason);
     }
     println!("\n");
-    
+
     let readline = rl.readline("edges> ");
     let edges_input = readline.map_err(|e| e.to_string())?;
-    
+
     let mut edges: Vec<EdgeHint> = Vec::new();
     if !edges_input.trim().is_empty() {
         for part in edges_input.split(',') {
@@ -334,7 +369,10 @@ async fn run_design_wizard(
                     from_id: parts[4].to_string(),
                     to_id: parts[5].to_string(),
                 });
-                println!("  Added edge: {} ({} {} -> {})", parts[0], parts[1], parts[4], parts[5]);
+                println!(
+                    "  Added edge: {} ({} {} -> {})",
+                    parts[0], parts[1], parts[4], parts[5]
+                );
             }
         }
     }
@@ -345,17 +383,18 @@ async fn run_design_wizard(
     println!("  Enter as: <table>:<type>:<from_node>:<to_node>:<from_id>:<to_id>");
     println!("  Example: orders:PLACED_BY:Order:User:order_id:customer_id");
     println!("  Suggested: ");
-    let fk_suggestions: Vec<_> = suggestions.iter()
+    let fk_suggestions: Vec<_> = suggestions
+        .iter()
         .filter(|s| s.stype == "fk_edge_candidate")
         .collect();
     for s in &fk_suggestions {
         println!("    {} ({})", s.table, s.reason);
     }
     println!("\n");
-    
+
     let readline = rl.readline("fk_edges> ");
     let fk_input = readline.map_err(|e| e.to_string())?;
-    
+
     let mut fk_edges: Vec<FkEdgeHint> = Vec::new();
     if !fk_input.trim().is_empty() {
         for part in fk_input.split(',') {
@@ -369,7 +408,10 @@ async fn run_design_wizard(
                     from_id: parts[4].to_string(),
                     to_id: parts[5].to_string(),
                 });
-                println!("  Added FK edge: {} ({} {} -> {})", parts[0], parts[1], parts[4], parts[5]);
+                println!(
+                    "  Added FK edge: {} ({} {} -> {})",
+                    parts[0], parts[1], parts[4], parts[5]
+                );
             }
         }
     }
@@ -377,7 +419,7 @@ async fn run_design_wizard(
 
     // Step 5: Generate YAML
     println!("Step 5: Generating YAML...\n");
-    
+
     let payload = json!({
         "database": database,
         "schema_name": database,
@@ -484,9 +526,13 @@ async fn list_schemas(client: &Client, url: &str) -> Result<Value, String> {
     }
 }
 
-async fn load_schema_from_file(client: &Client, url: &str, file_path: &str) -> Result<Value, String> {
-    let content = std::fs::read_to_string(file_path)
-        .map_err(|e| format!("Failed to read file: {}", e))?;
+async fn load_schema_from_file(
+    client: &Client,
+    url: &str,
+    file_path: &str,
+) -> Result<Value, String> {
+    let content =
+        std::fs::read_to_string(file_path).map_err(|e| format!("Failed to read file: {}", e))?;
 
     let endpoint = format!("{}/schemas/load", url);
     let schema_name = std::path::Path::new(file_path)
