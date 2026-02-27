@@ -3892,9 +3892,7 @@ impl RenderExpr {
                         .iter()
                         .flat_map(|(k, v)| {
                             let val_sql = v.to_sql();
-                            // Cast value to String for type compatibility in ClickHouse maps
-                            let val_as_string = format!("toString({})", val_sql);
-                            vec![format!("'{}'", k), val_as_string]
+                            vec![format!("'{}'", k), val_sql]
                         })
                         .collect();
                     format!("map({})", args.join(", "))
@@ -3908,7 +3906,10 @@ impl RenderExpr {
                 // Array subscript in ClickHouse: array[index]
                 // Note: Cypher uses 1-based indexing, ClickHouse uses 1-based too
                 let array_sql = array.to_sql();
-                let index_sql = index.to_sql();
+                let index_sql = match index.as_ref() {
+                    RenderExpr::Literal(Literal::Integer(n)) => format!("{}", n + 1),
+                    _ => index.to_sql(),
+                };
                 format!("{}[{}]", array_sql, index_sql)
             }
             RenderExpr::ArraySlicing { array, from, to } => {

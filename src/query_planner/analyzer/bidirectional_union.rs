@@ -87,16 +87,11 @@ fn transform_bidirectional(
                     return Ok(Transformed::Yes(new_graph_rel));
                 }
 
-                // Skip Union split when an undirected edge has a nested GraphRel as its
-                // left subtree. The Incoming branch swap would restructure the FROM/JOIN
-                // chain, producing broken SQL. Instead, keep Direction::Either and let the
-                // join builder handle both directions with an OR condition.
-                if has_nested_undirected_edge(plan) {
-                    crate::debug_print!(
-                        "🔄 BidirectionalUnion: Nested undirected edge detected, skipping Union split — join builder handles both directions with OR"
-                    );
-                    return Ok(Transformed::No(plan.clone()));
-                }
+                // NOTE: Previously skipped Union split for nested undirected edges,
+                // but this left Direction::Either unhandled (OR fallback was never
+                // implemented in GraphJoinInference path). The Incoming branch swap
+                // correctly restructures the chain — left/right subtrees swap
+                // and connections swap, maintaining valid FROM/JOIN ordering.
 
                 crate::debug_print!(
                     "🔄 BidirectionalUnion: Found {} undirected edge(s) in path, generating {} UNION branches",
@@ -1349,17 +1344,19 @@ mod tests {
         );
         let plan = Arc::new(LogicalPlan::GraphRel(outer_rel));
 
-        // Nested undirected edges should be detected
+        // Nested undirected edges should still be detected by the helper
         assert!(has_nested_undirected_edge(&plan));
 
-        // transform_bidirectional should skip (return No) for nested undirected
+        // transform_bidirectional should NOW transform nested undirected edges
+        // into UNION branches (previously skipped, but the Incoming branch swap
+        // correctly restructures the chain)
         let mut plan_ctx = PlanCtx::new_empty();
         let graph_schema =
             GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
         let result = transform_bidirectional(&plan, &mut plan_ctx, &graph_schema).unwrap();
         assert!(
-            matches!(result, Transformed::No(_)),
-            "Nested undirected edges should not be transformed by simple UNION split"
+            matches!(result, Transformed::Yes(_)),
+            "Nested undirected edges should now be transformed into UNION branches"
         );
     }
 

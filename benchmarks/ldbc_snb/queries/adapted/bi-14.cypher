@@ -1,9 +1,8 @@
 // Q14. International dialog (adapted)
-// Original uses multi-pattern MATCH which causes join ordering issues.
-// Adapted to use a single chain with directed KNOWS to avoid UNION ALL.
+// Adapted to use a single chain with directed KNOWS to avoid UNION ALL from multi-pattern MATCH.
 // Each OPTIONAL MATCH uses fresh endpoint nodes (p2a..p2d) with WHERE filter to person2.id
 // to avoid invalid JOIN conditions when both endpoints are CTE-backed.
-// Final WITH uses unique alias (finalScore) to avoid bare variable resolution ambiguity.
+// Uses official collect/map pattern for per-city top-scoring pair.
 /*
 :params { country1: 'Chile', country2: 'Argentina' }
 */
@@ -24,7 +23,17 @@ WITH DISTINCT person1, person2, city1, score + (CASE WHEN m3 IS NULL THEN 0 ELSE
 // case 4: person2 likes Post written by person1
 OPTIONAL MATCH (person1)<-[:HAS_CREATOR]-(m4:Post)<-[:LIKES]-(p2d:Person)
 WHERE p2d.id = person2.id
-WITH DISTINCT person1, person2, city1, score + (CASE WHEN m4 IS NULL THEN 0 ELSE 1 END) AS finalScore
-RETURN person1.id AS person1Id, person2.id AS person2Id, city1.name AS cityName, finalScore AS score
-ORDER BY score DESC, person1Id ASC, person2Id ASC
+WITH DISTINCT person1, person2, city1, score + (CASE WHEN m4 IS NULL THEN 0 ELSE 1 END) AS score
+// preorder and collect per city
+ORDER BY city1.name ASC, score DESC, person1.id ASC, person2.id ASC
+WITH city1, collect({score: score, person1Id: person1.id, person2Id: person2.id})[0] AS top
+RETURN
+  top.person1Id,
+  top.person2Id,
+  city1.name,
+  top.score
+ORDER BY
+  top.score DESC,
+  top.person1Id ASC,
+  top.person2Id ASC
 LIMIT 100
