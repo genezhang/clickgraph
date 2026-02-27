@@ -7,6 +7,7 @@ use nom::{
 };
 
 use super::ast::{MatchClause, PathPattern};
+use super::common::ws;
 use super::errors::OpenCypherParsingError;
 use super::expression::parse_identifier;
 use super::path_pattern;
@@ -15,8 +16,7 @@ use super::where_clause;
 pub fn parse_match_clause(
     input: &'_ str,
 ) -> IResult<&'_ str, MatchClause<'_>, OpenCypherParsingError<'_>> {
-    let (input, _) = tag_no_case("MATCH").parse(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = ws(tag_no_case("MATCH")).parse(input)?;
 
     // Parse comma-separated list of (optional path_variable, pattern)
     let (input, pattern_parts) = context(
