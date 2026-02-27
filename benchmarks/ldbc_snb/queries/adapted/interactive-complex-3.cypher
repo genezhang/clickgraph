@@ -1,6 +1,5 @@
 MATCH (person:Person {id: $personId})-[:KNOWS*1..2]-(friend:Person)
-WHERE person.id <> friend.id
-WITH DISTINCT friend
+WITH DISTINCT friend WHERE friend.id <> $personId
 MATCH (friend)<-[:HAS_CREATOR]-(message:Post)-[:IS_LOCATED_IN]->(country:Country)
 WHERE $endDate > message.creationDate >= $startDate
   AND country.name IN [$countryXName, $countryYName]
