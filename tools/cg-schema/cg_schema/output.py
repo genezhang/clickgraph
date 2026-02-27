@@ -1,5 +1,6 @@
 """Output generation for schema suggestions."""
 
+import re
 import yaml
 from typing import Any
 
@@ -72,7 +73,6 @@ def generate_yaml(tables: list[dict[str, Any]], suggestions: list[dict[str, Any]
                     # Extract entity name (handle both snake_case and camelCase)
                     entity = col.replace("_id", "").replace("_key", "").replace("_sk", "")
                     # Handle camelCase: userId -> user, creatorId -> creator, person1Id -> person1
-                    import re
                     entity = re.sub(r'([a-zA-Z0-9]+)Id$', r'\1', entity)  # userId -> user, creatorId -> creator, person1Id -> person1
                     entity = re.sub(r'([a-zA-Z0-9]+)ID$', r'\1', entity)  # userID -> user
                     entity = entity.lower()
