@@ -4,8 +4,8 @@
 //! and generate graph schema suggestions.
 
 #[cfg(feature = "gliner")]
-use crate::graph_catalog::gliner_nlp::{
-    try_create_nlp, TableSchemaInfo, ColumnInfo as NlpColumnInfo, TableSuggestion,
+use crate::graph_catalog::schema_pattern::{
+    try_create_nlp, SchemaNlp, TableSchemaInfo, ColumnInfo as NlpColumnInfo, TableSuggestion,
 };
 use clickhouse::Client;
 use serde::{Deserialize, Serialize};
@@ -99,6 +99,11 @@ impl SchemaDiscovery {
     ) -> Result<IntrospectResponse, String> {
         let tables = Self::list_tables(client, database).await?;
         
+        #[cfg(feature = "gliner")]
+        let nlp = SchemaNlp::new("").ok();
+        #[cfg(not(feature = "gliner"))]
+        let nlp: Option<crate::graph_catalog::schema_pattern::SchemaNlp> = None;
+        
         let mut table_metadata = Vec::new();
         let mut suggestions = Vec::new();
         
@@ -107,14 +112,33 @@ impl SchemaDiscovery {
             let row_count = Self::get_row_count(client, database, &table_name).await.ok();
             let sample = Self::get_sample_data(client, database, &table_name).await.unwrap_or_default();
             
-            // Generate suggestions
+            // Generate structural suggestions
             let table_suggestions = Self::generate_suggestions(&table_name, &columns);
             suggestions.extend(table_suggestions);
             
-            // Analyze sample data values for additional insights
-            if !sample.is_empty() {
-                let value_suggestions = Self::analyze_sample_values(&table_name, &columns, &sample);
-                // Skip adding value suggestions - unreliable
+            // Add NLP-based classification and pattern detection
+            #[cfg(feature = "gliner")]
+            if let Some(ref nlp_model) = nlp {
+                let column_info: Vec<(&str, bool)> = columns
+                    .iter()
+                    .map(|c| (c.name.as_str(), c.is_primary_key))
+                    .collect();
+                
+                // Classification
+                let nlp_suggestion = nlp_model.classify_table_with_columns(&table_name, &column_info);
+                suggestions.push(Suggestion {
+                    table: nlp_suggestion.table_name.clone(),
+                    suggestion_type: format!("nlp_{}", nlp_suggestion.suggestion_type),
+                    reason: nlp_suggestion.reason,
+                });
+                
+                // Pattern detection
+                let pattern = nlp_model.detect_schema_pattern(&table_name, &column_info);
+                suggestions.push(Suggestion {
+                    table: nlp_suggestion.table_name,
+                    suggestion_type: format!("pattern_{}", pattern.pattern),
+                    reason: pattern.details,
+                });
             }
             
             table_metadata.push(TableMetadata {
@@ -149,7 +173,7 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
         client: &Client,
         database: &str,
     ) -> Result<IntrospectResponse, String> {
-        use crate::graph_catalog::gliner_nlp::{TableSchemaInfo, ColumnInfo as NlpColumnInfo};
+        use crate::graph_catalog::schema_pattern::{TableSchemaInfo, ColumnInfo as NlpColumnInfo};
         
         let tables = Self::list_tables(client, database).await?;
         

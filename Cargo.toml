@@ -45,12 +45,11 @@ regex = "1.12.3"
 
 [features]
 default = []
-gliner = ["dep:gline_rs"]
+gliner = ["dep:gline-rs"]
 
-[dependencies.gline_rs]
+[dependencies.gline-rs]
 version = "1"
 optional = true
-package = "gline-rs"
 
 [dev-dependencies]
 clickhouse = { version = "0.13.2", features = ["test-util"] }

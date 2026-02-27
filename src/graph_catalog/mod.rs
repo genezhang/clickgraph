@@ -7,7 +7,7 @@ pub mod engine_detection;
 pub mod errors;
 pub mod expression_parser;
 pub mod filter_parser;
-pub mod gliner_nlp;
+pub mod schema_pattern;
 pub mod graph_schema;
 pub mod node_classification;
 pub mod pattern_schema;
@@ -26,7 +26,7 @@ mod composite_id_tests;
 #[allow(unused_imports)]
 pub use column_info::{query_table_columns, ColumnInfo};
 #[allow(unused_imports)]
-pub use gliner_nlp::{
+pub use schema_pattern::{
     try_create_nlp, ColumnInfo as NlpColumnInfo, NlpPrediction, NlpScores, SchemaEntity,
     SchemaNlp, TableSchemaInfo, TableSuggestion,
 };

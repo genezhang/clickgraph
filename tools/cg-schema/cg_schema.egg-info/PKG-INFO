@@ -1,0 +1,21 @@
+Metadata-Version: 2.1
+Name: cg-schema
+Version: 0.1.0
+Summary: ClickGraph Schema Designer - ML-powered schema discovery
+Home-page: UNKNOWN
+Author: ClickGraph Team
+Author-email: team@clickgraph.dev
+License: UNKNOWN
+Platform: UNKNOWN
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: Apache Software License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Requires-Python: >=3.9
+
+UNKNOWN
+

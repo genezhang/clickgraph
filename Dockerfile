@@ -1,6 +1,8 @@
 # ============================================================================
-# Stage 1: Planner - Generate dependency recipe for caching
+# Dockerfile - Production build (no GLiNER, no ML)
+# For schema design with ML, use: pip install cg-schema
 # ============================================================================
+# Stage 1: Planner - Generate dependency recipe for caching
 FROM lukemathwalker/cargo-chef:latest-rust-1-bullseye AS chef
 WORKDIR /app
 
@@ -10,14 +12,12 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 # ============================================================================
 # Stage 2: Builder - Build the application
-# ============================================================================
 FROM chef AS builder 
 
 # Copy dependency recipe
 COPY --from=planner /app/recipe.json recipe.json
 
-# Build dependencies - this is the caching Docker layer!
-# This layer is only rebuilt when dependencies change
+# Build dependencies - caching layer
 RUN cargo chef cook --release --recipe-path recipe.json
 
 # Copy source code
@@ -33,7 +33,6 @@ RUN strip /app/target/release/clickgraph && \
 
 # ============================================================================
 # Stage 3: Runtime - Minimal production image
-# ============================================================================
 FROM debian:bullseye-slim AS runtime
 
 # Install runtime dependencies only
