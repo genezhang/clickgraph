@@ -513,8 +513,18 @@ fn traverse_connected_pattern_with_mode<'a>(
                         )
                     })?;
 
-                    let start_label_for_scan = Some(first_combo.from_label.clone());
-                    let end_label_for_scan = Some(first_combo.to_label.clone());
+                    // For Incoming direction, AST start_node maps to schema to_node
+                    // and AST end_node maps to schema from_node. Swap labels accordingly.
+                    let (start_label_for_scan, end_label_for_scan) = match rel.direction {
+                        ast::Direction::Incoming => (
+                            Some(first_combo.to_label.clone()),
+                            Some(first_combo.from_label.clone()),
+                        ),
+                        _ => (
+                            Some(first_combo.from_label.clone()),
+                            Some(first_combo.to_label.clone()),
+                        ),
+                    };
                     let rel_labels_for_scan = Some(vec![first_combo.rel_type.clone()]);
 
                     // Generate scans for nodes using first combination
@@ -602,7 +612,30 @@ fn traverse_connected_pattern_with_mode<'a>(
                         was_undirected: None,
                     };
 
-                    plan = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
+                    // Preserve input plan: if there's an existing non-Empty plan
+                    // (e.g., a WithClause from prior WITH processing), wrap it in a
+                    // CartesianProduct with the new pattern — mirroring what the normal
+                    // "not connected with existing nodes" path does at line ~1291.
+                    // Without this, the input plan (and its WithClause nodes) is discarded.
+                    let new_pattern = Arc::new(LogicalPlan::GraphRel(graph_rel_node));
+                    let has_existing_plan = !matches!(plan.as_ref(), LogicalPlan::Empty);
+                    if has_existing_plan {
+                        let existing_is_optional = plan.is_optional_pattern();
+                        let (left, right, cp_is_optional) = if existing_is_optional && !is_optional
+                        {
+                            (new_pattern.clone(), plan.clone(), true)
+                        } else {
+                            (plan.clone(), new_pattern, is_optional)
+                        };
+                        plan = Arc::new(LogicalPlan::CartesianProduct(CartesianProduct {
+                            left,
+                            right,
+                            is_optional: cp_is_optional,
+                            join_condition: None,
+                        }));
+                    } else {
+                        plan = new_pattern;
+                    }
 
                     // === REGISTER ALIASES IN PLAN_CTX ===
                     // Register nodes with multi-type information
