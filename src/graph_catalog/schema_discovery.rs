@@ -287,7 +287,7 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
     /// List all tables in a database
     async fn list_tables(client: &Client, database: &str) -> Result<Vec<String>, String> {
         let db = validate_sql_identifier(database)?;
-        
+
         #[derive(Debug, clickhouse::Row, Deserialize)]
         struct TableName {
             name: String,
@@ -315,7 +315,7 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
     ) -> Result<Vec<ColumnMetadata>, String> {
         let db = validate_sql_identifier(database)?;
         let tbl = validate_sql_identifier(table)?;
-        
+
         #[derive(Debug, clickhouse::Row, Deserialize)]
         struct ColumnRow {
             name: String,
@@ -369,7 +369,7 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
     ) -> Result<Vec<serde_json::Value>, String> {
         let db = validate_sql_identifier(database)?;
         let tbl = validate_sql_identifier(table)?;
-        
+
         // First get column names
         #[derive(Debug, Clone, serde::Deserialize, clickhouse::Row)]
         struct ColName {
@@ -393,12 +393,7 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
         }
 
         // Query sample data using JSONEachRow format
-        let query = format!(
-            "SELECT {} FROM {}.{} LIMIT 3",
-            columns.join(", "),
-            db,
-            tbl
-        );
+        let query = format!("SELECT {} FROM {}.{} LIMIT 3", columns.join(", "), db, tbl);
 
         // Use fetch_bytes for JSONEachRow format
         let mut lines = client

@@ -1335,7 +1335,11 @@ pub async fn introspect_handler(
     );
 
     // Validate database name to prevent SQL injection
-    if !payload.database.chars().all(|c| c.is_alphanumeric() || c == '_') {
+    if !payload
+        .database
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_')
+    {
         log::error!("Invalid database name: {}", payload.database);
         return Err((
             StatusCode::BAD_REQUEST,
