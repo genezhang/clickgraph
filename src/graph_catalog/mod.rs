@@ -8,8 +8,10 @@ pub mod errors;
 pub mod expression_parser;
 pub mod filter_parser;
 pub mod graph_schema;
+pub mod llm_prompt;
 pub mod node_classification;
 pub mod pattern_schema;
+pub mod schema_discovery;
 pub mod schema_types;
 pub mod schema_validator;
 
@@ -43,6 +45,11 @@ pub use node_classification::{
 pub use pattern_schema::{
     CoupledEdgeContext, EdgeAccessStrategy, JoinStrategy, NodeAccessStrategy, NodePosition,
     PatternSchemaContext,
+};
+#[allow(unused_imports)]
+pub use schema_discovery::{
+    ColumnMetadata, DraftOptions, DraftRequest, EdgeHint, FkEdgeHint, IntrospectResponse, NodeHint,
+    SchemaDiscovery, Suggestion, TableMetadata,
 };
 #[allow(unused_imports)]
 pub use schema_validator::SchemaValidator;

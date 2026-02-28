@@ -561,6 +561,94 @@ print(response.json())
 
 ---
 
+## Schema Discovery
+
+### POST /schemas/introspect
+
+Introspect a ClickHouse database to get table metadata (columns, types, PKs, sample data).
+
+```http
+POST /schemas/introspect HTTP/1.1
+Content-Type: application/json
+
+{
+  "database": "mydb"
+}
+```
+
+**Response:**
+```json
+{
+  "database": "mydb",
+  "tables": [
+    {
+      "name": "users",
+      "columns": [
+        {"name": "id", "type": "UInt64", "is_primary_key": true, "is_in_order_by": true},
+        {"name": "name", "type": "String", "is_primary_key": false, "is_in_order_by": false}
+      ],
+      "row_count": 1000,
+      "sample": [{"id": 1, "name": "Alice"}]
+    }
+  ],
+  "suggestions": [],
+  "next_step": "Review tables and columns..."
+}
+```
+
+### POST /schemas/discover-prompt
+
+Generate LLM prompt(s) from database metadata for schema discovery. Used by the `clickgraph-client` `:discover` command.
+
+```http
+POST /schemas/discover-prompt HTTP/1.1
+Content-Type: application/json
+
+{
+  "database": "mydb"
+}
+```
+
+**Response:**
+```json
+{
+  "database": "mydb",
+  "total_tables": 7,
+  "prompts": [
+    {
+      "system_prompt": "You are a database schema analyst...",
+      "user_prompt": "## ClickHouse Tables...",
+      "table_count": 7,
+      "estimated_tokens": 2500
+    }
+  ]
+}
+```
+
+For large schemas (40+ tables), multiple prompts are returned for batched LLM calls.
+
+See [Schema Discovery](Schema-Discovery.md) for the full workflow.
+
+### POST /schemas/draft
+
+Generate a YAML schema draft from manual hints (used by the `:design` wizard).
+
+```http
+POST /schemas/draft HTTP/1.1
+Content-Type: application/json
+
+{
+  "database": "mydb",
+  "schema_name": "mydb",
+  "nodes": [{"table": "users", "label": "User", "node_id": "user_id"}],
+  "edges": [],
+  "fk_edges": [],
+  "options": {"auto_discover_columns": true}
+}
+```
+
+---
+
 ## Health Check
 
 ### GET /health
