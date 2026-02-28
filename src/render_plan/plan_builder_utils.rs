@@ -8483,31 +8483,21 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     }
 
                     // Fix INNER→LEFT in OPTIONAL MATCH CTE bodies.
-                    // When a CTE body has LEFT JOINs (indicating OPTIONAL MATCH),
-                    // any INNER JOINs after the CTE reference should also be LEFT.
-                    // The inference may generate INNER for endpoints (e.g., person2)
-                    // that weren't in the optional_aliases set.
+                    // When a CTE reference is LEFT JOINed (indicating OPTIONAL MATCH),
+                    // any INNER JOINs after it should also be LEFT — the inference may
+                    // generate INNER for endpoints (e.g., person2) that weren't in the
+                    // optional_aliases set.
+                    // We specifically require the CTE JOIN itself to be LEFT, not just
+                    // any LEFT JOIN in the body, to avoid converting genuinely INNER JOINs
+                    // in non-OPTIONAL contexts.
                     {
-                        let has_left_joins = rendered
-                            .joins
-                            .0
-                            .iter()
-                            .any(|j| matches!(j.join_type, super::JoinType::Left));
-                        let has_cte_join = rendered.joins.0.iter().any(|j| {
-                            j.table_name.starts_with("with_") || j.table_name.starts_with("vlp_")
+                        let first_left_cte_idx = rendered.joins.0.iter().position(|j| {
+                            matches!(j.join_type, super::JoinType::Left)
+                                && (j.table_name.starts_with("with_")
+                                    || j.table_name.starts_with("vlp_"))
                         });
-                        if has_left_joins && has_cte_join {
-                            // Find the first CTE-backed JOIN index
-                            let first_cte_idx = rendered
-                                .joins
-                                .0
-                                .iter()
-                                .position(|j| {
-                                    j.table_name.starts_with("with_")
-                                        || j.table_name.starts_with("vlp_")
-                                })
-                                .unwrap_or(0);
-                            for j in rendered.joins.0[first_cte_idx..].iter_mut() {
+                        if let Some(cte_idx) = first_left_cte_idx {
+                            for j in rendered.joins.0[cte_idx..].iter_mut() {
                                 if matches!(j.join_type, super::JoinType::Inner) {
                                     log::info!(
                                         "OPTIONAL MATCH fix: converting INNER→LEFT for JOIN {} ({})",

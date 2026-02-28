@@ -332,6 +332,39 @@ pub fn extract_map_keys_from_expr(expr: &RenderExpr) -> Option<Vec<String>> {
     }
 }
 
+/// Try to resolve a property access as a map key access.
+/// Returns `Some(ArraySubscript)` if `alias` is a CTE variable with map_keys containing `property_name`.
+/// The `cte_variables` map is used to reverse-lookup the Cypher alias for the CTE column name.
+fn try_resolve_map_access(
+    alias: &str,
+    property_name: &str,
+    scope: &VariableScope,
+) -> Option<RenderExpr> {
+    let cte_info = scope.get_cte_info_by_alias_or_name(alias)?;
+    let keys = cte_info.map_keys.as_ref()?;
+    if !keys.iter().any(|k| k == property_name) {
+        return None;
+    }
+    let from_alias = cte_info.effective_from_alias();
+    // Reverse-lookup the Cypher alias key that maps to this CteVariableInfo.
+    // Uses pointer identity because `cte_info` is a reference into `scope.cte_variables`.
+    let col_name = scope
+        .cte_variables
+        .iter()
+        .find(|(_, info)| std::ptr::eq(*info, cte_info))
+        .map(|(cypher_alias, _)| cypher_alias.clone())
+        .unwrap_or_else(|| alias.to_string());
+    Some(RenderExpr::ArraySubscript {
+        array: Box::new(RenderExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: TableAlias(from_alias),
+            column: PropertyValue::Column(col_name),
+        })),
+        index: Box::new(RenderExpr::Literal(super::render_expr::Literal::String(
+            property_name.to_string(),
+        ))),
+    })
+}
+
 /// Rewrite all expressions in a RenderPlan using scope-based resolution.
 /// CTE-scoped variables get their table_alias rewritten to the CTE name
 /// and their column rewritten to the CTE column name.
@@ -533,27 +566,8 @@ fn rewrite_bare_variables(expr: &RenderExpr, scope: &VariableScope) -> RenderExp
                 PropertyValue::Column(col) => col.as_str(),
                 PropertyValue::Expression(_) => return expr.clone(),
             };
-            if let Some(cte_info) = scope.get_cte_info_by_alias_or_name(alias) {
-                if let Some(ref keys) = cte_info.map_keys {
-                    if keys.iter().any(|k| k == property_name) {
-                        let from_alias = cte_info.effective_from_alias();
-                        let col_name = scope
-                            .cte_variables
-                            .iter()
-                            .find(|(_, info)| std::ptr::eq(*info, cte_info))
-                            .map(|(cypher_alias, _)| cypher_alias.clone())
-                            .unwrap_or_else(|| alias.to_string());
-                        return RenderExpr::ArraySubscript {
-                            array: Box::new(RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(from_alias),
-                                column: PropertyValue::Column(col_name),
-                            })),
-                            index: Box::new(RenderExpr::Literal(
-                                super::render_expr::Literal::String(property_name.to_string()),
-                            )),
-                        };
-                    }
-                }
+            if let Some(map_expr) = try_resolve_map_access(alias, property_name, scope) {
+                return map_expr;
             }
             expr.clone()
         }
@@ -768,31 +782,8 @@ pub fn rewrite_render_expr(expr: &RenderExpr, scope: &VariableScope) -> RenderEx
                     })
                 }
                 ResolvedProperty::Unresolved => {
-                    if let Some(cte_info) = scope.get_cte_info_by_alias_or_name(alias) {
-                        if let Some(ref keys) = cte_info.map_keys {
-                            if keys.iter().any(|k| k == property_name) {
-                                let from_alias = cte_info.effective_from_alias();
-                                let col_name = scope
-                                    .cte_variables
-                                    .iter()
-                                    .find(|(_, info)| std::ptr::eq(*info, cte_info))
-                                    .map(|(cypher_alias, _)| cypher_alias.clone())
-                                    .unwrap_or_else(|| alias.to_string());
-                                return RenderExpr::ArraySubscript {
-                                    array: Box::new(RenderExpr::PropertyAccessExp(
-                                        PropertyAccess {
-                                            table_alias: TableAlias(from_alias),
-                                            column: PropertyValue::Column(col_name),
-                                        },
-                                    )),
-                                    index: Box::new(RenderExpr::Literal(
-                                        super::render_expr::Literal::String(
-                                            property_name.to_string(),
-                                        ),
-                                    )),
-                                };
-                            }
-                        }
+                    if let Some(map_expr) = try_resolve_map_access(alias, property_name, scope) {
+                        return map_expr;
                     }
                     expr.clone()
                 }
