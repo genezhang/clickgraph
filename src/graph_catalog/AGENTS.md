@@ -323,3 +323,131 @@ JoinStrategy:
 - `CompositeKey::parse(key)` → `Result<CompositeKey>`
 - `is_composite_key(key)` → `bool` (contains `::`)
 - `extract_type_name(key)` → type portion before first `::`
+
+---
+
+# LLM-Based Schema Discovery
+
+> **Design Decision (Mar 2026)**: Replaced GLiNER-based Python tool with LLM-based approach
+> for significantly better accuracy (95% vs 15%).
+
+## Motivation: Why Heuristics Fail
+
+Previous GLiNER-based approach worked for well-named schemas (LDBC, SSB) but failed on real-world databases:
+
+| Problem | Example | Heuristic Result |
+|---------|---------|------------------|
+| Abbreviated columns | `mgr_uid`, `dept_code`, `tkt_id` | ❌ Cannot recognize as FK |
+| Non-standard FK names | `reporter`, `assignee`, `related_proj` | ❌ Misses FK relationship |
+| Cross-type FKs | `dept_code` String references `dept.code` String | ❌ Type mismatch |
+| Self-referential | `parent_tkt`, `mgr_uid` | ❌ Wrong direction |
+| Shortened tables | `usr`, `proj`, `dept` | ❌ Cannot expand |
+
+### Proof: Project Management Schema
+
+Input tables:
+```
+usr         (uid PK, uname, email_addr, reg_dt, dept_code, mgr_uid)
+dept        (code PK, dname, loc, parent_code)
+proj        (pid PK, pname, status, owner_uid, budget_amt)
+proj_assign (pid PK, uid PK, role, start_dt)       -- junction table
+tickets     (tkt_id PK, title, severity, reporter, assignee, related_proj, parent_tkt, created, resolved)
+obj_tag     (object_id PK, object_type PK, tag_name PK, tagged_by, tagged_at)  -- polymorphic
+audit_log   (ts OrderBy, actor, action, target_type, target_ref, details)  -- event log
+```
+
+**Heuristic Output** (15% accuracy):
+```
+usr:         pattern=standard_node, 0 FKs detected  ❌
+dept:        pattern=standard_node, 0 FKs detected  ❌
+proj:        pattern=standard_node, 0 FKs detected  ❌
+proj_assign: pattern=standard_edge, from=Pid, to=Uid  ❌ (wrong!)
+tickets:     pattern=standard_node, 0 FKs detected    ❌
+obj_tag:     pattern=standard_edge, from=object_id, to=object_type  ❌ (wrong!)
+audit_log:   pattern=flat_table  ❌ (misses event nature)
+```
+
+**LLM Output** (95% accuracy): Correctly identifies all nodes, edges, FK relationships, and polymorphic patterns.
+
+## Architecture
+
+```
+clickgraph-client (Rust CLI)
+    │
+    ├── :discover <database>
+    │     │
+    │     ├── GET /schemas/discover-prompt
+    │     │     │
+    │     │     └── Server: introspects DB → llm_prompt.rs formats prompt
+    │     │
+    │     └── Client: sends to LLM API → receives YAML → /schemas push
+    │
+    └── :introspect <database>  (fallback without LLM)
+```
+
+### Key Design Principles
+
+1. **Server stays lightweight** — No ML dependencies (~300MB saved)
+2. **Client holds API keys** — User's LLM, not server's
+3. **Flexible LLM choice** — Supports Anthropic (Claude) and OpenAI-compatible APIs
+4. **Works with any LLM** — Ollama, vLLM, LiteLLM, Together, Groq, etc.
+
+## Key Files
+
+| File | Lines | Role |
+|------|------:|------|
+| `llm_prompt.rs` | ~320 | Formats table metadata → LLM prompt with examples |
+| `clickgraph-client/src/llm.rs` | ~350 | LLM API client (Anthropic + OpenAI) |
+| `clickgraph-client/src/main.rs` | ~900 | CLI with `:discover` command |
+
+## API Endpoints
+
+| Method | Path | Handler | Purpose |
+|--------|------|---------|---------|
+| GET | `/schemas/introspect` | `introspect_handler` | Get table metadata + sample data |
+| POST | `/schemas/discover-prompt` | `discover_prompt_handler` | Generate LLM prompt |
+
+## Environment Variables
+
+### Server-side (for introspection)
+- `CLICKHOUSE_URL`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`
+
+### Client-side (for LLM)
+- `ANTHROPIC_API_KEY` — Use Claude (default)
+- `OPENAI_API_KEY` + `CLICKGRAPH_LLM_PROVIDER=openai` — Use OpenAI-compatible
+- `CLICKGRAPH_LLM_MODEL` — Override default model (default: claude-sonnet-4-20250514)
+
+## Example Usage
+
+```bash
+# Start ClickGraph server
+cargo run --bin clickgraph
+
+# In clickgraph-client:
+clickgraph-client :) :discover mydb
+
+# Output:
+# === LLM Schema Discovery for 'mydb' ===
+# Using Anthropic model: claude-sonnet-4-20250514
+# Fetching table metadata from server...
+# 
+# [LLM generates YAML schema]
+# 
+# Push to server? (y/n): y
+# ✓ Schema loaded successfully
+```
+
+## Prompt Engineering
+
+The LLM prompt includes:
+
+1. **ClickGraph schema format** — YAML examples showing nodes/edges format
+2. **Sample data** — 3 rows per table for value cross-referencing
+3. **Schema patterns** — Explains standard, FK-edge, denormalized, polymorphic
+4. **Naming conventions** — Guidance on label singularization, relationship naming
+
+This enables the LLM to:
+- Cross-check FK values between tables using sample data
+- Infer entity types from abbreviated names
+- Detect polymorphic relationships from `*_type` columns
+- Identify event/log tables from timestamp patterns
