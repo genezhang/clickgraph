@@ -1032,7 +1032,7 @@ fn build_property_access_from_segments<'a>(
         &original_input[first_start..last_end]
     };
     match parse_literal_or_variable_expression(key) {
-        Ok((_, Expression::Variable(key))) => {
+        Ok((remainder, Expression::Variable(key))) if remainder.is_empty() => {
             Ok(Expression::PropertyAccessExp(PropertyAccess { base, key }))
         }
         _ => Err(nom::Err::Error(Error::new(

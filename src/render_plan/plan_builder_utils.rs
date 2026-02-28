@@ -6607,13 +6607,16 @@ fn populate_cte_property_mappings_from_render_plan(
 /// into separate CTE columns:
 ///   - Node values → one column per schema property: `arrayElement(groupArray(prop), 1) AS alias_key_prop`
 ///   - Scalar values → single column: `arrayElement(groupArray(expr), 1) AS alias_key`
+///
+/// Returns (flattened_items, compound_key_mappings) where compound_key_mappings contains
+/// entries like ("msg.id", "latestLike_msg_id") for downstream property_mapping injection.
 fn try_flatten_head_collect_map_literal(
     expr: &crate::query_planner::logical_expr::LogicalExpr,
     col_alias: Option<&str>,
     plan: &LogicalPlan,
     plan_ctx: Option<&PlanCtx>,
     scope: Option<&super::variable_scope::VariableScope>,
-) -> Option<Vec<SelectItem>> {
+) -> Option<(Vec<SelectItem>, Vec<(String, String)>)> {
     use crate::query_planner::logical_expr::LogicalExpr;
 
     let alias = col_alias?;
@@ -6647,9 +6650,6 @@ fn try_flatten_head_collect_map_literal(
     // Check if any value is a node reference (TableAlias with multiple properties).
     // Bare variables like "likeTime" are also TableAlias but are scalars — empty/no property mapping.
     // Try multiple detection methods: plan_ctx labels, scope CTE variables, plan tree, schema.
-    let schema_arc = crate::server::query_context::get_current_schema();
-    let schema_ref = schema_arc.as_deref();
-
     let is_node_alias = |alias_name: &str| -> bool {
         // Method 1: Check plan_ctx for node labels
         if let Some(ctx) = plan_ctx {
@@ -6711,6 +6711,9 @@ fn try_flatten_head_collect_map_literal(
     let schema_ref = schema.as_deref();
 
     let mut flattened_items: Vec<SelectItem> = Vec::new();
+    // Collect compound key mappings: ("map_key.property", "alias_mapkey_property")
+    // These are stored at generation time to avoid ambiguous reverse-engineering from column names.
+    let mut compound_keys: Vec<(String, String)> = Vec::new();
 
     for (key, value) in entries {
         // Determine if this value is a node alias by trying to get its properties.
@@ -6787,6 +6790,9 @@ fn try_flatten_head_collect_map_literal(
 
                 let col_name = format!("{}_{}", key, cypher_prop);
                 let full_alias = format!("{}_{}", alias, col_name);
+                // Record compound key: "msg.id" → "latestLike_msg_id"
+                let compound_key = format!("{}.{}", key, cypher_prop);
+                compound_keys.push((compound_key, full_alias.clone()));
                 flattened_items.push(SelectItem {
                     expression: head_expr,
                     col_alias: Some(ColumnAlias(full_alias)),
@@ -6822,7 +6828,7 @@ fn try_flatten_head_collect_map_literal(
         return None;
     }
 
-    Some(flattened_items)
+    Some((flattened_items, compound_keys))
 }
 
 pub(crate) fn build_chained_with_match_cte_plan(
@@ -6845,6 +6851,11 @@ pub(crate) fn build_chained_with_match_cte_plan(
     let mut current_plan = plan.clone();
     let mut all_ctes: Vec<Cte> = Vec::new();
     let mut iteration = 0;
+
+    // Collect compound key mappings from flattened map literals.
+    // Written during CTE SELECT item generation, read during property_mapping construction.
+    let flattened_compound_keys: std::cell::RefCell<Vec<(String, String)>> =
+        std::cell::RefCell::new(Vec::new());
 
     // Track CTE schemas: map CTE name to:
     // 1. Vec<SelectItem>: Column definitions
@@ -8174,14 +8185,16 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                 log::info!("🔧 Checking for head(collect(MapLiteral)) flattening, alias={:?}, expanded_expr={:?}",
                                                     item.col_alias.as_ref().map(|a| &a.0),
                                                     std::mem::discriminant(&expanded_expr));
-                                                if let Some(flattened_items) = try_flatten_head_collect_map_literal(
+                                                if let Some((flattened_items, compound_keys)) = try_flatten_head_collect_map_literal(
                                                     &expanded_expr,
                                                     item.col_alias.as_ref().map(|a| a.0.as_str()),
                                                     plan_to_render,
                                                     plan_ctx,
                                                     body_scope_ref,
                                                 ) {
-                                                    log::info!("🔧 Flattened head(collect(MapLiteral)) into {} columns", flattened_items.len());
+                                                    log::info!("🔧 Flattened head(collect(MapLiteral)) into {} columns with {} compound keys",
+                                                        flattened_items.len(), compound_keys.len());
+                                                    flattened_compound_keys.borrow_mut().extend(compound_keys);
                                                     return flattened_items;
                                                 }
 
@@ -10283,60 +10296,29 @@ pub(crate) fn build_chained_with_match_cte_plan(
             }
 
             // 🔧 FIX: Add compound key mappings for flattened map literal columns.
-            // Column aliases like "latestLike_msg_id" are parsed as ("latestLike", "msg_id")
-            // but downstream resolution uses compound key "msg.id" from parser.
-            // Add ("latestLike", "msg.id") → "latestLike_msg_id" for each flattened column.
+            // These were collected at generation time by try_flatten_head_collect_map_literal()
+            // to avoid ambiguous reverse-engineering from underscore-delimited column names.
+            // Each entry maps ("base_alias", "map_key.property") → "base_alias_mapkey_property".
             {
-                let mut compound_entries: Vec<((String, String), String)> = Vec::new();
-                for item in &select_items_for_schema {
-                    if let Some(col_alias) = &item.col_alias {
-                        let col_name = &col_alias.0;
-                        // Detect flattened map columns: alias_key_prop where key_prop contains
-                        // a node map key. Pattern: 2+ underscores, middle segment is a map key.
-                        // We check if the expression is arrayElement(groupArray(...))
-                        if let RenderExpr::ScalarFnCall(sf) = &item.expression {
-                            if sf.name == "arrayElement" && sf.args.len() == 2 {
-                                if let RenderExpr::AggregateFnCall(agg) = &sf.args[0] {
-                                    if agg.name == "groupArray" && agg.args.len() == 1 {
-                                        if let RenderExpr::PropertyAccessExp(_) = &agg.args[0] {
-                                            // This is a flattened map property column.
-                                            // Parse: "latestLike_msg_id" → find base alias
-                                            // from exported_aliases, then compute compound key.
-                                            for base_alias in &exported_aliases {
-                                                let prefix = format!("{}_", base_alias);
-                                                if col_name.starts_with(&prefix) {
-                                                    let remainder = &col_name[prefix.len()..];
-                                                    // remainder is like "msg_id" → compound key "msg.id"
-                                                    if let Some(underscore_pos) =
-                                                        remainder.find('_')
-                                                    {
-                                                        let map_key = &remainder[..underscore_pos];
-                                                        let prop = &remainder[underscore_pos + 1..];
-                                                        let compound_key =
-                                                            format!("{}.{}", map_key, prop);
-                                                        compound_entries.push((
-                                                            (base_alias.clone(), compound_key),
-                                                            col_name.clone(),
-                                                        ));
-                                                    }
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                let stored_keys = flattened_compound_keys.borrow();
+                for (compound_key, col_name) in stored_keys.iter() {
+                    // Find which exported alias this column belongs to
+                    for base_alias in &exported_aliases {
+                        let prefix = format!("{}_", base_alias);
+                        if col_name.starts_with(&prefix) {
+                            log::info!(
+                                "🔧 property_mapping compound key: ({}, {}) → {}",
+                                base_alias,
+                                compound_key,
+                                col_name
+                            );
+                            property_mapping.insert(
+                                (base_alias.clone(), compound_key.clone()),
+                                col_name.clone(),
+                            );
+                            break;
                         }
                     }
-                }
-                for (key, val) in compound_entries {
-                    log::info!(
-                        "🔧 property_mapping compound key: ({}, {}) → {}",
-                        key.0,
-                        key.1,
-                        val
-                    );
-                    property_mapping.insert(key, val);
                 }
             }
 
