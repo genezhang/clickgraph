@@ -193,15 +193,16 @@ def determine_pattern(pk_columns: list, fk_columns: list, columns: list) -> str:
     
     # Check for timestamp columns (event/log tables)
     has_timestamp = any(
-        "time" in c.get("name", "").lower() or
-        "date" in c.get("name", "").lower() or
+        "_time" in c.get("name", "").lower() or
+        "_date" in c.get("name", "").lower() or
+        c.get("name", "").lower().endswith("_at") or
         c.get("type", "").lower().startswith("datetime")
         for c in columns
     )
     
     # Check for origin/dest pattern (denormalized)
-    has_origin = any("origin_" in c or c.startswith("src_") or c.startswith("from_") for c in all_col_names)
-    has_dest = any("dest_" in c or c.startswith("dst_") or c.startswith("to_") for c in all_col_names)
+    has_origin = any(c.startswith("origin_") or c.startswith("src_") for c in all_col_names)
+    has_dest = any(c.startswith("dest_") or c.startswith("dst_") for c in all_col_names)
     
     # Check for entity reference columns (userId, accountId - camelCase)
     entity_refs = [c for c in all_col_names if c.endswith("id") and not c.endswith("_id")]

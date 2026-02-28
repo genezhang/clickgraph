@@ -8,15 +8,27 @@ from rich.console import Console
 from rich.table import Table
 
 
-def generate_yaml(tables: list[dict[str, Any]], suggestions: list[dict[str, Any]]) -> str:
+def singularize(name: str) -> str:
+    """Simple singularization for table names."""
+    if name.endswith("ies"):
+        return name[:-3] + "y"
+    if name.endswith("es") and len(name) > 3:
+        return name[:-2]
+    if name.endswith("s") and not name.endswith("ss"):
+        return name[:-1]
+    return name
+
+
+def generate_yaml(tables: list[dict[str, Any]], suggestions: list[dict[str, Any]], database: str = "default") -> str:
     """Generate YAML schema from suggestions.
     
     Args:
         tables: Original table metadata
         suggestions: ML-analyzed suggestions
+        database: Database name for the schema
         
     Returns:
-        YAML string
+        YAML string in ClickGraph format
     """
     nodes = []
     edges = []
@@ -82,42 +94,41 @@ def generate_yaml(tables: list[dict[str, Any]], suggestions: list[dict[str, Any]
                         to_node = entity
             
             edge_entry = {
-                "type": table,
-                "from": {
-                    "node": from_node or "node",
-                    "id": id_columns[0] if id_columns else "from_id",
-                },
-                "to": {
-                    "node": to_node or "node", 
-                    "id": id_columns[1] if len(id_columns) > 1 else "to_id",
-                },
+                "type": table.upper(),
+                "database": database,
+                "table": table,
+                "from_node": singularize(from_node) if from_node else "Node",
+                "to_node": singularize(to_node) if to_node else "Node",
+                "from_id": id_columns[0] if id_columns else "from_id",
+                "to_id": id_columns[1] if len(id_columns) > 1 else "to_id",
             }
             
             if properties:
-                edge_entry["properties"] = properties
+                edge_entry["property_mappings"] = properties
             
             edges.append(edge_entry)
         else:
             # Treat as node (standard_node, flat_table, denormalized_node, unknown)
             node_entry = {
-                "label": table.rstrip("s"),  # Singularize
+                "label": singularize(table),
+                "database": database,
                 "table": table,
-                "id": {
-                    "column": node_id,
-                },
+                "node_id": node_id,
             }
             
             if properties:
-                node_entry["properties"] = properties
+                node_entry["property_mappings"] = properties
             
             nodes.append(node_entry)
     
-    schema = {}
+    schema = {
+        "graph_schema": {}
+    }
     
     if nodes:
-        schema["nodes"] = nodes
+        schema["graph_schema"]["nodes"] = nodes
     if edges:
-        schema["relationships"] = edges
+        schema["graph_schema"]["relationships"] = edges
     
     return yaml.dump(schema, default_flow_style=False, sort_keys=False)
 

@@ -8,9 +8,20 @@ use crate::graph_catalog::schema_pattern::{
     try_create_nlp, ColumnInfo as NlpColumnInfo, SchemaNlp, TableSchemaInfo, TableSuggestion,
 };
 use clickhouse::Client;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::io::AsyncBufReadExt;
+
+fn validate_sql_identifier(identifier: &str) -> Result<String, String> {
+    // Only allow alphanumeric, underscore, and dot (for database.table notation)
+    let re = Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_.]*$").map_err(|e| e.to_string())?;
+    if re.is_match(identifier) {
+        Ok(identifier.to_string())
+    } else {
+        Err(format!("Invalid SQL identifier: {}", identifier))
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnMetadata {
@@ -42,6 +53,8 @@ pub struct IntrospectResponse {
     pub database: String,
     pub tables: Vec<TableMetadata>,
     pub next_step: String,
+    #[serde(default)]
+    pub suggestions: Vec<Suggestion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,6 +179,7 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
             database: database.to_string(),
             tables: table_metadata,
             next_step: help,
+            suggestions,
         })
     }
 
@@ -256,6 +270,7 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
             database: database.to_string(),
             tables: table_metadata,
             next_step: help,
+            suggestions,
         })
     }
 
@@ -270,9 +285,9 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
     }
 
     /// List all tables in a database
-
-    /// List all tables in a database
     async fn list_tables(client: &Client, database: &str) -> Result<Vec<String>, String> {
+        let db = validate_sql_identifier(database)?;
+        
         #[derive(Debug, clickhouse::Row, Deserialize)]
         struct TableName {
             name: String,
@@ -280,7 +295,7 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
 
         let query = format!(
             "SELECT name FROM system.tables WHERE database = '{}' AND engine NOT IN ('SystemTable', 'MaterializedView') ORDER BY name",
-            database
+            db
         );
 
         let rows: Vec<TableName> = client
@@ -298,6 +313,9 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
         database: &str,
         table: &str,
     ) -> Result<Vec<ColumnMetadata>, String> {
+        let db = validate_sql_identifier(database)?;
+        let tbl = validate_sql_identifier(table)?;
+        
         #[derive(Debug, clickhouse::Row, Deserialize)]
         struct ColumnRow {
             name: String,
@@ -309,7 +327,7 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
 
         let query = format!(
             "SELECT name, type, is_in_primary_key, is_in_sorting_key FROM system.columns WHERE database = '{}' AND table = '{}' ORDER BY position",
-            database, table
+            db, tbl
         );
 
         let rows: Vec<ColumnRow> = client
@@ -331,7 +349,9 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
 
     /// Get row count for a table
     async fn get_row_count(client: &Client, database: &str, table: &str) -> Result<u64, String> {
-        let query = format!("SELECT count() FROM {}.{}", database, table);
+        let db = validate_sql_identifier(database)?;
+        let tbl = validate_sql_identifier(table)?;
+        let query = format!("SELECT count() FROM {}.{}", db, tbl);
         let count: u64 = client
             .query(&query)
             .fetch_one()
@@ -347,6 +367,9 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
         database: &str,
         table: &str,
     ) -> Result<Vec<serde_json::Value>, String> {
+        let db = validate_sql_identifier(database)?;
+        let tbl = validate_sql_identifier(table)?;
+        
         // First get column names
         #[derive(Debug, Clone, serde::Deserialize, clickhouse::Row)]
         struct ColName {
@@ -356,7 +379,7 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
         let columns: Vec<String> = client
             .query(&format!(
                 "SELECT name FROM system.columns WHERE database = '{}' AND table = '{}' ORDER BY position",
-                database, table
+                db, tbl
             ))
             .fetch_all()
             .await
@@ -373,8 +396,8 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
         let query = format!(
             "SELECT {} FROM {}.{} LIMIT 3",
             columns.join(", "),
-            database,
-            table
+            db,
+            tbl
         );
 
         // Use fetch_bytes for JSONEachRow format

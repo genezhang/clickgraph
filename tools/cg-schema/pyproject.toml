@@ -25,17 +25,15 @@ classifiers = [
 ]
 
 dependencies = [
-    "clickhouse-connect>=0.6.0",
-    "gliner>=0.2.0",
     "pyyaml>=6.0",
     "requests>=2.28.0",
     "rich>=13.0.0",
 ]
 
-[project.scripts]
-cg-schema = "cg_schema.cli:main"
-
 [project.optional-dependencies]
+ml = [
+    "gliner>=0.2.0",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",

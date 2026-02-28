@@ -1334,6 +1334,15 @@ pub async fn introspect_handler(
         payload.use_nlp
     );
 
+    // Validate database name to prevent SQL injection
+    if !payload.database.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        log::error!("Invalid database name: {}", payload.database);
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid database name" })),
+        ));
+    }
+
     let response = if payload.use_nlp {
         SchemaDiscovery::introspect_with_nlp(&app_state.clickhouse_client, &payload.database).await
     } else {

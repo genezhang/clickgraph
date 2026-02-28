@@ -69,7 +69,7 @@ def cmd_introspect(args):
     
     # Generate output
     if args.output:
-        yaml_content = generate_yaml(tables, suggestions)
+        yaml_content = generate_yaml(tables, suggestions, args.database)
         Path(args.output).write_text(yaml_content)
         console.print(f"\n[green]✓[/green] Schema saved to: {args.output}")
     
