@@ -492,9 +492,6 @@ fn transform_bidirectional(
     }
 }
 
-/// Check if a plan is a Union from a leaf undirected edge split.
-/// "Leaf" means both branches are GraphRels whose left subtrees are NOT GraphRels
-/// (i.e., simple `(a)-[:R]-(b)` edges, not chains like `(a)-[:R1]-(b)-[:R2]->(c)`).
 /// Check if a plan is a Union from an undirected edge where both endpoints
 /// are already bound by patterns in the left subtree. When both endpoints
 /// are bound, the edge is a filter (existence check) — both Union branches
@@ -555,15 +552,11 @@ fn has_alias_in_plan(plan: &LogicalPlan, alias: &str) -> bool {
 /// Recurses through CartesianProduct and Filter wrappers.
 fn collapse_leaf_unions_in_cp(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
     match plan.as_ref() {
-        LogicalPlan::Union(_) if is_redundant_undirected_union(&plan) => {
-            if let LogicalPlan::Union(u) = plan.as_ref() {
-                crate::debug_print!(
-                    "🔄 BidirectionalUnion: Collapsing redundant undirected Union to single branch"
-                );
-                u.inputs[0].clone() // Take Outgoing branch
-            } else {
-                plan
-            }
+        LogicalPlan::Union(u) if is_redundant_undirected_union(&plan) => {
+            crate::debug_print!(
+                "🔄 BidirectionalUnion: Collapsing redundant undirected Union to single branch"
+            );
+            u.inputs[0].clone() // Take Outgoing branch
         }
         LogicalPlan::CartesianProduct(cp) => {
             let new_left = collapse_leaf_unions_in_cp(cp.left.clone());
