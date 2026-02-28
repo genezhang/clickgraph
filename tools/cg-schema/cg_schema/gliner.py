@@ -1,6 +1,7 @@
 """GLiNER integration for schema entity recognition."""
 
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -166,15 +167,12 @@ def classify_column_type(column_name: str) -> str:
         return "fk"
     
     # Foreign key patterns - camelCase (userId, accountId, etc.)
-    # Pattern: lowercase letter followed by Id or ID at end
-    import re
-    if re.search(r'[a-z]([A-Z]id|Id|ID)$', column_name):  # e.g., userId, accountId, userID
+    # Pattern: lowercase letter or digit followed by Id or ID at end
+    if re.search(r'[a-z0-9](Id|ID)$', column_name):  # e.g., userId, person1Id, userID
         return "fk"
-    if re.search(r'[a-z][A-Z]ID$', column_name):  # e.g., userID
-        return "fk"
-    
+
     # Timestamp patterns
-    if "created" in name_lower or "updated" in name_lower or "at" in name_lower:
+    if name_lower.endswith("_at") or "created" in name_lower or "updated" in name_lower:
         if "date" in name_lower or "time" in name_lower or name_lower.endswith("_at"):
             return "timestamp"
     
