@@ -14,10 +14,7 @@ use tokio::io::AsyncBufReadExt;
 use crate::{
     clickhouse_query_generator,
     graph_catalog::graph_schema::GraphSchemaElement,
-    graph_catalog::{
-        DraftOptions, DraftRequest, EdgeHint, FkEdgeHint, IntrospectResponse, NodeHint,
-        SchemaDiscovery, Suggestion,
-    },
+    graph_catalog::{DraftOptions, DraftRequest, EdgeHint, FkEdgeHint, NodeHint, SchemaDiscovery},
     open_cypher_parser::{self, ast::CypherStatement},
     query_planner::{self, types::QueryType},
     render_plan::plan_builder::RenderPlanBuilder,
@@ -1320,19 +1317,13 @@ fn extract_result_count(_response: &axum::response::Response) -> Option<usize> {
 #[derive(Deserialize)]
 pub struct IntrospectRequest {
     pub database: String,
-    #[serde(default)]
-    pub use_nlp: bool,
 }
 
 pub async fn introspect_handler(
     State(app_state): State<Arc<AppState>>,
     Json(payload): Json<IntrospectRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    log::info!(
-        "Introspecting database: {} (nlp: {})",
-        payload.database,
-        payload.use_nlp
-    );
+    log::info!("Introspecting database: {}", payload.database);
 
     // Validate database name to prevent SQL injection
     if !payload
@@ -1347,16 +1338,58 @@ pub async fn introspect_handler(
         ));
     }
 
-    let response = if payload.use_nlp {
-        SchemaDiscovery::introspect_with_nlp(&app_state.clickhouse_client, &payload.database).await
-    } else {
-        SchemaDiscovery::introspect(&app_state.clickhouse_client, &payload.database).await
-    };
+    let response =
+        SchemaDiscovery::introspect(&app_state.clickhouse_client, &payload.database).await;
 
     match response {
         Ok(resp) => Ok(Json(serde_json::to_value(resp).unwrap())),
         Err(e) => {
             log::error!("Introspect failed: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e })),
+            ))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct DiscoverPromptRequest {
+    pub database: String,
+}
+
+pub async fn discover_prompt_handler(
+    State(app_state): State<Arc<AppState>>,
+    Json(payload): Json<DiscoverPromptRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    log::info!("Generating discovery prompt for: {}", payload.database);
+
+    // Validate database name to prevent SQL injection
+    if !payload
+        .database
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_')
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Invalid database name" })),
+        ));
+    }
+
+    // Introspect the database
+    let introspect_result =
+        SchemaDiscovery::introspect(&app_state.clickhouse_client, &payload.database).await;
+
+    match introspect_result {
+        Ok(resp) => {
+            let prompt_response = crate::graph_catalog::llm_prompt::format_discovery_prompt(
+                &resp.database,
+                &resp.tables,
+            );
+            Ok(Json(serde_json::to_value(prompt_response).unwrap()))
+        }
+        Err(e) => {
+            log::error!("Introspect failed for discover-prompt: {}", e);
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({ "error": e })),

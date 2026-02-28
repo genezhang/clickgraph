@@ -203,6 +203,97 @@ MATCH (u:User) RETURN count(u)
 - ✅ **Simplified Testing**: Load all test schemas from one file
 - ✅ **Backward Compatible**: Single-schema YAML files still work
 
+## LLM Schema Discovery Configuration
+
+The `clickgraph-client` `:discover` command uses an LLM to automatically generate graph schema YAML from ClickHouse table metadata.
+
+Two API formats are supported:
+- **Anthropic** (default) — Claude API
+- **OpenAI-compatible** — works with OpenAI, Ollama, vLLM, LiteLLM, Together, Groq, and any OpenAI-compatible endpoint
+
+### Anthropic (Default)
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-api03-..."
+
+# Optional overrides
+export CLICKGRAPH_LLM_MODEL="claude-sonnet-4-20250514"    # default
+export CLICKGRAPH_LLM_MAX_TOKENS=8192                      # default
+```
+
+### OpenAI-Compatible
+
+```bash
+export CLICKGRAPH_LLM_PROVIDER="openai"
+export OPENAI_API_KEY="sk-..."
+
+# Optional overrides
+export CLICKGRAPH_LLM_MODEL="gpt-4o"                                      # default for openai
+export CLICKGRAPH_LLM_API_URL="https://api.openai.com/v1/chat/completions" # default for openai
+export CLICKGRAPH_LLM_MAX_TOKENS=8192                                      # default
+```
+
+### Local Models (Ollama, vLLM, LiteLLM)
+
+```bash
+export CLICKGRAPH_LLM_PROVIDER="openai"
+export OPENAI_API_KEY="not-needed"                         # required but ignored by local servers
+export CLICKGRAPH_LLM_API_URL="http://localhost:11434/v1/chat/completions"  # Ollama
+export CLICKGRAPH_LLM_MODEL="llama3.1:70b"
+```
+
+### Variable Reference
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `CLICKGRAPH_LLM_PROVIDER` | No | `anthropic` | `anthropic` or `openai`. Controls API format, auth headers, and request/response shape |
+| `ANTHROPIC_API_KEY` | Yes (if provider=anthropic) | — | Anthropic API key. Get one at [console.anthropic.com](https://console.anthropic.com/) |
+| `OPENAI_API_KEY` | Yes (if provider=openai) | — | OpenAI or compatible API key. Falls back to `ANTHROPIC_API_KEY` if not set |
+| `CLICKGRAPH_LLM_MODEL` | No | `claude-sonnet-4-20250514` (anthropic) / `gpt-4o` (openai) | Model ID passed to the API |
+| `CLICKGRAPH_LLM_API_URL` | No | Provider-specific | API endpoint URL. Override for proxy, gateway, or local models |
+| `CLICKGRAPH_LLM_MAX_TOKENS` | No | `8192` | Maximum tokens in the LLM response. Increase if schemas are truncated |
+
+### Usage
+
+```bash
+# Start the client (server must be running)
+clickgraph-client --url http://localhost:8080
+
+# Run LLM-powered discovery
+clickgraph-client :) :discover mydb
+
+# Output: Generated YAML with nodes, edges, property mappings
+# Prompts to save to file and/or load into server
+```
+
+### Without an API Key
+
+If `ANTHROPIC_API_KEY` is not set, `:discover` falls back to `:introspect` which displays raw table metadata (columns, types, PKs, sample rows). You can then:
+- Write the YAML manually based on the metadata
+- Use the `:design` wizard for guided schema creation
+
+### Proxy / Gateway Setup
+
+To route LLM calls through a corporate proxy or API gateway:
+
+```bash
+# Route through a local proxy
+export CLICKGRAPH_LLM_API_URL="http://localhost:4000/v1/messages"
+
+# Route through AWS Bedrock (requires compatible endpoint)
+export CLICKGRAPH_LLM_API_URL="https://bedrock-runtime.us-east-1.amazonaws.com/..."
+```
+
+### Cost Estimation
+
+Schema discovery is a one-time operation per database. Typical costs:
+
+| Database Size | Prompt Tokens | Response Tokens | Estimated Cost (Sonnet) |
+|--------------|---------------|-----------------|------------------------|
+| 5-10 tables | ~2,000 | ~1,000 | ~$0.01 |
+| 20-30 tables | ~6,000 | ~3,000 | ~$0.03 |
+| 50+ tables | ~15,000 (batched) | ~8,000 | ~$0.08 |
+
 ## Protocol Support
 
 ### HTTP API

@@ -1,6 +1,6 @@
 # ============================================================================
-# Dockerfile - Production build (no GLiNER, no ML)
-# For schema design with ML, use: pip install cg-schema
+# Dockerfile - Production build
+# Schema discovery uses LLM via :discover command in clickgraph-client
 # ============================================================================
 # Stage 1: Planner - Generate dependency recipe for caching
 FROM lukemathwalker/cargo-chef:latest-rust-1-bullseye AS chef

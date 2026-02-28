@@ -7,8 +7,8 @@ use axum::{
 };
 use clickhouse::Client;
 use handlers::{
-    draft_handler, get_schema_handler, health_check, introspect_handler, list_schemas_handler,
-    load_schema_handler, query_handler,
+    discover_prompt_handler, draft_handler, get_schema_handler, health_check, introspect_handler,
+    list_schemas_handler, load_schema_handler, query_handler,
 };
 use sql_generation_handler::sql_generation_handler;
 
@@ -200,6 +200,7 @@ pub async fn run_with_config(config: ServerConfig) {
         .route("/schemas/load", post(load_schema_handler))
         .route("/schemas/{name}", get(get_schema_handler))
         .route("/schemas/introspect", post(introspect_handler))
+        .route("/schemas/discover-prompt", post(discover_prompt_handler))
         .route("/schemas/draft", post(draft_handler))
         .with_state(Arc::new(app_state.clone()));
 

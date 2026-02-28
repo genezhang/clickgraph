@@ -1,3 +1,5 @@
+mod llm;
+
 use clap::Parser;
 use reqwest::Client;
 use rustyline::{error::ReadlineError, DefaultEditor};
@@ -14,15 +16,16 @@ struct Args {
 fn print_usage() {
     println!("ClickGraph Client Commands:");
     println!("  <query>           - Execute Cypher query (default)");
-    println!("  :introspect <db> - Discover tables in database");
+    println!("  :discover <db>   - LLM-powered schema discovery (needs ANTHROPIC_API_KEY)");
+    println!("  :introspect <db> - Show tables/columns in database");
     println!("  :design <db>     - Interactive schema design wizard");
     println!("  :schemas         - List loaded schemas");
     println!("  :load <file>     - Load schema from YAML file");
     println!("  :help            - Show this help");
     println!("");
     println!("Examples:");
+    println!("  :discover mydb");
     println!("  :introspect lineage");
-    println!("  :design lineage");
     println!("  :schemas");
     println!("  MATCH (n:User) RETURN n.name LIMIT 5");
 }
@@ -55,6 +58,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     match cmd {
                         ":help" | ":h" => {
                             print_usage();
+                        }
+                        ":discover" | ":disc" => {
+                            if let Some(db) = arg {
+                                match run_discover(&client, &args.url, &db, &mut rl).await {
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        eprintln!("Error: {}", e);
+                                    }
+                                }
+                            } else {
+                                println!("Usage: :discover <database>");
+                            }
                         }
                         ":introspect" | ":i" => {
                             if let Some(db) = arg {
@@ -231,6 +246,195 @@ fn print_query_result(response: &Value) {
         }
     } else {
         println!("\n{}\n", response);
+    }
+}
+
+async fn run_discover(
+    client: &Client,
+    url: &str,
+    database: &str,
+    rl: &mut DefaultEditor,
+) -> Result<(), String> {
+    let llm_config = match llm::LlmConfig::from_env() {
+        Some(config) => config,
+        None => {
+            println!("No LLM API key found. Falling back to :introspect.\n");
+            println!("To use LLM-powered discovery, set one of:");
+            println!("  ANTHROPIC_API_KEY  (default, uses Claude)");
+            println!("  OPENAI_API_KEY + CLICKGRAPH_LLM_PROVIDER=openai");
+            println!();
+            let response = introspect_database(client, url, database).await?;
+            print_introspect_result(&response);
+            return Ok(());
+        }
+    };
+
+    let provider_name = match llm_config.provider {
+        llm::LlmProvider::Anthropic => "Anthropic",
+        llm::LlmProvider::OpenAI => "OpenAI-compatible",
+    };
+
+    println!("\n=== LLM Schema Discovery for '{}' ===\n", database);
+    println!("Using {} model: {}", provider_name, llm_config.model);
+    println!("Fetching table metadata from server...\n");
+
+    // Get discovery prompt from server
+    let endpoint = format!("{}/schemas/discover-prompt", url);
+    let payload = json!({ "database": database });
+
+    let response = client
+        .post(&endpoint)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !response.status().is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Server error: {}", text));
+    }
+
+    let prompt_response: Value = response.json().await.map_err(|e| e.to_string())?;
+
+    let prompts = prompt_response
+        .get("prompts")
+        .and_then(|p| p.as_array())
+        .ok_or("Invalid response from server: missing prompts")?;
+
+    let total_tables = prompt_response
+        .get("total_tables")
+        .and_then(|t| t.as_u64())
+        .unwrap_or(0);
+
+    println!(
+        "Found {} tables. Sending {} prompt(s) to LLM...\n",
+        total_tables,
+        prompts.len()
+    );
+
+    // Process each prompt batch
+    let mut all_yaml = String::new();
+    for (i, prompt) in prompts.iter().enumerate() {
+        let system = prompt
+            .get("system_prompt")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        let user = prompt
+            .get("user_prompt")
+            .and_then(|u| u.as_str())
+            .unwrap_or("");
+        let est_tokens = prompt
+            .get("estimated_tokens")
+            .and_then(|t| t.as_u64())
+            .unwrap_or(0);
+
+        if prompts.len() > 1 {
+            println!(
+                "  Batch {}/{} (~{} tokens)...",
+                i + 1,
+                prompts.len(),
+                est_tokens
+            );
+        } else {
+            println!("  Sending ~{} tokens...", est_tokens);
+        }
+
+        let result = llm::call_llm(client, &llm_config, system, user).await?;
+        let yaml = llm::extract_yaml(&result);
+
+        if prompts.len() > 1 {
+            all_yaml.push_str(&format!("# --- Batch {} ---\n", i + 1));
+        }
+        all_yaml.push_str(&yaml);
+        all_yaml.push('\n');
+    }
+
+    println!("\n=== Generated Schema YAML ===\n");
+    println!("{}", all_yaml);
+
+    // Offer to save or load
+    println!("What would you like to do?");
+    println!("  [s] Save to file");
+    println!("  [l] Load into server");
+    println!("  [b] Both (save + load)");
+    println!("  [n] Nothing (just review)");
+
+    let readline = rl.readline("action> ");
+    let action = readline.map_err(|e| e.to_string())?;
+
+    match action.trim().to_lowercase().as_str() {
+        "s" | "save" | "b" | "both" => {
+            let default_path = format!("{}.yaml", database);
+            let path_input = rl
+                .readline(&format!("Save to [{}]> ", default_path))
+                .map_err(|e| e.to_string())?;
+            let path = if path_input.trim().is_empty() {
+                default_path
+            } else {
+                path_input.trim().to_string()
+            };
+
+            std::fs::write(&path, &all_yaml).map_err(|e| format!("Failed to save: {}", e))?;
+            println!("Saved to {}", path);
+
+            if action.trim().to_lowercase().starts_with('b') {
+                // Also load
+                match load_schema_yaml(client, url, database, &all_yaml).await {
+                    Ok(resp) => {
+                        println!(
+                            "Loaded: {}",
+                            serde_json::to_string_pretty(&resp).unwrap_or_default()
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("Load error: {}", e);
+                    }
+                }
+            }
+        }
+        "l" | "load" => match load_schema_yaml(client, url, database, &all_yaml).await {
+            Ok(resp) => {
+                println!(
+                    "Loaded: {}",
+                    serde_json::to_string_pretty(&resp).unwrap_or_default()
+                );
+            }
+            Err(e) => {
+                eprintln!("Load error: {}", e);
+            }
+        },
+        _ => {
+            println!("OK. You can save this YAML manually or use :load <file> later.");
+        }
+    }
+
+    Ok(())
+}
+
+async fn load_schema_yaml(
+    client: &Client,
+    url: &str,
+    schema_name: &str,
+    yaml_content: &str,
+) -> Result<Value, String> {
+    let endpoint = format!("{}/schemas/load", url);
+    let payload = json!({
+        "schema_name": schema_name,
+        "config_content": yaml_content
+    });
+
+    let response = client
+        .post(&endpoint)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if response.status().is_success() {
+        response.json().await.map_err(|e| e.to_string())
+    } else {
+        let text = response.text().await.unwrap_or_default();
+        Err(text)
     }
 }
 

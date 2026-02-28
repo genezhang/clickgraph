@@ -3,14 +3,9 @@
 //! This module provides functionality to discover table structures in ClickHouse databases
 //! and generate graph schema suggestions.
 
-#[cfg(feature = "gliner")]
-use crate::graph_catalog::schema_pattern::{
-    try_create_nlp, ColumnInfo as NlpColumnInfo, SchemaNlp, TableSchemaInfo, TableSuggestion,
-};
 use clickhouse::Client;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use tokio::io::AsyncBufReadExt;
 
 fn validate_sql_identifier(identifier: &str) -> Result<String, String> {
@@ -109,11 +104,6 @@ impl SchemaDiscovery {
     pub async fn introspect(client: &Client, database: &str) -> Result<IntrospectResponse, String> {
         let tables = Self::list_tables(client, database).await?;
 
-        #[cfg(feature = "gliner")]
-        let nlp = SchemaNlp::new("").ok();
-        #[cfg(not(feature = "gliner"))]
-        let nlp: Option<crate::graph_catalog::schema_pattern::SchemaNlp> = None;
-
         let mut table_metadata = Vec::new();
         let mut suggestions = Vec::new();
 
@@ -130,32 +120,6 @@ impl SchemaDiscovery {
             let table_suggestions = Self::generate_suggestions(&table_name, &columns);
             suggestions.extend(table_suggestions);
 
-            // Add NLP-based classification and pattern detection
-            #[cfg(feature = "gliner")]
-            if let Some(ref nlp_model) = nlp {
-                let column_info: Vec<(&str, bool)> = columns
-                    .iter()
-                    .map(|c| (c.name.as_str(), c.is_primary_key))
-                    .collect();
-
-                // Classification
-                let nlp_suggestion =
-                    nlp_model.classify_table_with_columns(&table_name, &column_info);
-                suggestions.push(Suggestion {
-                    table: nlp_suggestion.table_name.clone(),
-                    suggestion_type: format!("nlp_{}", nlp_suggestion.suggestion_type),
-                    reason: nlp_suggestion.reason,
-                });
-
-                // Pattern detection
-                let pattern = nlp_model.detect_schema_pattern(&table_name, &column_info);
-                suggestions.push(Suggestion {
-                    table: nlp_suggestion.table_name,
-                    suggestion_type: format!("pattern_{}", pattern.pattern),
-                    reason: pattern.details,
-                });
-            }
-
             table_metadata.push(TableMetadata {
                 name: table_name,
                 columns,
@@ -181,107 +145,6 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
             next_step: help,
             suggestions,
         })
-    }
-
-    /// Introspect a database with GLiNER-powered suggestions
-    #[cfg(feature = "gliner")]
-    pub async fn introspect_with_nlp(
-        client: &Client,
-        database: &str,
-    ) -> Result<IntrospectResponse, String> {
-        use crate::graph_catalog::schema_pattern::{ColumnInfo as NlpColumnInfo, TableSchemaInfo};
-
-        let tables = Self::list_tables(client, database).await?;
-
-        let mut table_metadata = Vec::new();
-        let mut suggestions = Vec::new();
-
-        // Try to create GLiNER model
-        let nlp = try_create_nlp();
-
-        for table_name in tables {
-            let columns = Self::get_columns(client, database, &table_name).await?;
-            let row_count = Self::get_row_count(client, database, &table_name)
-                .await
-                .ok();
-            let sample = Self::get_sample_data(client, database, &table_name)
-                .await
-                .unwrap_or_default();
-
-            // Generate basic suggestions (always available)
-            let table_suggestions = Self::generate_suggestions(&table_name, &columns);
-            suggestions.extend(table_suggestions);
-
-            // If GLiNER is available, add NLP-powered suggestions
-            if let Some(ref nlp_model) = nlp {
-                let table_info = TableSchemaInfo {
-                    name: table_name.clone(),
-                    columns: columns
-                        .iter()
-                        .map(|c| NlpColumnInfo {
-                            name: c.name.clone(),
-                            is_pk: c.is_primary_key,
-                        })
-                        .collect(),
-                };
-
-                match nlp_model.suggest_from_tables(&[table_info]) {
-                    Ok(nlp_suggestions) => {
-                        for sugg in nlp_suggestions {
-                            // Add NLP suggestion with confidence
-                            let nlp_reason = format!(
-                                "[NLP] {} (confidence: {:.2}) - {}",
-                                sugg.suggestion_type, sugg.confidence, sugg.reason
-                            );
-                            suggestions.push(Suggestion {
-                                table: sugg.table_name,
-                                suggestion_type: format!("nlp_{}", sugg.suggestion_type),
-                                reason: nlp_reason,
-                            });
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("GLiNER suggestion failed for {}: {}", table_name, e);
-                    }
-                }
-            }
-
-            table_metadata.push(TableMetadata {
-                name: table_name,
-                columns,
-                row_count,
-                sample,
-            });
-        }
-
-        // For now, skip all suggestions - unreliable. Just return tables.
-        let help = format!(
-            "Review tables and columns above, then create your schema.\n\
-To generate YAML draft:\n\
-curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/json' -d '{{\n\
-  \"database\": \"{}\",\n\
-  \"schema_name\": \"my_graph\",\n\
-  \"nodes\": [{{\"table\": \"users\", \"label\": \"User\", \"node_id\": \"user_id\"}}],\n\
-  \"edges\": [{{\"table\": \"follows\", \"type\": \"FOLLOWS\", \"from_node\": \"User\", \"to_node\": \"User\", \"from_id\": \"follower_id\", \"to_id\": \"followed_id\"}}]\n}}'",
-            database
-        );
-
-        Ok(IntrospectResponse {
-            database: database.to_string(),
-            tables: table_metadata,
-            next_step: help,
-            suggestions,
-        })
-    }
-
-    /// Introspect a database with GLiNER-powered suggestions (stub when GLiNER not enabled)
-    #[cfg(not(feature = "gliner"))]
-    pub async fn introspect_with_nlp(
-        _client: &Client,
-        database: &str,
-    ) -> Result<IntrospectResponse, String> {
-        // When GLiNER is not enabled, just call regular introspect
-        Self::introspect(_client, database).await
     }
 
     /// List all tables in a database

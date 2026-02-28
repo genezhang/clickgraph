@@ -80,6 +80,7 @@ curl -X POST http://localhost:8080/query \
 - **[Advanced Patterns](Cypher-Advanced-Patterns.md)** - CASE, UNION, complex queries
 
 ### Schema Configuration
+- **[Schema Discovery](Schema-Discovery.md)** - LLM-powered automatic schema generation from ClickHouse metadata
 - **[Schema Basics](Schema-Basics.md)** - YAML schema configuration
 - **[Schema Configuration Advanced](Schema-Configuration-Advanced.md)** - Auto-discovery, FINAL, view parameters
 - **[Schema FK-Edge Patterns](Schema-FK-Edge-Patterns.md)** - Self-referencing FK for hierarchies (file systems, org charts)
