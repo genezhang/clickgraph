@@ -8,6 +8,10 @@
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
+
+/// Request timeout for LLM API calls (2 minutes)
+const LLM_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Supported API providers
 #[derive(Debug, Clone, PartialEq)]
@@ -164,6 +168,7 @@ async fn call_anthropic(
         .header("x-api-key", &config.api_key)
         .header("anthropic-version", "2023-06-01")
         .header("content-type", "application/json")
+        .timeout(LLM_REQUEST_TIMEOUT)
         .json(&request)
         .send()
         .await
@@ -219,6 +224,7 @@ async fn call_openai(
         .post(&config.api_url)
         .header("authorization", format!("Bearer {}", config.api_key))
         .header("content-type", "application/json")
+        .timeout(LLM_REQUEST_TIMEOUT)
         .json(&request)
         .send()
         .await

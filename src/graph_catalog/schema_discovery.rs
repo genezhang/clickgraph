@@ -6,11 +6,12 @@
 use clickhouse::Client;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use tokio::io::AsyncBufReadExt;
 
 fn validate_sql_identifier(identifier: &str) -> Result<String, String> {
-    // Only allow alphanumeric, underscore, and dot (for database.table notation)
-    let re = Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_.]*$").map_err(|e| e.to_string())?;
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9_.]*$").unwrap());
     if re.is_match(identifier) {
         Ok(identifier.to_string())
     } else {
@@ -214,7 +215,7 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
     async fn get_row_count(client: &Client, database: &str, table: &str) -> Result<u64, String> {
         let db = validate_sql_identifier(database)?;
         let tbl = validate_sql_identifier(table)?;
-        let query = format!("SELECT count() FROM {}.{}", db, tbl);
+        let query = format!("SELECT count() FROM `{}`.`{}`", db, tbl);
         let count: u64 = client
             .query(&query)
             .fetch_one()
@@ -255,8 +256,14 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
             return Ok(vec![]);
         }
 
-        // Query sample data using JSONEachRow format
-        let query = format!("SELECT {} FROM {}.{} LIMIT 3", columns.join(", "), db, tbl);
+        // Query sample data using JSONEachRow format (backtick-quote column names for reserved words)
+        let quoted_cols: Vec<String> = columns.iter().map(|c| format!("`{}`", c)).collect();
+        let query = format!(
+            "SELECT {} FROM `{}`.`{}` LIMIT 3",
+            quoted_cols.join(", "),
+            db,
+            tbl
+        );
 
         // Use fetch_bytes for JSONEachRow format
         let mut lines = client
@@ -273,7 +280,9 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
         {
             match serde_json::de::from_str::<serde_json::Value>(&line) {
                 Ok(value) => result.push(value),
-                Err(_) => {}
+                Err(e) => {
+                    log::warn!("Failed to parse sample row JSON: {}", e);
+                }
             }
         }
 
@@ -370,61 +379,6 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
         suggestions
     }
 
-    /// Analyze sample data values to detect patterns (emails, URLs - rare but useful)
-    fn analyze_sample_values(
-        table_name: &str,
-        columns: &[ColumnMetadata],
-        sample_rows: &[serde_json::Value],
-    ) -> Vec<Suggestion> {
-        let mut suggestions = Vec::new();
-
-        if sample_rows.is_empty() {
-            return suggestions;
-        }
-
-        for col in columns {
-            let values: Vec<&str> = sample_rows
-                .iter()
-                .filter_map(|row| row.get(&col.name).and_then(|v| v.as_str()))
-                .collect();
-
-            if values.is_empty() {
-                continue;
-            }
-
-            let sample = values.first().copied().unwrap_or("");
-
-            // Email pattern - rare but useful if found
-            if sample.contains('@') && sample.contains('.') && !sample.contains(' ') {
-                suggestions.push(Suggestion {
-                    table: table_name.to_string(),
-                    suggestion_type: "value_email".to_string(),
-                    reason: format!("column '{}' contains email: {}", col.name, sample),
-                });
-            }
-
-            // URL pattern - rare but useful if found
-            if sample.starts_with("http://") || sample.starts_with("https://") {
-                suggestions.push(Suggestion {
-                    table: table_name.to_string(),
-                    suggestion_type: "value_url".to_string(),
-                    reason: format!("column '{}' contains URL: {}", col.name, sample),
-                });
-            }
-
-            // UUID pattern - could indicate FK to UUID-based tables
-            if sample.len() == 36 && sample.matches('-').count() == 4 {
-                suggestions.push(Suggestion {
-                    table: table_name.to_string(),
-                    suggestion_type: "value_uuid".to_string(),
-                    reason: format!("column '{}' contains UUID", col.name),
-                });
-            }
-        }
-
-        suggestions
-    }
-
     /// Generate YAML draft from hints
     pub fn generate_draft(request: &DraftRequest) -> String {
         let auto_discover = request
@@ -448,7 +402,7 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
             if auto_discover {
                 yaml.push_str("      auto_discover_columns: true\n");
             }
-            yaml.push_str("\n");
+            yaml.push('\n');
         }
 
         // Regular edges

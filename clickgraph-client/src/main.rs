@@ -22,7 +22,7 @@ fn print_usage() {
     println!("  :schemas         - List loaded schemas");
     println!("  :load <file>     - Load schema from YAML file");
     println!("  :help            - Show this help");
-    println!("");
+    println!();
     println!("Examples:");
     println!("  :discover mydb");
     println!("  :introspect lineage");
@@ -119,7 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         println!("  {}: {} nodes, {} edges", name, nodes, edges);
                                     }
                                 }
-                                println!("");
+                                println!();
                             }
                             Err(e) => {
                                 eprintln!("Error: {}", e);
@@ -209,10 +209,10 @@ fn print_introspect_result(response: &Value) {
                     print!(" [PK: {}]", pk_cols.join(", "));
                 }
             }
-            println!("");
+            println!();
         }
     }
-    println!("");
+    println!();
 
     if let Some(suggestions) = response.get("suggestions").and_then(|s| s.as_array()) {
         if !suggestions.is_empty() {
@@ -230,7 +230,7 @@ fn print_introspect_result(response: &Value) {
                     println!("    - [{}] {}", stype, reason);
                 }
             }
-            println!("");
+            println!();
         }
     }
 }
@@ -342,11 +342,14 @@ async fn run_discover(
         let result = llm::call_llm(client, &llm_config, system, user).await?;
         let yaml = llm::extract_yaml(&result);
 
-        if prompts.len() > 1 {
-            all_yaml.push_str(&format!("# --- Batch {} ---\n", i + 1));
+        if i == 0 {
+            // First batch: use the full YAML (includes name/version/graph_schema wrapper)
+            all_yaml.push_str(&yaml);
+            all_yaml.push('\n');
+        } else {
+            // Continuation batches: merge nodes/edges into the first batch's YAML
+            all_yaml = merge_batch_yaml(&all_yaml, &yaml);
         }
-        all_yaml.push_str(&yaml);
-        all_yaml.push('\n');
     }
 
     println!("\n=== Generated Schema YAML ===\n");
@@ -409,6 +412,72 @@ async fn run_discover(
     }
 
     Ok(())
+}
+
+/// Merge continuation batch YAML into the base YAML.
+/// Extracts nodes/edges sections from the continuation and appends them
+/// to the corresponding sections in the base YAML.
+fn merge_batch_yaml(base: &str, continuation: &str) -> String {
+    // Extract nodes and edges entries from the continuation batch.
+    // The continuation should contain bare `nodes:` and `edges:` arrays
+    // (or partial graph_schema content). We find those sections and append
+    // their items to the base YAML.
+
+    let cont_nodes = extract_yaml_list_items(continuation, "nodes:");
+    let cont_edges = extract_yaml_list_items(continuation, "edges:");
+
+    let mut result = base.trim_end().to_string();
+
+    // Find the last occurrence of "edges:" or "nodes:" to know where to insert.
+    // Strategy: append nodes before edges section, append edges at the end.
+    if !cont_nodes.is_empty() {
+        // Find the edges: section in base and insert nodes before it
+        if let Some(edges_pos) = result.find("\n  edges:") {
+            result.insert_str(edges_pos, &format!("\n{}", cont_nodes));
+        } else if let Some(edges_pos) = result.find("\nedges:") {
+            result.insert_str(edges_pos, &format!("\n{}", cont_nodes));
+        } else {
+            // No edges section — just append nodes at the end
+            result.push('\n');
+            result.push_str(&cont_nodes);
+        }
+    }
+
+    if !cont_edges.is_empty() {
+        // Append edges at the very end
+        result.push('\n');
+        result.push_str(&cont_edges);
+    }
+
+    result.push('\n');
+    result
+}
+
+/// Extract the list items (lines starting with "    - " or "  - ") under a given section header.
+fn extract_yaml_list_items(yaml: &str, section: &str) -> String {
+    let mut in_section = false;
+    let mut items = String::new();
+
+    for line in yaml.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("nodes:") || trimmed.starts_with("edges:") {
+            in_section = trimmed.starts_with(section.trim());
+            continue;
+        }
+        // Stop if we hit another top-level key
+        if !line.starts_with(' ') && !line.is_empty() && !line.starts_with('#') {
+            if in_section {
+                break;
+            }
+            continue;
+        }
+        if in_section {
+            items.push_str(line);
+            items.push('\n');
+        }
+    }
+
+    items.trim_end().to_string()
 }
 
 async fn load_schema_yaml(
@@ -657,22 +726,43 @@ async fn run_design_wizard(
 }
 
 fn to_label(table: &str) -> String {
-    // Simple singularization: users -> User, orders -> Order
-    let mut label = table.trim_end_matches('s').to_string();
-    // Handle special cases
-    if label == "people" {
-        label = "Person".to_string();
-    } else if label == "analysis" {
-        // keep as is
-    } else if label != table {
-        // Capitalize first letter
-        if let Some(c) = label.get(0..1) {
-            label = c.to_uppercase() + &label[1..];
-        }
+    // Singularize table name → PascalCase label
+    // Only strip a single trailing 's' (not all), and handle common English patterns
+    let singular = if table == "people" {
+        "person".to_string()
+    } else if table.ends_with("ies") && table.len() > 3 {
+        // categories -> category, companies -> company
+        format!("{}y", &table[..table.len() - 3])
+    } else if table.ends_with("ses") || table.ends_with("xes") || table.ends_with("zes") {
+        // addresses -> address, boxes -> box, quizzes -> quiz (approximate)
+        table[..table.len() - 2].to_string()
+    } else if table.ends_with('s')
+        && !table.ends_with("ss")
+        && !table.ends_with("us")
+        && !table.ends_with("is")
+        && table.len() > 2
+    {
+        // users -> user, orders -> order
+        // but: boss (ends with ss) stays boss, status (ends with us) stays status
+        table[..table.len() - 1].to_string()
     } else {
-        label = table.to_string();
-    }
-    label
+        table.to_string()
+    };
+
+    // PascalCase: split on underscores and capitalize each segment
+    singular
+        .split('_')
+        .map(|seg| {
+            let mut c = seg.chars();
+            match c.next() {
+                None => String::new(),
+                Some(first) => {
+                    let upper: String = first.to_uppercase().collect();
+                    upper + c.as_str()
+                }
+            }
+        })
+        .collect()
 }
 
 async fn introspect_database(client: &Client, url: &str, database: &str) -> Result<Value, String> {

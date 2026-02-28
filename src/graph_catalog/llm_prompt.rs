@@ -100,15 +100,23 @@ pub fn format_discovery_prompt(
 
         for (i, chunk) in chunks.iter().enumerate() {
             let batch_header = if total_batches > 1 {
+                let continuation = if i > 0 {
+                    "\nIMPORTANT: This is a continuation batch. Return ONLY the nodes and edges \
+                     arrays (no name/version/description/graph_schema wrapper). Example:\n\
+                     nodes:\n  - label: Foo\n    ...\nedges:\n  - type: BAR\n    ...\n"
+                } else {
+                    ""
+                };
                 Some(format!(
                     "Batch {}/{} — {} tables in this batch, {} total in database.\n\
                      Cross-reference: tables from other batches may be referenced as FK targets.\n\
                      Use the table names listed below; assume any unrecognized FK target \
-                     is defined in another batch.",
+                     is defined in another batch.{}",
                     i + 1,
                     total_batches,
                     chunk.len(),
-                    tables.len()
+                    tables.len(),
+                    continuation
                 ))
             } else {
                 None
