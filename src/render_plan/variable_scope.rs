@@ -916,9 +916,31 @@ pub fn rewrite_render_expr(expr: &RenderExpr, scope: &VariableScope) -> RenderEx
             }
             expr.clone()
         }
+        // Raw SQL — rewrite CTE-backed alias references (e.g., "liker.id" → "cte.p5_liker_id")
+        // This handles NOT EXISTS subqueries generated from pattern expressions like
+        // not((liker)-[:KNOWS]-(person)) where liker/person are CTE-backed after WITH barriers.
+        RenderExpr::Raw(sql) => {
+            let mut new_sql = sql.clone();
+            for (alias, cte_info) in &scope.cte_variables {
+                // Replace alias.property patterns with CTE column references
+                let from_alias = cte_info.effective_from_alias();
+                for (prop, cte_col) in &cte_info.property_mapping {
+                    let pattern = format!("{}.{}", alias, prop);
+                    if new_sql.contains(&pattern) {
+                        let replacement = format!("{}.{}", from_alias, cte_col);
+                        log::info!("🔧 Raw SQL rewrite: '{}' → '{}'", pattern, replacement);
+                        new_sql = new_sql.replace(&pattern, &replacement);
+                    }
+                }
+            }
+            if new_sql != *sql {
+                RenderExpr::Raw(new_sql)
+            } else {
+                expr.clone()
+            }
+        }
         // Leaf nodes — no rewriting needed
         RenderExpr::Literal(_)
-        | RenderExpr::Raw(_)
         | RenderExpr::Star
         | RenderExpr::Parameter(_)
         | RenderExpr::InSubquery(_)

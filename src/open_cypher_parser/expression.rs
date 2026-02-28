@@ -936,6 +936,8 @@ fn parse_property_name(input: &str) -> IResult<&str, &str> {
 }
 
 pub fn parse_property_access(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    let original_input = input;
+
     // First part: the base (e.g., "src" or "p")
     let (mut input, base_str) = common::parse_alphanumeric_with_underscore(input)?;
 
@@ -950,55 +952,94 @@ pub fn parse_property_access(input: &'_ str) -> IResult<&'_ str, Expression<'_>>
         _ => return Err(nom::Err::Error(Error::new(input, ErrorKind::Float))),
     };
 
-    let current_expr = if first_key == "*" {
-        Expression::PropertyAccessExp(PropertyAccess {
-            base: base_expr,
-            key: "*",
-        })
-    } else {
-        match parse_literal_or_variable_expression(first_key) {
-            Ok((_, Expression::Variable(key))) => Expression::PropertyAccessExp(PropertyAccess {
+    if first_key == "*" {
+        return Ok((
+            input,
+            Expression::PropertyAccessExp(PropertyAccess {
                 base: base_expr,
-                key,
+                key: "*",
             }),
-            _ => return Err(nom::Err::Error(Error::new(input, ErrorKind::Float))),
-        }
-    };
-
-    // Try to parse additional chained properties: .property2.property3...
-    // Note: Currently only supports one additional property due to PropertyAccess limitations
-    if let Ok((new_input, next_key)) = preceded(char('.'), parse_property_name).parse(input) {
-        // Check if this is a temporal accessor - if so, convert to function call
-        let temporal_accessors = [
-            "year",
-            "month",
-            "day",
-            "hour",
-            "minute",
-            "second",
-            "millisecond",
-            "microsecond",
-            "nanosecond",
-        ];
-
-        if temporal_accessors.contains(&next_key) {
-            // Convert current_expr.temporal_accessor to temporal_accessor(current_expr)
-            return Ok((
-                new_input,
-                Expression::FunctionCallExp(crate::open_cypher_parser::ast::FunctionCall {
-                    name: next_key.to_string(),
-                    args: vec![current_expr],
-                }),
-            ));
-        }
-
-        // Not a temporal accessor - continue building property chain
-        // But we need PropertyAccess to support Expression as base, not just &str
-        // For now, we'll stop chaining after first property if not temporal
-        input = new_input;
+        ));
     }
 
-    Ok((input, current_expr))
+    // Greedily parse additional chained properties: .property2.property3...
+    // Builds a compound key like "msg.id" from "latestLike.msg.id"
+    let temporal_accessors = [
+        "year",
+        "month",
+        "day",
+        "hour",
+        "minute",
+        "second",
+        "millisecond",
+        "microsecond",
+        "nanosecond",
+    ];
+
+    // Collect all key segments: first_key, then any additional .segment chains
+    let mut segments: Vec<&str> = vec![first_key];
+    let mut compound_input = input;
+
+    loop {
+        match preceded(char('.'), parse_property_name).parse(compound_input) {
+            Ok((new_input, next_key)) => {
+                if temporal_accessors.contains(&next_key) {
+                    // Temporal accessor ends the chain — build expression from segments so far
+                    let inner_expr =
+                        build_property_access_from_segments(base_expr, &segments, original_input)?;
+                    return Ok((
+                        new_input,
+                        Expression::FunctionCallExp(crate::open_cypher_parser::ast::FunctionCall {
+                            name: next_key.to_string(),
+                            args: vec![inner_expr],
+                        }),
+                    ));
+                }
+                // Not temporal — add segment and continue
+                segments.push(next_key);
+                compound_input = new_input;
+            }
+            Err(_) => break,
+        }
+    }
+
+    let expr = build_property_access_from_segments(base_expr, &segments, original_input)?;
+    let final_input = if segments.len() > 1 {
+        compound_input
+    } else {
+        input
+    };
+    Ok((final_input, expr))
+}
+
+/// Build a PropertyAccessExp from base and key segments.
+/// For single segment ["id"], key = "id".
+/// For multiple segments ["msg", "id"], key = "msg.id" (compound key as contiguous slice).
+fn build_property_access_from_segments<'a>(
+    base: &'a str,
+    segments: &[&'a str],
+    original_input: &'a str,
+) -> Result<Expression<'a>, nom::Err<Error<&'a str>>> {
+    let key = if segments.len() == 1 {
+        segments[0]
+    } else {
+        // Compute compound key as a contiguous slice from original_input
+        // first segment starts at some offset, last segment ends at some offset
+        let first = segments[0];
+        let last = segments[segments.len() - 1];
+        let first_start = first.as_ptr() as usize - original_input.as_ptr() as usize;
+        let last_end = last.as_ptr() as usize + last.len() - original_input.as_ptr() as usize;
+        &original_input[first_start..last_end]
+    };
+    match parse_literal_or_variable_expression(key) {
+        Ok((_, Expression::Variable(key))) => {
+            Ok(Expression::PropertyAccessExp(PropertyAccess { base, key }))
+        }
+        _ => Err(nom::Err::Error(Error::new(
+            original_input,
+            ErrorKind::Float,
+        ))),
+    }
 }
 
 /// Helper function to determine if a character is valid in a parameter name.
@@ -1355,6 +1396,51 @@ mod tests {
             key: "name",
         });
         assert_eq!(&expr, &expected);
+    }
+
+    #[test]
+    fn test_parse_chained_property_access() {
+        // latestLike.msg.id → PropertyAccess { base: "latestLike", key: "msg.id" }
+        let (rem, expr) = parse_property_access("latestLike.msg.id").unwrap();
+        assert_eq!(rem, "");
+        let expected = Expression::PropertyAccessExp(PropertyAccess {
+            base: "latestLike",
+            key: "msg.id",
+        });
+        assert_eq!(&expr, &expected);
+    }
+
+    #[test]
+    fn test_parse_chained_property_access_with_remainder() {
+        // latestLike.msg.id + 1 → key = "msg.id", remainder = " + 1"
+        let (rem, expr) = parse_property_access("latestLike.msg.id + 1").unwrap();
+        assert_eq!(rem, " + 1");
+        let expected = Expression::PropertyAccessExp(PropertyAccess {
+            base: "latestLike",
+            key: "msg.id",
+        });
+        assert_eq!(&expr, &expected);
+    }
+
+    #[test]
+    fn test_parse_chained_property_with_temporal() {
+        // latestLike.msg.creationDate.year → year(latestLike.msg.creationDate)
+        let (rem, expr) = parse_property_access("latestLike.msg.creationDate.year").unwrap();
+        assert_eq!(rem, "");
+        match expr {
+            Expression::FunctionCallExp(fc) => {
+                assert_eq!(fc.name, "year");
+                assert_eq!(fc.args.len(), 1);
+                match &fc.args[0] {
+                    Expression::PropertyAccessExp(pa) => {
+                        assert_eq!(pa.base, "latestLike");
+                        assert_eq!(pa.key, "msg.creationDate");
+                    }
+                    other => panic!("Expected PropertyAccessExp, got {:?}", other),
+                }
+            }
+            other => panic!("Expected FunctionCallExp, got {:?}", other),
+        }
     }
 
     // fn_call + operator
