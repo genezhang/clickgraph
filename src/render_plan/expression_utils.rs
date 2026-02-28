@@ -297,11 +297,15 @@ pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
                 || references_alias(&reduce.list, alias)
                 || references_alias(&reduce.expression, alias)
         }
+        // Raw expressions may contain alias references as text (e.g., "(country.type = 'Country')")
+        RenderExpr::Raw(raw) => {
+            raw.contains(&format!("{}.", alias)) || raw.contains(&format!("{} ", alias))
+        }
+        // TableAlias may directly reference an alias
+        RenderExpr::TableAlias(ta) => ta.0 == alias,
         // Simple expressions that don't contain aliases
         RenderExpr::Literal(_)
-        | RenderExpr::Raw(_)
         | RenderExpr::Star
-        | RenderExpr::TableAlias(_)
         | RenderExpr::ColumnAlias(_)
         | RenderExpr::Column(_)
         | RenderExpr::Parameter(_) => false,

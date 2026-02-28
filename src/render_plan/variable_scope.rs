@@ -30,6 +30,9 @@ pub struct CteVariableInfo {
     /// Override for FROM alias (used by VLP CTEs where the FROM alias is "t"
     /// but `extract_from_alias_from_cte_name` can't derive it from the CTE name)
     pub from_alias_override: Option<String>,
+    /// Keys from map-typed expressions (e.g., {score: x, id: y}).
+    /// When set, `alias.key` resolves to `cte_col['key']` (ArraySubscript).
+    pub map_keys: Option<Vec<String>>,
 }
 
 impl CteVariableInfo {
@@ -243,9 +246,18 @@ impl<'a> VariableScope<'a> {
                 property_mapping: property_mapping.clone(),
                 labels,
                 from_alias_override: None,
+                map_keys: None,
             },
         );
         self.plan = new_plan;
+    }
+
+    /// Register map keys for a CTE variable (e.g., from `collect({score: x})[0] AS top`).
+    /// After this, `top.score` resolves to `cte_alias.top['score']`.
+    pub fn register_map_keys(&mut self, alias: &str, keys: Vec<String>) {
+        if let Some(info) = self.cte_variables.get_mut(alias) {
+            info.map_keys = Some(keys);
+        }
     }
 
     /// Update the plan reference (for when the plan tree changes between iterations).
@@ -268,6 +280,24 @@ impl<'a> VariableScope<'a> {
         self.cte_variables.get(alias)
     }
 
+    pub fn get_cte_info_by_alias_or_name(&self, alias: &str) -> Option<&CteVariableInfo> {
+        if let Some(info) = self.cte_variables.get(alias) {
+            return Some(info);
+        }
+        let mut best: Option<&CteVariableInfo> = None;
+        for info in self.cte_variables.values() {
+            if info.cte_name == alias {
+                if info.map_keys.is_some() {
+                    return Some(info);
+                }
+                if best.is_none() {
+                    best = Some(info);
+                }
+            }
+        }
+        best
+    }
+
     /// Get a clone of all accumulated CTE variables.
     /// Used for rebuilding scope after plan tree mutation.
     pub fn cte_variables(&self) -> &HashMap<String, CteVariableInfo> {
@@ -282,6 +312,58 @@ use super::render_expr::{
 };
 use super::{FilterItems, GroupByExpressions, OrderByItems, RenderPlan, SelectItem, UnionItems};
 use crate::graph_catalog::expression_parser::PropertyValue;
+
+/// Extract map keys from a RenderExpr that produces a map-typed value.
+pub fn extract_map_keys_from_expr(expr: &RenderExpr) -> Option<Vec<String>> {
+    match expr {
+        RenderExpr::MapLiteral(entries) => Some(entries.iter().map(|(k, _)| k.clone()).collect()),
+        RenderExpr::ArraySubscript { array, .. } => extract_map_keys_from_expr(array),
+        RenderExpr::AggregateFnCall(agg)
+            if agg.name.eq_ignore_ascii_case("collect") && agg.args.len() == 1 =>
+        {
+            extract_map_keys_from_expr(&agg.args[0])
+        }
+        RenderExpr::ScalarFnCall(sf)
+            if sf.name.eq_ignore_ascii_case("head") && sf.args.len() == 1 =>
+        {
+            extract_map_keys_from_expr(&sf.args[0])
+        }
+        _ => None,
+    }
+}
+
+/// Try to resolve a property access as a map key access.
+/// Returns `Some(ArraySubscript)` if `alias` is a CTE variable with map_keys containing `property_name`.
+/// The `cte_variables` map is used to reverse-lookup the Cypher alias for the CTE column name.
+fn try_resolve_map_access(
+    alias: &str,
+    property_name: &str,
+    scope: &VariableScope,
+) -> Option<RenderExpr> {
+    let cte_info = scope.get_cte_info_by_alias_or_name(alias)?;
+    let keys = cte_info.map_keys.as_ref()?;
+    if !keys.iter().any(|k| k == property_name) {
+        return None;
+    }
+    let from_alias = cte_info.effective_from_alias();
+    // Reverse-lookup the Cypher alias key that maps to this CteVariableInfo.
+    // Uses pointer identity because `cte_info` is a reference into `scope.cte_variables`.
+    let col_name = scope
+        .cte_variables
+        .iter()
+        .find(|(_, info)| std::ptr::eq(*info, cte_info))
+        .map(|(cypher_alias, _)| cypher_alias.clone())
+        .unwrap_or_else(|| alias.to_string());
+    Some(RenderExpr::ArraySubscript {
+        array: Box::new(RenderExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: TableAlias(from_alias),
+            column: PropertyValue::Column(col_name),
+        })),
+        index: Box::new(RenderExpr::Literal(super::render_expr::Literal::String(
+            property_name.to_string(),
+        ))),
+    })
+}
 
 /// Rewrite all expressions in a RenderPlan using scope-based resolution.
 /// CTE-scoped variables get their table_alias rewritten to the CTE name
@@ -477,8 +559,18 @@ fn rewrite_bare_variables(expr: &RenderExpr, scope: &VariableScope) -> RenderExp
                 }
             }
         }
-        // Leave other PropertyAccessExp untouched — fix_orphan_table_aliases handles these
-        RenderExpr::PropertyAccessExp(_) => expr.clone(),
+        // Check for map property access on other PropertyAccessExp
+        RenderExpr::PropertyAccessExp(pa) => {
+            let alias = &pa.table_alias.0;
+            let property_name = match &pa.column {
+                PropertyValue::Column(col) => col.as_str(),
+                PropertyValue::Expression(_) => return expr.clone(),
+            };
+            if let Some(map_expr) = try_resolve_map_access(alias, property_name, scope) {
+                return map_expr;
+            }
+            expr.clone()
+        }
         // Recurse into compound expressions
         RenderExpr::OperatorApplicationExp(oa) => {
             let rewritten_operands: Vec<RenderExpr> = oa
@@ -689,7 +781,12 @@ pub fn rewrite_render_expr(expr: &RenderExpr, scope: &VariableScope) -> RenderEx
                         column: PropertyValue::Column(db_col),
                     })
                 }
-                ResolvedProperty::Unresolved => expr.clone(),
+                ResolvedProperty::Unresolved => {
+                    if let Some(map_expr) = try_resolve_map_access(alias, property_name, scope) {
+                        return map_expr;
+                    }
+                    expr.clone()
+                }
             }
         }
         RenderExpr::OperatorApplicationExp(oa) => {
@@ -910,7 +1007,7 @@ fn fix_orphan_table_aliases_impl(
         missing_ctes.sort();
         for (cte_name, from_alias) in &missing_ctes {
             log::info!(
-                "🔧 fix_orphan_table_aliases: Adding CROSS JOIN for missing CTE {} AS {}",
+                "fix_orphan_table_aliases: Adding CROSS JOIN for missing CTE {} AS {}",
                 cte_name,
                 from_alias
             );
@@ -949,7 +1046,7 @@ fn fix_orphan_table_aliases_impl(
     }
 
     log::info!(
-        "🔧 fix_orphan_table_aliases: Fixing {} orphaned aliases: {:?}",
+        "fix_orphan_table_aliases: Fixing {} orphaned aliases: {:?}",
         alias_replacements.len(),
         alias_replacements
     );
@@ -1140,7 +1237,7 @@ fn rewrite_expr_cte_columns(
                         // Only rewrite if column differs from CTE column name
                         if col_name != cte_col.as_str() {
                             log::debug!(
-                                "🔧 rewrite_cte_property_columns: {}.{} → {}.{}",
+                                "rewrite_cte_property_columns: {}.{} -> {}.{}",
                                 pa.table_alias.0,
                                 col_name,
                                 pa.table_alias.0,
@@ -1334,6 +1431,7 @@ mod tests {
             ]),
             labels: vec!["Person".to_string()],
             from_alias_override: None,
+            map_keys: None,
         };
         let cloned = info.clone();
         assert_eq!(cloned.cte_name, "cte_0");
