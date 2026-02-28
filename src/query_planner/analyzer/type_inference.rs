@@ -664,6 +664,35 @@ impl TypeInference {
             }
 
             LogicalPlan::GraphNode(node) => {
+                // Ensure explicit GraphNode labels are visible in plan_ctx.
+                // After a WITH barrier, plan_ctx is a fresh child scope. GraphNode.label
+                // from the inner pattern (e.g., (city:City)) may not be in plan_ctx,
+                // causing infer_pattern_types to see None and mis-infer the label.
+                if let Some(ref label) = node.label {
+                    if let Ok(table_ctx) = plan_ctx.get_mut_table_ctx(&node.alias) {
+                        if table_ctx.get_label_opt().is_none() {
+                            log::info!(
+                                "🏷️ TypeInference: Pushing explicit label '{}' for '{}' from GraphNode into plan_ctx",
+                                label,
+                                node.alias
+                            );
+                            table_ctx.set_labels(Some(vec![label.clone()]));
+                        }
+                    } else {
+                        // No entry in plan_ctx — create one with the explicit label
+                        use crate::query_planner::plan_ctx::TableCtx;
+                        plan_ctx.insert_table_ctx(
+                            node.alias.clone(),
+                            TableCtx::build(
+                                node.alias.clone(),
+                                Some(vec![label.clone()]),
+                                vec![],
+                                false,
+                                false,
+                            ),
+                        );
+                    }
+                }
                 // Check if this node needs ViewScan creation from inferred label
                 if node.label.is_none() {
                     // Try to get inferred label from plan_ctx

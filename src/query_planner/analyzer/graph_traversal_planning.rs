@@ -721,10 +721,17 @@ impl GraphTRaversalPlanning {
             let rel_cte_name = if let Some(labels) = &graph_rel.labels {
                 if labels.len() > 1 {
                     // Multi-variant relationship - use consistent naming with cte_extraction.rs
-                    format!(
-                        "rel_{}_{}",
-                        graph_rel.left_connection, graph_rel.right_connection
-                    )
+                    if graph_rel.variable_length.is_some() {
+                        format!(
+                            "vlp_multi_type_{}_{}",
+                            graph_rel.left_connection, graph_rel.right_connection
+                        )
+                    } else {
+                        format!(
+                            "rel_{}_{}",
+                            graph_rel.left_connection, graph_rel.right_connection
+                        )
+                    }
                 } else {
                     // Single relationship - use label-based naming
                     format!(
