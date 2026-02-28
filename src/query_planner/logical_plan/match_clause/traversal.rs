@@ -181,8 +181,15 @@ fn traverse_connected_pattern_with_mode<'a>(
             .unwrap_or_else(generate_id);
         let end_node_label_from_ast = end_node_ref.first_label().map(|val| val.to_string());
 
+        log::debug!(
+            "🔍 end_node_label resolution: alias='{}', from_ast={:?}, in_plan_ctx={}",
+            end_node_alias,
+            end_node_label_from_ast,
+            plan_ctx.get_mut_table_ctx_opt(&end_node_alias).is_some()
+        );
+
         // CRITICAL FIX: Same label resolution order as start_node
-        let end_node_label = if end_node_label_from_ast.is_some() {
+        let mut end_node_label = if end_node_label_from_ast.is_some() {
             end_node_label_from_ast
         } else if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&end_node_alias) {
             if let Some(label) = table_ctx.get_label_opt() {
@@ -209,7 +216,7 @@ fn traverse_connected_pattern_with_mode<'a>(
         // Handle anonymous edge patterns: [] (no type specified)
         // Expand relationship types using composite key index from schema
         // Supports multiple relationships with same type name differentiated by from/to nodes
-        let rel_labels = match rel.labels.as_ref() {
+        let mut rel_labels = match rel.labels.as_ref() {
             Some(labels) => {
                 // Explicit labels provided: [:TYPE1|TYPE2]
                 // Look up relationship types using composite key index (O(1) lookup)
@@ -223,7 +230,6 @@ fn traverse_connected_pattern_with_mode<'a>(
                     compute_rel_node_labels(&rel.direction, &start_node_label, &end_node_label);
                 let from_label = from_label_for_expansion.as_deref();
                 let to_label = to_label_for_expansion.as_deref();
-
                 for label in labels.iter() {
                     let variants =
                         graph_schema.expand_generic_relationship_type(label, from_label, to_label);
@@ -237,7 +243,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 }
 
                 // Deduplicate in case of overlapping expansions
-                let unique_labels: Vec<String> = {
+                let mut unique_labels: Vec<String> = {
                     let mut seen = std::collections::HashSet::new();
                     expanded_labels
                         .into_iter()
@@ -357,62 +363,99 @@ fn traverse_connected_pattern_with_mode<'a>(
                     log::info!("  CTE will include node properties for path query support");
 
                     // Extract node types for each relationship from schema
-                    // Filter to composite keys ONLY to avoid duplicates (schema has both forms)
+                    // Composite keys (e.g., IS_LOCATED_IN::Comment::Country) are all kept as
+                    // each represents a distinct type variant. Simple keys are only kept if no
+                    // composite key with the same base type exists (avoids double-counting).
                     let mut relationship_node_types: Vec<(String, String, String)> = {
                         let graph_schema = plan_ctx.schema();
 
-                        // First: get unique base types from rel_labels (could contain both LIKED and LIKED::User::Post)
-                        let mut seen_base_types = std::collections::HashSet::new();
-                        let unique_rel_types: Vec<&String> = types
-                            .iter()
-                            .filter(|rel_type| {
-                                let base_type = rel_type.split("::").next().unwrap_or(rel_type);
-                                seen_base_types.insert(base_type.to_string())
-                            })
+                        // Separate composite and simple keys
+                        let mut composite_keys: Vec<&String> = Vec::new();
+                        let mut simple_keys: Vec<&String> = Vec::new();
+                        let mut composite_base_types = std::collections::HashSet::<String>::new();
+
+                        for rel_type in types {
+                            if rel_type.contains("::") {
+                                let base = rel_type.split("::").next().unwrap_or(rel_type);
+                                composite_base_types.insert(base.to_string());
+                                composite_keys.push(rel_type);
+                            } else {
+                                simple_keys.push(rel_type);
+                            }
+                        }
+
+                        // Keep all composite keys + simple keys not covered by composites
+                        let unique_rel_types: Vec<&String> = composite_keys
+                            .into_iter()
+                            .chain(
+                                simple_keys
+                                    .into_iter()
+                                    .filter(|k| !composite_base_types.contains(k.as_str())),
+                            )
                             .collect();
 
                         log::debug!(
-                            "  Filtered {} rel_labels to {} unique base types",
+                            "  Filtered {} rel_labels to {} unique types ({} composite, rest simple)",
                             types.len(),
-                            unique_rel_types.len()
+                            unique_rel_types.len(),
+                            composite_base_types.len()
                         );
 
-                        // Then: look up each unique type (prefer composite key if exists)
+                        // Look up each type and expand node types
                         unique_rel_types
                             .iter()
                             .filter_map(|rel_type| {
                                 // Try composite key first
-                                let rel_schema = if rel_type.contains("::") {
-                                    graph_schema.get_relationships_schema_opt(rel_type)
-                                } else {
-                                    // Simple key: try to find composite key by looking up all relationships
-                                    let base_type = rel_type.as_str();
+                                let rel_schemas: Vec<_> = if rel_type.contains("::") {
                                     graph_schema
+                                        .get_relationships_schema_opt(rel_type)
+                                        .into_iter()
+                                        .collect()
+                                } else {
+                                    // Simple key: collect ALL matching composite keys
+                                    let base_type = rel_type.as_str();
+                                    let matches: Vec<_> = graph_schema
                                         .get_relationships_schemas()
                                         .iter()
-                                        .find(|(key, _schema)| {
+                                        .filter(|(key, _)| {
                                             key.starts_with(base_type) && key.contains("::")
                                         })
                                         .map(|(_, schema)| schema)
-                                        .or_else(|| {
-                                            graph_schema.get_relationships_schema_opt(rel_type)
-                                        })
+                                        .collect();
+                                    if matches.is_empty() {
+                                        graph_schema
+                                            .get_relationships_schema_opt(rel_type)
+                                            .into_iter()
+                                            .collect()
+                                    } else {
+                                        matches
+                                    }
                                 };
 
-                                rel_schema.map(|schema| {
-                                    let base_type =
-                                        rel_type.split("::").next().unwrap_or(rel_type).to_string();
-                                    let froms = graph_schema.expand_node_type(&schema.from_node);
-                                    let tos = graph_schema.expand_node_type(&schema.to_node);
-                                    froms
+                                if rel_schemas.is_empty() {
+                                    return None;
+                                }
+
+                                let base_type =
+                                    rel_type.split("::").next().unwrap_or(rel_type).to_string();
+                                Some(
+                                    rel_schemas
                                         .into_iter()
-                                        .flat_map(|f| {
+                                        .flat_map(|schema| {
+                                            let froms =
+                                                graph_schema.expand_node_type(&schema.from_node);
+                                            let tos =
+                                                graph_schema.expand_node_type(&schema.to_node);
                                             let bt = base_type.clone();
-                                            tos.iter()
-                                                .map(move |t| (bt.clone(), f.clone(), t.clone()))
+                                            froms.into_iter().flat_map(move |f| {
+                                                let bt2 = bt.clone();
+                                                let tos2 = tos.clone();
+                                                tos2.into_iter()
+                                                    .map(move |t| (bt2.clone(), f.clone(), t))
+                                            })
                                         })
-                                        .collect::<Vec<_>>()
-                                })
+                                        .collect::<Vec<_>>(),
+                                )
                             })
                             .flatten()
                             .collect()
@@ -478,6 +521,84 @@ fn traverse_connected_pattern_with_mode<'a>(
                             relationship_node_types.len(),
                             original_count - relationship_node_types.len()
                         );
+                    }
+
+                    // === SUPERTYPE FILTERING (remove supertypes when all subtypes present) ===
+                    // When a polymorphic supertype (e.g., Message = Post|Comment) is present
+                    // AND all its concrete subtypes are also present, REMOVE the supertype.
+                    // The CTE generation creates UNION branches for each concrete subtype;
+                    // including the supertype would double-count rows (the supertype view
+                    // already unions the concrete tables).
+                    {
+                        let graph_schema = plan_ctx.schema();
+                        let from_labels: std::collections::HashSet<String> =
+                            relationship_node_types
+                                .iter()
+                                .map(|(_, f, _)| f.clone())
+                                .collect();
+                        let to_labels: std::collections::HashSet<String> = relationship_node_types
+                            .iter()
+                            .map(|(_, _, t)| t.clone())
+                            .collect();
+                        let mut from_supertypes_to_remove: std::collections::HashSet<String> =
+                            std::collections::HashSet::new();
+                        let mut to_supertypes_to_remove: std::collections::HashSet<String> =
+                            std::collections::HashSet::new();
+                        for from_label in &from_labels {
+                            if let Some(ns) = graph_schema.node_schema_opt(from_label) {
+                                if let Some(ref lv) = ns.label_value {
+                                    let subtypes: Vec<&str> = lv.split('|').collect();
+                                    if subtypes.len() >= 2
+                                        && subtypes.iter().all(|st| from_labels.contains(*st))
+                                    {
+                                        // All subtypes present → remove the supertype
+                                        from_supertypes_to_remove.insert(from_label.clone());
+                                    }
+                                }
+                            }
+                        }
+                        for to_label in &to_labels {
+                            if let Some(ns) = graph_schema.node_schema_opt(to_label) {
+                                if let Some(ref lv) = ns.label_value {
+                                    let subtypes: Vec<&str> = lv.split('|').collect();
+                                    if subtypes.len() >= 2
+                                        && subtypes.iter().all(|st| to_labels.contains(*st))
+                                    {
+                                        to_supertypes_to_remove.insert(to_label.clone());
+                                    }
+                                }
+                            }
+                        }
+                        if !from_supertypes_to_remove.is_empty()
+                            || !to_supertypes_to_remove.is_empty()
+                        {
+                            let original_count = relationship_node_types.len();
+                            relationship_node_types
+                                .retain(|(_, from_label, to_label)| {
+                                    if from_supertypes_to_remove.contains(from_label) {
+                                        log::info!(
+                                        "  ✂️  Supertype filtering: removing from_label='{}' (supertype with all subtypes present)",
+                                        from_label
+                                    );
+                                        return false;
+                                    }
+                                    if to_supertypes_to_remove.contains(to_label) {
+                                        log::info!(
+                                        "  ✂️  Supertype filtering: removing to_label='{}' (supertype with all subtypes present)",
+                                        to_label
+                                    );
+                                        return false;
+                                    }
+                                    true
+                                });
+                            if relationship_node_types.len() < original_count {
+                                log::info!(
+                                    "🎯 Supertype filtering: {} → {} combinations (removed supertypes, kept concrete subtypes)",
+                                    original_count,
+                                    relationship_node_types.len()
+                                );
+                            }
+                        }
                     }
 
                     if relationship_node_types.is_empty() {
@@ -552,10 +673,20 @@ fn traverse_connected_pattern_with_mode<'a>(
                             (scan, false)
                         };
 
+                    // For multi-type patterns (2+ combinations), set GraphNode labels to
+                    // None. The types are encoded in pattern_combinations and will be used
+                    // during CTE generation. Setting a default label here would cause
+                    // TypeInference to push it into plan_ctx, incorrectly narrowing
+                    // sibling patterns that share the same node alias.
+                    let multi_type = pattern_combinations.len() > 1;
                     let start_graph_node = GraphNode {
                         input: start_scan,
                         alias: start_node_alias.clone(),
-                        label: start_label_for_scan.clone(),
+                        label: if multi_type {
+                            None
+                        } else {
+                            start_label_for_scan.clone()
+                        },
                         is_denormalized: start_is_denorm,
                         projected_columns: None,
                         node_types: None, // Multi-type info is in pattern_combinations
@@ -564,7 +695,11 @@ fn traverse_connected_pattern_with_mode<'a>(
                     let end_graph_node = GraphNode {
                         input: end_scan,
                         alias: end_node_alias.clone(),
-                        label: end_label_for_scan.clone(),
+                        label: if multi_type {
+                            None
+                        } else {
+                            end_label_for_scan.clone()
+                        },
                         is_denormalized: end_is_denorm,
                         projected_columns: None,
                         node_types: None,
@@ -799,6 +934,92 @@ fn traverse_connected_pattern_with_mode<'a>(
                 end_node_props,
                 end_node_ref.name.is_some(),
             );
+
+            // FIX: Infer end node label from relationship schema for connected chains.
+            // When processing (a)-[:R1]->(b)-[:R2]->(c), after R1 processing,
+            // b's label in plan_ctx may be empty. If R1's schema unambiguously
+            // determines b's type, set it now so R2 doesn't trigger false multi-type
+            // detection. Only set when ALL rel_labels agree on the same endpoint type.
+            //
+            // SUPERTYPE COLLAPSE: When inferred_labels = {Post, Comment, Message} and
+            // Message is a supertype with label_value="Post|Comment", collapse to {Message}.
+            // This avoids multi-type branching when the supertype view already covers both.
+            // Also filter rel_labels to only the supertype variant.
+            if end_node_label.is_none() {
+                if let Some(ref mut labels) = rel_labels {
+                    let graph_schema = plan_ctx.schema();
+                    let mut inferred_labels = std::collections::HashSet::<String>::new();
+                    for label in labels.iter() {
+                        if let Some(rel_schema) = graph_schema.get_relationships_schema_opt(label) {
+                            let end_label = match rel.direction {
+                                ast::Direction::Incoming => &rel_schema.from_node,
+                                _ => &rel_schema.to_node,
+                            };
+                            if end_label != "$any" {
+                                inferred_labels.insert(end_label.clone());
+                            }
+                        }
+                    }
+
+                    // Supertype collapse: if a supertype has all subtypes present, use the supertype
+                    if inferred_labels.len() > 1 {
+                        let mut supertype_label: Option<String> = None;
+                        for candidate in &inferred_labels {
+                            if let Some(ns) = graph_schema.node_schema_opt(candidate) {
+                                if let Some(ref lv) = ns.label_value {
+                                    let subtypes: Vec<&str> = lv.split('|').collect();
+                                    if subtypes.len() >= 2
+                                        && subtypes.iter().all(|st| inferred_labels.contains(*st))
+                                    {
+                                        supertype_label = Some(candidate.clone());
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(ref st_label) = supertype_label {
+                            log::info!(
+                                "🔗 Traversal: Supertype collapse for '{}': {:?} → [{}]",
+                                end_node_alias,
+                                inferred_labels,
+                                st_label
+                            );
+                            inferred_labels.clear();
+                            inferred_labels.insert(st_label.clone());
+
+                            // Also filter rel_labels to only the supertype variant
+                            labels.retain(|label| {
+                                let parts: Vec<&str> = label.split("::").collect();
+                                if parts.len() >= 3 {
+                                    let (from_part, to_part) = (parts[1], parts[2]);
+                                    match rel.direction {
+                                        ast::Direction::Incoming => from_part == st_label,
+                                        _ => to_part == st_label,
+                                    }
+                                } else {
+                                    true // Keep non-composite labels
+                                }
+                            });
+                        }
+                    }
+
+                    if inferred_labels.len() == 1 {
+                        let label = inferred_labels.into_iter().next().unwrap();
+                        if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&end_node_alias) {
+                            if table_ctx.get_label_opt().is_none() {
+                                log::info!(
+                                    "🔗 Traversal: Inferred end node '{}' label='{}' from chain schema",
+                                    end_node_alias, label
+                                );
+                                table_ctx.set_labels(Some(vec![label.clone()]));
+                                // Also update end_node_label for GraphNode creation
+                                // and downstream relationship table resolution
+                                end_node_label = Some(label);
+                            }
+                        }
+                    }
+                }
+            }
 
             let (left_conn, right_conn) =
                 compute_connection_aliases(&rel.direction, &start_node_alias, &end_node_alias);

@@ -9974,10 +9974,33 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
             // Use individual exported aliases (e.g., ["a", "allNeighboursCount"]) not combined with_alias
             // compute_cte_id_column_for_alias needs the actual node alias to find the GraphNode.
-            // Try the inner plan first (the WITH's input — where GraphNodes live),
-            // then fall back to current_plan for compatibility.
+            // CRITICAL: Check CTE references FIRST — if the alias is already CTE-backed from an
+            // upstream WITH, inherit its ID column. Otherwise, plan-level lookup may find stale
+            // VLP endpoints (e.g., end_id) instead of the CTE's renamed column (e.g., id).
             let id_lookup_plan = inner_plans_for_id.first().unwrap_or(&current_plan);
             for alias in &exported_aliases {
+                // Priority 1: Inherit from upstream CTE (most reliable for chained WITH)
+                if let Some(prev_cte_name) = cte_references.get(alias) {
+                    if let Some(meta) = cte_schemas.get(prev_cte_name) {
+                        if let Some(prev_id) = meta.alias_to_id.get(alias) {
+                            log::info!(
+                                "📊 WITH CTE '{}': ID for alias '{}' -> '{}' (inherited from CTE '{}')",
+                                cte_name, alias, prev_id, prev_cte_name
+                            );
+                            alias_to_id_column.insert(alias.clone(), prev_id.clone());
+                            continue;
+                        } else if meta.column_names.contains(alias) {
+                            // Fallback: CTE has a direct column matching alias (e.g. UNWIND scalar)
+                            log::info!(
+                                "📊 WITH CTE '{}': ID for alias '{}' -> '{}' (bare column from CTE '{}')",
+                                cte_name, alias, alias, prev_cte_name
+                            );
+                            alias_to_id_column.insert(alias.clone(), alias.clone());
+                            continue;
+                        }
+                    }
+                }
+                // Priority 2: Compute from plan structure (inner plan first, then current)
                 if let Some(id_col_name) = compute_cte_id_column_for_alias(alias, id_lookup_plan)
                     .or_else(|| compute_cte_id_column_for_alias(alias, &current_plan))
                 {
@@ -9988,24 +10011,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         id_col_name
                     );
                     alias_to_id_column.insert(alias.clone(), id_col_name.clone());
-                } else if let Some(prev_cte_name) = cte_references.get(alias) {
-                    // Alias comes from a previous CTE — inherit its ID column
-                    if let Some(meta) = cte_schemas.get(prev_cte_name) {
-                        if let Some(prev_id) = meta.alias_to_id.get(alias) {
-                            log::info!(
-                                "📊 WITH CTE '{}': ID for alias '{}' -> '{}' (inherited from CTE '{}')",
-                                cte_name, alias, prev_id, prev_cte_name
-                            );
-                            alias_to_id_column.insert(alias.clone(), prev_id.clone());
-                        } else if meta.column_names.contains(alias) {
-                            // Fallback: CTE has a direct column matching alias (e.g. UNWIND scalar)
-                            log::info!(
-                                "📊 WITH CTE '{}': ID for alias '{}' -> '{}' (bare column from CTE '{}')",
-                                cte_name, alias, alias, prev_cte_name
-                            );
-                            alias_to_id_column.insert(alias.clone(), alias.clone());
-                        }
-                    }
                 }
             }
 

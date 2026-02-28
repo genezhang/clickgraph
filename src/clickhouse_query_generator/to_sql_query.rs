@@ -3688,6 +3688,36 @@ impl RenderExpr {
                     return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
                 }
 
+                // IN/NOT IN with List containing non-constant elements → expand to OR/AND
+                // ClickHouse: `x IN [col1, col2]` fails when array has column refs
+                if (op.operator == Operator::In || op.operator == Operator::NotIn)
+                    && rendered.len() == 2
+                {
+                    if let RenderExpr::List(list_items) = &op.operands[1] {
+                        let has_non_constant = list_items.iter().any(|item| {
+                            !matches!(item, RenderExpr::Literal(_) | RenderExpr::Parameter(_))
+                        });
+                        if has_non_constant {
+                            let lhs = &rendered[0];
+                            let item_sqls: Vec<String> =
+                                list_items.iter().map(|item| item.to_sql()).collect();
+                            if op.operator == Operator::In {
+                                let clauses: Vec<String> = item_sqls
+                                    .iter()
+                                    .map(|rhs| format!("{} = {}", lhs, rhs))
+                                    .collect();
+                                return format!("({})", clauses.join(" OR "));
+                            } else {
+                                let clauses: Vec<String> = item_sqls
+                                    .iter()
+                                    .map(|rhs| format!("{} <> {}", lhs, rhs))
+                                    .collect();
+                                return format!("({})", clauses.join(" AND "));
+                            }
+                        }
+                    }
+                }
+
                 // Special handling for string predicates - ClickHouse uses functions
                 if op.operator == Operator::StartsWith && rendered.len() == 2 {
                     return format!("startsWith({}, {})", &rendered[0], &rendered[1]);
@@ -4032,6 +4062,35 @@ impl RenderExpr {
                     return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
                 }
 
+                // IN/NOT IN with List containing non-constant elements → expand to OR/AND
+                if (op.operator == Operator::In || op.operator == Operator::NotIn)
+                    && rendered.len() == 2
+                {
+                    if let RenderExpr::List(list_items) = &op.operands[1] {
+                        let has_non_constant = list_items.iter().any(|item| {
+                            !matches!(item, RenderExpr::Literal(_) | RenderExpr::Parameter(_))
+                        });
+                        if has_non_constant {
+                            let lhs = &rendered[0];
+                            let item_sqls: Vec<String> =
+                                list_items.iter().map(|item| item.to_sql()).collect();
+                            if op.operator == Operator::In {
+                                let clauses: Vec<String> = item_sqls
+                                    .iter()
+                                    .map(|rhs| format!("{} = {}", lhs, rhs))
+                                    .collect();
+                                return format!("({})", clauses.join(" OR "));
+                            } else {
+                                let clauses: Vec<String> = item_sqls
+                                    .iter()
+                                    .map(|rhs| format!("{} <> {}", lhs, rhs))
+                                    .collect();
+                                return format!("({})", clauses.join(" AND "));
+                            }
+                        }
+                    }
+                }
+
                 // Special handling for string predicates - ClickHouse uses functions
                 if op.operator == Operator::StartsWith && rendered.len() == 2 {
                     return format!("startsWith({}, {})", &rendered[0], &rendered[1]);
@@ -4197,6 +4256,35 @@ impl ToSql for OperatorApplication {
             && matches!(&self.operands[1], RenderExpr::PropertyAccessExp(_))
         {
             return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
+        }
+
+        // IN/NOT IN with List containing non-constant elements → expand to OR/AND
+        if (self.operator == Operator::In || self.operator == Operator::NotIn)
+            && rendered.len() == 2
+        {
+            if let RenderExpr::List(list_items) = &self.operands[1] {
+                let has_non_constant = list_items
+                    .iter()
+                    .any(|item| !matches!(item, RenderExpr::Literal(_) | RenderExpr::Parameter(_)));
+                if has_non_constant {
+                    let lhs = &rendered[0];
+                    let item_sqls: Vec<String> =
+                        list_items.iter().map(|item| item.to_sql()).collect();
+                    if self.operator == Operator::In {
+                        let clauses: Vec<String> = item_sqls
+                            .iter()
+                            .map(|rhs| format!("{} = {}", lhs, rhs))
+                            .collect();
+                        return format!("({})", clauses.join(" OR "));
+                    } else {
+                        let clauses: Vec<String> = item_sqls
+                            .iter()
+                            .map(|rhs| format!("{} <> {}", lhs, rhs))
+                            .collect();
+                        return format!("({})", clauses.join(" AND "));
+                    }
+                }
+            }
         }
 
         // Special handling for string predicates - ClickHouse uses functions

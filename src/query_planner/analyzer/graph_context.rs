@@ -80,10 +80,19 @@ pub fn get_graph_context<'a>(
     // This must happen before get_node_table_ctx/get_rel_table_ctx which create immutable borrows
     if let Some(labels) = &graph_rel.labels {
         if labels.len() > 1 {
-            let cte_name = format!(
-                "rel_{}_{}",
-                graph_rel.left_connection, graph_rel.right_connection
-            );
+            // Use vlp_multi_type_ prefix for VLP multi-type relationships
+            // to match CTE extraction naming in cte_extraction.rs
+            let cte_name = if graph_rel.variable_length.is_some() {
+                format!(
+                    "vlp_multi_type_{}_{}",
+                    graph_rel.left_connection, graph_rel.right_connection
+                )
+            } else {
+                format!(
+                    "rel_{}_{}",
+                    graph_rel.left_connection, graph_rel.right_connection
+                )
+            };
             log::info!("🔍 graph_context: REL alias '{}' has {} labels - registering columns for multi-variant CTE: '{}'", 
                        graph_rel.alias, labels.len(), cte_name);
 
@@ -253,11 +262,18 @@ pub fn get_graph_context<'a>(
         // Check if this is a multi-variant relationship (multiple labels for same rel type)
         // If so, a UNION CTE should have been created with name: rel_{left_connection}_{right_connection}
         if labels.len() > 1 {
-            let cte_name = format!(
-                "rel_{}_{}",
-                graph_rel.left_connection, graph_rel.right_connection
-            );
-            log::info!("🔍 graph_context: REL alias '{}' has {} labels - using multi-variant CTE: '{}' (mappings registered earlier)", 
+            let cte_name = if graph_rel.variable_length.is_some() {
+                format!(
+                    "vlp_multi_type_{}_{}",
+                    graph_rel.left_connection, graph_rel.right_connection
+                )
+            } else {
+                format!(
+                    "rel_{}_{}",
+                    graph_rel.left_connection, graph_rel.right_connection
+                )
+            };
+            log::info!("🔍 graph_context: REL alias '{}' has {} labels - using multi-variant CTE: '{}' (mappings registered earlier)",
                        rel_alias, labels.len(), cte_name);
             cte_name
         } else {
