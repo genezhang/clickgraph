@@ -411,15 +411,25 @@ fn transform_bidirectional(
             ) {
                 Ok(Transformed::No(plan.clone()))
             } else {
+                let new_left = match transformed_left {
+                    Transformed::Yes(p) => p,
+                    Transformed::No(p) => p,
+                };
+                let new_right = match transformed_right {
+                    Transformed::Yes(p) => p,
+                    Transformed::No(p) => p,
+                };
+
+                // Collapse leaf undirected Unions inside CartesianProduct.
+                // When both endpoints of an undirected edge are bound by other patterns
+                // in the CP, the edge is a filter (existence check), not a traversal.
+                // Both UNION branches produce identical results — one direction suffices.
+                let collapsed_left = collapse_leaf_unions_in_cp(new_left);
+                let collapsed_right = collapse_leaf_unions_in_cp(new_right);
+
                 let new_cp = crate::query_planner::logical_plan::CartesianProduct {
-                    left: match transformed_left {
-                        Transformed::Yes(p) => p,
-                        Transformed::No(p) => p,
-                    },
-                    right: match transformed_right {
-                        Transformed::Yes(p) => p,
-                        Transformed::No(p) => p,
-                    },
+                    left: collapsed_left,
+                    right: collapsed_right,
                     is_optional: cp.is_optional,
                     join_condition: cp.join_condition.clone(),
                 };
@@ -451,6 +461,10 @@ fn transform_bidirectional(
             match transformed_input {
                 Transformed::Yes(new_input) => {
                     // The input was transformed (may now be a Union)
+                    // Collapse leaf undirected Unions where both endpoints are bound
+                    // by other patterns (e.g., multi-pattern MATCH with undirected KNOWS)
+                    let new_input = collapse_leaf_unions_in_cp(new_input);
+
                     // Wrap it in WithClause - the Union stays INSIDE the WITH boundary
                     let new_with = crate::query_planner::logical_plan::WithClause {
                         cte_name: with_clause.cte_name.clone(), // PRESERVE from CteSchemaResolver
@@ -475,6 +489,103 @@ fn transform_bidirectional(
                 }
             }
         }
+    }
+}
+
+/// Check if a plan is a Union from an undirected edge where both endpoints
+/// are already bound by patterns in the left subtree. When both endpoints
+/// are bound, the edge is a filter (existence check) — both Union branches
+/// produce identical results, so one direction suffices.
+///
+/// This handles multi-pattern MATCH like:
+///   MATCH (p1chain), (p2chain), (person1)-[:KNOWS]-(person2)
+/// where person1 and person2 are already bound by p1chain and p2chain.
+fn is_redundant_undirected_union(plan: &LogicalPlan) -> bool {
+    if let LogicalPlan::Union(u) = plan {
+        if u.inputs.len() == 2 {
+            // Unwrap Filter from first branch (relationship uniqueness filter)
+            let first_inner = match u.inputs[0].as_ref() {
+                LogicalPlan::Filter(f) => f.input.as_ref(),
+                other => other,
+            };
+            // Check if first branch is a GraphRel where both endpoints exist in left subtree
+            if let LogicalPlan::GraphRel(gr) = first_inner {
+                let left_conn = &gr.left_connection;
+                let right_conn = &gr.right_connection;
+                let left_has_both = has_alias_in_plan(&gr.left, left_conn)
+                    && has_alias_in_plan(&gr.left, right_conn);
+                if left_has_both {
+                    crate::debug_print!(
+                        "🔄 BidirectionalUnion: Redundant Union detected — both endpoints '{}' and '{}' bound in left subtree",
+                        left_conn, right_conn
+                    );
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Check if a plan tree contains an alias as a node or connection.
+fn has_alias_in_plan(plan: &LogicalPlan, alias: &str) -> bool {
+    match plan {
+        LogicalPlan::GraphNode(gn) => gn.alias == alias || has_alias_in_plan(&gn.input, alias),
+        LogicalPlan::GraphRel(gr) => {
+            gr.left_connection == alias
+                || gr.right_connection == alias
+                || has_alias_in_plan(&gr.left, alias)
+                || has_alias_in_plan(&gr.right, alias)
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            has_alias_in_plan(&cp.left, alias) || has_alias_in_plan(&cp.right, alias)
+        }
+        LogicalPlan::Filter(f) => has_alias_in_plan(&f.input, alias),
+        LogicalPlan::Projection(p) => has_alias_in_plan(&p.input, alias),
+        _ => false,
+    }
+}
+
+/// Recursively collapse leaf undirected Unions.
+/// When both endpoints of an undirected edge are bound by other patterns,
+/// the UNION is redundant — take just the Outgoing (first) branch.
+/// Recurses through CartesianProduct and Filter wrappers.
+fn collapse_leaf_unions_in_cp(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
+    match plan.as_ref() {
+        LogicalPlan::Union(u) if is_redundant_undirected_union(&plan) => {
+            crate::debug_print!(
+                "🔄 BidirectionalUnion: Collapsing redundant undirected Union to single branch"
+            );
+            u.inputs[0].clone() // Take Outgoing branch
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            let new_left = collapse_leaf_unions_in_cp(cp.left.clone());
+            let new_right = collapse_leaf_unions_in_cp(cp.right.clone());
+            if Arc::ptr_eq(&new_left, &cp.left) && Arc::ptr_eq(&new_right, &cp.right) {
+                plan
+            } else {
+                Arc::new(LogicalPlan::CartesianProduct(
+                    crate::query_planner::logical_plan::CartesianProduct {
+                        left: new_left,
+                        right: new_right,
+                        is_optional: cp.is_optional,
+                        join_condition: cp.join_condition.clone(),
+                    },
+                ))
+            }
+        }
+        LogicalPlan::Filter(f) => {
+            let new_input = collapse_leaf_unions_in_cp(f.input.clone());
+            if Arc::ptr_eq(&new_input, &f.input) {
+                plan
+            } else {
+                Arc::new(LogicalPlan::Filter(Filter {
+                    input: new_input,
+                    predicate: f.predicate.clone(),
+                }))
+            }
+        }
+        _ => plan,
     }
 }
 

@@ -295,6 +295,15 @@ fn distribute_union(plan: &LogicalPlan) -> LogicalPlan {
             tuple_properties: u.tuple_properties.clone(),
         }),
 
+        // WithClause: recurse into input to distribute any buried Unions
+        LogicalPlan::WithClause(wc) => {
+            let new_input = distribute_union(&wc.input);
+            LogicalPlan::WithClause(crate::query_planner::logical_plan::WithClause {
+                input: Arc::new(new_input),
+                ..wc.clone()
+            })
+        }
+
         // Leaf/other nodes: no transformation needed
         other => other.clone(),
     }
