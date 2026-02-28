@@ -916,9 +916,75 @@ pub fn rewrite_render_expr(expr: &RenderExpr, scope: &VariableScope) -> RenderEx
             }
             expr.clone()
         }
+        // Raw SQL — rewrite CTE-backed alias references (e.g., "liker.id" → "cte.p5_liker_id")
+        // This handles NOT EXISTS subqueries generated from pattern expressions like
+        // not((liker)-[:KNOWS]-(person)) where liker/person are CTE-backed after WITH barriers.
+        RenderExpr::Raw(sql) => {
+            let mut new_sql = sql.clone();
+            // Sort replacements longest-alias-first to prevent short aliases (e.g. "m")
+            // from matching inside longer identifiers before the longer alias gets a chance.
+            let mut replacements: Vec<(&str, &str, &str)> = Vec::new();
+            for (alias, cte_info) in &scope.cte_variables {
+                let from_alias = cte_info.effective_from_alias();
+                for (prop, cte_col) in &cte_info.property_mapping {
+                    replacements.push((alias.as_str(), prop.as_str(), cte_col.as_str()));
+                }
+                let _ = from_alias; // used below via cte_info
+            }
+            // Sort by alias length descending, then property length descending
+            replacements.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then(b.1.len().cmp(&a.1.len())));
+
+            for (alias, prop, _cte_col) in &replacements {
+                let pattern = format!("{}.{}", alias, prop);
+                // Word-boundary-aware replacement: the character before the match must not be
+                // alphanumeric or underscore (to avoid matching "forum.id" when pattern is "m.id").
+                let cte_info = scope.cte_variables.get(*alias).unwrap();
+                let from_alias = cte_info.effective_from_alias();
+                let cte_col = cte_info.property_mapping.get(*prop).unwrap();
+                let replacement = format!("{}.{}", from_alias, cte_col);
+
+                let mut result = String::with_capacity(new_sql.len());
+                let mut search_from = 0;
+                while let Some(pos) = new_sql[search_from..].find(&pattern) {
+                    let abs_pos = search_from + pos;
+                    // Check word boundary before match
+                    let boundary_before = if abs_pos == 0 {
+                        true
+                    } else {
+                        let prev_char = new_sql.as_bytes()[abs_pos - 1] as char;
+                        !prev_char.is_alphanumeric() && prev_char != '_'
+                    };
+                    // Check word boundary after match
+                    let after_pos = abs_pos + pattern.len();
+                    let boundary_after = if after_pos >= new_sql.len() {
+                        true
+                    } else {
+                        let next_char = new_sql.as_bytes()[after_pos] as char;
+                        !next_char.is_alphanumeric() && next_char != '_'
+                    };
+
+                    if boundary_before && boundary_after {
+                        result.push_str(&new_sql[search_from..abs_pos]);
+                        result.push_str(&replacement);
+                        log::info!("🔧 Raw SQL rewrite: '{}' → '{}'", pattern, replacement);
+                        search_from = after_pos;
+                    } else {
+                        // Not a word boundary — skip this occurrence
+                        result.push_str(&new_sql[search_from..abs_pos + 1]);
+                        search_from = abs_pos + 1;
+                    }
+                }
+                result.push_str(&new_sql[search_from..]);
+                new_sql = result;
+            }
+            if new_sql != *sql {
+                RenderExpr::Raw(new_sql)
+            } else {
+                expr.clone()
+            }
+        }
         // Leaf nodes — no rewriting needed
         RenderExpr::Literal(_)
-        | RenderExpr::Raw(_)
         | RenderExpr::Star
         | RenderExpr::Parameter(_)
         | RenderExpr::InSubquery(_)

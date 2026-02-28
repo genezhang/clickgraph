@@ -6601,6 +6601,236 @@ fn populate_cte_property_mappings_from_render_plan(
     crate::server::query_context::set_cte_property_mappings(cte_mappings);
 }
 
+/// Detect `head(collect({key1: val1, key2: val2, ...})) AS alias` patterns where
+/// any MapLiteral value is a bare node reference (TableAlias). ClickHouse map() requires
+/// homogeneous value types, but nodes have no single SQL value. Flatten each map entry
+/// into separate CTE columns:
+///   - Node values → one column per schema property: `arrayElement(groupArray(prop), 1) AS alias_key_prop`
+///   - Scalar values → single column: `arrayElement(groupArray(expr), 1) AS alias_key`
+///
+/// Returns (flattened_items, compound_key_mappings) where compound_key_mappings contains
+/// entries like ("msg.id", "latestLike_msg_id") for downstream property_mapping injection.
+fn try_flatten_head_collect_map_literal(
+    expr: &crate::query_planner::logical_expr::LogicalExpr,
+    col_alias: Option<&str>,
+    plan: &LogicalPlan,
+    plan_ctx: Option<&PlanCtx>,
+    scope: Option<&super::variable_scope::VariableScope>,
+) -> Option<(Vec<SelectItem>, Vec<(String, String)>)> {
+    use crate::query_planner::logical_expr::LogicalExpr;
+
+    let alias = col_alias?;
+
+    log::info!(
+        "🔧 try_flatten_head_collect_map_literal: checking alias='{}', expr type={:?}",
+        alias,
+        std::mem::discriminant(expr)
+    );
+
+    // Match: ScalarFnCall("head", [AggregateFnCall("collect", [MapLiteral(entries)])])
+    let entries = match expr {
+        LogicalExpr::ScalarFnCall(sf)
+            if sf.name.eq_ignore_ascii_case("head") && sf.args.len() == 1 =>
+        {
+            match &sf.args[0] {
+                LogicalExpr::AggregateFnCall(agg)
+                    if agg.name.eq_ignore_ascii_case("collect") && agg.args.len() == 1 =>
+                {
+                    match &agg.args[0] {
+                        LogicalExpr::MapLiteral(entries) => entries,
+                        _ => return None,
+                    }
+                }
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+
+    // Check if any value is a node reference (TableAlias with multiple properties).
+    // Bare variables like "likeTime" are also TableAlias but are scalars — empty/no property mapping.
+    // Try multiple detection methods: plan_ctx labels, scope CTE variables, plan tree, schema.
+    let is_node_alias = |alias_name: &str| -> bool {
+        // Method 1: Check plan_ctx for node labels
+        if let Some(ctx) = plan_ctx {
+            if let Ok(tc) = ctx.get_table_ctx(alias_name) {
+                if tc.get_label_opt().is_some() {
+                    return true;
+                }
+            }
+        }
+        // Method 2: Check scope CTE variables for multi-property mapping
+        if let Some(s) = scope {
+            if let Some(cte_info) = s.cte_variables().get(alias_name) {
+                log::info!(
+                    "🔧 is_node_alias('{}') Method 2: property_mapping.len()={}, labels={:?}",
+                    alias_name,
+                    cte_info.property_mapping.len(),
+                    cte_info.labels
+                );
+                // Node aliases have multiple properties (id, name, etc.)
+                // Scalar aliases have 0 or 1 properties
+                if cte_info.property_mapping.len() > 1 {
+                    return true;
+                }
+                // Also check if there are labels
+                if !cte_info.labels.is_empty() {
+                    return true;
+                }
+            }
+        }
+        // Method 3: Check plan tree for GraphNode with this alias
+        if let Some(label) =
+            crate::render_plan::cte_extraction::get_node_label_for_alias(alias_name, plan)
+        {
+            if !label.is_empty() {
+                return true;
+            }
+        }
+        false
+    };
+
+    let has_node_value = entries.iter().any(|(_, v)| {
+        if let LogicalExpr::TableAlias(ta) = v {
+            is_node_alias(&ta.0)
+        } else {
+            false
+        }
+    });
+    if !has_node_value {
+        return None; // All scalar — keep using map() (preserves bi-14)
+    }
+
+    log::info!(
+        "🔧 try_flatten_head_collect_map_literal: Flattening {} entries for alias '{}'",
+        entries.len(),
+        alias
+    );
+
+    let schema = crate::server::query_context::get_current_schema();
+    let schema_ref = schema.as_deref();
+
+    let mut flattened_items: Vec<SelectItem> = Vec::new();
+    // Collect compound key mappings: ("map_key.property", "alias_mapkey_property")
+    // These are stored at generation time to avoid ambiguous reverse-engineering from column names.
+    let mut compound_keys: Vec<(String, String)> = Vec::new();
+
+    for (key, value) in entries {
+        // Determine if this value is a node alias by trying to get its properties.
+        // If we find >1 property, it's a node; otherwise treat as scalar.
+        let node_properties: Option<Vec<(String, String)>> = if let LogicalExpr::TableAlias(ta) =
+            value
+        {
+            // Try scope CTE variables first (after WITH barriers)
+            let from_scope = scope.and_then(|s| {
+                s.cte_variables().get(&ta.0).and_then(|cte_info| {
+                    if cte_info.property_mapping.len() > 1 {
+                        Some(
+                            cte_info
+                                .property_mapping
+                                .iter()
+                                .map(|(prop, _cte_col)| (prop.clone(), prop.clone()))
+                                .collect(),
+                        )
+                    } else {
+                        None
+                    }
+                })
+            });
+            if from_scope.is_some() {
+                from_scope
+            } else {
+                // Try schema lookup via plan_ctx
+                let label = plan_ctx
+                    .and_then(|ctx| {
+                        ctx.get_table_ctx(&ta.0)
+                            .ok()
+                            .and_then(|tc| tc.get_label_opt())
+                    })
+                    .or_else(|| {
+                        crate::render_plan::cte_extraction::get_node_label_for_alias(&ta.0, plan)
+                    });
+                label
+                    .and_then(|l| schema_ref.map(|s| s.get_node_properties(&[l])))
+                    .filter(|props| props.len() > 1)
+            }
+        } else {
+            None
+        };
+
+        let is_node = node_properties.is_some();
+
+        if is_node {
+            let node_alias = match value {
+                LogicalExpr::TableAlias(ta) => ta,
+                _ => unreachable!(),
+            };
+
+            let properties = node_properties.unwrap();
+
+            for (cypher_prop, db_col) in &properties {
+                let mut prop_access = RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(node_alias.0.clone()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                        db_col.clone(),
+                    ),
+                });
+                // Apply scope rewriting for CTE-backed references
+                if let Some(s) = scope {
+                    prop_access = super::variable_scope::rewrite_render_expr(&prop_access, s);
+                }
+                let group_array = RenderExpr::AggregateFnCall(AggregateFnCall {
+                    name: "groupArray".to_string(),
+                    args: vec![prop_access],
+                });
+                let head_expr = RenderExpr::ScalarFnCall(ScalarFnCall {
+                    name: "arrayElement".to_string(),
+                    args: vec![group_array, RenderExpr::Literal(Literal::Integer(1))],
+                });
+
+                let col_name = format!("{}_{}", key, cypher_prop);
+                let full_alias = format!("{}_{}", alias, col_name);
+                // Record compound key: "msg.id" → "latestLike_msg_id"
+                let compound_key = format!("{}.{}", key, cypher_prop);
+                compound_keys.push((compound_key, full_alias.clone()));
+                flattened_items.push(SelectItem {
+                    expression: head_expr,
+                    col_alias: Some(ColumnAlias(full_alias)),
+                });
+            }
+        } else {
+            // Scalar value — convert to RenderExpr and wrap in arrayElement(groupArray(...), 1)
+            let render_value: Option<RenderExpr> = value.clone().try_into().ok();
+            if let Some(mut val_expr) = render_value {
+                // Rewrite CTE-backed references
+                if let Some(s) = scope {
+                    val_expr = super::variable_scope::rewrite_render_expr(&val_expr, s);
+                }
+                let group_array = RenderExpr::AggregateFnCall(AggregateFnCall {
+                    name: "groupArray".to_string(),
+                    args: vec![val_expr],
+                });
+                let head_expr = RenderExpr::ScalarFnCall(ScalarFnCall {
+                    name: "arrayElement".to_string(),
+                    args: vec![group_array, RenderExpr::Literal(Literal::Integer(1))],
+                });
+
+                let full_alias = format!("{}_{}", alias, key);
+                flattened_items.push(SelectItem {
+                    expression: head_expr,
+                    col_alias: Some(ColumnAlias(full_alias)),
+                });
+            }
+        }
+    }
+
+    if flattened_items.is_empty() {
+        return None;
+    }
+
+    Some((flattened_items, compound_keys))
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -6621,6 +6851,11 @@ pub(crate) fn build_chained_with_match_cte_plan(
     let mut current_plan = plan.clone();
     let mut all_ctes: Vec<Cte> = Vec::new();
     let mut iteration = 0;
+
+    // Collect compound key mappings from flattened map literals.
+    // Written during CTE SELECT item generation, read during property_mapping construction.
+    let flattened_compound_keys: std::cell::RefCell<Vec<(String, String)>> =
+        std::cell::RefCell::new(Vec::new());
 
     // Track CTE schemas: map CTE name to:
     // 1. Vec<SelectItem>: Column definitions
@@ -7943,6 +8178,25 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                 } else {
                                                     rewritten_expr
                                                 };
+
+                                                // 🔧 FIX: Flatten head(collect(MapLiteral)) with node values
+                                                // ClickHouse map() requires homogeneous value types, but nodes
+                                                // have no single value. Expand each map entry to separate CTE columns.
+                                                log::info!("🔧 Checking for head(collect(MapLiteral)) flattening, alias={:?}, expanded_expr={:?}",
+                                                    item.col_alias.as_ref().map(|a| &a.0),
+                                                    std::mem::discriminant(&expanded_expr));
+                                                if let Some((flattened_items, compound_keys)) = try_flatten_head_collect_map_literal(
+                                                    &expanded_expr,
+                                                    item.col_alias.as_ref().map(|a| a.0.as_str()),
+                                                    plan_to_render,
+                                                    plan_ctx,
+                                                    body_scope_ref,
+                                                ) {
+                                                    log::info!("🔧 Flattened head(collect(MapLiteral)) into {} columns with {} compound keys",
+                                                        flattened_items.len(), compound_keys.len());
+                                                    flattened_compound_keys.borrow_mut().extend(compound_keys);
+                                                    return flattened_items;
+                                                }
 
                                                 let expr_result: Result<RenderExpr, _> = expanded_expr.try_into();
                                                 expr_result.ok().map(|mut expr| {
@@ -10039,6 +10293,33 @@ pub(crate) fn build_chained_with_match_cte_plan(
             );
             for ((alias, property), cte_column) in property_mapping.iter() {
                 log::debug!("🔧   AFTER: ({}, {}) → {}", alias, property, cte_column);
+            }
+
+            // 🔧 FIX: Add compound key mappings for flattened map literal columns.
+            // These were collected at generation time by try_flatten_head_collect_map_literal()
+            // to avoid ambiguous reverse-engineering from underscore-delimited column names.
+            // Each entry maps ("base_alias", "map_key.property") → "base_alias_mapkey_property".
+            {
+                let stored_keys = flattened_compound_keys.borrow();
+                for (compound_key, col_name) in stored_keys.iter() {
+                    // Find which exported alias this column belongs to
+                    for base_alias in &exported_aliases {
+                        let prefix = format!("{}_", base_alias);
+                        if col_name.starts_with(&prefix) {
+                            log::info!(
+                                "🔧 property_mapping compound key: ({}, {}) → {}",
+                                base_alias,
+                                compound_key,
+                                col_name
+                            );
+                            property_mapping.insert(
+                                (base_alias.clone(), compound_key.clone()),
+                                col_name.clone(),
+                            );
+                            break;
+                        }
+                    }
+                }
             }
 
             // Cross-reference: for bare column aliases (e.g. UNWIND scalar `person`),

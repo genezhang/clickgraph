@@ -603,10 +603,12 @@ fn generate_not_exists_from_path_pattern(
                                     full_table, table_name, to_col, start_id_sql
                                 ),
                                 _ => {
+                                    // Split into two NOT EXISTS to avoid OR inside subquery
                                     format!(
-                                    "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} OR {}.{} = {})",
+                                    "(NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}) AND NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}))",
                                     full_table,
                                     table_name, from_col, start_id_sql,
+                                    full_table,
                                     table_name, to_col, start_id_sql
                                 )
                                 }
@@ -614,12 +616,14 @@ fn generate_not_exists_from_path_pattern(
                         }
                         (None, true) => {
                             // Undirected with anonymous end: check either direction
+                            // Split into two NOT EXISTS to avoid OR inside subquery
                             format!(
-                                "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} OR {}.{} = {})",
+                                "(NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}) AND NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}))",
                                 full_table,
                                 table_name,
                                 from_col,
                                 start_id_sql,
+                                full_table,
                                 table_name,
                                 to_col,
                                 start_id_sql
@@ -627,12 +631,15 @@ fn generate_not_exists_from_path_pattern(
                         }
                         (Some(_end), true) => {
                             // Named end node, undirected: check both directions
+                            // Split into two NOT EXISTS to avoid OR inside subquery —
+                            // ClickHouse "Cannot clone Union plan step" with OR in correlated subqueries
                             format!(
-                                "NOT EXISTS (SELECT 1 FROM {} WHERE ({}.{} = {} AND {}.{} = {}) OR ({}.{} = {} AND {}.{} = {}))",
+                                "(NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} AND {}.{} = {}) AND NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} AND {}.{} = {}))",
                                 full_table,
                                 // Direction 1: start -> end
                                 table_name, from_col, start_id_sql,
                                 table_name, to_col, end_id_sql,
+                                full_table,
                                 // Direction 2: end -> start
                                 table_name, from_col, end_id_sql,
                                 table_name, to_col, start_id_sql
