@@ -9829,6 +9829,34 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                                     fk_col.to_string(),
                                                                 );
                                                             }
+                                                            RenderExpr::TableAlias(ta)
+                                                                if ta.0 == person_alias =>
+                                                            {
+                                                                *expr = RenderExpr::PropertyAccessExp(
+                                                                    PropertyAccess {
+                                                                        table_alias: TableAlias(
+                                                                            rel_alias.to_string(),
+                                                                        ),
+                                                                        column: PropertyValue::Column(
+                                                                            fk_col.to_string(),
+                                                                        ),
+                                                                    },
+                                                                );
+                                                            }
+                                                            RenderExpr::ColumnAlias(ca)
+                                                                if ca.0 == person_alias =>
+                                                            {
+                                                                *expr = RenderExpr::PropertyAccessExp(
+                                                                    PropertyAccess {
+                                                                        table_alias: TableAlias(
+                                                                            rel_alias.to_string(),
+                                                                        ),
+                                                                        column: PropertyValue::Column(
+                                                                            fk_col.to_string(),
+                                                                        ),
+                                                                    },
+                                                                );
+                                                            }
                                                             RenderExpr::AggregateFnCall(agg) => {
                                                                 for arg in agg.args.iter_mut() {
                                                                     rewrite_person_to_fk(
