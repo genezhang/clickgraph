@@ -479,6 +479,39 @@ build_chained_with_match_cte_plan() loop
 -- After:  a_b.p1_b_id (correct — CTE alias as FROM)
 ```
 
+### 12. BidirectionalUnion in WithClause CTE (Mar 2026)
+
+When undirected edges (`-[:KNOWS]-`) appear before a WITH clause, BidirectionalUnion creates a Union. The WithClause handler in `plan_builder.rs` has two rendering paths:
+- **Structured path**: Uses `to_render_plan()` — renders each Union branch independently with its own FROM + JOINs. Required for Union inputs.
+- **Flat extractor path**: Uses `extract_from()`, `extract_filters()`, etc. — collapses to single FROM/JOIN set. `extract_from(Union) => None`, causing `FROM system.one`.
+
+Detection: `input_has_denormalized_union()` (for denormalized schemas) and `input_has_bidirectional_union()` (for all Union inputs) traverse through Filter/GraphJoins/Projection/GraphNode wrappers to find Union nodes.
+
+### 13. Weighted Shortest Path (Mar 2026)
+
+Weighted VLP for `cost(path)` support (LDBC complex-14):
+- **Weight CTE detection** in `plan_builder_utils.rs`: A WITH clause exporting exactly `source`, `target`, `weight` + downstream `shortestPath()` triggers weighted mode.
+- **Bidirectional weight CTE**: Auto-created `bidi_{cte_name}` with `UNION ALL SELECT target AS source, source AS target, weight` for both traversal directions.
+- **Task-local config**: `WeightCteConfig` stored in `QueryContext`, read by VLP CTE generator.
+- **Outer query restructuring**: When weight CTE + VLP CTEs present, outer query FROM replaced with VLP CTE, joins/UNION removed.
+- Key files: `variable_length_cte.rs` (weighted mode), `to_sql_query.rs` (cost() + nested agg), `plan_builder_utils.rs` (detection + bidi CTE), `query_context.rs` (config storage).
+
+### 14. Pattern Comprehension CTEs (Feb 2026)
+
+For `size(PatternComprehension)` that would generate correlated subqueries (which fail with ClickHouse UNION ALL):
+- **`PcCteResult`** + `generate_pattern_comprehension_cte()` in `plan_builder_utils.rs`: Pre-aggregated CTEs.
+- Pattern: `SELECT corr_0, corr_1, COUNT(*) AS result FROM edge GROUP BY corr_0, corr_1`
+- LEFT JOIN + `COALESCE(pc_cte.result, 0)` replaces correlated subquery.
+- `generate_pc_cte_with_either()` for `Direction::Either`: UNION ALL of both direction variants.
+- Used by bi-8 official query. PCs with `list_constraint` (e.g. arrayCount) still use correlated subquery path.
+
+### 15. List Concatenation: arrayConcat (Feb 2026)
+
+`interestedPersons + collect(person)` → `arrayConcat()`:
+- `is_list_expr()` in `to_sql_query.rs` detects groupArray/collect/arrayConcat/arraySort/List/nested Addition.
+- `flatten_list_addition_operands()` flattens nested + into arrayConcat args.
+- Key: RenderExpr stores `"collect"` not `"groupArray"` — function registry mapping happens later. Must check both names.
+
 ## Common Bug Patterns
 
 | Pattern | Symptom | Root Cause |
@@ -495,6 +528,8 @@ build_chained_with_match_cte_plan() loop
 | **Same-table relationship empty** | **User→FOLLOWS→User returns nothing** | **Missing `AS from_node` / `AS to_node` aliases for self-joins** |
 | **Identifier cannot be resolved after WITH** | **"DB::Exception: Identifier 'person.id' cannot be resolved"** | **Premature resolution: variable baked into Raw/ExistsSubquery SQL before CTE scope rewriting (see §10)** |
 | **reverse_mapping misses expression type** | **Variable reference not rewritten to CTE column** | **`rewrite_expression_simple` skips Raw, ExistsSubquery, PatternCount, ReduceExpr, etc. (see §10)** |
+| **FROM=system.one in CTE body** | **Undirected edge + WITH generates broken SQL** | **Union input routed through flat extractor path instead of to_render_plan() (see §12)** |
+| **Nested aggregate missed** | **CASE WHEN count(*)... not detected as aggregate** | **`render_expr_contains_aggregate()` only checked top-level AggregateFnCall (see §13)** |
 
 ## Files You Should NOT Touch Casually
 
@@ -506,7 +541,7 @@ build_chained_with_match_cte_plan() loop
 
 ```bash
 # Must pass ALL of these:
-cargo test                                    # 995 unit + 35 integration + 7 + 25 doc
+cargo test                                    # 1114 unit + integration + doc
 cargo test test_vlp_with_cte_join             # VLP+WITH regression test
 cargo test test_with_clause_property_renaming # WITH alias propagation
 
