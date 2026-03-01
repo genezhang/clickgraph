@@ -927,13 +927,25 @@ fn traverse_connected_pattern_with_mode<'a>(
                 table_ctx.append_properties(start_node_props);
             }
 
-            register_node_in_context(
-                plan_ctx,
-                &end_node_alias,
-                &end_node_label,
-                end_node_props,
-                end_node_ref.name.is_some(),
-            );
+            // Check if end node already exists in plan_ctx (e.g., from multi-pattern MATCH:
+            // (person1:Person{id:$p1}), (person2:Person{id:$p2}), path = shortestPath(...))
+            // If it does, APPEND properties instead of replacing to preserve existing filters.
+            if let Some(existing_ctx) = plan_ctx.get_mut_table_ctx_opt(&end_node_alias) {
+                if end_node_label.is_some() {
+                    existing_ctx.set_labels(end_node_label.clone().map(|l| vec![l]));
+                }
+                if !end_node_props.is_empty() {
+                    existing_ctx.append_properties(end_node_props);
+                }
+            } else {
+                register_node_in_context(
+                    plan_ctx,
+                    &end_node_alias,
+                    &end_node_label,
+                    end_node_props,
+                    end_node_ref.name.is_some(),
+                );
+            }
 
             // FIX: Infer end node label from relationship schema for connected chains.
             // When processing (a)-[:R1]->(b)-[:R2]->(c), after R1 processing,
@@ -1125,6 +1137,55 @@ fn traverse_connected_pattern_with_mode<'a>(
                 None // Single-type, no VLP
             };
 
+            // For VLP patterns when start node is already in plan_ctx,
+            // extract inline property filters from both endpoints before building GraphRel.
+            // Without this, filters like {id: $person2Id} are lost because
+            // FilterIntoGraphRel only finds filters that were converted to
+            // filter_predicates, but properties haven't been converted yet.
+            let vlp_where_predicate = if shortest_path_mode.is_some() || variable_length.is_some() {
+                use crate::query_planner::logical_expr::{Operator, OperatorApplication};
+                let mut node_filters = vec![];
+
+                // Extract filters/properties for left connection
+                if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&left_conn) {
+                    node_filters.extend(table_ctx.get_filters().iter().cloned());
+                    let props = table_ctx.get_and_clear_properties();
+                    if !props.is_empty() {
+                        if let Ok(mut prop_filters) = convert_properties(props, &left_conn) {
+                            log::debug!(
+                                "VLP: Converted {} properties to filters for left node '{}' (start-in-ctx)",
+                                prop_filters.len(), left_conn
+                            );
+                            node_filters.append(&mut prop_filters);
+                        }
+                    }
+                }
+
+                // Extract filters/properties for right connection
+                if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&right_conn) {
+                    node_filters.extend(table_ctx.get_filters().iter().cloned());
+                    let props = table_ctx.get_and_clear_properties();
+                    if !props.is_empty() {
+                        if let Ok(mut prop_filters) = convert_properties(props, &right_conn) {
+                            log::debug!(
+                                "VLP: Converted {} properties to filters for right node '{}' (start-in-ctx)",
+                                prop_filters.len(), right_conn
+                            );
+                            node_filters.append(&mut prop_filters);
+                        }
+                    }
+                }
+
+                node_filters.into_iter().reduce(|acc, filter| {
+                    LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::And,
+                        operands: vec![acc, filter],
+                    })
+                })
+            } else {
+                None
+            };
+
             let graph_rel_node = GraphRel {
                 left: left_node,
                 center: generate_relationship_center(
@@ -1145,7 +1206,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 variable_length,
                 shortest_path_mode: shortest_path_mode.clone(),
                 path_variable: path_variable.map(|s| s.to_string()),
-                where_predicate: None, // Will be populated by filter pushdown optimization
+                where_predicate: vlp_where_predicate,
                 labels: rel_labels.clone(),
                 is_optional: if is_optional { Some(true) } else { None },
                 anchor_connection,
