@@ -681,10 +681,17 @@ pub fn extract_node_appearance(
         (cte.name.clone(), String::new())
     } else if let Some(labels) = &graph_rel.labels {
         if labels.len() > 1 {
-            let cte_name = format!(
-                "rel_{}_{}",
-                graph_rel.left_connection, graph_rel.right_connection
-            );
+            let cte_name = if graph_rel.variable_length.is_some() {
+                format!(
+                    "vlp_multi_type_{}_{}",
+                    graph_rel.left_connection, graph_rel.right_connection
+                )
+            } else {
+                format!(
+                    "rel_{}_{}",
+                    graph_rel.left_connection, graph_rel.right_connection
+                )
+            };
             log::info!(
                 "🔍 NodeAppearance: REL '{}' has {} labels - using multi-variant CTE: '{}'",
                 graph_rel.alias,

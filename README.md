@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="/docs/images/cglogo.png" height="150">
+  <img src="https://github.com/genezhang/clickgraph/blob/main/docs/images/cglogo.png" height="150">
 </div>
 
 # ClickGraph
@@ -19,8 +19,8 @@
 
 ### Highlights ✨
 
-- **Neo4j Browser Support** - Connect Neo4j Browser directly to ClickGraph via Bolt protocol for live graph visualization. See [`demos/neo4j-browser/`](demos/neo4j-browser/README.md) for a ready-to-run demo.
-- **Graph-Notebook Support** - Run Jupyter graph notebooks against your ClickHouse data using the `graph-notebook` library. See [`demos/graph-notebook/`](demos/graph-notebook/README.md) for setup instructions.
+- **Neo4j Browser Support** - Connect Neo4j Browser directly to ClickGraph via Bolt protocol for live graph visualization. See [`demos/neo4j-browser/`](https://github.com/genezhang/clickgraph/blob/main/demos/neo4j-browser/README.md) for a ready-to-run demo.
+- **Graph-Notebook Support** - Run Jupyter graph notebooks against your ClickHouse data using the `graph-notebook` library. See [`demos/graph-notebook/`](https://github.com/genezhang/clickgraph/blob/main/demos/graph-notebook/README.md) for setup instructions.
 - **Numerous rounds of refactoring** - help to improve the code quality, including the following.
 - **Improved WITH Clause Correctness** - Chained `WITH` queries (multi-step aggregation, filtering, and renaming) now produce correct results across a wider range of patterns.
 - **More Reliable Query Results** - Fixed result ordering, column projection in UNION queries, and variable resolution after `WITH` — queries return what Cypher semantics require.
@@ -295,7 +295,7 @@ This starts:
 
 Then open http://localhost:7474 and connect to `bolt://localhost:7687` to visualize graph queries.
 
-See [demos/neo4j-browser/README.md](demos/neo4j-browser/README.md) for details.
+See [demos/neo4j-browser/README.md](https://github.com/genezhang/clickgraph/blob/main/demos/neo4j-browser/README.md) for details.
    ```bash
    # Simple query
    curl -X POST http://localhost:8080/query \
@@ -532,7 +532,7 @@ See `docs/configuration.md` for complete configuration documentation.
 - **[Development Process](DEVELOPMENT_PROCESS.md)** - Detailed 6-phase workflow (reference)
 - **[Current Status](STATUS.md)** - What works now, what's in progress
 - **[Known Issues](KNOWN_ISSUES.md)** - Active bugs and limitations
-- **[Wiki Documentation](docs/wiki/)** - Comprehensive guides including [Graph-Notebook Compatibility](docs/wiki/Graph-Notebook-Compatibility.md), [Neo4j Tools Integration](docs/wiki/Neo4j-Tools-Integration.md), and more
+- **[Wiki Documentation](docs/wiki/)** - Comprehensive guides including [Graph-Notebook Compatibility](https://github.com/genezhang/clickgraph/blob/main/docs/wiki/Graph-Notebook-Compatibility.md), [Neo4j Tools Integration](https://github.com/genezhang/clickgraph/blob/main/docs/wiki/Neo4j-Tools-Integration.md), and more
 
 ## 🧪 Development Status
 
@@ -590,5 +590,4 @@ ClickGraph welcomes contributions! Key areas for development:
 
 ClickGraph is licensed under the Apache License, Version 2.0. See the LICENSE file for details.
 
-This project is developed on a forked repo of [Brahmand](https://github.com/suryatmodulus/brahmand) with zero-ETL view-based graph querying, Neo4j ecosystem compatibility and enterprise deployment capabilities.
-
+This project is developed on a forked repo of [Brahmand](https://github.com/darshanDevrai/brahmand) with zero-ETL view-based graph querying, Neo4j ecosystem compatibility and enterprise deployment capabilities.

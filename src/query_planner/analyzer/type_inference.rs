@@ -208,11 +208,11 @@ impl TypeInference {
                 // For multi-hop (a)-[r1]->(b)-[r2]->(c), we need to:
                 // 1. Process r1 first → establishes b's label
                 // 2. Then process r2 → can use b's label from step 1
-                let left_transformed =
+                let mut left_transformed =
                     self.infer_labels_recursive(rel.left.clone(), plan_ctx, graph_schema)?;
                 let center_transformed =
                     self.infer_labels_recursive(rel.center.clone(), plan_ctx, graph_schema)?;
-                let right_transformed =
+                let mut right_transformed =
                     self.infer_labels_recursive(rel.right.clone(), plan_ctx, graph_schema)?;
 
                 // Connected Pattern Detection (Optimization - WIP)
@@ -520,6 +520,37 @@ impl TypeInference {
                     }
                 );
 
+                // PROPAGATE: If newly-inferred labels narrow a shared connection,
+                // prune child GraphRel's pattern_combinations.
+                // Example: (post)<-[:HAS_CREATOR]-(otherPerson) with 3 HAS_CREATOR variants,
+                // then (forum)-[:CONTAINER_OF]->(post) infers post=Post → prune to 1 combo.
+                //
+                // When pruned to 1 combo, remove pattern_combinations entirely and fix the
+                // child's internal GraphNodes/ViewScans to use the correct types. This makes
+                // the plan identical to what traversal would build with explicit labels.
+                //
+                // NOTE: Check both left and right subtrees — Incoming direction chains place
+                // existing plan in right. Also traverse through CartesianProduct wrappers
+                // (multi-type patterns create CP(WithClause, GraphRel) when existing plan exists).
+                for side in &["left", "right"] {
+                    let child_plan = match *side {
+                        "left" => match &left_transformed {
+                            Transformed::Yes(p) | Transformed::No(p) => Arc::clone(p),
+                        },
+                        _ => match &right_transformed {
+                            Transformed::Yes(p) | Transformed::No(p) => Arc::clone(p),
+                        },
+                    };
+                    if let Some(pruned_plan) =
+                        self.try_prune_pattern_combinations(&child_plan, plan_ctx, graph_schema)
+                    {
+                        match *side {
+                            "left" => left_transformed = Transformed::Yes(pruned_plan),
+                            _ => right_transformed = Transformed::Yes(pruned_plan),
+                        }
+                    }
+                }
+
                 // Check if we need to rebuild with inferred edge types
                 let needs_rebuild = left_transformed.is_yes()
                     || center_transformed.is_yes()
@@ -633,6 +664,35 @@ impl TypeInference {
             }
 
             LogicalPlan::GraphNode(node) => {
+                // Ensure explicit GraphNode labels are visible in plan_ctx.
+                // After a WITH barrier, plan_ctx is a fresh child scope. GraphNode.label
+                // from the inner pattern (e.g., (city:City)) may not be in plan_ctx,
+                // causing infer_pattern_types to see None and mis-infer the label.
+                if let Some(ref label) = node.label {
+                    if let Ok(table_ctx) = plan_ctx.get_mut_table_ctx(&node.alias) {
+                        if table_ctx.get_label_opt().is_none() {
+                            log::info!(
+                                "🏷️ TypeInference: Pushing explicit label '{}' for '{}' from GraphNode into plan_ctx",
+                                label,
+                                node.alias
+                            );
+                            table_ctx.set_labels(Some(vec![label.clone()]));
+                        }
+                    } else {
+                        // No entry in plan_ctx — create one with the explicit label
+                        use crate::query_planner::plan_ctx::TableCtx;
+                        plan_ctx.insert_table_ctx(
+                            node.alias.clone(),
+                            TableCtx::build(
+                                node.alias.clone(),
+                                Some(vec![label.clone()]),
+                                vec![],
+                                false,
+                                false,
+                            ),
+                        );
+                    }
+                }
                 // Check if this node needs ViewScan creation from inferred label
                 if node.label.is_none() {
                     // Try to get inferred label from plan_ctx
@@ -2143,6 +2203,300 @@ impl TypeInference {
             inferred_left_label,
             inferred_right_label,
         ))
+    }
+
+    /// Recursively search for and prune pattern_combinations in a plan subtree.
+    ///
+    /// Handles both direct GraphRel children and GraphRels nested inside
+    /// CartesianProduct wrappers (created when multi-type patterns have an
+    /// existing input plan like a WithClause).
+    fn try_prune_pattern_combinations(
+        &self,
+        plan: &Arc<LogicalPlan>,
+        plan_ctx: &mut PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> Option<Arc<LogicalPlan>> {
+        match plan.as_ref() {
+            LogicalPlan::GraphRel(child_rel) if child_rel.pattern_combinations.is_some() => {
+                self.prune_graphrel_combinations(child_rel, plan_ctx, graph_schema)
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                // Try left branch of CartesianProduct
+                if let Some(new_left) =
+                    self.try_prune_pattern_combinations(&cp.left, plan_ctx, graph_schema)
+                {
+                    let new_cp = crate::query_planner::logical_plan::CartesianProduct {
+                        left: new_left,
+                        right: cp.right.clone(),
+                        is_optional: cp.is_optional,
+                        join_condition: cp.join_condition.clone(),
+                    };
+                    return Some(Arc::new(LogicalPlan::CartesianProduct(new_cp)));
+                }
+                // Try right branch
+                if let Some(new_right) =
+                    self.try_prune_pattern_combinations(&cp.right, plan_ctx, graph_schema)
+                {
+                    let new_cp = crate::query_planner::logical_plan::CartesianProduct {
+                        left: cp.left.clone(),
+                        right: new_right,
+                        is_optional: cp.is_optional,
+                        join_condition: cp.join_condition.clone(),
+                    };
+                    return Some(Arc::new(LogicalPlan::CartesianProduct(new_cp)));
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Core pruning logic for a GraphRel with pattern_combinations.
+    /// Returns Some(new_plan) if pruning reduced the combinations.
+    fn prune_graphrel_combinations(
+        &self,
+        child_rel: &GraphRel,
+        plan_ctx: &mut PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> Option<Arc<LogicalPlan>> {
+        let full_combos = plan_ctx
+            .get_pattern_combinations(&child_rel.left_connection, &child_rel.right_connection)
+            .cloned();
+
+        let combos = full_combos?;
+
+        let left_label_now = plan_ctx
+            .get_table_ctx(&child_rel.left_connection)
+            .ok()
+            .and_then(|ctx| ctx.get_label_opt());
+        let right_label_now = plan_ctx
+            .get_table_ctx(&child_rel.right_connection)
+            .ok()
+            .and_then(|ctx| ctx.get_label_opt());
+
+        if left_label_now.is_none() && right_label_now.is_none() {
+            return None;
+        }
+
+        let pruned: Vec<_> = combos
+            .iter()
+            .filter(|c| {
+                let left_ok = left_label_now
+                    .as_ref()
+                    .map(|l| c.from_label == *l)
+                    .unwrap_or(true);
+                let right_ok = right_label_now
+                    .as_ref()
+                    .map(|l| c.to_label == *l)
+                    .unwrap_or(true);
+                left_ok && right_ok
+            })
+            .cloned()
+            .collect();
+
+        if pruned.len() >= combos.len() {
+            return None; // Nothing pruned
+        }
+
+        log::info!(
+            "TypeInference: Pruned pattern_combinations from {} to {} (left={:?}, right={:?})",
+            combos.len(),
+            pruned.len(),
+            left_label_now,
+            right_label_now,
+        );
+
+        if pruned.len() == 1 {
+            // Single combo remaining — rebuild child with correct types
+            match self.rebuild_graphrel_single_combo(child_rel, &pruned[0], plan_ctx, graph_schema)
+            {
+                Ok(rebuilt) => Some(rebuilt),
+                Err(e) => {
+                    log::warn!(
+                        "TypeInference: Failed to rebuild child: {:?}, keeping pruned combos",
+                        e
+                    );
+                    Some(Arc::new(LogicalPlan::GraphRel(GraphRel {
+                        pattern_combinations: Some(pruned),
+                        ..child_rel.clone()
+                    })))
+                }
+            }
+        } else if pruned.is_empty() {
+            Some(Arc::new(LogicalPlan::GraphRel(GraphRel {
+                pattern_combinations: None,
+                ..child_rel.clone()
+            })))
+        } else {
+            Some(Arc::new(LogicalPlan::GraphRel(GraphRel {
+                pattern_combinations: Some(pruned),
+                ..child_rel.clone()
+            })))
+        }
+    }
+
+    /// Rebuild a GraphRel from a single TypeCombination, removing pattern_combinations.
+    ///
+    /// When multi-type pattern pruning narrows to exactly 1 combo, this function
+    /// rebuilds the GraphRel with correct internal GraphNodes and ViewScans,
+    /// making the plan identical to what traversal would build with explicit labels.
+    fn rebuild_graphrel_single_combo(
+        &self,
+        child_rel: &GraphRel,
+        combo: &crate::query_planner::plan_ctx::TypeCombination,
+        plan_ctx: &mut PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<Arc<LogicalPlan>> {
+        log::info!(
+            "🔍 TypeInference: Rebuilding child GraphRel with single combo: {} -[{}]-> {}",
+            combo.from_label,
+            combo.rel_type,
+            combo.to_label,
+        );
+
+        // Helper: rebuild a GraphNode with the correct label and ViewScan
+        let rebuild_node =
+            |plan: &Arc<LogicalPlan>, label: &str| -> AnalyzerResult<Arc<LogicalPlan>> {
+                if let LogicalPlan::GraphNode(node) = plan.as_ref() {
+                    match graph_schema.node_schema(label) {
+                        Ok(node_schema) => {
+                            let full_table =
+                                format!("{}.{}", node_schema.database, node_schema.table_name);
+                            let id_col = node_schema
+                                .node_id
+                                .columns()
+                                .first()
+                                .ok_or_else(|| {
+                                    AnalyzerError::SchemaNotFound(format!(
+                                        "No ID column for node '{}'",
+                                        label
+                                    ))
+                                })?
+                                .to_string();
+
+                            let mut vs = ViewScan::new(
+                                full_table,
+                                None,
+                                node_schema.property_mappings.clone(),
+                                id_col,
+                                vec!["id".to_string()],
+                                vec![],
+                            );
+                            vs.is_denormalized = node_schema.is_denormalized;
+
+                            let new_node = GraphNode {
+                                input: Arc::new(LogicalPlan::ViewScan(Arc::new(vs))),
+                                alias: node.alias.clone(),
+                                label: Some(label.to_string()),
+                                is_denormalized: node_schema.is_denormalized,
+                                projected_columns: None,
+                                node_types: None,
+                            };
+                            Ok(Arc::new(LogicalPlan::GraphNode(new_node)))
+                        }
+                        Err(_) => Ok(Arc::clone(plan)), // Keep original if schema not found
+                    }
+                } else {
+                    Ok(Arc::clone(plan)) // Not a GraphNode, keep as-is
+                }
+            };
+
+        // Map left_connection → from_label, right_connection → to_label
+        // Find which GraphNode (left/right) corresponds to which connection
+        let new_left = if let LogicalPlan::GraphNode(n) = child_rel.left.as_ref() {
+            if n.alias == child_rel.left_connection {
+                rebuild_node(&child_rel.left, &combo.from_label)?
+            } else if n.alias == child_rel.right_connection {
+                rebuild_node(&child_rel.left, &combo.to_label)?
+            } else {
+                Arc::clone(&child_rel.left)
+            }
+        } else {
+            Arc::clone(&child_rel.left)
+        };
+
+        let new_right = if let LogicalPlan::GraphNode(n) = child_rel.right.as_ref() {
+            if n.alias == child_rel.left_connection {
+                rebuild_node(&child_rel.right, &combo.from_label)?
+            } else if n.alias == child_rel.right_connection {
+                rebuild_node(&child_rel.right, &combo.to_label)?
+            } else {
+                Arc::clone(&child_rel.right)
+            }
+        } else {
+            Arc::clone(&child_rel.right)
+        };
+
+        // Rebuild center ViewScan with correct relationship table
+        let rel_key = format!(
+            "{}::{}::{}",
+            combo.rel_type, combo.from_label, combo.to_label
+        );
+        let new_center =
+            if let Some(rel_schema) = graph_schema.get_relationships_schema_opt(&rel_key) {
+                let full_table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+                let from_id = rel_schema.from_id.clone();
+                let to_id = rel_schema.to_id.clone();
+                let id_col = from_id
+                    .columns()
+                    .first()
+                    .ok_or_else(|| {
+                        AnalyzerError::SchemaNotFound(format!(
+                            "No from_id column for rel '{}'",
+                            rel_key
+                        ))
+                    })?
+                    .to_string();
+
+                let mut vs = ViewScan::new(
+                    full_table,
+                    None,
+                    rel_schema.property_mappings.clone(),
+                    id_col,
+                    vec!["id".to_string()],
+                    vec![],
+                );
+                vs.from_id = Some(from_id);
+                vs.to_id = Some(to_id);
+                Arc::new(LogicalPlan::ViewScan(Arc::new(vs)))
+            } else {
+                // Fallback: try base type
+                Arc::clone(&child_rel.center)
+            };
+
+        // Update plan_ctx labels
+        if let Some(ctx) = plan_ctx.get_mut_table_ctx_opt(&child_rel.left_connection) {
+            ctx.set_labels(Some(vec![combo.from_label.clone()]));
+        }
+        if let Some(ctx) = plan_ctx.get_mut_table_ctx_opt(&child_rel.right_connection) {
+            ctx.set_labels(Some(vec![combo.to_label.clone()]));
+        }
+
+        let new_rel = GraphRel {
+            left: new_left,
+            center: new_center,
+            right: new_right,
+            alias: child_rel.alias.clone(),
+            direction: child_rel.direction.clone(),
+            left_connection: child_rel.left_connection.clone(),
+            right_connection: child_rel.right_connection.clone(),
+            is_rel_anchor: child_rel.is_rel_anchor,
+            variable_length: child_rel.variable_length.clone(),
+            shortest_path_mode: child_rel.shortest_path_mode.clone(),
+            path_variable: child_rel.path_variable.clone(),
+            where_predicate: child_rel.where_predicate.clone(),
+            labels: Some(vec![format!(
+                "{}::{}::{}",
+                combo.rel_type, combo.from_label, combo.to_label
+            )]),
+            is_optional: child_rel.is_optional,
+            anchor_connection: child_rel.anchor_connection.clone(),
+            cte_references: child_rel.cte_references.clone(),
+            pattern_combinations: None, // No longer needed — single type
+            was_undirected: child_rel.was_undirected,
+        };
+
+        Ok(Arc::new(LogicalPlan::GraphRel(new_rel)))
     }
 
     /// Check if a query node label matches a schema node definition

@@ -10,6 +10,9 @@ pub enum LogicalExprError {
     #[error("PatternComprehension should have been rewritten during query planning")]
     PatternComprehensionNotRewritten,
 
+    #[error("ListComprehension should have been rewritten during query planning")]
+    ListComprehensionNotRewritten,
+
     #[error("Unsupported expression type: {0}")]
     UnsupportedExpression(String),
 

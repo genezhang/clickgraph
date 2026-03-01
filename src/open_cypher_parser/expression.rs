@@ -15,8 +15,8 @@ use crate::open_cypher_parser::common::{self, ws};
 
 use super::{
     ast::{
-        ExistsSubquery, Expression, FunctionCall, LambdaExpression, Literal, Operator,
-        OperatorApplication, PatternComprehension, PropertyAccess, ReduceExpression,
+        ExistsSubquery, Expression, FunctionCall, LambdaExpression, ListComprehension, Literal,
+        Operator, OperatorApplication, PatternComprehension, PropertyAccess, ReduceExpression,
     },
     errors::OpenCypherParsingError,
     path_pattern, where_clause,
@@ -40,6 +40,7 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
         parse_case_expression,
         parse_reduce_expression, // Must be before parse_function_call to catch reduce(...)
         parse_pattern_comprehension, // Must be before parse_list_literal to catch [(pattern) | ...]
+        parse_list_comprehension, // Must be before parse_list_literal to catch [x IN list WHERE ...]
         parse_path_pattern_expression,
         parse_function_call,
         parse_property_access,
@@ -415,6 +416,168 @@ fn parse_pattern_comprehension_projection(input: &'_ str) -> IResult<&'_ str, Ex
     let (leftover, expr) = parse_expression(expr_str)?;
 
     // Make sure we consumed the whole expression
+    if !leftover.trim().is_empty() {
+        return Err(nom::Err::Error(Error::new(input, ErrorKind::TakeWhile1)));
+    }
+
+    Ok((remaining, expr))
+}
+
+/// Parse list comprehension: [variable IN list WHERE condition | projection]
+/// Examples:
+///   [x IN range(1,10) WHERE x > 5]
+///   [x IN list | x * 2]
+///   [p IN posts WHERE (p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)]
+///
+/// Disambiguated from list literal by requiring `identifier IN` after `[`.
+fn parse_list_comprehension(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    // Parse opening bracket '['
+    let (input, _) = ws(char('[')).parse(input)?;
+
+    // Parse variable name — must be followed by whitespace + IN keyword
+    let (input, variable) = parse_identifier(input)?;
+
+    // Parse 'IN' keyword (must be surrounded by whitespace and case-insensitive)
+    let (input, _) = ws(tag_no_case("IN")).parse(input)?;
+
+    // Parse the list expression. We need to stop at WHERE, |, or ]
+    // Use bracket-aware scanning to find the boundary
+    let (input, list_expr) = parse_list_comp_inner_expr(input, &["WHERE", "|", "]"])?;
+
+    // Parse optional WHERE clause
+    let (input, where_clause) = {
+        let trimmed = input.trim_start();
+        if trimmed.starts_with("WHERE") || trimmed.starts_with("where") {
+            // Consume WHERE keyword
+            let (input, _) = ws(tag_no_case("WHERE")).parse(input)?;
+            // Parse the WHERE expression, stopping at | or ]
+            let (input, expr) = parse_list_comp_inner_expr(input, &["|", "]"])?;
+            (input, Some(Box::new(expr)))
+        } else {
+            (input, None)
+        }
+    };
+
+    // Parse optional projection (| expr)
+    let (input, projection) = {
+        let trimmed = input.trim_start();
+        if trimmed.starts_with('|') {
+            let (input, _) = ws(char('|')).parse(input)?;
+            // Parse the projection expression, stopping at ]
+            let (input, expr) = parse_list_comp_inner_expr(input, &["]"])?;
+            (input, Some(Box::new(expr)))
+        } else {
+            (input, None)
+        }
+    };
+
+    // Parse closing bracket ']'
+    let (input, _) = ws(char(']')).parse(input)?;
+
+    Ok((
+        input,
+        Expression::ListComprehension(ListComprehension {
+            variable,
+            list_expr: Box::new(list_expr),
+            where_clause,
+            projection,
+        }),
+    ))
+}
+
+/// Parse an expression inside a list comprehension, stopping at specified keywords/chars.
+/// Handles bracket nesting, parenthesis nesting, and string literals so that
+/// keywords inside strings (e.g., `"WHERE"`) or nested brackets are not treated as stops.
+fn parse_list_comp_inner_expr<'a>(
+    input: &'a str,
+    stop_at: &[&str],
+) -> IResult<&'a str, Expression<'a>> {
+    let mut depth_bracket = 0i32;
+    let mut depth_paren = 0i32;
+    let mut i = 0;
+    let bytes = input.as_bytes();
+
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+
+        // Skip string literals — don't match keywords or track brackets inside them
+        if ch == '\'' || ch == '"' {
+            let quote = ch;
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] as char == '\\' {
+                    i += 2; // skip escaped character
+                    continue;
+                }
+                if bytes[i] as char == quote {
+                    i += 1; // consume closing quote
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        match ch {
+            '[' => depth_bracket += 1,
+            ']' => {
+                if depth_bracket == 0 && depth_paren == 0 {
+                    // Check if "]" is a stop token
+                    if stop_at.contains(&"]") {
+                        break;
+                    }
+                }
+                depth_bracket -= 1;
+            }
+            '(' => depth_paren += 1,
+            ')' => {
+                if depth_paren > 0 {
+                    depth_paren -= 1;
+                }
+            }
+            _ => {
+                // Only check keyword stops at depth 0
+                if depth_bracket == 0 && depth_paren == 0 {
+                    for token in stop_at {
+                        if *token != "]" && input[i..].len() >= token.len() {
+                            let candidate = &input[i..i + token.len()];
+                            if candidate.eq_ignore_ascii_case(token) {
+                                // Ensure it's a word boundary (not part of a larger identifier)
+                                let before_ok =
+                                    i == 0 || !input.as_bytes()[i - 1].is_ascii_alphanumeric();
+                                let after_ok = i + token.len() >= input.len()
+                                    || !input.as_bytes()[i + token.len()].is_ascii_alphanumeric();
+                                if before_ok && after_ok {
+                                    // Found stop token at position i
+                                    let expr_str = input[..i].trim_end();
+                                    let remaining = &input[i..];
+                                    let (leftover, expr) = parse_expression(expr_str)?;
+                                    if !leftover.trim().is_empty() {
+                                        return Err(nom::Err::Error(Error::new(
+                                            input,
+                                            ErrorKind::TakeWhile1,
+                                        )));
+                                    }
+                                    return Ok((remaining, expr));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    // Reached end of relevant portion (or found ] at depth 0)
+    let expr_str = input[..i].trim_end();
+    let remaining = &input[i..];
+
+    if expr_str.is_empty() {
+        return Err(nom::Err::Error(Error::new(input, ErrorKind::TakeWhile1)));
+    }
+
+    let (leftover, expr) = parse_expression(expr_str)?;
     if !leftover.trim().is_empty() {
         return Err(nom::Err::Error(Error::new(input, ErrorKind::TakeWhile1)));
     }
@@ -936,6 +1099,8 @@ fn parse_property_name(input: &str) -> IResult<&str, &str> {
 }
 
 pub fn parse_property_access(input: &'_ str) -> IResult<&'_ str, Expression<'_>> {
+    let original_input = input;
+
     // First part: the base (e.g., "src" or "p")
     let (mut input, base_str) = common::parse_alphanumeric_with_underscore(input)?;
 
@@ -950,55 +1115,122 @@ pub fn parse_property_access(input: &'_ str) -> IResult<&'_ str, Expression<'_>>
         _ => return Err(nom::Err::Error(Error::new(input, ErrorKind::Float))),
     };
 
-    let current_expr = if first_key == "*" {
-        Expression::PropertyAccessExp(PropertyAccess {
-            base: base_expr,
-            key: "*",
-        })
-    } else {
-        match parse_literal_or_variable_expression(first_key) {
-            Ok((_, Expression::Variable(key))) => Expression::PropertyAccessExp(PropertyAccess {
+    if first_key == "*" {
+        return Ok((
+            input,
+            Expression::PropertyAccessExp(PropertyAccess {
                 base: base_expr,
-                key,
+                key: "*",
             }),
-            _ => return Err(nom::Err::Error(Error::new(input, ErrorKind::Float))),
-        }
-    };
+        ));
+    }
 
-    // Try to parse additional chained properties: .property2.property3...
-    // Note: Currently only supports one additional property due to PropertyAccess limitations
-    if let Ok((new_input, next_key)) = preceded(char('.'), parse_property_name).parse(input) {
-        // Check if this is a temporal accessor - if so, convert to function call
-        let temporal_accessors = [
-            "year",
-            "month",
-            "day",
-            "hour",
-            "minute",
-            "second",
-            "millisecond",
-            "microsecond",
-            "nanosecond",
-        ];
+    // Greedily parse additional chained properties: .property2.property3...
+    // Builds a compound key like "msg.id" from "latestLike.msg.id"
+    let temporal_accessors = [
+        "year",
+        "month",
+        "day",
+        "hour",
+        "minute",
+        "second",
+        "millisecond",
+        "microsecond",
+        "nanosecond",
+    ];
 
-        if temporal_accessors.contains(&next_key) {
-            // Convert current_expr.temporal_accessor to temporal_accessor(current_expr)
+    // Check if first_key alone is a temporal accessor (e.g., birthday.month -> month(birthday)).
+    // This mirrors the chain loop's temporal check below, which only fires for SUBSEQUENT keys.
+    // Without this check, `birthday.month` would be PropertyAccess instead of FunctionCall.
+    //
+    // DESIGN NOTE: This is a context-free heuristic. In Cypher, `x.month` is ambiguous:
+    //   - If x is a temporal value: month(x) (temporal accessor)
+    //   - If x is a map/node: x['month'] (property access)
+    // The spec resolves this at the semantic level (type checking), but we resolve at parse
+    // time because post-WITH temporal values lose their type information. This means a node
+    // property literally named "month", "day", "year", etc. would be misinterpreted. If that
+    // occurs, the workaround is to use map syntax: `node['month']`.
+    //
+    // Guard: only apply when first_key is the TERMINAL segment (no further `.segment` follows).
+    // If chained (e.g., `x.month.something`), it's clearly a property access, not temporal.
+    if temporal_accessors.contains(&first_key) {
+        let peek_result: IResult<_, _, nom::error::Error<_>> =
+            preceded(char('.'), parse_property_name).parse(input);
+        if peek_result.is_err() {
             return Ok((
-                new_input,
+                input,
                 Expression::FunctionCallExp(crate::open_cypher_parser::ast::FunctionCall {
-                    name: next_key.to_string(),
-                    args: vec![current_expr],
+                    name: first_key.to_string(),
+                    args: vec![Expression::Variable(base_expr)],
                 }),
             ));
         }
-
-        // Not a temporal accessor - continue building property chain
-        // But we need PropertyAccess to support Expression as base, not just &str
-        // For now, we'll stop chaining after first property if not temporal
-        input = new_input;
     }
 
-    Ok((input, current_expr))
+    // Collect all key segments: first_key, then any additional .segment chains
+    let mut segments: Vec<&str> = vec![first_key];
+    let mut compound_input = input;
+
+    loop {
+        match preceded(char('.'), parse_property_name).parse(compound_input) {
+            Ok((new_input, next_key)) => {
+                if temporal_accessors.contains(&next_key) {
+                    // Temporal accessor ends the chain — build expression from segments so far
+                    let inner_expr =
+                        build_property_access_from_segments(base_expr, &segments, original_input)?;
+                    return Ok((
+                        new_input,
+                        Expression::FunctionCallExp(crate::open_cypher_parser::ast::FunctionCall {
+                            name: next_key.to_string(),
+                            args: vec![inner_expr],
+                        }),
+                    ));
+                }
+                // Not temporal — add segment and continue
+                segments.push(next_key);
+                compound_input = new_input;
+            }
+            Err(_) => break,
+        }
+    }
+
+    let expr = build_property_access_from_segments(base_expr, &segments, original_input)?;
+    let final_input = if segments.len() > 1 {
+        compound_input
+    } else {
+        input
+    };
+    Ok((final_input, expr))
+}
+
+/// Build a PropertyAccessExp from base and key segments.
+/// For single segment ["id"], key = "id".
+/// For multiple segments ["msg", "id"], key = "msg.id" (compound key as contiguous slice).
+fn build_property_access_from_segments<'a>(
+    base: &'a str,
+    segments: &[&'a str],
+    original_input: &'a str,
+) -> Result<Expression<'a>, nom::Err<Error<&'a str>>> {
+    let key = if segments.len() == 1 {
+        segments[0]
+    } else {
+        // Compute compound key as a contiguous slice from original_input
+        // first segment starts at some offset, last segment ends at some offset
+        let first = segments[0];
+        let last = segments[segments.len() - 1];
+        let first_start = first.as_ptr() as usize - original_input.as_ptr() as usize;
+        let last_end = last.as_ptr() as usize + last.len() - original_input.as_ptr() as usize;
+        &original_input[first_start..last_end]
+    };
+    match parse_literal_or_variable_expression(key) {
+        Ok((remainder, Expression::Variable(key))) if remainder.is_empty() => {
+            Ok(Expression::PropertyAccessExp(PropertyAccess { base, key }))
+        }
+        _ => Err(nom::Err::Error(Error::new(
+            original_input,
+            ErrorKind::Float,
+        ))),
+    }
 }
 
 /// Helper function to determine if a character is valid in a parameter name.
@@ -1355,6 +1587,51 @@ mod tests {
             key: "name",
         });
         assert_eq!(&expr, &expected);
+    }
+
+    #[test]
+    fn test_parse_chained_property_access() {
+        // latestLike.msg.id → PropertyAccess { base: "latestLike", key: "msg.id" }
+        let (rem, expr) = parse_property_access("latestLike.msg.id").unwrap();
+        assert_eq!(rem, "");
+        let expected = Expression::PropertyAccessExp(PropertyAccess {
+            base: "latestLike",
+            key: "msg.id",
+        });
+        assert_eq!(&expr, &expected);
+    }
+
+    #[test]
+    fn test_parse_chained_property_access_with_remainder() {
+        // latestLike.msg.id + 1 → key = "msg.id", remainder = " + 1"
+        let (rem, expr) = parse_property_access("latestLike.msg.id + 1").unwrap();
+        assert_eq!(rem, " + 1");
+        let expected = Expression::PropertyAccessExp(PropertyAccess {
+            base: "latestLike",
+            key: "msg.id",
+        });
+        assert_eq!(&expr, &expected);
+    }
+
+    #[test]
+    fn test_parse_chained_property_with_temporal() {
+        // latestLike.msg.creationDate.year → year(latestLike.msg.creationDate)
+        let (rem, expr) = parse_property_access("latestLike.msg.creationDate.year").unwrap();
+        assert_eq!(rem, "");
+        match expr {
+            Expression::FunctionCallExp(fc) => {
+                assert_eq!(fc.name, "year");
+                assert_eq!(fc.args.len(), 1);
+                match &fc.args[0] {
+                    Expression::PropertyAccessExp(pa) => {
+                        assert_eq!(pa.base, "latestLike");
+                        assert_eq!(pa.key, "msg.creationDate");
+                    }
+                    other => panic!("Expected PropertyAccessExp, got {:?}", other),
+                }
+            }
+            other => panic!("Expected FunctionCallExp, got {:?}", other),
+        }
     }
 
     // fn_call + operator
@@ -1838,6 +2115,178 @@ mod tests {
                 );
             }
             Err(_) => {}
+        }
+    }
+
+    #[test]
+    fn test_temporal_accessor_single_segment() {
+        // birthday.month should parse as month(birthday)
+        // This is critical for post-WITH temporal accessor resolution
+        let input = "birthday.month";
+        let result = parse_expression(input);
+        match result {
+            Ok((remaining, expr)) => {
+                assert_eq!(remaining, "");
+                if let Expression::FunctionCallExp(fc) = &expr {
+                    assert_eq!(fc.name, "month");
+                    assert_eq!(fc.args.len(), 1);
+                    assert!(matches!(&fc.args[0], Expression::Variable("birthday")));
+                } else {
+                    panic!("Expected FunctionCallExp(month), got {:?}", expr);
+                }
+            }
+            Err(e) => panic!("Should parse birthday.month as temporal accessor: {:?}", e),
+        }
+
+        // birthday.day should also work
+        let input = "birthday.day";
+        let result = parse_expression(input);
+        match result {
+            Ok((remaining, expr)) => {
+                assert_eq!(remaining, "");
+                if let Expression::FunctionCallExp(fc) = &expr {
+                    assert_eq!(fc.name, "day");
+                } else {
+                    panic!("Expected FunctionCallExp(day), got {:?}", expr);
+                }
+            }
+            Err(e) => panic!("Should parse birthday.day: {:?}", e),
+        }
+    }
+
+    // ===== List Comprehension Parser Tests =====
+
+    #[test]
+    fn test_list_comprehension_identity() {
+        // [x IN list] — identity, no WHERE or projection
+        let input = "[x IN list]";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::ListComprehension(lc) = &expr {
+            assert_eq!(lc.variable, "x");
+            assert!(matches!(&*lc.list_expr, Expression::Variable("list")));
+            assert!(lc.where_clause.is_none());
+            assert!(lc.projection.is_none());
+        } else {
+            panic!("Expected ListComprehension, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_list_comprehension_with_where() {
+        // [x IN range(1, 10) WHERE x > 5]
+        let input = "[x IN range(1, 10) WHERE x > 5]";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::ListComprehension(lc) = &expr {
+            assert_eq!(lc.variable, "x");
+            assert!(lc.where_clause.is_some());
+            assert!(lc.projection.is_none());
+        } else {
+            panic!("Expected ListComprehension, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_list_comprehension_with_projection() {
+        // [x IN list | x * 2]
+        let input = "[x IN list | x * 2]";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::ListComprehension(lc) = &expr {
+            assert_eq!(lc.variable, "x");
+            assert!(lc.where_clause.is_none());
+            assert!(lc.projection.is_some());
+        } else {
+            panic!("Expected ListComprehension, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_list_comprehension_where_and_projection() {
+        // [x IN list WHERE x > 0 | x * 2]
+        let input = "[x IN list WHERE x > 0 | x * 2]";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::ListComprehension(lc) = &expr {
+            assert_eq!(lc.variable, "x");
+            assert!(lc.where_clause.is_some());
+            assert!(lc.projection.is_some());
+        } else {
+            panic!("Expected ListComprehension, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_list_comprehension_with_pattern_where() {
+        // [p IN posts WHERE (p)-[:HAS_TAG]->()]
+        let input = "[p IN posts WHERE (p)-[:HAS_TAG]->()]";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::ListComprehension(lc) = &expr {
+            assert_eq!(lc.variable, "p");
+            assert!(matches!(&*lc.list_expr, Expression::Variable("posts")));
+            assert!(lc.where_clause.is_some());
+        } else {
+            panic!("Expected ListComprehension, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_list_comprehension_nested_brackets() {
+        // [x IN [1, 2, 3] WHERE x > 1]
+        let input = "[x IN [1, 2, 3] WHERE x > 1]";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::ListComprehension(lc) = &expr {
+            assert_eq!(lc.variable, "x");
+            assert!(matches!(&*lc.list_expr, Expression::List(_)));
+            assert!(lc.where_clause.is_some());
+        } else {
+            panic!("Expected ListComprehension, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_list_literal_not_misinterpreted() {
+        // [1, 2, 3] must still parse as a list literal, not a list comprehension
+        let input = "[1, 2, 3]";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        assert!(
+            matches!(&expr, Expression::List(_)),
+            "Expected List literal, got {:?}",
+            expr
+        );
+    }
+
+    #[test]
+    fn test_list_comprehension_size_wrapper() {
+        // size([p IN posts WHERE (p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)])
+        let input = "size([p IN posts WHERE (p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)])";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::FunctionCallExp(fc) = &expr {
+            assert_eq!(fc.name.to_lowercase(), "size");
+            assert_eq!(fc.args.len(), 1);
+            assert!(matches!(&fc.args[0], Expression::ListComprehension(_)));
+        } else {
+            panic!("Expected FunctionCallExp(size), got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_list_comprehension_string_in_where() {
+        // [x IN list WHERE x.name = "WHERE test"]
+        // The "WHERE" inside the string must not be treated as a keyword stop
+        let input = r#"[x IN list WHERE x.name = "WHERE test"]"#;
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::ListComprehension(lc) = &expr {
+            assert_eq!(lc.variable, "x");
+            assert!(lc.where_clause.is_some());
+        } else {
+            panic!("Expected ListComprehension, got {:?}", expr);
         }
     }
 }

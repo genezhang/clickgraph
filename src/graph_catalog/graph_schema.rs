@@ -962,7 +962,9 @@ impl GraphSchema {
         // Get all composite keys for this relationship type from the index
         let composite_keys = match self.rel_type_index.get(generic_name) {
             Some(keys) => keys.clone(),
-            None => return Vec::new(), // Type not found in schema
+            None => {
+                return Vec::new(); // Type not found in schema
+            }
         };
 
         // If no node labels provided, return all matches

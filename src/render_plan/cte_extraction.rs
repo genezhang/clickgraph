@@ -2822,12 +2822,13 @@ pub fn extract_ctes_with_context(
                                     }
                                 }
                                 // Fallback 3: derive from schema relationships
+                                // Use ALL variants (not just first) to get all possible from types
                                 let mut from_types: Vec<String> = rel_types
                                     .iter()
-                                    .filter_map(|rt| {
-                                        schema.get_all_rel_schemas_for_type(rt).first().map(|rs| {
-                                            rs.from_node.clone()
-                                        })
+                                    .flat_map(|rt| {
+                                        schema.get_all_rel_schemas_for_type(rt)
+                                            .into_iter()
+                                            .map(|rs| rs.from_node.clone())
                                     })
                                     .collect();
                                 from_types.sort();
@@ -2894,7 +2895,10 @@ pub fn extract_ctes_with_context(
                             }
 
                             for rel_type in &rel_types {
-                                if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
+                                // Use get_all_rel_schemas_for_type to iterate ALL variants
+                                // e.g., HAS_CREATOR has Comment→Person, Post→Person, Message→Person
+                                let all_schemas = schema.get_all_rel_schemas_for_type(rel_type);
+                                for rel_schema in &all_schemas {
                                     // For undirected patterns, we need to consider both directions
                                     // But we should add the OTHER node in each relationship, not both blindly
                                     for start_label in &start_labels {
@@ -2954,6 +2958,78 @@ pub fn extract_ctes_with_context(
                                 .unwrap_or_else(|| "UnknownEndType".to_string())];
                             }
                         }
+
+                        // === SUPERTYPE FILTERING (remove supertypes when all subtypes present) ===
+                        // When a polymorphic supertype (e.g., Message = Post|Comment) is present
+                        // AND all its subtypes are also present, REMOVE the supertype.
+                        // CTE UNION branches are per-concrete-subtype; the supertype would double-count.
+                        let start_labels = {
+                            let start_set: std::collections::HashSet<String> =
+                                start_labels.iter().cloned().collect();
+                            let mut supertypes_to_remove: std::collections::HashSet<String> =
+                                std::collections::HashSet::new();
+                            for label in &start_set {
+                                if let Some(ns) = schema.node_schema_opt(label) {
+                                    if let Some(ref lv) = ns.label_value {
+                                        let subtypes: Vec<&str> = lv.split('|').collect();
+                                        if subtypes.len() >= 2
+                                            && subtypes.iter().all(|st| start_set.contains(*st))
+                                        {
+                                            // All subtypes present → remove the supertype
+                                            supertypes_to_remove.insert(label.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            let mut filtered: Vec<String> = start_labels
+                                .into_iter()
+                                .filter(|label| {
+                                    if supertypes_to_remove.contains(label) {
+                                        log::info!(
+                                            "  ✂️  CTE supertype filtering: removing start_label '{}' (supertype with all subtypes present)",
+                                            label
+                                        );
+                                        return false;
+                                    }
+                                    true
+                                })
+                                .collect();
+                            filtered.sort();
+                            filtered
+                        };
+                        let end_labels = {
+                            let end_set: std::collections::HashSet<String> =
+                                end_labels.iter().cloned().collect();
+                            let mut supertypes_to_remove: std::collections::HashSet<String> =
+                                std::collections::HashSet::new();
+                            for label in &end_set {
+                                if let Some(ns) = schema.node_schema_opt(label) {
+                                    if let Some(ref lv) = ns.label_value {
+                                        let subtypes: Vec<&str> = lv.split('|').collect();
+                                        if subtypes.len() >= 2
+                                            && subtypes.iter().all(|st| end_set.contains(*st))
+                                        {
+                                            supertypes_to_remove.insert(label.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            let mut filtered: Vec<String> = end_labels
+                                .into_iter()
+                                .filter(|label| {
+                                    if supertypes_to_remove.contains(label) {
+                                        log::info!(
+                                            "  ✂️  CTE supertype filtering: removing end_label '{}' (supertype with all subtypes present)",
+                                            label
+                                        );
+                                        return false;
+                                    }
+                                    true
+                                })
+                                .collect();
+                            filtered.sort();
+                            filtered
+                        };
 
                         log::info!(
                             "🎯 CTE Multi-type VLP: start_labels={:?}, rel_types={:?}, end_labels={:?}",
@@ -3115,10 +3191,6 @@ pub fn extract_ctes_with_context(
                                 crate::server::query_context::register_relationship_cte_name(
                                     &graph_rel.alias,
                                     &cte_name,
-                                );
-                                eprintln!(
-                                    "🔥🔥🔥 REGISTRATION: alias='{}' → cte_name='{}'",
-                                    graph_rel.alias, cte_name
                                 );
                                 log::debug!(
                                     "📝 Registered multi-type VLP CTE: alias='{}' → cte_name='{}'",

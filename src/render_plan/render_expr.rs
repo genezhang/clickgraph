@@ -603,10 +603,12 @@ fn generate_not_exists_from_path_pattern(
                                     full_table, table_name, to_col, start_id_sql
                                 ),
                                 _ => {
+                                    // Split into two NOT EXISTS to avoid OR inside subquery
                                     format!(
-                                    "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} OR {}.{} = {})",
+                                    "(NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}) AND NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}))",
                                     full_table,
                                     table_name, from_col, start_id_sql,
+                                    full_table,
                                     table_name, to_col, start_id_sql
                                 )
                                 }
@@ -614,12 +616,14 @@ fn generate_not_exists_from_path_pattern(
                         }
                         (None, true) => {
                             // Undirected with anonymous end: check either direction
+                            // Split into two NOT EXISTS to avoid OR inside subquery
                             format!(
-                                "NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} OR {}.{} = {})",
+                                "(NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}) AND NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {}))",
                                 full_table,
                                 table_name,
                                 from_col,
                                 start_id_sql,
+                                full_table,
                                 table_name,
                                 to_col,
                                 start_id_sql
@@ -627,12 +631,15 @@ fn generate_not_exists_from_path_pattern(
                         }
                         (Some(_end), true) => {
                             // Named end node, undirected: check both directions
+                            // Split into two NOT EXISTS to avoid OR inside subquery —
+                            // ClickHouse "Cannot clone Union plan step" with OR in correlated subqueries
                             format!(
-                                "NOT EXISTS (SELECT 1 FROM {} WHERE ({}.{} = {} AND {}.{} = {}) OR ({}.{} = {} AND {}.{} = {}))",
+                                "(NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} AND {}.{} = {}) AND NOT EXISTS (SELECT 1 FROM {} WHERE {}.{} = {} AND {}.{} = {}))",
                                 full_table,
                                 // Direction 1: start -> end
                                 table_name, from_col, start_id_sql,
                                 table_name, to_col, end_id_sql,
+                                full_table,
                                 // Direction 2: end -> start
                                 table_name, from_col, end_id_sql,
                                 table_name, to_col, start_id_sql
@@ -856,6 +863,54 @@ pub enum Operator {
     Distinct,
     IsNull,
     IsNotNull,
+}
+
+impl Operator {
+    /// Returns a numeric precedence level for arithmetic operators.
+    /// Higher = binds tighter. Returns None for non-arithmetic operators.
+    fn arithmetic_precedence(self) -> Option<u8> {
+        match self {
+            Operator::Addition | Operator::Subtraction => Some(1),
+            Operator::Multiplication | Operator::Division | Operator::ModuloDivision => Some(2),
+            Operator::Exponentiation => Some(3),
+            _ => None,
+        }
+    }
+}
+
+/// Check whether a right operand needs parenthesization to preserve semantics.
+///
+/// Parentheses are needed when the right operand is an operator expression whose
+/// precedence is less than or equal to the outer operator's precedence for
+/// non-commutative operators (Subtraction, Division, ModuloDivision), because
+/// left-to-right evaluation would change the result.
+///
+/// Examples:
+/// - `a - (b + c)` must NOT flatten to `a - b + c`
+/// - `a / (b * c)` must NOT flatten to `a / b * c`
+/// - `a * (b + c)` must NOT flatten to `a * b + c`
+pub fn needs_right_parens(outer_op: Operator, right_operand: &RenderExpr) -> bool {
+    let outer_prec = match outer_op.arithmetic_precedence() {
+        Some(p) => p,
+        None => return false,
+    };
+
+    if let RenderExpr::OperatorApplicationExp(inner) = right_operand {
+        let inner_prec = match inner.operator.arithmetic_precedence() {
+            Some(p) => p,
+            None => return false,
+        };
+        // For non-commutative ops (-, /, %), parens needed when inner precedence <= outer
+        // For commutative ops (+, *), parens needed when inner precedence < outer (strict)
+        match outer_op {
+            Operator::Subtraction | Operator::Division | Operator::ModuloDivision => {
+                inner_prec <= outer_prec
+            }
+            _ => inner_prec < outer_prec,
+        }
+    } else {
+        false
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -1296,5 +1351,83 @@ impl TryFrom<LogicalCase> for RenderCase {
             when_then,
             else_expr,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_binop(op: Operator, left: RenderExpr, right: RenderExpr) -> RenderExpr {
+        RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: op,
+            operands: vec![left, right],
+        })
+    }
+
+    fn lit_int(n: i64) -> RenderExpr {
+        RenderExpr::Literal(Literal::Integer(n))
+    }
+
+    #[test]
+    fn test_needs_right_parens_sub_add() {
+        // a - (b + c) needs parens
+        let right = make_binop(Operator::Addition, lit_int(2), lit_int(3));
+        assert!(needs_right_parens(Operator::Subtraction, &right));
+    }
+
+    #[test]
+    fn test_needs_right_parens_sub_sub() {
+        // a - (b - c) needs parens
+        let right = make_binop(Operator::Subtraction, lit_int(2), lit_int(3));
+        assert!(needs_right_parens(Operator::Subtraction, &right));
+    }
+
+    #[test]
+    fn test_needs_right_parens_div_mul() {
+        // a / (b * c) needs parens
+        let right = make_binop(Operator::Multiplication, lit_int(2), lit_int(3));
+        assert!(needs_right_parens(Operator::Division, &right));
+    }
+
+    #[test]
+    fn test_needs_right_parens_mul_add() {
+        // a * (b + c) needs parens (I4 fix: was missing before)
+        let right = make_binop(Operator::Addition, lit_int(2), lit_int(3));
+        assert!(needs_right_parens(Operator::Multiplication, &right));
+    }
+
+    #[test]
+    fn test_no_parens_add_add() {
+        // a + (b + c) does NOT need parens (commutative, same precedence)
+        let right = make_binop(Operator::Addition, lit_int(2), lit_int(3));
+        assert!(!needs_right_parens(Operator::Addition, &right));
+    }
+
+    #[test]
+    fn test_no_parens_mul_mul() {
+        // a * (b * c) does NOT need parens (commutative, same precedence)
+        let right = make_binop(Operator::Multiplication, lit_int(2), lit_int(3));
+        assert!(!needs_right_parens(Operator::Multiplication, &right));
+    }
+
+    #[test]
+    fn test_no_parens_add_mul() {
+        // a + (b * c) does NOT need parens (higher precedence inner)
+        let right = make_binop(Operator::Multiplication, lit_int(2), lit_int(3));
+        assert!(!needs_right_parens(Operator::Addition, &right));
+    }
+
+    #[test]
+    fn test_no_parens_non_arithmetic() {
+        // a AND (b OR c) — handled separately by AND/OR wrapping, not by needs_right_parens
+        let right = make_binop(Operator::Or, lit_int(0), lit_int(1));
+        assert!(!needs_right_parens(Operator::And, &right));
+    }
+
+    #[test]
+    fn test_no_parens_literal() {
+        // a - 5 does NOT need parens (right is literal, not operator)
+        assert!(!needs_right_parens(Operator::Subtraction, &lit_int(5)));
     }
 }
