@@ -2874,6 +2874,8 @@ pub fn extract_ctes_with_context(
                         // Multi-type VLP: Use JOIN expansion with UNION ALL
                         log::info!("🎯 CTE: Using JOIN expansion for multi-type VLP");
 
+                        let is_undirected_pattern = graph_rel.was_undirected.unwrap_or(false);
+
                         // Extract start labels from graph pattern
                         let start_labels =
                             extract_node_labels(&graph_rel.left).unwrap_or_else(|| {
@@ -2925,14 +2927,22 @@ pub fn extract_ctes_with_context(
                         // but the actual query could reach multiple types
                         let mut end_labels: Vec<String> = Vec::new();
 
-                        // First, try to get explicit labels from the graph pattern
-                        if let Some(labels) = extract_node_labels(&graph_rel.right) {
-                            end_labels = labels;
+                        // For directed patterns, trust explicit labels from the graph pattern.
+                        // For undirected patterns (was_undirected=true), the GraphNode's inferred
+                        // label may reflect only one direction (e.g., the to_node from forward
+                        // traversal). We always re-derive end types from the schema below, then
+                        // intersect with any explicit labels to preserve user constraints like
+                        // (a)-[:R*]-(b:User) while still covering both directions.
+                        let explicit_end_labels = extract_node_labels(&graph_rel.right);
+
+                        if !is_undirected_pattern {
+                            if let Some(ref labels) = explicit_end_labels {
+                                end_labels = labels.clone();
+                            }
                         }
 
-                        // If no labels set, derive all possible end types from relationships.
-                        // When end_labels is already set (by PatternResolver or explicit typing
-                        // like `(b:Post)`), respect the constraint — don't re-expand.
+                        // Derive all possible end types from relationships when end_labels is
+                        // empty (undirected patterns always derive, directed only when untyped).
                         if end_labels.is_empty() {
                             let mut possible_end_types = std::collections::HashSet::new();
 
@@ -3033,6 +3043,27 @@ pub fn extract_ctes_with_context(
                                     schema,
                                 )
                                 .unwrap_or_else(|| "UnknownEndType".to_string())];
+                            }
+
+                            // For undirected patterns with explicit end labels (e.g., (a)--(b:User)),
+                            // intersect schema-derived types with the explicit constraint to avoid
+                            // widening the query beyond what the user specified.
+                            if is_undirected_pattern {
+                                if let Some(ref explicit) = explicit_end_labels {
+                                    let explicit_set: std::collections::HashSet<&String> =
+                                        explicit.iter().collect();
+                                    let intersected: Vec<String> = end_labels
+                                        .iter()
+                                        .filter(|l| explicit_set.contains(l))
+                                        .cloned()
+                                        .collect();
+                                    if !intersected.is_empty() {
+                                        end_labels = intersected;
+                                    }
+                                    // If intersection is empty, keep schema-derived labels —
+                                    // the explicit label was inferred (not user-specified) and
+                                    // may reflect only one direction.
+                                }
                             }
                         }
 
@@ -6270,5 +6301,95 @@ pub fn generate_cycle_prevention_filters_composite(
                 })
                 .unwrap(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::query_planner::logical_expr::{Literal, LogicalExpr};
+    use std::sync::Arc;
+
+    /// Regression: extract_node_labels should return None for unlabeled nodes.
+    #[test]
+    fn test_extract_node_labels_unlabeled_node() {
+        let node = LogicalPlan::GraphNode(crate::query_planner::logical_plan::GraphNode {
+            input: Arc::new(LogicalPlan::Empty),
+            alias: "o".to_string(),
+            label: None,
+            is_denormalized: false,
+            projected_columns: None,
+            node_types: None,
+        });
+        assert_eq!(extract_node_labels(&node), None);
+    }
+
+    /// extract_node_labels returns single label when set.
+    #[test]
+    fn test_extract_node_labels_single_label() {
+        let node = LogicalPlan::GraphNode(crate::query_planner::logical_plan::GraphNode {
+            input: Arc::new(LogicalPlan::Empty),
+            alias: "a".to_string(),
+            label: Some("Post".to_string()),
+            is_denormalized: false,
+            projected_columns: None,
+            node_types: None,
+        });
+        assert_eq!(extract_node_labels(&node), Some(vec!["Post".to_string()]));
+    }
+
+    /// extract_node_labels returns ALL types from node_types when multiple are present.
+    #[test]
+    fn test_extract_node_labels_multi_type() {
+        let node = LogicalPlan::GraphNode(crate::query_planner::logical_plan::GraphNode {
+            input: Arc::new(LogicalPlan::Empty),
+            alias: "o".to_string(),
+            label: Some("Post".to_string()), // First label
+            is_denormalized: false,
+            projected_columns: None,
+            node_types: Some(vec!["Post".to_string(), "User".to_string()]),
+        });
+        // Should return both types, not just the single label
+        let labels = extract_node_labels(&node).unwrap();
+        assert_eq!(labels.len(), 2);
+        assert!(labels.contains(&"Post".to_string()));
+        assert!(labels.contains(&"User".to_string()));
+    }
+
+    /// Regression: For undirected patterns, node_types with single entry should
+    /// still return that single entry via the label field (not node_types).
+    #[test]
+    fn test_extract_node_labels_single_node_type_uses_label() {
+        let node = LogicalPlan::GraphNode(crate::query_planner::logical_plan::GraphNode {
+            input: Arc::new(LogicalPlan::Empty),
+            alias: "o".to_string(),
+            label: Some("User".to_string()),
+            is_denormalized: false,
+            projected_columns: None,
+            node_types: Some(vec!["User".to_string()]), // Single type
+        });
+        // node_types has len=1, so falls through to label check
+        assert_eq!(extract_node_labels(&node), Some(vec!["User".to_string()]));
+    }
+
+    /// extract_node_labels traverses through Filter wrappers.
+    #[test]
+    fn test_extract_node_labels_through_filter() {
+        let node = LogicalPlan::GraphNode(crate::query_planner::logical_plan::GraphNode {
+            input: Arc::new(LogicalPlan::Empty),
+            alias: "a".to_string(),
+            label: Some("Post".to_string()),
+            is_denormalized: false,
+            projected_columns: None,
+            node_types: None,
+        });
+        let filtered = LogicalPlan::Filter(crate::query_planner::logical_plan::Filter {
+            input: Arc::new(node),
+            predicate: LogicalExpr::Literal(Literal::Boolean(true)),
+        });
+        assert_eq!(
+            extract_node_labels(&filtered),
+            Some(vec!["Post".to_string()])
+        );
     }
 }
