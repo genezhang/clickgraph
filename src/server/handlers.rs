@@ -215,9 +215,15 @@ pub async fn query_handler(
     // Intercept apoc.meta.schema MCP queries that use UNWIND + map projection.
     // The procedure executor can handle simple CALL, but the MCP query pattern
     // (UNWIND keys(value) AS key WITH key, value[key] ...) cannot be parsed/executed.
+    // Simple CALL apoc.meta.schema() falls through to the normal procedure dispatch below.
     if clean_upper.contains("APOC.META.SCHEMA") && clean_upper.contains("UNWIND") {
         log::info!("Detected apoc.meta.schema MCP query — short-circuiting with unwound results");
-        let schema_name = schema_name_param.unwrap_or_else(|| "default".to_string());
+
+        // Determine schema: payload param > USE clause > "default"
+        let schema_name = schema_name_param
+            .clone()
+            .or_else(|| extract_schema_from_use_clause(&clean_query))
+            .unwrap_or_else(|| "default".to_string());
 
         let schema_guard = crate::server::GLOBAL_SCHEMAS.get().ok_or_else(|| {
             (
@@ -1338,6 +1344,41 @@ pub async fn get_schema_handler(
         )),
     }
 }
+/// Extract a schema name from a leading `USE <schema>` clause in a Cypher query.
+///
+/// This lightweight text-based extraction mirrors the normal path's USE handling
+/// (which relies on the parser AST) for interceptions that run before parsing.
+fn extract_schema_from_use_clause(query: &str) -> Option<String> {
+    let trimmed = query.trim_start();
+    if !trimmed
+        .get(..4)
+        .map(|s| s.eq_ignore_ascii_case("USE "))
+        .unwrap_or(false)
+    {
+        return None;
+    }
+
+    let after_use = trimmed[3..].trim_start();
+    if after_use.is_empty() {
+        return None;
+    }
+
+    let mut end = after_use.len();
+    for (i, ch) in after_use.char_indices() {
+        if ch.is_whitespace() || ch == ';' {
+            end = i;
+            break;
+        }
+    }
+
+    let schema = after_use[..end].trim_matches('`').trim();
+    if schema.is_empty() {
+        None
+    } else {
+        Some(schema.to_string())
+    }
+}
+
 fn extract_result_count(_response: &axum::response::Response) -> Option<usize> {
     // TODO: Implement proper result count extraction
     // This would require either:

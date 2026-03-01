@@ -1044,45 +1044,30 @@ impl BoltHandler {
             return Ok(vec![BoltMessage::success(result_metadata)]);
         }
 
-        // Intercept apoc.meta.schema queries for MCP server compatibility.
-        // The MCP query uses UNWIND + map indexing + map projection which the
-        // procedure executor cannot handle; short-circuit with pre-formatted results.
-        if query_upper.contains("APOC.META.SCHEMA") {
-            log::info!("Detected apoc.meta.schema query — short-circuiting for MCP compatibility");
+        // Intercept the MCP server's apoc.meta.schema UNWIND query pattern.
+        // Only the UNWIND variant needs interception — the procedure executor cannot
+        // handle UNWIND + map indexing + map projection. Simple CALL apoc.meta.schema()
+        // falls through to the normal procedure-only execution pipeline below.
+        if query_upper.contains("APOC.META.SCHEMA") && query_upper.contains("UNWIND") {
+            log::info!(
+                "Detected apoc.meta.schema UNWIND query — short-circuiting for MCP compatibility"
+            );
 
             let effective_schema = schema_name.as_deref().unwrap_or("default").to_string();
 
-            let result = if query_upper.contains("UNWIND") {
-                // MCP query — return unwound format
-                let schema_guard = crate::server::GLOBAL_SCHEMAS
-                    .get()
-                    .ok_or_else(|| BoltError::internal("Schema registry not initialized"))?;
-                let schemas = schema_guard.read().await;
-                let schema = schemas
-                    .get(&effective_schema)
-                    .ok_or_else(|| BoltError::internal("Schema not found"))?;
-                crate::procedures::apoc_meta_schema::execute_unwound(schema)
-            } else {
-                // Simple CALL apoc.meta.schema() — use normal executor
-                let registry = crate::procedures::ProcedureRegistry::new();
-                crate::procedures::executor::execute_procedure_by_name(
-                    "apoc.meta.schema",
-                    &effective_schema,
-                    &registry,
-                )
-                .await
-            };
+            let schema_guard = crate::server::GLOBAL_SCHEMAS
+                .get()
+                .ok_or_else(|| BoltError::internal("Schema registry not initialized"))?;
+            let schemas = schema_guard.read().await;
+            let schema = schemas
+                .get(&effective_schema)
+                .ok_or_else(|| BoltError::internal("Schema not found"))?;
 
-            match result {
+            match crate::procedures::apoc_meta_schema::execute_unwound(schema) {
                 Ok(records) => {
-                    // Determine field names from the first record
-                    let fields: Vec<String> = if let Some(first) = records.first() {
-                        let mut keys: Vec<String> = first.keys().cloned().collect();
-                        keys.sort();
-                        keys
-                    } else {
-                        vec!["value".to_string()]
-                    };
+                    // The MCP UNWIND query always produces columns "key" and "value",
+                    // even when the schema is empty (zero rows).
+                    let fields = vec!["key".to_string(), "value".to_string()];
 
                     // Convert records to Bolt rows
                     let bolt_rows: Vec<Vec<BoltValue>> = records

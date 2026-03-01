@@ -93,11 +93,19 @@ fn build_schema_map(schema: &GraphSchema) -> serde_json::Value {
     for (label, node_schema) in schema.all_node_schemas() {
         let properties = build_property_metadata(&node_schema.property_mappings);
 
+        // Normalize label to base segment after the last "::" for APOC output
+        // and relationship matching. Node keys can be qualified (e.g., "db::table::Label").
+        let base_label = label
+            .rsplit("::")
+            .next()
+            .unwrap_or(label.as_str())
+            .to_string();
+
         // Build relationships section for this node
-        let relationships = build_node_relationships(schema, label);
+        let relationships = build_node_relationships(schema, &base_label);
 
         schema_map.insert(
-            label.clone(),
+            base_label,
             serde_json::json!({
                 "type": "node",
                 "count": -1,
@@ -156,67 +164,72 @@ fn build_property_metadata(
 /// Build the relationships section for a node label.
 ///
 /// Scans all relationship schemas to find edges originating from or targeting this node.
+/// For each relationship type, produces a single entry keyed by the base type name with:
+/// - `direction`: "out" if this node is a source, "in" if only a target
+/// - `labels`: endpoint labels (targets for outgoing, sources for incoming)
+/// - `properties`: relationship property metadata
+///
+/// When this node is both source and target of the same type (self-referential),
+/// the outgoing direction takes precedence (matching Neo4j APOC behavior).
 fn build_node_relationships(schema: &GraphSchema, node_label: &str) -> serde_json::Value {
-    let mut rels = serde_json::Map::new();
+    // Collect outgoing and incoming info per base relationship type
+    struct RelInfo {
+        is_outgoing: bool,
+        labels: Vec<String>,
+        properties: serde_json::Value,
+    }
+
+    let mut rel_map: std::collections::BTreeMap<String, RelInfo> =
+        std::collections::BTreeMap::new();
 
     for (key, rel_schema) in schema.get_relationships_schemas() {
-        // Skip composite keys — only process simple type keys or composite keys
-        // We need the from_node/to_node info which is on the schema
         let rel_type = if key.contains("::") {
-            // Composite key like "FOLLOWS::User::User" — extract base type
             key.split("::").next().unwrap_or(key).to_string()
         } else {
             key.clone()
         };
 
-        if rel_schema.from_node == node_label {
-            // Outgoing relationship
-            let entry = rels
-                .entry(rel_type.clone())
-                .or_insert_with(|| {
-                    serde_json::json!({
-                        "direction": "out",
-                        "count": -1,
-                        "labels": [],
-                        "properties": {},
-                    })
-                })
-                .as_object_mut()
-                .unwrap();
+        let is_source = rel_schema.from_node == node_label;
+        let is_target = rel_schema.to_node == node_label;
 
-            // Add target label to labels array if not already present
-            if let Some(labels) = entry.get_mut("labels").and_then(|v| v.as_array_mut()) {
-                let target = serde_json::Value::String(rel_schema.to_node.clone());
-                if !labels.contains(&target) {
-                    labels.push(target);
-                }
-            }
-
-            // Set properties from the relationship schema
-            entry.insert(
-                "properties".to_string(),
-                build_property_metadata(&rel_schema.property_mappings),
-            );
+        if !is_source && !is_target {
+            continue;
         }
 
-        if rel_schema.to_node == node_label {
-            // Incoming relationship — use a separate key to avoid overwriting outgoing
-            let in_key = format!("{}_in", rel_type);
+        let entry = rel_map.entry(rel_type).or_insert_with(|| RelInfo {
+            is_outgoing: is_source,
+            labels: Vec::new(),
+            properties: serde_json::json!({}),
+        });
 
-            // Only add if we haven't already added an outgoing for the same type to this node
-            // (self-referential relationships like User-FOLLOWS->User have both)
-            if !rels.contains_key(&in_key) {
-                rels.insert(
-                    in_key,
-                    serde_json::json!({
-                        "direction": "in",
-                        "count": -1,
-                        "labels": [&rel_schema.from_node],
-                        "properties": {},
-                    }),
-                );
+        // Outgoing takes precedence over incoming (self-referential: both true)
+        if is_source {
+            entry.is_outgoing = true;
+            // For outgoing, collect target labels
+            if !entry.labels.contains(&rel_schema.to_node) {
+                entry.labels.push(rel_schema.to_node.clone());
             }
+            entry.properties = build_property_metadata(&rel_schema.property_mappings);
+        } else if !entry.is_outgoing {
+            // Only set incoming info if no outgoing was found yet
+            if !entry.labels.contains(&rel_schema.from_node) {
+                entry.labels.push(rel_schema.from_node.clone());
+            }
+            entry.properties = build_property_metadata(&rel_schema.property_mappings);
         }
+    }
+
+    let mut rels = serde_json::Map::new();
+    for (rel_type, info) in rel_map {
+        rels.insert(
+            rel_type,
+            serde_json::json!({
+                "direction": if info.is_outgoing { "out" } else { "in" },
+                "count": -1,
+                "labels": info.labels,
+                "properties": info.properties,
+            }),
+        );
     }
 
     serde_json::Value::Object(rels)
@@ -410,6 +423,26 @@ mod tests {
         assert_eq!(user_rels["LIKES"]["direction"], "out");
         let likes_labels = user_rels["LIKES"]["labels"].as_array().unwrap();
         assert!(likes_labels.contains(&serde_json::json!("Post")));
+    }
+
+    #[test]
+    fn test_incoming_relationship_no_suffix() {
+        let schema = create_schema_with_nodes_and_rels();
+        let results = execute(&schema).unwrap();
+        let value = &results[0]["value"];
+
+        // Post is only a target — LIKES should appear with direction "in", no "_in" suffix
+        let post_rels = value["Post"]["relationships"].as_object().unwrap();
+        assert!(post_rels.contains_key("LIKES"));
+        assert_eq!(post_rels["LIKES"]["direction"], "in");
+        let likes_labels = post_rels["LIKES"]["labels"].as_array().unwrap();
+        assert!(likes_labels.contains(&serde_json::json!("User")));
+
+        // No synthetic "_in" keys should exist
+        assert!(
+            !post_rels.keys().any(|k| k.ends_with("_in")),
+            "No _in suffixed keys should exist"
+        );
     }
 
     #[test]
