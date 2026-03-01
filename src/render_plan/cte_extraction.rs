@@ -3522,6 +3522,10 @@ pub fn extract_ctes_with_context(
 
                         // Collect node properties for start_properties and end_properties
                         // This enables path queries: MATCH p=()-->() RETURN p
+                        // No AS aliases here — ClickHouse treats AS inside formatRowNoNewline
+                        // as SELECT-level aliases, which conflict when both start_properties and
+                        // end_properties reference same-named columns (User→User JOINs).
+                        // The result transformer's clean_property_keys() strips table alias prefixes.
                         let start_prop_cols: Vec<String> = from_node_schema
                             .property_mappings
                             .values()
@@ -3530,7 +3534,6 @@ pub fn extract_ctes_with_context(
                                     PropertyValue::Column(c) => c.clone(),
                                     PropertyValue::Expression(e) => e.clone(),
                                 };
-                                // Include both the column and its alias for proper JSON formatting
                                 format!("{from_table}.{col_name}")
                             })
                             .collect();

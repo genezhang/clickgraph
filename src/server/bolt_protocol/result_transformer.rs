@@ -138,6 +138,45 @@ pub enum ReturnItemType {
 /// ]
 /// ```
 
+/// Parse composite relationship key "FOLLOWS::User::User" into ("FOLLOWS", Some("User"), Some("User"))
+/// Simple keys like "FOLLOWS" return ("FOLLOWS", None, None)
+fn parse_composite_rel_key(key: &str) -> (String, Option<String>, Option<String>) {
+    let parts: Vec<&str> = key.split("::").collect();
+    match parts.as_slice() {
+        [rel_type, from_label, to_label] => (
+            rel_type.to_string(),
+            Some(from_label.to_string()),
+            Some(to_label.to_string()),
+        ),
+        _ => (key.to_string(), None, None),
+    }
+}
+
+/// Strip composite key suffixes from rel_types and infer from/to labels if missing.
+/// Converts ["FOLLOWS::User::User"] → (["FOLLOWS"], inferred_from, inferred_to)
+fn strip_composite_rel_types(
+    rel_types: &[String],
+    existing_from: Option<String>,
+    existing_to: Option<String>,
+) -> (Vec<String>, Option<String>, Option<String>) {
+    let mut stripped_types = Vec::new();
+    let mut inferred_from = existing_from;
+    let mut inferred_to = existing_to;
+
+    for rt in rel_types {
+        let (base_type, from_label, to_label) = parse_composite_rel_key(rt);
+        stripped_types.push(base_type);
+        if inferred_from.is_none() {
+            inferred_from = from_label;
+        }
+        if inferred_to.is_none() {
+            inferred_to = to_label;
+        }
+    }
+
+    (stripped_types, inferred_from, inferred_to)
+}
+
 /// Helper function to find the direction of a relationship in a GraphRel within the logical plan
 fn find_relationship_direction(plan: &LogicalPlan, rel_alias: &str) -> Option<String> {
     match plan {
@@ -247,10 +286,19 @@ pub fn extract_return_metadata(
                             find_relationship_direction(logical_plan, &table_alias.to_string())
                         };
 
+                        // Strip composite key suffixes: "FOLLOWS::User::User" → "FOLLOWS"
+                        // and infer from/to labels if not already set
+                        let (stripped_types, inferred_from, inferred_to) =
+                            strip_composite_rel_types(
+                                &rel_var.rel_types,
+                                rel_var.from_node_label.clone(),
+                                rel_var.to_node_label.clone(),
+                            );
+
                         ReturnItemType::Relationship {
-                            rel_types: rel_var.rel_types.clone(),
-                            from_label: rel_var.from_node_label.clone(),
-                            to_label: rel_var.to_node_label.clone(),
+                            rel_types: stripped_types,
+                            from_label: inferred_from,
+                            to_label: inferred_to,
                             direction,
                         }
                     }
@@ -422,10 +470,18 @@ pub fn extract_return_metadata(
                                 find_relationship_direction(logical_plan, &var_name)
                             };
 
+                            // Strip composite key suffixes: "FOLLOWS::User::User" → "FOLLOWS"
+                            let (stripped_types, inferred_from, inferred_to) =
+                                strip_composite_rel_types(
+                                    &rel_var.rel_types,
+                                    rel_var.from_node_label.clone(),
+                                    rel_var.to_node_label.clone(),
+                                );
+
                             ReturnItemType::Relationship {
-                                rel_types: rel_var.rel_types.clone(),
-                                from_label: rel_var.from_node_label.clone(),
-                                to_label: rel_var.to_node_label.clone(),
+                                rel_types: stripped_types,
+                                from_label: inferred_from,
+                                to_label: inferred_to,
                                 direction,
                             }
                         }
@@ -1160,25 +1216,20 @@ fn transform_to_relationship(
     let from_node_label = &resolved_from_label;
     let to_node_label = &resolved_to_label;
 
-    // Get from/to node schemas to determine if IDs are composite
-    let from_node_schema = schema
-        .node_schema_opt(from_node_label)
-        .ok_or_else(|| format!("From node schema not found for label: {}", from_node_label))?;
-    let to_node_schema = schema
-        .node_schema_opt(to_node_label)
-        .ok_or_else(|| format!("To node schema not found for label: {}", to_node_label))?;
-
-    // Extract from_id values (may be composite)
-    let from_id_columns = from_node_schema.node_id.id.columns();
-    let from_id_values: Vec<String> = from_id_columns
+    // Extract from_id values using relationship's FK columns (e.g., follower_id, followed_id)
+    let from_rel_id_columns = rel_schema.from_id.columns();
+    let from_id_values: Vec<String> = from_rel_id_columns
         .iter()
         .enumerate()
         .map(|(i, col_name)| {
+            // First try: FK column from relationship schema (e.g., follower_id)
             properties
                 .get(*col_name)
-                .or_else(|| properties.get("start_id")) // For CTE: use generic start_id
-                .or_else(|| properties.get("from_id")) // Fallback to generic name for single column
-                .or_else(|| properties.get(&format!("from_id_{}", i + 1))) // Composite: from_id_1, from_id_2, ...
+                // Second try: generic CTE column names
+                .or_else(|| properties.get("start_id"))
+                .or_else(|| properties.get("from_id"))
+                // Third try: composite variants
+                .or_else(|| properties.get(&format!("from_id_{}", i + 1)))
                 .and_then(value_to_string)
                 .ok_or_else(|| {
                     format!(
@@ -1189,17 +1240,20 @@ fn transform_to_relationship(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    // Extract to_id values (may be composite)
-    let to_id_columns = to_node_schema.node_id.id.columns();
-    let to_id_values: Vec<String> = to_id_columns
+    // Extract to_id values using relationship's FK columns
+    let to_rel_id_columns = rel_schema.to_id.columns();
+    let to_id_values: Vec<String> = to_rel_id_columns
         .iter()
         .enumerate()
         .map(|(i, col_name)| {
+            // First try: FK column from relationship schema (e.g., followed_id)
             properties
                 .get(*col_name)
-                .or_else(|| properties.get("end_id")) // For CTE: use generic end_id
-                .or_else(|| properties.get("to_id")) // Fallback to generic name for single column
-                .or_else(|| properties.get(&format!("to_id_{}", i + 1))) // Composite: to_id_1, to_id_2, ...
+                // Second try: generic CTE column names
+                .or_else(|| properties.get("end_id"))
+                .or_else(|| properties.get("to_id"))
+                // Third try: composite variants
+                .or_else(|| properties.get(&format!("to_id_{}", i + 1)))
                 .and_then(value_to_string)
                 .ok_or_else(|| {
                     format!(
@@ -1214,16 +1268,20 @@ fn transform_to_relationship(
     let from_id_str = from_id_values.join("|");
     let to_id_str = to_id_values.join("|");
 
-    // Remove internal from_id/to_id keys from properties (they're FK columns, not user properties)
+    // Remove internal ID keys from properties (they're FK columns, not user properties)
     properties.remove("from_id");
     properties.remove("to_id");
     properties.remove("start_id");
     properties.remove("end_id");
-    // Remove composite variants: from_id_1, from_id_2, to_id_1, to_id_2, ...
-    for i in 1..=from_id_columns.len() {
-        properties.remove(&format!("from_id_{}", i));
+    // Remove relationship FK columns and composite variants
+    for col in &from_rel_id_columns {
+        properties.remove(*col);
     }
-    for i in 1..=to_id_columns.len() {
+    for col in &to_rel_id_columns {
+        properties.remove(*col);
+    }
+    for i in 1..=10 {
+        properties.remove(&format!("from_id_{}", i));
         properties.remove(&format!("to_id_{}", i));
     }
 
@@ -1806,8 +1864,8 @@ fn transform_vlp_path(
         _ => "UNKNOWN".to_string(),
     };
 
-    let start_id_str = fields[4].as_str().unwrap_or("0").to_string();
-    let end_id_str = fields[5].as_str().unwrap_or("0").to_string();
+    let start_id_str = value_to_id_string(&fields[4]);
+    let end_id_str = value_to_id_string(&fields[5]);
     let hop_count = fields[6]
         .as_i64()
         .or_else(|| fields[6].as_str().and_then(|s| s.parse().ok()))
@@ -2324,6 +2382,17 @@ fn create_relationship_with_type(
 /// Convert a JSON Value to a String for elementId generation
 ///
 /// Handles String, Number, Boolean types. Returns None for complex types.
+/// Extract an ID value from a JSON Value, handling both strings and numbers.
+/// ClickHouse may return tuple elements as their native types (integer for numeric columns),
+/// so we must handle both Value::String("16") and Value::Number(16).
+fn value_to_id_string(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => "0".to_string(),
+    }
+}
+
 fn value_to_string(value: &Value) -> Option<String> {
     match value {
         Value::String(s) => Some(s.clone()),
@@ -2574,25 +2643,75 @@ mod tests {
             &schema,
         );
 
-        if let Err(e) = &result {
-            eprintln!("Transform error: {}", e);
-        }
-
-        // Note: Due to a bug in transform_to_relationship, both from_id and to_id
-        // use the node's node_id column (user_id), so they both get the same value.
-        // This test documents the current behavior.
         assert!(result.is_ok());
         let rel = result.unwrap();
         assert_eq!(rel.rel_type, "FOLLOWS");
-        // Current buggy behavior: both use user_id (1), so element_id is wrong
-        assert_eq!(rel.element_id, "FOLLOWS:1->1");
-        // These would be correct if the function used the relationship's from_id/to_id columns
-        // assert_eq!(rel.start_node_element_id, "User:1");
-        // assert_eq!(rel.end_node_element_id, "User:2");
+        // Uses relationship's FK columns: follower_id=1, followed_id=2
+        assert_eq!(rel.element_id, "FOLLOWS:1->2");
+        assert_eq!(rel.start_node_element_id, "User:1");
+        assert_eq!(rel.end_node_element_id, "User:2");
         assert_eq!(
             rel.properties.get("follow_date").unwrap(),
             &Value::String("2024-01-15".to_string())
         );
+    }
+
+    /// Regression test: parse_composite_rel_key correctly splits "FOLLOWS::User::User" format
+    #[test]
+    fn test_parse_composite_rel_key_with_labels() {
+        let (rel_type, from, to) = parse_composite_rel_key("FOLLOWS::User::User");
+        assert_eq!(rel_type, "FOLLOWS");
+        assert_eq!(from, Some("User".to_string()));
+        assert_eq!(to, Some("User".to_string()));
+    }
+
+    #[test]
+    fn test_parse_composite_rel_key_different_labels() {
+        let (rel_type, from, to) = parse_composite_rel_key("LIKES::User::Post");
+        assert_eq!(rel_type, "LIKES");
+        assert_eq!(from, Some("User".to_string()));
+        assert_eq!(to, Some("Post".to_string()));
+    }
+
+    #[test]
+    fn test_parse_composite_rel_key_simple() {
+        let (rel_type, from, to) = parse_composite_rel_key("FOLLOWS");
+        assert_eq!(rel_type, "FOLLOWS");
+        assert_eq!(from, None);
+        assert_eq!(to, None);
+    }
+
+    /// Regression test: strip_composite_rel_types removes ::From::To suffixes from rel_types
+    /// and infers from/to labels. Fixes undirected relationship queries leaking composite
+    /// rel_type "FOLLOWS::User::User" in Bolt responses.
+    #[test]
+    fn test_strip_composite_rel_types_infers_labels() {
+        let (types, from, to) =
+            strip_composite_rel_types(&["FOLLOWS::User::User".to_string()], None, None);
+        assert_eq!(types, vec!["FOLLOWS".to_string()]);
+        assert_eq!(from, Some("User".to_string()));
+        assert_eq!(to, Some("User".to_string()));
+    }
+
+    #[test]
+    fn test_strip_composite_rel_types_preserves_existing_labels() {
+        let (types, from, to) = strip_composite_rel_types(
+            &["FOLLOWS::User::User".to_string()],
+            Some("Person".to_string()),
+            Some("Person".to_string()),
+        );
+        assert_eq!(types, vec!["FOLLOWS".to_string()]);
+        // Existing labels take precedence
+        assert_eq!(from, Some("Person".to_string()));
+        assert_eq!(to, Some("Person".to_string()));
+    }
+
+    #[test]
+    fn test_strip_composite_rel_types_simple_passthrough() {
+        let (types, from, to) = strip_composite_rel_types(&["FOLLOWS".to_string()], None, None);
+        assert_eq!(types, vec!["FOLLOWS".to_string()]);
+        assert_eq!(from, None);
+        assert_eq!(to, None);
     }
 
     // Integration-style test (requires more setup)
