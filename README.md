@@ -385,7 +385,7 @@ I'll be back:)
 
 Use ClickGraph with AI assistants like Claude through the Model Context Protocol (MCP).
 
-**Zero Configuration**: ClickGraph's Bolt protocol is compatible with Neo4j's MCP server out-of-the-box!
+ClickGraph implements `apoc.meta.schema()` and Neo4j-compatible schema procedures, so MCP servers can discover your graph structure automatically — no extra configuration needed.
 
 ### Quick Setup with Claude Desktop
 
@@ -394,8 +394,8 @@ Use ClickGraph with AI assistants like Claude through the Model Context Protocol
    docker run -d -p 8080:8080 -p 7687:7687 genezhang/clickgraph:latest
    ```
 
-2. **Configure Claude Desktop** to connect via Neo4j's MCP server:
-   
+2. **Configure Claude Desktop** to connect via a Neo4j MCP server:
+
    Add to Claude Desktop's MCP configuration (`claude_desktop_config.json`):
    ```json
    {
@@ -403,7 +403,7 @@ Use ClickGraph with AI assistants like Claude through the Model Context Protocol
        "clickgraph": {
          "command": "npx",
          "args": [
-           "@modelcontextprotocol/server-neo4j",
+           "@anthropic-ai/mcp-server-neo4j",
            "bolt://localhost:7687"
          ],
          "env": {
@@ -420,9 +420,11 @@ Use ClickGraph with AI assistants like Claude through the Model Context Protocol
    - "Find users who follow each other"
    - "What's the average age of users by country?"
 
+**Compatible MCP Servers**: Anthropic's [`@anthropic-ai/mcp-server-neo4j`](https://www.npmjs.com/package/@anthropic-ai/mcp-server-neo4j), Neo4j's official [`@neo4j/mcp-neo4j`](https://www.npmjs.com/package/@neo4j/mcp-neo4j), and the Labs Python server [`mcp-neo4j-cypher`](https://github.com/neo4j-contrib/mcp-neo4j).
+
 **Features Available**:
 - ✅ Natural language to Cypher query translation
-- ✅ Schema introspection and discovery
+- ✅ Schema discovery via `apoc.meta.schema()` and `db.schema.*` procedures
 - ✅ Complex graph pattern queries
 - ✅ Aggregations and analytics
 

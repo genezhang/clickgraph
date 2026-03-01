@@ -1044,6 +1044,71 @@ impl BoltHandler {
             return Ok(vec![BoltMessage::success(result_metadata)]);
         }
 
+        // Intercept the MCP server's apoc.meta.schema UNWIND query pattern.
+        // Only the UNWIND variant needs interception — the procedure executor cannot
+        // handle UNWIND + map indexing + map projection. Simple CALL apoc.meta.schema()
+        // falls through to the normal procedure-only execution pipeline below.
+        if query_upper.contains("APOC.META.SCHEMA") && query_upper.contains("UNWIND") {
+            log::info!(
+                "Detected apoc.meta.schema UNWIND query — short-circuiting for MCP compatibility"
+            );
+
+            let effective_schema = schema_name.as_deref().unwrap_or("default").to_string();
+
+            let schema_guard = crate::server::GLOBAL_SCHEMAS
+                .get()
+                .ok_or_else(|| BoltError::internal("Schema registry not initialized"))?;
+            let schemas = schema_guard.read().await;
+            let schema = schemas
+                .get(&effective_schema)
+                .ok_or_else(|| BoltError::internal("Schema not found"))?;
+
+            match crate::procedures::apoc_meta_schema::execute_unwound(schema) {
+                Ok(records) => {
+                    // The MCP UNWIND query always produces columns "key" and "value",
+                    // even when the schema is empty (zero rows).
+                    let fields = vec!["key".to_string(), "value".to_string()];
+
+                    // Convert records to Bolt rows
+                    let bolt_rows: Vec<Vec<BoltValue>> = records
+                        .iter()
+                        .map(|record| {
+                            fields
+                                .iter()
+                                .map(|f| {
+                                    BoltValue::Json(
+                                        record.get(f).cloned().unwrap_or(serde_json::Value::Null),
+                                    )
+                                })
+                                .collect()
+                        })
+                        .collect();
+
+                    // Update context to streaming state
+                    {
+                        let mut context = lock_context!(self.context);
+                        context.set_state(ConnectionState::Streaming);
+                    }
+
+                    self.cached_results = Some(bolt_rows);
+
+                    let mut result_metadata = HashMap::new();
+                    result_metadata.insert("fields".to_string(), serde_json::json!(fields));
+                    result_metadata
+                        .insert("result_consumed_after".to_string(), serde_json::json!(-1));
+
+                    return Ok(vec![BoltMessage::success(result_metadata)]);
+                }
+                Err(e) => {
+                    log::error!("apoc.meta.schema execution failed: {}", e);
+                    return Ok(vec![BoltMessage::failure(
+                        "Neo.ClientError.Procedure.ProcedureCallFailed".to_string(),
+                        e,
+                    )]);
+                }
+            }
+        }
+
         // Parse and execute the query with task-local schema context
         // Note: id() predicates with encoded values are decoded in FilterTagging pass
         use crate::server::query_context::{with_query_context, QueryContext};

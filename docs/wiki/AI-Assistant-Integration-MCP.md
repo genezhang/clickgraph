@@ -4,14 +4,13 @@
 
 ## Overview
 
-The Model Context Protocol (MCP) enables AI assistants to connect to external data sources and tools. ClickGraph's Bolt protocol implementation is fully compatible with Neo4j's MCP server, allowing you to query your graph data using natural language through AI assistants like Claude.
+The Model Context Protocol (MCP) enables AI assistants to connect to external data sources and tools. ClickGraph's Bolt protocol implements `apoc.meta.schema()` and the full suite of Neo4j schema procedures, so MCP servers can discover your graph structure automatically and generate accurate queries.
 
 **Key Benefits**:
-- 🎯 **Zero Custom Code**: Use existing Neo4j MCP server
-- 🔄 **Zero Maintenance**: Anthropic maintains the protocol implementation
+- 🎯 **Drop-in Compatible**: Works with existing Neo4j MCP servers — no custom code needed
+- 📊 **Automatic Schema Discovery**: `apoc.meta.schema()` exposes node types, relationship types, and properties
 - 🚀 **Instant Setup**: 2-minute configuration
 - 💬 **Natural Language**: Query graphs conversationally
-- 📊 **Schema Discovery**: AI understands your graph structure automatically
 
 ## Quick Start
 
@@ -76,7 +75,7 @@ EOF
     "clickgraph": {
       "command": "npx",
       "args": [
-        "@modelcontextprotocol/server-neo4j",
+        "@anthropic-ai/mcp-server-neo4j",
         "bolt://localhost:7687"
       ],
       "env": {
@@ -96,7 +95,7 @@ EOF
     "clickgraph-prod": {
       "command": "npx",
       "args": [
-        "@modelcontextprotocol/server-neo4j",
+        "@anthropic-ai/mcp-server-neo4j",
         "bolt://your-server.com:7687"
       ],
       "env": {
@@ -146,15 +145,15 @@ Connect to multiple ClickGraph instances with different schemas:
   "mcpServers": {
     "social-graph": {
       "command": "npx",
-      "args": ["@modelcontextprotocol/server-neo4j", "bolt://localhost:7687"]
+      "args": ["@anthropic-ai/mcp-server-neo4j", "bolt://localhost:7687"]
     },
     "ecommerce-graph": {
       "command": "npx",
-      "args": ["@modelcontextprotocol/server-neo4j", "bolt://localhost:7688"]
+      "args": ["@anthropic-ai/mcp-server-neo4j", "bolt://localhost:7688"]
     },
     "fraud-detection": {
       "command": "npx",
-      "args": ["@modelcontextprotocol/server-neo4j", "bolt://prod-server:7687"],
+      "args": ["@anthropic-ai/mcp-server-neo4j", "bolt://prod-server:7687"],
       "env": {
         "NEO4J_USERNAME": "analyst",
         "NEO4J_PASSWORD": "${PROD_PASSWORD}"  
@@ -187,7 +186,7 @@ Update MCP config:
   "mcpServers": {
     "clickgraph": {
       "command": "npx",
-      "args": ["@modelcontextprotocol/server-neo4j", "bolt://localhost:8687"]
+      "args": ["@anthropic-ai/mcp-server-neo4j", "bolt://localhost:8687"]
     }
   }
 }
@@ -210,7 +209,7 @@ ClickGraph supports multiple authentication methods through Bolt:
 **No Authentication** (development only):
 ```json
 {
-  "args": ["@modelcontextprotocol/server-neo4j", "bolt://localhost:7687"],
+  "args": ["@anthropic-ai/mcp-server-neo4j", "bolt://localhost:7687"],
   "env": {}
 }
 ```
@@ -322,11 +321,11 @@ Claude: [Writes query with OPTIONAL MATCH to find dangling refs]
 - Subqueries (`EXISTS`, `WITH`)
 - All Cypher operators and functions
 
-✅ **Schema Discovery**:
-- Automatic node type enumeration
-- Relationship type discovery
-- Property inspection
-- Index and constraint information (if defined in schema)
+✅ **Schema Discovery** (via `apoc.meta.schema()` and `db.schema.*` procedures):
+- Automatic node type enumeration (`db.labels()`)
+- Relationship type discovery (`db.relationshipTypes()`)
+- Property inspection (`db.schema.nodeTypeProperties()`, `db.schema.relTypeProperties()`)
+- Full APOC schema metadata (`apoc.meta.schema()`) — used by MCP servers for automatic graph introspection
 
 ✅ **Query Optimization**:
 - AI generates optimized Cypher
@@ -400,7 +399,7 @@ EOF
 
 3. **Test MCP server manually**:
    ```bash
-   npx @modelcontextprotocol/server-neo4j bolt://localhost:7687
+   npx @anthropic-ai/mcp-server-neo4j bolt://localhost:7687
    # Should start without errors
    ```
 
@@ -592,6 +591,18 @@ Build a ClickGraph-specific MCP server with additional features:
 
 See [Custom MCP Server Development](#future-enhancements) below.
 
+## Compatible MCP Servers
+
+ClickGraph has been tested with the following Neo4j MCP servers:
+
+| Server | Install | Notes |
+|--------|---------|-------|
+| [Anthropic Neo4j MCP](https://www.npmjs.com/package/@anthropic-ai/mcp-server-neo4j) | `npx @anthropic-ai/mcp-server-neo4j` | Recommended for Claude Desktop |
+| [Neo4j Official MCP](https://www.npmjs.com/package/@neo4j/mcp-neo4j) | `npx @neo4j/mcp-neo4j` | Official Neo4j MCP server |
+| [Labs Python MCP](https://github.com/neo4j-contrib/mcp-neo4j) | `uvx mcp-neo4j-cypher` | Python-based, uses simpler schema query |
+
+All three use `apoc.meta.schema()` for schema discovery, which ClickGraph fully supports.
+
 ## Future Enhancements
 
 Potential improvements for MCP integration:
@@ -601,18 +612,12 @@ Potential improvements for MCP integration:
    - ClickGraph-specific features (query cache control, schema management)
    - Enhanced error messages with optimization hints
 
-2. **Enhanced Schema Discovery**:
-   - Automatic schema documentation generation
-   - Example queries for common patterns
-   - Property type inference and validation
-
-3. **Query Performance Insights**:
+2. **Query Performance Insights**:
    - Expose ClickGraph's query timing metrics
    - Suggest indexes and optimizations
    - Query plan visualization
 
-4. **Multi-Schema Support**:
-   - Schema-aware query generation
+3. **Multi-Schema Support**:
    - Cross-schema query validation
    - Dynamic schema switching via USE clause
 
@@ -635,5 +640,6 @@ Potential improvements for MCP integration:
 **MCP Protocol Resources**:
 
 - [Model Context Protocol Specification](https://modelcontextprotocol.io)
-- [Neo4j MCP Server Documentation](https://github.com/modelcontextprotocol/servers/tree/main/src/neo4j)
-- [Anthropic MCP Documentation](https://docs.anthropic.com/en/docs/model-context-protocol)
+- [Anthropic Neo4j MCP Server](https://www.npmjs.com/package/@anthropic-ai/mcp-server-neo4j)
+- [Neo4j Official MCP Server](https://www.npmjs.com/package/@neo4j/mcp-neo4j)
+- [Neo4j Labs Python MCP Server](https://github.com/neo4j-contrib/mcp-neo4j)
