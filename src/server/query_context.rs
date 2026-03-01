@@ -76,6 +76,11 @@ pub struct QueryContext {
     /// Wrapped in Arc to match RenderPlan/Cte fields and avoid cloning overhead.
     pub current_variable_registry:
         Option<std::sync::Arc<crate::query_planner::typed_variable::VariableRegistry>>,
+
+    /// Weight CTE config for weighted shortest path (Dijkstra).
+    /// Set in build_chained_with_match_cte_plan when a weight CTE is detected.
+    /// Read by VLP CTE generation to use weighted mode.
+    pub weight_cte_config: Option<crate::clickhouse_query_generator::WeightCteConfig>,
 }
 
 impl QueryContext {
@@ -450,7 +455,23 @@ pub fn clear_all_render_contexts() {
         ctx.relationship_columns.clear();
         ctx.cte_property_mappings.clear();
         ctx.multi_type_vlp_aliases.clear();
+        ctx.weight_cte_config = None;
     });
+}
+
+/// Set weight CTE config for weighted shortest path
+pub fn set_weight_cte_config(config: crate::clickhouse_query_generator::WeightCteConfig) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().weight_cte_config = Some(config);
+    });
+}
+
+/// Get weight CTE config for weighted shortest path
+pub fn get_weight_cte_config() -> Option<crate::clickhouse_query_generator::WeightCteConfig> {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().weight_cte_config.clone())
+        .ok()
+        .flatten()
 }
 
 #[cfg(test)]

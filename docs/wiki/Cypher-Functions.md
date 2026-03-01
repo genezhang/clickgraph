@@ -872,7 +872,12 @@ RETURN u.user_id AS business_id, u.name
 | `nodes(path)` | List of nodes | `nodes(path)` |
 | `edges(path)` | List of edges | `edges(path)` |
 | `shortestPath(...)` | Find shortest path | `shortestPath((a)-[*]-(b))` |
-| `allShortestPaths(...)` | All shortest paths | `allShortestPaths((a)-[*]-(b))` |### Scalar Functions
+| `allShortestPaths(...)` | All shortest paths | `allShortestPaths((a)-[*]-(b))` |
+| `cost(path)` | Total weight of weighted shortest path | `cost(path)` |
+
+> **Note:** `cost(path)` requires a preceding WITH clause that exports exactly three aliases named `source`, `target`, and `weight`, representing edge weights. The query must also use `shortestPath()`. The weight CTE is automatically detected and used for weighted VLP traversal (Dijkstra-style `ORDER BY total_weight ASC` instead of `ORDER BY hop_count ASC`).
+
+### Scalar Functions
 
 | Function | Description | Example |
 |----------|-------------|---------|  

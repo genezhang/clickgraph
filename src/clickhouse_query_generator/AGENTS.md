@@ -69,7 +69,7 @@ to_sql_query.rs (3,240)    ← MAIN FILE: render_plan_to_sql()
     ├─ to_sql.rs (374)               ← ToSql trait + impls for LogicalExpr, LogicalPlan
     │                                   Used by view_query.rs and EXISTS/IN subqueries
     │
-    ├─ variable_length_cte.rs (3,359) ← VariableLengthCteGenerator: WITH RECURSIVE CTEs
+    ├─ variable_length_cte.rs (3,943) ← VariableLengthCteGenerator: WITH RECURSIVE CTEs
     │                                    for *1..N path patterns. 5 schema variations.
     │                                    Most complex file after to_sql_query.rs.
     │
@@ -141,7 +141,8 @@ the final SQL string is constructed clause by clause.
 - `render_plan_to_sql()` — Top-level orchestrator. Handles UNION wrapping, VLP rewriting, context setup/teardown.
 - `rewrite_vlp_select_aliases()` — Rewrites Cypher aliases (`a.name`) to CTE column names (`t.start_name`).
   Has special handling for OPTIONAL VLP (skip start alias), WITH CTE (skip covered aliases).
-- `rewrite_expr_for_vlp()` — Recursive expression rewriter for VLP alias mapping.
+- `rewrite_expr_for_vlp()` — Recursive expression rewriter for VLP alias mapping. Also handles `cost(path)` → `t.total_weight` mapping for weighted VLP mode.
+- `render_expr_contains_aggregate()` — Recursive aggregate detection for nested CASE/ScalarFnCall expressions. Used by `has_aggregation` checks in UNION branch rendering.
 - `derive_cypher_property_name()` — **⚠️ TECHNICAL DEBT**: Hardcoded DB→Cypher property name mappings.
 - `RenderExpr::to_sql()` — Massive match arm (~700 lines) handling every expression type.
 - `RenderExpr::to_sql_without_table_alias()` — For LEFT JOIN subquery filters.
@@ -170,7 +171,7 @@ Used by view_query.rs and for EXISTS/IN subquery generation.
 - `LogicalExpr::MapLiteral` → `map()` with toString() cast (ClickHouse requires homogeneous map values)
 - `LogicalExpr::In` with PropertyAccess → `has(array, value)` (array membership)
 
-### variable_length_cte.rs (3,359 lines) — Recursive CTE Generator
+### variable_length_cte.rs (3,943 lines) — Recursive CTE Generator
 
 **What it does**: Generates `WITH RECURSIVE` CTEs for Cypher `*1..N` path patterns.
 The most schema-sensitive code in the codebase.
@@ -228,6 +229,12 @@ generate_cte() → Cte
 - `path_edges` — Array of edge tuples (for edge uniqueness)
 - `path_relationships` — Array of relationship type strings
 - `hop_count` — Integer counter
+
+**Weighted mode** (Mar 2026): `set_weight_cte(WeightCteConfig)` enables Dijkstra-style traversal:
+- `generate_weighted_base_case()`: JOINs weight CTE instead of edge table, adds `total_weight` column
+- `generate_weighted_recursive_case()`: Accumulates `total_weight + ew.weight`, JOINs weight CTE
+- `order_by_column`: Returns `"total_weight"` when weighted, `"hop_count"` when unweighted
+- Used in tiered CTE templates (Shortest + AllShortest) for ROW_NUMBER and MIN filtering
 
 ### multi_type_vlp_joins.rs (1,337 lines) — Multi-Type Path Generator
 
@@ -358,6 +365,11 @@ simply passes the string through unchanged. No opportunity to rewrite.
 with SQL rendering deferred to `to_sql()`. See `render_plan/AGENTS.md` §10
 for the full architecture description and migration plan.
 
+### 9. Weight CTE Config Lifecycle
+`weight_cte_config` is stored in task-local `QueryContext` and must be cleared in
+`clear_all_render_contexts()` alongside other render-phase state. Detection requires both
+the `source/target/weight` alias pattern AND a `shortestPath()` call in the query plan.
+
 ## Common Bug Patterns
 
 | Pattern | Symptom | Where to Fix |
@@ -449,7 +461,7 @@ pub use json_builder::{
     generate_multi_type_union_sql,
 };
 pub use multi_type_vlp_joins::MultiTypeVlpJoinGenerator;
-pub use variable_length_cte::{NodeProperty, VariableLengthCteGenerator};
+pub use variable_length_cte::{NodeProperty, VariableLengthCteGenerator, WeightCteConfig};
 ```
 
 ### Key traits:

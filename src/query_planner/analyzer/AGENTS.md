@@ -33,6 +33,7 @@ mod.rs                       ← Pipeline orchestrator: initial → intermediate
     │ vlp_transitivity_check.rs (375) ← Validate VLP patterns are transitive
     │ cte_schema_resolver.rs (223)    ← Register WITH CTE schemas in PlanCtx
     │ bidirectional_union.rs (1,236)  ← Undirected (a)--(b) → UNION ALL of both directions
+    │ union_distribution.rs (310)    ← Distribute Union through GraphRel/CP/Filter/WithClause
     │ graph_join/ (inference)         ← Graph pattern → JOINs (runs early for PatternSchemaContext)
     │ projected_columns_resolver.rs (377) ← Pre-compute GraphNode.projected_columns
     │ query_validation.rs (343)       ← Validate relationship patterns against schema
@@ -84,6 +85,7 @@ mod.rs                       ← Pipeline orchestrator: initial → intermediate
 | variable_resolver.rs | 1,335 | Resolve variable references to CTE sources |
 | projection_tagging.rs | 1,327 | RETURN * expansion, property tagging, **count(*) semantics** |
 | bidirectional_union.rs | 1,236 | Undirected patterns → UNION ALL |
+| union_distribution.rs | 310 | Distribute Union through GraphRel/CartesianProduct/Filter/WithClause |
 | property_requirements_analyzer.rs | 1,095 | Determine required properties for pruning |
 | graph_traversal_planning.rs | 850 | Multi-hop CTE planning, [:A\|B] UNION |
 | match_type_inference.rs | 760 | MATCH clause type inference helpers |
@@ -135,6 +137,7 @@ Step 1:  UnifiedTypeInference    — ALL type resolution in 5 phases:
 Step 2:  VlpTransitivityCheck    — Validate VLP patterns are transitive
 Step 3:  CteSchemaResolver       — Register WITH CTE schemas in PlanCtx
 Step 4:  BidirectionalUnion      — (a)--(b) → UNION ALL (MUST be before GraphJoinInference!)
+Step 4b: UnionDistribution       — Hoist Union through GraphRel/CartesianProduct/Filter/WithClause
 Step 5:  GraphJoinInference      — Graph patterns → JOIN trees + PatternSchemaContext
 Step 6:  ProjectedColumnsResolver — Pre-compute GraphNode.projected_columns
 Step 7:  QueryValidation         — Validate relationship patterns
@@ -284,8 +287,9 @@ Many passes have hard dependencies on previous passes:
 |------|----------|--------|
 | UnifiedTypeInference | SchemaInference | Needs table contexts to exist |
 | [REMOVED: PatternResolver] | — | Merged into UnifiedTypeInference |
-| BidirectionalUnion | — | MUST run BEFORE GraphJoinInference |
-| GraphJoinInference | BidirectionalUnion, UnifiedTypeInference | GraphRel must be direction-resolved, types inferred |
+| BidirectionalUnion | — | MUST run BEFORE UnionDistribution and GraphJoinInference |
+| UnionDistribution | BidirectionalUnion | MUST run AFTER BidirectionalUnion, BEFORE GraphJoinInference |
+| GraphJoinInference | BidirectionalUnion, UnionDistribution, UnifiedTypeInference | GraphRel must be direction-resolved, Union distributed, types inferred |
 | FilterTagging | GraphJoinInference | Needs PatternSchemaContext for property mapping |
 | CartesianJoinExtraction | FilterTagging | Needs property-mapped predicates |
 | VariableResolver | FilterTagging | Needs property-mapped expressions |
@@ -531,6 +535,8 @@ Incorrect inference, direction validation, or aggregation placement causes downs
 Generates 2^n UNION branches for n undirected edges. Must correctly handle VLP
 multi-type patterns (skip splitting — CTE handles both directions internally).
 
+**Redundant union collapse** (Feb 2026): `is_redundant_undirected_union()` detects when both endpoints of an undirected edge are already bound by patterns in the left subtree. Collapses to single Outgoing branch to avoid ClickHouse "multiple recursive CTEs" error. Uses `has_alias_in_plan()` helper to check endpoint binding. Called from both the WithClause handler and CartesianProduct handler via `collapse_leaf_unions_in_cp()`.
+
 ### 🟡 projection_tagging.rs (1,327 lines)
 RETURN * expansion, property tagging, **count() semantics**:
 - `count(n)` without DISTINCT → `count(*)` (counting rows = counting nodes/relationships)
@@ -538,6 +544,14 @@ RETURN * expansion, property tagging, **count() semantics**:
 - `count(DISTINCT n.prop)` → `count(DISTINCT n.prop)` (direct property)
 **Key decision**: Non-DISTINCT count treats nodes like relationships (both are rows in result set).
 Changes here affect all aggregation queries.
+
+### union_distribution.rs — Union Distribution Pass (Feb 2026)
+
+Distributes Union nodes through GraphRel/CartesianProduct/Filter/WithClause using algebraic identities. Registered in the analyzer pipeline between BidirectionalUnion and GraphJoinInference.
+
+**Key rule**: When a Union is buried inside a GraphRel or CartesianProduct, the SQL generator can't render it correctly (each Union branch needs its own FROM+JOINs). This pass pulls the Union outward so each branch gets independent rendering.
+
+**WithClause handler** (Mar 2026): Added recursion into `WithClause.input` so Union nodes inside WITH are also distributed. This handles cases like multi-pattern MATCH with undirected edges followed by WITH, where BidirectionalUnion creates a Union inside the WithClause input tree.
 
 ### 🟢 Most other files are relatively safe
 Single-purpose passes with clear inputs/outputs and limited blast radius.

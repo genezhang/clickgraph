@@ -29,7 +29,7 @@ pub use json_builder::{
     generate_multi_type_union_sql,
 };
 pub use multi_type_vlp_joins::MultiTypeVlpJoinGenerator; // Export for cte_extraction.rs
-pub use variable_length_cte::{NodeProperty, VariableLengthCteGenerator};
+pub use variable_length_cte::{NodeProperty, VariableLengthCteGenerator, WeightCteConfig};
 
 // pub fn generate_sql(plan: RenderPlan) -> String{
 //     let mut sql = String::new();

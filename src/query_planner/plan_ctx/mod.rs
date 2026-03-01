@@ -819,6 +819,14 @@ impl PlanCtx {
 
                 columns.insert(property_name, cte_column);
             }
+
+            // Also register aliased non-PropertyAccess expressions (e.g., CASE ... AS weight)
+            // These are important for weight CTE detection in weighted shortest path
+            if let Some(alias) = &item.col_alias {
+                if !matches!(&item.expression, LogicalExpr::PropertyAccessExp(_)) {
+                    columns.insert(alias.0.clone(), alias.0.clone());
+                }
+            }
         }
 
         log::info!(

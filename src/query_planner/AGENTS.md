@@ -89,6 +89,7 @@ mod.rs                   ← Entry points: evaluate_read_query(), evaluate_read_
     │  3. VlpTransitivityCheck   → validate VLP patterns                  │
     │  4. CteSchemaResolver      → register CTE schemas                   │
     │  5. BidirectionalUnion     → undirected → UNION ALL (both dirs)     │
+    │  5b. UnionDistribution    → hoist Union through GraphRel/CP/Filter │
     │  6. GraphJoinInference     → graph patterns → SQL JOINs             │
     │  7. ProjectedColumnsResolver → pre-compute projected columns        │
     │  8. QueryValidation        → validate query structure               │
@@ -437,6 +438,10 @@ When modifying this module, ensure these patterns work:
 - [ ] Aggregation: `MATCH (u:User)-[:FOLLOWS]->(f) RETURN u.name, count(f) AS cnt`
 - [ ] Untyped nodes: `MATCH (n) RETURN n LIMIT 10`
 - [ ] Undirected: `MATCH (a:User)--(b) RETURN a.name, b.name`
+- [ ] Shortest path: `MATCH p = shortestPath((a:Person)-[:KNOWS*]-(b:Person)) RETURN length(p)`
+- [ ] Weighted shortest path: `... WITH source, target, weight MATCH path = shortestPath(...) RETURN cost(path)`
+- [ ] List comprehension: `RETURN [x IN list WHERE cond | expr]`
+- [ ] Pattern comprehension: `size([(a)-[:REL]->(b) | b.prop])`
 
 ## Sub-modules That Deserve Their Own AGENTS.md
 
