@@ -333,42 +333,19 @@ pub fn extract_return_metadata(
 
                         // Parse composite relationship keys: "AUTHORED::User::Post" -> ("AUTHORED", "User", "Post")
                         // This happens when relationships use composite keys for disambiguation
-                        let (actual_rel_types, inferred_from_labels, inferred_to_labels): (
-                            Vec<String>,
-                            Vec<String>,
-                            Vec<String>,
-                        ) = rel_types
-                            .iter()
-                            .map(|rt| {
-                                let parts: Vec<&str> = rt.split("::").collect();
-                                match parts.as_slice() {
-                                    [rel_type, from_label, to_label] => {
-                                        // Composite key format
-                                        (
-                                            rel_type.to_string(),
-                                            Some(from_label.to_string()),
-                                            Some(to_label.to_string()),
-                                        )
-                                    }
-                                    _ => {
-                                        // Simple type
-                                        (rt.clone(), None, None)
-                                    }
-                                }
-                            })
-                            .fold(
-                                (Vec::new(), Vec::new(), Vec::new()),
-                                |(mut types, mut from, mut to), (t, f, to_label)| {
-                                    types.push(t);
-                                    if let Some(from_label) = f {
-                                        from.push(from_label);
-                                    }
-                                    if let Some(to_l) = to_label {
-                                        to.push(to_l);
-                                    }
-                                    (types, from, to)
-                                },
-                            );
+                        let mut inferred_from_labels = Vec::new();
+                        let mut inferred_to_labels = Vec::new();
+                        let mut actual_rel_types = Vec::new();
+                        for rt in &rel_types {
+                            let (base_type, from_label, to_label) = parse_composite_rel_key(rt);
+                            actual_rel_types.push(base_type);
+                            if let Some(fl) = from_label {
+                                inferred_from_labels.push(fl);
+                            }
+                            if let Some(tl) = to_label {
+                                inferred_to_labels.push(tl);
+                            }
+                        }
 
                         // Use parsed relationship types
                         rel_types = actual_rel_types;
@@ -1280,9 +1257,14 @@ fn transform_to_relationship(
     for col in &to_rel_id_columns {
         properties.remove(*col);
     }
-    for i in 1..=10 {
-        properties.remove(&format!("from_id_{}", i));
-        properties.remove(&format!("to_id_{}", i));
+    // Remove any composite ID variants (from_id_1, from_id_2, to_id_1, to_id_2, ...)
+    let composite_id_keys: Vec<String> = properties
+        .keys()
+        .filter(|k| k.starts_with("from_id_") || k.starts_with("to_id_"))
+        .cloned()
+        .collect();
+    for key in composite_id_keys {
+        properties.remove(&key);
     }
 
     // Generate relationship elementId: "FOLLOWS:1->2" or "BELONGS_TO:tenant1|user1->tenant1|org1"

@@ -14206,16 +14206,18 @@ fn build_cte_column_map(
                     // Determine the real column to use in correlated subqueries.
                     // If the SELECT expression is a PropertyAccess (e.g., `a.user_id AS p1_a_user_id`),
                     // use the actual column from the expression (user_id), not the alias (p1_a_user_id).
-                    // This handles both base tables (where p{N} names don't exist as real columns)
-                    // and CTE references (where the expression itself will use the CTE column name).
-                    let real_col = if let RenderExpr::PropertyAccessExp(ref pa) = item.expression {
-                        pa.column.raw().to_string()
+                    // Uses PropertyValue::to_sql() which handles:
+                    // - simple columns (with proper quoting),
+                    // - expression-based mappings (e.g., toYear(FlightDate)),
+                    // - base tables (where p{N} names don't exist as real columns),
+                    // - CTE references (where the expression itself will use the CTE column name).
+                    let qualified = if let RenderExpr::PropertyAccessExp(ref pa) = item.expression {
+                        pa.column.to_sql(&effective_alias)
                     } else {
                         // Non-property expressions (aggregates, subqueries, etc.):
                         // fall back to the CTE column alias name
-                        cte_col_name.clone()
+                        format!("{}.{}", effective_alias, cte_col_name)
                     };
-                    let qualified = format!("{}.{}", effective_alias, real_col);
                     map.insert((parsed_alias, parsed_property), qualified);
                 } else {
                     // Non-p{N} columns: treat the alias itself as a bare variable
