@@ -118,6 +118,16 @@ impl WherePropertyExtractor {
                 }
             }
 
+            Expression::ListComprehension(lc) => {
+                Self::walk_expression(&lc.list_expr, properties);
+                if let Some(ref wc) = lc.where_clause {
+                    Self::walk_expression(wc, properties);
+                }
+                if let Some(ref proj) = lc.projection {
+                    Self::walk_expression(proj, properties);
+                }
+            }
+
             // Base cases - no property references to extract
             Expression::Literal(_)
             | Expression::Variable(_)

@@ -292,6 +292,20 @@ pub fn translate_scalar_function(
 
     let fn_name_lower = fn_name.to_lowercase();
 
+    // Special handling for datetime({epochMillis: x}) -> identity pass-through
+    // The epochMillis value is already an Int64 epoch timestamp, so just return it directly.
+    // Temporal accessors like .month/.day will wrap it via fromUnixTimestamp64Milli().
+    if fn_name_lower == "datetime" {
+        if fn_call.args.len() == 1 {
+            if let LogicalExpr::MapLiteral(entries) = &fn_call.args[0] {
+                if entries.len() == 1 && entries[0].0.to_lowercase() == "epochmillis" {
+                    return entries[0].1.to_sql();
+                }
+            }
+        }
+        // Fall through to normal function_registry handling
+    }
+
     // Special handling for duration() with map argument
     // Neo4j: duration({days: 5, hours: 2}) -> ClickHouse: (toIntervalDay(5) + toIntervalHour(2))
     if fn_name_lower == "duration" {
@@ -852,6 +866,49 @@ mod tests {
     }
 
     // ===== Duration Function Tests =====
+
+    #[test]
+    fn test_translate_datetime_epoch_millis_passthrough() {
+        use crate::query_planner::logical_expr::Literal;
+
+        // datetime({epochMillis: friend.birthday}) -> friend.birthday (identity)
+        let fn_call = ScalarFnCall {
+            name: "datetime".to_string(),
+            args: vec![LogicalExpr::MapLiteral(vec![(
+                "epochMillis".to_string(),
+                LogicalExpr::PropertyAccessExp(
+                    crate::query_planner::logical_expr::PropertyAccess {
+                        table_alias: crate::query_planner::logical_expr::TableAlias(
+                            "friend".to_string(),
+                        ),
+                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                            "birthday".to_string(),
+                        ),
+                    },
+                ),
+            )])],
+        };
+
+        let result = translate_scalar_function(&fn_call).unwrap();
+        assert_eq!(result, "friend.birthday");
+    }
+
+    #[test]
+    fn test_translate_datetime_epoch_millis_literal() {
+        use crate::query_planner::logical_expr::Literal;
+
+        // datetime({epochMillis: 1234567890}) -> 1234567890
+        let fn_call = ScalarFnCall {
+            name: "datetime".to_string(),
+            args: vec![LogicalExpr::MapLiteral(vec![(
+                "epochMillis".to_string(),
+                LogicalExpr::Literal(Literal::Integer(1234567890)),
+            )])],
+        };
+
+        let result = translate_scalar_function(&fn_call).unwrap();
+        assert_eq!(result, "1234567890");
+    }
 
     #[test]
     fn test_translate_duration_single_days() {

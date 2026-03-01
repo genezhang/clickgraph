@@ -3,7 +3,7 @@ use crate::{
     query_planner::logical_plan::LogicalPlan,
     render_plan::{
         render_expr::{
-            AggregateFnCall, Column, ColumnAlias, InSubquery, Literal, Operator,
+            self, AggregateFnCall, Column, ColumnAlias, InSubquery, Literal, Operator,
             OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias,
         },
         {
@@ -3301,6 +3301,15 @@ impl RenderExpr {
                     }
                 }
 
+                // Special handling for datetime({epochMillis: x}) -> identity pass-through
+                if fn_name_lower == "datetime" && fn_call.args.len() == 1 {
+                    if let RenderExpr::MapLiteral(entries) = &fn_call.args[0] {
+                        if entries.len() == 1 && entries[0].0.to_lowercase() == "epochmillis" {
+                            return entries[0].1.to_sql();
+                        }
+                    }
+                }
+
                 // Check if we have a Neo4j -> ClickHouse mapping
                 match get_function_mapping(&fn_name_lower) {
                     Some(mapping) => {
@@ -3793,7 +3802,13 @@ impl RenderExpr {
                             Operator::And | Operator::Or => {
                                 format!("({} {} {})", &rendered[0], sql_op, &rendered[1])
                             }
-                            _ => format!("{} {} {}", &rendered[0], sql_op, &rendered[1]),
+                            _ => {
+                                if render_expr::needs_right_parens(op.operator, &op.operands[1]) {
+                                    format!("{} {} ({})", &rendered[0], sql_op, &rendered[1])
+                                } else {
+                                    format!("{} {} {}", &rendered[0], sql_op, &rendered[1])
+                                }
+                            }
                         }
                     }
                     _ => {
@@ -4148,7 +4163,13 @@ impl RenderExpr {
                         Operator::And | Operator::Or => {
                             format!("({} {} {})", &rendered[0], sql_op, &rendered[1])
                         }
-                        _ => format!("{} {} {}", &rendered[0], sql_op, &rendered[1]),
+                        _ => {
+                            if render_expr::needs_right_parens(op.operator, &op.operands[1]) {
+                                format!("{} {} ({})", &rendered[0], sql_op, &rendered[1])
+                            } else {
+                                format!("{} {} {}", &rendered[0], sql_op, &rendered[1])
+                            }
+                        }
                     },
                     _ => match op.operator {
                         Operator::And | Operator::Or => {
@@ -4350,7 +4371,13 @@ impl ToSql for OperatorApplication {
         match rendered.len() {
             0 => "".into(),                              // should not happen
             1 => format!("{} {}", sql_op, &rendered[0]), // unary
-            2 => format!("{} {} {}", &rendered[0], sql_op, &rendered[1]),
+            2 => {
+                if render_expr::needs_right_parens(self.operator, &self.operands[1]) {
+                    format!("{} {} ({})", &rendered[0], sql_op, &rendered[1])
+                } else {
+                    format!("{} {} {}", &rendered[0], sql_op, &rendered[1])
+                }
+            }
             _ => {
                 // n-ary: join with the operator
                 rendered.join(&format!(" {} ", sql_op))

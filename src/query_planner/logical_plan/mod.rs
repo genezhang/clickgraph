@@ -439,6 +439,23 @@ pub struct PatternComprehensionMeta {
     pub where_clause: Option<LogicalExpr>,
     /// DFS order position for matching count(*) placeholders
     pub position_index: usize,
+    /// Optional list constraint for list comprehension patterns.
+    /// When set, the pattern comprehension was derived from `size([p IN list WHERE pattern])`.
+    /// Contains (iteration_variable, list_expression_alias) — the correlated subquery
+    /// should add `has(list_cte_column, edge_id)` instead of a direct correlation.
+    pub list_constraint: Option<ListConstraint>,
+}
+
+/// Constraint from a list comprehension: `[p IN posts WHERE pattern]`
+/// The iteration variable `p` maps to elements of the `posts` array.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListConstraint {
+    /// The iteration variable name (e.g., "p")
+    pub variable: String,
+    /// The list expression alias (e.g., "posts")
+    pub list_alias: String,
+    /// The source node label for the list elements (e.g., "Post" from collect(post:Post))
+    pub source_label: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

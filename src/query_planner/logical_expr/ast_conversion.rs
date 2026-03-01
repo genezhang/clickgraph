@@ -506,6 +506,9 @@ impl<'a> std::convert::TryFrom<open_cypher_parser::ast::Expression<'a>> for Logi
             Expression::PatternComprehension(_) => {
                 Err(errors::LogicalExprError::PatternComprehensionNotRewritten)
             }
+            Expression::ListComprehension(_) => {
+                Err(errors::LogicalExprError::ListComprehensionNotRewritten)
+            }
             Expression::ArraySubscript { array, index } => Ok(LogicalExpr::ArraySubscript {
                 array: Box::new(LogicalExpr::try_from(*array)?),
                 index: Box::new(LogicalExpr::try_from(*index)?),

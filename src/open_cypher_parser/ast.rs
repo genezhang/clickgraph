@@ -571,6 +571,11 @@ pub enum Expression<'a> {
     /// Returns a list of projected values from matched patterns
     /// Example: [(user)-[:FOLLOWS]->(follower) WHERE follower.active | follower.name]
     PatternComprehension(PatternComprehension<'a>),
+    /// List comprehension: [x IN list WHERE cond | expr]
+    /// Filters and/or transforms a list
+    /// Example: [x IN range(1,10) WHERE x > 5 | x * 2]
+    /// Example: [p IN posts WHERE (p)-[:HAS_TAG]->()]
+    ListComprehension(ListComprehension<'a>),
     /// Array subscript: array[index]
     /// Access element at specified index (1-based in Cypher)
     /// Example: labels(n)[1], list[0], [1,2,3][2]
@@ -647,6 +652,26 @@ pub struct PatternComprehension<'a> {
     pub where_clause: Option<Box<Expression<'a>>>,
     /// Expression to project for each match (e.g., follower.name)
     pub projection: Box<Expression<'a>>,
+}
+
+/// List comprehension: filters and/or transforms a list
+/// Syntax: [variable IN list WHERE condition | projection]
+/// The WHERE clause and projection are both optional.
+/// When projection is None, returns the variable itself (identity filter).
+/// Examples:
+///   [x IN range(1,10) WHERE x > 5] => [6, 7, 8, 9, 10]
+///   [x IN [1,2,3] | x * 2] => [2, 4, 6]
+///   [p IN posts WHERE (p)-[:HAS_TAG]->()]
+#[derive(Debug, PartialEq, Clone)]
+pub struct ListComprehension<'a> {
+    /// The iteration variable name (e.g., "x", "p")
+    pub variable: &'a str,
+    /// The list expression to iterate over
+    pub list_expr: Box<Expression<'a>>,
+    /// Optional WHERE clause for filtering
+    pub where_clause: Option<Box<Expression<'a>>>,
+    /// Optional projection expression (after |). None = identity (return variable)
+    pub projection: Option<Box<Expression<'a>>>,
 }
 
 impl fmt::Display for Expression<'_> {

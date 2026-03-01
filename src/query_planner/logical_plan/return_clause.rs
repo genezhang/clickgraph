@@ -487,6 +487,7 @@ fn rewrite_pattern_comprehensions<'a>(
                     pattern_hops: vec![],
                     where_clause: None,
                     position_index: pc_counter,
+                    list_constraint: None,
                 },
             );
 
