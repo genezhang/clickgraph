@@ -1511,4 +1511,186 @@ mod tests {
             "Single undirected edge should not be detected as nested"
         );
     }
+
+    /// Helper to build a VLP multi-type GraphRel (variable_length + multiple labels).
+    fn make_vlp_multi_type_rel(
+        left: Arc<LogicalPlan>,
+        right: Arc<LogicalPlan>,
+        rel_alias: &str,
+        left_conn: &str,
+        right_conn: &str,
+        direction: Direction,
+        labels: Vec<&str>,
+    ) -> GraphRel {
+        let center = Arc::new(LogicalPlan::ViewScan(Arc::new(ViewScan::new(
+            "rels".to_string(),
+            None,
+            HashMap::new(),
+            "id".to_string(),
+            vec![],
+            vec![],
+        ))));
+        GraphRel {
+            left,
+            center,
+            right,
+            alias: rel_alias.to_string(),
+            direction,
+            left_connection: left_conn.to_string(),
+            right_connection: right_conn.to_string(),
+            is_rel_anchor: false,
+            variable_length: Some(crate::query_planner::logical_plan::VariableLengthSpec {
+                min_hops: Some(1),
+                max_hops: Some(1),
+            }),
+            shortest_path_mode: None,
+            path_variable: None,
+            where_predicate: None,
+            labels: Some(labels.into_iter().map(|s| s.to_string()).collect()),
+            is_optional: None,
+            anchor_connection: None,
+            cte_references: std::collections::HashMap::new(),
+            pattern_combinations: None,
+            was_undirected: None,
+        }
+    }
+
+    /// Regression: VLP multi-type undirected pattern should set was_undirected=true
+    /// and direction=Outgoing, rather than creating a UNION split.
+    /// This is critical for to-side-only nodes like Post that have no outgoing edges —
+    /// the VLP CTE handles both directions internally.
+    #[test]
+    fn test_vlp_multi_type_undirected_sets_was_undirected() {
+        let node_a = make_test_node("posts", "a", "Post");
+        let node_o = make_test_node("users", "o", "User");
+
+        let graph_rel = make_vlp_multi_type_rel(
+            node_a,
+            node_o,
+            "r",
+            "a",
+            "o",
+            Direction::Either,
+            vec!["AUTHORED", "LIKED"],
+        );
+        let plan = Arc::new(LogicalPlan::GraphRel(graph_rel));
+
+        let mut plan_ctx = PlanCtx::new_empty();
+        let graph_schema =
+            GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+        let result = transform_bidirectional(&plan, &mut plan_ctx, &graph_schema).unwrap();
+
+        match result {
+            Transformed::Yes(new_plan) => {
+                if let LogicalPlan::GraphRel(rel) = new_plan.as_ref() {
+                    assert_eq!(
+                        rel.direction,
+                        Direction::Outgoing,
+                        "VLP multi-type should be converted to Outgoing"
+                    );
+                    assert_eq!(
+                        rel.was_undirected,
+                        Some(true),
+                        "VLP multi-type should mark was_undirected=true"
+                    );
+                    assert_eq!(
+                        rel.labels.as_ref().unwrap().len(),
+                        2,
+                        "Labels should be preserved"
+                    );
+                    assert!(
+                        rel.variable_length.is_some(),
+                        "Variable length should be preserved"
+                    );
+                } else {
+                    panic!("Expected GraphRel, got Union — VLP multi-type should NOT be split into Union");
+                }
+            }
+            Transformed::No(_) => panic!("Expected transformation for undirected pattern"),
+        }
+    }
+
+    /// VLP single-type undirected should still create a UNION split (not skip).
+    #[test]
+    fn test_vlp_single_type_undirected_creates_union() {
+        let node_a = make_test_node("users", "a", "User");
+        let node_b = make_test_node("users", "b", "User");
+
+        // Single label + variable_length = NOT multi-type, should get Union split
+        let center = Arc::new(LogicalPlan::ViewScan(Arc::new(ViewScan::new(
+            "follows".to_string(),
+            None,
+            HashMap::new(),
+            "id".to_string(),
+            vec![],
+            vec![],
+        ))));
+        let graph_rel = GraphRel {
+            left: node_a,
+            center,
+            right: node_b,
+            alias: "r".to_string(),
+            direction: Direction::Either,
+            left_connection: "a".to_string(),
+            right_connection: "b".to_string(),
+            is_rel_anchor: false,
+            variable_length: Some(crate::query_planner::logical_plan::VariableLengthSpec {
+                min_hops: Some(1),
+                max_hops: Some(1),
+            }),
+            shortest_path_mode: None,
+            path_variable: None,
+            where_predicate: None,
+            labels: Some(vec!["FOLLOWS".to_string()]),
+            is_optional: None,
+            anchor_connection: None,
+            cte_references: std::collections::HashMap::new(),
+            pattern_combinations: None,
+            was_undirected: None,
+        };
+        let plan = Arc::new(LogicalPlan::GraphRel(graph_rel));
+
+        let mut plan_ctx = PlanCtx::new_empty();
+        let graph_schema =
+            GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+        let result = transform_bidirectional(&plan, &mut plan_ctx, &graph_schema).unwrap();
+
+        match result {
+            Transformed::Yes(new_plan) => {
+                assert!(
+                    matches!(new_plan.as_ref(), LogicalPlan::Union(_)),
+                    "Single-type VLP undirected should create Union, not skip"
+                );
+            }
+            Transformed::No(_) => panic!("Expected transformation for undirected pattern"),
+        }
+    }
+
+    /// Directed VLP multi-type should not be transformed at all.
+    #[test]
+    fn test_vlp_multi_type_directed_no_transform() {
+        let node_a = make_test_node("users", "a", "User");
+        let node_o = make_test_node("posts", "o", "Post");
+
+        let graph_rel = make_vlp_multi_type_rel(
+            node_a,
+            node_o,
+            "r",
+            "a",
+            "o",
+            Direction::Outgoing, // Already directed
+            vec!["AUTHORED", "LIKED"],
+        );
+        let plan = Arc::new(LogicalPlan::GraphRel(graph_rel));
+
+        let mut plan_ctx = PlanCtx::new_empty();
+        let graph_schema =
+            GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+        let result = transform_bidirectional(&plan, &mut plan_ctx, &graph_schema).unwrap();
+
+        assert!(
+            matches!(result, Transformed::No(_)),
+            "Directed VLP multi-type should not be transformed"
+        );
+    }
 }
