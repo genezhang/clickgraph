@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use crate::clickhouse_query_generator::variable_length_cte::WeightCteConfig;
 use crate::clickhouse_query_generator::NodeProperty;
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::graph_schema::GraphSchema;
@@ -55,6 +56,9 @@ pub struct CteGenerationContext {
     /// When set, CTE generation creates UNION of all pattern combinations
     pub pattern_combinations:
         Option<HashMap<(String, String), Vec<crate::query_planner::plan_ctx::TypeCombination>>>,
+
+    /// Weighted shortest path: pre-computed edge weight CTE configuration
+    pub weight_cte: Option<WeightCteConfig>,
 }
 
 impl CteGenerationContext {
@@ -80,6 +84,7 @@ impl CteGenerationContext {
             end_node_label: None,
             is_optional: false,
             pattern_combinations: None,
+            weight_cte: None,
         }
     }
 
@@ -132,6 +137,12 @@ impl CteGenerationContext {
     /// Set whether this VLP is optional
     pub(crate) fn with_is_optional(mut self, is_optional: bool) -> Self {
         self.is_optional = is_optional;
+        self
+    }
+
+    /// Set weight CTE configuration for weighted shortest path
+    pub(crate) fn with_weight_cte(mut self, config: Option<WeightCteConfig>) -> Self {
+        self.weight_cte = config;
         self
     }
 

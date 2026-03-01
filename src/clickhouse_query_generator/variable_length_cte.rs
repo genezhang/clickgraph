@@ -63,6 +63,21 @@ pub struct VariableLengthCteGenerator<'a> {
     pub intermediate_node_table: Option<String>, // Table for intermediate nodes (e.g., "groups")
     pub intermediate_node_id_column: Option<String>, // ID column for intermediate nodes (e.g., "group_id")
     pub intermediate_node_label: Option<String>, // Label value for intermediate hops (e.g., "Group")
+    // Weighted shortest path: use a pre-computed edge weight CTE instead of direct edge table
+    pub weight_cte: Option<WeightCteConfig>,
+}
+
+/// Configuration for weighted shortest path using a pre-computed edge weight CTE
+#[derive(Debug, Clone)]
+pub struct WeightCteConfig {
+    /// Name of the CTE containing edge weights (e.g., "with_source_target_weight_cte_1")
+    pub cte_name: String,
+    /// Column name for source node ID in the weight CTE
+    pub source_column: String,
+    /// Column name for target node ID in the weight CTE
+    pub target_column: String,
+    /// Column name for edge weight in the weight CTE
+    pub weight_column: String,
 }
 
 /// Mode for shortest path queries
@@ -265,6 +280,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             intermediate_node_table: None,
             intermediate_node_id_column: None,
             intermediate_node_label: None,
+            weight_cte: None,
         }
     }
 
@@ -337,6 +353,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             intermediate_node_table: None,
             intermediate_node_id_column: None,
             intermediate_node_label: None,
+            weight_cte: None,
         }
     }
 
@@ -408,6 +425,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             intermediate_node_table: None,
             intermediate_node_id_column: None,
             intermediate_node_label: None,
+            weight_cte: None,
         }
     }
 
@@ -737,6 +755,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
         self.intermediate_node_label = Some(label.to_string());
     }
 
+    /// Set weight CTE configuration for weighted shortest path
+    pub fn set_weight_cte(&mut self, config: WeightCteConfig) {
+        self.weight_cte = Some(config);
+    }
+
     /// Build edge tuple expression for the base case (first hop)
     /// Returns SQL expression like: `tuple(rel.from_id, rel.to_id)` or `tuple(rel.date, rel.num, ...)`
     fn build_edge_tuple_base(&self) -> String {
@@ -997,6 +1020,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Build CTE structure based on shortest path mode and filters
         // For shortest path queries, end filters are now applied during path generation
         // in the inner CTE, so we don't need separate filtering steps
+        // For weighted mode, ORDER BY total_weight instead of hop_count
+        let order_by_column = if self.weight_cte.is_some() {
+            "total_weight"
+        } else {
+            "hop_count"
+        };
         let sql = match (&self.shortest_path_mode, &self.end_node_filters) {
             (Some(ShortestPathMode::Shortest), Some(end_filters)) => {
                 // Rewrite end filter for use in intermediate CTE
@@ -1020,14 +1049,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 // CORRECT ORDER: Filter to target FIRST (with min/max_hops), then find shortest path from EACH start node
                 // This ensures we get the shortest path TO THE TARGET within hop bounds from each source
                 format!(
-                    "{}_inner AS (\n{}\n),\n{}_to_target AS (\n    SELECT * FROM {}_inner WHERE {}\n),\n{} AS (\n    SELECT * FROM (\n        SELECT *, ROW_NUMBER() OVER (PARTITION BY start_id ORDER BY hop_count ASC) as rn\n        FROM {}_to_target\n    ) WHERE rn = 1\n)",
-                    self.cte_name,
-                    query_body,
-                    self.cte_name,
-                    self.cte_name,
-                    filter_with_bounds,
-                    self.cte_name,
-                    self.cte_name
+                    "{name}_inner AS (\n{body}\n),\n{name}_to_target AS (\n    SELECT * FROM {name}_inner WHERE {filter}\n),\n{name} AS (\n    SELECT * FROM (\n        SELECT *, ROW_NUMBER() OVER (PARTITION BY start_id ORDER BY {order_col} ASC) as rn\n        FROM {name}_to_target\n    ) WHERE rn = 1\n)",
+                    name = self.cte_name,
+                    body = query_body,
+                    filter = filter_with_bounds,
+                    order_col = order_by_column,
                 )
             }
             (Some(ShortestPathMode::AllShortest), Some(end_filters)) => {
@@ -1050,22 +1076,21 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
                 // CORRECT ORDER: Filter to target FIRST (with min/max_hops), then find shortest path from EACH start node
                 format!(
-                    "{}_inner AS (\n{}\n),\n{}_to_target AS (\n    SELECT * FROM {}_inner WHERE {}\n),\n{} AS (\n    SELECT * FROM (\n        SELECT *, ROW_NUMBER() OVER (PARTITION BY start_id ORDER BY hop_count ASC) as rn\n        FROM {}_to_target\n    ) WHERE rn = 1\n)",
-                    self.cte_name,
-                    query_body,
-                    self.cte_name,
-                    self.cte_name,
-                    filter_with_bounds,
-                    self.cte_name,
-                    self.cte_name
+                    "{name}_inner AS (\n{body}\n),\n{name}_to_target AS (\n    SELECT * FROM {name}_inner WHERE {filter}\n),\n{name} AS (\n    SELECT * FROM (\n        SELECT *, ROW_NUMBER() OVER (PARTITION BY start_id ORDER BY {order_col} ASC) as rn\n        FROM {name}_to_target\n    ) WHERE rn = 1\n)",
+                    name = self.cte_name,
+                    body = query_body,
+                    filter = filter_with_bounds,
+                    order_col = order_by_column,
                 )
             }
             (Some(ShortestPathMode::Shortest), None) => {
                 // 2-tier: inner → select shortest path to EACH end node (no target filter)
                 // Use window function to get the shortest path to each distinct end_id
                 format!(
-                    "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM (\n        SELECT *, ROW_NUMBER() OVER (PARTITION BY end_id ORDER BY hop_count ASC) as rn\n        FROM {}_inner\n    ) WHERE rn = 1\n)",
-                    self.cte_name, query_body, self.cte_name, self.cte_name
+                    "{name}_inner AS (\n{body}\n),\n{name} AS (\n    SELECT * FROM (\n        SELECT *, ROW_NUMBER() OVER (PARTITION BY end_id ORDER BY {order_col} ASC) as rn\n        FROM {name}_inner\n    ) WHERE rn = 1\n)",
+                    name = self.cte_name,
+                    body = query_body,
+                    order_col = order_by_column,
                 )
             }
             (Some(ShortestPathMode::AllShortest), None) => {
@@ -1456,6 +1481,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
     }
 
     fn generate_base_case(&self, hop_count: u32) -> String {
+        // Weighted shortest path: use pre-computed weight CTE instead of direct edge table
+        if let Some(ref wc) = self.weight_cte {
+            return self.generate_weighted_base_case(wc);
+        }
+
         // Determine which pattern to use based on denormalization flags
         // Full denormalized: both nodes virtual → use denormalized generator
         // Mixed: one node virtual, one standard → use mixed generator
@@ -1750,6 +1780,51 @@ impl<'a> VariableLengthCteGenerator<'a> {
             hop_count, hop_count
         )
     }
+    /// Generate weighted base case using pre-computed edge weight CTE
+    fn generate_weighted_base_case(&self, wc: &WeightCteConfig) -> String {
+        let mut where_conditions = Vec::new();
+        if let Some(ref filters) = self.start_node_filters {
+            // Rewrite start node filter: "start_node.id = $param" → "ew.source = $param"
+            let rewritten = filters
+                .replace(&format!("{}.", self.start_node_alias), "ew.")
+                .replace("ew.id", &format!("ew.{}", wc.source_column));
+            where_conditions.push(rewritten);
+        }
+
+        let where_clause = if where_conditions.is_empty() {
+            String::new()
+        } else {
+            format!("\n    WHERE {}", where_conditions.join(" AND "))
+        };
+
+        format!(
+            "    SELECT\n        ew.{source} AS start_id,\n        ew.{target} AS end_id,\n        1 AS hop_count,\n        ew.{weight} AS total_weight,\n        [ew.{source}, ew.{target}] AS path_nodes,\n        [] AS path_edges,\n        [] AS path_relationships\n    FROM {cte} ew{where_clause}",
+            source = wc.source_column,
+            target = wc.target_column,
+            weight = wc.weight_column,
+            cte = wc.cte_name,
+            where_clause = where_clause,
+        )
+    }
+
+    /// Generate weighted recursive case using pre-computed edge weight CTE
+    fn generate_weighted_recursive_case(
+        &self,
+        wc: &WeightCteConfig,
+        max_hops: u32,
+        cte_name: &str,
+    ) -> String {
+        format!(
+            "    SELECT\n        vp.start_id,\n        ew.{target} AS end_id,\n        vp.hop_count + 1 AS hop_count,\n        vp.total_weight + ew.{weight} AS total_weight,\n        arrayConcat(vp.path_nodes, [ew.{target}]) AS path_nodes,\n        vp.path_edges AS path_edges,\n        vp.path_relationships AS path_relationships\n    FROM {cte_name} vp\n    JOIN {weight_cte} ew ON ew.{source} = vp.end_id\n    WHERE vp.hop_count < {max_hops}\n      AND NOT has(vp.path_nodes, ew.{target})",
+            target = wc.target_column,
+            weight = wc.weight_column,
+            source = wc.source_column,
+            cte_name = cte_name,
+            weight_cte = wc.cte_name,
+            max_hops = max_hops,
+        )
+    }
+
     /// Generate recursive case that extends existing paths
     /// Reserved for backward compatibility when default CTE name is used
     #[allow(dead_code)]
@@ -1760,6 +1835,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
     }
 
     fn generate_recursive_case_with_cte_name(&self, max_hops: u32, cte_name: &str) -> String {
+        // Weighted shortest path: join weight CTE instead of edge table
+        if let Some(ref wc) = self.weight_cte {
+            return self.generate_weighted_recursive_case(wc, max_hops, cte_name);
+        }
+
         // For fully denormalized edges, use simplified generation
         if self.is_denormalized {
             return self.generate_denormalized_recursive_case(max_hops, cte_name);

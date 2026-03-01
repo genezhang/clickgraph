@@ -819,6 +819,14 @@ impl PlanCtx {
 
                 columns.insert(property_name, cte_column);
             }
+
+            // Also register aliased non-PropertyAccess expressions (e.g., CASE ... AS weight)
+            // These are important for weight CTE detection in weighted shortest path
+            if let Some(alias) = &item.col_alias {
+                if !matches!(&item.expression, LogicalExpr::PropertyAccessExp(_)) {
+                    columns.insert(alias.0.clone(), alias.0.clone());
+                }
+            }
         }
 
         log::info!(
@@ -866,6 +874,37 @@ impl PlanCtx {
             if let Some(columns) = self.cte_columns.get(actual_cte_name) {
                 return columns.get(property).map(|s| s.as_str());
             }
+        }
+        None
+    }
+
+    /// Find a weight CTE suitable for weighted shortest path.
+    /// Looks for a CTE with columns aliased "source", "target", and "weight".
+    /// Checks both keys (property names) and values (column aliases).
+    /// Returns (cte_name, source_column, target_column, weight_column) if found.
+    pub fn find_weight_cte(&self) -> Option<(String, String, String, String)> {
+        for (cte_name, columns) in &self.cte_columns {
+            // Check both keys and values for the required column names
+            let find_col = |name: &str| -> Option<String> {
+                if let Some(col) = columns.get(name) {
+                    return Some(col.clone());
+                }
+                for (_, v) in columns {
+                    if v == name {
+                        return Some(v.clone());
+                    }
+                }
+                None
+            };
+            if let (Some(s), Some(t), Some(w)) =
+                (find_col("source"), find_col("target"), find_col("weight"))
+            {
+                return Some((cte_name.clone(), s, t, w));
+            }
+        }
+        // Check parent scope
+        if let Some(ref parent) = self.parent_scope {
+            return parent.find_weight_cte();
         }
         None
     }

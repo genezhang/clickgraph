@@ -10297,6 +10297,87 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
             all_ctes.push(with_cte);
 
+            // Detect weight CTE for weighted shortest path (complex-14)
+            // A weight CTE has exactly 3 exported aliases: source, target, weight
+            if original_exported_aliases.len() == 3
+                && original_exported_aliases.contains(&"source".to_string())
+                && original_exported_aliases.contains(&"target".to_string())
+                && original_exported_aliases.contains(&"weight".to_string())
+            {
+                log::info!(
+                    "🔧 Detected weight CTE '{}' for weighted shortest path",
+                    cte_name
+                );
+                // Create a bidirectional weight CTE that includes both edge directions.
+                // The adapted query uses directed edges for clean SQL, but the VLP
+                // needs both directions for traversal.
+                let bidi_cte_name = format!("bidi_{}", cte_name);
+                let bidi_sql = format!(
+                    "SELECT source, target, weight FROM {cte} \
+                     UNION ALL \
+                     SELECT target AS source, source AS target, weight FROM {cte}",
+                    cte = cte_name
+                );
+                let bidi_cte = super::Cte {
+                    cte_name: bidi_cte_name.clone(),
+                    content: super::CteContent::RawSql(bidi_sql),
+                    is_recursive: false,
+                    vlp_start_alias: None,
+                    vlp_end_alias: None,
+                    vlp_start_table: None,
+                    vlp_end_table: None,
+                    vlp_cypher_start_alias: None,
+                    vlp_cypher_end_alias: None,
+                    vlp_start_id_col: None,
+                    vlp_end_id_col: None,
+                    vlp_path_variable: None,
+                    columns: vec![],
+                    from_alias: None,
+                    outer_where_filters: None,
+                    with_exported_aliases: vec![
+                        "source".to_string(),
+                        "target".to_string(),
+                        "weight".to_string(),
+                    ],
+                    variable_registry: None,
+                };
+                all_ctes.push(bidi_cte);
+
+                // Point the weight config to the bidirectional CTE
+                crate::server::query_context::set_weight_cte_config(
+                    crate::clickhouse_query_generator::WeightCteConfig {
+                        cte_name: bidi_cte_name,
+                        source_column: "source".to_string(),
+                        target_column: "target".to_string(),
+                        weight_column: "weight".to_string(),
+                    },
+                );
+
+                // Fix GROUP BY: exclude aggregate-derived "weight" column.
+                // The SQL generator's build_union_inner_select handles per-branch
+                // aggregation correctly, but the GROUP BY must only contain
+                // the non-aggregate columns (source, target).
+                if let Some(cte) = all_ctes.iter_mut().find(|c| c.cte_name == cte_name) {
+                    if let super::CteContent::Structured(ref mut render_plan) = cte.content {
+                        let source_target_group_by: Vec<RenderExpr> = render_plan
+                            .select
+                            .items
+                            .iter()
+                            .filter(|item| {
+                                item.col_alias
+                                    .as_ref()
+                                    .is_some_and(|a| a.0 == "source" || a.0 == "target")
+                            })
+                            .map(|item| item.expression.clone())
+                            .collect();
+                        if !source_target_group_by.is_empty() {
+                            render_plan.group_by =
+                                super::GroupByExpressions(source_target_group_by);
+                        }
+                    }
+                }
+            }
+
             // Store CTE schema for later reference creation
 
             // Compute ID column mappings for this CTE using the DETERMINISTIC formula
@@ -11683,6 +11764,78 @@ pub(crate) fn build_chained_with_match_cte_plan(
     // and rewrites them to match the actual FROM/JOIN aliases.
     if !scope_cte_variables.is_empty() {
         super::variable_scope::fix_orphan_table_aliases(&mut render_plan, &final_scope);
+    }
+
+    // Weighted shortestPath fix: restructure outer query to use VLP CTE as FROM.
+    // When weight CTE is detected and VLP CTEs exist, the outer query incorrectly
+    // cross-joins the weight CTE with VLP. Fix: use VLP CTE as sole FROM source,
+    // remove all joins and UNION branches, and rewrite SELECT to use VLP columns.
+    if let Some(weight_config) = crate::server::query_context::get_weight_cte_config() {
+        // VLP CTEs are in render_plan.ctes (not all_ctes yet — they get moved later)
+        let has_vlp = render_plan
+            .ctes
+            .0
+            .iter()
+            .any(|c| c.vlp_path_variable.is_some());
+        log::info!(
+            "🔧 Weighted shortestPath check: weight_config={}, has_vlp={}, render_plan.ctes={}",
+            weight_config.cte_name,
+            has_vlp,
+            render_plan.ctes.0.len()
+        );
+        if has_vlp {
+            // Find the first VLP CTE (the one that resolves person1→person2)
+            if let Some(vlp_cte) = render_plan
+                .ctes
+                .0
+                .iter()
+                .find(|c| c.vlp_path_variable.is_some())
+            {
+                let vlp_cte_name = vlp_cte.cte_name.clone();
+                let path_variable = vlp_cte.vlp_path_variable.clone();
+                let start_alias = vlp_cte.vlp_cypher_start_alias.clone();
+                let end_alias = vlp_cte.vlp_cypher_end_alias.clone();
+                log::info!(
+                    "🔧 Weighted shortestPath: restructuring outer query to use VLP CTE '{}' (weight CTE: '{}', path_var: {:?})",
+                    vlp_cte_name,
+                    weight_config.cte_name,
+                    path_variable
+                );
+
+                // Replace FROM with VLP CTE
+                render_plan.from = FromTableItem(Some(ViewTableRef {
+                    source: std::sync::Arc::new(LogicalPlan::Empty),
+                    name: vlp_cte_name,
+                    alias: Some("t".to_string()),
+                    use_final: false,
+                }));
+
+                // Clear all joins — VLP CTE is self-contained
+                render_plan.joins = JoinItems(vec![]);
+
+                // Remove UNION branches (bidirectional shortestPath creates two VLPs,
+                // but with weighted mode we only need one — both give same minimum weight)
+                render_plan.union = UnionItems(None);
+
+                // Rewrite SELECT items using VLP column mappings
+                // The RETURN expressions (nodes(path), cost(path)) are rewritten to
+                // VLP CTE columns (t.path_nodes, t.total_weight)
+                for item in &mut render_plan.select.items {
+                    let rewritten =
+                        crate::clickhouse_query_generator::to_sql_query::rewrite_expr_for_vlp(
+                            &item.expression,
+                            &start_alias,
+                            &end_alias,
+                            &path_variable,
+                            false,
+                        );
+                    item.expression = rewritten;
+                }
+
+                // Remove group_by (no aggregation in outer query)
+                render_plan.group_by = super::GroupByExpressions(vec![]);
+            }
+        }
     }
 
     // Add all CTEs (innermost first, which is correct order for SQL)

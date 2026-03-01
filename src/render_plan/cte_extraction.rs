@@ -305,6 +305,7 @@ pub fn generate_vlp_cte_via_manager(
     start_label: Option<String>,
     end_label: Option<String>,
     is_optional: Option<bool>,
+    weight_cte: Option<crate::clickhouse_query_generator::WeightCteConfig>,
 ) -> Result<Cte, RenderBuildError> {
     use std::sync::Arc;
 
@@ -325,7 +326,8 @@ pub fn generate_vlp_cte_via_manager(
         .with_edge_id(edge_id)
         .with_relationship_cypher_alias(relationship_cypher_alias)
         .with_node_labels(start_label.clone(), end_label.clone())
-        .with_is_optional(is_optional.unwrap_or(false));
+        .with_is_optional(is_optional.unwrap_or(false))
+        .with_weight_cte(weight_cte);
 
     // Convert filters to CategorizedFilters format
     let filters = super::filter_pipeline::CategorizedFilters {
@@ -3527,6 +3529,20 @@ pub fn extract_ctes_with_context(
                     log::info!("  combined_end_filters: {:?}", combined_end_filters);
                     log::debug!("  rel_filters_sql: {:?}", rel_filters_sql);
 
+                    // Detect weight CTE for weighted shortest path
+                    // Check task-local QueryContext (set by build_chained_with_match_cte_plan)
+                    let weight_cte_config = if graph_rel.shortest_path_mode.is_some() {
+                        crate::server::query_context::get_weight_cte_config().map(|wc| {
+                            log::info!(
+                                "🏋️ Detected weight CTE '{}' for weighted shortest path",
+                                wc.cte_name
+                            );
+                            wc
+                        })
+                    } else {
+                        None
+                    };
+
                     // Generate VLP CTE via unified CteManager API
                     let var_len_cte = generate_vlp_cte_via_manager(
                         &pattern_ctx,
@@ -3544,6 +3560,7 @@ pub fn extract_ctes_with_context(
                         Some(start_label.clone()),
                         Some(end_label.clone()),
                         graph_rel.is_optional,
+                        weight_cte_config,
                     )?;
 
                     // TODO(multi-vlp): Per-VLP unique aliases (vt0, vt1) are used in

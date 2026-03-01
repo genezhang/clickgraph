@@ -2976,6 +2976,11 @@ impl VariableLengthCteStrategy {
             }
         }
 
+        // Set weight CTE if configured for weighted shortest path
+        if let Some(ref weight_config) = context.weight_cte {
+            generator.set_weight_cte(weight_config.clone());
+        }
+
         // Generate the CTE using the comprehensive generator
         let cte = generator.generate_cte();
 

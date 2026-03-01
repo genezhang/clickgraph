@@ -841,7 +841,7 @@ fn extract_alias_from_filter(expr: &RenderExpr) -> Option<String> {
 /// - length(p) → t.hop_count
 /// - nodes(p) → t.path_nodes  
 /// - relationships(p) → t.path_relationships
-fn rewrite_expr_for_vlp(
+pub(crate) fn rewrite_expr_for_vlp(
     expr: &RenderExpr,
     start_alias: &Option<String>,
     end_alias: &Option<String>,
@@ -885,6 +885,7 @@ fn rewrite_expr_for_vlp(
                                 "length" => Some("hop_count"),
                                 "nodes" => Some("path_nodes"),
                                 "relationships" => Some("path_relationships"),
+                                "cost" => Some("total_weight"),
                                 _ => None,
                             };
 
@@ -1746,6 +1747,62 @@ fn lookup_denorm_node_id_property() -> Option<String> {
     None
 }
 
+/// Recursively check if a RenderExpr contains an aggregate function call
+fn render_expr_contains_aggregate(expr: &RenderExpr) -> bool {
+    match expr {
+        RenderExpr::AggregateFnCall(_) => true,
+        RenderExpr::ScalarFnCall(f) => f.args.iter().any(render_expr_contains_aggregate),
+        RenderExpr::Case(c) => {
+            c.when_then.iter().any(|(cond, val)| {
+                render_expr_contains_aggregate(cond) || render_expr_contains_aggregate(val)
+            }) || c
+                .else_expr
+                .as_ref()
+                .is_some_and(|e| render_expr_contains_aggregate(e))
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            op.operands.iter().any(render_expr_contains_aggregate)
+        }
+        RenderExpr::List(items) => items.iter().any(render_expr_contains_aggregate),
+        RenderExpr::ArraySubscript { array, index } => {
+            render_expr_contains_aggregate(array) || render_expr_contains_aggregate(index)
+        }
+        _ => false,
+    }
+}
+
+/// Recursively collect property-access SQL from aggregate function arguments,
+/// including aggregates nested inside Case, ScalarFnCall, etc.
+fn collect_nested_aggregate_args(expr: &RenderExpr, agg_arg_cols: &mut Vec<String>) {
+    match expr {
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in &agg.args {
+                collect_property_access_sql(arg, agg_arg_cols);
+            }
+        }
+        RenderExpr::ScalarFnCall(f) => {
+            for arg in &f.args {
+                collect_nested_aggregate_args(arg, agg_arg_cols);
+            }
+        }
+        RenderExpr::Case(c) => {
+            for (cond, val) in &c.when_then {
+                collect_nested_aggregate_args(cond, agg_arg_cols);
+                collect_nested_aggregate_args(val, agg_arg_cols);
+            }
+            if let Some(e) = &c.else_expr {
+                collect_nested_aggregate_args(e, agg_arg_cols);
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in &op.operands {
+                collect_nested_aggregate_args(operand, agg_arg_cols);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Build a SELECT clause for UNION inner branches in the aggregation case.
 /// Returns (inner_select_sql, agg_arg_columns) where agg_arg_columns lists
 /// the SQL text of property-access expressions extracted from aggregate arguments.
@@ -1755,7 +1812,7 @@ fn build_union_inner_select(select: &SelectItems) -> (String, Vec<String>) {
         .items
         .iter()
         .filter(|item| {
-            if matches!(&item.expression, RenderExpr::AggregateFnCall(_)) {
+            if render_expr_contains_aggregate(&item.expression) {
                 return false;
             }
             // Skip ALL __order_col items: ORDER BY is handled by outer query
@@ -1768,14 +1825,10 @@ fn build_union_inner_select(select: &SelectItems) -> (String, Vec<String>) {
         })
         .collect();
 
-    // Extract property-access expressions from aggregate arguments
+    // Extract property-access expressions from aggregate arguments (recursively)
     let mut agg_arg_cols: Vec<String> = Vec::new();
     for item in &select.items {
-        if let RenderExpr::AggregateFnCall(agg) = &item.expression {
-            for arg in &agg.args {
-                collect_property_access_sql(arg, &mut agg_arg_cols);
-            }
-        }
+        collect_nested_aggregate_args(&item.expression, &mut agg_arg_cols);
     }
     agg_arg_cols.sort();
     agg_arg_cols.dedup();
@@ -1869,7 +1922,7 @@ fn build_outer_aggregate_select(select: &SelectItems, agg_arg_cols: &[String]) -
                 .as_ref()
                 .map(|a| a.0.clone())
                 .unwrap_or_else(|| "result".to_string());
-            if matches!(&item.expression, RenderExpr::AggregateFnCall(_)) {
+            if render_expr_contains_aggregate(&item.expression) {
                 let mut agg_sql = item.expression.to_sql();
                 for col_ref in agg_arg_cols {
                     agg_sql = agg_sql.replace(col_ref, &format!("`{}`", col_ref));
@@ -2348,11 +2401,12 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
         plan = modified_plan;
 
         // Check if SELECT items contain aggregation (e.g., count(*), sum(), etc.)
+        // Uses recursive check to detect aggregates nested in CASE, function calls, etc.
         let has_aggregation = plan
             .select
             .items
             .iter()
-            .any(|item| matches!(&item.expression, RenderExpr::AggregateFnCall(_)));
+            .any(|item| render_expr_contains_aggregate(&item.expression));
 
         // Pre-compute inner SELECT and aggregate arg columns for aggregation+UNION case
         let (inner_select_sql, agg_arg_cols) = if has_aggregation {
@@ -2974,10 +3028,11 @@ impl ToSql for Cte {
                         // SELECT * — avoids unresolvable table-qualified column refs.
                         let has_modifiers =
                             has_group_by || has_order_by_skip_limit || plan.having_clause.is_some();
-                        let has_aggregation =
-                            plan.select.items.iter().any(|item| {
-                                matches!(&item.expression, RenderExpr::AggregateFnCall(_))
-                            });
+                        let has_aggregation = plan
+                            .select
+                            .items
+                            .iter()
+                            .any(|item| render_expr_contains_aggregate(&item.expression));
 
                         if has_aggregation && has_custom_select && plan.from.0.is_some() {
                             // Aggregate + UNION: inner branches project raw columns,
