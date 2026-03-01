@@ -39,7 +39,11 @@ fn is_list_expr_logical(expr: &LogicalExpr) -> bool {
     }
 }
 
-/// Flatten nested + operations into a list of SQL strings for arrayConcat()
+/// Flatten nested + operations into a list of SQL strings for arrayConcat().
+/// Known scalar literals are wrapped as `[scalar]` so that `list + scalar`
+/// produces valid `arrayConcat(list, [scalar])` (ClickHouse requires array args).
+/// Ambiguous expressions (Identifier, PropertyAccessExp, etc.) are left as-is
+/// since they may already hold arrays.
 fn flatten_list_addition_operands_logical(
     expr: &LogicalExpr,
 ) -> Result<Vec<String>, ClickhouseQueryGeneratorError> {
@@ -51,8 +55,29 @@ fn flatten_list_addition_operands_logical(
             }
             Ok(result)
         }
-        _ => Ok(vec![ToSql::to_sql(expr)?]),
+        _ => {
+            let sql = ToSql::to_sql(expr)?;
+            if is_known_scalar_logical(expr) {
+                // Wrap scalar as single-element array for arrayConcat compatibility
+                Ok(vec![format!("[{}]", sql)])
+            } else {
+                Ok(vec![sql])
+            }
+        }
     }
+}
+
+/// Returns true if the expression is definitely a scalar (not an array).
+fn is_known_scalar_logical(expr: &LogicalExpr) -> bool {
+    matches!(
+        expr,
+        LogicalExpr::Literal(Literal::Integer(_))
+            | LogicalExpr::Literal(Literal::Float(_))
+            | LogicalExpr::Literal(Literal::String(_))
+            | LogicalExpr::Literal(Literal::Boolean(_))
+            | LogicalExpr::Literal(Literal::Null)
+            | LogicalExpr::Parameter(_)
+    )
 }
 
 /// Flatten nested + operations into a list of SQL strings for concat()

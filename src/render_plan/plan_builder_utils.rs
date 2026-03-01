@@ -9464,22 +9464,33 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 }
                             }
 
-                            let pc_join = Join {
-                                table_name: pc_cte_name.clone(),
-                                table_alias: pc_cte_name.clone(),
-                                joining_on: join_conditions,
-                                join_type: JoinType::Left,
-                                pre_filter: None,
-                                from_id_column: None,
-                                to_id_column: None,
-                                graph_rel: None,
-                            };
+                            // Guard: require all correlation predicates to be resolved.
+                            // An empty or incomplete join would produce ON 1=1 (Cartesian product).
+                            if join_conditions.len() != pc_result.correlation_columns.len() {
+                                log::warn!(
+                                    "⚠️ PC CTE '{}': only {}/{} join conditions resolved — skipping join (will use 0)",
+                                    pc_cte_name,
+                                    join_conditions.len(),
+                                    pc_result.correlation_columns.len()
+                                );
+                            } else {
+                                let pc_join = Join {
+                                    table_name: pc_cte_name.clone(),
+                                    table_alias: pc_cte_name.clone(),
+                                    joining_on: join_conditions,
+                                    join_type: JoinType::Left,
+                                    pre_filter: None,
+                                    from_id_column: None,
+                                    to_id_column: None,
+                                    graph_rel: None,
+                                };
 
-                            // Add LEFT JOIN to the WITH CTE body.
-                            // For UNION plans, add to each branch.
-                            add_join_to_plan_or_union_branches(&mut with_cte_render, pc_join);
+                                // Add LEFT JOIN to the WITH CTE body.
+                                // For UNION plans, add to each branch.
+                                add_join_to_plan_or_union_branches(&mut with_cte_render, pc_join);
 
-                            pc_cte_names.push((*pc_idx, pc_cte_name));
+                                pc_cte_names.push((*pc_idx, pc_cte_name));
+                            }
                         } else {
                             log::warn!(
                                 "⚠️ Could not generate PC CTE for pattern comprehension #{} — falling back to 0",
@@ -14786,14 +14797,15 @@ fn generate_pc_cte_with_either(
         .collect();
 
     let cte_sql = if union_parts.len() == 1 {
-        // Single variant — just add GROUP BY + COUNT(*)
+        // Single variant — wrap in subquery with outer aggregation
         format!(
-            "{}, COUNT(*) AS result GROUP BY {}",
+            "SELECT {}, COUNT(*) AS result FROM ({}) AS __u GROUP BY {}",
+            corr_aliases.join(", "),
             union_parts[0],
             corr_aliases.join(", ")
         )
     } else {
-        // Multiple variants — wrap in UNION ALL with outer GROUP BY
+        // Multiple variants — wrap UNION ALL in subquery with outer GROUP BY
         let inner_union = union_parts.join(" UNION ALL ");
         format!(
             "SELECT {}, COUNT(*) AS result FROM ({}) AS __u GROUP BY {}",
@@ -16343,7 +16355,9 @@ fn find_pc_cte_join_column(
 /// If the plan has UNION branches, the join is cloned into each branch.
 fn add_join_to_plan_or_union_branches(plan: &mut RenderPlan, join: Join) {
     if let UnionItems(Some(ref mut union)) = plan.union {
-        // Add to each UNION branch
+        // Add to each UNION branch AND the outer plan.
+        // The outer plan's FROM+JOINs form the first UNION ALL branch
+        // in CTE body rendering, so it needs the join too.
         for (bi, branch) in union.input.iter_mut().enumerate() {
             log::debug!(
                 "🔧 add_join_to_plan_or_union_branches: branch {} has {} existing joins, adding '{}'",
@@ -16353,7 +16367,6 @@ fn add_join_to_plan_or_union_branches(plan: &mut RenderPlan, join: Join) {
             );
             branch.joins.0.push(join.clone());
         }
-        // Also add to the outer plan's joins (for non-UNION rendering paths)
         plan.joins.0.push(join);
     } else {
         log::debug!(

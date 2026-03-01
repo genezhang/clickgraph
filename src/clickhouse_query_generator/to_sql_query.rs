@@ -97,7 +97,11 @@ fn is_list_expr(expr: &RenderExpr) -> bool {
     }
 }
 
-/// Flatten nested + operations for arrayConcat (list concatenation)
+/// Flatten nested + operations for arrayConcat (list concatenation).
+/// Known scalar literals are wrapped as `[scalar]` so that `list + scalar`
+/// produces valid `arrayConcat(list, [scalar])` (ClickHouse requires array args).
+/// Ambiguous expressions (PropertyAccessExp, ColumnAlias, etc.) are left as-is
+/// since they may already hold arrays (e.g., CTE columns from groupArray).
 fn flatten_list_addition_operands(expr: &RenderExpr) -> Vec<String> {
     match expr {
         RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => op
@@ -105,8 +109,31 @@ fn flatten_list_addition_operands(expr: &RenderExpr) -> Vec<String> {
             .iter()
             .flat_map(flatten_list_addition_operands)
             .collect(),
-        _ => vec![expr.to_sql()],
+        _ => {
+            let sql = expr.to_sql();
+            if is_known_scalar(expr) {
+                // Wrap scalar as single-element array for arrayConcat compatibility
+                vec![format!("[{}]", sql)]
+            } else {
+                vec![sql]
+            }
+        }
     }
+}
+
+/// Returns true if the expression is definitely a scalar (not an array).
+/// Conservative: returns false for ambiguous types (PropertyAccessExp, ColumnAlias, etc.)
+/// since those may hold array values from CTE columns.
+fn is_known_scalar(expr: &RenderExpr) -> bool {
+    matches!(
+        expr,
+        RenderExpr::Literal(Literal::Integer(_))
+            | RenderExpr::Literal(Literal::Float(_))
+            | RenderExpr::Literal(Literal::String(_))
+            | RenderExpr::Literal(Literal::Boolean(_))
+            | RenderExpr::Literal(Literal::Null)
+            | RenderExpr::Parameter(_)
+    )
 }
 
 /// Build the relationship columns mapping from a RenderPlan (for collecting data)
@@ -4654,5 +4681,71 @@ mod tests {
     fn test_map_literal_empty() {
         let map_expr = RenderExpr::MapLiteral(vec![]);
         assert_eq!(map_expr.to_sql(), "map()");
+    }
+
+    /// Test: collect(x) + collect(y) → arrayConcat(groupArray(x), groupArray(y))
+    #[test]
+    fn test_list_concat_two_collects() {
+        let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![
+                RenderExpr::AggregateFnCall(AggregateFnCall {
+                    name: "collect".to_string(),
+                    args: vec![RenderExpr::Literal(Literal::String("x".to_string()))],
+                }),
+                RenderExpr::AggregateFnCall(AggregateFnCall {
+                    name: "groupArray".to_string(),
+                    args: vec![RenderExpr::Literal(Literal::String("y".to_string()))],
+                }),
+            ],
+        });
+        let sql = expr.to_sql();
+        // "collect" is mapped to "groupArray" by the function registry during to_sql()
+        assert_eq!(sql, "arrayConcat(groupArray('x'), groupArray('y'))");
+    }
+
+    /// Test: list + scalar → arrayConcat(list, [scalar])
+    #[test]
+    fn test_list_concat_list_plus_scalar() {
+        let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![
+                RenderExpr::AggregateFnCall(AggregateFnCall {
+                    name: "collect".to_string(),
+                    args: vec![RenderExpr::Literal(Literal::Integer(1))],
+                }),
+                RenderExpr::Literal(Literal::Integer(42)),
+            ],
+        });
+        let sql = expr.to_sql();
+        assert_eq!(sql, "arrayConcat(groupArray(1), [42])");
+    }
+
+    /// Test: scalar + list → arrayConcat([scalar], list)
+    #[test]
+    fn test_list_concat_scalar_plus_list() {
+        let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![
+                RenderExpr::Literal(Literal::Integer(42)),
+                RenderExpr::List(vec![RenderExpr::Literal(Literal::Integer(1))]),
+            ],
+        });
+        let sql = expr.to_sql();
+        assert_eq!(sql, "arrayConcat([42], [1])");
+    }
+
+    /// Test: numeric + numeric (no list) → stays as addition, not arrayConcat
+    #[test]
+    fn test_addition_without_lists_unchanged() {
+        let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![
+                RenderExpr::Literal(Literal::Integer(1)),
+                RenderExpr::Literal(Literal::Integer(2)),
+            ],
+        });
+        let sql = expr.to_sql();
+        assert_eq!(sql, "1 + 2");
     }
 }
