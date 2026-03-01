@@ -9318,6 +9318,41 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 }
                             }
 
+                            // Augment branch_col_map with correlation variables and
+                            // list aliases from pattern comprehensions that may not be
+                            // in the current CTE's SELECT (they're consumed by expressions
+                            // but not in WITH output).
+                            if let FromTableItem(Some(ref from)) = plan.from {
+                                if let Some(ref from_alias) = from.alias {
+                                    for pc in pattern_comprehensions.iter() {
+                                        // Add correlation variable ID columns
+                                        for cv in &pc.correlation_vars {
+                                            let key = (cv.var_name.clone(), "id".to_string());
+                                            if !branch_col_map.contains_key(&key) {
+                                                let cte_col = crate::utils::cte_column_naming::cte_column_name(&cv.var_name, "id");
+                                                branch_col_map.insert(
+                                                    key,
+                                                    format!("{}.{}", from_alias, cte_col),
+                                                );
+                                            }
+                                        }
+                                        // Add list constraint alias (array column)
+                                        if let Some(ref lc) = pc.list_constraint {
+                                            let key1 = (lc.list_alias.clone(), "id".to_string());
+                                            if !branch_col_map.contains_key(&key1) {
+                                                let qualified =
+                                                    format!("{}.\"{}\"", from_alias, lc.list_alias);
+                                                branch_col_map.insert(key1, qualified.clone());
+                                                branch_col_map.insert(
+                                                    (lc.list_alias.clone(), lc.list_alias.clone()),
+                                                    qualified,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             log::info!(
                                 "🔧 Branch column map keys: {:?}",
                                 branch_col_map.keys().collect::<Vec<_>>()
@@ -9357,6 +9392,22 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         &cte_name,
                     );
 
+                    // Only apply correlated-subquery-specific fixes when at least one
+                    // PC uses a correlated subquery (i.e., has no list_constraint —
+                    // list_constraint PCs use arrayCount which is non-correlated).
+                    let has_correlated_subqueries = pattern_comprehensions
+                        .iter()
+                        .any(|pc| pc.list_constraint.is_none() && !pc.pattern_hops.is_empty());
+
+                    if has_correlated_subqueries {
+                        // ClickHouse limitation: correlated subqueries need outer column
+                        // references to be in the SELECT for decorrelation.
+                        add_correlated_columns_to_select(
+                            &mut with_cte_render,
+                            &pattern_comprehensions,
+                        );
+                    }
+
                     // ClickHouse limitation: correlated subqueries cannot exist inside
                     // UNION ALL branches (error: "Cannot clone ... plan step").
                     // Fix: split each UNION branch into its own CTE, then the main CTE
@@ -9365,7 +9416,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     fn select_has_raw_subquery(items: &[SelectItem]) -> bool {
                         fn expr_has_raw_subquery(expr: &RenderExpr) -> bool {
                             match expr {
-                                RenderExpr::Raw(s) => s.contains("(SELECT"),
+                                RenderExpr::Raw(s) => s.starts_with("(SELECT"),
                                 RenderExpr::OperatorApplicationExp(op) => {
                                     op.operands.iter().any(expr_has_raw_subquery)
                                 }
@@ -14155,6 +14206,13 @@ fn generate_pattern_comprehension_correlated_subquery(
         return None;
     }
 
+    // For list comprehension patterns (e.g., size([p IN posts WHERE pattern])),
+    // use arrayCount() instead of correlated subquery to avoid ClickHouse
+    // "Cannot clone Union plan step" error when outer query has UNION ALL.
+    if pc_meta.list_constraint.is_some() {
+        return generate_list_comp_array_count(pc_meta, schema, cte_column_map);
+    }
+
     log::info!(
         "🔧 generate_pc_correlated_subquery: {} hops, {} correlation vars, where={:?}",
         pc_meta.pattern_hops.len(),
@@ -14181,18 +14239,35 @@ fn generate_pattern_comprehension_correlated_subquery(
         let rel_alias = format!("__r{}", hop_idx);
 
         // Determine from/to labels based on direction
-        let (from_label, to_label) = match hop.direction {
-            crate::query_planner::logical_expr::Direction::Incoming => {
-                // Incoming: (end)<-[:REL]-(start) → in schema terms from=start, to=end
-                // But pattern writes it as (end_alias)<-[:REL]-(start_alias)
-                // The start_label in AST is actually the "to" node in schema terms for Incoming
-                (hop.end_label.as_deref(), hop.start_label.as_deref())
+        let (mut from_label_owned, to_label_owned): (Option<String>, Option<String>) =
+            match hop.direction {
+                crate::query_planner::logical_expr::Direction::Incoming => {
+                    // Incoming: (end)<-[:REL]-(start) → in schema terms from=start, to=end
+                    (hop.end_label.clone(), hop.start_label.clone())
+                }
+                _ => {
+                    // Outgoing: (start)-[:REL]->(end)
+                    (hop.start_label.clone(), hop.end_label.clone())
+                }
+            };
+
+        // For list comprehension: override first hop's from_label with the list source label
+        // e.g., [p IN posts WHERE (p)-[:HAS_TAG]->()...] where posts = collect(post:Post)
+        if hop_idx == 0 {
+            if let Some(ref lc) = pc_meta.list_constraint {
+                if from_label_owned.is_none() {
+                    if let Some(ref src_label) = lc.source_label {
+                        log::info!(
+                            "🔧 List constraint: overriding first hop from_label with source_label '{}'",
+                            src_label
+                        );
+                        from_label_owned = Some(src_label.clone());
+                    }
+                }
             }
-            _ => {
-                // Outgoing: (start)-[:REL]->(end)
-                (hop.start_label.as_deref(), hop.end_label.as_deref())
-            }
-        };
+        }
+        let from_label = from_label_owned.as_deref();
+        let to_label = to_label_owned.as_deref();
 
         let rel_type = hop.rel_type.as_deref();
 
@@ -14274,6 +14349,35 @@ fn generate_pattern_comprehension_correlated_subquery(
         }
     }
 
+    // Handle list constraint: [p IN posts WHERE pattern]
+    // The iteration variable `p` should be correlated via has(posts_array, edge.id)
+    if let Some(ref lc) = pc_meta.list_constraint {
+        // Find which hop starts with the list iteration variable
+        // The iteration variable is the start node of the first hop
+        if let Some((_, edge_alias, hop_info)) = edge_tables.first() {
+            let edge_col = find_edge_id_column(schema, &edge_tables[0].0, true, hop_info);
+
+            // Find the CTE column for the list array
+            // Look for the list alias (e.g., "posts") in the CTE column map
+            let list_cte_col = find_cte_column_for_list_alias(&lc.list_alias, cte_column_map);
+
+            if let Some(list_col) = list_cte_col {
+                where_conditions.push(format!("has({}, {}.{})", list_col, edge_alias, edge_col));
+                log::info!(
+                    "🔧 List constraint: has({}, {}.{})",
+                    list_col,
+                    edge_alias,
+                    edge_col
+                );
+            } else {
+                log::warn!(
+                    "⚠️ Could not find CTE column for list alias '{}'",
+                    lc.list_alias
+                );
+            }
+        }
+    }
+
     // Handle WHERE clause from pattern comprehension
     if let Some(ref where_expr) = pc_meta.where_clause {
         if let Some(where_sql) = render_pc_where_clause(
@@ -14304,6 +14408,218 @@ fn generate_pattern_comprehension_correlated_subquery(
         "(SELECT COUNT(*) FROM {}{}{})",
         from_clause, joins_str, where_str
     ))
+}
+
+/// Generate an `arrayCount()` expression for list comprehension patterns.
+///
+/// For `size([p IN posts WHERE (p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)])`:
+/// ```sql
+/// arrayCount(
+///   x -> (x, person_id_col) IN (
+///     SELECT __r0.PostId, __r1.PersonId
+///     FROM Post_hasTag_Tag AS __r0
+///     INNER JOIN Person_hasInterest_Tag AS __r1 ON __r0.TagId = __r1.TagId
+///   ),
+///   posts_col
+/// )
+/// ```
+///
+/// This avoids correlated subqueries, which fail with ClickHouse's
+/// "Cannot clone Union plan step" error when the outer query has UNION ALL.
+fn generate_list_comp_array_count(
+    pc_meta: &crate::query_planner::logical_plan::PatternComprehensionMeta,
+    schema: &GraphSchema,
+    cte_column_map: &HashMap<(String, String), String>,
+) -> Option<String> {
+    use crate::query_planner::logical_plan::ConnectedPatternInfo;
+
+    let lc = pc_meta.list_constraint.as_ref()?;
+
+    if pc_meta.pattern_hops.is_empty() {
+        return None;
+    }
+
+    log::info!(
+        "🔧 generate_list_comp_array_count: {} hops, list_alias='{}', source_label={:?}",
+        pc_meta.pattern_hops.len(),
+        lc.list_alias,
+        lc.source_label
+    );
+
+    // Build edge tables chain (same logic as correlated subquery path)
+    let mut edge_tables: Vec<(String, String, &ConnectedPatternInfo)> = Vec::new();
+
+    for (hop_idx, hop) in pc_meta.pattern_hops.iter().enumerate() {
+        let rel_alias = format!("__r{}", hop_idx);
+
+        let (mut from_label_owned, to_label_owned): (Option<String>, Option<String>) =
+            match hop.direction {
+                crate::query_planner::logical_expr::Direction::Incoming => {
+                    (hop.end_label.clone(), hop.start_label.clone())
+                }
+                _ => (hop.start_label.clone(), hop.end_label.clone()),
+            };
+
+        // Override first hop's from_label with list source label
+        if hop_idx == 0 && from_label_owned.is_none() {
+            if let Some(ref src_label) = lc.source_label {
+                from_label_owned = Some(src_label.clone());
+            }
+        }
+
+        let from_label = from_label_owned.as_deref();
+        let to_label = to_label_owned.as_deref();
+        let rel_type = hop.rel_type.as_deref();
+
+        let db_table = find_edge_table_in_schema(schema, rel_type, from_label, to_label);
+        if let Some(table) = db_table {
+            edge_tables.push((table, rel_alias, hop));
+        } else {
+            log::warn!(
+                "⚠️ No edge table found for arrayCount hop {}: rel_type={:?}, from={:?}, to={:?}",
+                hop_idx,
+                rel_type,
+                from_label,
+                to_label
+            );
+            return None;
+        }
+    }
+
+    // Build FROM + JOINs for the edge chain
+    let mut from_clause = String::new();
+    let mut join_clauses: Vec<String> = Vec::new();
+    let mut where_conditions: Vec<String> = Vec::new();
+
+    for (idx, (db_table, alias, hop)) in edge_tables.iter().enumerate() {
+        if idx == 0 {
+            from_clause = format!("{} AS {}", db_table, alias);
+        } else {
+            let prev_alias = &edge_tables[idx - 1].1;
+            let prev_hop = edge_tables[idx - 1].2;
+            let prev_to_col = find_edge_id_column(schema, &edge_tables[idx - 1].0, false, prev_hop);
+            let curr_from_col = find_edge_id_column(schema, db_table, true, hop);
+            join_clauses.push(format!(
+                "INNER JOIN {} AS {} ON {}.{} = {}.{}",
+                db_table, alias, prev_alias, prev_to_col, alias, curr_from_col
+            ));
+        }
+    }
+
+    // Find the list element column (first hop's from_id — the iteration variable)
+    let list_element_col = {
+        let (_, first_alias, first_hop) = &edge_tables[0];
+        let col = find_edge_id_column(schema, &edge_tables[0].0, true, first_hop);
+        format!("{}.{}", first_alias, col)
+    };
+
+    // Find correlation variable columns (from edge tables) — go into the tuple
+    let mut corr_edge_cols: Vec<String> = Vec::new();
+    let mut corr_outer_cols: Vec<String> = Vec::new();
+
+    for cv in &pc_meta.correlation_vars {
+        let (hop_idx, is_start) = match &cv.pattern_position {
+            crate::query_planner::logical_plan::PatternPosition::StartOfHop(idx) => (*idx, true),
+            crate::query_planner::logical_plan::PatternPosition::EndOfHop(idx) => (*idx, false),
+        };
+
+        if hop_idx >= edge_tables.len() {
+            continue;
+        }
+
+        let (_, edge_alias, hop_info) = &edge_tables[hop_idx];
+        let edge_col = if is_start {
+            find_edge_id_column(schema, &edge_tables[hop_idx].0, true, hop_info)
+        } else {
+            find_edge_id_column(schema, &edge_tables[hop_idx].0, false, hop_info)
+        };
+
+        corr_edge_cols.push(format!("{}.{}", edge_alias, edge_col));
+
+        // Find outer column reference for this correlation variable
+        let cte_col =
+            find_cte_column_for_correlation_var(&cv.var_name, &cv.label, schema, cte_column_map);
+        if let Some(cte_ref) = cte_col {
+            corr_outer_cols.push(cte_ref);
+        } else {
+            log::warn!(
+                "⚠️ No CTE column for correlation var '{}' in arrayCount — falling back",
+                cv.var_name
+            );
+            return None;
+        }
+    }
+
+    // Find list array column reference
+    let list_col = find_cte_column_for_list_alias(&lc.list_alias, cte_column_map);
+    let list_col = match list_col {
+        Some(c) => c,
+        None => {
+            log::warn!(
+                "⚠️ No CTE column for list alias '{}' in arrayCount",
+                lc.list_alias
+            );
+            return None;
+        }
+    };
+
+    // Handle additional WHERE clause from pattern
+    if let Some(ref where_expr) = pc_meta.where_clause {
+        if let Some(where_sql) = render_pc_where_clause(
+            where_expr,
+            &pc_meta.pattern_hops,
+            &edge_tables,
+            schema,
+            &mut join_clauses,
+        ) {
+            where_conditions.push(where_sql);
+        }
+    }
+
+    // Build the inner SELECT columns: list_element_col, then correlation columns
+    let mut select_cols = vec![list_element_col.clone()];
+    select_cols.extend(corr_edge_cols);
+
+    let joins_str = if join_clauses.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", join_clauses.join(" "))
+    };
+
+    let where_str = if where_conditions.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", where_conditions.join(" AND "))
+    };
+
+    // Build the tuple for arrayCount lambda
+    let lambda_tuple = if corr_outer_cols.is_empty() {
+        "x".to_string()
+    } else {
+        let mut parts = vec!["x".to_string()];
+        parts.extend(corr_outer_cols);
+        format!("({})", parts.join(", "))
+    };
+
+    let inner_select = format!(
+        "SELECT {} FROM {}{}{}",
+        select_cols.join(", "),
+        from_clause,
+        joins_str,
+        where_str
+    );
+
+    let result = format!(
+        "arrayCount(x -> {} IN ({}), {})",
+        lambda_tuple, inner_select, list_col
+    );
+
+    log::info!(
+        "🔧 arrayCount expression: {}",
+        &result[..result.len().min(300)]
+    );
+
+    Some(result)
 }
 
 /// Generate a correlated subquery for pattern comprehensions that contain
@@ -14696,6 +15012,42 @@ fn find_cte_column_for_correlation_var(
     None
 }
 
+/// Find the CTE column reference for a list alias (e.g., "posts" from `collect(post) AS posts`).
+/// Looks for the alias as a direct key in the CTE column map — list aliases are scalar columns
+/// (arrays), not node aliases with property sub-columns.
+fn find_cte_column_for_list_alias(
+    list_alias: &str,
+    cte_column_map: &HashMap<(String, String), String>,
+) -> Option<String> {
+    // List aliases like "posts" are stored as (alias, "*") or (alias, alias) in CTE column maps.
+    // Try several patterns used by the CTE naming system.
+
+    // Pattern 1: (alias, "*") — wildcard property
+    if let Some(cte_ref) = cte_column_map.get(&(list_alias.to_string(), "*".to_string())) {
+        return Some(cte_ref.clone());
+    }
+
+    // Pattern 2: (alias, alias) — self-reference
+    if let Some(cte_ref) = cte_column_map.get(&(list_alias.to_string(), list_alias.to_string())) {
+        return Some(cte_ref.clone());
+    }
+
+    // Pattern 3: Search for any key where the first element matches the alias
+    for ((alias, _prop), cte_ref) in cte_column_map {
+        if alias == list_alias {
+            return Some(cte_ref.clone());
+        }
+    }
+
+    log::debug!(
+        "🔍 List alias CTE column lookup failed for '{}'. Map keys: {:?}",
+        list_alias,
+        cte_column_map.keys().collect::<Vec<_>>()
+    );
+
+    None
+}
+
 /// Render a WHERE clause from a LogicalExpr for use inside a correlated subquery.
 /// Resolves property accesses to schema-mapped column names on edge table aliases.
 /// May add additional JOINs for intermediate node tables referenced in the WHERE clause.
@@ -15043,6 +15395,58 @@ fn find_edge_id_column_for_node(
 /// Walks SELECT items in order, finds AggregateFnCall("count", [Star|Raw("*")])
 /// expressions that were placeholder replacements from pattern comprehension rewriting,
 /// and replaces them with Raw(subquery_sql).
+/// Add correlated columns from pattern comprehensions to a render plan's SELECT.
+/// ClickHouse needs all correlated columns in the outer SELECT for decorrelation.
+/// This adds columns referenced by correlated subqueries that aren't already present.
+fn add_correlated_columns_to_select(
+    plan: &mut RenderPlan,
+    pattern_comprehensions: &[crate::query_planner::logical_plan::PatternComprehensionMeta],
+) {
+    // Collect needed columns from pattern comprehension metadata
+    let mut needed_cols: Vec<(String, String)> = Vec::new(); // (cte_col_ref, alias)
+    let from_alias = if let FromTableItem(Some(ref from)) = plan.from {
+        from.alias.clone()
+    } else {
+        None
+    };
+    let from_alias = match from_alias {
+        Some(a) => a,
+        None => return,
+    };
+
+    for pc in pattern_comprehensions {
+        // Correlation variables need their ID column in outer SELECT
+        for cv in &pc.correlation_vars {
+            let cte_col = crate::utils::cte_column_naming::cte_column_name(&cv.var_name, "id");
+            let qualified = format!("{}.{}", from_alias, cte_col);
+            // Check if this column is already in SELECT
+            let already_present = plan.select.items.iter().any(|item| {
+                if let Some(ref alias) = item.col_alias {
+                    alias.0 == cte_col
+                } else {
+                    false
+                }
+            });
+            if !already_present {
+                needed_cols.push((qualified, cte_col));
+            }
+        }
+    }
+
+    // Add missing columns to SELECT
+    for (qualified, alias) in needed_cols {
+        log::info!(
+            "🔧 Adding correlated column to SELECT: {} AS \"{}\"",
+            qualified,
+            alias
+        );
+        plan.select.items.push(SelectItem {
+            expression: RenderExpr::Raw(qualified),
+            col_alias: Some(ColumnAlias(alias)),
+        });
+    }
+}
+
 fn replace_count_star_placeholders_in_select(
     select_items: &mut [SelectItem],
     pc_subqueries: &[String],

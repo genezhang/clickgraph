@@ -40,6 +40,7 @@ type PatternComprehensionInfo<'a> = (
     Option<Box<Expression<'a>>>,
     Box<Expression<'a>>,
     crate::query_planner::logical_plan::AggregationType, // Aggregation type
+    Option<(String, String)>, // Optional list constraint: (iteration_var, list_alias)
 );
 
 /// Evaluate a WITH clause by creating a WithClause node.
@@ -224,7 +225,9 @@ fn rewrite_with_pattern_comprehensions<'a>(
             pattern_comprehensions.len()
         );
 
-        for (pattern, _where_clause, _projection, agg_type) in pattern_comprehensions {
+        for (pattern, _where_clause, _projection, agg_type, list_constraint) in
+            pattern_comprehensions
+        {
             let correlation_var = extract_correlation_variable_from_pattern(&pattern, plan_ctx);
             if correlation_var.is_none() {
                 log::warn!("⚠️  Pattern comprehension has no correlation variable - skipping");
@@ -257,10 +260,57 @@ fn rewrite_with_pattern_comprehensions<'a>(
             // Extract full pattern info for correlated subquery generation
             let correlation_vars_info =
                 extract_all_correlation_variables_from_pattern(&pattern, plan_ctx);
-            let pattern_hops_info = extract_connected_pattern_info(&pattern);
+            let mut pattern_hops_info = extract_connected_pattern_info(&pattern);
             let pc_where_clause = _where_clause
                 .as_ref()
                 .and_then(|w| LogicalExpr::try_from(w.as_ref().clone()).ok());
+
+            // Enrich hop labels from plan_ctx for variables without explicit labels
+            for hop in &mut pattern_hops_info {
+                if hop.start_label.is_none() {
+                    if let Some(ref alias) = hop.start_alias {
+                        if let Ok(ctx) = plan_ctx.get_table_ctx(alias) {
+                            if let Some(labels) = ctx.get_labels() {
+                                hop.start_label = labels.iter().next().cloned();
+                            }
+                        }
+                    }
+                }
+                if hop.end_label.is_none() {
+                    if let Some(ref alias) = hop.end_alias {
+                        if let Ok(ctx) = plan_ctx.get_table_ctx(alias) {
+                            if let Some(labels) = ctx.get_labels() {
+                                hop.end_label = labels.iter().next().cloned();
+                            }
+                        }
+                    }
+                }
+            }
+
+            // For list comprehension, try to infer the iteration variable's label
+            // from the list source. e.g., [p IN posts WHERE (p)-[:HAS_TAG]->()...] where
+            // posts = collect(post:Post) → source_label = "Post"
+            let source_label = if let Some(ref lc) = list_constraint {
+                // Strategy 1: Look up list alias directly in plan_ctx
+                plan_ctx
+                    .get_table_ctx(&lc.1)
+                    .ok()
+                    .and_then(|ctx| ctx.get_labels().cloned())
+                    .and_then(|labels| labels.into_iter().next())
+                    .or_else(|| {
+                        // Strategy 2: Scan input plan for previous WITH items containing
+                        // collect(X) AS <list_alias>, then look up X's label in plan_ctx
+                        find_collect_source_label(&_plan, &lc.1, plan_ctx)
+                    })
+                    .or_else(|| {
+                        // Strategy 3: Check pattern hops first hop start_label
+                        pattern_hops_info
+                            .first()
+                            .and_then(|h| h.start_label.clone())
+                    })
+            } else {
+                None
+            };
 
             all_metas.push(
                 crate::query_planner::logical_plan::PatternComprehensionMeta {
@@ -276,6 +326,13 @@ fn rewrite_with_pattern_comprehensions<'a>(
                     pattern_hops: pattern_hops_info,
                     where_clause: pc_where_clause,
                     position_index: pc_counter,
+                    list_constraint: list_constraint.map(|(var, alias)| {
+                        crate::query_planner::logical_plan::ListConstraint {
+                            variable: var,
+                            list_alias: alias,
+                            source_label: source_label.clone(),
+                        }
+                    }),
                 },
             );
 
@@ -319,6 +376,7 @@ fn rewrite_expression_pattern_comprehensions<'a>(
                     pc.where_clause.clone(),
                     pc.projection.clone(),
                     crate::query_planner::logical_plan::AggregationType::GroupArray, // Bare list uses groupArray
+                    None,
                 )],
             )
         }
@@ -409,8 +467,59 @@ fn rewrite_expression_pattern_comprehensions<'a>(
                             pc.where_clause.clone(),
                             pc.projection.clone(),
                             agg_type,
+                            None,
                         )],
                     );
+                }
+            }
+
+            // Check for size/length of ListComprehension with pattern predicate
+            // e.g., size([p IN posts WHERE (p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)])
+            if func.args.len() == 1 {
+                if let Expression::ListComprehension(lc) = &func.args[0] {
+                    if (func_lower == "size" || func_lower == "length") && lc.where_clause.is_some()
+                    {
+                        if let Some(ref where_expr) = lc.where_clause {
+                            // Check if the WHERE clause contains a path pattern
+                            if let Some(path_pattern) =
+                                extract_path_pattern_from_expression(where_expr)
+                            {
+                                log::info!(
+                                    "🔄 size(ListComprehension) with pattern predicate detected"
+                                );
+
+                                // Extract the list alias from the list expression
+                                let list_alias = match &*lc.list_expr {
+                                    Expression::Variable(v) => v.to_string(),
+                                    _ => format!("{:?}", lc.list_expr),
+                                };
+
+                                let iteration_var = lc.variable.to_string();
+
+                                // The identity projection (just the variable itself)
+                                let projection = Box::new(Expression::Variable(lc.variable));
+
+                                // Replace with count(*)
+                                let replacement_expr = Expression::FunctionCallExp(FunctionCall {
+                                    name: "count".to_string(),
+                                    args: vec![Expression::Literal(
+                                        crate::open_cypher_parser::ast::Literal::String("*"),
+                                    )],
+                                });
+
+                                return (
+                                    replacement_expr,
+                                    vec![(
+                                        path_pattern,
+                                        None, // WHERE is already in the pattern
+                                        projection,
+                                        crate::query_planner::logical_plan::AggregationType::Count,
+                                        Some((iteration_var, list_alias)),
+                                    )],
+                                );
+                            }
+                        }
+                    }
                 }
             }
 
@@ -710,5 +819,167 @@ fn extract_connected_pattern_info(
             extract_connected_pattern_info(inner)
         }
         PathPattern::Node(_) => vec![],
+    }
+}
+
+/// Extract a PathPattern from an expression.
+/// Used for list comprehension WHERE clauses that contain graph patterns.
+/// e.g., `(p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)` → PathPattern
+fn extract_path_pattern_from_expression<'a>(
+    expr: &Expression<'a>,
+) -> Option<crate::open_cypher_parser::ast::PathPattern<'a>> {
+    match expr {
+        Expression::PathPattern(pp) => Some(pp.clone()),
+        Expression::OperatorApplicationExp(op) => {
+            // Check operands for path patterns (e.g., AND/OR combinations)
+            for operand in &op.operands {
+                if let Some(pp) = extract_path_pattern_from_expression(operand) {
+                    return Some(pp);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Scan the input plan for a previous WithClause that contains `collect(X) AS list_alias`,
+/// then look up X's label in plan_ctx. This traces the source node type through collect()
+/// for list comprehension patterns like `[p IN posts WHERE ...]`.
+fn find_collect_source_label(
+    plan: &LogicalPlan,
+    list_alias: &str,
+    plan_ctx: &PlanCtx,
+) -> Option<String> {
+    match plan {
+        LogicalPlan::WithClause(wc) => {
+            // Check this WithClause's items for collect(X) AS list_alias
+            for item in &wc.items {
+                let alias_name = item.col_alias.as_ref().map(|a| a.0.as_str()).or_else(|| {
+                    if let LogicalExpr::TableAlias(ref v) = item.expression {
+                        Some(v.0.as_str())
+                    } else if let LogicalExpr::ColumnAlias(ref v) = item.expression {
+                        Some(v.0.as_str())
+                    } else {
+                        None
+                    }
+                });
+                if alias_name == Some(list_alias) {
+                    // Found the item producing list_alias. Check if it's collect(X).
+                    if let Some(source_var) = extract_collect_source_var(&item.expression) {
+                        log::info!(
+                            "🔧 find_collect_source_label: '{}' = collect('{}'), looking up label",
+                            list_alias,
+                            source_var
+                        );
+                        // Strategy A: Look up in plan_ctx
+                        if let Ok(ctx) = plan_ctx.get_table_ctx(&source_var) {
+                            if let Some(labels) = ctx.get_labels() {
+                                if let Some(label) = labels.iter().next().cloned() {
+                                    return Some(label);
+                                }
+                            }
+                        }
+                        // Strategy B: Scan the plan tree for a GraphNode with this alias
+                        if let Some(label) = find_graph_node_label(&wc.input, &source_var) {
+                            log::info!(
+                                "🔧 find_collect_source_label: found label '{}' from plan tree for '{}'",
+                                label, source_var
+                            );
+                            return Some(label);
+                        }
+                    }
+                }
+            }
+            // Recurse into input plan
+            find_collect_source_label(&wc.input, list_alias, plan_ctx)
+        }
+        LogicalPlan::Filter(f) => find_collect_source_label(&f.input, list_alias, plan_ctx),
+        LogicalPlan::GraphJoins(gj) => find_collect_source_label(&gj.input, list_alias, plan_ctx),
+        LogicalPlan::OrderBy(o) => find_collect_source_label(&o.input, list_alias, plan_ctx),
+        LogicalPlan::Limit(l) => find_collect_source_label(&l.input, list_alias, plan_ctx),
+        LogicalPlan::GraphRel(gr) => {
+            if let Some(label) = find_collect_source_label(&gr.left, list_alias, plan_ctx) {
+                return Some(label);
+            }
+            find_collect_source_label(&gr.right, list_alias, plan_ctx)
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            if let Some(label) = find_collect_source_label(&cp.left, list_alias, plan_ctx) {
+                return Some(label);
+            }
+            find_collect_source_label(&cp.right, list_alias, plan_ctx)
+        }
+        _ => None,
+    }
+}
+
+/// Extract the source variable from a collect/groupArray expression.
+/// e.g., `AggregateFnCall { name: "collect", args: [Variable("post")] }` → "post"
+fn extract_collect_source_var(expr: &LogicalExpr) -> Option<String> {
+    match expr {
+        LogicalExpr::AggregateFnCall(agg) => {
+            let name_lower = agg.name.to_lowercase();
+            if name_lower == "collect" || name_lower == "grouparray" {
+                if let Some(first_arg) = agg.args.first() {
+                    return match first_arg {
+                        LogicalExpr::TableAlias(v) => Some(v.0.clone()),
+                        LogicalExpr::ColumnAlias(v) => Some(v.0.clone()),
+                        _ => None,
+                    };
+                }
+            }
+            None
+        }
+        LogicalExpr::ScalarFnCall(func) => {
+            let name_lower = func.name.to_lowercase();
+            if name_lower == "collect" || name_lower == "grouparray" {
+                if let Some(first_arg) = func.args.first() {
+                    return match first_arg {
+                        LogicalExpr::TableAlias(v) => Some(v.0.clone()),
+                        LogicalExpr::ColumnAlias(v) => Some(v.0.clone()),
+                        _ => None,
+                    };
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Scan a logical plan tree for a GraphNode with the given alias and return its label.
+fn find_graph_node_label(plan: &LogicalPlan, alias: &str) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphNode(gn) => {
+            if gn.alias == alias {
+                return gn.label.clone();
+            }
+            find_graph_node_label(&gn.input, alias)
+        }
+        LogicalPlan::GraphRel(gr) => {
+            if let Some(label) = find_graph_node_label(&gr.left, alias) {
+                return Some(label);
+            }
+            find_graph_node_label(&gr.right, alias)
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            if let Some(label) = find_graph_node_label(&cp.left, alias) {
+                return Some(label);
+            }
+            find_graph_node_label(&cp.right, alias)
+        }
+        LogicalPlan::Filter(f) => find_graph_node_label(&f.input, alias),
+        LogicalPlan::GraphJoins(gj) => find_graph_node_label(&gj.input, alias),
+        LogicalPlan::WithClause(wc) => find_graph_node_label(&wc.input, alias),
+        LogicalPlan::Union(u) => {
+            for branch in &u.inputs {
+                if let Some(label) = find_graph_node_label(branch, alias) {
+                    return Some(label);
+                }
+            }
+            None
+        }
+        _ => None,
     }
 }

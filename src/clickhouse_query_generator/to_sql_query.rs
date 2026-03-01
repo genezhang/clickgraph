@@ -3301,6 +3301,15 @@ impl RenderExpr {
                     }
                 }
 
+                // Special handling for datetime({epochMillis: x}) -> identity pass-through
+                if fn_name_lower == "datetime" && fn_call.args.len() == 1 {
+                    if let RenderExpr::MapLiteral(entries) = &fn_call.args[0] {
+                        if entries.len() == 1 && entries[0].0.to_lowercase() == "epochmillis" {
+                            return entries[0].1.to_sql();
+                        }
+                    }
+                }
+
                 // Check if we have a Neo4j -> ClickHouse mapping
                 match get_function_mapping(&fn_name_lower) {
                     Some(mapping) => {
@@ -3793,7 +3802,30 @@ impl RenderExpr {
                             Operator::And | Operator::Or => {
                                 format!("({} {} {})", &rendered[0], sql_op, &rendered[1])
                             }
-                            _ => format!("{} {} {}", &rendered[0], sql_op, &rendered[1]),
+                            _ => {
+                                // Parenthesize right operand for non-commutative ops
+                                let needs_right_parens = match op.operator {
+                                    Operator::Subtraction => matches!(
+                                        &op.operands[1],
+                                        RenderExpr::OperatorApplicationExp(inner)
+                                            if inner.operator == Operator::Addition
+                                                || inner.operator == Operator::Subtraction
+                                    ),
+                                    Operator::Division => matches!(
+                                        &op.operands[1],
+                                        RenderExpr::OperatorApplicationExp(inner)
+                                            if inner.operator == Operator::Multiplication
+                                                || inner.operator == Operator::Division
+                                                || inner.operator == Operator::ModuloDivision
+                                    ),
+                                    _ => false,
+                                };
+                                if needs_right_parens {
+                                    format!("{} {} ({})", &rendered[0], sql_op, &rendered[1])
+                                } else {
+                                    format!("{} {} {}", &rendered[0], sql_op, &rendered[1])
+                                }
+                            }
                         }
                     }
                     _ => {
@@ -4148,7 +4180,29 @@ impl RenderExpr {
                         Operator::And | Operator::Or => {
                             format!("({} {} {})", &rendered[0], sql_op, &rendered[1])
                         }
-                        _ => format!("{} {} {}", &rendered[0], sql_op, &rendered[1]),
+                        _ => {
+                            let needs_right_parens = match op.operator {
+                                Operator::Subtraction => matches!(
+                                    &op.operands[1],
+                                    RenderExpr::OperatorApplicationExp(inner)
+                                        if inner.operator == Operator::Addition
+                                            || inner.operator == Operator::Subtraction
+                                ),
+                                Operator::Division => matches!(
+                                    &op.operands[1],
+                                    RenderExpr::OperatorApplicationExp(inner)
+                                        if inner.operator == Operator::Multiplication
+                                            || inner.operator == Operator::Division
+                                            || inner.operator == Operator::ModuloDivision
+                                ),
+                                _ => false,
+                            };
+                            if needs_right_parens {
+                                format!("{} {} ({})", &rendered[0], sql_op, &rendered[1])
+                            } else {
+                                format!("{} {} {}", &rendered[0], sql_op, &rendered[1])
+                            }
+                        }
                     },
                     _ => match op.operator {
                         Operator::And | Operator::Or => {
@@ -4350,7 +4404,32 @@ impl ToSql for OperatorApplication {
         match rendered.len() {
             0 => "".into(),                              // should not happen
             1 => format!("{} {}", sql_op, &rendered[0]), // unary
-            2 => format!("{} {} {}", &rendered[0], sql_op, &rendered[1]),
+            2 => {
+                // Parenthesize right operand to preserve associativity for non-commutative ops:
+                // a - (b - c) must NOT flatten to a - b - c
+                // a / (b * c) must NOT flatten to a / b * c
+                let needs_right_parens = match self.operator {
+                    Operator::Subtraction => matches!(
+                        &self.operands[1],
+                        RenderExpr::OperatorApplicationExp(inner)
+                            if inner.operator == Operator::Addition
+                                || inner.operator == Operator::Subtraction
+                    ),
+                    Operator::Division => matches!(
+                        &self.operands[1],
+                        RenderExpr::OperatorApplicationExp(inner)
+                            if inner.operator == Operator::Multiplication
+                                || inner.operator == Operator::Division
+                                || inner.operator == Operator::ModuloDivision
+                    ),
+                    _ => false,
+                };
+                if needs_right_parens {
+                    format!("{} {} ({})", &rendered[0], sql_op, &rendered[1])
+                } else {
+                    format!("{} {} {}", &rendered[0], sql_op, &rendered[1])
+                }
+            }
             _ => {
                 // n-ary: join with the operator
                 rendered.join(&format!(" {} ", sql_op))
