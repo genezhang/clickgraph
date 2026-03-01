@@ -624,10 +624,19 @@ fn extract_bound_node_filter(
 
 /// Check if a plan subtree contains a GraphNode with the given alias.
 /// Used to verify that a Filter belongs to the correct node before extracting it.
+/// Traverses through all common plan node wrappers to find GraphNode leaves.
 fn filter_subtree_has_alias(plan: &LogicalPlan, alias: &str) -> bool {
     match plan {
         LogicalPlan::GraphNode(node) => node.alias == alias,
         LogicalPlan::Filter(f) => filter_subtree_has_alias(&f.input, alias),
+        LogicalPlan::Projection(p) => filter_subtree_has_alias(&p.input, alias),
+        LogicalPlan::WithClause(w) => filter_subtree_has_alias(&w.input, alias),
+        LogicalPlan::CartesianProduct(cp) => {
+            filter_subtree_has_alias(&cp.left, alias) || filter_subtree_has_alias(&cp.right, alias)
+        }
+        LogicalPlan::GraphRel(gr) => {
+            filter_subtree_has_alias(&gr.left, alias) || filter_subtree_has_alias(&gr.right, alias)
+        }
         // ViewScan without GraphNode wrapper — allow (backward compatibility)
         LogicalPlan::ViewScan(_) | LogicalPlan::Empty => true,
         _ => false,
