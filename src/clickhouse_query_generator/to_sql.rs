@@ -21,6 +21,65 @@ fn has_string_operand_logical(operands: &[LogicalExpr]) -> bool {
     operands.iter().any(contains_string_literal_logical)
 }
 
+/// Check if a LogicalExpr is a list/array expression (for arrayConcat detection).
+fn is_list_expr_logical(expr: &LogicalExpr) -> bool {
+    match expr {
+        LogicalExpr::AggregateFnCall(agg) => {
+            agg.name.eq_ignore_ascii_case("collect") || agg.name.eq_ignore_ascii_case("groupArray")
+        }
+        LogicalExpr::ScalarFnCall(f) => {
+            let n = f.name.to_lowercase();
+            n == "arrayconcat" || n == "arraysort" || n == "arraydistinct"
+        }
+        LogicalExpr::List(_) => true,
+        LogicalExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
+            op.operands.iter().any(is_list_expr_logical)
+        }
+        _ => false,
+    }
+}
+
+/// Flatten nested + operations into a list of SQL strings for arrayConcat().
+/// Known scalar literals are wrapped as `[scalar]` so that `list + scalar`
+/// produces valid `arrayConcat(list, [scalar])` (ClickHouse requires array args).
+/// Ambiguous expressions (Identifier, PropertyAccessExp, etc.) are left as-is
+/// since they may already hold arrays.
+fn flatten_list_addition_operands_logical(
+    expr: &LogicalExpr,
+) -> Result<Vec<String>, ClickhouseQueryGeneratorError> {
+    match expr {
+        LogicalExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
+            let mut result = Vec::new();
+            for operand in &op.operands {
+                result.extend(flatten_list_addition_operands_logical(operand)?);
+            }
+            Ok(result)
+        }
+        _ => {
+            let sql = ToSql::to_sql(expr)?;
+            if is_known_scalar_logical(expr) {
+                // Wrap scalar as single-element array for arrayConcat compatibility
+                Ok(vec![format!("[{}]", sql)])
+            } else {
+                Ok(vec![sql])
+            }
+        }
+    }
+}
+
+/// Returns true if the expression is definitely a scalar (not an array).
+fn is_known_scalar_logical(expr: &LogicalExpr) -> bool {
+    matches!(
+        expr,
+        LogicalExpr::Literal(Literal::Integer(_))
+            | LogicalExpr::Literal(Literal::Float(_))
+            | LogicalExpr::Literal(Literal::String(_))
+            | LogicalExpr::Literal(Literal::Boolean(_))
+            | LogicalExpr::Literal(Literal::Null)
+            | LogicalExpr::Parameter(_)
+    )
+}
+
 /// Flatten nested + operations into a list of SQL strings for concat()
 fn flatten_addition_operands_logical(
     expr: &LogicalExpr,
@@ -132,9 +191,21 @@ impl ToSql for LogicalExpr {
                     .collect::<Result<Vec<String>, _>>()?;
                 match op.operator {
                     Operator::Addition => {
+                        // Use arrayConcat() for list concatenation
+                        if op.operands.iter().any(is_list_expr_logical) {
+                            let flattened: Vec<String> = op
+                                .operands
+                                .iter()
+                                .map(flatten_list_addition_operands_logical)
+                                .collect::<Result<Vec<Vec<String>>, _>>()?
+                                .into_iter()
+                                .flatten()
+                                .collect();
+                            Ok(format!("arrayConcat({})", flattened.join(", ")))
+                        }
                         // Use concat() for string concatenation, + for numeric
                         // Flatten nested + operations for cases like: a + ' - ' + b
-                        if has_string_operand_logical(&op.operands) {
+                        else if has_string_operand_logical(&op.operands) {
                             let flattened: Vec<String> = op
                                 .operands
                                 .iter()

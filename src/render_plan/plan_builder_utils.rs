@@ -9360,286 +9360,194 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     .any(|pc| !pc.pattern_hops.is_empty());
 
                 if has_pattern_hops {
-                    // ===== NEW: Correlated subquery approach =====
+                    // ===== Pre-aggregated CTE + LEFT JOIN approach =====
+                    // For each PC with pattern_hops and no list_constraint, generate a
+                    // pre-aggregated CTE with GROUP BY on correlation columns, then LEFT JOIN
+                    // from the WITH CTE to the PC CTE. This avoids ClickHouse "Cannot clone
+                    // Union plan step" errors that occur with correlated subqueries + UNION ALL.
+
+                    // Separate PCs into CTE-based (no list_constraint) and arrayCount-based
+                    let cte_pcs: Vec<(
+                        usize,
+                        &crate::query_planner::logical_plan::PatternComprehensionMeta,
+                    )> = pattern_comprehensions
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, pc)| {
+                            !pc.pattern_hops.is_empty() && pc.list_constraint.is_none()
+                        })
+                        .collect();
+                    let array_count_pcs: Vec<
+                        &crate::query_planner::logical_plan::PatternComprehensionMeta,
+                    > = pattern_comprehensions
+                        .iter()
+                        .filter(|pc| !pc.pattern_hops.is_empty() && pc.list_constraint.is_some())
+                        .collect();
+
                     log::info!(
-                        "🔧 Generating {} correlated subquery pattern comprehension(s) for WITH alias '{}'",
-                        pattern_comprehensions.len(),
-                        with_alias
+                        "🔧 Pattern comprehensions for '{}': {} CTE-based, {} arrayCount-based",
+                        with_alias,
+                        cte_pcs.len(),
+                        array_count_pcs.len(),
                     );
 
-                    // Generate and replace correlated subqueries.
-                    // For UNION plans (BidirectionalUnion), each branch has different
-                    // FROM/JOIN structure, so we need per-branch column maps and subqueries.
-                    fn generate_and_replace_pc_subqueries(
-                        plan: &mut RenderPlan,
-                        pattern_comprehensions: &[crate::query_planner::logical_plan::PatternComprehensionMeta],
-                        schema: &GraphSchema,
-                        cte_name: &str,
-                    ) {
-                        if let UnionItems(Some(ref mut union)) = plan.union {
-                            // UNION plan: process each branch independently.
-                            // Return early — the parent plan's SELECT items will be
-                            // overridden with branch SELECTs during UNION branch CTE
-                            // splitting, so we must not also replace in the parent.
-                            for branch in union.input.iter_mut() {
-                                generate_and_replace_pc_subqueries(
-                                    branch,
-                                    pattern_comprehensions,
-                                    schema,
-                                    cte_name,
-                                );
-                            }
-                            return;
-                        }
+                    // Phase A: Generate pre-aggregated CTEs for non-list-constraint PCs
+                    let mut pc_cte_names: Vec<(usize, String)> = Vec::new(); // (pc_index, cte_name)
+                    for (pc_idx, pc_meta) in &cte_pcs {
+                        let pc_cte_name = format!("pc_{}_{}", with_alias, pc_idx);
 
-                        // Try replacing in this plan's own select items
-                        if !plan.select.items.is_empty() {
-                            let cte_col_map = build_cte_column_map(plan, cte_name);
-                            // Also include direct JOINs as available references
-                            // (e.g., friend from Person JOIN is directly available as friend.id)
-                            let mut branch_col_map = cte_col_map;
-                            for join in &plan.joins.0 {
-                                let join_alias = &join.table_alias;
-                                branch_col_map
-                                    .entry((join_alias.clone(), "id".to_string()))
-                                    .or_insert_with(|| format!("{}.id", join_alias));
-                            }
-                            // Scan FROM's ViewScan property_mapping for CTE-backed columns.
-                            // When FROM is a CTE, the property_mapping values contain CTE column
-                            // names in p{N}_{alias}_{property} format that we can parse.
-                            if let FromTableItem(Some(ref from)) = plan.from {
-                                if let Some(ref from_alias) = from.alias {
-                                    if let LogicalPlan::ViewScan(ref scan) = from.source.as_ref() {
-                                        for (_prop, col_value) in &scan.property_mapping {
-                                            if let crate::graph_catalog::expression_parser::PropertyValue::Column(ref col_name) = col_value {
-                                                if let Some((parsed_alias, parsed_property)) =
-                                                    parse_cte_column(col_name)
-                                                {
-                                                    let qualified =
-                                                        format!("{}.{}", from_alias, col_name);
-                                                    branch_col_map
-                                                        .entry((parsed_alias, parsed_property))
-                                                        .or_insert(qualified);
-                                                }
-                                                // Also add bare column references (non-p{N} like "person", "score")
-                                                else {
-                                                    let qualified =
-                                                        format!("{}.\"{}\"", from_alias, col_name);
-                                                    branch_col_map
-                                                        .entry((col_name.clone(), "id".to_string()))
-                                                        .or_insert(qualified.clone());
-                                                    branch_col_map
-                                                        .entry((col_name.clone(), col_name.clone()))
-                                                        .or_insert(qualified);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Augment branch_col_map with correlation variables and
-                            // list aliases from pattern comprehensions that may not be
-                            // in the current CTE's SELECT (they're consumed by expressions
-                            // but not in WITH output).
-                            if let FromTableItem(Some(ref from)) = plan.from {
-                                if let Some(ref from_alias) = from.alias {
-                                    for pc in pattern_comprehensions.iter() {
-                                        // Add correlation variable ID columns
-                                        for cv in &pc.correlation_vars {
-                                            let key = (cv.var_name.clone(), "id".to_string());
-                                            if !branch_col_map.contains_key(&key) {
-                                                let cte_col = crate::utils::cte_column_naming::cte_column_name(&cv.var_name, "id");
-                                                branch_col_map.insert(
-                                                    key,
-                                                    format!("{}.{}", from_alias, cte_col),
-                                                );
-                                            }
-                                        }
-                                        // Add list constraint alias (array column)
-                                        if let Some(ref lc) = pc.list_constraint {
-                                            let key1 = (lc.list_alias.clone(), "id".to_string());
-                                            if !branch_col_map.contains_key(&key1) {
-                                                let qualified =
-                                                    format!("{}.\"{}\"", from_alias, lc.list_alias);
-                                                branch_col_map.insert(key1, qualified.clone());
-                                                branch_col_map.insert(
-                                                    (lc.list_alias.clone(), lc.list_alias.clone()),
-                                                    qualified,
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
+                        if let Some(pc_result) = generate_pattern_comprehension_cte(pc_meta, schema)
+                        {
                             log::info!(
-                                "🔧 Branch column map keys: {:?}",
-                                branch_col_map.keys().collect::<Vec<_>>()
+                                "🔧 PC CTE '{}': {} correlation columns",
+                                pc_cte_name,
+                                pc_result.correlation_columns.len()
                             );
 
-                            let mut pc_subqueries: Vec<String> = Vec::new();
-                            for pc_meta in pattern_comprehensions {
-                                if let Some(subquery_sql) =
-                                    generate_pattern_comprehension_correlated_subquery(
-                                        pc_meta,
-                                        schema,
-                                        &branch_col_map,
-                                    )
-                                {
-                                    log::info!(
-                                        "🔧 PC correlated subquery: {}",
-                                        &subquery_sql[..subquery_sql.len().min(200)]
-                                    );
-                                    pc_subqueries.push(subquery_sql);
+                            // Push the CTE before the WITH CTE (ordering matters)
+                            all_ctes.push(Cte::new(
+                                pc_cte_name.clone(),
+                                CteContent::RawSql(pc_result.cte_sql),
+                                false,
+                            ));
+
+                            // Build LEFT JOIN to the PC CTE
+                            // ON conditions: pc_cte.corr_N = <corresponding CTE column>
+                            let mut join_conditions: Vec<OperatorApplication> = Vec::new();
+                            for (cv_idx, (var_name, label, corr_alias)) in
+                                pc_result.correlation_columns.iter().enumerate()
+                            {
+                                // Find the CTE column reference for this correlation variable.
+                                // We need to resolve (var_name, id) to a column in the WITH CTE body.
+                                let cte_col_ref = find_pc_cte_join_column(
+                                    var_name,
+                                    label,
+                                    schema,
+                                    &with_cte_render,
+                                    &cte_name,
+                                );
+
+                                if let Some(cte_ref) = cte_col_ref {
+                                    // Parse "alias.column" into PropertyAccessExp for proper
+                                    // dependency tracking in sort_joins_by_dependency
+                                    let lhs_expr = if let Some(dot_pos) = cte_ref.find('.') {
+                                        let alias_part =
+                                            cte_ref[..dot_pos].trim_matches('"').to_string();
+                                        let col_part =
+                                            cte_ref[dot_pos + 1..].trim_matches('"').to_string();
+                                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(alias_part),
+                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(col_part),
+                                        })
+                                    } else {
+                                        RenderExpr::Raw(cte_ref)
+                                    };
+                                    join_conditions.push(OperatorApplication {
+                                        operator: Operator::Equal,
+                                        operands: vec![
+                                            lhs_expr,
+                                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: TableAlias(pc_cte_name.clone()),
+                                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                    corr_alias.clone(),
+                                                ),
+                                            }),
+                                        ],
+                                    });
                                 } else {
                                     log::warn!(
-                                        "⚠️ Could not generate correlated subquery for PC — falling back to 0"
+                                        "⚠️ Could not find CTE column for PC correlation var '{}' (label='{}', cv_idx={})",
+                                        var_name,
+                                        label,
+                                        cv_idx
                                     );
-                                    pc_subqueries.push("0".to_string());
                                 }
                             }
-                            replace_count_star_placeholders_in_select(
-                                &mut plan.select.items,
-                                &pc_subqueries,
+
+                            // Guard: require all correlation predicates to be resolved.
+                            // An empty or incomplete join would produce ON 1=1 (Cartesian product).
+                            if join_conditions.len() != pc_result.correlation_columns.len() {
+                                log::warn!(
+                                    "⚠️ PC CTE '{}': only {}/{} join conditions resolved — skipping join (will use 0)",
+                                    pc_cte_name,
+                                    join_conditions.len(),
+                                    pc_result.correlation_columns.len()
+                                );
+                            } else {
+                                let pc_join = Join {
+                                    table_name: pc_cte_name.clone(),
+                                    table_alias: pc_cte_name.clone(),
+                                    joining_on: join_conditions,
+                                    join_type: JoinType::Left,
+                                    pre_filter: None,
+                                    from_id_column: None,
+                                    to_id_column: None,
+                                    graph_rel: None,
+                                };
+
+                                // Add LEFT JOIN to the WITH CTE body.
+                                // For UNION plans, add to each branch.
+                                add_join_to_plan_or_union_branches(&mut with_cte_render, pc_join);
+
+                                pc_cte_names.push((*pc_idx, pc_cte_name));
+                            }
+                        } else {
+                            log::warn!(
+                                "⚠️ Could not generate PC CTE for pattern comprehension #{} — falling back to 0",
+                                pc_idx
                             );
                         }
                     }
-                    generate_and_replace_pc_subqueries(
+
+                    // Phase B: Replace count(*) placeholders with COALESCE(pc_cte.result, 0)
+                    // Build replacement expressions indexed by PC position
+                    let mut pc_replacements: Vec<String> = Vec::new();
+                    let mut cte_name_iter = pc_cte_names.iter();
+                    let mut next_cte = cte_name_iter.next();
+                    for (pc_idx, pc_meta) in pattern_comprehensions.iter().enumerate() {
+                        if pc_meta.pattern_hops.is_empty() {
+                            continue;
+                        }
+                        if pc_meta.list_constraint.is_some() {
+                            // Will be handled by arrayCount path — put a placeholder
+                            // that will be replaced below
+                            pc_replacements.push("__arraycount_placeholder__".to_string());
+                            continue;
+                        }
+                        if let Some((idx, ref name)) = next_cte {
+                            if *idx == pc_idx {
+                                pc_replacements.push(format!("COALESCE({}.result, 0)", name));
+                                next_cte = cte_name_iter.next();
+                            } else {
+                                pc_replacements.push("0".to_string());
+                            }
+                        } else {
+                            pc_replacements.push("0".to_string());
+                        }
+                    }
+
+                    // Replace count(*) placeholders in SELECT items
+                    replace_count_star_placeholders_in_select_or_union(
                         &mut with_cte_render,
-                        &pattern_comprehensions,
-                        schema,
-                        &cte_name,
+                        &pc_replacements,
                     );
 
-                    // Only apply correlated-subquery-specific fixes when at least one
-                    // PC uses a correlated subquery (i.e., has no list_constraint —
-                    // list_constraint PCs use arrayCount which is non-correlated).
-                    let has_correlated_subqueries = pattern_comprehensions
-                        .iter()
-                        .any(|pc| pc.list_constraint.is_none() && !pc.pattern_hops.is_empty());
-
-                    if has_correlated_subqueries {
-                        // ClickHouse limitation: correlated subqueries need outer column
-                        // references to be in the SELECT for decorrelation.
-                        add_correlated_columns_to_select(
+                    // Phase C: Handle arrayCount PCs (list_constraint patterns)
+                    // These still use the inline approach since they don't need
+                    // correlated subqueries.
+                    if !array_count_pcs.is_empty() {
+                        generate_and_replace_arraycount_pc_subqueries(
                             &mut with_cte_render,
                             &pattern_comprehensions,
+                            schema,
+                            &cte_name,
                         );
                     }
-
-                    // ClickHouse limitation: correlated subqueries cannot exist inside
-                    // UNION ALL branches (error: "Cannot clone ... plan step").
-                    // Fix: split each UNION branch into its own CTE, then the main CTE
-                    // becomes a simple UNION ALL of the branch CTEs (no correlated subqueries
-                    // inside UNION branches).
-                    fn select_has_raw_subquery(items: &[SelectItem]) -> bool {
-                        fn expr_has_raw_subquery(expr: &RenderExpr) -> bool {
-                            match expr {
-                                RenderExpr::Raw(s) => s.starts_with("(SELECT"),
-                                RenderExpr::OperatorApplicationExp(op) => {
-                                    op.operands.iter().any(expr_has_raw_subquery)
-                                }
-                                RenderExpr::ScalarFnCall(f) => {
-                                    f.args.iter().any(expr_has_raw_subquery)
-                                }
-                                _ => false,
-                            }
-                        }
-                        items
-                            .iter()
-                            .any(|item| expr_has_raw_subquery(&item.expression))
-                    }
-
-                    if with_cte_render.union.0.is_some()
-                        && select_has_raw_subquery(&with_cte_render.select.items)
-                    {
-                        log::info!(
-                            "🔧 Splitting UNION + correlated subquery CTE '{}' into branch CTEs",
-                            cte_name
-                        );
-
-                        // Build branch 0 (first branch) from the main plan's FROM/JOINs.
-                        // Move fields from with_cte_render into a new branch plan.
-                        let branch0_name = format!("{}_br0", cte_name);
-                        let branch0_plan = {
-                            let mut bp = with_cte_render.clone();
-                            bp.union = UnionItems(None);
-                            bp.group_by = GroupByExpressions(vec![]);
-                            bp.order_by = OrderByItems(vec![]);
-                            bp.limit = LimitItem(None);
-                            bp.skip = SkipItem(None);
-                            bp.having_clause = None;
-                            bp.ctes = CteItems(vec![]);
-                            bp
-                        };
-                        all_ctes.push(Cte::new(
-                            branch0_name.clone(),
-                            CteContent::Structured(Box::new(branch0_plan)),
-                            false,
-                        ));
-
-                        // Build branch CTEs from UNION branches
-                        let mut branch_cte_names = vec![branch0_name];
-                        if let UnionItems(Some(union)) =
-                            std::mem::replace(&mut with_cte_render.union, UnionItems(None))
-                        {
-                            for (bi, mut branch) in union.input.into_iter().enumerate() {
-                                let br_name = format!("{}_br{}", cte_name, bi + 1);
-                                // CRITICAL: Override branch SELECT with the main plan's
-                                // SELECT (which has the correlated subqueries from PC
-                                // replacement). UNION branches may have different SELECT
-                                // items from BidirectionalUnion expansion.
-                                branch.select = with_cte_render.select.clone();
-                                all_ctes.push(Cte::new(
-                                    br_name.clone(),
-                                    CteContent::Structured(Box::new(branch)),
-                                    false,
-                                ));
-                                branch_cte_names.push(br_name);
-                            }
-                        }
-
-                        // Rebuild the main CTE as:
-                        //   SELECT * FROM branch0 UNION ALL SELECT * FROM branch1
-                        // Use RawSql to keep it simple and avoid ClickHouse inline subquery
-                        // limitation.
-                        let union_sql = branch_cte_names
-                            .iter()
-                            .map(|name| format!("SELECT * FROM {}", name))
-                            .collect::<Vec<_>>()
-                            .join("\nUNION ALL\n");
-                        // Store the raw UNION SQL so it's picked up at CTE creation time.
-                        with_cte_render.select = SelectItems {
-                            items: vec![],
-                            distinct: false,
-                        };
-                        with_cte_render.from = FromTableItem(None);
-                        with_cte_render.joins = JoinItems(vec![]);
-                        with_cte_render.filters = FilterItems(None);
-                        with_cte_render.union = UnionItems(None);
-                        // Store the UNION SQL in a tagged CTE so the downstream CTE builder
-                        // can emit RawSql instead of rendering the empty Structured plan.
-                        with_cte_render.ctes = CteItems(vec![Cte::new(
-                            "__pc_union_sql__".to_string(),
-                            CteContent::RawSql(union_sql),
-                            false,
-                        )]);
-
-                        log::info!(
-                            "✅ Split into {} branch CTEs for '{}'",
-                            branch_cte_names.len(),
-                            cte_name
-                        );
-                    }
-
-                    // NOTE: When has_aggregation was false (because PC count(*) placeholders
-                    // were excluded), no GROUP BY or anyLast() wrapping was applied, so nothing
-                    // to clean up. The correlated subqueries produce scalar values directly.
 
                     log::info!(
-                        "✅ Pattern comprehension correlated subqueries applied for '{}'",
-                        with_alias
+                        "✅ Pattern comprehension CTEs applied for '{}': {} CTEs created",
+                        with_alias,
+                        pc_cte_names.len(),
                     );
                 } else {
                     // ===== LEGACY: CTE + LEFT JOIN approach (simple single-hop, single-correlation) =====
@@ -14500,6 +14408,425 @@ fn generate_pattern_comprehension_correlated_subquery(
     ))
 }
 
+/// Result of generating a pre-aggregated CTE for a pattern comprehension.
+struct PcCteResult {
+    /// The CTE body SQL (SELECT ... FROM ... GROUP BY ...)
+    cte_sql: String,
+    /// Correlation columns: (var_name, var_label, cte_col_alias) — e.g., ("tag", "Tag", "corr_0")
+    correlation_columns: Vec<(String, String, String)>,
+    /// The result column name in the CTE (always "result")
+    result_column: String,
+}
+
+/// Generate a pre-aggregated CTE SQL for a pattern comprehension.
+///
+/// Instead of a correlated subquery like:
+/// ```sql
+/// (SELECT COUNT(*) FROM edge WHERE TagId = outer.tag_id AND PersonId = outer.person_id)
+/// ```
+///
+/// Generates a non-correlated CTE:
+/// ```sql
+/// SELECT TagId AS corr_0, PersonId AS corr_1, COUNT(*) AS result
+/// FROM edge_table AS __r0
+/// INNER JOIN ... AS __r1 ON ...
+/// WHERE date_filters...
+/// GROUP BY TagId, PersonId
+/// ```
+///
+/// The caller then adds a LEFT JOIN from the main CTE to this PC CTE.
+fn generate_pattern_comprehension_cte(
+    pc_meta: &crate::query_planner::logical_plan::PatternComprehensionMeta,
+    schema: &GraphSchema,
+) -> Option<PcCteResult> {
+    use crate::query_planner::logical_plan::{ConnectedPatternInfo, PatternPosition};
+
+    if pc_meta.pattern_hops.is_empty() {
+        return None;
+    }
+
+    // Skip list comprehension patterns — they use arrayCount() instead
+    if pc_meta.list_constraint.is_some() {
+        return None;
+    }
+
+    log::info!(
+        "🔧 generate_pattern_comprehension_cte: {} hops, {} correlation vars",
+        pc_meta.pattern_hops.len(),
+        pc_meta.correlation_vars.len(),
+    );
+
+    // Check for Direction::Either — need UNION ALL of both directions
+    let has_either_direction = pc_meta
+        .pattern_hops
+        .iter()
+        .any(|h| h.direction == crate::query_planner::logical_expr::Direction::Either);
+
+    if has_either_direction {
+        return generate_pc_cte_with_either(pc_meta, schema);
+    }
+
+    // For each hop, find the matching edge table in schema
+    let mut edge_tables: Vec<(String, String, &ConnectedPatternInfo)> = Vec::new();
+
+    for (hop_idx, hop) in pc_meta.pattern_hops.iter().enumerate() {
+        let rel_alias = format!("__r{}", hop_idx);
+
+        let (from_label_owned, to_label_owned): (Option<String>, Option<String>) =
+            match hop.direction {
+                crate::query_planner::logical_expr::Direction::Incoming => {
+                    (hop.end_label.clone(), hop.start_label.clone())
+                }
+                _ => (hop.start_label.clone(), hop.end_label.clone()),
+            };
+
+        let from_label = from_label_owned.as_deref();
+        let to_label = to_label_owned.as_deref();
+        let rel_type = hop.rel_type.as_deref();
+
+        let db_table = find_edge_table_in_schema(schema, rel_type, from_label, to_label);
+
+        if let Some(table) = db_table {
+            edge_tables.push((table, rel_alias, hop));
+        } else {
+            log::warn!(
+                "⚠️ No edge table found for CTE hop {}: rel_type={:?}, from={:?}, to={:?}",
+                hop_idx,
+                rel_type,
+                from_label,
+                to_label
+            );
+            return None;
+        }
+    }
+
+    // Build FROM + JOINs for the edge chain
+    let mut from_clause = String::new();
+    let mut join_clauses: Vec<String> = Vec::new();
+    let mut where_conditions: Vec<String> = Vec::new();
+
+    for (idx, (db_table, alias, hop)) in edge_tables.iter().enumerate() {
+        if idx == 0 {
+            from_clause = format!("{} AS {}", db_table, alias);
+        } else {
+            let prev_alias = &edge_tables[idx - 1].1;
+            let prev_hop = edge_tables[idx - 1].2;
+            let prev_to_col = find_edge_id_column(schema, &edge_tables[idx - 1].0, false, prev_hop);
+            let curr_from_col = find_edge_id_column(schema, db_table, true, hop);
+            join_clauses.push(format!(
+                "INNER JOIN {} AS {} ON {}.{} = {}.{}",
+                db_table, alias, prev_alias, prev_to_col, alias, curr_from_col
+            ));
+        }
+    }
+
+    // Build SELECT columns for correlation variables (these become GROUP BY columns)
+    let mut select_cols: Vec<String> = Vec::new();
+    let mut group_by_cols: Vec<String> = Vec::new();
+    let mut correlation_columns: Vec<(String, String, String)> = Vec::new();
+
+    for (cv_idx, cv) in pc_meta.correlation_vars.iter().enumerate() {
+        let (hop_idx, is_start) = match &cv.pattern_position {
+            PatternPosition::StartOfHop(idx) => (*idx, true),
+            PatternPosition::EndOfHop(idx) => (*idx, false),
+        };
+
+        if hop_idx >= edge_tables.len() {
+            continue;
+        }
+
+        let (_, edge_alias, hop_info) = &edge_tables[hop_idx];
+
+        let edge_col = if is_start {
+            find_edge_id_column(schema, &edge_tables[hop_idx].0, true, hop_info)
+        } else {
+            find_edge_id_column(schema, &edge_tables[hop_idx].0, false, hop_info)
+        };
+
+        let corr_alias = format!("corr_{}", cv_idx);
+        select_cols.push(format!("{}.{} AS {}", edge_alias, edge_col, corr_alias));
+        group_by_cols.push(format!("{}.{}", edge_alias, edge_col));
+        correlation_columns.push((cv.var_name.clone(), cv.label.clone(), corr_alias));
+    }
+
+    // Handle WHERE clause from pattern comprehension
+    if let Some(ref where_expr) = pc_meta.where_clause {
+        if let Some(where_sql) = render_pc_where_clause(
+            where_expr,
+            &pc_meta.pattern_hops,
+            &edge_tables,
+            schema,
+            &mut join_clauses,
+        ) {
+            where_conditions.push(where_sql);
+        }
+    }
+
+    // Build final CTE SQL
+    select_cols.push("COUNT(*) AS result".to_string());
+
+    let where_str = if where_conditions.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", where_conditions.join(" AND "))
+    };
+
+    let joins_str = if join_clauses.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", join_clauses.join(" "))
+    };
+
+    let group_by_str = if group_by_cols.is_empty() {
+        String::new()
+    } else {
+        format!(" GROUP BY {}", group_by_cols.join(", "))
+    };
+
+    let cte_sql = format!(
+        "SELECT {} FROM {}{}{}{}",
+        select_cols.join(", "),
+        from_clause,
+        joins_str,
+        where_str,
+        group_by_str
+    );
+
+    log::info!("🔧 PC CTE SQL: {}", &cte_sql[..cte_sql.len().min(300)]);
+
+    Some(PcCteResult {
+        cte_sql,
+        correlation_columns,
+        result_column: "result".to_string(),
+    })
+}
+
+/// Generate a pre-aggregated CTE for pattern comprehensions with Direction::Either.
+/// Creates UNION ALL of both direction variants, wrapped in an outer GROUP BY.
+fn generate_pc_cte_with_either(
+    pc_meta: &crate::query_planner::logical_plan::PatternComprehensionMeta,
+    schema: &GraphSchema,
+) -> Option<PcCteResult> {
+    use crate::query_planner::logical_plan::PatternPosition;
+
+    // Build direction variants (same logic as correlated subquery path)
+    let mut direction_variants: Vec<Vec<crate::query_planner::logical_expr::Direction>> =
+        vec![vec![]];
+
+    for hop in &pc_meta.pattern_hops {
+        if hop.direction == crate::query_planner::logical_expr::Direction::Either {
+            let mut new_variants = Vec::new();
+            for variant in &direction_variants {
+                let mut v_out = variant.clone();
+                v_out.push(crate::query_planner::logical_expr::Direction::Outgoing);
+                new_variants.push(v_out);
+
+                let mut v_in = variant.clone();
+                v_in.push(crate::query_planner::logical_expr::Direction::Incoming);
+                new_variants.push(v_in);
+            }
+            direction_variants = new_variants;
+        } else {
+            for variant in &mut direction_variants {
+                variant.push(hop.direction.clone());
+            }
+        }
+    }
+
+    // Determine correlation column aliases (consistent across all variants)
+    let mut correlation_columns: Vec<(String, String, String)> = Vec::new();
+    for (cv_idx, cv) in pc_meta.correlation_vars.iter().enumerate() {
+        let corr_alias = format!("corr_{}", cv_idx);
+        correlation_columns.push((cv.var_name.clone(), cv.label.clone(), corr_alias));
+    }
+
+    let mut union_parts: Vec<String> = Vec::new();
+
+    for directions in &direction_variants {
+        let mut edge_tables: Vec<(
+            String,
+            String,
+            &crate::query_planner::logical_plan::ConnectedPatternInfo,
+            crate::query_planner::logical_expr::Direction,
+        )> = Vec::new();
+
+        let mut all_found = true;
+        for (hop_idx, (hop, dir)) in pc_meta
+            .pattern_hops
+            .iter()
+            .zip(directions.iter())
+            .enumerate()
+        {
+            let rel_alias = format!("__r{}", hop_idx);
+
+            let (from_label, to_label) = match dir {
+                crate::query_planner::logical_expr::Direction::Incoming => {
+                    (hop.end_label.as_deref(), hop.start_label.as_deref())
+                }
+                _ => (hop.start_label.as_deref(), hop.end_label.as_deref()),
+            };
+
+            let rel_type = hop.rel_type.as_deref();
+            let db_table = find_edge_table_in_schema(schema, rel_type, from_label, to_label);
+
+            if let Some(table) = db_table {
+                edge_tables.push((table, rel_alias, hop, dir.clone()));
+            } else {
+                if *dir == crate::query_planner::logical_expr::Direction::Outgoing {
+                    let db_table_rev =
+                        find_edge_table_in_schema(schema, rel_type, to_label, from_label);
+                    if let Some(table) = db_table_rev {
+                        edge_tables.push((
+                            table,
+                            format!("__r{}", hop_idx),
+                            hop,
+                            crate::query_planner::logical_expr::Direction::Incoming,
+                        ));
+                        continue;
+                    }
+                }
+                all_found = false;
+                break;
+            }
+        }
+
+        if !all_found {
+            continue;
+        }
+
+        // Build FROM + JOINs for this direction variant
+        let mut from_clause = String::new();
+        let mut join_clauses: Vec<String> = Vec::new();
+        let mut where_conditions: Vec<String> = Vec::new();
+
+        for (idx, (db_table, alias, _hop, _dir)) in edge_tables.iter().enumerate() {
+            if idx == 0 {
+                from_clause = format!("{} AS {}", db_table, alias);
+            } else {
+                let prev_alias = &edge_tables[idx - 1].1;
+                let prev_hop = edge_tables[idx - 1].2;
+                let prev_dir = &edge_tables[idx - 1].3;
+
+                let prev_to_col = find_edge_id_column_with_direction(
+                    schema,
+                    &edge_tables[idx - 1].0,
+                    false,
+                    prev_hop,
+                    prev_dir,
+                );
+                let curr_from_col =
+                    find_edge_id_column_with_direction(schema, db_table, true, _hop, _dir);
+
+                join_clauses.push(format!(
+                    "INNER JOIN {} AS {} ON {}.{} = {}.{}",
+                    db_table, alias, prev_alias, prev_to_col, alias, curr_from_col
+                ));
+            }
+        }
+
+        // SELECT columns for correlation variables
+        let mut select_cols: Vec<String> = Vec::new();
+        for (cv_idx, cv) in pc_meta.correlation_vars.iter().enumerate() {
+            let (hop_idx, is_start) = match &cv.pattern_position {
+                PatternPosition::StartOfHop(idx) => (*idx, true),
+                PatternPosition::EndOfHop(idx) => (*idx, false),
+            };
+
+            if hop_idx >= edge_tables.len() {
+                continue;
+            }
+
+            let (_, edge_alias, hop_info, dir) = &edge_tables[hop_idx];
+            let edge_col = find_edge_id_column_with_direction(
+                schema,
+                &edge_tables[hop_idx].0,
+                is_start,
+                hop_info,
+                dir,
+            );
+
+            let corr_alias = format!("corr_{}", cv_idx);
+            select_cols.push(format!("{}.{} AS {}", edge_alias, edge_col, corr_alias));
+        }
+
+        // WHERE clause
+        if let Some(ref where_expr) = pc_meta.where_clause {
+            if let Some(where_sql) = render_pc_where_clause(
+                where_expr,
+                &pc_meta.pattern_hops,
+                &edge_tables
+                    .iter()
+                    .map(|(t, a, h, _)| (t.clone(), a.clone(), *h))
+                    .collect::<Vec<_>>(),
+                schema,
+                &mut join_clauses,
+            ) {
+                where_conditions.push(where_sql);
+            }
+        }
+
+        let where_str = if where_conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", where_conditions.join(" AND "))
+        };
+
+        let joins_str = if join_clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", join_clauses.join(" "))
+        };
+
+        union_parts.push(format!(
+            "SELECT {} FROM {}{}{}",
+            select_cols.join(", "),
+            from_clause,
+            joins_str,
+            where_str,
+        ));
+    }
+
+    if union_parts.is_empty() {
+        return None;
+    }
+
+    // Build the corr column aliases for the outer GROUP BY
+    let corr_aliases: Vec<String> = correlation_columns
+        .iter()
+        .map(|(_, _, alias)| alias.clone())
+        .collect();
+
+    let cte_sql = if union_parts.len() == 1 {
+        // Single variant — wrap in subquery with outer aggregation
+        format!(
+            "SELECT {}, COUNT(*) AS result FROM ({}) AS __u GROUP BY {}",
+            corr_aliases.join(", "),
+            union_parts[0],
+            corr_aliases.join(", ")
+        )
+    } else {
+        // Multiple variants — wrap UNION ALL in subquery with outer GROUP BY
+        let inner_union = union_parts.join(" UNION ALL ");
+        format!(
+            "SELECT {}, COUNT(*) AS result FROM ({}) AS __u GROUP BY {}",
+            corr_aliases.join(", "),
+            inner_union,
+            corr_aliases.join(", ")
+        )
+    };
+
+    log::info!(
+        "🔧 PC CTE (Either) SQL: {}",
+        &cte_sql[..cte_sql.len().min(300)]
+    );
+
+    Some(PcCteResult {
+        cte_sql,
+        correlation_columns,
+        result_column: "result".to_string(),
+    })
+}
+
 /// Generate an `arrayCount()` expression for list comprehension patterns.
 ///
 /// For `size([p IN posts WHERE (p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)])`:
@@ -15955,4 +16282,255 @@ pub(super) fn find_node_id_column_from_schema(
         label
     );
     "id".to_string()
+}
+
+/// Find the CTE column reference for a correlation variable in the WITH CTE body.
+/// Used to build LEFT JOIN ON conditions between the WITH CTE and a PC CTE.
+///
+/// The correlation variable (e.g., "tag" with label "Tag") needs to resolve to
+/// a qualified column reference (e.g., "person_tag.p3_tag_id") in the WITH CTE body.
+fn find_pc_cte_join_column(
+    var_name: &str,
+    label: &str,
+    schema: &GraphSchema,
+    with_cte_render: &RenderPlan,
+    cte_name: &str,
+) -> Option<String> {
+    // Build the CTE column map from the WITH CTE body
+    let cte_col_map = build_cte_column_map(with_cte_render, cte_name);
+
+    // Also include direct JOINs as available references
+    let mut col_map = cte_col_map;
+    for join in &with_cte_render.joins.0 {
+        let join_alias = &join.table_alias;
+        col_map
+            .entry((join_alias.clone(), "id".to_string()))
+            .or_insert_with(|| format!("{}.id", join_alias));
+    }
+
+    // Scan FROM's ViewScan property_mapping
+    if let FromTableItem(Some(ref from)) = with_cte_render.from {
+        if let Some(ref from_alias) = from.alias {
+            if let LogicalPlan::ViewScan(ref scan) = from.source.as_ref() {
+                for (_prop, col_value) in &scan.property_mapping {
+                    if let crate::graph_catalog::expression_parser::PropertyValue::Column(
+                        ref col_name,
+                    ) = col_value
+                    {
+                        if let Some((parsed_alias, parsed_property)) = parse_cte_column(col_name) {
+                            let qualified = format!("{}.{}", from_alias, col_name);
+                            col_map
+                                .entry((parsed_alias, parsed_property))
+                                .or_insert(qualified);
+                        } else {
+                            let qualified = format!("{}.\"{}\"", from_alias, col_name);
+                            col_map
+                                .entry((col_name.clone(), "id".to_string()))
+                                .or_insert(qualified.clone());
+                            col_map
+                                .entry((col_name.clone(), col_name.clone()))
+                                .or_insert(qualified);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Augment with correlation variable CTE column names
+    if let FromTableItem(Some(ref from)) = with_cte_render.from {
+        if let Some(ref from_alias) = from.alias {
+            let key = (var_name.to_string(), "id".to_string());
+            if !col_map.contains_key(&key) {
+                let cte_col = crate::utils::cte_column_naming::cte_column_name(var_name, "id");
+                col_map.insert(key, format!("{}.{}", from_alias, cte_col));
+            }
+        }
+    }
+
+    find_cte_column_for_correlation_var(var_name, label, schema, &col_map)
+}
+
+/// Add a JOIN to a render plan, handling UNION branches.
+/// If the plan has UNION branches, the join is cloned into each branch.
+fn add_join_to_plan_or_union_branches(plan: &mut RenderPlan, join: Join) {
+    if let UnionItems(Some(ref mut union)) = plan.union {
+        // Add to each UNION branch AND the outer plan.
+        // The outer plan's FROM+JOINs form the first UNION ALL branch
+        // in CTE body rendering, so it needs the join too.
+        for (bi, branch) in union.input.iter_mut().enumerate() {
+            log::debug!(
+                "🔧 add_join_to_plan_or_union_branches: branch {} has {} existing joins, adding '{}'",
+                bi,
+                branch.joins.0.len(),
+                join.table_alias
+            );
+            branch.joins.0.push(join.clone());
+        }
+        plan.joins.0.push(join);
+    } else {
+        log::debug!(
+            "🔧 add_join_to_plan_or_union_branches: non-union plan has {} existing joins, adding '{}'",
+            plan.joins.0.len(),
+            join.table_alias
+        );
+        plan.joins.0.push(join);
+    }
+}
+
+/// Replace count(*) placeholders in SELECT items, handling UNION branches.
+fn replace_count_star_placeholders_in_select_or_union(
+    plan: &mut RenderPlan,
+    pc_replacements: &[String],
+) {
+    if let UnionItems(Some(ref mut union)) = plan.union {
+        for branch in union.input.iter_mut() {
+            replace_count_star_placeholders_in_select(&mut branch.select.items, pc_replacements);
+        }
+    }
+    // Always replace in the main plan's SELECT too
+    replace_count_star_placeholders_in_select(&mut plan.select.items, pc_replacements);
+}
+
+/// Generate and replace arrayCount subqueries for list-constraint pattern comprehensions.
+/// This handles only PCs with list_constraint (e.g., `size([p IN posts WHERE pattern])`).
+/// Non-list PCs are handled by the CTE approach and should not be passed here.
+fn generate_and_replace_arraycount_pc_subqueries(
+    plan: &mut RenderPlan,
+    pattern_comprehensions: &[crate::query_planner::logical_plan::PatternComprehensionMeta],
+    schema: &GraphSchema,
+    cte_name: &str,
+) {
+    if let UnionItems(Some(ref mut union)) = plan.union {
+        for branch in union.input.iter_mut() {
+            generate_and_replace_arraycount_pc_subqueries(
+                branch,
+                pattern_comprehensions,
+                schema,
+                cte_name,
+            );
+        }
+        return;
+    }
+
+    if plan.select.items.is_empty() {
+        return;
+    }
+
+    let cte_col_map = build_cte_column_map(plan, cte_name);
+    let mut branch_col_map = cte_col_map;
+
+    // Include JOINs as available references
+    for join in &plan.joins.0 {
+        let join_alias = &join.table_alias;
+        branch_col_map
+            .entry((join_alias.clone(), "id".to_string()))
+            .or_insert_with(|| format!("{}.id", join_alias));
+    }
+
+    // Scan FROM's ViewScan property_mapping
+    if let FromTableItem(Some(ref from)) = plan.from {
+        if let Some(ref from_alias) = from.alias {
+            if let LogicalPlan::ViewScan(ref scan) = from.source.as_ref() {
+                for (_prop, col_value) in &scan.property_mapping {
+                    if let crate::graph_catalog::expression_parser::PropertyValue::Column(
+                        ref col_name,
+                    ) = col_value
+                    {
+                        if let Some((parsed_alias, parsed_property)) = parse_cte_column(col_name) {
+                            let qualified = format!("{}.{}", from_alias, col_name);
+                            branch_col_map
+                                .entry((parsed_alias, parsed_property))
+                                .or_insert(qualified);
+                        } else {
+                            let qualified = format!("{}.\"{}\"", from_alias, col_name);
+                            branch_col_map
+                                .entry((col_name.clone(), "id".to_string()))
+                                .or_insert(qualified.clone());
+                            branch_col_map
+                                .entry((col_name.clone(), col_name.clone()))
+                                .or_insert(qualified);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Augment with correlation variables and list aliases
+    if let FromTableItem(Some(ref from)) = plan.from {
+        if let Some(ref from_alias) = from.alias {
+            for pc in pattern_comprehensions.iter() {
+                for cv in &pc.correlation_vars {
+                    let key = (cv.var_name.clone(), "id".to_string());
+                    if !branch_col_map.contains_key(&key) {
+                        let cte_col =
+                            crate::utils::cte_column_naming::cte_column_name(&cv.var_name, "id");
+                        branch_col_map.insert(key, format!("{}.{}", from_alias, cte_col));
+                    }
+                }
+                if let Some(ref lc) = pc.list_constraint {
+                    let key1 = (lc.list_alias.clone(), "id".to_string());
+                    if !branch_col_map.contains_key(&key1) {
+                        let qualified = format!("{}.\"{}\"", from_alias, lc.list_alias);
+                        branch_col_map.insert(key1, qualified.clone());
+                        branch_col_map
+                            .insert((lc.list_alias.clone(), lc.list_alias.clone()), qualified);
+                    }
+                }
+            }
+        }
+    }
+
+    // Only generate subqueries for list_constraint PCs (arrayCount path)
+    let mut pc_subqueries: Vec<String> = Vec::new();
+    for pc_meta in pattern_comprehensions {
+        if pc_meta.pattern_hops.is_empty() {
+            continue;
+        }
+        if pc_meta.list_constraint.is_some() {
+            if let Some(subquery_sql) =
+                generate_pattern_comprehension_correlated_subquery(pc_meta, schema, &branch_col_map)
+            {
+                pc_subqueries.push(subquery_sql);
+            } else {
+                pc_subqueries.push("0".to_string());
+            }
+        }
+        // Non-list PCs: already handled as COALESCE — use placeholder markers
+        // that won't match count(*) patterns
+    }
+
+    // Only replace __arraycount_placeholder__ entries with arrayCount subqueries
+    let mut ac_idx = 0;
+    for item in plan.select.items.iter_mut() {
+        replace_arraycount_placeholders_in_expr(&mut item.expression, &pc_subqueries, &mut ac_idx);
+    }
+}
+
+/// Replace __arraycount_placeholder__ markers with actual arrayCount subquery SQL.
+fn replace_arraycount_placeholders_in_expr(
+    expr: &mut RenderExpr,
+    pc_subqueries: &[String],
+    ac_idx: &mut usize,
+) {
+    match expr {
+        RenderExpr::Raw(s) if s == "__arraycount_placeholder__" => {
+            if *ac_idx < pc_subqueries.len() {
+                *expr = RenderExpr::Raw(pc_subqueries[*ac_idx].clone());
+                *ac_idx += 1;
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in op.operands.iter_mut() {
+                replace_arraycount_placeholders_in_expr(operand, pc_subqueries, ac_idx);
+            }
+        }
+        RenderExpr::ScalarFnCall(f) => {
+            for arg in f.args.iter_mut() {
+                replace_arraycount_placeholders_in_expr(arg, pc_subqueries, ac_idx);
+            }
+        }
+        _ => {}
+    }
 }

@@ -72,6 +72,70 @@ fn flatten_addition_operands(expr: &RenderExpr) -> Vec<String> {
     }
 }
 
+/// Check if a RenderExpr is a list/array expression (for arrayConcat detection).
+/// Returns true for: groupArray(), arrayConcat(), arraySort(), List literals,
+/// and recursive Addition of list expressions (list + list).
+fn is_list_expr(expr: &RenderExpr) -> bool {
+    match expr {
+        RenderExpr::AggregateFnCall(agg) => {
+            agg.name.eq_ignore_ascii_case("groupArray")
+                || agg.name.eq_ignore_ascii_case("collect")
+                || agg.name.eq_ignore_ascii_case("arrayConcat")
+        }
+        RenderExpr::ScalarFnCall(f) => {
+            f.name.eq_ignore_ascii_case("arrayConcat")
+                || f.name.eq_ignore_ascii_case("arraySort")
+                || f.name.eq_ignore_ascii_case("arrayDistinct")
+                || f.name.eq_ignore_ascii_case("arrayFilter")
+                || f.name.eq_ignore_ascii_case("arrayMap")
+        }
+        RenderExpr::List(_) => true,
+        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
+            op.operands.iter().any(is_list_expr)
+        }
+        _ => false,
+    }
+}
+
+/// Flatten nested + operations for arrayConcat (list concatenation).
+/// Known scalar literals are wrapped as `[scalar]` so that `list + scalar`
+/// produces valid `arrayConcat(list, [scalar])` (ClickHouse requires array args).
+/// Ambiguous expressions (PropertyAccessExp, ColumnAlias, etc.) are left as-is
+/// since they may already hold arrays (e.g., CTE columns from groupArray).
+fn flatten_list_addition_operands(expr: &RenderExpr) -> Vec<String> {
+    match expr {
+        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => op
+            .operands
+            .iter()
+            .flat_map(flatten_list_addition_operands)
+            .collect(),
+        _ => {
+            let sql = expr.to_sql();
+            if is_known_scalar(expr) {
+                // Wrap scalar as single-element array for arrayConcat compatibility
+                vec![format!("[{}]", sql)]
+            } else {
+                vec![sql]
+            }
+        }
+    }
+}
+
+/// Returns true if the expression is definitely a scalar (not an array).
+/// Conservative: returns false for ambiguous types (PropertyAccessExp, ColumnAlias, etc.)
+/// since those may hold array values from CTE columns.
+fn is_known_scalar(expr: &RenderExpr) -> bool {
+    matches!(
+        expr,
+        RenderExpr::Literal(Literal::Integer(_))
+            | RenderExpr::Literal(Literal::Float(_))
+            | RenderExpr::Literal(Literal::String(_))
+            | RenderExpr::Literal(Literal::Boolean(_))
+            | RenderExpr::Literal(Literal::Null)
+            | RenderExpr::Parameter(_)
+    )
+}
+
 /// Build the relationship columns mapping from a RenderPlan (for collecting data)
 /// Returns the mapping of alias → (from_id_column, to_id_column)
 fn build_relationship_columns_from_plan(plan: &RenderPlan) -> HashMap<String, (String, String)> {
@@ -3900,6 +3964,17 @@ impl RenderExpr {
                     return format!("(position({}, {}) > 0)", &rendered[0], &rendered[1]);
                 }
 
+                // Special handling for Addition with list/array operands - use arrayConcat()
+                // Cypher: list1 + list2 → ClickHouse: arrayConcat(list1, list2)
+                if op.operator == Operator::Addition && op.operands.iter().any(is_list_expr) {
+                    let flattened: Vec<String> = op
+                        .operands
+                        .iter()
+                        .flat_map(flatten_list_addition_operands)
+                        .collect();
+                    return format!("arrayConcat({})", flattened.join(", "));
+                }
+
                 // Special handling for Addition with string operands - use concat()
                 // ClickHouse doesn't support + for string concatenation
                 // Flatten nested + operations to handle cases like: a + ' - ' + b
@@ -4279,6 +4354,16 @@ impl RenderExpr {
                     return format!("(position({}, {}) > 0)", &rendered[0], &rendered[1]);
                 }
 
+                // Special handling for Addition with list/array operands - use arrayConcat()
+                if op.operator == Operator::Addition && op.operands.iter().any(is_list_expr) {
+                    let flattened: Vec<String> = op
+                        .operands
+                        .iter()
+                        .flat_map(flatten_list_addition_operands)
+                        .collect();
+                    return format!("arrayConcat({})", flattened.join(", "));
+                }
+
                 // Special handling for interval arithmetic with epoch-millis values
                 if (op.operator == Operator::Addition || op.operator == Operator::Subtraction)
                     && rendered.len() == 2
@@ -4481,6 +4566,16 @@ impl ToSql for OperatorApplication {
             return format!("(position({}, {}) > 0)", &rendered[0], &rendered[1]);
         }
 
+        // Special handling for Addition with list/array operands - use arrayConcat()
+        if self.operator == Operator::Addition && self.operands.iter().any(is_list_expr) {
+            let flattened: Vec<String> = self
+                .operands
+                .iter()
+                .flat_map(flatten_list_addition_operands)
+                .collect();
+            return format!("arrayConcat({})", flattened.join(", "));
+        }
+
         // Special handling for Addition with string operands - use concat()
         // ClickHouse doesn't support + for string concatenation
         // Flatten nested + operations to handle cases like: a + ' - ' + b
@@ -4586,5 +4681,71 @@ mod tests {
     fn test_map_literal_empty() {
         let map_expr = RenderExpr::MapLiteral(vec![]);
         assert_eq!(map_expr.to_sql(), "map()");
+    }
+
+    /// Test: collect(x) + collect(y) → arrayConcat(groupArray(x), groupArray(y))
+    #[test]
+    fn test_list_concat_two_collects() {
+        let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![
+                RenderExpr::AggregateFnCall(AggregateFnCall {
+                    name: "collect".to_string(),
+                    args: vec![RenderExpr::Literal(Literal::String("x".to_string()))],
+                }),
+                RenderExpr::AggregateFnCall(AggregateFnCall {
+                    name: "groupArray".to_string(),
+                    args: vec![RenderExpr::Literal(Literal::String("y".to_string()))],
+                }),
+            ],
+        });
+        let sql = expr.to_sql();
+        // "collect" is mapped to "groupArray" by the function registry during to_sql()
+        assert_eq!(sql, "arrayConcat(groupArray('x'), groupArray('y'))");
+    }
+
+    /// Test: list + scalar → arrayConcat(list, [scalar])
+    #[test]
+    fn test_list_concat_list_plus_scalar() {
+        let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![
+                RenderExpr::AggregateFnCall(AggregateFnCall {
+                    name: "collect".to_string(),
+                    args: vec![RenderExpr::Literal(Literal::Integer(1))],
+                }),
+                RenderExpr::Literal(Literal::Integer(42)),
+            ],
+        });
+        let sql = expr.to_sql();
+        assert_eq!(sql, "arrayConcat(groupArray(1), [42])");
+    }
+
+    /// Test: scalar + list → arrayConcat([scalar], list)
+    #[test]
+    fn test_list_concat_scalar_plus_list() {
+        let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![
+                RenderExpr::Literal(Literal::Integer(42)),
+                RenderExpr::List(vec![RenderExpr::Literal(Literal::Integer(1))]),
+            ],
+        });
+        let sql = expr.to_sql();
+        assert_eq!(sql, "arrayConcat([42], [1])");
+    }
+
+    /// Test: numeric + numeric (no list) → stays as addition, not arrayConcat
+    #[test]
+    fn test_addition_without_lists_unchanged() {
+        let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![
+                RenderExpr::Literal(Literal::Integer(1)),
+                RenderExpr::Literal(Literal::Integer(2)),
+            ],
+        });
+        let sql = expr.to_sql();
+        assert_eq!(sql, "1 + 2");
     }
 }
