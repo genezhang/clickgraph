@@ -72,6 +72,43 @@ fn flatten_addition_operands(expr: &RenderExpr) -> Vec<String> {
     }
 }
 
+/// Check if a RenderExpr is a list/array expression (for arrayConcat detection).
+/// Returns true for: groupArray(), arrayConcat(), arraySort(), List literals,
+/// and recursive Addition of list expressions (list + list).
+fn is_list_expr(expr: &RenderExpr) -> bool {
+    match expr {
+        RenderExpr::AggregateFnCall(agg) => {
+            agg.name.eq_ignore_ascii_case("groupArray")
+                || agg.name.eq_ignore_ascii_case("collect")
+                || agg.name.eq_ignore_ascii_case("arrayConcat")
+        }
+        RenderExpr::ScalarFnCall(f) => {
+            f.name.eq_ignore_ascii_case("arrayConcat")
+                || f.name.eq_ignore_ascii_case("arraySort")
+                || f.name.eq_ignore_ascii_case("arrayDistinct")
+                || f.name.eq_ignore_ascii_case("arrayFilter")
+                || f.name.eq_ignore_ascii_case("arrayMap")
+        }
+        RenderExpr::List(_) => true,
+        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
+            op.operands.iter().any(is_list_expr)
+        }
+        _ => false,
+    }
+}
+
+/// Flatten nested + operations for arrayConcat (list concatenation)
+fn flatten_list_addition_operands(expr: &RenderExpr) -> Vec<String> {
+    match expr {
+        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => op
+            .operands
+            .iter()
+            .flat_map(flatten_list_addition_operands)
+            .collect(),
+        _ => vec![expr.to_sql()],
+    }
+}
+
 /// Build the relationship columns mapping from a RenderPlan (for collecting data)
 /// Returns the mapping of alias → (from_id_column, to_id_column)
 fn build_relationship_columns_from_plan(plan: &RenderPlan) -> HashMap<String, (String, String)> {
@@ -3900,6 +3937,17 @@ impl RenderExpr {
                     return format!("(position({}, {}) > 0)", &rendered[0], &rendered[1]);
                 }
 
+                // Special handling for Addition with list/array operands - use arrayConcat()
+                // Cypher: list1 + list2 → ClickHouse: arrayConcat(list1, list2)
+                if op.operator == Operator::Addition && op.operands.iter().any(is_list_expr) {
+                    let flattened: Vec<String> = op
+                        .operands
+                        .iter()
+                        .flat_map(flatten_list_addition_operands)
+                        .collect();
+                    return format!("arrayConcat({})", flattened.join(", "));
+                }
+
                 // Special handling for Addition with string operands - use concat()
                 // ClickHouse doesn't support + for string concatenation
                 // Flatten nested + operations to handle cases like: a + ' - ' + b
@@ -4279,6 +4327,16 @@ impl RenderExpr {
                     return format!("(position({}, {}) > 0)", &rendered[0], &rendered[1]);
                 }
 
+                // Special handling for Addition with list/array operands - use arrayConcat()
+                if op.operator == Operator::Addition && op.operands.iter().any(is_list_expr) {
+                    let flattened: Vec<String> = op
+                        .operands
+                        .iter()
+                        .flat_map(flatten_list_addition_operands)
+                        .collect();
+                    return format!("arrayConcat({})", flattened.join(", "));
+                }
+
                 // Special handling for interval arithmetic with epoch-millis values
                 if (op.operator == Operator::Addition || op.operator == Operator::Subtraction)
                     && rendered.len() == 2
@@ -4479,6 +4537,16 @@ impl ToSql for OperatorApplication {
         }
         if self.operator == Operator::Contains && rendered.len() == 2 {
             return format!("(position({}, {}) > 0)", &rendered[0], &rendered[1]);
+        }
+
+        // Special handling for Addition with list/array operands - use arrayConcat()
+        if self.operator == Operator::Addition && self.operands.iter().any(is_list_expr) {
+            let flattened: Vec<String> = self
+                .operands
+                .iter()
+                .flat_map(flatten_list_addition_operands)
+                .collect();
+            return format!("arrayConcat({})", flattened.join(", "));
         }
 
         // Special handling for Addition with string operands - use concat()

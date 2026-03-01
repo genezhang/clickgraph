@@ -21,6 +21,40 @@ fn has_string_operand_logical(operands: &[LogicalExpr]) -> bool {
     operands.iter().any(contains_string_literal_logical)
 }
 
+/// Check if a LogicalExpr is a list/array expression (for arrayConcat detection).
+fn is_list_expr_logical(expr: &LogicalExpr) -> bool {
+    match expr {
+        LogicalExpr::AggregateFnCall(agg) => {
+            agg.name.eq_ignore_ascii_case("collect") || agg.name.eq_ignore_ascii_case("groupArray")
+        }
+        LogicalExpr::ScalarFnCall(f) => {
+            let n = f.name.to_lowercase();
+            n == "arrayconcat" || n == "arraysort" || n == "arraydistinct"
+        }
+        LogicalExpr::List(_) => true,
+        LogicalExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
+            op.operands.iter().any(is_list_expr_logical)
+        }
+        _ => false,
+    }
+}
+
+/// Flatten nested + operations into a list of SQL strings for arrayConcat()
+fn flatten_list_addition_operands_logical(
+    expr: &LogicalExpr,
+) -> Result<Vec<String>, ClickhouseQueryGeneratorError> {
+    match expr {
+        LogicalExpr::OperatorApplicationExp(op) if op.operator == Operator::Addition => {
+            let mut result = Vec::new();
+            for operand in &op.operands {
+                result.extend(flatten_list_addition_operands_logical(operand)?);
+            }
+            Ok(result)
+        }
+        _ => Ok(vec![ToSql::to_sql(expr)?]),
+    }
+}
+
 /// Flatten nested + operations into a list of SQL strings for concat()
 fn flatten_addition_operands_logical(
     expr: &LogicalExpr,
@@ -132,9 +166,21 @@ impl ToSql for LogicalExpr {
                     .collect::<Result<Vec<String>, _>>()?;
                 match op.operator {
                     Operator::Addition => {
+                        // Use arrayConcat() for list concatenation
+                        if op.operands.iter().any(is_list_expr_logical) {
+                            let flattened: Vec<String> = op
+                                .operands
+                                .iter()
+                                .map(flatten_list_addition_operands_logical)
+                                .collect::<Result<Vec<Vec<String>>, _>>()?
+                                .into_iter()
+                                .flatten()
+                                .collect();
+                            Ok(format!("arrayConcat({})", flattened.join(", ")))
+                        }
                         // Use concat() for string concatenation, + for numeric
                         // Flatten nested + operations for cases like: a + ' - ' + b
-                        if has_string_operand_logical(&op.operands) {
+                        else if has_string_operand_logical(&op.operands) {
                             let flattened: Vec<String> = op
                                 .operands
                                 .iter()
