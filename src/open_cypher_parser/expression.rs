@@ -486,7 +486,8 @@ fn parse_list_comprehension(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
 }
 
 /// Parse an expression inside a list comprehension, stopping at specified keywords/chars.
-/// Handles bracket nesting so that `[` `]` `(` `)` are properly balanced.
+/// Handles bracket nesting, parenthesis nesting, and string literals so that
+/// keywords inside strings (e.g., `"WHERE"`) or nested brackets are not treated as stops.
 fn parse_list_comp_inner_expr<'a>(
     input: &'a str,
     stop_at: &[&str],
@@ -497,7 +498,27 @@ fn parse_list_comp_inner_expr<'a>(
     let bytes = input.as_bytes();
 
     while i < bytes.len() {
-        match bytes[i] as char {
+        let ch = bytes[i] as char;
+
+        // Skip string literals — don't match keywords or track brackets inside them
+        if ch == '\'' || ch == '"' {
+            let quote = ch;
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] as char == '\\' {
+                    i += 2; // skip escaped character
+                    continue;
+                }
+                if bytes[i] as char == quote {
+                    i += 1; // consume closing quote
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        match ch {
             '[' => depth_bracket += 1,
             ']' => {
                 if depth_bracket == 0 && depth_paren == 0 {
@@ -1118,11 +1139,21 @@ pub fn parse_property_access(input: &'_ str) -> IResult<&'_ str, Expression<'_>>
         "nanosecond",
     ];
 
-    // Check if first_key alone is a temporal accessor (e.g., birthday.month → month(birthday))
+    // Check if first_key alone is a temporal accessor (e.g., birthday.month -> month(birthday)).
     // This mirrors the chain loop's temporal check below, which only fires for SUBSEQUENT keys.
     // Without this check, `birthday.month` would be PropertyAccess instead of FunctionCall.
+    //
+    // DESIGN NOTE: This is a context-free heuristic. In Cypher, `x.month` is ambiguous:
+    //   - If x is a temporal value: month(x) (temporal accessor)
+    //   - If x is a map/node: x['month'] (property access)
+    // The spec resolves this at the semantic level (type checking), but we resolve at parse
+    // time because post-WITH temporal values lose their type information. This means a node
+    // property literally named "month", "day", "year", etc. would be misinterpreted. If that
+    // occurs, the workaround is to use map syntax: `node['month']`.
+    //
+    // Guard: only apply when first_key is the TERMINAL segment (no further `.segment` follows).
+    // If chained (e.g., `x.month.something`), it's clearly a property access, not temporal.
     if temporal_accessors.contains(&first_key) {
-        // Peek ahead: if no more `.segment` follows, this is a temporal accessor
         let peek_result: IResult<_, _, nom::error::Error<_>> =
             preceded(char('.'), parse_property_name).parse(input);
         if peek_result.is_err() {
@@ -2120,6 +2151,142 @@ mod tests {
                 }
             }
             Err(e) => panic!("Should parse birthday.day: {:?}", e),
+        }
+    }
+
+    // ===== List Comprehension Parser Tests =====
+
+    #[test]
+    fn test_list_comprehension_identity() {
+        // [x IN list] — identity, no WHERE or projection
+        let input = "[x IN list]";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::ListComprehension(lc) = &expr {
+            assert_eq!(lc.variable, "x");
+            assert!(matches!(&*lc.list_expr, Expression::Variable("list")));
+            assert!(lc.where_clause.is_none());
+            assert!(lc.projection.is_none());
+        } else {
+            panic!("Expected ListComprehension, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_list_comprehension_with_where() {
+        // [x IN range(1, 10) WHERE x > 5]
+        let input = "[x IN range(1, 10) WHERE x > 5]";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::ListComprehension(lc) = &expr {
+            assert_eq!(lc.variable, "x");
+            assert!(lc.where_clause.is_some());
+            assert!(lc.projection.is_none());
+        } else {
+            panic!("Expected ListComprehension, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_list_comprehension_with_projection() {
+        // [x IN list | x * 2]
+        let input = "[x IN list | x * 2]";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::ListComprehension(lc) = &expr {
+            assert_eq!(lc.variable, "x");
+            assert!(lc.where_clause.is_none());
+            assert!(lc.projection.is_some());
+        } else {
+            panic!("Expected ListComprehension, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_list_comprehension_where_and_projection() {
+        // [x IN list WHERE x > 0 | x * 2]
+        let input = "[x IN list WHERE x > 0 | x * 2]";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::ListComprehension(lc) = &expr {
+            assert_eq!(lc.variable, "x");
+            assert!(lc.where_clause.is_some());
+            assert!(lc.projection.is_some());
+        } else {
+            panic!("Expected ListComprehension, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_list_comprehension_with_pattern_where() {
+        // [p IN posts WHERE (p)-[:HAS_TAG]->()]
+        let input = "[p IN posts WHERE (p)-[:HAS_TAG]->()]";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::ListComprehension(lc) = &expr {
+            assert_eq!(lc.variable, "p");
+            assert!(matches!(&*lc.list_expr, Expression::Variable("posts")));
+            assert!(lc.where_clause.is_some());
+        } else {
+            panic!("Expected ListComprehension, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_list_comprehension_nested_brackets() {
+        // [x IN [1, 2, 3] WHERE x > 1]
+        let input = "[x IN [1, 2, 3] WHERE x > 1]";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::ListComprehension(lc) = &expr {
+            assert_eq!(lc.variable, "x");
+            assert!(matches!(&*lc.list_expr, Expression::List(_)));
+            assert!(lc.where_clause.is_some());
+        } else {
+            panic!("Expected ListComprehension, got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_list_literal_not_misinterpreted() {
+        // [1, 2, 3] must still parse as a list literal, not a list comprehension
+        let input = "[1, 2, 3]";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        assert!(
+            matches!(&expr, Expression::List(_)),
+            "Expected List literal, got {:?}",
+            expr
+        );
+    }
+
+    #[test]
+    fn test_list_comprehension_size_wrapper() {
+        // size([p IN posts WHERE (p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)])
+        let input = "size([p IN posts WHERE (p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)])";
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::FunctionCallExp(fc) = &expr {
+            assert_eq!(fc.name.to_lowercase(), "size");
+            assert_eq!(fc.args.len(), 1);
+            assert!(matches!(&fc.args[0], Expression::ListComprehension(_)));
+        } else {
+            panic!("Expected FunctionCallExp(size), got {:?}", expr);
+        }
+    }
+
+    #[test]
+    fn test_list_comprehension_string_in_where() {
+        // [x IN list WHERE x.name = "WHERE test"]
+        // The "WHERE" inside the string must not be treated as a keyword stop
+        let input = r#"[x IN list WHERE x.name = "WHERE test"]"#;
+        let (remaining, expr) = parse_expression(input).unwrap();
+        assert_eq!(remaining, "");
+        if let Expression::ListComprehension(lc) = &expr {
+            assert_eq!(lc.variable, "x");
+            assert!(lc.where_clause.is_some());
+        } else {
+            panic!("Expected ListComprehension, got {:?}", expr);
         }
     }
 }

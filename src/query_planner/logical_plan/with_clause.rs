@@ -34,14 +34,21 @@ use crate::{
 };
 use std::sync::Arc;
 
-/// Type alias for pattern comprehension tuple with aggregation type
-type PatternComprehensionInfo<'a> = (
-    crate::open_cypher_parser::ast::PathPattern<'a>,
-    Option<Box<Expression<'a>>>,
-    Box<Expression<'a>>,
-    crate::query_planner::logical_plan::AggregationType, // Aggregation type
-    Option<(String, String)>, // Optional list constraint: (iteration_var, list_alias)
-);
+/// Extracted info from a pattern comprehension (or list comprehension with pattern predicate).
+/// Used to track the pattern, projection, aggregation type, and optional list constraint
+/// during WITH/RETURN clause rewriting.
+struct PatternComprehensionInfo<'a> {
+    /// The path pattern from the comprehension (e.g., `(p)-[:HAS_TAG]->()`)
+    pattern: crate::open_cypher_parser::ast::PathPattern<'a>,
+    /// Optional WHERE clause from the comprehension
+    where_clause: Option<Box<Expression<'a>>>,
+    /// The projection expression (what gets collected/counted)
+    projection: Box<Expression<'a>>,
+    /// How this comprehension is aggregated (Count, GroupArray, Sum, etc.)
+    aggregation_type: crate::query_planner::logical_plan::AggregationType,
+    /// For list comprehensions: (iteration_var, list_alias) — e.g., ("p", "posts")
+    list_constraint: Option<(String, String)>,
+}
 
 /// Evaluate a WITH clause by creating a WithClause node.
 ///
@@ -225,10 +232,9 @@ fn rewrite_with_pattern_comprehensions<'a>(
             pattern_comprehensions.len()
         );
 
-        for (pattern, _where_clause, _projection, agg_type, list_constraint) in
-            pattern_comprehensions
-        {
-            let correlation_var = extract_correlation_variable_from_pattern(&pattern, plan_ctx);
+        for pc_info in pattern_comprehensions {
+            let correlation_var =
+                extract_correlation_variable_from_pattern(&pc_info.pattern, plan_ctx);
             if correlation_var.is_none() {
                 log::warn!("⚠️  Pattern comprehension has no correlation variable - skipping");
                 continue;
@@ -244,7 +250,7 @@ fn rewrite_with_pattern_comprehensions<'a>(
                 .unwrap_or_default();
 
             // Extract direction and relationship types from the pattern
-            let (direction, rel_types) = extract_direction_and_rel_types(&pattern);
+            let (direction, rel_types) = extract_direction_and_rel_types(&pc_info.pattern);
 
             // Determine the result alias from the WITH item
             let result_alias = item
@@ -254,14 +260,15 @@ fn rewrite_with_pattern_comprehensions<'a>(
 
             log::info!(
                 "🔧 Pattern comprehension meta: var='{}', label='{}', dir={:?}, rels={:?}, agg={:?}, alias='{}'",
-                correlation_var, correlation_label, direction, rel_types, agg_type, result_alias
+                correlation_var, correlation_label, direction, rel_types, pc_info.aggregation_type, result_alias
             );
 
             // Extract full pattern info for correlated subquery generation
             let correlation_vars_info =
-                extract_all_correlation_variables_from_pattern(&pattern, plan_ctx);
-            let mut pattern_hops_info = extract_connected_pattern_info(&pattern);
-            let pc_where_clause = _where_clause
+                extract_all_correlation_variables_from_pattern(&pc_info.pattern, plan_ctx);
+            let mut pattern_hops_info = extract_connected_pattern_info(&pc_info.pattern);
+            let pc_where_clause = pc_info
+                .where_clause
                 .as_ref()
                 .and_then(|w| LogicalExpr::try_from(w.as_ref().clone()).ok());
 
@@ -289,8 +296,8 @@ fn rewrite_with_pattern_comprehensions<'a>(
 
             // For list comprehension, try to infer the iteration variable's label
             // from the list source. e.g., [p IN posts WHERE (p)-[:HAS_TAG]->()...] where
-            // posts = collect(post:Post) → source_label = "Post"
-            let source_label = if let Some(ref lc) = list_constraint {
+            // posts = collect(post:Post) -> source_label = "Post"
+            let source_label = if let Some(ref lc) = pc_info.list_constraint {
                 // Strategy 1: Look up list alias directly in plan_ctx
                 plan_ctx
                     .get_table_ctx(&lc.1)
@@ -318,7 +325,7 @@ fn rewrite_with_pattern_comprehensions<'a>(
                     correlation_label,
                     direction,
                     rel_types,
-                    agg_type,
+                    agg_type: pc_info.aggregation_type,
                     result_alias: result_alias.clone(),
                     target_label: None,
                     target_property: None,
@@ -326,7 +333,7 @@ fn rewrite_with_pattern_comprehensions<'a>(
                     pattern_hops: pattern_hops_info,
                     where_clause: pc_where_clause,
                     position_index: pc_counter,
-                    list_constraint: list_constraint.map(|(var, alias)| {
+                    list_constraint: pc_info.list_constraint.map(|(var, alias)| {
                         crate::query_planner::logical_plan::ListConstraint {
                             variable: var,
                             list_alias: alias,
@@ -371,13 +378,14 @@ fn rewrite_expression_pattern_comprehensions<'a>(
             });
             (
                 collect_call,
-                vec![(
-                    (*pc.pattern).clone(),
-                    pc.where_clause.clone(),
-                    pc.projection.clone(),
-                    crate::query_planner::logical_plan::AggregationType::GroupArray, // Bare list uses groupArray
-                    None,
-                )],
+                vec![PatternComprehensionInfo {
+                    pattern: (*pc.pattern).clone(),
+                    where_clause: pc.where_clause.clone(),
+                    projection: pc.projection.clone(),
+                    aggregation_type:
+                        crate::query_planner::logical_plan::AggregationType::GroupArray,
+                    list_constraint: None,
+                }],
             )
         }
         Expression::FunctionCallExp(func) => {
@@ -462,13 +470,13 @@ fn rewrite_expression_pattern_comprehensions<'a>(
 
                     return (
                         replacement_expr,
-                        vec![(
-                            (*pc.pattern).clone(),
-                            pc.where_clause.clone(),
-                            pc.projection.clone(),
-                            agg_type,
-                            None,
-                        )],
+                        vec![PatternComprehensionInfo {
+                            pattern: (*pc.pattern).clone(),
+                            where_clause: pc.where_clause.clone(),
+                            projection: pc.projection.clone(),
+                            aggregation_type: agg_type,
+                            list_constraint: None,
+                        }],
                     );
                 }
             }
@@ -477,9 +485,8 @@ fn rewrite_expression_pattern_comprehensions<'a>(
             // e.g., size([p IN posts WHERE (p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)])
             if func.args.len() == 1 {
                 if let Expression::ListComprehension(lc) = &func.args[0] {
-                    if (func_lower == "size" || func_lower == "length") && lc.where_clause.is_some()
-                    {
-                        if let Some(ref where_expr) = lc.where_clause {
+                    if let Some(ref where_expr) = lc.where_clause {
+                        if func_lower == "size" || func_lower == "length" {
                             // Check if the WHERE clause contains a path pattern
                             if let Some(path_pattern) =
                                 extract_path_pattern_from_expression(where_expr)
@@ -491,7 +498,33 @@ fn rewrite_expression_pattern_comprehensions<'a>(
                                 // Extract the list alias from the list expression
                                 let list_alias = match &*lc.list_expr {
                                     Expression::Variable(v) => v.to_string(),
-                                    _ => format!("{:?}", lc.list_expr),
+                                    other => {
+                                        log::warn!(
+                                            "ListComprehension list expression is not a simple variable: {:?}. \
+                                             Only variable references (e.g., [p IN posts WHERE ...]) are supported.",
+                                            other
+                                        );
+                                        // Fall through to default function processing
+                                        // instead of generating a bogus alias
+                                        let mut all_pcs = Vec::new();
+                                        let new_args: Vec<Expression<'a>> = func
+                                            .args
+                                            .into_iter()
+                                            .map(|arg| {
+                                                let (new_arg, pcs) =
+                                                    rewrite_expression_pattern_comprehensions(arg);
+                                                all_pcs.extend(pcs);
+                                                new_arg
+                                            })
+                                            .collect();
+                                        return (
+                                            Expression::FunctionCallExp(FunctionCall {
+                                                name: func.name,
+                                                args: new_args,
+                                            }),
+                                            all_pcs,
+                                        );
+                                    }
                                 };
 
                                 let iteration_var = lc.variable.to_string();
@@ -509,13 +542,13 @@ fn rewrite_expression_pattern_comprehensions<'a>(
 
                                 return (
                                     replacement_expr,
-                                    vec![(
-                                        path_pattern,
-                                        None, // WHERE is already in the pattern
+                                    vec![PatternComprehensionInfo {
+                                        pattern: path_pattern,
+                                        where_clause: None, // WHERE is already in the pattern
                                         projection,
-                                        crate::query_planner::logical_plan::AggregationType::Count,
-                                        Some((iteration_var, list_alias)),
-                                    )],
+                                        aggregation_type: crate::query_planner::logical_plan::AggregationType::Count,
+                                        list_constraint: Some((iteration_var, list_alias)),
+                                    }],
                                 );
                             }
                         }

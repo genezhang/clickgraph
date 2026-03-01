@@ -14251,21 +14251,6 @@ fn generate_pattern_comprehension_correlated_subquery(
                 }
             };
 
-        // For list comprehension: override first hop's from_label with the list source label
-        // e.g., [p IN posts WHERE (p)-[:HAS_TAG]->()...] where posts = collect(post:Post)
-        if hop_idx == 0 {
-            if let Some(ref lc) = pc_meta.list_constraint {
-                if from_label_owned.is_none() {
-                    if let Some(ref src_label) = lc.source_label {
-                        log::info!(
-                            "🔧 List constraint: overriding first hop from_label with source_label '{}'",
-                            src_label
-                        );
-                        from_label_owned = Some(src_label.clone());
-                    }
-                }
-            }
-        }
         let from_label = from_label_owned.as_deref();
         let to_label = to_label_owned.as_deref();
 
@@ -14346,35 +14331,6 @@ fn generate_pattern_comprehension_correlated_subquery(
                 cv.var_name,
                 cv.label
             );
-        }
-    }
-
-    // Handle list constraint: [p IN posts WHERE pattern]
-    // The iteration variable `p` should be correlated via has(posts_array, edge.id)
-    if let Some(ref lc) = pc_meta.list_constraint {
-        // Find which hop starts with the list iteration variable
-        // The iteration variable is the start node of the first hop
-        if let Some((_, edge_alias, hop_info)) = edge_tables.first() {
-            let edge_col = find_edge_id_column(schema, &edge_tables[0].0, true, hop_info);
-
-            // Find the CTE column for the list array
-            // Look for the list alias (e.g., "posts") in the CTE column map
-            let list_cte_col = find_cte_column_for_list_alias(&lc.list_alias, cte_column_map);
-
-            if let Some(list_col) = list_cte_col {
-                where_conditions.push(format!("has({}, {}.{})", list_col, edge_alias, edge_col));
-                log::info!(
-                    "🔧 List constraint: has({}, {}.{})",
-                    list_col,
-                    edge_alias,
-                    edge_col
-                );
-            } else {
-                log::warn!(
-                    "⚠️ Could not find CTE column for list alias '{}'",
-                    lc.list_alias
-                );
-            }
         }
     }
 
@@ -15032,11 +14988,23 @@ fn find_cte_column_for_list_alias(
         return Some(cte_ref.clone());
     }
 
-    // Pattern 3: Search for any key where the first element matches the alias
-    for ((alias, _prop), cte_ref) in cte_column_map {
-        if alias == list_alias {
-            return Some(cte_ref.clone());
+    // Pattern 3: Search for any key where the first element matches the alias.
+    // Collect all matches to detect ambiguity — only return if exactly one match.
+    let matches: Vec<&String> = cte_column_map
+        .iter()
+        .filter(|((alias, _prop), _)| alias == list_alias)
+        .map(|(_, cte_ref)| cte_ref)
+        .collect();
+    match matches.len() {
+        1 => return Some(matches[0].clone()),
+        n if n > 1 => {
+            log::warn!(
+                "Ambiguous CTE column for list alias '{}': {} matches found. Skipping.",
+                list_alias,
+                n
+            );
         }
+        _ => {}
     }
 
     log::debug!(
@@ -15395,6 +15363,17 @@ fn find_edge_id_column_for_node(
 /// Walks SELECT items in order, finds AggregateFnCall("count", [Star|Raw("*")])
 /// expressions that were placeholder replacements from pattern comprehension rewriting,
 /// and replaces them with Raw(subquery_sql).
+fn replace_count_star_placeholders_in_select(
+    select_items: &mut [SelectItem],
+    pc_subqueries: &[String],
+) {
+    let mut pc_idx = 0;
+
+    for item in select_items.iter_mut() {
+        replace_count_star_in_expr(&mut item.expression, pc_subqueries, &mut pc_idx);
+    }
+}
+
 /// Add correlated columns from pattern comprehensions to a render plan's SELECT.
 /// ClickHouse needs all correlated columns in the outer SELECT for decorrelation.
 /// This adds columns referenced by correlated subqueries that aren't already present.
@@ -15444,17 +15423,6 @@ fn add_correlated_columns_to_select(
             expression: RenderExpr::Raw(qualified),
             col_alias: Some(ColumnAlias(alias)),
         });
-    }
-}
-
-fn replace_count_star_placeholders_in_select(
-    select_items: &mut [SelectItem],
-    pc_subqueries: &[String],
-) {
-    let mut pc_idx = 0;
-
-    for item in select_items.iter_mut() {
-        replace_count_star_in_expr(&mut item.expression, pc_subqueries, &mut pc_idx);
     }
 }
 

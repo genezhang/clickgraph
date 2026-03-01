@@ -3,7 +3,7 @@ use crate::{
     query_planner::logical_plan::LogicalPlan,
     render_plan::{
         render_expr::{
-            AggregateFnCall, Column, ColumnAlias, InSubquery, Literal, Operator,
+            self, AggregateFnCall, Column, ColumnAlias, InSubquery, Literal, Operator,
             OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias,
         },
         {
@@ -3803,24 +3803,7 @@ impl RenderExpr {
                                 format!("({} {} {})", &rendered[0], sql_op, &rendered[1])
                             }
                             _ => {
-                                // Parenthesize right operand for non-commutative ops
-                                let needs_right_parens = match op.operator {
-                                    Operator::Subtraction => matches!(
-                                        &op.operands[1],
-                                        RenderExpr::OperatorApplicationExp(inner)
-                                            if inner.operator == Operator::Addition
-                                                || inner.operator == Operator::Subtraction
-                                    ),
-                                    Operator::Division => matches!(
-                                        &op.operands[1],
-                                        RenderExpr::OperatorApplicationExp(inner)
-                                            if inner.operator == Operator::Multiplication
-                                                || inner.operator == Operator::Division
-                                                || inner.operator == Operator::ModuloDivision
-                                    ),
-                                    _ => false,
-                                };
-                                if needs_right_parens {
+                                if render_expr::needs_right_parens(op.operator, &op.operands[1]) {
                                     format!("{} {} ({})", &rendered[0], sql_op, &rendered[1])
                                 } else {
                                     format!("{} {} {}", &rendered[0], sql_op, &rendered[1])
@@ -4181,23 +4164,7 @@ impl RenderExpr {
                             format!("({} {} {})", &rendered[0], sql_op, &rendered[1])
                         }
                         _ => {
-                            let needs_right_parens = match op.operator {
-                                Operator::Subtraction => matches!(
-                                    &op.operands[1],
-                                    RenderExpr::OperatorApplicationExp(inner)
-                                        if inner.operator == Operator::Addition
-                                            || inner.operator == Operator::Subtraction
-                                ),
-                                Operator::Division => matches!(
-                                    &op.operands[1],
-                                    RenderExpr::OperatorApplicationExp(inner)
-                                        if inner.operator == Operator::Multiplication
-                                            || inner.operator == Operator::Division
-                                            || inner.operator == Operator::ModuloDivision
-                                ),
-                                _ => false,
-                            };
-                            if needs_right_parens {
+                            if render_expr::needs_right_parens(op.operator, &op.operands[1]) {
                                 format!("{} {} ({})", &rendered[0], sql_op, &rendered[1])
                             } else {
                                 format!("{} {} {}", &rendered[0], sql_op, &rendered[1])
@@ -4405,26 +4372,7 @@ impl ToSql for OperatorApplication {
             0 => "".into(),                              // should not happen
             1 => format!("{} {}", sql_op, &rendered[0]), // unary
             2 => {
-                // Parenthesize right operand to preserve associativity for non-commutative ops:
-                // a - (b - c) must NOT flatten to a - b - c
-                // a / (b * c) must NOT flatten to a / b * c
-                let needs_right_parens = match self.operator {
-                    Operator::Subtraction => matches!(
-                        &self.operands[1],
-                        RenderExpr::OperatorApplicationExp(inner)
-                            if inner.operator == Operator::Addition
-                                || inner.operator == Operator::Subtraction
-                    ),
-                    Operator::Division => matches!(
-                        &self.operands[1],
-                        RenderExpr::OperatorApplicationExp(inner)
-                            if inner.operator == Operator::Multiplication
-                                || inner.operator == Operator::Division
-                                || inner.operator == Operator::ModuloDivision
-                    ),
-                    _ => false,
-                };
-                if needs_right_parens {
+                if render_expr::needs_right_parens(self.operator, &self.operands[1]) {
                     format!("{} {} ({})", &rendered[0], sql_op, &rendered[1])
                 } else {
                     format!("{} {} {}", &rendered[0], sql_op, &rendered[1])
