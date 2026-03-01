@@ -228,18 +228,31 @@ fn transform_bidirectional(
                     UnionType::All
                 };
 
-                let union = Union {
+                let union_plan = Arc::new(LogicalPlan::Union(Union {
                     inputs: branches,
                     union_type,
-                };
+                }));
+
+                // Collapse redundant Union when both endpoints are already bound
+                // (e.g., shortestPath between two specific nodes — both directions equivalent)
+                let final_plan = collapse_leaf_unions_in_cp(union_plan.clone());
+                if !Arc::ptr_eq(&final_plan, &union_plan) {
+                    crate::debug_print!(
+                        "🔄 BidirectionalUnion: Collapsed redundant Projection Union to single branch"
+                    );
+                    return Ok(Transformed::Yes(final_plan));
+                }
 
                 crate::debug_print!(
-                    "🔄 BidirectionalUnion: Created UNION {:?} with {} branches (with column swaps)",
-                    union.union_type,
-                    union.inputs.len()
+                    "🔄 BidirectionalUnion: Created UNION with {} branches (with column swaps)",
+                    if let LogicalPlan::Union(u) = final_plan.as_ref() {
+                        u.inputs.len()
+                    } else {
+                        1
+                    }
                 );
 
-                Ok(Transformed::Yes(Arc::new(LogicalPlan::Union(union))))
+                Ok(Transformed::Yes(final_plan))
             } else {
                 // No undirected edges, just recurse normally
                 let transformed = transform_bidirectional(&proj.input, plan_ctx, graph_schema)?;
@@ -503,11 +516,15 @@ fn transform_bidirectional(
 fn is_redundant_undirected_union(plan: &LogicalPlan) -> bool {
     if let LogicalPlan::Union(u) = plan {
         if u.inputs.len() == 2 {
-            // Unwrap Filter from first branch (relationship uniqueness filter)
-            let first_inner = match u.inputs[0].as_ref() {
-                LogicalPlan::Filter(f) => f.input.as_ref(),
-                other => other,
-            };
+            // Unwrap Filter/Projection wrappers from first branch to find inner GraphRel
+            let mut first_inner = u.inputs[0].as_ref();
+            loop {
+                match first_inner {
+                    LogicalPlan::Filter(f) => first_inner = f.input.as_ref(),
+                    LogicalPlan::Projection(p) => first_inner = p.input.as_ref(),
+                    _ => break,
+                }
+            }
             // Check if first branch is a GraphRel where both endpoints exist in left subtree
             if let LogicalPlan::GraphRel(gr) = first_inner {
                 let left_conn = &gr.left_connection;

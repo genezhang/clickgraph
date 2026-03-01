@@ -546,6 +546,24 @@ fn extract_bound_node_filter(
 ) -> Option<String> {
     match plan {
         LogicalPlan::Filter(filter) => {
+            // 🔧 FIX: Verify this filter belongs to the target alias before extracting.
+            // In multi-pattern MATCH, a CartesianProduct may contain filters for multiple
+            // nodes. Without verification, we could extract the wrong node's filter.
+            if !filter_subtree_has_alias(&filter.input, node_alias) {
+                log::debug!(
+                    "🔍 Skipping filter - subtree does not contain alias '{}', recursing",
+                    node_alias
+                );
+                // This filter is for a different node — recurse into input to continue searching
+                return extract_bound_node_filter(
+                    &filter.input,
+                    node_alias,
+                    cte_alias,
+                    relationship_type,
+                    node_role,
+                );
+            }
+
             // Found a filter - convert to RenderExpr and then to SQL
             if let Ok(mut render_expr) = RenderExpr::try_from(filter.predicate.clone()) {
                 // Apply property mapping to the filter expression with relationship context
@@ -601,6 +619,18 @@ fn extract_bound_node_filter(
             }
         }
         _ => None,
+    }
+}
+
+/// Check if a plan subtree contains a GraphNode with the given alias.
+/// Used to verify that a Filter belongs to the correct node before extracting it.
+fn filter_subtree_has_alias(plan: &LogicalPlan, alias: &str) -> bool {
+    match plan {
+        LogicalPlan::GraphNode(node) => node.alias == alias,
+        LogicalPlan::Filter(f) => filter_subtree_has_alias(&f.input, alias),
+        // ViewScan without GraphNode wrapper — allow (backward compatibility)
+        LogicalPlan::ViewScan(_) | LogicalPlan::Empty => true,
+        _ => false,
     }
 }
 
@@ -2479,10 +2509,10 @@ pub fn extract_ctes_with_context(
                     (None, None, None, None)
                 };
 
-                log::info!("🔍 After categorization and mapping:");
-                log::info!("  start_filters_sql: {:?}", start_filters_sql);
-                log::info!("  end_filters_sql: {:?}", end_filters_sql);
-                log::info!("  rel_filters_sql: {:?}", rel_filters_sql);
+                log::debug!("After categorization and mapping:");
+                log::debug!("  start_filters_sql: {:?}", start_filters_sql);
+                log::debug!("  end_filters_sql: {:?}", end_filters_sql);
+                log::debug!("  rel_filters_sql: {:?}", rel_filters_sql);
 
                 // 🔧 BOUND NODE FIX: Extract filters from bound nodes (Filter → GraphNode)
                 // For ALL VLP queries, inline property predicates like {code: 'LAX'} are in Filter nodes
@@ -2490,15 +2520,17 @@ pub fn extract_ctes_with_context(
                 // Examples:
                 //   - MATCH path = (p1:Person {id: 1})-[:KNOWS*]-(p2:Person {id: 2})
                 //   - MATCH (origin:Airport {code: 'LAX'})-[:FLIGHT*1..2]->(dest:Airport {code: 'ATL'})
-                log::debug!("🔍 VLP BOUND NODE FIX: Extracting inline property predicates from bound nodes...");
+                log::debug!(
+                    "VLP BOUND NODE FIX: Extracting inline property predicates from bound nodes..."
+                );
                 log::debug!("  Start alias: {}, End alias: {}", start_alias, end_alias);
                 log::debug!("  Current start_filters_sql: {:?}", start_filters_sql);
                 log::debug!("  Current end_filters_sql: {:?}", end_filters_sql);
-                log::debug!(
+                log::info!(
                     "  graph_rel.left type: {:?}",
                     std::mem::discriminant(graph_rel.left.as_ref())
                 );
-                log::debug!(
+                log::info!(
                     "  graph_rel.right type: {:?}",
                     std::mem::discriminant(graph_rel.right.as_ref())
                 );
@@ -2544,7 +2576,26 @@ pub fn extract_ctes_with_context(
                     rel_type,
                     Some(crate::render_plan::cte_generation::NodeRole::From),
                 ) {
-                    log::info!("🔧 Adding bound start node filter: {}", bound_start_filter);
+                    log::debug!("Adding bound start node filter: {}", bound_start_filter);
+                    start_filters_sql = Some(match start_filters_sql {
+                        Some(existing) => {
+                            format!("({}) AND ({})", existing, bound_start_filter)
+                        }
+                        None => bound_start_filter,
+                    });
+                } else if let Some(bound_start_filter) = extract_bound_node_filter(
+                    // 🔧 FIX: For BidirectionalUnion reverse branch, start node's filter
+                    // may be in the right subtree (connections are swapped).
+                    &graph_rel.right,
+                    &start_alias,
+                    &start_cte_alias,
+                    rel_type,
+                    Some(crate::render_plan::cte_generation::NodeRole::From),
+                ) {
+                    log::info!(
+                        "🔧 Adding bound start node filter (from right subtree): {}",
+                        bound_start_filter
+                    );
                     start_filters_sql = Some(match start_filters_sql {
                         Some(existing) => {
                             format!("({}) AND ({})", existing, bound_start_filter)
@@ -2552,7 +2603,7 @@ pub fn extract_ctes_with_context(
                         None => bound_start_filter,
                     });
                 } else {
-                    log::info!("⚠️  No bound start node filter found");
+                    log::debug!("No bound start node filter found");
                 }
 
                 // Extract end node filter (from right side)
@@ -2568,12 +2619,29 @@ pub fn extract_ctes_with_context(
                         Some(existing) => format!("({}) AND ({})", existing, bound_end_filter),
                         None => bound_end_filter,
                     });
+                } else if let Some(bound_end_filter) = extract_bound_node_filter(
+                    // 🔧 FIX: For multi-pattern MATCH, the end node's filter may be in the
+                    // left subtree (inside a CartesianProduct of standalone patterns).
+                    &graph_rel.left,
+                    &end_alias,
+                    &end_cte_alias,
+                    rel_type,
+                    Some(crate::render_plan::cte_generation::NodeRole::To),
+                ) {
+                    log::info!(
+                        "🔧 Adding bound end node filter (from left subtree): {}",
+                        bound_end_filter
+                    );
+                    end_filters_sql = Some(match end_filters_sql {
+                        Some(existing) => format!("({}) AND ({})", existing, bound_end_filter),
+                        None => bound_end_filter,
+                    });
                 } else {
-                    log::info!("⚠️  No bound end node filter found");
+                    log::debug!("No bound end node filter found");
                 }
 
-                log::info!("  Final start_filters_sql: {:?}", start_filters_sql);
-                log::info!("  Final end_filters_sql: {:?}", end_filters_sql);
+                log::debug!("  Final start_filters_sql: {:?}", start_filters_sql);
+                log::debug!("  Final end_filters_sql: {:?}", end_filters_sql);
 
                 // For optional VLP, don't include start node filters in CTE
                 // The filters should remain on the base table in the final query
@@ -3417,7 +3485,7 @@ pub fn extract_ctes_with_context(
                     log::info!("🔍 VLP CTE: Using CteManager with filters:");
                     log::info!("  combined_start_filters: {:?}", combined_start_filters);
                     log::info!("  combined_end_filters: {:?}", combined_end_filters);
-                    log::info!("  rel_filters_sql: {:?}", rel_filters_sql);
+                    log::debug!("  rel_filters_sql: {:?}", rel_filters_sql);
 
                     // Generate VLP CTE via unified CteManager API
                     let var_len_cte = generate_vlp_cte_via_manager(

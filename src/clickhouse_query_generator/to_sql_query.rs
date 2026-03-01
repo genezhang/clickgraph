@@ -4,7 +4,7 @@ use crate::{
     render_plan::{
         render_expr::{
             self, AggregateFnCall, Column, ColumnAlias, InSubquery, Literal, Operator,
-            OperatorApplication, PropertyAccess, RenderExpr, ScalarFnCall, TableAlias,
+            OperatorApplication, PropertyAccess, RenderCase, RenderExpr, ScalarFnCall, TableAlias,
         },
         {
             ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem,
@@ -525,6 +525,38 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
         }
     }
 
+    // Remove spurious JOINs and metadata SELECT items from the main plan
+    // when FROM is a VLP CTE for shortestPath queries. Only shortestPath patterns
+    // (with path_variable) produce these spurious artifacts from multi-pattern MATCH.
+    // Other VLP queries have legitimate JOINs to non-VLP tables.
+    if let Some(from_ref) = &plan.from.0 {
+        if from_ref.name.starts_with("vlp_") {
+            let is_shortest_path = plan
+                .ctes
+                .0
+                .iter()
+                .any(|cte| cte.vlp_path_variable.is_some());
+            if is_shortest_path {
+                plan.joins.0.retain(|join| {
+                    join.table_name.starts_with("vlp_") || join.table_name.starts_with("with_")
+                });
+                plan.select.items.retain(|item| {
+                    if let Some(ref col_alias) = item.col_alias {
+                        !matches!(
+                            col_alias.0.as_str(),
+                            "_rel_properties"
+                                | "__rel_type__"
+                                | "__start_label__"
+                                | "__end_label__"
+                        )
+                    } else {
+                        true
+                    }
+                });
+            }
+        }
+    }
+
     // Also rewrite UNION branches — each may have its own VLP CTE
     // (e.g., undirected patterns create separate CTEs for each direction)
     // Pass parent CTEs so branches can find VLP CTE info (path_variable, start/end aliases)
@@ -667,6 +699,47 @@ fn rewrite_vlp_branch_select(branch: &mut RenderPlan, parent_ctes: &[crate::rend
         let rewritten =
             rewrite_expr_for_vlp(filter_expr, &start_alias, &end_alias, &path_variable, false);
         branch.filters.0 = Some(rewritten);
+    }
+
+    // 🔧 FIX: Remove spurious JOINs from VLP branches in multi-pattern MATCH.
+    // When FROM is a VLP CTE, JOINs to regular tables (not VLP/WITH CTEs) are redundant
+    // because the VLP CTE already encodes the full traversal with endpoint filters.
+    // These JOINs come from standalone pattern nodes in multi-pattern MATCH
+    // (e.g., `(person1:Person), (person2:Person), path = shortestPath(...)`).
+    if from_is_vlp {
+        let before_count = branch.joins.0.len();
+        branch.joins.0.retain(|join| {
+            // Keep JOINs to VLP CTEs or WITH CTEs
+            if join.table_name.starts_with("vlp_") || join.table_name.starts_with("with_") {
+                return true;
+            }
+            // Remove JOINs to regular tables (spurious from multi-pattern MATCH)
+            log::info!(
+                "🔧 VLP branch cleanup: removing spurious JOIN to {} AS {}",
+                join.table_name,
+                join.table_alias
+            );
+            false
+        });
+        if branch.joins.0.len() < before_count {
+            log::info!(
+                "🔧 VLP branch cleanup: removed {} spurious JOINs",
+                before_count - branch.joins.0.len()
+            );
+        }
+
+        // Remove metadata SELECT items (relationship metadata not needed for path queries)
+        branch.select.items.retain(|item| {
+            if let Some(ref col_alias) = item.col_alias {
+                // Keep user-defined aliases, remove internal metadata
+                !matches!(
+                    col_alias.0.as_str(),
+                    "_rel_properties" | "__rel_type__" | "__start_label__" | "__end_label__"
+                )
+            } else {
+                true
+            }
+        });
     }
 }
 
@@ -999,9 +1072,98 @@ fn rewrite_expr_for_vlp(
             )),
         },
 
+        // Handle CASE expressions - rewrite VLP references in all sub-expressions
+        RenderExpr::Case(case) => {
+            // Special pattern: CASE path IS NULL WHEN true THEN -1 ELSE length(path) END
+            // Rewrite to: ifNull(t.hop_count, toInt64(-1))
+            if let Some(ref case_expr) = case.expr {
+                if is_vlp_path_is_null(case_expr, path_variable) {
+                    // Use minOrNull() aggregate so we always get exactly one row:
+                    // - No path: VLP CTE returns 0 rows → minOrNull() returns NULL → ifNull gives -1
+                    // - Path exists: VLP CTE returns 1 row → minOrNull() returns hop_count
+                    // Note: ClickHouse min() returns 0 for empty sets (not NULL), so minOrNull is required.
+                    // toInt64() wraps minOrNull to avoid type mismatch (UInt64 vs Int64(-1)).
+                    return RenderExpr::ScalarFnCall(ScalarFnCall {
+                        name: "ifNull".to_string(),
+                        args: vec![
+                            RenderExpr::ScalarFnCall(ScalarFnCall {
+                                name: "toInt64".to_string(),
+                                args: vec![RenderExpr::AggregateFnCall(AggregateFnCall {
+                                    name: "minOrNull".to_string(),
+                                    args: vec![RenderExpr::Column(Column(PropertyValue::Column(
+                                        "t.hop_count".to_string(),
+                                    )))],
+                                })],
+                            }),
+                            RenderExpr::ScalarFnCall(ScalarFnCall {
+                                name: "toInt64".to_string(),
+                                args: vec![RenderExpr::Literal(Literal::Integer(-1))],
+                            }),
+                        ],
+                    });
+                }
+            }
+            // Generic case: recursively rewrite all sub-expressions
+            RenderExpr::Case(RenderCase {
+                expr: case.expr.as_ref().map(|e| {
+                    Box::new(rewrite_expr_for_vlp(
+                        e,
+                        start_alias,
+                        end_alias,
+                        path_variable,
+                        skip_start_alias,
+                    ))
+                }),
+                when_then: case
+                    .when_then
+                    .iter()
+                    .map(|(w, t)| {
+                        (
+                            rewrite_expr_for_vlp(
+                                w,
+                                start_alias,
+                                end_alias,
+                                path_variable,
+                                skip_start_alias,
+                            ),
+                            rewrite_expr_for_vlp(
+                                t,
+                                start_alias,
+                                end_alias,
+                                path_variable,
+                                skip_start_alias,
+                            ),
+                        )
+                    })
+                    .collect(),
+                else_expr: case.else_expr.as_ref().map(|e| {
+                    Box::new(rewrite_expr_for_vlp(
+                        e,
+                        start_alias,
+                        end_alias,
+                        path_variable,
+                        skip_start_alias,
+                    ))
+                }),
+            })
+        }
+
         // Leave other expressions unchanged
         other => other.clone(),
     }
+}
+
+/// Check if an expression is `path IS NULL` where path is the VLP path variable
+fn is_vlp_path_is_null(expr: &RenderExpr, path_variable: &Option<String>) -> bool {
+    if let Some(path_var) = path_variable {
+        if let RenderExpr::OperatorApplicationExp(op) = expr {
+            if op.operator == Operator::IsNull && op.operands.len() == 1 {
+                return matches!(&op.operands[0], RenderExpr::TableAlias(alias) if alias.0 == *path_var)
+                    || matches!(&op.operands[0], RenderExpr::ColumnAlias(ColumnAlias(a)) if a == path_var);
+            }
+        }
+    }
+    false
 }
 
 /// Derive Cypher property name from database column name
