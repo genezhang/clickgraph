@@ -22,22 +22,21 @@ Schema Variations:
 
 Usage:
     # Requires running ClickGraph server (any schema — test loads its own)
-    pytest tests/integration/test_schema_sql_generation.py -v
-    pytest tests/integration/test_schema_sql_generation.py -v -k standard
-    pytest tests/integration/test_schema_sql_generation.py -v -k "undirected"
+    pytest tests/sql_generation/test_schema_sql_generation.py -v
+    pytest tests/sql_generation/test_schema_sql_generation.py -v -k standard
+    pytest tests/sql_generation/test_schema_sql_generation.py -v -k "undirected"
 """
 
 import pytest
 import requests
 import yaml
 import os
-import re
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8082")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 SCHEMA_YAML_PATH = os.path.join(
     os.path.dirname(__file__), "..", "..", "schemas", "test", "schema_variations.yaml"
 )
@@ -73,6 +72,7 @@ def load_schema_to_server(schema_name):
             "config_content": yaml_content,
             "validate_schema": False,  # No ClickHouse tables needed
         },
+        timeout=10,
     )
     assert resp.status_code == 200, f"Failed to load schema {schema_name}: {resp.text}"
     return f"test_{schema_name}"
@@ -87,6 +87,7 @@ def sql_query(cypher, schema_name):
             "schema_name": schema_name,
             "sql_only": True,
         },
+        timeout=10,
     )
     try:
         data = resp.json()
@@ -113,6 +114,7 @@ def assert_valid_sql(status, sql, data, *, allow_system_one=False, label=""):
     # Basic SQL structure
     sql_upper = sql.upper()
     assert "SELECT" in sql_upper, f"{prefix}No SELECT in SQL:\n{sql}"
+    assert "FROM" in sql_upper, f"{prefix}No FROM in SQL:\n{sql}"
 
 
 def assert_has_union(sql, label=""):
@@ -127,13 +129,29 @@ def assert_has_union(sql, label=""):
 
 @pytest.fixture(scope="module")
 def loaded_schemas():
-    """Load all schema variations once per module."""
+    """Load all schema variations once per module.
+
+    Behavior:
+      * If the ClickGraph server is not reachable (connection error), skip the
+        entire module, since none of the tests can run.
+      * For other schema-load errors, attempt to load all schemas, then fail
+        the fixture with a summary of which schema(s) failed, so regressions
+        are reported as test failures instead of skips.
+    """
     result = {}
+    errors = {}
     for name in SCHEMA_DEFS:
         try:
             result[name] = load_schema_to_server(name)
+        except requests.exceptions.ConnectionError as e:
+            pytest.skip(
+                f"ClickGraph server not reachable while loading schema '{name}': {e}"
+            )
         except Exception as e:
-            pytest.skip(f"Could not load schema {name}: {e}")
+            errors[name] = e
+    if errors:
+        details = "; ".join(f"{schema}: {err}" for schema, err in errors.items())
+        raise AssertionError(f"Failed to load schema variations: {details}")
     return result
 
 
@@ -176,6 +194,7 @@ class TestStandardSchema:
             "MATCH (a:User)-[:FRIENDS_WITH]-(b:User) RETURN a.name, b.name", s
         )
         assert_valid_sql(status, sql, data, label="standard/undirected_self")
+        assert_has_union(sql, label="standard/undirected_self")
 
     def test_undirected_with_barrier(self, loaded_schemas):
         """Undirected edge before WITH barrier (the BidirectionalUnion fix)."""
@@ -184,6 +203,7 @@ class TestStandardSchema:
             "MATCH (a:User)-[:FRIENDS_WITH]-(b:User) WITH a, b RETURN a.name, b.name", s
         )
         assert_valid_sql(status, sql, data, label="standard/undirected_with")
+        assert_has_union(sql, label="standard/undirected_with")
 
     def test_undirected_with_aggregation(self, loaded_schemas):
         """Undirected edge + WITH + aggregation."""
@@ -192,6 +212,7 @@ class TestStandardSchema:
             "MATCH (a:User)-[:FRIENDS_WITH]-(b:User) WITH a, count(b) AS friends RETURN a.name, friends ORDER BY friends DESC", s
         )
         assert_valid_sql(status, sql, data, label="standard/undirected_agg")
+        assert_has_union(sql, label="standard/undirected_agg")
 
     # --- WITH + MATCH chains ---
 
@@ -326,6 +347,7 @@ class TestFkEdgeSchema:
             "MATCH (o:Order)-[:PLACED_BY]-(c:Customer) RETURN o.order_id, c.name", s
         )
         assert_valid_sql(status, sql, data, label="fk/undirected")
+        assert_has_union(sql, label="fk/undirected")
 
     def test_fk_where_filter(self, loaded_schemas):
         s = _schema_name(loaded_schemas, "fk_edge")
@@ -376,6 +398,7 @@ class TestDenormalizedSchema:
             "MATCH (a:Airport)-[:FLIGHT]-(b:Airport) WHERE a.city = 'Seattle' RETURN b.city, count(*) AS flights", s
         )
         assert_valid_sql(status, sql, data, label="denorm/undirected")
+        assert_has_union(sql, label="denorm/undirected")
 
     def test_denorm_with_chain(self, loaded_schemas):
         s = _schema_name(loaded_schemas, "denormalized")
@@ -455,6 +478,7 @@ class TestPolymorphicSchema:
             "MATCH (u:User)-[:FOLLOWS]-(f:User) RETURN u.name, f.name", s
         )
         assert_valid_sql(status, sql, data, label="poly/undirected")
+        assert_has_union(sql, label="poly/undirected")
 
     def test_poly_undirected_with_barrier(self, loaded_schemas):
         s = _schema_name(loaded_schemas, "polymorphic")
@@ -462,6 +486,7 @@ class TestPolymorphicSchema:
             "MATCH (u:User)-[:FOLLOWS]-(f:User) WITH u, f RETURN u.name, f.name", s
         )
         assert_valid_sql(status, sql, data, label="poly/undirected_with")
+        assert_has_union(sql, label="poly/undirected_with")
 
     def test_poly_with_chain(self, loaded_schemas):
         s = _schema_name(loaded_schemas, "polymorphic")
@@ -528,6 +553,7 @@ class TestCompositeIdSchema:
             "MATCH (a:Account)-[:TRANSFERRED]-(b:Account) RETURN a.account_number, b.account_number", s
         )
         assert_valid_sql(status, sql, data, label="composite/undirected")
+        assert_has_union(sql, label="composite/undirected")
 
     def test_composite_undirected_with_barrier(self, loaded_schemas):
         s = _schema_name(loaded_schemas, "composite_id")
@@ -535,6 +561,7 @@ class TestCompositeIdSchema:
             "MATCH (a:Account)-[:TRANSFERRED]-(b:Account) WITH a, b RETURN a.account_number, b.account_number", s
         )
         assert_valid_sql(status, sql, data, label="composite/undirected_with")
+        assert_has_union(sql, label="composite/undirected_with")
 
     def test_composite_with_chain(self, loaded_schemas):
         s = _schema_name(loaded_schemas, "composite_id")
@@ -616,6 +643,7 @@ class TestCoupledEdgesSchema:
             "MATCH (ip:IP)-[:ACCESSED]-(other:IP) RETURN ip.ip, other.ip", s
         )
         assert_valid_sql(status, sql, data, label="coupled/undirected")
+        assert_has_union(sql, label="coupled/undirected")
 
     def test_coupled_edge_properties(self, loaded_schemas):
         s = _schema_name(loaded_schemas, "coupled_edges")
@@ -647,6 +675,7 @@ class TestCrossSchemaPatterns:
         s = _schema_name(loaded_schemas, schema_key)
         status, sql, data = sql_query(query, s)
         assert_valid_sql(status, sql, data, label=f"cross/undirected_with/{schema_key}")
+        assert_has_union(sql, label=f"cross/undirected_with/{schema_key}")
 
     # --- Aggregation patterns ---
 
