@@ -1721,16 +1721,38 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 let is_denormalized_input = input_has_denormalized_union(with.input.as_ref());
 
+                // Check if the input contains a bidirectional Union (from BidirectionalUnion).
+                // Like denormalized Unions, bidirectional Unions cannot be rendered via the flat
+                // extractor path — extract_from(Union) returns None, causing FROM=system.one
+                // and broken SQL. Route through to_render_plan() which renders each branch independently.
+                fn input_has_bidirectional_union(plan: &LogicalPlan) -> bool {
+                    match plan {
+                        LogicalPlan::Union(_) => true,
+                        LogicalPlan::Filter(f) => input_has_bidirectional_union(f.input.as_ref()),
+                        LogicalPlan::GraphJoins(gj) => {
+                            input_has_bidirectional_union(gj.input.as_ref())
+                        }
+                        LogicalPlan::Projection(p) => {
+                            input_has_bidirectional_union(p.input.as_ref())
+                        }
+                        LogicalPlan::GraphNode(gn) => {
+                            input_has_bidirectional_union(gn.input.as_ref())
+                        }
+                        _ => false,
+                    }
+                }
+                let is_bidirectional_union = input_has_bidirectional_union(with.input.as_ref());
+
                 // Handle WithClause by building a CTE from the input and creating a render plan with the CTE
                 let has_aggregation = with
                     .items
                     .iter()
                     .any(|item| matches!(item.expression, LogicalExpr::AggregateFnCall(_)));
 
-                let cte_content = if is_denormalized_input {
-                    // Denormalized Union path: use to_render_plan() which correctly
-                    // renders both UNION branches with per-branch property resolution
-                    log::info!("🔧 WithClause: Using to_render_plan for denormalized Union input");
+                let cte_content = if is_denormalized_input || is_bidirectional_union {
+                    // Union path: use to_render_plan() which correctly renders both
+                    // UNION branches with per-branch property resolution and FROM/JOINs
+                    log::info!("🔧 WithClause: Using to_render_plan for Union input (denormalized={}, bidirectional={})", is_denormalized_input, is_bidirectional_union);
                     let mut input_plan = with.input.to_render_plan(schema)?;
 
                     // Apply WHERE clause from WITH if present
@@ -1916,7 +1938,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         is_multi_label_scan: false,
                         variable_registry: None,
                     }))
-                }; // end of if/else is_denormalized_input
+                }; // end of if/else is_denormalized_input || is_bidirectional_union
 
                 // Use CTE name from analyzer (includes counter for uniqueness)
                 // The analyzer set this name using CteSchemaResolver with proper counter tracking

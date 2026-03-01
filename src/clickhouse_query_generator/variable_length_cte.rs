@@ -1096,8 +1096,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
             (Some(ShortestPathMode::AllShortest), None) => {
                 // 2-tier: inner → select all shortest (no target filter)
                 format!(
-                    "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE hop_count = (SELECT MIN(hop_count) FROM {}_inner)\n)",
-                    self.cte_name, query_body, self.cte_name, self.cte_name, self.cte_name
+                    "{name}_inner AS (\n{body}\n),\n{name} AS (\n    SELECT * FROM {name}_inner WHERE {order_col} = (SELECT MIN({order_col}) FROM {name}_inner)\n)",
+                    name = self.cte_name,
+                    body = query_body,
+                    order_col = order_by_column,
                 )
             }
             (None, Some(end_filters)) => {
@@ -3451,6 +3453,159 @@ mod tests {
         assert!(
             sql.contains("interaction_type IN ('FOLLOWS', 'LIKES')"),
             "Expected polymorphic IN filter in base case. SQL: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn test_weighted_shortest_path_base_case() {
+        let schema = create_test_schema();
+        let spec = VariableLengthSpec::unbounded();
+        let mut generator = VariableLengthCteGenerator::new(
+            &schema,
+            spec,
+            "users",       // start table
+            "user_id",     // start id column
+            "follows",     // relationship table
+            "follower_id", // from column
+            "followed_id", // to column
+            "users",       // end table
+            "user_id",     // end id column
+            "u1",          // start alias
+            "u2",          // end alias
+            vec![],        // no properties
+            Some(ShortestPathMode::Shortest),
+            None, // no start node filters
+            None, // no end node filters
+            None, // no path variable
+            None, // no relationship types
+            None, // no edge_id
+        );
+
+        generator.set_weight_cte(WeightCteConfig {
+            cte_name: "bidi_weight".to_string(),
+            source_column: "source".to_string(),
+            target_column: "target".to_string(),
+            weight_column: "weight".to_string(),
+        });
+
+        let sql = generator.generate_recursive_sql();
+        println!("Weighted shortest path SQL:\n{}", sql);
+
+        // Base case should SELECT from weight CTE, not edge table
+        assert!(
+            sql.contains("FROM bidi_weight ew"),
+            "Expected base case FROM weight CTE. SQL: {}",
+            sql
+        );
+        // Should have total_weight column
+        assert!(
+            sql.contains("total_weight"),
+            "Expected total_weight column. SQL: {}",
+            sql
+        );
+        // Recursive case should ORDER BY total_weight (not hop_count)
+        assert!(
+            sql.contains("ORDER BY total_weight ASC"),
+            "Expected ORDER BY total_weight ASC. SQL: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn test_weighted_recursive_case_joins_weight_cte() {
+        let schema = create_test_schema();
+        let spec = VariableLengthSpec::range(1, 5);
+        let mut generator = VariableLengthCteGenerator::new(
+            &schema,
+            spec,
+            "users",
+            "user_id",
+            "follows",
+            "follower_id",
+            "followed_id",
+            "users",
+            "user_id",
+            "u1",
+            "u2",
+            vec![],
+            Some(ShortestPathMode::Shortest),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        generator.set_weight_cte(WeightCteConfig {
+            cte_name: "bidi_w".to_string(),
+            source_column: "src".to_string(),
+            target_column: "tgt".to_string(),
+            weight_column: "w".to_string(),
+        });
+
+        let sql = generator.generate_recursive_sql();
+        println!("Weighted recursive SQL:\n{}", sql);
+
+        // Recursive case should JOIN weight CTE
+        assert!(
+            sql.contains("JOIN bidi_w ew ON ew.src = vp.end_id"),
+            "Expected recursive JOIN on weight CTE. SQL: {}",
+            sql
+        );
+        // Should accumulate weight
+        assert!(
+            sql.contains("vp.total_weight + ew.w AS total_weight"),
+            "Expected weight accumulation. SQL: {}",
+            sql
+        );
+        // Should respect max hops
+        assert!(
+            sql.contains("hop_count < 5"),
+            "Expected max hops guard. SQL: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn test_all_shortest_no_end_filter_uses_order_column() {
+        let schema = create_test_schema();
+        let spec = VariableLengthSpec::unbounded();
+        let mut generator = VariableLengthCteGenerator::new(
+            &schema,
+            spec,
+            "users",
+            "user_id",
+            "follows",
+            "follower_id",
+            "followed_id",
+            "users",
+            "user_id",
+            "u1",
+            "u2",
+            vec![],
+            Some(ShortestPathMode::AllShortest),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        generator.set_weight_cte(WeightCteConfig {
+            cte_name: "bidi_w".to_string(),
+            source_column: "source".to_string(),
+            target_column: "target".to_string(),
+            weight_column: "weight".to_string(),
+        });
+
+        let sql = generator.generate_recursive_sql();
+        println!("AllShortest weighted SQL:\n{}", sql);
+
+        // AllShortest with no end filter should use total_weight (not hop_count) for weighted mode
+        assert!(
+            sql.contains("WHERE total_weight = (SELECT MIN(total_weight)"),
+            "Expected AllShortest to filter by total_weight, not hop_count. SQL: {}",
             sql
         );
     }

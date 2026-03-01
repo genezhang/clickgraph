@@ -878,37 +878,6 @@ impl PlanCtx {
         None
     }
 
-    /// Find a weight CTE suitable for weighted shortest path.
-    /// Looks for a CTE with columns aliased "source", "target", and "weight".
-    /// Checks both keys (property names) and values (column aliases).
-    /// Returns (cte_name, source_column, target_column, weight_column) if found.
-    pub fn find_weight_cte(&self) -> Option<(String, String, String, String)> {
-        for (cte_name, columns) in &self.cte_columns {
-            // Check both keys and values for the required column names
-            let find_col = |name: &str| -> Option<String> {
-                if let Some(col) = columns.get(name) {
-                    return Some(col.clone());
-                }
-                for (_, v) in columns {
-                    if v == name {
-                        return Some(v.clone());
-                    }
-                }
-                None
-            };
-            if let (Some(s), Some(t), Some(w)) =
-                (find_col("source"), find_col("target"), find_col("weight"))
-            {
-                return Some((cte_name.clone(), s, t, w));
-            }
-        }
-        // Check parent scope
-        if let Some(ref parent) = self.parent_scope {
-            return parent.find_weight_cte();
-        }
-        None
-    }
-
     /// Check if a table name is a CTE reference
     /// This works with both CTE names (e.g., "with_o_cte_0") and aliases (e.g., "o")
     pub fn is_cte(&self, name: &str) -> bool {

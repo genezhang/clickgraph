@@ -455,6 +455,7 @@ pub fn clear_all_render_contexts() {
         ctx.relationship_columns.clear();
         ctx.cte_property_mappings.clear();
         ctx.multi_type_vlp_aliases.clear();
+        ctx.weight_cte_config = None;
     });
 }
 

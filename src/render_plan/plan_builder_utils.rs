@@ -10299,10 +10299,39 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
             // Detect weight CTE for weighted shortest path (complex-14)
             // A weight CTE has exactly 3 exported aliases: source, target, weight
+            // AND the query must contain a shortestPath() call downstream to avoid
+            // false positives on unrelated queries that happen to use these alias names.
+            fn plan_has_shortest_path(plan: &LogicalPlan) -> bool {
+                match plan {
+                    LogicalPlan::GraphRel(gr) => {
+                        gr.shortest_path_mode.is_some()
+                            || plan_has_shortest_path(gr.left.as_ref())
+                            || plan_has_shortest_path(gr.right.as_ref())
+                    }
+                    LogicalPlan::WithClause(wc) => plan_has_shortest_path(wc.input.as_ref()),
+                    LogicalPlan::Filter(f) => plan_has_shortest_path(f.input.as_ref()),
+                    LogicalPlan::Projection(p) => plan_has_shortest_path(p.input.as_ref()),
+                    LogicalPlan::GraphJoins(gj) => plan_has_shortest_path(gj.input.as_ref()),
+                    LogicalPlan::GraphNode(gn) => plan_has_shortest_path(gn.input.as_ref()),
+                    LogicalPlan::GroupBy(gb) => plan_has_shortest_path(gb.input.as_ref()),
+                    LogicalPlan::OrderBy(ob) => plan_has_shortest_path(ob.input.as_ref()),
+                    LogicalPlan::Skip(s) => plan_has_shortest_path(s.input.as_ref()),
+                    LogicalPlan::Limit(l) => plan_has_shortest_path(l.input.as_ref()),
+                    LogicalPlan::CartesianProduct(cp) => {
+                        plan_has_shortest_path(cp.left.as_ref())
+                            || plan_has_shortest_path(cp.right.as_ref())
+                    }
+                    LogicalPlan::Union(u) => {
+                        u.inputs.iter().any(|i| plan_has_shortest_path(i.as_ref()))
+                    }
+                    _ => false,
+                }
+            }
             if original_exported_aliases.len() == 3
                 && original_exported_aliases.contains(&"source".to_string())
                 && original_exported_aliases.contains(&"target".to_string())
                 && original_exported_aliases.contains(&"weight".to_string())
+                && plan_has_shortest_path(plan)
             {
                 log::info!(
                     "🔧 Detected weight CTE '{}' for weighted shortest path",
