@@ -696,8 +696,15 @@ mod tests {
             &schema,
         );
 
-        assert_eq!(paths.len(), 1, "Should find 1 reversed path: Post←AUTHORED←User");
-        assert!(paths[0].hops[0].reversed, "Hop should be reversed (incoming)");
+        assert_eq!(
+            paths.len(),
+            1,
+            "Should find 1 reversed path: Post←AUTHORED←User"
+        );
+        assert!(
+            paths[0].hops[0].reversed,
+            "Hop should be reversed (incoming)"
+        );
         assert_eq!(paths[0].hops[0].from_node_type, "Post");
         assert_eq!(paths[0].hops[0].to_node_type, "User");
     }
@@ -709,52 +716,114 @@ mod tests {
         let mut nodes = HashMap::new();
         let mut relationships = HashMap::new();
 
-        nodes.insert("User".to_string(), NodeSchema {
-            database: "test".to_string(), table_name: "users".to_string(),
-            column_names: vec![], primary_keys: "user_id".to_string(),
-            node_id: NodeIdSchema::single("user_id".to_string(), SchemaType::Integer),
-            property_mappings: HashMap::new(), view_parameters: None, engine: None,
-            use_final: None, filter: None, is_denormalized: false,
-            from_properties: None, to_properties: None,
-            denormalized_source_table: None, label_column: None, label_value: None,
-            node_id_types: None,
-        });
-        nodes.insert("Post".to_string(), NodeSchema {
-            database: "test".to_string(), table_name: "posts".to_string(),
-            column_names: vec![], primary_keys: "post_id".to_string(),
-            node_id: NodeIdSchema::single("post_id".to_string(), SchemaType::Integer),
-            property_mappings: HashMap::new(), view_parameters: None, engine: None,
-            use_final: None, filter: None, is_denormalized: false,
-            from_properties: None, to_properties: None,
-            denormalized_source_table: None, label_column: None, label_value: None,
-            node_id_types: None,
-        });
-        relationships.insert("AUTHORED::User::Post".to_string(), RelationshipSchema {
-            database: "test".to_string(), table_name: "authored".to_string(),
-            column_names: vec![], from_node: "User".to_string(), to_node: "Post".to_string(),
-            from_node_table: "users".to_string(), to_node_table: "posts".to_string(),
-            from_id: Identifier::from("user_id"), to_id: Identifier::from("post_id"),
-            from_node_id_dtype: SchemaType::Integer, to_node_id_dtype: SchemaType::Integer,
-            property_mappings: HashMap::new(), view_parameters: None, engine: None,
-            use_final: None, filter: None, edge_id: None, type_column: None,
-            from_label_column: None, to_label_column: None,
-            from_label_values: None, to_label_values: None,
-            from_node_properties: None, to_node_properties: None,
-            is_fk_edge: false, constraints: None, edge_id_types: None,
-        });
-        relationships.insert("LIKED::User::Post".to_string(), RelationshipSchema {
-            database: "test".to_string(), table_name: "likes".to_string(),
-            column_names: vec![], from_node: "User".to_string(), to_node: "Post".to_string(),
-            from_node_table: "users".to_string(), to_node_table: "posts".to_string(),
-            from_id: Identifier::from("user_id"), to_id: Identifier::from("post_id"),
-            from_node_id_dtype: SchemaType::Integer, to_node_id_dtype: SchemaType::Integer,
-            property_mappings: HashMap::new(), view_parameters: None, engine: None,
-            use_final: None, filter: None, edge_id: None, type_column: None,
-            from_label_column: None, to_label_column: None,
-            from_label_values: None, to_label_values: None,
-            from_node_properties: None, to_node_properties: None,
-            is_fk_edge: false, constraints: None, edge_id_types: None,
-        });
+        nodes.insert(
+            "User".to_string(),
+            NodeSchema {
+                database: "test".to_string(),
+                table_name: "users".to_string(),
+                column_names: vec![],
+                primary_keys: "user_id".to_string(),
+                node_id: NodeIdSchema::single("user_id".to_string(), SchemaType::Integer),
+                property_mappings: HashMap::new(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
+                denormalized_source_table: None,
+                label_column: None,
+                label_value: None,
+                node_id_types: None,
+            },
+        );
+        nodes.insert(
+            "Post".to_string(),
+            NodeSchema {
+                database: "test".to_string(),
+                table_name: "posts".to_string(),
+                column_names: vec![],
+                primary_keys: "post_id".to_string(),
+                node_id: NodeIdSchema::single("post_id".to_string(), SchemaType::Integer),
+                property_mappings: HashMap::new(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
+                denormalized_source_table: None,
+                label_column: None,
+                label_value: None,
+                node_id_types: None,
+            },
+        );
+        relationships.insert(
+            "AUTHORED::User::Post".to_string(),
+            RelationshipSchema {
+                database: "test".to_string(),
+                table_name: "authored".to_string(),
+                column_names: vec![],
+                from_node: "User".to_string(),
+                to_node: "Post".to_string(),
+                from_node_table: "users".to_string(),
+                to_node_table: "posts".to_string(),
+                from_id: Identifier::from("user_id"),
+                to_id: Identifier::from("post_id"),
+                from_node_id_dtype: SchemaType::Integer,
+                to_node_id_dtype: SchemaType::Integer,
+                property_mappings: HashMap::new(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                edge_id: None,
+                type_column: None,
+                from_label_column: None,
+                to_label_column: None,
+                from_label_values: None,
+                to_label_values: None,
+                from_node_properties: None,
+                to_node_properties: None,
+                is_fk_edge: false,
+                constraints: None,
+                edge_id_types: None,
+            },
+        );
+        relationships.insert(
+            "LIKED::User::Post".to_string(),
+            RelationshipSchema {
+                database: "test".to_string(),
+                table_name: "likes".to_string(),
+                column_names: vec![],
+                from_node: "User".to_string(),
+                to_node: "Post".to_string(),
+                from_node_table: "users".to_string(),
+                to_node_table: "posts".to_string(),
+                from_id: Identifier::from("user_id"),
+                to_id: Identifier::from("post_id"),
+                from_node_id_dtype: SchemaType::Integer,
+                to_node_id_dtype: SchemaType::Integer,
+                property_mappings: HashMap::new(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                edge_id: None,
+                type_column: None,
+                from_label_column: None,
+                to_label_column: None,
+                from_label_values: None,
+                to_label_values: None,
+                from_node_properties: None,
+                to_node_properties: None,
+                is_fk_edge: false,
+                constraints: None,
+                edge_id_types: None,
+            },
+        );
         let schema = GraphSchema::build(1, "test".to_string(), nodes, relationships);
 
         let paths = enumerate_vlp_paths_undirected(
@@ -766,9 +835,16 @@ mod tests {
             &schema,
         );
 
-        assert_eq!(paths.len(), 2, "Should find 2 reversed paths (AUTHORED + LIKED)");
+        assert_eq!(
+            paths.len(),
+            2,
+            "Should find 2 reversed paths (AUTHORED + LIKED)"
+        );
         for path in &paths {
-            assert!(path.hops[0].reversed, "All hops should be reversed (incoming to Post)");
+            assert!(
+                path.hops[0].reversed,
+                "All hops should be reversed (incoming to Post)"
+            );
             assert_eq!(path.hops[0].from_node_type, "Post");
             assert_eq!(path.hops[0].to_node_type, "User");
         }
@@ -788,7 +864,11 @@ mod tests {
             &schema,
         );
 
-        assert_eq!(paths.len(), 0, "Directed from Post should find nothing (Post has no outgoing AUTHORED)");
+        assert_eq!(
+            paths.len(),
+            0,
+            "Directed from Post should find nothing (Post has no outgoing AUTHORED)"
+        );
     }
 
     /// Undirected from User should find both outgoing (User→Post) and incoming (User←Post)
@@ -811,7 +891,10 @@ mod tests {
         // AUTHORED outgoing: User→Post (not reversed)
         // AUTHORED incoming: User←Post (reversed) — but Post→User doesn't end at valid type
         // Actually with empty end_labels, all end types are acceptable
-        assert!(paths.len() >= 3, "Should find at least 3 paths: FOLLOWS out, FOLLOWS in, AUTHORED out");
+        assert!(
+            paths.len() >= 3,
+            "Should find at least 3 paths: FOLLOWS out, FOLLOWS in, AUTHORED out"
+        );
 
         let reversed_count = paths.iter().filter(|p| p.hops[0].reversed).count();
         let forward_count = paths.iter().filter(|p| !p.hops[0].reversed).count();

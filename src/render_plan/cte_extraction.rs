@@ -6283,8 +6283,8 @@ pub fn generate_cycle_prevention_filters_composite(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use crate::query_planner::logical_expr::{Literal, LogicalExpr};
+    use std::sync::Arc;
 
     /// Regression: extract_node_labels should return None for unlabeled nodes.
     #[test]
@@ -6363,6 +6363,9 @@ mod tests {
             input: Arc::new(node),
             predicate: LogicalExpr::Literal(Literal::Boolean(true)),
         });
-        assert_eq!(extract_node_labels(&filtered), Some(vec!["Post".to_string()]));
+        assert_eq!(
+            extract_node_labels(&filtered),
+            Some(vec!["Post".to_string()])
+        );
     }
 }
