@@ -2551,6 +2551,126 @@ mod tests {
             None
         );
     }
+
+    /// Regression test: build_cte_column_map must use real column names from expressions,
+    /// not CTE alias names like p1_a_user_id. When the FROM is a base table (e.g., social.users),
+    /// correlated subqueries must reference `a.user_id`, not `a.p1_a_user_id`.
+    /// See: click-to-expand regression (Code 47 ClickHouse error).
+    #[test]
+    fn test_build_cte_column_map_uses_expression_column_not_alias() {
+        use crate::graph_catalog::expression_parser::PropertyValue;
+        use crate::render_plan::render_expr::{ColumnAlias, PropertyAccess, TableAlias};
+
+        // Build a minimal RenderPlan with a base table FROM and PropertyAccessExp SELECT items
+        let render_plan = RenderPlan {
+            ctes: CteItems(vec![]),
+            select: SelectItems {
+                items: vec![
+                    // `a.user_id AS p1_a_user_id` — the expression has the real column name
+                    SelectItem {
+                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias("a".to_string()),
+                            column: PropertyValue::Column("user_id".to_string()),
+                        }),
+                        col_alias: Some(ColumnAlias("p1_a_user_id".to_string())),
+                    },
+                    // `a.full_name AS p1_a_name` — property mapping: Cypher "name" → DB "full_name"
+                    SelectItem {
+                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias("a".to_string()),
+                            column: PropertyValue::Column("full_name".to_string()),
+                        }),
+                        col_alias: Some(ColumnAlias("p1_a_name".to_string())),
+                    },
+                ],
+                distinct: false,
+            },
+            from: FromTableItem(Some(ViewTableRef {
+                source: Arc::new(LogicalPlan::Empty),
+                name: "social.users".to_string(),
+                alias: Some("a".to_string()),
+                use_final: false,
+            })),
+            joins: JoinItems(vec![]),
+            array_join: ArrayJoinItem(vec![]),
+            filters: FilterItems(None),
+            group_by: GroupByExpressions(vec![]),
+            having_clause: None,
+            order_by: OrderByItems(vec![]),
+            skip: SkipItem(None),
+            limit: LimitItem(None),
+            union: UnionItems(None),
+            fixed_path_info: None,
+            is_multi_label_scan: false,
+            variable_registry: None,
+        };
+
+        let map = build_cte_column_map(&render_plan, "with_some_cte");
+
+        // Must use real column "user_id", NOT the alias "p1_a_user_id"
+        assert_eq!(
+            map.get(&("a".to_string(), "user_id".to_string())),
+            Some(&"a.user_id".to_string()),
+            "Correlated subquery should reference real column a.user_id, not a.p1_a_user_id"
+        );
+
+        // Property-mapped column: Cypher "name" → real DB column "full_name"
+        assert_eq!(
+            map.get(&("a".to_string(), "name".to_string())),
+            Some(&"a.full_name".to_string()),
+            "Correlated subquery should reference real column a.full_name, not a.p1_a_name"
+        );
+    }
+
+    /// Regression test: build_cte_column_map should fall back to CTE alias name
+    /// when expression is not a PropertyAccessExp (e.g., aggregate or subquery).
+    #[test]
+    fn test_build_cte_column_map_fallback_for_non_property_expr() {
+        use crate::render_plan::render_expr::ColumnAlias;
+
+        let render_plan = RenderPlan {
+            ctes: CteItems(vec![]),
+            select: SelectItems {
+                items: vec![
+                    // Non-PropertyAccessExp: e.g., COUNT(*) AS p1_a_count
+                    SelectItem {
+                        expression: RenderExpr::Literal(
+                            crate::render_plan::render_expr::Literal::Integer(1),
+                        ),
+                        col_alias: Some(ColumnAlias("p1_a_count".to_string())),
+                    },
+                ],
+                distinct: false,
+            },
+            from: FromTableItem(Some(ViewTableRef {
+                source: Arc::new(LogicalPlan::Empty),
+                name: "with_some_cte".to_string(),
+                alias: Some("cte_alias".to_string()),
+                use_final: false,
+            })),
+            joins: JoinItems(vec![]),
+            array_join: ArrayJoinItem(vec![]),
+            filters: FilterItems(None),
+            group_by: GroupByExpressions(vec![]),
+            having_clause: None,
+            order_by: OrderByItems(vec![]),
+            skip: SkipItem(None),
+            limit: LimitItem(None),
+            union: UnionItems(None),
+            fixed_path_info: None,
+            is_multi_label_scan: false,
+            variable_registry: None,
+        };
+
+        let map = build_cte_column_map(&render_plan, "with_some_cte");
+
+        // For non-PropertyAccess expressions, falls back to the CTE column alias name
+        assert_eq!(
+            map.get(&("a".to_string(), "count".to_string())),
+            Some(&"cte_alias.p1_a_count".to_string()),
+            "Non-PropertyAccess expressions should fall back to CTE alias column name"
+        );
+    }
 }
 pub fn extract_group_by(plan: &LogicalPlan) -> RenderPlanBuilderResult<Vec<RenderExpr>> {
     use crate::graph_catalog::expression_parser::PropertyValue;
@@ -14083,7 +14203,21 @@ fn build_cte_column_map(
             if let Some(ref col_alias) = item.col_alias {
                 let cte_col_name = &col_alias.0;
                 if let Some((parsed_alias, parsed_property)) = parse_cte_column(cte_col_name) {
-                    let qualified = format!("{}.{}", effective_alias, cte_col_name);
+                    // Determine the real column to use in correlated subqueries.
+                    // If the SELECT expression is a PropertyAccess (e.g., `a.user_id AS p1_a_user_id`),
+                    // use the actual column from the expression (user_id), not the alias (p1_a_user_id).
+                    // Uses PropertyValue::to_sql() which handles:
+                    // - simple columns (with proper quoting),
+                    // - expression-based mappings (e.g., toYear(FlightDate)),
+                    // - base tables (where p{N} names don't exist as real columns),
+                    // - CTE references (where the expression itself will use the CTE column name).
+                    let qualified = if let RenderExpr::PropertyAccessExp(ref pa) = item.expression {
+                        pa.column.to_sql(&effective_alias)
+                    } else {
+                        // Non-property expressions (aggregates, subqueries, etc.):
+                        // fall back to the CTE column alias name
+                        format!("{}.{}", effective_alias, cte_col_name)
+                    };
                     map.insert((parsed_alias, parsed_property), qualified);
                 } else {
                     // Non-p{N} columns: treat the alias itself as a bare variable

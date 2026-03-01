@@ -3937,7 +3937,7 @@ impl RenderExpr {
                         .iter()
                         .flat_map(|(k, v)| {
                             let val_sql = v.to_sql();
-                            vec![format!("'{}'", k), val_sql]
+                            vec![format!("'{}'", k), format!("toString({})", val_sql)]
                         })
                         .collect();
                     format!("map({})", args.join(", "))
@@ -4392,5 +4392,37 @@ impl ToSql for OrderByOrder {
             OrderByOrder::Asc => "ASC".to_string(),
             OrderByOrder::Desc => "DESC".to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render_plan::render_expr::{Literal, RenderExpr};
+
+    /// Regression test: MapLiteral values must be wrapped in toString() for ClickHouse
+    /// type compatibility. Without this, mixed-type maps like {name:'nodes', data:count(*)}
+    /// cause ClickHouse type errors.
+    #[test]
+    fn test_map_literal_wraps_values_in_to_string() {
+        let map_expr = RenderExpr::MapLiteral(vec![
+            (
+                "name".to_string(),
+                RenderExpr::Literal(Literal::String("nodes".to_string())),
+            ),
+            (
+                "count".to_string(),
+                RenderExpr::Literal(Literal::Integer(42)),
+            ),
+        ]);
+
+        let sql = map_expr.to_sql();
+        assert_eq!(sql, "map('name', toString('nodes'), 'count', toString(42))");
+    }
+
+    #[test]
+    fn test_map_literal_empty() {
+        let map_expr = RenderExpr::MapLiteral(vec![]);
+        assert_eq!(map_expr.to_sql(), "map()");
     }
 }
