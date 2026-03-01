@@ -456,8 +456,8 @@ async fn test_optional_match_count() {
     .await;
     let sql_lower = sql.to_lowercase();
     assert!(
-        sql_lower.contains("left") || sql_lower.contains("optional") || sql_lower.contains("count"),
-        "OPTIONAL MATCH should produce LEFT JOIN or equivalent"
+        sql_lower.contains("left join"),
+        "OPTIONAL MATCH should produce LEFT JOIN"
     );
 }
 

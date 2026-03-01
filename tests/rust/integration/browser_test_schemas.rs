@@ -1,6 +1,6 @@
 //! Shared schema builders for browser interaction tests.
 //!
-//! Provides four schema variations used by both `browser_expand_tests` and
+//! Provides five schema variations used by both `browser_expand_tests` and
 //! `browser_interaction_tests`.
 
 use std::collections::HashMap;

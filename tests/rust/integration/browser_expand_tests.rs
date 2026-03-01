@@ -47,6 +47,33 @@ async fn generate_expand_sql(schema: &GraphSchema, cypher: &str) -> String {
     .await
 }
 
+/// Full pipeline returning Result — for tests expecting possible errors.
+async fn try_generate_expand_sql(schema: &GraphSchema, cypher: &str) -> Result<String, String> {
+    let schema = schema.clone();
+    let cypher = cypher.to_string();
+
+    let ctx = QueryContext::new(Some("default".to_string()));
+    with_query_context(ctx, async {
+        set_current_schema(Arc::new(schema.clone()));
+
+        let ast = match parse_query(&cypher) {
+            Ok(ast) => ast,
+            Err(e) => return Err(format!("Parse error: {:?}", e)),
+        };
+
+        let (logical_plan, _plan_ctx) = match evaluate_read_query(ast, &schema, None, None) {
+            Ok(result) => result,
+            Err(e) => return Err(format!("Plan error: {:?}", e)),
+        };
+
+        match logical_plan_to_render_plan(logical_plan, &schema) {
+            Ok(render_plan) => Ok(render_plan.to_sql()),
+            Err(e) => Err(format!("Render error: {:?}", e)),
+        }
+    })
+    .await
+}
+
 // ===========================================================================
 // Standard schema tests
 // ===========================================================================
@@ -469,13 +496,8 @@ async fn test_directed_incoming_post() {
 async fn test_directed_outgoing_post() {
     let schema = create_standard_schema();
     // Post is to-side only — no outgoing edges exist in schema
-    let result = std::panic::catch_unwind(|| {
-        tokio::runtime::Runtime::new().unwrap().block_on(async {
-            generate_expand_sql(&schema, "MATCH (a:Post)-->(o) RETURN a, o").await
-        })
-    });
-    // Either produces SQL (empty result) or errors — both are valid
-    // The key thing is it doesn't panic with an unhandled error
+    // Either produces SQL (degenerate/empty result) or returns an error — both are valid
+    let result = try_generate_expand_sql(&schema, "MATCH (a:Post)-->(o) RETURN a, o").await;
     if let Ok(sql) = result {
         assert!(
             sql.to_lowercase().contains("select"),
