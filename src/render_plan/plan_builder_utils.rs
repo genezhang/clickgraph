@@ -15583,10 +15583,8 @@ fn add_correlated_columns_to_select(
                     .first()
                     .map(|id_col| {
                         let real = format!("{}.{}", from_alias, id_col);
-                        let alias = crate::utils::cte_column_naming::cte_column_name(
-                            &cv.var_name,
-                            id_col,
-                        );
+                        let alias =
+                            crate::utils::cte_column_naming::cte_column_name(&cv.var_name, id_col);
                         (real, alias)
                     })
                     .unwrap_or_else(|| {
