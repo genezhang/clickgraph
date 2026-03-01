@@ -10,6 +10,7 @@
 //! - `db.propertyKeys()` - Returns all unique property keys across nodes and relationships
 //! - `db.schema.nodeTypeProperties()` - Returns property metadata for each node type
 //! - `db.schema.relTypeProperties()` - Returns property metadata for each relationship type
+//! - `apoc.meta.schema()` - Returns APOC-format schema metadata for MCP server compatibility
 //!
 //! # Architecture
 //!
@@ -30,6 +31,7 @@
 //! connection database parameters is not currently supported; all procedure
 //! calls are evaluated against the HTTP-selected (or default) schema.
 
+pub mod apoc_meta_schema;
 pub mod db_labels;
 pub mod db_property_keys;
 pub mod db_relationship_types;
@@ -88,6 +90,9 @@ impl ProcedureRegistry {
             Arc::new(db_schema_rel_type_properties::execute),
         );
 
+        // Register APOC procedures for MCP server compatibility
+        registry.register("apoc.meta.schema", Arc::new(apoc_meta_schema::execute));
+
         // Register dbms.* stubs for Neo4j Browser compatibility
         registry.register("dbms.clientConfig", Arc::new(dbms_stubs::client_config));
         registry.register(
@@ -134,8 +139,8 @@ mod tests {
     #[test]
     fn test_registry_creation() {
         let registry = ProcedureRegistry::new();
-        // Now we have 10 procedures registered (6 core + 4 dbms stubs)
-        assert_eq!(registry.names().len(), 10);
+        // Now we have 11 procedures registered (6 core + 1 apoc + 4 dbms stubs)
+        assert_eq!(registry.names().len(), 11);
 
         // Verify all expected procedures are registered
         assert!(registry.contains("db.labels"));
@@ -148,14 +153,15 @@ mod tests {
         assert!(registry.contains("dbms.security.showCurrentUser"));
         assert!(registry.contains("dbms.procedures"));
         assert!(registry.contains("dbms.functions"));
+        assert!(registry.contains("apoc.meta.schema"));
     }
 
     #[test]
     fn test_registry_register_and_lookup() {
         let mut registry = ProcedureRegistry::new();
 
-        // Should already have 10 built-in procedures (6 core + 4 dbms stubs)
-        assert_eq!(registry.names().len(), 10);
+        // Should already have 11 built-in procedures (6 core + 1 apoc + 4 dbms stubs)
+        assert_eq!(registry.names().len(), 11);
 
         // Register a dummy procedure
         let dummy_proc: ProcedureFn = Arc::new(|_schema| {
@@ -169,7 +175,7 @@ mod tests {
 
         assert!(registry.contains("test.procedure"));
         assert!(registry.get("test.procedure").is_some());
-        assert_eq!(registry.names().len(), 11); // 10 built-in + 1 test
+        assert_eq!(registry.names().len(), 12); // 11 built-in + 1 test
     }
 
     #[test]

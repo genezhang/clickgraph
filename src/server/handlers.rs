@@ -212,6 +212,41 @@ pub async fn query_handler(
         return Ok(Json(response).into_response());
     }
 
+    // Intercept apoc.meta.schema MCP queries that use UNWIND + map projection.
+    // The procedure executor can handle simple CALL, but the MCP query pattern
+    // (UNWIND keys(value) AS key WITH key, value[key] ...) cannot be parsed/executed.
+    if clean_upper.contains("APOC.META.SCHEMA") && clean_upper.contains("UNWIND") {
+        log::info!("Detected apoc.meta.schema MCP query — short-circuiting with unwound results");
+        let schema_name = schema_name_param.unwrap_or_else(|| "default".to_string());
+
+        let schema_guard = crate::server::GLOBAL_SCHEMAS.get().ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Schema registry not initialized".to_string(),
+            )
+        })?;
+        let schemas = schema_guard.read().await;
+        let schema = schemas.get(&schema_name).ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("Schema not found: {}", schema_name),
+            )
+        })?;
+
+        match crate::procedures::apoc_meta_schema::execute_unwound(schema) {
+            Ok(results) => {
+                let response_json = crate::procedures::executor::format_as_json(results);
+                return Ok(Json(response_json).into_response());
+            }
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("apoc.meta.schema execution failed: {}", e),
+                ));
+            }
+        }
+    }
+
     // Handle procedure calls early (before query context)
     // Parse to check if it's a procedure call or procedure-only query
     let (_is_procedure, is_union, proc_name_opt) =
