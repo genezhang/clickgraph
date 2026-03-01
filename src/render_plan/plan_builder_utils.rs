@@ -15527,6 +15527,9 @@ fn add_correlated_columns_to_select(
         None => return,
     };
 
+    // Hoist schema lookup once for all correlation vars (avoids repeated lookups per SELECT item)
+    let schema = crate::server::query_context::get_current_schema_with_fallback();
+
     for pc in pattern_comprehensions {
         // Correlation variables need their ID column in outer SELECT.
         // The ID column might already be present under its real schema name
@@ -15535,8 +15538,24 @@ fn add_correlated_columns_to_select(
             let generic_id_col =
                 crate::utils::cte_column_naming::cte_column_name(&cv.var_name, "id");
 
+            // Resolve the schema's ID column names once per correlation var.
+            // node_id.id.columns() returns actual DB column names (e.g., ["user_id"]).
+            let id_col_names: Vec<String> = schema
+                .as_ref()
+                .and_then(|s| s.node_schema(&cv.label).ok())
+                .map(|ns| {
+                    ns.node_id
+                        .id
+                        .columns()
+                        .into_iter()
+                        .map(|c| c.to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+
             // Check if ANY ID column for this alias is already in SELECT.
-            // Match by cte_column_name prefix pattern: p{N}_{alias}_ where alias == cv.var_name
+            // Uses the parsed CTE alias property portion (e.g., "user_id" from "p1_a_user_id")
+            // to match against schema ID columns, avoiding reliance on RenderExpr internals.
             let already_has_id = plan.select.items.iter().any(|item| {
                 if let Some(ref alias) = item.col_alias {
                     // Check generic "id" form (p1_a_id)
@@ -15544,26 +15563,14 @@ fn add_correlated_columns_to_select(
                         return true;
                     }
                     // Check real ID column form (p1_a_user_id, p1_a_post_id, etc.)
-                    // by parsing the alias and checking if it belongs to this variable
-                    if let Some((parsed_alias, _)) =
+                    // by parsing the alias and comparing the property portion to schema ID columns
+                    if let Some((parsed_alias, property)) =
                         crate::utils::cte_column_naming::parse_cte_column(&alias.0)
                     {
-                        if parsed_alias == cv.var_name {
-                            // Check if this expression is the ID column by looking for
-                            // PropertyAccessExp that matches the schema's ID column
-                            if let RenderExpr::PropertyAccessExp(ref pa) = item.expression {
-                                // Use the schema to check if this is the ID column
-                                if let Some(schema) =
-                                    crate::server::query_context::get_current_schema_with_fallback()
-                                {
-                                    if let Ok(node_schema) = schema.node_schema(&cv.label) {
-                                        let id_cols = node_schema.node_id.id.columns();
-                                        if id_cols.iter().any(|c| *c == pa.column.raw()) {
-                                            return true;
-                                        }
-                                    }
-                                }
-                            }
+                        if parsed_alias == cv.var_name
+                            && id_col_names.iter().any(|c| *c == property)
+                        {
+                            return true;
                         }
                     }
                 }
@@ -15572,27 +15579,22 @@ fn add_correlated_columns_to_select(
 
             if !already_has_id {
                 // Find the real ID column name from schema instead of using generic "id"
-                let fallback = (
-                    format!("{}.{}", from_alias, generic_id_col),
-                    generic_id_col.clone(),
-                );
-                let (real_col, col_alias) =
-                    crate::server::query_context::get_current_schema_with_fallback()
-                        .and_then(|schema| {
-                            schema.node_schema(&cv.label).ok().map(|ns| {
-                                let id_cols = ns.node_id.id.columns();
-                                id_cols.first().map(|id_col| {
-                                    let real = format!("{}.{}", from_alias, id_col);
-                                    let alias = crate::utils::cte_column_naming::cte_column_name(
-                                        &cv.var_name,
-                                        id_col,
-                                    );
-                                    (real, alias)
-                                })
-                            })
-                        })
-                        .flatten()
-                        .unwrap_or(fallback);
+                let (real_col, col_alias) = id_col_names
+                    .first()
+                    .map(|id_col| {
+                        let real = format!("{}.{}", from_alias, id_col);
+                        let alias = crate::utils::cte_column_naming::cte_column_name(
+                            &cv.var_name,
+                            id_col,
+                        );
+                        (real, alias)
+                    })
+                    .unwrap_or_else(|| {
+                        (
+                            format!("{}.{}", from_alias, generic_id_col),
+                            generic_id_col.clone(),
+                        )
+                    });
                 needed_cols.push((real_col, col_alias));
             }
         }

@@ -2927,19 +2927,22 @@ pub fn extract_ctes_with_context(
                         // but the actual query could reach multiple types
                         let mut end_labels: Vec<String> = Vec::new();
 
+                        // For directed patterns, trust explicit labels from the graph pattern.
                         // For undirected patterns (was_undirected=true), the GraphNode's inferred
                         // label may reflect only one direction (e.g., the to_node from forward
-                        // traversal). Always re-derive end types from the schema to ensure we
-                        // find reachable types in BOTH directions.
-                        // For directed patterns, trust explicit labels from the graph pattern.
+                        // traversal). We always re-derive end types from the schema below, then
+                        // intersect with any explicit labels to preserve user constraints like
+                        // (a)-[:R*]-(b:User) while still covering both directions.
+                        let explicit_end_labels = extract_node_labels(&graph_rel.right);
+
                         if !is_undirected_pattern {
-                            if let Some(labels) = extract_node_labels(&graph_rel.right) {
-                                end_labels = labels;
+                            if let Some(ref labels) = explicit_end_labels {
+                                end_labels = labels.clone();
                             }
                         }
 
                         // Derive all possible end types from relationships when end_labels is
-                        // empty or was forced empty by the undirected override above.
+                        // empty (undirected patterns always derive, directed only when untyped).
                         if end_labels.is_empty() {
                             let mut possible_end_types = std::collections::HashSet::new();
 
@@ -3040,6 +3043,27 @@ pub fn extract_ctes_with_context(
                                     schema,
                                 )
                                 .unwrap_or_else(|| "UnknownEndType".to_string())];
+                            }
+
+                            // For undirected patterns with explicit end labels (e.g., (a)--(b:User)),
+                            // intersect schema-derived types with the explicit constraint to avoid
+                            // widening the query beyond what the user specified.
+                            if is_undirected_pattern {
+                                if let Some(ref explicit) = explicit_end_labels {
+                                    let explicit_set: std::collections::HashSet<&String> =
+                                        explicit.iter().collect();
+                                    let intersected: Vec<String> = end_labels
+                                        .iter()
+                                        .filter(|l| explicit_set.contains(l))
+                                        .cloned()
+                                        .collect();
+                                    if !intersected.is_empty() {
+                                        end_labels = intersected;
+                                    }
+                                    // If intersection is empty, keep schema-derived labels —
+                                    // the explicit label was inferred (not user-specified) and
+                                    // may reflect only one direction.
+                                }
                             }
                         }
 
