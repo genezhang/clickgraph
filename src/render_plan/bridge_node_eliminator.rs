@@ -16,6 +16,14 @@ use crate::render_plan::render_expr::{
 };
 use crate::render_plan::{CteContent, Join, RenderPlan};
 
+/// Check if a table name is a generated CTE reference.
+fn is_cte_table(table_name: &str) -> bool {
+    table_name.starts_with("with_")
+        || table_name.starts_with("vlp_")
+        || table_name.starts_with("pc_")
+        || table_name.starts_with("bidi_")
+}
+
 /// Upstream FK reference extracted from a bridge node's ON condition.
 /// When a node JOIN has `ON node.id = edge.FK`, the upstream reference
 /// is `edge.FK` (the alias and column from the other side of the equality).
@@ -36,29 +44,111 @@ struct BridgeCandidate {
     upstream: UpstreamRef,
 }
 
-/// Top-level entry point: eliminate bridge nodes in all parts of the plan.
+/// Top-level entry point: eliminate unnecessary JOINs in all parts of the plan.
+/// Two passes:
+/// 1. Remove unreferenced JOINs (e.g., CROSS JOINs with `ON 1=1` where alias is unused)
+/// 2. Remove bridge node JOINs (FK bridges between edge tables)
 pub fn eliminate_bridge_nodes(plan: &mut RenderPlan) {
-    // Main plan joins
-    eliminate_bridge_nodes_in_plan(plan);
+    // Apply both passes to main plan, UNION branches, and CTE bodies
+    optimize_joins_in_plan(plan);
 
-    // UNION branch joins
     if let Some(ref mut union) = plan.union.0 {
         for branch in union.input.iter_mut() {
-            eliminate_bridge_nodes_in_plan(branch);
+            optimize_joins_in_plan(branch);
         }
     }
 
-    // CTE body joins (recursive into structured CTEs)
     for cte in plan.ctes.0.iter_mut() {
         if let CteContent::Structured(ref mut cte_plan) = cte.content {
-            eliminate_bridge_nodes_in_plan(cte_plan);
+            optimize_joins_in_plan(cte_plan);
 
             if let Some(ref mut union) = cte_plan.union.0 {
                 for branch in union.input.iter_mut() {
-                    eliminate_bridge_nodes_in_plan(branch);
+                    optimize_joins_in_plan(branch);
                 }
             }
         }
+    }
+}
+
+/// Apply all join optimizations to a single plan.
+fn optimize_joins_in_plan(plan: &mut RenderPlan) {
+    remove_unreferenced_joins(plan);
+    eliminate_bridge_nodes_in_plan(plan);
+}
+
+/// Remove JOINs whose alias is completely unreferenced in the plan.
+/// Catches CROSS JOINs (ON 1=1), spurious node JOINs, etc.
+fn remove_unreferenced_joins(plan: &mut RenderPlan) {
+    // Collect indices to remove (in reverse order for safe removal)
+    let mut to_remove = Vec::new();
+
+    for (idx, join) in plan.joins.0.iter().enumerate().rev() {
+        let alias = &join.table_alias;
+
+        // Never remove edge tables — they provide the traversal
+        if join.from_id_column.is_some() || join.to_id_column.is_some() {
+            continue;
+        }
+
+        // Never remove VLP joins
+        if join.graph_rel.is_some() {
+            continue;
+        }
+
+        // Never remove CTE joins
+        if is_cte_table(&join.table_name) {
+            continue;
+        }
+
+        // Never remove joins in fixed path metadata
+        if let Some(ref fpm) = plan.fixed_path_info {
+            if fpm.node_aliases.contains(alias) {
+                continue;
+            }
+        }
+
+        // Keep if alias is referenced in SELECT/WHERE/ORDER BY/GROUP BY/HAVING/ARRAY JOIN
+        if is_alias_referenced_in_plan(plan, alias) {
+            continue;
+        }
+
+        // Keep if any OTHER join's ON condition or pre_filter references this alias
+        // (unlike bridge elimination, we can't rewrite those here)
+        let alias_used_in_other_joins = plan.joins.0.iter().enumerate().any(|(i, other)| {
+            if i == idx {
+                return false;
+            }
+            for cond in &other.joining_on {
+                for operand in &cond.operands {
+                    if references_alias(operand, alias) {
+                        return true;
+                    }
+                }
+            }
+            if let Some(ref pf) = other.pre_filter {
+                if references_alias(pf, alias) {
+                    return true;
+                }
+            }
+            false
+        });
+
+        if alias_used_in_other_joins {
+            continue;
+        }
+
+        log::debug!(
+            "Unreferenced join elimination: removing {} ({})",
+            alias,
+            join.table_name
+        );
+        to_remove.push(idx);
+    }
+
+    // Remove in reverse index order (already reversed from the loop)
+    for idx in &to_remove {
+        plan.joins.0.remove(*idx);
     }
 }
 
@@ -130,8 +220,11 @@ fn find_bridge_candidates(plan: &RenderPlan) -> Vec<BridgeCandidate> {
             _ => continue,
         };
 
-        // Guard: table_name must not be a CTE reference (with_ or vlp_ prefix)
-        if join.table_name.starts_with("with_") || join.table_name.starts_with("vlp_") {
+        // Guard: table_name must not be a CTE reference
+        if join.table_name.starts_with("with_")
+            || join.table_name.starts_with("vlp_")
+            || join.table_name.starts_with("pc_")
+        {
             continue;
         }
 
