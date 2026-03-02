@@ -856,7 +856,7 @@ pub fn transform_row(
 /// Transform flat result row into a Node struct
 ///
 /// Extracts properties, determines ID columns from schema, and generates elementId
-fn transform_to_node(
+pub(crate) fn transform_to_node(
     row: &HashMap<String, Value>,
     var_name: &str,
     labels: &[String],
@@ -1039,7 +1039,7 @@ fn infer_node_label_from_properties(
 /// # Returns
 ///
 /// Relationship struct with properties and generated elementIds
-fn transform_to_relationship(
+pub(crate) fn transform_to_relationship(
     row: &HashMap<String, Value>,
     var_name: &str,
     rel_types: &[String],

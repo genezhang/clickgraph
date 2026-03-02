@@ -57,6 +57,8 @@
 use serde_json::Value;
 use std::collections::HashMap;
 
+use crate::server::models::{GraphEdge, GraphNode};
+
 /// Neo4j Bolt 5.x Node structure
 ///
 /// Represents a graph node with labels, properties, and Neo4j 5.0+ elementId.
@@ -218,6 +220,15 @@ impl Node {
         }
     }
 
+    /// Convert to HTTP API GraphNode
+    pub fn to_graph_node(&self) -> GraphNode {
+        GraphNode {
+            element_id: self.element_id.clone(),
+            labels: self.labels.clone(),
+            properties: self.properties.clone(),
+        }
+    }
+
     /// Encode this Node to packstream format
     ///
     /// Format: 0xB4 (4-field struct) + 0x4E ('N') + [id, labels, properties, elementId]
@@ -270,6 +281,17 @@ impl Relationship {
             element_id,
             start_node_element_id,
             end_node_element_id,
+        }
+    }
+
+    /// Convert to HTTP API GraphEdge
+    pub fn to_graph_edge(&self) -> GraphEdge {
+        GraphEdge {
+            element_id: self.element_id.clone(),
+            rel_type: self.rel_type.clone(),
+            start_node_element_id: self.start_node_element_id.clone(),
+            end_node_element_id: self.end_node_element_id.clone(),
+            properties: self.properties.clone(),
         }
     }
 
