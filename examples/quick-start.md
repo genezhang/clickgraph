@@ -187,7 +187,28 @@ curl -X POST http://localhost:8080/query \
 }
 ```
 
-### Test 3: Find Mutual Friends
+### Test 3: Graph Format (Structured Nodes & Edges)
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "MATCH (u:User)-[r:FRIENDS_WITH]->(f:User) RETURN u, r, f LIMIT 5", "format": "Graph"}'
+```
+
+**Expected result** (structured graph objects with stats):
+```json
+{
+  "nodes": [
+    {"element_id": "User:1", "labels": ["User"], "properties": {"name": "Alice", "age": 25, "city": "New York"}},
+    {"element_id": "User:2", "labels": ["User"], "properties": {"name": "Bob", "age": 30, "city": "San Francisco"}}
+  ],
+  "edges": [
+    {"element_id": "FRIENDS_WITH:1->2", "rel_type": "FRIENDS_WITH", "start_node_element_id": "User:1", "end_node_element_id": "User:2", "properties": {"since": "2023-01-15"}}
+  ],
+  "stats": {"total_time_ms": 5.1, "parse_time_ms": 0.3, "planning_time_ms": 1.2, "query_type": "read"}
+}
+```
+
+### Test 4: Find Mutual Friends
 ```bash
 curl -X POST http://localhost:8080/query \
   -H "Content-Type: application/json" \
@@ -203,7 +224,7 @@ curl -X POST http://localhost:8080/query \
 }
 ```
 
-### Test 4: Neo4j Driver (Python)
+### Test 5: Neo4j Driver (Python)
 ```python
 from neo4j import GraphDatabase
 

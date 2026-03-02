@@ -154,15 +154,58 @@ RETURN
 
 ## GraphRAG Context Extraction
 
-For GraphRAG applications, extract rich context:
+For GraphRAG applications, you can extract context in two complementary ways:
+
+### Triple Format (flat rows for LLM prompts)
 
 ```cypher
--- Get all relationships around a topic entity
+-- Get all relationships around a topic entity as triples
 MATCH (topic:Topic {name: 'Machine Learning'})-[r]-(related)
-RETURN 
+RETURN
     topic.name AS subject,
     type(r) AS predicate,
     COALESCE(related.name, related.title, toString(related.id)) AS object
+```
+
+### Graph Format (structured nodes & edges)
+
+Use `format: "Graph"` to get deduplicated, typed graph objects — ideal for building context windows, feeding graph-structured data to LLMs, or powering visualization:
+
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "MATCH (topic:Topic {name: \"Machine Learning\"})-[r]-(related) RETURN topic, r, related LIMIT 50",
+    "format": "Graph"
+  }'
+```
+
+**Response** — nodes and edges are automatically deduplicated:
+```json
+{
+  "nodes": [
+    {"element_id": "Topic:1", "labels": ["Topic"], "properties": {"name": "Machine Learning"}},
+    {"element_id": "Paper:42", "labels": ["Paper"], "properties": {"title": "Attention Is All You Need"}},
+    {"element_id": "Person:7", "labels": ["Person"], "properties": {"name": "Geoffrey Hinton"}}
+  ],
+  "edges": [
+    {"element_id": "MENTIONS:42->1", "rel_type": "MENTIONS", "start_node_element_id": "Paper:42", "end_node_element_id": "Topic:1", "properties": {}},
+    {"element_id": "EXPERT_IN:7->1", "rel_type": "EXPERT_IN", "start_node_element_id": "Person:7", "end_node_element_id": "Topic:1", "properties": {}}
+  ],
+  "stats": {"total_time_ms": 4.2, "query_type": "read", "result_rows": 50}
+}
+```
+
+The Graph format is particularly useful for GraphRAG because:
+- **Deduplication**: The same entity appearing via multiple paths is returned once
+- **Typed objects**: Nodes have labels and edges have rel_type — no need to infer types from column names
+- **Performance stats**: Included in every response for monitoring retrieval latency
+- **Direct use**: Structured output maps directly to graph data structures in Python, JavaScript, etc.
+
+For schemas with many relationship types, set `max_inferred_types` higher (default 5):
+
+```json
+{"query": "MATCH (e:Entity)-[*1..2]-(related) RETURN e, related", "format": "Graph", "max_inferred_types": 15}
 ```
 
 ## Best Practices
@@ -308,10 +351,12 @@ RETURN f.path, d.path
 
 ## Example: Complete Subgraph for GraphRAG
 
+### As triples (flat rows for LLM prompt text)
+
 ```cypher
--- Extract 1-hop context for an entity (GraphRAG use case)
+-- Extract 1-hop context for an entity
 MATCH (entity:Entity {id: $entity_id})-[r]-(related)
-RETURN 
+RETURN
     entity.name AS subject,
     type(r) AS predicate,
     related.name AS object,
@@ -320,3 +365,16 @@ LIMIT 50
 ```
 
 This returns triples suitable for building LLM context windows.
+
+### As structured graph (typed objects for programmatic use)
+
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "MATCH (entity:Entity {id: 42})-[r]-(related) RETURN entity, r, related LIMIT 50",
+    "format": "Graph"
+  }'
+```
+
+This returns `{ nodes, edges, stats }` with deduplicated graph objects — see [Graph Format](../../docs/api.md#graph-format) for the full response schema.

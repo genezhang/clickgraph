@@ -936,8 +936,33 @@ LIMIT 100
 | Co-occurrence analysis | 120ms | 220ms |
 | Multi-hop semantic search | 95ms | 180ms |
 
+## GraphRAG Integration
+
+Knowledge graphs stored in ClickGraph can serve as the retrieval layer for GraphRAG (Graph-based Retrieval-Augmented Generation). Use the `format: "Graph"` output to extract structured context for LLM prompts:
+
+```bash
+# Extract structured context around an entity for an LLM prompt
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "MATCH (e:Entity {name: \"Machine Learning\"})-[r]-(related) RETURN e, r, related LIMIT 50",
+    "format": "Graph",
+    "max_inferred_types": 15
+  }'
+```
+
+This returns deduplicated `{ nodes, edges, stats }` — see [Graph Format](../../docs/api.md#graph-format) for the full response schema and [Subgraph Extraction](Cypher-Subgraph-Extraction.md#graphrag-context-extraction) for more patterns.
+
+**Typical GraphRAG workflow with ClickGraph:**
+
+1. **Retrieve**: Use Cypher to extract a local subgraph around seed entities
+2. **Structure**: Use `format: "Graph"` to get typed, deduplicated nodes and edges
+3. **Contextualize**: Feed the structured graph data into an LLM prompt as context
+4. **Answer**: The LLM reasons over the graph context to answer user questions
+
 ## Next Steps
 
+- **[Subgraph Extraction](Cypher-Subgraph-Extraction.md)** - Detailed subgraph extraction patterns for GraphRAG
 - **[Social Network Analysis](Use-Case-Social-Network.md)** - Social graph analytics
 - **[Fraud Detection](Use-Case-Fraud-Detection.md)** - Financial fraud patterns
 - **[Performance Optimization](Performance-Query-Optimization.md)** - Advanced optimization

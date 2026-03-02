@@ -38,6 +38,8 @@ Content-Type: application/json
   - Supports `RETURN DISTINCT` for de-duplicating results ✅ **[ADDED: v0.5.1]**
   - Use when multiple graph paths lead to the same node (e.g., friend-of-friend queries)
   - Example: `MATCH (a)-[:FOLLOWS]->(f)-[:FOLLOWS]->(fof) RETURN DISTINCT fof.name`
+- `format` (string, optional): Output format. One of `JSONEachRow` (default), `Pretty`, `PrettyCompact`, `Csv`, `CSVWithNames`, `Graph`
+  - `Graph`: Returns structured `{ nodes, edges, stats }` response with deduplicated graph objects. See [Graph Format](#graph-format) below.
 - `parameters` (object, optional): Query parameters for parameterized queries ✅ **[COMPLETED: Nov 10, 2025]**
   - Supports all JSON data types: String, Int, Float, Bool, Array, Null
   - Use `$paramName` syntax in queries (e.g., `WHERE n.age >= $minAge`)
@@ -476,6 +478,93 @@ curl -X POST http://localhost:8080/query \
   -d '{
     "query": "MATCH (u:User)-[:FOLLOWS]->(friend) RETURN u.name, count(friend) as friend_count ORDER BY friend_count DESC"
   }'
+```
+
+### Graph Format
+
+The `Graph` output format returns a structured response with deduplicated nodes and edges, along with query performance stats. This is useful for graph visualization, GraphRAG pipelines, and any application that needs typed graph objects rather than flat rows.
+
+**Request:**
+```bash
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "MATCH (u:User)-[r:FOLLOWS]->(f:User) RETURN u, r, f LIMIT 5",
+    "format": "Graph"
+  }'
+```
+
+**Response:**
+```json
+{
+  "nodes": [
+    {
+      "element_id": "User:1",
+      "labels": ["User"],
+      "properties": {"name": "Alice", "age": 30}
+    },
+    {
+      "element_id": "User:2",
+      "labels": ["User"],
+      "properties": {"name": "Bob", "age": 25}
+    }
+  ],
+  "edges": [
+    {
+      "element_id": "FOLLOWS:1->2",
+      "rel_type": "FOLLOWS",
+      "start_node_element_id": "User:1",
+      "end_node_element_id": "User:2",
+      "properties": {}
+    }
+  ],
+  "stats": {
+    "total_time_ms": 5.1,
+    "parse_time_ms": 0.3,
+    "planning_time_ms": 1.2,
+    "render_time_ms": 0.1,
+    "sql_generation_time_ms": 0.2,
+    "execution_time_ms": 3.3,
+    "query_type": "read",
+    "result_rows": 5
+  }
+}
+```
+
+**Response Fields:**
+- `nodes` (array): Deduplicated graph nodes. Each node has:
+  - `element_id` (string): Unique identifier (format: `Label:id`)
+  - `labels` (array): Node labels (e.g., `["User"]`)
+  - `properties` (object): Node properties
+- `edges` (array): Deduplicated graph edges. Each edge has:
+  - `element_id` (string): Unique identifier (format: `Type:from->to`)
+  - `rel_type` (string): Relationship type (e.g., `"FOLLOWS"`)
+  - `start_node_element_id` (string): Source node element_id
+  - `end_node_element_id` (string): Target node element_id
+  - `properties` (object): Relationship properties
+- `stats` (object): Query performance breakdown in milliseconds
+
+**Notes:**
+- Nodes and edges are deduplicated by `element_id` — the same node appearing in multiple result rows is returned once
+- Scalar-only queries (e.g., `RETURN u.name`) return empty `nodes` and `edges` arrays
+- The `Graph` format requires the full query planning pipeline (cache is bypassed) since it needs type metadata to classify return items as nodes vs relationships
+- Uses the same element_id format as the Bolt protocol for consistency
+
+**Python Example:**
+```python
+import requests
+
+response = requests.post('http://localhost:8080/query', json={
+    'query': 'MATCH (u:User)-[r:FOLLOWS]->(f:User) RETURN u, r, f LIMIT 10',
+    'format': 'Graph'
+})
+
+data = response.json()
+print(f"Nodes: {len(data['nodes'])}, Edges: {len(data['edges'])}")
+print(f"Query time: {data['stats']['total_time_ms']:.1f}ms")
+
+for node in data['nodes']:
+    print(f"  {node['element_id']}: {node['properties']}")
 ```
 
 ### Parameterized Queries
