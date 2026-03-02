@@ -37,7 +37,6 @@ def query_sql_only(cypher_query, schema_name=SCHEMA_NAME):
 class TestBrowserNodeExpansion:
     """Tests for clicking on nodes to expand relationships"""
     
-    @pytest.mark.xfail(reason="Code bug: untyped undirected rel with type(r)/labels(m) generates invalid CTE column references")
     def test_expand_labeled_node_all_relationships(self):
         """Browser: Click node → Expand (shows all relationship types)"""
         # Browser generates: MATCH (n:User) WHERE id(n) = 123 MATCH (n)-[r]-(m) RETURN *
@@ -55,7 +54,6 @@ class TestBrowserNodeExpansion:
         data = response.json()
         assert "count" in data["results"][0]
     
-    @pytest.mark.xfail(reason="Code bug: untyped directed rel UNION CTE generates invalid column references")
     def test_expand_node_outgoing_only(self):
         """Browser: Click node → Expand outgoing relationships only"""
         response = query("MATCH (n:User)-[r]->(m) WHERE n.user_id = 1 RETURN count(*) as count")
@@ -174,7 +172,6 @@ class TestBrowserPathQueries:
         response = query("MATCH p=()-[r:FOLLOWS]->() RETURN p LIMIT 5")
         assert response.status_code == 200
     
-    @pytest.mark.xfail(reason="Code bug: VLP on social_integration generates invalid SQL")
     def test_variable_length_path(self):
         """Browser: Variable length exploration"""
         response = query("MATCH p=(u:User)-[:FOLLOWS*1..2]->(f:User) RETURN count(*) as count")

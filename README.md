@@ -23,7 +23,7 @@
 - **ClickHouse cluster load balancing** - Set `CLICKHOUSE_CLUSTER` to auto-discover and balance across cluster nodes
 - **`apoc.meta.schema()` for MCP** - Schema discovery procedure for AI assistant integration
 - **LLM-powered schema design tool** - Interactive schema generation from natural language
-- **1,131 unit tests** - Up from 1,032, with 76 schema-parameterized SQL generation tests
+- **1,360 unit tests + 3,068 integration tests** - Comprehensive test coverage across all features
 
 See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 
@@ -222,7 +222,8 @@ RETURN friend.name
 **Current Version**: v0.6.3-dev
 
 ### Test Coverage
-- **Rust Unit Tests**: 1,131 passing (100%)
+- **Rust Unit Tests**: 1,360 passing (100%)
+- **Integration Tests**: 3,068 passing (108 environment-dependent)
 - **LDBC SNB**: 36/37 queries passing (97%)
 - **Benchmarks**: 14/14 passing (100%)
 - **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)

@@ -2567,8 +2567,25 @@ impl RenderPlanBuilder for LogicalPlan {
             result
         }
 
+        // Helper: check if plan is Empty or a chain of Unwind nodes ending in Empty,
+        // possibly wrapped in Filter/OrderBy/Skip/Limit/GroupBy from WHERE/ORDER BY clauses.
+        // Standalone UNWIND (without MATCH) has Unwind(Empty) — this is a legitimate
+        // data source (array expression), not a pruned/filtered-out query.
+        fn input_is_empty_or_unwind_chain(plan: &LogicalPlan) -> bool {
+            match plan {
+                LogicalPlan::Empty => true,
+                LogicalPlan::Unwind(u) => input_is_empty_or_unwind_chain(&u.input),
+                LogicalPlan::Filter(f) => input_is_empty_or_unwind_chain(&f.input),
+                LogicalPlan::OrderBy(o) => input_is_empty_or_unwind_chain(&o.input),
+                LogicalPlan::Skip(s) => input_is_empty_or_unwind_chain(&s.input),
+                LogicalPlan::Limit(l) => input_is_empty_or_unwind_chain(&l.input),
+                LogicalPlan::GroupBy(g) => input_is_empty_or_unwind_chain(&g.input),
+                _ => false,
+            }
+        }
+
         // Helper to check if this is a RETURN-only query (no MATCH clause)
-        // Pattern: GraphJoins*/Limit/Skip/OrderBy* → Projection → Empty
+        // Pattern: GraphJoins*/Limit/Skip/OrderBy* → Projection → Empty/Unwind(Empty)
         // vs filtered query: GraphNode/GraphJoins with actual joins → Empty (no valid types)
         fn is_return_only_query(plan: &LogicalPlan) -> bool {
             match plan {
@@ -2584,24 +2601,30 @@ impl RenderPlanBuilder for LogicalPlan {
                 // aliases (TableAlias), while a pure RETURN uses literals/scalars.
                 LogicalPlan::GraphJoins(gj) if gj.joins.is_empty() => {
                     if let LogicalPlan::Projection(p) = gj.input.as_ref() {
-                        // Pure RETURN-only if input is Empty AND no item is a graph alias
-                        matches!(p.input.as_ref(), LogicalPlan::Empty)
-                            && !p
-                                .items
-                                .iter()
-                                .any(|item| matches!(item.expression, LogicalExpr::TableAlias(_)))
+                        let is_empty_or_unwind = input_is_empty_or_unwind_chain(p.input.as_ref());
+                        // For Unwind chains, TableAlias items are UNWIND aliases (not graph nodes),
+                        // so skip the graph alias check. For pure Empty, reject graph aliases.
+                        let has_unwind = matches!(p.input.as_ref(), LogicalPlan::Unwind(_));
+                        is_empty_or_unwind
+                            && (has_unwind
+                                || !p.items.iter().any(|item| {
+                                    matches!(item.expression, LogicalExpr::TableAlias(_))
+                                }))
                     } else {
                         false
                     }
                 }
 
-                // Found Projection → check if input is Empty (pure RETURN query, no MATCH)
+                // Found Projection → check if input is Empty or Unwind chain (pure RETURN/UNWIND query, no MATCH)
                 LogicalPlan::Projection(p) => {
-                    matches!(p.input.as_ref(), LogicalPlan::Empty)
-                        && !p
-                            .items
-                            .iter()
-                            .any(|item| matches!(item.expression, LogicalExpr::TableAlias(_)))
+                    let is_empty_or_unwind = input_is_empty_or_unwind_chain(p.input.as_ref());
+                    let has_unwind = matches!(p.input.as_ref(), LogicalPlan::Unwind(_));
+                    is_empty_or_unwind
+                        && (has_unwind
+                            || !p
+                                .items
+                                .iter()
+                                .any(|item| matches!(item.expression, LogicalExpr::TableAlias(_))))
                 }
 
                 // Any other plan type → not RETURN-only

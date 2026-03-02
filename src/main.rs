@@ -41,6 +41,10 @@ struct Cli {
     /// Useful for graph-notebook, Neodash, and other Neo4j ecosystem tools
     #[arg(long)]
     neo4j_compat_mode: bool,
+
+    /// Log level (overridden by RUST_LOG env var)
+    #[arg(long, default_value = "info")]
+    log_level: String,
 }
 
 impl From<Cli> for config::CliConfig {
@@ -78,10 +82,13 @@ fn main() {
 }
 
 async fn async_main() {
-    // Initialize logger - defaults to INFO level, can be overridden with RUST_LOG env var
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
-
     let cli = Cli::parse();
+
+    // Initialize logger - use --log-level value as default, RUST_LOG env var overrides
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(&cli.log_level),
+    )
+    .init();
 
     println!("\nClickGraph v{}\n", env!("CARGO_PKG_VERSION"));
 

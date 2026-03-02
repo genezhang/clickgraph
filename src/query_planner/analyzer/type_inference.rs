@@ -2978,7 +2978,7 @@ impl TypeInference {
     fn push_inferred_table_names_to_scan(
         logical_plan: Arc<LogicalPlan>,
         plan_ctx: &mut PlanCtx,
-        _graph_schema: &GraphSchema,
+        graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Arc<LogicalPlan>> {
         use crate::query_planner::transformed::Transformed;
 
@@ -2987,7 +2987,7 @@ impl TypeInference {
                 let child_tf = Self::push_inferred_table_names_to_scan_transformed(
                     projection.input.clone(),
                     plan_ctx,
-                    _graph_schema,
+                    graph_schema,
                 )?;
                 projection.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -3030,13 +3030,23 @@ impl TypeInference {
                     };
 
                     if let Some(label) = label_to_use {
-                        log::info!(
+                        // Skip ViewScan resolution for denormalized nodes — the render
+                        // phase handles them with correct direction context from the
+                        // GraphRel. Resolving here creates a spurious UNION DISTINCT
+                        // because try_generate_view_scan has no direction info.
+                        if graph_schema.is_denormalized_node(&label) {
+                            log::info!(
+                                "TypeInference Phase 3: Skipping ViewScan for denormalized node '{}' (label '{}') — render phase handles direction",
+                                graph_node.alias, label
+                            );
+                        } else {
+                            log::info!(
                             "TypeInference Phase 3: Resolving Empty → ViewScan for node '{}' with label '{}'",
                             graph_node.alias, label
                         );
 
-                        // Create ViewScan using the label
-                        match crate::query_planner::logical_plan::match_clause::try_generate_view_scan(
+                            // Create ViewScan using the label
+                            match crate::query_planner::logical_plan::match_clause::try_generate_view_scan(
                             &graph_node.alias,
                             &label,
                             plan_ctx,
@@ -3068,6 +3078,7 @@ impl TypeInference {
                                 );
                             }
                         }
+                        } // end: non-denormalized branch
                     } else {
                         log::debug!("TypeInference Phase 3: Node '{}' has no valid label, skipping ViewScan creation", graph_node.alias);
                     }
@@ -3077,7 +3088,7 @@ impl TypeInference {
                 let child_tf = Self::push_inferred_table_names_to_scan_transformed(
                     graph_node.input.clone(),
                     plan_ctx,
-                    _graph_schema,
+                    graph_schema,
                 )?;
                 graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -3086,12 +3097,12 @@ impl TypeInference {
                 let left_tf = Self::push_inferred_table_names_to_scan_transformed(
                     graph_rel.left.clone(),
                     plan_ctx,
-                    _graph_schema,
+                    graph_schema,
                 )?;
                 let right_tf = Self::push_inferred_table_names_to_scan_transformed(
                     graph_rel.right.clone(),
                     plan_ctx,
-                    _graph_schema,
+                    graph_schema,
                 )?;
 
                 // Check if center (relationship) is Empty - need to resolve to ViewScan
@@ -3137,7 +3148,7 @@ impl TypeInference {
                                         "TypeInference Phase 3: Failed to create ViewScan for relationship '{}' with type '{}'",
                                         graph_rel.alias, rel_type
                                     );
-                                    Self::push_inferred_table_names_to_scan_transformed(graph_rel.center.clone(), plan_ctx, _graph_schema)?
+                                    Self::push_inferred_table_names_to_scan_transformed(graph_rel.center.clone(), plan_ctx, graph_schema)?
                                 }
                             } else {
                                 // Multiple relationship types - keep Empty, will be handled by UNION generation
@@ -3148,28 +3159,28 @@ impl TypeInference {
                                 Self::push_inferred_table_names_to_scan_transformed(
                                     graph_rel.center.clone(),
                                     plan_ctx,
-                                    _graph_schema,
+                                    graph_schema,
                                 )?
                             }
                         } else {
                             Self::push_inferred_table_names_to_scan_transformed(
                                 graph_rel.center.clone(),
                                 plan_ctx,
-                                _graph_schema,
+                                graph_schema,
                             )?
                         }
                     } else {
                         Self::push_inferred_table_names_to_scan_transformed(
                             graph_rel.center.clone(),
                             plan_ctx,
-                            _graph_schema,
+                            graph_schema,
                         )?
                     }
                 } else {
                     Self::push_inferred_table_names_to_scan_transformed(
                         graph_rel.center.clone(),
                         plan_ctx,
-                        _graph_schema,
+                        graph_schema,
                     )?
                 };
 
@@ -3179,7 +3190,7 @@ impl TypeInference {
                 let child_tf = Self::push_inferred_table_names_to_scan_transformed(
                     cte.input.clone(),
                     plan_ctx,
-                    _graph_schema,
+                    graph_schema,
                 )?;
                 cte.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -3188,7 +3199,7 @@ impl TypeInference {
                 let child_tf = Self::push_inferred_table_names_to_scan_transformed(
                     graph_joins.input.clone(),
                     plan_ctx,
-                    _graph_schema,
+                    graph_schema,
                 )?;
                 graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -3196,7 +3207,7 @@ impl TypeInference {
                 let child_tf = Self::push_inferred_table_names_to_scan_transformed(
                     filter.input.clone(),
                     plan_ctx,
-                    _graph_schema,
+                    graph_schema,
                 )?;
                 filter.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -3204,7 +3215,7 @@ impl TypeInference {
                 let child_tf = Self::push_inferred_table_names_to_scan_transformed(
                     group_by.input.clone(),
                     plan_ctx,
-                    _graph_schema,
+                    graph_schema,
                 )?;
                 group_by.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -3212,7 +3223,7 @@ impl TypeInference {
                 let child_tf = Self::push_inferred_table_names_to_scan_transformed(
                     order_by.input.clone(),
                     plan_ctx,
-                    _graph_schema,
+                    graph_schema,
                 )?;
                 order_by.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -3220,7 +3231,7 @@ impl TypeInference {
                 let child_tf = Self::push_inferred_table_names_to_scan_transformed(
                     skip.input.clone(),
                     plan_ctx,
-                    _graph_schema,
+                    graph_schema,
                 )?;
                 skip.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -3228,7 +3239,7 @@ impl TypeInference {
                 let child_tf = Self::push_inferred_table_names_to_scan_transformed(
                     limit.input.clone(),
                     plan_ctx,
-                    _graph_schema,
+                    graph_schema,
                 )?;
                 limit.rebuild_or_clone(child_tf, logical_plan.clone())
             }
@@ -3238,7 +3249,7 @@ impl TypeInference {
                     let child_tf = Self::push_inferred_table_names_to_scan_transformed(
                         input_plan.clone(),
                         plan_ctx,
-                        _graph_schema,
+                        graph_schema,
                     )?;
                     inputs_tf.push(child_tf);
                 }
@@ -3250,7 +3261,7 @@ impl TypeInference {
                 let child_tf = Self::push_inferred_table_names_to_scan_transformed(
                     u.input.clone(),
                     plan_ctx,
-                    _graph_schema,
+                    graph_schema,
                 )?;
                 match child_tf {
                     Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
@@ -3269,12 +3280,12 @@ impl TypeInference {
                 let left_tf = Self::push_inferred_table_names_to_scan_transformed(
                     cp.left.clone(),
                     plan_ctx,
-                    _graph_schema,
+                    graph_schema,
                 )?;
                 let right_tf = Self::push_inferred_table_names_to_scan_transformed(
                     cp.right.clone(),
                     plan_ctx,
-                    _graph_schema,
+                    graph_schema,
                 )?;
                 match (&left_tf, &right_tf) {
                     (Transformed::No(_), Transformed::No(_)) => {
@@ -3294,7 +3305,7 @@ impl TypeInference {
                 let child_tf = Self::push_inferred_table_names_to_scan_transformed(
                     with_clause.input.clone(),
                     plan_ctx,
-                    _graph_schema,
+                    graph_schema,
                 )?;
                 match child_tf {
                     Transformed::Yes(new_input) => {
@@ -3362,8 +3373,10 @@ impl TypeInference {
                     };
 
                     if let Some(label) = label_to_use {
-                        // Create ViewScan using the label
-                        match crate::query_planner::logical_plan::match_clause::try_generate_view_scan(
+                        // Skip denormalized nodes — render phase handles with direction context
+                        if !graph_schema.is_denormalized_node(&label) {
+                            // Create ViewScan using the label
+                            match crate::query_planner::logical_plan::match_clause::try_generate_view_scan(
                             &graph_node.alias,
                             &label,
                             plan_ctx,
@@ -3382,6 +3395,7 @@ impl TypeInference {
                                 ))));
                             }
                             _ => {}
+                        }
                         }
                     }
                 }

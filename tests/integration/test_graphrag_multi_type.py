@@ -55,7 +55,6 @@ class TestMultiTypeRecursivePatterns:
         assert "User" in node_types, "Should find User nodes via FOLLOWS"
         assert "Post" in node_types, "Should find Post nodes via AUTHORED"
     
-    @pytest.mark.xfail(reason="Code bug: multi-type VLP generates invalid SQL or crashes server")
     def test_multi_type_with_sql_only(self):
         """Verify SQL generation shows UNION ALL for multiple types."""
         import requests
@@ -402,7 +401,6 @@ class TestMultiTypePropertyExtraction:
         for result in results:
             assert result["x.city"] == "NYC"
     
-    @pytest.mark.xfail(reason="Code bug: multi-type property extraction with aggregation/order")
     def test_property_with_order_by(self):
         """Test ORDER BY on extracted JSON properties."""
         response = execute_cypher(
@@ -424,7 +422,6 @@ class TestMultiTypePropertyExtraction:
             names = [r["x.name"] for r in results if r["x.name"]]
             assert names == sorted(names), "Results should be ordered by name"
     
-    @pytest.mark.xfail(reason="Code bug: multi-type property extraction with aggregation/order")
     def test_property_with_aggregation(self):
         """Test aggregation with JSON property access."""
         response = execute_cypher(
