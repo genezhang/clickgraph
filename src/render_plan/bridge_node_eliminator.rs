@@ -1,13 +1,16 @@
-//! Bridge Node Elimination Optimization
+//! Post-hoc Query Plan Optimizer
 //!
-//! Removes unnecessary node table JOINs that only serve as FK bridges between
-//! edge tables. When a node table is joined solely to connect two edge tables
-//! (e.g., edge1.PersonId = person.id AND person.id = edge2.PersonId), the node
-//! table can be eliminated and the edges joined directly (edge1.PersonId = edge2.PersonId).
+//! Three optimization passes applied after join sorting, before SQL generation:
 //!
-//! This is critical for performance with `join_use_nulls=1` (ClickGraph's default),
-//! where chaining LEFT JOINs through unnecessary node tables causes ClickHouse
-//! to become extremely slow.
+//! 1. **Dead CTE elimination**: Removes CTEs that are never referenced by any
+//!    later CTE or the outer query.
+//!
+//! 2. **Unreferenced join elimination**: Removes JOINs whose alias is completely
+//!    unreferenced (e.g., spurious CROSS JOINs with `ON 1=1`).
+//!
+//! 3. **Bridge node elimination**: Removes node table JOINs that only serve as FK
+//!    bridges between edge tables, rewriting downstream ON conditions to chain FKs
+//!    directly. Critical for performance with `join_use_nulls=1`.
 
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::render_plan::expression_utils::references_alias;
@@ -44,11 +47,93 @@ struct BridgeCandidate {
     upstream: UpstreamRef,
 }
 
-/// Top-level entry point: eliminate unnecessary JOINs in all parts of the plan.
-/// Two passes:
-/// 1. Remove unreferenced JOINs (e.g., CROSS JOINs with `ON 1=1` where alias is unused)
-/// 2. Remove bridge node JOINs (FK bridges between edge tables)
+/// Check if a CTE name is referenced in a RenderPlan (FROM, JOINs, subqueries).
+fn is_cte_referenced_in_plan(plan: &RenderPlan, cte_name: &str) -> bool {
+    // Check FROM
+    if let Some(ref from) = plan.from.0 {
+        if from.name == cte_name {
+            return true;
+        }
+    }
+
+    // Check JOINs
+    for join in &plan.joins.0 {
+        if join.table_name == cte_name {
+            return true;
+        }
+    }
+
+    // Check UNION branches
+    if let Some(ref union) = plan.union.0 {
+        for branch in &union.input {
+            if is_cte_referenced_in_plan(branch, cte_name) {
+                return true;
+            }
+        }
+    }
+
+    // Check subqueries in expressions (EXISTS, IN subquery, pattern count)
+    // These may reference CTEs indirectly. For safety, check all expressions
+    // for the CTE name as a table alias reference.
+    if is_alias_referenced_in_plan(plan, cte_name) {
+        return true;
+    }
+
+    false
+}
+
+/// Remove CTEs that are never referenced by any later CTE or the outer query.
+/// Iterates until no more dead CTEs are found (handles cascading dead references).
+fn remove_dead_ctes(plan: &mut RenderPlan) {
+    loop {
+        let mut dead_indices = Vec::new();
+
+        for (idx, cte) in plan.ctes.0.iter().enumerate() {
+            let name = &cte.cte_name;
+
+            // Check if referenced in the outer query
+            if is_cte_referenced_in_plan(plan, name) {
+                continue;
+            }
+
+            // Check if referenced by any OTHER CTE (later ones, since flattened in dependency order)
+            let referenced_by_other_cte = plan.ctes.0.iter().enumerate().any(|(j, other_cte)| {
+                if j == idx {
+                    return false;
+                }
+                match &other_cte.content {
+                    CteContent::Structured(inner_plan) => {
+                        is_cte_referenced_in_plan(inner_plan, name)
+                    }
+                    CteContent::RawSql(sql) => sql.contains(name),
+                }
+            });
+
+            if referenced_by_other_cte {
+                continue;
+            }
+
+            log::debug!("Dead CTE elimination: removing {}", name);
+            dead_indices.push(idx);
+        }
+
+        if dead_indices.is_empty() {
+            break;
+        }
+
+        // Remove in reverse order
+        for idx in dead_indices.iter().rev() {
+            plan.ctes.0.remove(*idx);
+        }
+    }
+}
+
+/// Top-level entry point: run all plan optimizations.
+/// 1. Dead CTE elimination
+/// 2. Unreferenced join elimination
+/// 3. Bridge node join elimination
 pub fn eliminate_bridge_nodes(plan: &mut RenderPlan) {
+    remove_dead_ctes(plan);
     // Apply both passes to main plan, UNION branches, and CTE bodies
     optimize_joins_in_plan(plan);
 
