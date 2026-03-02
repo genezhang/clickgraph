@@ -2,7 +2,7 @@
 
 *Updated: February 20, 2026*
 
-## Current Version: v0.6.2-dev
+## Current Version: v0.6.3-dev
 
 Read-only Cypher-to-ClickHouse SQL query engine with Neo4j Browser compatibility.
 

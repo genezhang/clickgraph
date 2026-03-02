@@ -4,9 +4,9 @@
 
 # ClickGraph
 
-#### ClickGraph - A high-performance, stateless, read-only graph query service for ClickHouse®, written in Rust, with Neo4j ecosystem compatibility - Cypher and Bolt Protocol 5.8 support.
+#### ClickGraph - A high-performance, stateless, read-only graph query service for ClickHouse, written in Rust, with Neo4j ecosystem compatibility - Cypher and Bolt Protocol 5.8 support.
 
-> **Note: ClickGraph is development-ready for view-based graph analytics applications. Kindly raise an issue if you encounter any problem.**
+> **Note: ClickGraph dev release is at beta quality for view-based graph analytics applications. Kindly raise an issue if you encounter any problem.**
 
 ---
 ## Motivation and Rationale
@@ -15,121 +15,15 @@
 - View-based graph analytics offer the benefits of zero-ETL without the hassle of data migration and duplicate cost, yet better performance and scalability than most of the native graph analytics options.
 - Neo4j Bolt protocol support gives access to the tools available based on the Bolt protocol.
 ---
-## 🚀 What's New in v0.6.2-dev
 
-### Highlights ✨
+## What's New in v0.6.3-dev
 
-- **Neo4j Browser Support** - Connect Neo4j Browser directly to ClickGraph via Bolt protocol for live graph visualization. See [`demos/neo4j-browser/`](https://github.com/genezhang/clickgraph/blob/main/demos/neo4j-browser/README.md) for a ready-to-run demo.
-- **Graph-Notebook Support** - Run Jupyter graph notebooks against your ClickHouse data using the `graph-notebook` library. See [`demos/graph-notebook/`](https://github.com/genezhang/clickgraph/blob/main/demos/graph-notebook/README.md) for setup instructions.
-- **Numerous rounds of refactoring** - help to improve the code quality, including the following.
-- **Improved WITH Clause Correctness** - Chained `WITH` queries (multi-step aggregation, filtering, and renaming) now produce correct results across a wider range of patterns.
-- **More Reliable Query Results** - Fixed result ordering, column projection in UNION queries, and variable resolution after `WITH` — queries return what Cypher semantics require.
-- **LDBC SNB Progress** - 14/37 benchmark queries passing (38%), up from 10/37 (27%).
-- **Test Coverage** - 1,032 unit tests passing; 3,026 integration tests at parity with prior release.
-
----
-
-## 📦 Major Features & Capabilities (v0.5.0 - v0.6.1)
-
-### Advanced Schema Support
-
-- **Composite Node IDs** - Use property combinations instead of single columns for node identity
-  - **Example**: `node_id: [tenant_id, user_id]` for multi-tenant users, `[country, city]` for locations
-  - **Use case**: Multi-tenant systems, hierarchical data, time-series events, complex entity relationships
-  - **Benefit**: Model real-world data without artificial ID columns
-
-- **ClickHouse Function Pass-through** - Use ClickHouse functions directly in Cypher expressions
-  - **Syntax**: `RETURN ch.function_name(args)` or `RETURN chagg.aggregate_function(args)`
-  - **Use cases**: `ch.cityHash64()`, `ch.murmurHash3_64()`, `chagg.uniq()`, specialized aggregations
-  - **Example**: `RETURN ch.cityHash64(u.email) AS hash`
-
-### Benchmarks
-
-- **Ontime Flights** - a benchmark for airline flights illustrating the power/performance.
-
-- **LDBC SNB (Work In Progress)** - Social Network Benchmark implementation
-  - **Status**: Schema mapping complete, query adaptation in progress
-  - **Scale**: Designed for scale factors 1-100 (1K-100M edges)
-  - **Purpose**: Industry-standard graph database benchmarking
-
-### Quality Improvements
-
-- **Error handling** - Removed `.unwrap()` landmines, proper Result/Option propagation
-- **Schema validation** - Comprehensive checks for empty ID columns, missing properties
-- **Test infrastructure** - Unified test data setup scripts, reproducible fixtures
-- **Code quality** - Modular architecture, reduced duplication, cleaner abstractions
-
-### Previous Major Features (v0.5.x)
-
-- **Diverse schema variations** - To fit existing database schemas.
-- **Cross-table queries** - Zeek log correlation, multi-table JOINs (v0.5.4)
-- **Smart type inference** - Automatic node/relationship type inference (v0.5.4)
-- **FK-Edge patterns** - File systems, org charts with VLP (v0.5.4)
-- **Polymorphic edges** - Single table with multiple edge types (v0.5.2)
-- **Multi-tenancy** - Parameterized views, 99% cache reduction (v0.5.0)
-- **Query cache** - LRU caching, 10-100x speedup (v0.5.0)
-- **Bolt Protocol 5.8** - Full Neo4j compatibility (v0.5.0)
-
----
-
-## 📦 Previous Releases
-
-<details>
-<summary><b>v0.5.4 (December 7, 2025)</b> - Cross-Table Queries & Smart Inference</summary>
-
-- **Cross-table query support** - Zeek log correlation and multi-table JOINs
-- **Smart type inference** - Automatic node and relationship type inference
-- **FK-Edge patterns** - File systems, org charts with variable-length paths
-- **OnTime Flights benchmark** - 20M row real-world dataset validation
-- See [CHANGELOG.md](CHANGELOG.md) for details
-
-</details>
-
-<details>
-<summary><b>v0.5.3 (December 2, 2025)</b> - Cypher Functions Release</summary>
-
-- **`label()` function**: Get scalar label for nodes
-- **EXISTS subqueries**: Filter based on pattern existence
-- **WITH + MATCH chaining**: Multi-stage query pipelines
-- **Regex matching (`=~`)**: Pattern matching via ClickHouse `match()`
-- **`collect()` function**: Aggregate to arrays via `groupArray()`
-
-</details>
-
-<details>
-<summary><b>v0.5.2 (November 30, 2025)</b> - Schema Variations Release</summary>
-
-**Comprehensive support for advanced schema patterns including polymorphic edges, coupled edges, and denormalized tables.**
-
-- **Polymorphic Edge Tables**: Single table with multiple edge types
-- **Coupled Edge Optimization**: Automatic JOIN elimination for same-table edges
-- **VLP + UNWIND Support**: Path decomposition with ARRAY JOIN
-- **OPTIONAL MATCH + VLP Fix**: Anchor nodes preserved when no path exists
-
-</details>
-
-<details>
-<summary><b>v0.5.1 (November 21, 2025)</b> - Docker Hub Release 🐳</summary>
-
-- Official Docker Hub availability: `docker pull genezhang/clickgraph:latest`
-- Multi-platform support (linux/amd64, linux/arm64)
-- RETURN DISTINCT support
-- Docker image validation suite
-
-</details>
-
-<details>
-<summary><b>v0.5.0 (November 2025)</b> - Phase 2 Complete</summary>
-
-- Multi-tenancy with parameterized views (99% cache memory reduction)
-- SET ROLE RBAC support for column-level security
-- Query cache with LRU eviction (10-100x speedup)
-- Parameterized queries with Neo4j-compatible $param syntax
-- Auto-schema discovery from ClickHouse metadata
-- Complete Bolt Protocol 5.8 implementation
-- 22% code reduction in core modules
-
-</details>
+- **LDBC SNB: 36/37 queries (97%)** - Up from 14/37, near-complete Social Network Benchmark coverage
+- **GraphRAG structured output** - `format: "Graph"` returns deduplicated nodes, edges, and stats
+- **ClickHouse cluster load balancing** - Set `CLICKHOUSE_CLUSTER` to auto-discover and balance across cluster nodes
+- **`apoc.meta.schema()` for MCP** - Schema discovery procedure for AI assistant integration
+- **LLM-powered schema design tool** - Interactive schema generation from natural language
+- **1,131 unit tests** - Up from 1,032, with 76 schema-parameterized SQL generation tests
 
 See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 
@@ -138,34 +32,26 @@ See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 ## Features
 
 ### Core Capabilities
-- **Read-Only Graph Analytics**: Translates Cypher graph queries into optimized ClickHouse SQL for analytical workloads
-- **ClickHouse-native**: Leverages ClickHouse for graph queries on shared data with SQL, merging OLAP speed with graph-analysis power
-- **Stateless Architecture**: Offloads all query execution to ClickHouse—no extra datastore required
-- **Cypher Query Language**: Industry-standard Cypher read syntax for intuitive, expressive property-graph querying
-- **Parameterized Queries**: Neo4j-compatible parameter support (`$param` syntax) for SQL injection prevention and query plan caching
-- **Query Cache**: Development-ready LRU caching with 10-100x speedup for repeated query translations, SQL template reuse with parameter substitution, and Neo4j-compatible CYPHER replan options
-- **Variable-Length Paths**: Recursive traversals with `*1..3` syntax using ClickHouse WITH RECURSIVE CTEs
-- **Path Variables & Functions**: Capture and analyze path data with `length(p)`, `nodes(p)`, `relationships(p)` functions
-- **Analytical-scale Performance**: Optimized for very large datasets and complex multi-hop traversals
-- **Query Performance Metrics**: Phase-by-phase timing with HTTP headers and structured logging for monitoring and optimization
+- **Cypher-to-SQL Translation** - Industry-standard Cypher read syntax translated to optimized ClickHouse SQL
+- **Stateless Architecture** - Offloads all query execution to ClickHouse; no extra datastore required
+- **Variable-Length Paths** - Recursive traversals with `*1..3` syntax using ClickHouse `WITH RECURSIVE` CTEs
+- **Path Functions** - `length(p)`, `nodes(p)`, `relationships(p)` for path analysis
+- **Parameterized Queries** - Neo4j-compatible `$param` syntax for SQL injection prevention
+- **Query Cache** - LRU caching with 10-100x speedup for repeated translations
+- **ClickHouse Functions** - Pass-through via `ch.function_name()` and `chagg.aggregate()` prefixes
+- **Query Metrics** - Phase-by-phase timing via HTTP headers and structured logging
 
 ### Neo4j Ecosystem Compatibility
-- **Bolt Protocol v5.8**: ✅ **Fully functional** - Complete query execution, authentication, and multi-database support. Compatible with Neo4j drivers, cypher-shell, Neo4j Browser, and AWS graph-notebook (Jupyter visualization).
-- **HTTP REST API**: ✅ **Fully functional** - Complete query execution with parameters, aggregations, and all Cypher features
-- **Multi-Schema Support**: ✅ **Fully working** - Complete schema isolation with per-request schema selection:
-  - **USE clause**: Cypher `USE database_name` syntax (highest priority)
-  - **Session/request parameter**: Bolt session database or HTTP `schema_name` parameter
-  - **Default schema**: Fallback to "default" schema
-  - **Schema isolation**: Different schemas map same labels to different ClickHouse tables
-- **Dual Server Architecture**: HTTP and Bolt servers running simultaneously
-- **Authentication Support**: Multiple authentication schemes including basic auth
+- **Bolt Protocol v5.8** - Full Neo4j driver compatibility (cypher-shell, Neo4j Browser, graph-notebook)
+- **HTTP REST API** - Complete query execution with parameters and aggregations
+- **Multi-Schema Support** - Per-request schema selection via `USE` clause, session parameter, or default
+- **Authentication** - Multiple auth schemes including basic auth
 
 ### View-Based Graph Model
-- **Zero Migration**: Transform existing relational data into graph format through YAML configuration
-- **Auto-Discovery**: Automatically query ClickHouse `system.columns` for property mappings with `auto_discover_columns: true` - no manual mapping needed!
-- **Dynamic Schema Loading**: Runtime schema registration via HTTP API (`POST /schemas/load`) with full YAML content support
-- **Native Performance**: Leverages ClickHouse's columnar storage and query optimization
-- **Robust Implementation**: Comprehensive validation, error handling, and optimization passes
+- **Zero Migration** - Map existing tables to graph format through YAML configuration
+- **Auto-Discovery** - `auto_discover_columns: true` queries ClickHouse metadata automatically
+- **Dynamic Schema Loading** - Runtime schema registration via `POST /schemas/load`
+- **Composite Node IDs** - Multi-column identity (e.g., `node_id: [tenant_id, user_id]`)
 
 ---
 
@@ -175,33 +61,31 @@ ClickGraph runs as a lightweight stateless query translator alongside ClickHouse
 
 ```mermaid
 flowchart LR
-    Clients["📱 Graph Clients<br/><br/>HTTP/REST<br/>Bolt Protocol<br/>(Neo4j tools)"]
-    
-    ClickGraph["⚡ ClickGraph<br/><br/>Cypher → SQL<br/>Translator<br/><br/>:8080 (HTTP)<br/>:7687 (Bolt)"]
-    
-    ClickHouse["💾 ClickHouse®<br/><br/>Columnar Storage<br/>Query Engine"]
-    
+    Clients["Graph Clients<br/><br/>HTTP/REST<br/>Bolt Protocol<br/>(Neo4j tools)"]
+
+    ClickGraph["ClickGraph<br/><br/>Cypher -> SQL<br/>Translator<br/><br/>:8080 (HTTP)<br/>:7687 (Bolt)"]
+
+    ClickHouse["ClickHouse<br/><br/>Columnar Storage<br/>Query Engine"]
+
     Clients -->|Cypher| ClickGraph
     ClickGraph -->|SQL| ClickHouse
     ClickHouse -->|Results| ClickGraph
     ClickGraph -->|Results| Clients
-    
+
     style ClickGraph fill:#e1f5ff,stroke:#0288d1,stroke-width:3px
     style ClickHouse fill:#fff3e0,stroke:#f57c00,stroke-width:3px
     style Clients fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
 ```
 
-**Three-tier architecture:** Graph clients → ClickGraph translator → ClickHouse database
+**Three-tier architecture:** Graph clients -> ClickGraph translator -> ClickHouse database
 
-Both protocols share the same underlying query engine and ClickHouse backend.
+---
 
-## 🚀 Quick Start
+## Quick Start
 
 **New to ClickGraph?** See the **[Getting Started Guide](docs/getting-started.md)** for a complete walkthrough.
 
-### Option 1: Docker (Recommended - No Build Required)
-
-Pull and run the pre-built image:
+### Option 1: Docker (Recommended)
 
 ```bash
 # Pull the latest image
@@ -224,9 +108,6 @@ docker run -d \
   genezhang/clickgraph:latest
 ```
 
-**Note**: `CLICKHOUSE_DATABASE` is optional (defaults to "default"). All queries use fully-qualified table names from your schema config. The graph from the config in `GRAPH_CONFIG_PATH` becomes the default graph for Cypher.
-```
-
 Or use docker-compose (uses published image by default):
 
 ```bash
@@ -234,8 +115,6 @@ docker-compose up -d
 ```
 
 ### Option 2: Build from Source
-
-Build and run locally with Rust:
 
 ```bash
 # Prerequisites: Rust toolchain (1.85+) and Docker for ClickHouse
@@ -245,350 +124,132 @@ git clone https://github.com/genezhang/clickgraph
 cd clickgraph
 docker-compose up -d clickhouse-service
 
-# 2. Build ClickGraph
+# 2. Build and run
 cargo build --release
-
-# 3. Set required environment variables and run
 export CLICKHOUSE_URL="http://localhost:8123"
 export CLICKHOUSE_USER="test_user"
 export CLICKHOUSE_PASSWORD="test_pass"
 export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml"
 cargo run --bin clickgraph
-
-# Or inline (all on one command):
-CLICKHOUSE_URL="http://localhost:8123" \
-CLICKHOUSE_USER="test_user" \
-CLICKHOUSE_PASSWORD="test_pass" \
-GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml" \
-cargo run --bin clickgraph -- --http-port 8080 --bolt-port 7687
 ```
 
-> **⚠️ Required Environment Variables**: `GRAPH_CONFIG_PATH` is required to start the server. Without it, ClickGraph won't know how to map your ClickHouse tables to graph nodes and edges.
+> `GRAPH_CONFIG_PATH` is required. It tells ClickGraph how to map ClickHouse tables to graph nodes and edges.
 
 ### Test Your Setup
 
-Query via HTTP API:
 ```bash
+# HTTP API
 curl -X POST http://localhost:8080/query \
   -H "Content-Type: application/json" \
   -d '{"query": "MATCH (u:User) RETURN u.full_name LIMIT 5"}'
-```
 
-Or connect with Neo4j tools (cypher-shell, Neo4j Browser):
-```bash
+# Bolt protocol (cypher-shell, Neo4j Browser, or any Neo4j driver)
 cypher-shell -a bolt://localhost:7687 -u neo4j -p password
 ```
 
-### Visualize with Neo4j Browser (5 minutes)
+### Visualize with Neo4j Browser
 
-For an **interactive graph visualization experience**, use the included Neo4j Browser demo:
+Run the included demo for interactive graph visualization:
 
 ```bash
-cd demos/neo4j-browser
-bash setup.sh
+cd demos/neo4j-browser && bash setup.sh
 ```
 
-This starts:
-- ClickHouse (database)
-- ClickGraph (query engine)
-- Neo4j Browser UI (visualization)
-
-Then open http://localhost:7474 and connect to `bolt://localhost:7687` to visualize graph queries.
-
+Then open http://localhost:7474 and connect to `bolt://localhost:7687`.
 See [demos/neo4j-browser/README.md](https://github.com/genezhang/clickgraph/blob/main/demos/neo4j-browser/README.md) for details.
-   ```bash
-   # Simple query
-   curl -X POST http://localhost:8080/query \
-     -H "Content-Type: application/json" \
-     -d '{"query": "RETURN 1 as test"}'
-   
-   # Query with parameters
-   curl -X POST http://localhost:8080/query \
-     -H "Content-Type: application/json" \
-     -d '{"query": "MATCH (u:User) WHERE u.age >= $minAge RETURN u.full_name, u.age", "parameters": {"minAge": 25}}'
-   ```
 
-4. **Bolt Protocol** (Neo4j driver compatibility):
-   ```python
-   from neo4j import GraphDatabase
-   
-   driver = GraphDatabase.driver("bolt://localhost:7687")
-   with driver.session() as session:
-       result = session.run("RETURN 1 as test")
-       for record in result:
-           print(record["test"])  # Outputs: 1
-   driver.close()
-   ```
+### AI Assistant Integration (MCP)
 
-5. **Use the USE clause for queries on a specific graph**:
-   ```cypher
-   -- Query specific graph using Neo4j-compatible USE clause
-   USE social_network
-   MATCH (u:User)-[:FOLLOWS]->(friend)
-   RETURN u.name, collect(friend.name) AS friends
-   
-   -- USE overrides session/request parameters
-   USE ecommerce
-   MATCH (p:Product) WHERE p.price > 100 RETURN p.name
-   ```
+ClickGraph implements `apoc.meta.schema()` and Neo4j-compatible schema procedures, enabling AI assistants (Claude, etc.) to discover your graph structure via MCP servers like [`@anthropic-ai/mcp-server-neo4j`](https://www.npmjs.com/package/@anthropic-ai/mcp-server-neo4j) and [`@neo4j/mcp-neo4j`](https://www.npmjs.com/package/@neo4j/mcp-neo4j).
 
-📖 **[Complete Setup Guide →](docs/getting-started.md)**
+See the **[MCP Setup Guide](https://github.com/genezhang/clickgraph/blob/main/docs/wiki/AI-Assistant-Integration-MCP.md)** for configuration details.
 
----
-
-## 💻 Interactive CLI Client
-
-ClickGraph includes an interactive command-line client for easy querying (inherited from Brahmand):
-
-### Build and Run
+### CLI Client
 
 ```bash
-# Build the client
 cargo build --release -p clickgraph-client
-
-# Run with default settings (connects to http://localhost:8080)
-./target/release/clickgraph-client
-
-# Or connect to a custom server
-./target/release/clickgraph-client --url http://your-server:8080
+./target/release/clickgraph-client  # connects to http://localhost:8080
 ```
-
-### Usage
-
-```
-clickgraph-client :) MATCH (u:User) RETURN u.name LIMIT 5
-
-Tim Duncan
-Tony Parker
-LaMarcus Aldridge
-Manu Ginobili
-Boris Diaw
-
-clickgraph-client :) MATCH (u:User)-[:FOLLOWS]->(friend) WHERE u.user_id = 101 RETURN friend.name
-
-Tim Duncan
-LaMarcus Aldridge
-
-clickgraph-client :) <Ctrl+C or Ctrl+D to exit>
-I'll be back:)
-```
-
-**Features**:
-- Interactive REPL with history support
-- Automatic result formatting (JSON or text)
-- Command history (up/down arrows)
-- Simple connection to any ClickGraph server
 
 ---
 
-## 🤖 AI Assistant Integration (MCP Protocol)
+## Schema Configuration
 
-Use ClickGraph with AI assistants like Claude through the Model Context Protocol (MCP).
+Map your tables to a graph with YAML:
 
-ClickGraph implements `apoc.meta.schema()` and Neo4j-compatible schema procedures, so MCP servers can discover your graph structure automatically — no extra configuration needed.
-
-### Quick Setup with Claude Desktop
-
-1. **Start ClickGraph** with Bolt protocol enabled (default):
-   ```bash
-   docker run -d -p 8080:8080 -p 7687:7687 genezhang/clickgraph:latest
-   ```
-
-2. **Configure Claude Desktop** to connect via a Neo4j MCP server:
-
-   Add to Claude Desktop's MCP configuration (`claude_desktop_config.json`):
-   ```json
-   {
-     "mcpServers": {
-       "clickgraph": {
-         "command": "npx",
-         "args": [
-           "@anthropic-ai/mcp-server-neo4j",
-           "bolt://localhost:7687"
-         ],
-         "env": {
-           "NEO4J_USERNAME": "neo4j",
-           "NEO4J_PASSWORD": "password"
-         }
-       }
-     }
-   }
-   ```
-
-3. **Query with natural language**:
-   - "Show me all users in the graph"
-   - "Find users who follow each other"
-   - "What's the average age of users by country?"
-
-**Compatible MCP Servers**: Anthropic's [`@anthropic-ai/mcp-server-neo4j`](https://www.npmjs.com/package/@anthropic-ai/mcp-server-neo4j), Neo4j's official [`@neo4j/mcp-neo4j`](https://www.npmjs.com/package/@neo4j/mcp-neo4j), and the Labs Python server [`mcp-neo4j-cypher`](https://github.com/neo4j-contrib/mcp-neo4j).
-
-**Features Available**:
-- ✅ Natural language to Cypher query translation
-- ✅ Schema discovery via `apoc.meta.schema()` and `db.schema.*` procedures
-- ✅ Complex graph pattern queries
-- ✅ Aggregations and analytics
-
-📖 **[Complete MCP Setup Guide →](docs/wiki/AI-Assistant-Integration-MCP.md)**
-
----
-
-## 📊 View-Based Graph Model
-
-Transform existing relational data into graph format through YAML configuration:
-
-**Example**: Map your `users` and `user_follows` tables to a social network graph:
 ```yaml
 views:
   - name: social_network
     nodes:
-      - label: user                    # Node label in Cypher queries
+      - label: user
         table: users
         database: mydb
         node_id: user_id
         property_mappings:
           name: full_name
     edges:
-      - type: follows                 # Relationship type in Cypher queries
+      - type: follows
         table: user_follows
         database: mydb
-        from_node: user        # Source node label
-        to_node: user          # Target node label
+        from_node: user
+        to_node: user
         from_id: follower_id
         to_id: followed_id
 ```
 
-Then query with standard Cypher:
 ```cypher
 MATCH (u:user)-[:follows]->(friend:user)
 WHERE u.name = 'Alice'
 RETURN friend.name
 ```
 
-**OPTIONAL MATCH** for handling optional patterns:
-```cypher
--- Find all users and their friends (if any)
-MATCH (u:user)
-OPTIONAL MATCH (u)-[:follows]->(friend:user)
-RETURN u.name, friend.name
+---
 
--- Mixed required and optional patterns
-MATCH (u:user)-[:authored]->(p:post)
-OPTIONAL MATCH (p)-[:liked_by]->(liker:user)
-RETURN u.name, p.title, COUNT(liker) as likes
-```
-→ Generates efficient `LEFT JOIN` SQL with NULL handling for unmatched patterns
-
-## 🚀 Examples
-
-### ⚡ **[Quick Start](examples/quick-start.md)** - 5 Minutes to Graph Analytics
-
-Perfect for first-time users! Simple social network demo with:
-- **3 users, friendships** - minimal setup with Memory tables
-- **Basic Cypher queries** - find friends, mutual connections  
-- **HTTP & Neo4j drivers** - both integration methods
-- **5-minute setup** - zero to working graph analytics
-
-### 📊 **[E-commerce Analytics](examples/ecommerce-analytics.md)** - Comprehensive Demo
-
-Complete end-to-end demonstration with:
-- **Complete data setup** with realistic e-commerce schema (customers, products, orders, reviews)
-- **Advanced graph queries** for customer segmentation, product recommendations, and market basket analysis  
-- **Real-world workflows** with both HTTP REST API and Neo4j driver examples
-- **Performance optimization** techniques and expected benchmarks
-- **Business insights** from customer journeys, seasonal patterns, and cross-selling opportunities
-
-**Start with Quick Start, then explore E-commerce Analytics for advanced usage!** 🎯
-
-## �🔧 Configuration
-
-ClickGraph supports flexible configuration via command-line arguments and environment variables:
-
-```bash
-# View all options
-cargo run --bin clickgraph -- --help
-
-# ClickHouse database connection env vars are required to connect to ClickHouse
-# Custom ports
-cargo run --bin clickgraph -- --http-port 8081 --bolt-port 7688
-
-# Disable Bolt protocol (HTTP only)
-cargo run --bin clickgraph -- --disable-bolt
-
-# Custom host binding
-cargo run --bin clickgraph -- --http-host 127.0.0.1 --bolt-host 127.0.0.1
-
-# Configure CTE depth limit for variable-length paths (default: 100)
-cargo run --bin clickgraph -- --max-cte-depth 150
-export CLICKGRAPH_MAX_CTE_DEPTH=150  # Or via environment variable
-```
-
-See `docs/configuration.md` for complete configuration documentation.
-
-## 📚 Documentation
+## Documentation
 
 - **[Getting Started](docs/getting-started.md)** - Setup walkthrough and first queries
 - **[Features Overview](docs/features.md)** - Comprehensive feature list
 - **[API Documentation](docs/api.md)** - HTTP REST API and Bolt protocol
 - **[Configuration Guide](docs/configuration.md)** - Server configuration and CLI options
-- **[Dev Quick Start](DEV_QUICK_START.md)** - ⚡ **30-second workflow** (START HERE for contributors!)
-- **[Development Process](DEVELOPMENT_PROCESS.md)** - Detailed 6-phase workflow (reference)
-- **[Current Status](STATUS.md)** - What works now, what's in progress
-- **[Known Issues](KNOWN_ISSUES.md)** - Active bugs and limitations
-- **[Wiki Documentation](docs/wiki/)** - Comprehensive guides including [Graph-Notebook Compatibility](https://github.com/genezhang/clickgraph/blob/main/docs/wiki/Graph-Notebook-Compatibility.md), [Neo4j Tools Integration](https://github.com/genezhang/clickgraph/blob/main/docs/wiki/Neo4j-Tools-Integration.md), and more
+- **[Wiki](https://github.com/genezhang/clickgraph/blob/main/docs/wiki/)** - Comprehensive guides: [Cypher Reference](https://github.com/genezhang/clickgraph/blob/main/docs/wiki/Cypher-Language-Reference.md), [Schema Basics](https://github.com/genezhang/clickgraph/blob/main/docs/wiki/Schema-Basics.md), [Graph-Notebook](https://github.com/genezhang/clickgraph/blob/main/docs/wiki/Graph-Notebook-Compatibility.md), [Neo4j Tools](https://github.com/genezhang/clickgraph/blob/main/docs/wiki/Neo4j-Tools-Integration.md)
+- **[Examples](examples/)** - [Quick Start](examples/quick-start.md) | [E-commerce Analytics](examples/ecommerce-analytics.md)
+- **[Dev Quick Start](DEV_QUICK_START.md)** - 30-second workflow for contributors
 
-## 🧪 Development Status
+---
 
-**Current Version**: v0.6.2-dev
+## Development Status
+
+**Current Version**: v0.6.3-dev
 
 ### Test Coverage
-- ✅ **Rust Unit Tests**: 1,032/1,032 passing (100%)
-- ✅ **Schema Variation Tests**: 73 tests across 4 schema types
-- ✅ **Benchmarks**: 14/14 passing (100%)
-- ✅ **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)
-- ✅ **Pytest**: 3,026 passing (13 pre-existing failures, at parity with prior release)
-- ✅ **LDBC SNB**: 14/37 queries passing (38%) on mini dataset
-
-### Key Features
-- ✅ **Polymorphic & Coupled Edge Tables**: Advanced schema patterns
-- ✅ **Multi-Tenancy**: Parameterized views with row-level security
-- ✅ **Bolt Protocol 5.8**: Full Neo4j driver compatibility
-- ✅ **Query Cache**: 10-100x speedup with LRU eviction
-- ✅ **Parameterized Queries**: Neo4j-compatible `$param` syntax
-- ✅ **Variable-Length Paths**: Recursive CTEs with configurable depth
+- **Rust Unit Tests**: 1,131 passing (100%)
+- **LDBC SNB**: 36/37 queries passing (97%)
+- **Benchmarks**: 14/14 passing (100%)
+- **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)
 
 ### Known Limitations
-- ⚠️ **Read-Only Engine**: Write operations not supported by design
-- ⚠️ **Anonymous Nodes**: Use named nodes for better SQL generation
+- **Read-Only Engine**: Write operations not supported by design
+- **Anonymous Nodes**: Use named nodes for better SQL generation
 
 See [STATUS.md](STATUS.md) and [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for details.
 
-## 🗺️ Roadmap
+## Roadmap
 
-**Phase 1 (v0.4.0)** ✅ - Query cache, parameters, Bolt protocol, Neo4j functions
-**Phase 2 (v0.5.0)** ✅ - Multi-tenancy, RBAC, auto-schema discovery
-**Phase 2.5 (v0.5.2)** ✅ - Schema variations (polymorphic, coupled edges)
-**Phase 2.6 (v0.5.3)** ✅ - Cypher functions (label, EXISTS, regex, collect)
-**Phase 3 (v0.6.x)** 🔄 - WITH clause scope redesign, GraphRAG support, LDBC SNB benchmark
+| Phase | Version | Status |
+|-------|---------|--------|
+| Phase 1 | v0.4.0 | Complete - Query cache, parameters, Bolt protocol |
+| Phase 2 | v0.5.0 | Complete - Multi-tenancy, RBAC, auto-schema discovery |
+| Phase 2.5-2.6 | v0.5.2-v0.5.3 | Complete - Schema variations, Cypher functions |
+| Phase 3 | v0.6.3 | Complete - WITH redesign, GraphRAG, LDBC SNB, MCP |
+| Phase 4 | v0.6.x | Next - user-requested features, advanced optimizations |
 
 See [ROADMAP.md](ROADMAP.md) for detailed feature tracking.
 
-## 🤝 Contributing
+## Contributing
 
-ClickGraph welcomes contributions! Key areas for development:
-- Additional Cypher language features (Phase 3)
-- Query optimization improvements  
-- Neo4j compatibility enhancements
-- Performance benchmarking
-- Documentation improvements
+Contributions welcome! See [DEV_QUICK_START.md](DEV_QUICK_START.md) to get started and [DEVELOPMENT_PROCESS.md](DEVELOPMENT_PROCESS.md) for the full workflow.
 
-**Development Resources**:
-- [DEV_QUICK_START.md](DEV_QUICK_START.md) - ⚡ **Essential 30-second workflow** (START HERE!)
-- [DEVELOPMENT_PROCESS.md](DEVELOPMENT_PROCESS.md) - Detailed 6-phase workflow (reference)
-- [STATUS.md](STATUS.md) - Current project status and test results
-- [KNOWN_ISSUES.md](KNOWN_ISSUES.md) - Active bugs and limitations
-- [.github/copilot-instructions.md](.github/copilot-instructions.md) - Architecture and conventions
-
-## 📄 License
+## License
 
 ClickGraph is licensed under the Apache License, Version 2.0. See the LICENSE file for details.
 

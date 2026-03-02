@@ -55,7 +55,7 @@ services:
       - neo4j_demo_logs:/logs
 
   clickgraph:
-    image: genezhang/clickgraph:v0.6.2-dev
+    image: genezhang/clickgraph:v0.6.3-dev
     container_name: clickgraph-demo
     depends_on:
       clickhouse:

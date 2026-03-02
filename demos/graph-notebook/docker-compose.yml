@@ -28,7 +28,7 @@ services:
       - ../neo4j-browser/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
 
   clickgraph:
-    image: genezhang/clickgraph:v0.6.2-dev
+    image: genezhang/clickgraph:v0.6.3-dev
     container_name: clickgraph-notebook-demo
     depends_on:
       clickhouse:
