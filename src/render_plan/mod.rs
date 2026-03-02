@@ -1,3 +1,4 @@
+pub mod bridge_node_eliminator;
 pub mod cte_extraction;
 pub mod cte_generation;
 pub mod cte_manager;

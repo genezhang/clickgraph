@@ -2349,6 +2349,12 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
         }
     }
 
+    // STEP: Eliminate bridge node JOINs
+    // Removes node tables that only serve as FK bridges between edge tables.
+    // e.g., edge1.PersonId = person.id AND person.id = edge2.PersonId
+    //     → edge1.PersonId = edge2.PersonId (person JOIN removed)
+    crate::render_plan::bridge_node_eliminator::eliminate_bridge_nodes(&mut plan);
+
     // Rewrite path function calls for fixed (non-VLP) path patterns
     // Converts length(p) → hop_count, etc.
     plan = rewrite_fixed_path_functions(plan);

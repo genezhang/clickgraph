@@ -85,10 +85,8 @@ async fn async_main() {
     let cli = Cli::parse();
 
     // Initialize logger - use --log-level value as default, RUST_LOG env var overrides
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or(&cli.log_level),
-    )
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(&cli.log_level))
+        .init();
 
     println!("\nClickGraph v{}\n", env!("CARGO_PKG_VERSION"));
 
