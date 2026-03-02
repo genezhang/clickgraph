@@ -491,6 +491,7 @@ async fn query_handler_inner(
     // Try cache lookup (unless replan=force or Graph format which needs plan context)
     let cached_sql = if output_format == OutputFormat::Graph {
         log::debug!("Cache BYPASS for Graph format (needs plan context)");
+        cache_status = "BYPASS";
         None
     } else if replan_option != query_cache::ReplanOption::Force {
         if let Some(cache) = GLOBAL_QUERY_CACHE.get() {
@@ -734,6 +735,13 @@ async fn query_handler_inner(
                 return Ok(Json(sql_response).into_response());
             }
 
+            if output_format == OutputFormat::Graph {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "Graph format is not supported for CALL queries".to_string(),
+                ));
+            }
+
             (vec![ch_sql], None, true, query_type_str, None)
         } else if is_read {
             // Phase 2: Plan query
@@ -881,7 +889,8 @@ async fn query_handler_inner(
         metrics.log_performance(&payload.query);
 
         let (nodes, edges) =
-            super::graph_output::transform_to_graph(&rows, &logical_plan, &plan_ctx, &graph_schema);
+            super::graph_output::transform_to_graph(&rows, &logical_plan, &plan_ctx, &graph_schema)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
         let response = GraphQueryResponse {
             nodes,
@@ -1010,17 +1019,16 @@ async fn query_handler_inner(
 //     }
 // }
 
-/// Execute SQL and return parsed JSON rows (used by Graph format).
-async fn execute_json_rows(
-    app_state: &Arc<AppState>,
+/// Substitute parameters and validate that no unsubstituted placeholders remain.
+/// Shared by `execute_json_rows` and `execute_cte_queries`.
+fn prepare_final_sql(
     ch_sql_queries: &[String],
-    parameters: Option<std::collections::HashMap<String, Value>>,
-    role: Option<String>,
-) -> Result<Vec<Value>, (StatusCode, String)> {
+    parameters: Option<&std::collections::HashMap<String, Value>>,
+) -> Result<String, (StatusCode, String)> {
     let ch_query_string = ch_sql_queries.join(" ");
 
     let final_sql = if let Some(params) = parameters {
-        parameter_substitution::substitute_parameters(&ch_query_string, &params).map_err(|e| {
+        parameter_substitution::substitute_parameters(&ch_query_string, params).map_err(|e| {
             (
                 StatusCode::BAD_REQUEST,
                 format!("Parameter substitution error: {}", e),
@@ -1039,6 +1047,18 @@ async fn execute_json_rows(
             ),
         ));
     }
+
+    Ok(final_sql)
+}
+
+/// Execute SQL and return parsed JSON rows (used by Graph format).
+async fn execute_json_rows(
+    app_state: &Arc<AppState>,
+    ch_sql_queries: &[String],
+    parameters: Option<std::collections::HashMap<String, Value>>,
+    role: Option<String>,
+) -> Result<Vec<Value>, (StatusCode, String)> {
+    let final_sql = prepare_final_sql(ch_sql_queries, parameters.as_ref())?;
 
     log::debug!("Executing SQL (graph format):\n{}", final_sql);
 
@@ -1085,31 +1105,7 @@ async fn execute_cte_queries(
     parameters: Option<std::collections::HashMap<String, Value>>,
     role: Option<String>,
 ) -> Result<Response, (StatusCode, String)> {
-    let ch_query_string = ch_sql_queries.join(" ");
-
-    // Substitute parameters if provided
-    let final_sql = if let Some(params) = parameters {
-        match parameter_substitution::substitute_parameters(&ch_query_string, &params) {
-            Ok(sql) => sql,
-            Err(e) => {
-                log::error!("Parameter substitution failed: {}", e);
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    format!("Parameter substitution error: {}", e),
-                ));
-            }
-        }
-    } else {
-        ch_query_string.clone()
-    };
-
-    // Check for unsubstituted $param placeholders before executing
-    if let Some(missing_param) = parameter_substitution::find_unsubstituted_parameter(&final_sql) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("Missing required parameter: '{}'. Parameterized views require view_parameters to be provided.", missing_param),
-        ));
-    }
+    let final_sql = prepare_final_sql(&ch_sql_queries, parameters.as_ref())?;
 
     // Log full SQL for debugging (especially helpful when ClickHouse truncates errors)
     log::debug!("Executing SQL:\n{}", final_sql);

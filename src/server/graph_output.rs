@@ -27,14 +27,9 @@ pub fn transform_to_graph(
     logical_plan: &LogicalPlan,
     plan_ctx: &PlanCtx,
     schema: &GraphSchema,
-) -> (Vec<GraphNode>, Vec<GraphEdge>) {
-    let metadata = match extract_return_metadata(logical_plan, plan_ctx) {
-        Ok(m) => m,
-        Err(e) => {
-            log::warn!("Failed to extract return metadata for graph output: {}", e);
-            return (vec![], vec![]);
-        }
-    };
+) -> Result<(Vec<GraphNode>, Vec<GraphEdge>), String> {
+    let metadata = extract_return_metadata(logical_plan, plan_ctx)
+        .map_err(|e| format!("Failed to extract return metadata for graph output: {}", e))?;
 
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
@@ -101,5 +96,5 @@ pub fn transform_to_graph(
         }
     }
 
-    (nodes, edges)
+    Ok((nodes, edges))
 }
