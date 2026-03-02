@@ -1,14 +1,18 @@
 //! Post-hoc Query Plan Optimizer
 //!
-//! Three optimization passes applied after join sorting, before SQL generation:
+//! Four optimization passes applied after join sorting, before SQL generation:
 //!
 //! 1. **Dead CTE elimination**: Removes CTEs that are never referenced by any
 //!    later CTE or the outer query.
 //!
-//! 2. **Unreferenced join elimination**: Removes JOINs whose alias is completely
+//! 2. **VLP column pruning**: Removes unused property columns from recursive VLP CTEs.
+//!    VLP CTEs carry all start/end node properties but outer queries typically only
+//!    reference a few. Pruning reduces per-row overhead in recursive CTEs.
+//!
+//! 3. **Unreferenced join elimination**: Removes JOINs whose alias is completely
 //!    unreferenced (e.g., spurious CROSS JOINs with `ON 1=1`).
 //!
-//! 3. **Bridge node elimination**: Removes node table JOINs that only serve as FK
+//! 4. **Bridge node elimination**: Removes node table JOINs that only serve as FK
 //!    bridges between edge tables, rewriting downstream ON conditions to chain FKs
 //!    directly. Critical for performance with `join_use_nulls=1`.
 
@@ -18,6 +22,7 @@ use crate::render_plan::render_expr::{
     Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
 };
 use crate::render_plan::{CteContent, Join, RenderPlan};
+use std::collections::HashSet;
 
 /// Check if a table name is a generated CTE reference.
 fn is_cte_table(table_name: &str) -> bool {
@@ -130,11 +135,13 @@ fn remove_dead_ctes(plan: &mut RenderPlan) {
 
 /// Top-level entry point: run all plan optimizations.
 /// 1. Dead CTE elimination
-/// 2. Unreferenced join elimination
-/// 3. Bridge node join elimination
+/// 2. VLP column pruning
+/// 3. Unreferenced join elimination
+/// 4. Bridge node join elimination
 pub fn eliminate_bridge_nodes(plan: &mut RenderPlan) {
     remove_dead_ctes(plan);
-    // Apply both passes to main plan, UNION branches, and CTE bodies
+    prune_vlp_columns(plan);
+    // Apply join optimization passes to main plan, UNION branches, and CTE bodies
     optimize_joins_in_plan(plan);
 
     if let Some(ref mut union) = plan.union.0 {
@@ -155,6 +162,612 @@ pub fn eliminate_bridge_nodes(plan: &mut RenderPlan) {
         }
     }
 }
+
+// ─── VLP Column Pruning ───────────────────────────────────────────────────────
+
+/// Core columns in VLP CTEs that should never be pruned.
+fn is_vlp_core_column(col: &str) -> bool {
+    matches!(
+        col,
+        "start_id"
+            | "end_id"
+            | "hop_count"
+            | "path_edges"
+            | "path_relationships"
+            | "path_nodes"
+            | "total_weight"
+            | "start_properties"
+            | "end_properties"
+            | "__rel_type__"
+    )
+}
+
+/// Prune unused property columns from recursive VLP CTEs.
+///
+/// VLP CTEs carry ALL start/end node properties through recursion, but the outer
+/// query typically only uses a few (e.g., start_id, end_id, start_creationDate).
+/// Each unused column adds per-row overhead in every recursive iteration.
+fn prune_vlp_columns(plan: &mut RenderPlan) {
+    // Phase 1: Collect VLP CTE info and determine which columns to prune (immutable)
+    let mut prune_list: Vec<(usize, HashSet<String>)> = Vec::new();
+
+    for (i, cte) in plan.ctes.0.iter().enumerate() {
+        if !cte.is_recursive || !cte.cte_name.starts_with("vlp_") {
+            continue;
+        }
+        let sql = match &cte.content {
+            CteContent::RawSql(s) => s,
+            _ => continue,
+        };
+
+        // Extract all property column aliases defined in the VLP SQL
+        let property_columns = extract_property_columns_from_vlp_sql(sql);
+        if property_columns.is_empty() {
+            continue;
+        }
+
+        // Find the alias(es) used to reference this VLP CTE in the outer plan
+        let aliases = find_vlp_aliases_in_plan(plan, &cte.cte_name);
+
+        // Collect all columns referenced externally (outer plan + other CTEs)
+        let mut externally_used: HashSet<String> = HashSet::new();
+        for alias in &aliases {
+            collect_columns_for_alias_in_plan(plan, alias, &mut externally_used);
+        }
+        // Also check other CTE bodies for references to this VLP
+        for other_cte in &plan.ctes.0 {
+            if other_cte.cte_name == cte.cte_name {
+                continue;
+            }
+            match &other_cte.content {
+                CteContent::Structured(inner_plan) => {
+                    let inner_aliases = find_vlp_aliases_in_plan(inner_plan, &cte.cte_name);
+                    for alias in &inner_aliases {
+                        collect_columns_for_alias_in_plan(inner_plan, alias, &mut externally_used);
+                    }
+                    // Also collect bare column references (ColumnAlias, Column, Raw)
+                    // that match VLP column names — structured CTEs may reference
+                    // VLP columns without a table alias prefix
+                    if !inner_aliases.is_empty() {
+                        collect_bare_vlp_column_refs_in_plan(
+                            inner_plan,
+                            &property_columns,
+                            &mut externally_used,
+                        );
+                    }
+                }
+                CteContent::RawSql(other_sql) => {
+                    // Scan raw SQL for column references via any known alias
+                    for alias in &aliases {
+                        collect_columns_from_raw_sql(other_sql, alias, &mut externally_used);
+                    }
+                    // Also scan for bare VLP column names in raw SQL
+                    collect_bare_vlp_columns_from_raw_sql(
+                        other_sql,
+                        &property_columns,
+                        &mut externally_used,
+                    );
+                }
+            }
+        }
+
+        // Collect columns referenced internally in the VLP CTE (WHERE/JOIN conditions)
+        let internally_used = collect_vlp_internal_refs(sql);
+
+        // Determine unused columns
+        let unused: HashSet<String> = property_columns
+            .difference(&externally_used)
+            .filter(|col| !internally_used.contains(*col))
+            .cloned()
+            .collect();
+
+        if !unused.is_empty() {
+            log::debug!(
+                "VLP column pruning: {} — removing {}/{} property columns",
+                cte.cte_name,
+                unused.len(),
+                property_columns.len()
+            );
+            prune_list.push((i, unused));
+        }
+    }
+
+    // Phase 2: Apply pruning (mutable)
+    for (idx, unused) in prune_list {
+        if let CteContent::RawSql(ref mut sql) = plan.ctes.0[idx].content {
+            *sql = prune_vlp_select_columns(sql, &unused);
+        }
+    }
+}
+
+/// Extract property column aliases (start_X, end_X) from VLP SQL.
+/// Returns only non-core property columns that are candidates for pruning.
+fn extract_property_columns_from_vlp_sql(sql: &str) -> HashSet<String> {
+    let mut columns = HashSet::new();
+    // Scan for " as start_XXX" or " as end_XXX" patterns
+    let as_pat = " as ";
+    let mut pos = 0;
+    while let Some(idx) = sql[pos..].find(as_pat) {
+        let start = pos + idx + as_pat.len();
+        let end = sql[start..]
+            .find(|c: char| !c.is_alphanumeric() && c != '_')
+            .map(|i| start + i)
+            .unwrap_or(sql.len());
+        let alias = &sql[start..end];
+        if (alias.starts_with("start_") || alias.starts_with("end_"))
+            && !is_vlp_core_column(alias)
+            && alias.len() > 6
+        // at least "start_X" (7 chars)
+        {
+            columns.insert(alias.to_string());
+        }
+        pos = end;
+    }
+    columns
+}
+
+/// Find all aliases used to reference a VLP CTE in a plan.
+/// Checks FROM table name and JOIN table names.
+fn find_vlp_aliases_in_plan(plan: &RenderPlan, vlp_name: &str) -> Vec<String> {
+    let mut aliases = Vec::new();
+
+    // Check FROM
+    if let Some(ref from) = plan.from.0 {
+        if from.name == vlp_name {
+            if let Some(ref alias) = from.alias {
+                aliases.push(alias.clone());
+            } else {
+                aliases.push(vlp_name.to_string());
+            }
+        }
+    }
+
+    // Check JOINs
+    for join in &plan.joins.0 {
+        if join.table_name == vlp_name {
+            aliases.push(join.table_alias.clone());
+        }
+    }
+
+    // Check UNION branches
+    if let Some(ref union) = plan.union.0 {
+        for branch in &union.input {
+            aliases.extend(find_vlp_aliases_in_plan(branch, vlp_name));
+        }
+    }
+
+    aliases
+}
+
+/// Collect all column names referenced via PropertyAccessExp for a given alias.
+fn collect_columns_for_alias_in_plan(
+    plan: &RenderPlan,
+    alias: &str,
+    columns: &mut HashSet<String>,
+) {
+    // SELECT
+    for item in &plan.select.items {
+        collect_columns_for_alias_in_expr(&item.expression, alias, columns);
+    }
+    // WHERE
+    if let Some(ref filter) = plan.filters.0 {
+        collect_columns_for_alias_in_expr(filter, alias, columns);
+    }
+    // ORDER BY
+    for item in &plan.order_by.0 {
+        collect_columns_for_alias_in_expr(&item.expression, alias, columns);
+    }
+    // GROUP BY
+    for expr in &plan.group_by.0 {
+        collect_columns_for_alias_in_expr(expr, alias, columns);
+    }
+    // HAVING
+    if let Some(ref having) = plan.having_clause {
+        collect_columns_for_alias_in_expr(having, alias, columns);
+    }
+    // JOINs (ON conditions and pre_filters)
+    for join in &plan.joins.0 {
+        for cond in &join.joining_on {
+            for operand in &cond.operands {
+                collect_columns_for_alias_in_expr(operand, alias, columns);
+            }
+        }
+        if let Some(ref pf) = join.pre_filter {
+            collect_columns_for_alias_in_expr(pf, alias, columns);
+        }
+    }
+    // ARRAY JOIN
+    for aj in &plan.array_join.0 {
+        collect_columns_for_alias_in_expr(&aj.expression, alias, columns);
+    }
+    // UNION branches
+    if let Some(ref union) = plan.union.0 {
+        for branch in &union.input {
+            collect_columns_for_alias_in_plan(branch, alias, columns);
+        }
+    }
+}
+
+/// Recursively collect column names from PropertyAccessExp matching a given alias.
+fn collect_columns_for_alias_in_expr(
+    expr: &RenderExpr,
+    alias: &str,
+    columns: &mut HashSet<String>,
+) {
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => {
+            if pa.table_alias.0 == alias {
+                columns.insert(pa.column.raw().to_string());
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in &op.operands {
+                collect_columns_for_alias_in_expr(operand, alias, columns);
+            }
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            for arg in &func.args {
+                collect_columns_for_alias_in_expr(arg, alias, columns);
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in &agg.args {
+                collect_columns_for_alias_in_expr(arg, alias, columns);
+            }
+        }
+        RenderExpr::Case(case) => {
+            if let Some(ref e) = case.expr {
+                collect_columns_for_alias_in_expr(e, alias, columns);
+            }
+            for (when, then) in &case.when_then {
+                collect_columns_for_alias_in_expr(when, alias, columns);
+                collect_columns_for_alias_in_expr(then, alias, columns);
+            }
+            if let Some(ref e) = case.else_expr {
+                collect_columns_for_alias_in_expr(e, alias, columns);
+            }
+        }
+        RenderExpr::InSubquery(subq) => {
+            collect_columns_for_alias_in_expr(&subq.expr, alias, columns);
+        }
+        RenderExpr::ArraySubscript { array, index } => {
+            collect_columns_for_alias_in_expr(array, alias, columns);
+            collect_columns_for_alias_in_expr(index, alias, columns);
+        }
+        RenderExpr::ArraySlicing { array, from, to } => {
+            collect_columns_for_alias_in_expr(array, alias, columns);
+            if let Some(ref f) = from {
+                collect_columns_for_alias_in_expr(f, alias, columns);
+            }
+            if let Some(ref t) = to {
+                collect_columns_for_alias_in_expr(t, alias, columns);
+            }
+        }
+        RenderExpr::List(items) => {
+            for item in items {
+                collect_columns_for_alias_in_expr(item, alias, columns);
+            }
+        }
+        RenderExpr::ReduceExpr(reduce) => {
+            collect_columns_for_alias_in_expr(&reduce.initial_value, alias, columns);
+            collect_columns_for_alias_in_expr(&reduce.list, alias, columns);
+            collect_columns_for_alias_in_expr(&reduce.expression, alias, columns);
+        }
+        RenderExpr::MapLiteral(entries) => {
+            for (_, v) in entries {
+                collect_columns_for_alias_in_expr(v, alias, columns);
+            }
+        }
+        RenderExpr::Raw(raw) => {
+            // Scan raw SQL for "alias.column" patterns where column is start_X/end_X
+            let prefix = format!("{}.", alias);
+            let mut pos = 0;
+            while let Some(idx) = raw[pos..].find(&prefix) {
+                let col_start = pos + idx + prefix.len();
+                let col_end = raw[col_start..]
+                    .find(|c: char| !c.is_alphanumeric() && c != '_')
+                    .map(|i| col_start + i)
+                    .unwrap_or(raw.len());
+                let col = &raw[col_start..col_end];
+                if col.starts_with("start_") || col.starts_with("end_") {
+                    columns.insert(col.to_string());
+                }
+                pos = col_end;
+            }
+        }
+        // Leaf nodes that don't contain column references
+        _ => {}
+    }
+}
+
+/// Collect column references from raw SQL text for a given alias.
+fn collect_columns_from_raw_sql(sql: &str, alias: &str, columns: &mut HashSet<String>) {
+    let prefix = format!("{}.", alias);
+    let mut pos = 0;
+    while let Some(idx) = sql[pos..].find(&prefix) {
+        let col_start = pos + idx + prefix.len();
+        let col_end = sql[col_start..]
+            .find(|c: char| !c.is_alphanumeric() && c != '_')
+            .map(|i| col_start + i)
+            .unwrap_or(sql.len());
+        let col = &sql[col_start..col_end];
+        if (col.starts_with("start_") || col.starts_with("end_")) && !is_vlp_core_column(col) {
+            columns.insert(col.to_string());
+        }
+        pos = col_end;
+    }
+}
+
+/// Collect bare VLP column references (ColumnAlias, Column, Raw) from a structured plan.
+/// Catches cases where structured CTEs reference VLP columns without a table alias prefix
+/// (e.g., `end_birthday` instead of `t.end_birthday`).
+fn collect_bare_vlp_column_refs_in_plan(
+    plan: &RenderPlan,
+    vlp_columns: &HashSet<String>,
+    used: &mut HashSet<String>,
+) {
+    // Collect from all plan parts
+    for item in &plan.select.items {
+        collect_bare_vlp_refs_in_expr(&item.expression, vlp_columns, used);
+    }
+    if let Some(ref filter) = plan.filters.0 {
+        collect_bare_vlp_refs_in_expr(filter, vlp_columns, used);
+    }
+    for item in &plan.order_by.0 {
+        collect_bare_vlp_refs_in_expr(&item.expression, vlp_columns, used);
+    }
+    for expr in &plan.group_by.0 {
+        collect_bare_vlp_refs_in_expr(expr, vlp_columns, used);
+    }
+    if let Some(ref having) = plan.having_clause {
+        collect_bare_vlp_refs_in_expr(having, vlp_columns, used);
+    }
+    for join in &plan.joins.0 {
+        for cond in &join.joining_on {
+            for operand in &cond.operands {
+                collect_bare_vlp_refs_in_expr(operand, vlp_columns, used);
+            }
+        }
+        if let Some(ref pf) = join.pre_filter {
+            collect_bare_vlp_refs_in_expr(pf, vlp_columns, used);
+        }
+    }
+    if let Some(ref union) = plan.union.0 {
+        for branch in &union.input {
+            collect_bare_vlp_column_refs_in_plan(branch, vlp_columns, used);
+        }
+    }
+}
+
+/// Recursively scan an expression for bare column references matching VLP column names.
+fn collect_bare_vlp_refs_in_expr(
+    expr: &RenderExpr,
+    vlp_columns: &HashSet<String>,
+    used: &mut HashSet<String>,
+) {
+    match expr {
+        RenderExpr::ColumnAlias(ca) => {
+            if vlp_columns.contains(&ca.0) {
+                used.insert(ca.0.clone());
+            }
+        }
+        RenderExpr::Column(col) => {
+            let col_name = col.raw().to_string();
+            if vlp_columns.contains(&col_name) {
+                used.insert(col_name);
+            }
+        }
+        RenderExpr::Raw(raw) => {
+            // Scan raw SQL for bare VLP column names
+            for col in vlp_columns {
+                if raw.contains(col.as_str()) {
+                    used.insert(col.clone());
+                }
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in &op.operands {
+                collect_bare_vlp_refs_in_expr(operand, vlp_columns, used);
+            }
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            for arg in &func.args {
+                collect_bare_vlp_refs_in_expr(arg, vlp_columns, used);
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in &agg.args {
+                collect_bare_vlp_refs_in_expr(arg, vlp_columns, used);
+            }
+        }
+        RenderExpr::Case(case) => {
+            if let Some(ref e) = case.expr {
+                collect_bare_vlp_refs_in_expr(e, vlp_columns, used);
+            }
+            for (when, then) in &case.when_then {
+                collect_bare_vlp_refs_in_expr(when, vlp_columns, used);
+                collect_bare_vlp_refs_in_expr(then, vlp_columns, used);
+            }
+            if let Some(ref e) = case.else_expr {
+                collect_bare_vlp_refs_in_expr(e, vlp_columns, used);
+            }
+        }
+        RenderExpr::List(items) => {
+            for item in items {
+                collect_bare_vlp_refs_in_expr(item, vlp_columns, used);
+            }
+        }
+        RenderExpr::InSubquery(subq) => {
+            collect_bare_vlp_refs_in_expr(&subq.expr, vlp_columns, used);
+        }
+        RenderExpr::ArraySubscript { array, index } => {
+            collect_bare_vlp_refs_in_expr(array, vlp_columns, used);
+            collect_bare_vlp_refs_in_expr(index, vlp_columns, used);
+        }
+        _ => {}
+    }
+}
+
+/// Scan raw SQL for bare VLP column names (without alias prefix).
+fn collect_bare_vlp_columns_from_raw_sql(
+    sql: &str,
+    vlp_columns: &HashSet<String>,
+    used: &mut HashSet<String>,
+) {
+    for col in vlp_columns {
+        if sql.contains(col.as_str()) {
+            used.insert(col.clone());
+        }
+    }
+}
+
+/// Collect property columns referenced in VLP CTE's own FROM/JOIN/WHERE clauses.
+/// These are internal references (e.g., edge constraint filters, wrapper CTE WHEREs)
+/// that must be preserved.
+fn collect_vlp_internal_refs(sql: &str) -> HashSet<String> {
+    let mut refs = HashSet::new();
+
+    // Scan non-column-definition regions of the SQL.
+    let mut in_non_def_region = false;
+    for line in sql.lines() {
+        let trimmed = line.trim();
+
+        // Always scan WHERE portions — even on SELECT lines (wrapper CTEs have
+        // "SELECT * FROM vlp_inner WHERE end_col = ..." on a single line)
+        if let Some(where_pos) = trimmed.find("WHERE ") {
+            scan_line_for_vlp_column_refs(&trimmed[where_pos..], &mut refs);
+        }
+
+        // Detect transitions between definition and non-definition regions
+        if trimmed.starts_with("SELECT") {
+            in_non_def_region = false;
+            continue;
+        }
+        if trimmed.starts_with("FROM ")
+            || trimmed.starts_with("JOIN ")
+            || trimmed.starts_with("WHERE ")
+            || trimmed.starts_with("ORDER ")
+            || trimmed.starts_with("HAVING ")
+            || trimmed.starts_with("GROUP ")
+        {
+            in_non_def_region = true;
+        }
+
+        if !in_non_def_region {
+            continue;
+        }
+
+        // Scan this line for property column references
+        scan_line_for_vlp_column_refs(trimmed, &mut refs);
+    }
+
+    refs
+}
+
+/// Scan a text line for start_X / end_X column references.
+fn scan_line_for_vlp_column_refs(text: &str, refs: &mut HashSet<String>) {
+    for prefix in &["start_", "end_"] {
+        let mut pos = 0;
+        while let Some(idx) = text[pos..].find(prefix) {
+            let abs = pos + idx;
+            // Word boundary check (not preceded by alphanumeric or _)
+            if abs > 0 {
+                let prev = text.as_bytes()[abs - 1];
+                if prev.is_ascii_alphanumeric() || prev == b'_' {
+                    pos = abs + 1;
+                    continue;
+                }
+            }
+            let end = text[abs..]
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .map(|i| abs + i)
+                .unwrap_or(text.len());
+            let col = &text[abs..end];
+            if !is_vlp_core_column(col) && col.len() > prefix.len() {
+                refs.insert(col.to_string());
+            }
+            pos = end;
+        }
+    }
+}
+
+/// Remove unused property columns from VLP CTE SQL.
+/// Handles both base case and recursive case (split by UNION ALL).
+fn prune_vlp_select_columns(sql: &str, unused: &HashSet<String>) -> String {
+    if unused.is_empty() {
+        return sql.to_string();
+    }
+
+    // Split at UNION ALL boundaries to process base and recursive cases independently
+    let union_sep = "\n    UNION ALL\n";
+    let parts: Vec<&str> = sql.split(union_sep).collect();
+
+    let pruned: Vec<String> = parts
+        .into_iter()
+        .map(|part| prune_columns_in_select_block(part, unused))
+        .collect();
+
+    pruned.join(union_sep)
+}
+
+/// Prune unused columns from a single SELECT...FROM block.
+fn prune_columns_in_select_block(block: &str, unused: &HashSet<String>) -> String {
+    // Find SELECT keyword
+    let select_pos = match block.find("SELECT") {
+        Some(pos) => pos,
+        None => return block.to_string(),
+    };
+    let after_select = select_pos + "SELECT".len();
+
+    // Find FROM keyword (on its own line with indentation)
+    // Try multiple FROM patterns since indentation may vary
+    let from_pos = block[after_select..]
+        .find("\n    FROM ")
+        .or_else(|| block[after_select..].find("\n        FROM "))
+        .or_else(|| block[after_select..].find("\nFROM "))
+        .map(|pos| after_select + pos);
+
+    let from_pos = match from_pos {
+        Some(pos) => pos,
+        None => return block.to_string(),
+    };
+
+    let prefix = &block[..after_select];
+    let columns_str = &block[after_select..from_pos];
+    let suffix = &block[from_pos..];
+
+    // Split columns by ",\n" delimiter
+    let columns: Vec<&str> = columns_str.split(",\n").collect();
+
+    // Filter: keep columns that don't define any unused alias
+    let kept: Vec<&str> = columns
+        .into_iter()
+        .filter(|col| {
+            let trimmed = col.trim();
+            !unused.iter().any(|u| column_defines_alias(trimmed, u))
+        })
+        .collect();
+
+    if kept.is_empty() {
+        // Safety: don't remove ALL columns
+        return block.to_string();
+    }
+
+    format!("{}{}{}", prefix, kept.join(",\n"), suffix)
+}
+
+/// Check if a column definition text defines a specific alias.
+fn column_defines_alias(col_trimmed: &str, alias: &str) -> bool {
+    // Pattern: "... as alias_name" at end of definition
+    let as_pat = format!(" as {}", alias);
+    if col_trimmed.ends_with(&as_pat) {
+        return true;
+    }
+    // Carry-forward without explicit alias: "vp.alias_name" (standalone)
+    col_trimmed == format!("vp.{}", alias)
+}
+
+// ─── Join Optimizations ──────────────────────────────────────────────────────
 
 /// Apply all join optimizations to a single plan.
 fn optimize_joins_in_plan(plan: &mut RenderPlan) {
@@ -351,6 +964,31 @@ fn find_bridge_candidates(plan: &RenderPlan) -> Vec<BridgeCandidate> {
             continue;
         }
 
+        // Guard: other JOINs must only reference this alias via the id_column.
+        // Pass 2 only rewrites `alias.id_column` → upstream. If another JOIN
+        // references `alias.other_column`, that reference would become dangling.
+        let has_non_id_ref = plan.joins.0.iter().enumerate().any(|(i, other)| {
+            if i == idx {
+                return false;
+            }
+            for cond in &other.joining_on {
+                for operand in &cond.operands {
+                    if has_non_id_column_ref(operand, alias, &id_column) {
+                        return true;
+                    }
+                }
+            }
+            if let Some(ref pf) = other.pre_filter {
+                if has_non_id_column_ref(pf, alias, &id_column) {
+                    return true;
+                }
+            }
+            false
+        });
+        if has_non_id_ref {
+            continue;
+        }
+
         candidates.push(BridgeCandidate {
             join_idx: idx,
             alias: alias.clone(),
@@ -439,6 +1077,43 @@ fn is_alias_referenced_in_plan(plan: &RenderPlan, alias: &str) -> bool {
     }
 
     false
+}
+
+/// Check if an expression references an alias with a column OTHER than the given id_column.
+/// Used to guard bridge elimination: if other JOINs reference non-ID columns on the
+/// candidate, those references can't be rewritten, so elimination is unsafe.
+fn has_non_id_column_ref(expr: &RenderExpr, alias: &str, id_column: &str) -> bool {
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => {
+            pa.table_alias.0 == alias && pa.column.raw() != id_column
+        }
+        RenderExpr::OperatorApplicationExp(op) => op
+            .operands
+            .iter()
+            .any(|o| has_non_id_column_ref(o, alias, id_column)),
+        RenderExpr::ScalarFnCall(func) => func
+            .args
+            .iter()
+            .any(|a| has_non_id_column_ref(a, alias, id_column)),
+        RenderExpr::AggregateFnCall(agg) => agg
+            .args
+            .iter()
+            .any(|a| has_non_id_column_ref(a, alias, id_column)),
+        RenderExpr::Case(case) => {
+            case.when_then.iter().any(|(w, t)| {
+                has_non_id_column_ref(w, alias, id_column)
+                    || has_non_id_column_ref(t, alias, id_column)
+            }) || case
+                .else_expr
+                .as_ref()
+                .is_some_and(|e| has_non_id_column_ref(e, alias, id_column))
+        }
+        RenderExpr::List(items) => items
+            .iter()
+            .any(|i| has_non_id_column_ref(i, alias, id_column)),
+        RenderExpr::InSubquery(subq) => has_non_id_column_ref(&subq.expr, alias, id_column),
+        _ => false,
+    }
 }
 
 /// Pass 2: Rewrite downstream JOIN ON conditions to bypass an eliminated bridge node.
