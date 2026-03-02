@@ -240,3 +240,238 @@ fn collapse_recursive(plan: &LogicalPlan) -> LogicalPlan {
         other => other.clone(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::query_planner::logical_expr::{
+        AggregateFnCall, ColumnAlias, Literal, LogicalExpr, TableAlias,
+    };
+    use crate::query_planner::logical_plan::{ProjectionItem, WithClause};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    /// Helper: build a minimal WithClause with given items and modifiers.
+    fn make_with(
+        items: Vec<ProjectionItem>,
+        distinct: bool,
+        order_by: bool,
+        skip: bool,
+        limit: bool,
+        where_clause: bool,
+    ) -> WithClause {
+        WithClause {
+            cte_name: None,
+            input: Arc::new(LogicalPlan::Empty),
+            items,
+            distinct,
+            order_by: if order_by { Some(vec![]) } else { None },
+            skip: if skip { Some(10) } else { None },
+            limit: if limit { Some(10) } else { None },
+            where_clause: if where_clause {
+                Some(LogicalExpr::Literal(Literal::Boolean(true)))
+            } else {
+                None
+            },
+            exported_aliases: vec![],
+            cte_references: HashMap::new(),
+            pattern_comprehensions: vec![],
+        }
+    }
+
+    fn table_alias_item(name: &str) -> ProjectionItem {
+        ProjectionItem {
+            expression: LogicalExpr::TableAlias(TableAlias(name.to_string())),
+            col_alias: Some(ColumnAlias(format!("{}.*", name))),
+        }
+    }
+
+    fn column_alias_item(name: &str) -> ProjectionItem {
+        ProjectionItem {
+            expression: LogicalExpr::ColumnAlias(ColumnAlias(name.to_string())),
+            col_alias: Some(ColumnAlias(name.to_string())),
+        }
+    }
+
+    #[test]
+    fn test_multi_variable_passthrough_is_scoping_only() {
+        let wc = make_with(
+            vec![table_alias_item("country"), table_alias_item("zombie")],
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(is_scoping_only_with(&wc));
+    }
+
+    #[test]
+    fn test_single_item_is_not_scoping_only() {
+        let wc = make_with(
+            vec![table_alias_item("country")],
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(!is_scoping_only_with(&wc));
+    }
+
+    #[test]
+    fn test_distinct_is_not_scoping_only() {
+        let wc = make_with(
+            vec![table_alias_item("a"), table_alias_item("b")],
+            true,
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(!is_scoping_only_with(&wc));
+    }
+
+    #[test]
+    fn test_order_by_is_not_scoping_only() {
+        let wc = make_with(
+            vec![table_alias_item("a"), table_alias_item("b")],
+            false,
+            true,
+            false,
+            false,
+            false,
+        );
+        assert!(!is_scoping_only_with(&wc));
+    }
+
+    #[test]
+    fn test_skip_is_not_scoping_only() {
+        let wc = make_with(
+            vec![table_alias_item("a"), table_alias_item("b")],
+            false,
+            false,
+            true,
+            false,
+            false,
+        );
+        assert!(!is_scoping_only_with(&wc));
+    }
+
+    #[test]
+    fn test_limit_is_not_scoping_only() {
+        let wc = make_with(
+            vec![table_alias_item("a"), table_alias_item("b")],
+            false,
+            false,
+            false,
+            true,
+            false,
+        );
+        assert!(!is_scoping_only_with(&wc));
+    }
+
+    #[test]
+    fn test_where_is_not_scoping_only() {
+        let wc = make_with(
+            vec![table_alias_item("a"), table_alias_item("b")],
+            false,
+            false,
+            false,
+            false,
+            true,
+        );
+        assert!(!is_scoping_only_with(&wc));
+    }
+
+    #[test]
+    fn test_rename_is_not_scoping_only() {
+        // WITH a AS b, c — rename present
+        let items = vec![
+            ProjectionItem {
+                expression: LogicalExpr::TableAlias(TableAlias("a".to_string())),
+                col_alias: Some(ColumnAlias("b".to_string())),
+            },
+            table_alias_item("c"),
+        ];
+        let wc = make_with(items, false, false, false, false, false);
+        assert!(!is_scoping_only_with(&wc));
+    }
+
+    #[test]
+    fn test_complex_expression_is_not_scoping_only() {
+        // WITH count(a) AS cnt, b — aggregation present
+        let items = vec![
+            ProjectionItem {
+                expression: LogicalExpr::AggregateFnCall(AggregateFnCall {
+                    name: "count".to_string(),
+                    args: vec![LogicalExpr::TableAlias(TableAlias("a".to_string()))],
+                }),
+                col_alias: Some(ColumnAlias("cnt".to_string())),
+            },
+            table_alias_item("b"),
+        ];
+        let wc = make_with(items, false, false, false, false, false);
+        assert!(!is_scoping_only_with(&wc));
+    }
+
+    #[test]
+    fn test_column_alias_passthrough_is_scoping_only() {
+        let wc = make_with(
+            vec![
+                column_alias_item("messageCount"),
+                table_alias_item("zombie"),
+            ],
+            false,
+            false,
+            false,
+            false,
+            false,
+        );
+        assert!(is_scoping_only_with(&wc));
+    }
+
+    #[test]
+    fn test_empty_items_is_not_scoping_only() {
+        let wc = make_with(vec![], false, false, false, false, false);
+        assert!(!is_scoping_only_with(&wc));
+    }
+
+    #[test]
+    fn test_collapse_removes_scoping_only_with() {
+        // Build: WithClause(input=Empty, items=[a, b])
+        let wc = WithClause {
+            exported_aliases: vec!["a".to_string(), "b".to_string()],
+            ..make_with(
+                vec![table_alias_item("a"), table_alias_item("b")],
+                false,
+                false,
+                false,
+                false,
+                false,
+            )
+        };
+        let plan = Arc::new(LogicalPlan::WithClause(wc));
+        let result = collapse_scoping_only_withs(plan);
+        assert!(matches!(&*result, LogicalPlan::Empty));
+    }
+
+    #[test]
+    fn test_collapse_preserves_non_scoping_with() {
+        // WITH DISTINCT a, b — should be kept
+        let wc = WithClause {
+            exported_aliases: vec!["a".to_string(), "b".to_string()],
+            ..make_with(
+                vec![table_alias_item("a"), table_alias_item("b")],
+                true,
+                false,
+                false,
+                false,
+                false,
+            )
+        };
+        let plan = Arc::new(LogicalPlan::WithClause(wc));
+        let result = collapse_scoping_only_withs(plan);
+        assert!(matches!(&*result, LogicalPlan::WithClause(_)));
+    }
+}

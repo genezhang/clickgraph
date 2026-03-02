@@ -12696,7 +12696,6 @@ pub(crate) fn find_all_with_clauses_grouped(
     grouped
 }
 
-/// Walk a plan tree and absorb any GraphJoins nodes that appear as direct
 /// Collapse a passthrough WITH clause by replacing it with its input.
 /// A passthrough WITH is one that simply wraps a CTE reference without any transformations:
 /// - Single item that's just a TableAlias

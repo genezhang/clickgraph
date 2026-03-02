@@ -97,9 +97,9 @@ Two queries use adapted Cypher (equivalent semantics, different syntax):
 
 | Tier | Count | Queries |
 |------|-------|---------|
-| Fast (<1s) | 12 | short-1,4,5, complex-2,4,7,8,11, bi-1,3,4 |
-| Medium (1-10s) | 12 | short-3,6,7, complex-1,3,5,6, bi-2,5,7,8,11,12,18 |
-| Slow (10-60s) | 8 | short-2, complex-6,9,10,12, bi-13,14,17 |
+| Fast (<1s) | 11 | short-1,4,5, complex-2,4,7,8,11, bi-1,3,4 |
+| Medium (1-10s) | 14 | short-2,3,6,7, complex-1,3,5,6, bi-2,5,7,8,11,12,18 |
+| Slow (10-60s) | 7 | complex-9,10,12, bi-13,14,17 |
 | **Total** | 32 | 231s total, 7.2s avg |
 
 ## Data Scales
@@ -120,14 +120,21 @@ Two queries use adapted Cypher (equivalent semantics, different syntax):
 
 ```bash
 # sf0.003 (unit test data, ~300 rows)
-cargo test  # 1114 unit tests
-python3 /tmp/get_sql_errors.py  # 37 LDBC queries
+cargo test  # 1114+ unit tests including SQL generation tests
 
-# sf1 (~3M messages)
+# sf1 (~3M messages) — load data into ClickHouse
 bash benchmarks/ldbc_snb/schemas/sf1_load_data.sh
-python3 /tmp/get_sql_errors_sf1.py  # 60s timeout
 
-# sf10 (~25M messages)
-curl ... @benchmarks/ldbc_snb/schemas/sf10_normalize.sql
-python3 /tmp/ldbc_perf_sf10.py  # 300s timeout
+# sf10 (~25M messages) — apply column name normalization
+curl 'http://localhost:18123/?user=test_user&password=test_pass' \
+  --data-binary @benchmarks/ldbc_snb/schemas/sf10_normalize.sql
 ```
+
+Benchmark measurements were run using custom driver scripts (not shipped in this
+repository) that iterate over the 37 LDBC queries, send each to ClickGraph's
+`/query` endpoint, and collect execution times and errors. To replicate:
+
+1. Start ClickGraph pointing at the loaded ClickHouse instance
+2. For each query in `benchmarks/ldbc_snb/queries/official/`, POST to `/query`
+   with appropriate parameters and a per-query timeout (60s for sf1, 300s for sf10)
+3. Record pass/fail/timeout/OOM status and execution time

@@ -1,18 +1,17 @@
--- sf1 DDL + Data Loading Script
+-- sf1 Schema (DDL only) for LDBC SNB
 --
--- Creates the ldbc database, all tables, loads sf1 CsvBasic v1 data,
--- creates union views (Message, etc.), and adds ALIAS columns for
--- column name normalization.
+-- Creates the ldbc database and all tables required for sf1 CsvBasic v1 data.
+-- This script defines schema only (CREATE DATABASE + CREATE TABLE statements).
+-- Data loading, union views (Message, etc.), and ALIAS columns for column
+-- name normalization are handled by the companion script sf1_load_data.sh.
 --
--- Prerequisite: sf1 data extracted at /data/sf1/ inside ClickHouse container
--- (mount benchmarks/ldbc_snb/data/ as /data/)
---
--- Usage (one statement at a time via clickhouse-client):
---   cat sf1_ddl_load.sql | clickhouse-client --multiquery
--- Or via HTTP (each statement separately):
---   while IFS= read -r stmt; do
---     curl 'http://localhost:18123/?user=test_user&password=test_pass' --data-binary "$stmt"
---   done < <(grep -v '^--' sf1_ddl_load.sql | sed '/^$/d')
+-- Usage (one statement at a time via HTTP):
+--   while IFS= read -r -d ';' stmt; do
+--     stmt=$(echo "$stmt" | sed '/^--/d' | tr '\n' ' ' | xargs)
+--     [ -z "$stmt" ] && continue
+--     curl -sS 'http://localhost:18123/?user=test_user&password=test_pass' \
+--       --data-binary "$stmt;"
+--   done < sf1_ddl_load.sql
 
 -- ============================================================
 -- 1. DATABASE
