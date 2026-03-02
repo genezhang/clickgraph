@@ -41,6 +41,7 @@ pub enum OutputFormat {
     PrettyCompact,
     Csv,
     CSVWithNames,
+    Graph,
 }
 
 /// SQL dialect for query generation
@@ -93,8 +94,49 @@ impl From<OutputFormat> for String {
             OutputFormat::PrettyCompact => "PrettyCompact".to_string(),
             OutputFormat::Csv => "CSV".to_string(),
             OutputFormat::CSVWithNames => "CSVWithNames".to_string(),
+            OutputFormat::Graph => "Graph".to_string(),
         }
     }
+}
+
+/// Query performance stats included in API responses
+#[derive(Debug, Serialize, Clone)]
+pub struct QueryStats {
+    pub total_time_ms: f64,
+    pub parse_time_ms: f64,
+    pub planning_time_ms: f64,
+    pub render_time_ms: f64,
+    pub sql_generation_time_ms: f64,
+    pub execution_time_ms: f64,
+    pub query_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_rows: Option<usize>,
+}
+
+/// A graph node in the structured graph response
+#[derive(Debug, Serialize, Clone)]
+pub struct GraphNode {
+    pub element_id: String,
+    pub labels: Vec<String>,
+    pub properties: HashMap<String, Value>,
+}
+
+/// A graph edge in the structured graph response
+#[derive(Debug, Serialize, Clone)]
+pub struct GraphEdge {
+    pub element_id: String,
+    pub rel_type: String,
+    pub start_node_element_id: String,
+    pub end_node_element_id: String,
+    pub properties: HashMap<String, Value>,
+}
+
+/// Structured graph response for format=Graph
+#[derive(Debug, Serialize)]
+pub struct GraphQueryResponse {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+    pub stats: QueryStats,
 }
 
 #[derive(Debug, Row, Serialize, Deserialize)]

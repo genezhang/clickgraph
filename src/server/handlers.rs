@@ -13,16 +13,16 @@ use tokio::io::AsyncBufReadExt;
 
 use crate::{
     clickhouse_query_generator,
-    graph_catalog::graph_schema::GraphSchemaElement,
+    graph_catalog::graph_schema::{GraphSchema, GraphSchemaElement},
     graph_catalog::{DraftOptions, DraftRequest, EdgeHint, FkEdgeHint, NodeHint, SchemaDiscovery},
     open_cypher_parser::{self, ast::CypherStatement},
-    query_planner::{self, types::QueryType},
+    query_planner::{self, logical_plan::LogicalPlan, plan_ctx::PlanCtx, types::QueryType},
     render_plan::plan_builder::RenderPlanBuilder,
 };
 
 use super::{
     graph_catalog,
-    models::{OutputFormat, QueryRequest, SqlOnlyResponse},
+    models::{GraphQueryResponse, OutputFormat, QueryRequest, QueryStats, SqlOnlyResponse},
     parameter_substitution, query_cache,
     query_context::{with_query_context, QueryContext},
     AppState, GLOBAL_QUERY_CACHE,
@@ -110,6 +110,19 @@ impl QueryPerformanceMetrics {
                 "Performance breakdown for query: {}",
                 query.chars().take(100).collect::<String>()
             );
+        }
+    }
+
+    pub fn to_stats(&self) -> QueryStats {
+        QueryStats {
+            total_time_ms: self.total_time * 1000.0,
+            parse_time_ms: self.parse_time * 1000.0,
+            planning_time_ms: self.planning_time * 1000.0,
+            render_time_ms: self.render_time * 1000.0,
+            sql_generation_time_ms: self.sql_generation_time * 1000.0,
+            execution_time_ms: self.execution_time * 1000.0,
+            query_type: self.query_type.clone(),
+            result_rows: self.result_rows,
         }
     }
 
@@ -475,8 +488,12 @@ async fn query_handler_inner(
     );
     let mut cache_status = "MISS";
 
-    // Try cache lookup (unless replan=force)
-    let cached_sql = if replan_option != query_cache::ReplanOption::Force {
+    // Try cache lookup (unless replan=force or Graph format which needs plan context)
+    let cached_sql = if output_format == OutputFormat::Graph {
+        log::debug!("Cache BYPASS for Graph format (needs plan context)");
+        cache_status = "BYPASS";
+        None
+    } else if replan_option != query_cache::ReplanOption::Force {
         if let Some(cache) = GLOBAL_QUERY_CACHE.get() {
             if let Some(sql) = cache.get(&cache_key) {
                 log::debug!("Cache HIT for query");
@@ -576,7 +593,8 @@ async fn query_handler_inner(
         }
     }
 
-    let (ch_sql_queries, maybe_schema_elem, is_read, query_type_str) = {
+    // graph_ctx holds (LogicalPlan, PlanCtx, GraphSchema) when format=Graph
+    let (ch_sql_queries, maybe_schema_elem, is_read, query_type_str, graph_ctx) = {
         // ✅ FAIL LOUDLY: If schema not found, return clear error (no silent fallback)
         let graph_schema = match graph_catalog::get_graph_schema_by_name(&schema_name).await {
             Ok(schema) => schema,
@@ -717,7 +735,14 @@ async fn query_handler_inner(
                 return Ok(Json(sql_response).into_response());
             }
 
-            (vec![ch_sql], None, true, query_type_str)
+            if output_format == OutputFormat::Graph {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "Graph format is not supported for CALL queries".to_string(),
+                ));
+            }
+
+            (vec![ch_sql], None, true, query_type_str, None)
         } else if is_read {
             // Phase 2: Plan query
             let planning_start = Instant::now();
@@ -822,7 +847,14 @@ async fn query_handler_inner(
                 return Ok(response);
             }
 
-            (vec![ch_query], None, true, query_type_str)
+            // Preserve plan context for Graph format (needed for node/edge transformation)
+            let graph_ctx = if output_format == OutputFormat::Graph {
+                Some((logical_plan, plan_ctx, graph_schema))
+            } else {
+                None
+            };
+
+            (vec![ch_query], None, true, query_type_str, graph_ctx)
         } else {
             // DDL operations not supported - ClickGraph is read-only
             return Err((
@@ -839,12 +871,47 @@ async fn query_handler_inner(
     // Merge view_parameters and query parameters for substitution
     let all_params = merge_parameters(&payload.parameters, &payload.view_parameters);
 
+    // Graph format: execute SQL, get rows, transform to nodes/edges
+    if let Some((logical_plan, plan_ctx, graph_schema)) = graph_ctx {
+        let rows = execute_json_rows(
+            &app_state,
+            &ch_sql_queries,
+            all_params,
+            payload.role.clone(),
+        )
+        .await?;
+
+        metrics.execution_time = execution_start.elapsed().as_secs_f64();
+        metrics.total_time = start_time.elapsed().as_secs_f64();
+        metrics.query_type = query_type_str;
+        metrics.sql_queries_count = sql_queries_count;
+        metrics.result_rows = Some(rows.len());
+        metrics.log_performance(&payload.query);
+
+        let (nodes, edges) =
+            super::graph_output::transform_to_graph(&rows, &logical_plan, &plan_ctx, &graph_schema)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+        let response = GraphQueryResponse {
+            nodes,
+            edges,
+            stats: metrics.to_stats(),
+        };
+
+        let mut resp = Json(response).into_response();
+        if let Ok(cache_header) = axum::http::HeaderValue::try_from(cache_status) {
+            resp.headers_mut()
+                .insert("X-Query-Cache-Status", cache_header);
+        }
+        return Ok(resp);
+    }
+
     let response = if is_read {
         execute_cte_queries(
             app_state,
             ch_sql_queries,
             output_format,
-            all_params, // Use merged parameters
+            all_params,
             payload.role.clone(),
         )
         .await
@@ -873,7 +940,7 @@ async fn query_handler_inner(
     // Log performance metrics
     metrics.log_performance(&payload.query);
 
-    // Add performance headers to response
+    // Add performance headers and stats to response
     match response {
         Ok(mut resp) => {
             let headers = metrics.to_headers();
@@ -952,6 +1019,85 @@ async fn query_handler_inner(
 //     }
 // }
 
+/// Substitute parameters and validate that no unsubstituted placeholders remain.
+/// Shared by `execute_json_rows` and `execute_cte_queries`.
+fn prepare_final_sql(
+    ch_sql_queries: &[String],
+    parameters: Option<&std::collections::HashMap<String, Value>>,
+) -> Result<String, (StatusCode, String)> {
+    let ch_query_string = ch_sql_queries.join(" ");
+
+    let final_sql = if let Some(params) = parameters {
+        parameter_substitution::substitute_parameters(&ch_query_string, params).map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Parameter substitution error: {}", e),
+            )
+        })?
+    } else {
+        ch_query_string
+    };
+
+    if let Some(missing_param) = parameter_substitution::find_unsubstituted_parameter(&final_sql) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Missing required parameter: '{}'. Parameterized views require view_parameters to be provided.",
+                missing_param
+            ),
+        ));
+    }
+
+    Ok(final_sql)
+}
+
+/// Execute SQL and return parsed JSON rows (used by Graph format).
+async fn execute_json_rows(
+    app_state: &Arc<AppState>,
+    ch_sql_queries: &[String],
+    parameters: Option<std::collections::HashMap<String, Value>>,
+    role: Option<String>,
+) -> Result<Vec<Value>, (StatusCode, String)> {
+    let final_sql = prepare_final_sql(ch_sql_queries, parameters.as_ref())?;
+
+    log::debug!("Executing SQL (graph format):\n{}", final_sql);
+
+    let client = app_state.connection_pool.get_client(role.as_deref()).await;
+    let mut lines = client
+        .query(&final_sql)
+        .fetch_bytes("JSONEachRow")
+        .map_err(|e| {
+            log::error!(
+                "ClickHouse query failed. SQL was:\n{}\nError: {}",
+                final_sql,
+                e
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Clickhouse Error: {}", e),
+            )
+        })?
+        .lines();
+
+    let mut rows = Vec::new();
+    while let Some(line) = lines.next_line().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Clickhouse Error: {}", e),
+        )
+    })? {
+        let value: Value = serde_json::from_str(&line).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Invalid JSON from ClickHouse: {}", e),
+            )
+        })?;
+        rows.push(value);
+    }
+
+    Ok(rows)
+}
+
 async fn execute_cte_queries(
     app_state: Arc<AppState>,
     ch_sql_queries: Vec<String>,
@@ -959,31 +1105,7 @@ async fn execute_cte_queries(
     parameters: Option<std::collections::HashMap<String, Value>>,
     role: Option<String>,
 ) -> Result<Response, (StatusCode, String)> {
-    let ch_query_string = ch_sql_queries.join(" ");
-
-    // Substitute parameters if provided
-    let final_sql = if let Some(params) = parameters {
-        match parameter_substitution::substitute_parameters(&ch_query_string, &params) {
-            Ok(sql) => sql,
-            Err(e) => {
-                log::error!("Parameter substitution failed: {}", e);
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    format!("Parameter substitution error: {}", e),
-                ));
-            }
-        }
-    } else {
-        ch_query_string.clone()
-    };
-
-    // Check for unsubstituted $param placeholders before executing
-    if let Some(missing_param) = parameter_substitution::find_unsubstituted_parameter(&final_sql) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("Missing required parameter: '{}'. Parameterized views require view_parameters to be provided.", missing_param),
-        ));
-    }
+    let final_sql = prepare_final_sql(&ch_sql_queries, parameters.as_ref())?;
 
     // Log full SQL for debugging (especially helpful when ClickHouse truncates errors)
     log::debug!("Executing SQL:\n{}", final_sql);

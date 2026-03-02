@@ -26,6 +26,7 @@ pub mod bolt_protocol;
 mod clickhouse_client;
 pub mod connection_pool;
 pub mod graph_catalog;
+pub mod graph_output;
 pub mod handlers;
 pub mod models;
 mod parameter_substitution;
