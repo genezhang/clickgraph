@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::env;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 
 /// Manages multiple connection pools, one per role + default.
@@ -32,6 +33,9 @@ struct ConnectionConfig {
     database: String,
     max_cte_depth: u32,
 }
+
+/// Timeout for cluster discovery query during startup.
+const CLUSTER_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl RoleConnectionPool {
     /// Create a new role-based connection pool.
@@ -168,7 +172,6 @@ impl ConnectionConfig {
         #[derive(Debug, clickhouse::Row, Deserialize)]
         struct ClusterNode {
             host_address: String,
-            port: u16,
         }
 
         let client = Client::default()
@@ -177,23 +180,23 @@ impl ConnectionConfig {
             .with_password(&self.password)
             .with_database(&self.database);
 
+        // Use '' for ClickHouse string literal escaping (not backslash)
         let query = format!(
-            "SELECT host_address, port FROM system.clusters WHERE cluster = '{}' ORDER BY host_address, port",
-            cluster_name.replace('\'', "\\'")
+            "SELECT DISTINCT host_address FROM system.clusters WHERE cluster = '{}' ORDER BY host_address",
+            cluster_name.replace('\'', "''")
         );
 
-        match client.query(&query).fetch_all::<ClusterNode>().await {
-            Ok(rows) => {
-                let scheme = if seed_url.starts_with("https://") {
-                    "https"
-                } else {
-                    "http"
-                };
+        // Wrap discovery in a timeout so startup doesn't stall on unreachable seeds
+        let result = tokio::time::timeout(
+            CLUSTER_DISCOVERY_TIMEOUT,
+            client.query(&query).fetch_all::<ClusterNode>(),
+        )
+        .await;
 
-                let discovered_urls: Vec<String> = rows
-                    .into_iter()
-                    .map(|node| format!("{}://{}:{}", scheme, node.host_address, node.port))
-                    .collect();
+        match result {
+            Ok(Ok(rows)) => {
+                let hosts: Vec<String> = rows.into_iter().map(|node| node.host_address).collect();
+                let discovered_urls = build_cluster_urls(seed_url, &hosts);
 
                 if discovered_urls.is_empty() {
                     log::warn!(
@@ -210,11 +213,18 @@ impl ConnectionConfig {
                     self.urls = discovered_urls;
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 log::warn!(
                     "Failed to discover cluster '{}' nodes: {}. Falling back to seed URL",
                     cluster_name,
                     e
+                );
+            }
+            Err(_) => {
+                log::warn!(
+                    "Cluster '{}' discovery timed out after {}s. Falling back to seed URL",
+                    cluster_name,
+                    CLUSTER_DISCOVERY_TIMEOUT.as_secs()
                 );
             }
         }
@@ -244,6 +254,40 @@ impl ConnectionConfig {
 
         client
     }
+}
+
+/// Build cluster URLs by replacing the host in the seed URL with each discovered host.
+///
+/// Preserves the seed URL's scheme, port, and path — only the hostname is swapped.
+/// `system.clusters.port` is the native TCP port (9000), NOT the HTTP port, so we
+/// always use the port from the seed URL.
+fn build_cluster_urls(seed_url: &str, hosts: &[String]) -> Vec<String> {
+    // Parse seed URL: scheme://host[:port][/path...]
+    let (scheme, after_scheme) = if let Some(rest) = seed_url.strip_prefix("https://") {
+        ("https", rest)
+    } else if let Some(rest) = seed_url.strip_prefix("http://") {
+        ("http", rest)
+    } else {
+        // Unrecognized scheme — can't safely parse
+        return vec![];
+    };
+
+    // Split host[:port] from /path
+    let (host_port, path) = match after_scheme.find('/') {
+        Some(idx) => (&after_scheme[..idx], &after_scheme[idx..]),
+        None => (after_scheme, ""),
+    };
+
+    // Extract port from seed (if present)
+    let port_suffix = match host_port.rfind(':') {
+        Some(colon_idx) => &host_port[colon_idx..], // includes the ':'
+        None => "",
+    };
+
+    hosts
+        .iter()
+        .map(|host| format!("{}://{}{}{}", scheme, host, port_suffix, path))
+        .collect()
 }
 
 #[cfg(test)]
@@ -344,8 +388,6 @@ mod tests {
         };
 
         // Verify round-robin cycles through indices
-        // We can't inspect which URL a Client uses, but we can verify
-        // the counter increments and wraps correctly
         let stats = pool.stats().await;
         assert_eq!(stats.node_count, 3);
 
@@ -355,5 +397,62 @@ mod tests {
         }
         // After 9 calls, counter should be at 9
         assert_eq!(pool.round_robin.load(Ordering::Relaxed), 9);
+    }
+
+    // --- build_cluster_urls tests ---
+
+    #[test]
+    fn test_build_cluster_urls_preserves_port() {
+        let urls = build_cluster_urls(
+            "http://seed:8123",
+            &["10.0.0.1".into(), "10.0.0.2".into(), "10.0.0.3".into()],
+        );
+        assert_eq!(
+            urls,
+            vec![
+                "http://10.0.0.1:8123",
+                "http://10.0.0.2:8123",
+                "http://10.0.0.3:8123",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_build_cluster_urls_preserves_https() {
+        let urls = build_cluster_urls("https://seed:8443", &["node1".into(), "node2".into()]);
+        assert_eq!(urls, vec!["https://node1:8443", "https://node2:8443"]);
+    }
+
+    #[test]
+    fn test_build_cluster_urls_preserves_path() {
+        let urls = build_cluster_urls(
+            "http://proxy:8123/clickhouse",
+            &["10.0.0.1".into(), "10.0.0.2".into()],
+        );
+        assert_eq!(
+            urls,
+            vec![
+                "http://10.0.0.1:8123/clickhouse",
+                "http://10.0.0.2:8123/clickhouse",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_build_cluster_urls_no_port() {
+        let urls = build_cluster_urls("http://seed", &["node1".into(), "node2".into()]);
+        assert_eq!(urls, vec!["http://node1", "http://node2"]);
+    }
+
+    #[test]
+    fn test_build_cluster_urls_empty_hosts() {
+        let urls = build_cluster_urls("http://seed:8123", &[]);
+        assert!(urls.is_empty());
+    }
+
+    #[test]
+    fn test_build_cluster_urls_bad_scheme() {
+        let urls = build_cluster_urls("ftp://seed:8123", &["node1".into()]);
+        assert!(urls.is_empty());
     }
 }
