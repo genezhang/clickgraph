@@ -13,6 +13,7 @@ jobs:
   generate_changelog:
     name: Generate and Commit Changelog
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - name: Checkout main branch
         uses: actions/checkout@v4
@@ -38,6 +39,7 @@ jobs:
   create_release:
     name: Create GitHub Release
     needs: generate_changelog
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Checkout tag
@@ -58,7 +60,7 @@ jobs:
 
   build_and_upload:
     name: Build, Package & Upload Assets
-    needs: [generate_changelog, create_release]
+    needs: create_release
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
