@@ -135,8 +135,7 @@ pub struct PoolStats {
 
 impl ConnectionConfig {
     fn from_env(max_cte_depth: u32) -> Result<Self, String> {
-        let url =
-            env::var("CLICKHOUSE_URL").map_err(|_| "CLICKHOUSE_URL not set".to_string())?;
+        let url = env::var("CLICKHOUSE_URL").map_err(|_| "CLICKHOUSE_URL not set".to_string())?;
         let cluster_name = env::var("CLICKHOUSE_CLUSTER").ok();
 
         Ok(Self {
