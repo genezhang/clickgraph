@@ -35,9 +35,10 @@
     │  query_cache.rs   (581)  — LRU cache for SQL templates      │
     │  parameter_substitution.rs (368) — $param → SQL escaping    │
     │  graph_catalog.rs (858)  — schema init/load/validate        │
+    │  graph_output.rs  (100)  — format=Graph transformation      │
     │  connection_pool.rs (158) — role-based ClickHouse pools     │
     │  clickhouse_client.rs (75) — client factory                 │
-    │  models.rs        (257)  — request/response types           │
+    │  models.rs        (300)  — request/response types           │
     └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -73,8 +74,11 @@ handlers.rs::query_handler()
     ├── 13. Parameter substitution (merge view_parameters + query parameters)
     ├── 14. Check for unsubstituted $param placeholders
     │
-    └── 15. Execute via connection_pool.get_client(role) → ClickHouse
-            Return JSON/Pretty/CSV response with performance headers
+    ├── 15a. If format=Graph: execute SQL → JSON rows → graph_output::transform_to_graph()
+    │         Return { nodes, edges, stats } with deduplication
+    │
+    └── 15b. Otherwise: Execute via connection_pool.get_client(role) → ClickHouse
+             Return JSON/Pretty/CSV response with performance headers
 ```
 
 ## Key Files
@@ -88,8 +92,9 @@ handlers.rs::query_handler()
 | `query_cache.rs` | 581 | LRU cache: `QueryCache`, `QueryCacheKey`, `ReplanOption` (CYPHER replan=force/skip), `CacheMetrics`, schema-scoped invalidation |
 | `query_context.rs` | 456 | **Task-local context** via `tokio::task_local!`: schema, denormalized aliases, relationship columns, CTE property mappings, multi-type VLP aliases, **VariableRegistry** (PR #120) |
 | `parameter_substitution.rs` | 368 | `substitute_parameters()`, `find_unsubstituted_parameter()`, SQL injection prevention via string escaping |
-| `models.rs` | 257 | `QueryRequest`, `OutputFormat`, `SqlDialect`, `SqlGenerationRequest/Response`, `SqlOnlyResponse` |
-| `connection_pool.rs` | 158 | `RoleConnectionPool`: lazy-initialized per-role ClickHouse client pools with read/write lock |
+| `models.rs` | 300 | `QueryRequest`, `OutputFormat` (incl. `Graph`), `SqlDialect`, `SqlGenerationRequest/Response`, `SqlOnlyResponse`, `GraphNode`, `GraphEdge`, `GraphQueryResponse`, `QueryStats` |
+| `graph_output.rs` | 100 | `transform_to_graph()` — converts flat JSON rows to deduplicated `(Vec<GraphNode>, Vec<GraphEdge>)` by reusing Bolt's `extract_return_metadata`/`transform_to_node`/`transform_to_relationship` |
+| `connection_pool.rs` | 260 | `RoleConnectionPool`: lazy-initialized per-role ClickHouse client pools with read/write lock, cluster load balancing via round-robin |
 | `clickhouse_client.rs` | 75 | `try_get_client()`: creates ClickHouse client from env vars with safety limits (60s timeout, 1M rows, 1GB result) |
 | `bolt_protocol/` | 7986 | Neo4j Bolt v4.1–5.8 wire protocol (see separate section below) |
 
@@ -209,7 +214,7 @@ pub struct QueryContext {
 ```rust
 pub struct QueryRequest {
     pub query: String,
-    pub format: Option<OutputFormat>,       // JSONEachRow, Pretty, CSV, etc.
+    pub format: Option<OutputFormat>,       // JSONEachRow, Pretty, CSV, Graph, etc.
     pub sql_only: Option<bool>,             // Return SQL without executing
     pub schema_name: Option<String>,        // Schema selection
     pub parameters: Option<HashMap<String, Value>>,  // Query params ($userId)
@@ -272,6 +277,11 @@ curl -X POST http://localhost:8080/query \
 curl -X POST http://localhost:8080/query \
   -H "Content-Type: application/json" \
   -d '{"query":"MATCH (u:User) RETURN u.name", "sql_only": true}'
+
+# Graph format (structured nodes/edges/stats)
+curl -X POST http://localhost:8080/query \
+  -H "Content-Type: application/json" \
+  -d '{"query":"MATCH (u:User)-[r:FOLLOWS]->(f:User) RETURN u, r, f LIMIT 5", "format": "Graph"}'
 
 # SQL generation endpoint (structured response)
 curl -X POST http://localhost:8080/query/sql \
@@ -339,6 +349,7 @@ Neo4j Browser/Driver → TCP or WebSocket
 | `CLICKHOUSE_PASSWORD` | (required) | ClickHouse password |
 | `CLICKHOUSE_DATABASE` | `"default"` | Default database |
 | `GRAPH_CONFIG_PATH` | (optional) | YAML schema file path |
+| `CLICKHOUSE_CLUSTER` | (optional) | Cluster name for load balancing (discovers nodes from `system.clusters`) |
 | `CLICKGRAPH_QUERY_CACHE_ENABLED` | `true` | Enable/disable query cache |
 | `CLICKGRAPH_QUERY_CACHE_MAX_ENTRIES` | `1000` | Max cached queries |
 | `CLICKGRAPH_QUERY_CACHE_MAX_SIZE_MB` | `100` | Max cache memory |

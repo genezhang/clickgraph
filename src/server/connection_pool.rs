@@ -2,75 +2,117 @@
 //!
 //! Maintains separate connection pools for different roles to avoid
 //! SET ROLE overhead and ensure proper role isolation.
+//!
+//! When `CLICKHOUSE_CLUSTER` is set, discovers cluster nodes from
+//! `system.clusters` and round-robins queries across them.
 
 use clickhouse::Client;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::env;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 
-/// Manages multiple connection pools, one per role + default
+/// Manages multiple connection pools, one per role + default.
+/// When cluster mode is active, round-robins across discovered nodes.
 pub struct RoleConnectionPool {
-    default_client: Client,
-    role_clients: Arc<RwLock<HashMap<String, Client>>>,
+    default_clients: Vec<Client>,
+    role_clients: Arc<RwLock<HashMap<String, Vec<Client>>>>,
     base_config: ConnectionConfig,
+    round_robin: AtomicUsize,
 }
 
 #[derive(Clone)]
 struct ConnectionConfig {
-    url: String,
+    urls: Vec<String>,
+    cluster_name: Option<String>,
     user: String,
     password: String,
     database: String,
     max_cte_depth: u32,
 }
 
+/// Timeout for cluster discovery query during startup.
+const CLUSTER_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
+
 impl RoleConnectionPool {
-    /// Create a new role-based connection pool
-    pub fn new(max_cte_depth: u32) -> Result<Self, String> {
-        let config = ConnectionConfig::from_env(max_cte_depth)?;
-        let default_client = config.create_client(None);
+    /// Create a new role-based connection pool.
+    /// If `CLICKHOUSE_CLUSTER` is set, queries the seed node to discover cluster members.
+    pub async fn new(max_cte_depth: u32) -> Result<Self, String> {
+        let mut config = ConnectionConfig::from_env(max_cte_depth)?;
+
+        // If cluster mode, discover nodes from the seed URL
+        if config.cluster_name.is_some() {
+            config.discover_cluster_nodes().await;
+        }
+
+        let default_clients: Vec<Client> = config
+            .urls
+            .iter()
+            .map(|url| config.create_client_for_url(url, None))
+            .collect();
+
+        let node_count = default_clients.len();
+        let cluster_info = if let Some(ref name) = config.cluster_name {
+            format!("Cluster mode: {} nodes for cluster '{}'", node_count, name)
+        } else {
+            "Single-node mode".to_string()
+        };
+        log::info!("{}", cluster_info);
 
         Ok(Self {
-            default_client,
+            default_clients,
             role_clients: Arc::new(RwLock::new(HashMap::new())),
             base_config: config,
+            round_robin: AtomicUsize::new(0),
         })
     }
 
-    /// Get a client for the specified role (or default if None)
+    /// Get a client for the specified role (or default if None).
+    /// Round-robins across cluster nodes when multiple URLs are configured.
     ///
     /// This method:
-    /// 1. Returns default pool if role is None
-    /// 2. Checks if role pool exists (fast path - read lock)
-    /// 3. Creates new role pool if needed (slow path - write lock)
+    /// 1. Picks a node index via round-robin
+    /// 2. Returns default pool if role is None
+    /// 3. Checks if role pool exists (fast path - read lock)
+    /// 4. Creates new role pool if needed (slow path - write lock)
     ///
     /// Role pools are lazy-initialized on first use.
     pub async fn get_client(&self, role: Option<&str>) -> Client {
+        let idx = self.round_robin.fetch_add(1, Ordering::Relaxed) % self.default_clients.len();
+
         let Some(role) = role else {
-            return self.default_client.clone();
+            return self.default_clients[idx].clone();
         };
 
         // Fast path: check if role pool exists (read lock)
         {
             let pools = self.role_clients.read().await;
-            if let Some(client) = pools.get(role) {
-                return client.clone();
+            if let Some(clients) = pools.get(role) {
+                return clients[idx].clone();
             }
         }
 
-        // Slow path: create new role pool (write lock)
+        // Slow path: create new role pools for all URLs (write lock)
         let mut pools = self.role_clients.write().await;
 
         // Double-check after acquiring write lock (another thread might have created it)
-        if let Some(client) = pools.get(role) {
-            return client.clone();
+        if let Some(clients) = pools.get(role) {
+            return clients[idx].clone();
         }
 
-        // Create new client with role
+        // Create clients with role for all URLs
         log::info!("Creating new connection pool for role: {}", role);
-        let client = self.base_config.create_client(Some(role));
-        pools.insert(role.to_string(), client.clone());
+        let clients: Vec<Client> = self
+            .base_config
+            .urls
+            .iter()
+            .map(|url| self.base_config.create_client_for_url(url, Some(role)))
+            .collect();
+        let client = clients[idx].clone();
+        pools.insert(role.to_string(), clients);
 
         client
     }
@@ -81,6 +123,8 @@ impl RoleConnectionPool {
         PoolStats {
             total_role_pools: pools.len(),
             roles: pools.keys().cloned().collect(),
+            node_count: self.default_clients.len(),
+            cluster_name: self.base_config.cluster_name.clone(),
         }
     }
 }
@@ -89,12 +133,18 @@ impl RoleConnectionPool {
 pub struct PoolStats {
     pub total_role_pools: usize,
     pub roles: Vec<String>,
+    pub node_count: usize,
+    pub cluster_name: Option<String>,
 }
 
 impl ConnectionConfig {
     fn from_env(max_cte_depth: u32) -> Result<Self, String> {
+        let url = env::var("CLICKHOUSE_URL").map_err(|_| "CLICKHOUSE_URL not set".to_string())?;
+        let cluster_name = env::var("CLICKHOUSE_CLUSTER").ok();
+
         Ok(Self {
-            url: env::var("CLICKHOUSE_URL").map_err(|_| "CLICKHOUSE_URL not set".to_string())?,
+            urls: vec![url],
+            cluster_name,
             user: env::var("CLICKHOUSE_USER").map_err(|_| "CLICKHOUSE_USER not set".to_string())?,
             // Allow empty password for local development
             password: env::var("CLICKHOUSE_PASSWORD").unwrap_or_default(),
@@ -104,9 +154,85 @@ impl ConnectionConfig {
         })
     }
 
-    fn create_client(&self, role: Option<&str>) -> Client {
+    /// Discover cluster nodes from `system.clusters` using the seed URL.
+    /// Falls back to the seed URL with a warning if discovery fails or returns empty.
+    async fn discover_cluster_nodes(&mut self) {
+        let cluster_name = match &self.cluster_name {
+            Some(name) => name.clone(),
+            None => return,
+        };
+
+        let seed_url = &self.urls[0];
+        log::info!(
+            "Discovering cluster '{}' nodes from seed: {}",
+            cluster_name,
+            seed_url
+        );
+
+        #[derive(Debug, clickhouse::Row, Deserialize)]
+        struct ClusterNode {
+            host_address: String,
+        }
+
+        let client = Client::default()
+            .with_url(seed_url)
+            .with_user(&self.user)
+            .with_password(&self.password)
+            .with_database(&self.database);
+
+        // Use '' for ClickHouse string literal escaping (not backslash)
+        let query = format!(
+            "SELECT DISTINCT host_address FROM system.clusters WHERE cluster = '{}' ORDER BY host_address",
+            cluster_name.replace('\'', "''")
+        );
+
+        // Wrap discovery in a timeout so startup doesn't stall on unreachable seeds
+        let result = tokio::time::timeout(
+            CLUSTER_DISCOVERY_TIMEOUT,
+            client.query(&query).fetch_all::<ClusterNode>(),
+        )
+        .await;
+
+        match result {
+            Ok(Ok(rows)) => {
+                let hosts: Vec<String> = rows.into_iter().map(|node| node.host_address).collect();
+                let discovered_urls = build_cluster_urls(seed_url, &hosts);
+
+                if discovered_urls.is_empty() {
+                    log::warn!(
+                        "Cluster '{}' returned no nodes, falling back to seed URL",
+                        cluster_name
+                    );
+                } else {
+                    log::info!(
+                        "Discovered {} nodes for cluster '{}': {:?}",
+                        discovered_urls.len(),
+                        cluster_name,
+                        discovered_urls
+                    );
+                    self.urls = discovered_urls;
+                }
+            }
+            Ok(Err(e)) => {
+                log::warn!(
+                    "Failed to discover cluster '{}' nodes: {}. Falling back to seed URL",
+                    cluster_name,
+                    e
+                );
+            }
+            Err(_) => {
+                log::warn!(
+                    "Cluster '{}' discovery timed out after {}s. Falling back to seed URL",
+                    cluster_name,
+                    CLUSTER_DISCOVERY_TIMEOUT.as_secs()
+                );
+            }
+        }
+    }
+
+    fn create_client_for_url(&self, url: &str, role: Option<&str>) -> Client {
         let mut client = Client::default()
-            .with_url(&self.url)
+            .with_url(url)
             .with_user(&self.user)
             .with_password(&self.password)
             .with_database(&self.database)
@@ -130,6 +256,40 @@ impl ConnectionConfig {
     }
 }
 
+/// Build cluster URLs by replacing the host in the seed URL with each discovered host.
+///
+/// Preserves the seed URL's scheme, port, and path — only the hostname is swapped.
+/// `system.clusters.port` is the native TCP port (9000), NOT the HTTP port, so we
+/// always use the port from the seed URL.
+fn build_cluster_urls(seed_url: &str, hosts: &[String]) -> Vec<String> {
+    // Parse seed URL: scheme://host[:port][/path...]
+    let (scheme, after_scheme) = if let Some(rest) = seed_url.strip_prefix("https://") {
+        ("https", rest)
+    } else if let Some(rest) = seed_url.strip_prefix("http://") {
+        ("http", rest)
+    } else {
+        // Unrecognized scheme — can't safely parse
+        return vec![];
+    };
+
+    // Split host[:port] from /path
+    let (host_port, path) = match after_scheme.find('/') {
+        Some(idx) => (&after_scheme[..idx], &after_scheme[idx..]),
+        None => (after_scheme, ""),
+    };
+
+    // Extract port from seed (if present)
+    let port_suffix = match host_port.rfind(':') {
+        Some(colon_idx) => &host_port[colon_idx..], // includes the ':'
+        None => "",
+    };
+
+    hosts
+        .iter()
+        .map(|host| format!("{}://{}{}{}", scheme, host, port_suffix, path))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,7 +305,7 @@ mod tests {
             env::set_var("CLICKHOUSE_DATABASE", "test_db");
         }
 
-        let pool = RoleConnectionPool::new(100).unwrap();
+        let pool = RoleConnectionPool::new(100).await.unwrap();
 
         // Get clients for different roles
         let _default = pool.get_client(None).await;
@@ -160,5 +320,139 @@ mod tests {
         assert_eq!(stats.total_role_pools, 2); // analyst + admin
         assert!(stats.roles.contains(&"analyst".to_string()));
         assert!(stats.roles.contains(&"admin".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_single_node_config() {
+        unsafe {
+            env::set_var("CLICKHOUSE_URL", "http://localhost:8123");
+            env::set_var("CLICKHOUSE_USER", "test_user");
+            env::set_var("CLICKHOUSE_PASSWORD", "test_pass");
+            env::remove_var("CLICKHOUSE_CLUSTER");
+        }
+
+        let config = ConnectionConfig::from_env(100).unwrap();
+        assert_eq!(config.urls.len(), 1);
+        assert_eq!(config.urls[0], "http://localhost:8123");
+        assert!(config.cluster_name.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_cluster_config_env() {
+        unsafe {
+            env::set_var("CLICKHOUSE_URL", "http://localhost:8123");
+            env::set_var("CLICKHOUSE_USER", "test_user");
+            env::set_var("CLICKHOUSE_PASSWORD", "test_pass");
+            env::set_var("CLICKHOUSE_CLUSTER", "my_cluster");
+        }
+
+        let config = ConnectionConfig::from_env(100).unwrap();
+        assert_eq!(config.cluster_name, Some("my_cluster".to_string()));
+        // URLs still just seed before discovery
+        assert_eq!(config.urls.len(), 1);
+
+        // Clean up
+        unsafe {
+            env::remove_var("CLICKHOUSE_CLUSTER");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_round_robin_distribution() {
+        unsafe {
+            env::set_var("CLICKHOUSE_URL", "http://localhost:8123");
+            env::set_var("CLICKHOUSE_USER", "test_user");
+            env::set_var("CLICKHOUSE_PASSWORD", "test_pass");
+            env::remove_var("CLICKHOUSE_CLUSTER");
+        }
+
+        let mut config = ConnectionConfig::from_env(100).unwrap();
+        // Simulate multi-node by adding URLs manually
+        config.urls = vec![
+            "http://node1:8123".to_string(),
+            "http://node2:8123".to_string(),
+            "http://node3:8123".to_string(),
+        ];
+
+        let default_clients: Vec<Client> = config
+            .urls
+            .iter()
+            .map(|url| config.create_client_for_url(url, None))
+            .collect();
+
+        let pool = RoleConnectionPool {
+            default_clients,
+            role_clients: Arc::new(RwLock::new(HashMap::new())),
+            base_config: config,
+            round_robin: AtomicUsize::new(0),
+        };
+
+        // Verify round-robin cycles through indices
+        let stats = pool.stats().await;
+        assert_eq!(stats.node_count, 3);
+
+        // Call get_client multiple times and verify counter advances
+        for _ in 0..9 {
+            let _ = pool.get_client(None).await;
+        }
+        // After 9 calls, counter should be at 9
+        assert_eq!(pool.round_robin.load(Ordering::Relaxed), 9);
+    }
+
+    // --- build_cluster_urls tests ---
+
+    #[test]
+    fn test_build_cluster_urls_preserves_port() {
+        let urls = build_cluster_urls(
+            "http://seed:8123",
+            &["10.0.0.1".into(), "10.0.0.2".into(), "10.0.0.3".into()],
+        );
+        assert_eq!(
+            urls,
+            vec![
+                "http://10.0.0.1:8123",
+                "http://10.0.0.2:8123",
+                "http://10.0.0.3:8123",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_build_cluster_urls_preserves_https() {
+        let urls = build_cluster_urls("https://seed:8443", &["node1".into(), "node2".into()]);
+        assert_eq!(urls, vec!["https://node1:8443", "https://node2:8443"]);
+    }
+
+    #[test]
+    fn test_build_cluster_urls_preserves_path() {
+        let urls = build_cluster_urls(
+            "http://proxy:8123/clickhouse",
+            &["10.0.0.1".into(), "10.0.0.2".into()],
+        );
+        assert_eq!(
+            urls,
+            vec![
+                "http://10.0.0.1:8123/clickhouse",
+                "http://10.0.0.2:8123/clickhouse",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_build_cluster_urls_no_port() {
+        let urls = build_cluster_urls("http://seed", &["node1".into(), "node2".into()]);
+        assert_eq!(urls, vec!["http://node1", "http://node2"]);
+    }
+
+    #[test]
+    fn test_build_cluster_urls_empty_hosts() {
+        let urls = build_cluster_urls("http://seed:8123", &[]);
+        assert!(urls.is_empty());
+    }
+
+    #[test]
+    fn test_build_cluster_urls_bad_scheme() {
+        let urls = build_cluster_urls("ftp://seed:8123", &["node1".into()]);
+        assert!(urls.is_empty());
     }
 }
