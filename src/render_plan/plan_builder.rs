@@ -2567,13 +2567,19 @@ impl RenderPlanBuilder for LogicalPlan {
             result
         }
 
-        // Helper: check if plan is Empty or a chain of Unwind nodes ending in Empty.
+        // Helper: check if plan is Empty or a chain of Unwind nodes ending in Empty,
+        // possibly wrapped in Filter/OrderBy/Skip/Limit/GroupBy from WHERE/ORDER BY clauses.
         // Standalone UNWIND (without MATCH) has Unwind(Empty) — this is a legitimate
         // data source (array expression), not a pruned/filtered-out query.
         fn input_is_empty_or_unwind_chain(plan: &LogicalPlan) -> bool {
             match plan {
                 LogicalPlan::Empty => true,
                 LogicalPlan::Unwind(u) => input_is_empty_or_unwind_chain(&u.input),
+                LogicalPlan::Filter(f) => input_is_empty_or_unwind_chain(&f.input),
+                LogicalPlan::OrderBy(o) => input_is_empty_or_unwind_chain(&o.input),
+                LogicalPlan::Skip(s) => input_is_empty_or_unwind_chain(&s.input),
+                LogicalPlan::Limit(l) => input_is_empty_or_unwind_chain(&l.input),
+                LogicalPlan::GroupBy(g) => input_is_empty_or_unwind_chain(&g.input),
                 _ => false,
             }
         }
