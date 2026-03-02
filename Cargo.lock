@@ -314,7 +314,7 @@ checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
 
 [[package]]
 name = "clickgraph"
-version = "0.6.2-dev"
+version = "0.6.3-dev"
 dependencies = [
  "anyhow",
  "async-trait",
