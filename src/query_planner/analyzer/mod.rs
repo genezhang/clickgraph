@@ -119,6 +119,7 @@ mod vlp_transitivity_check;
 // PatternResolver module and configuration
 mod pattern_resolver;
 mod pattern_resolver_config;
+mod scoping_with_collapse;
 
 pub fn initial_analyzing(
     plan: Arc<LogicalPlan>,
@@ -203,6 +204,16 @@ pub fn initial_analyzing(
     let plan = vlp_transitivity_check
         .analyze_with_graph_schema(plan.clone(), plan_ctx, current_graph_schema)?
         .get_plan();
+
+    // Step 2.9: Scoping-Only WITH Collapse
+    // Removes multi-variable WITH clauses that purely pass variables through
+    // (e.g., `WITH country, zombie` — no aggregation, DISTINCT, ORDER BY, etc.).
+    // Must run BEFORE CteSchemaResolver and GraphJoinInference so that:
+    // - CteSchemaResolver doesn't register stale CTE schemas for collapsed WITHs
+    // - GraphJoinInference computes correct joins for the merged patterns
+    // Skipped for plans containing VLPs (VLP property detection depends on WITH boundaries).
+    log::info!("🔍 ANALYZER: Running ScopingWithCollapse");
+    let plan = scoping_with_collapse::collapse_scoping_only_withs(plan);
 
     // Step 3: CTE Schema Resolver - register CTE schemas in plan_ctx for analyzer/planner
     // This runs after SchemaInference to ensure property mappings are available

@@ -125,6 +125,9 @@ docs1/
 # Agent documentation for AI-assisted development
 !**/AGENTS.md
 
+# Benchmark results
+!benchmarks/ldbc_snb/BENCHMARK_RESULTS.md
+
 # Development assistants
 .claude/
 agent-os/

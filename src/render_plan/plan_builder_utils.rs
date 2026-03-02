@@ -7156,7 +7156,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
     // Process WITH clauses iteratively until none remain
     while has_with_clause_in_graph_rel(&current_plan) {
-        log::debug!("🔧 build_chained_with_match_cte_plan: has_with_clause_in_graph_rel(&current_plan) = true, entering loop");
         iteration += 1;
         log::debug!(
             "🔧 build_chained_with_match_cte_plan: ========== ITERATION {} ==========",
@@ -7171,8 +7170,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
         );
 
         if iteration > MAX_PLAN_DEPTH {
-            log::debug!("🔧 build_chained_with_match_cte_plan: HIT PLAN DEPTH LIMIT! Current plan structure:");
-            show_plan_structure(&current_plan, 0);
             return Err(RenderBuildError::InvalidRenderPlan(format!(
                 "Query plan too deeply nested (depth > {}). This usually indicates a bug in query planning.",
                 MAX_PLAN_DEPTH
@@ -12699,8 +12696,7 @@ pub(crate) fn find_all_with_clauses_grouped(
     grouped
 }
 
-/// Prune joins from GraphJoins that are already covered by a CTE.
-///
+/// Walk a plan tree and absorb any GraphJoins nodes that appear as direct
 /// Collapse a passthrough WITH clause by replacing it with its input.
 /// A passthrough WITH is one that simply wraps a CTE reference without any transformations:
 /// - Single item that's just a TableAlias
@@ -12749,10 +12745,6 @@ pub(crate) fn collapse_passthrough_with(
             );
             if key == target_alias {
                 // FORCE COLLAPSE for passthrough WITHs
-                log::debug!(
-                    "🔧 collapse_passthrough_with: FORCE COLLAPSING WithClause key='{}' target='{}'",
-                    key, target_alias
-                );
                 Ok(wc.input.as_ref().clone())
             } else {
                 // Not the target - recurse into input
@@ -12831,7 +12823,71 @@ pub(crate) fn collapse_passthrough_with(
                 exposed_alias: gb.exposed_alias.clone(),
             }))
         }
-        // For other node types that don't contain WITH clauses, return unchanged
+        LogicalPlan::GraphRel(gr) => {
+            let new_left = collapse_passthrough_with(&gr.left, target_alias, target_cte_name)?;
+            let new_right = collapse_passthrough_with(&gr.right, target_alias, target_cte_name)?;
+            Ok(LogicalPlan::GraphRel(GraphRel {
+                left: Arc::new(new_left),
+                center: gr.center.clone(),
+                right: Arc::new(new_right),
+                alias: gr.alias.clone(),
+                direction: gr.direction.clone(),
+                left_connection: gr.left_connection.clone(),
+                right_connection: gr.right_connection.clone(),
+                is_rel_anchor: gr.is_rel_anchor,
+                variable_length: gr.variable_length.clone(),
+                shortest_path_mode: gr.shortest_path_mode.clone(),
+                path_variable: gr.path_variable.clone(),
+                where_predicate: gr.where_predicate.clone(),
+                labels: gr.labels.clone(),
+                is_optional: gr.is_optional,
+                anchor_connection: gr.anchor_connection.clone(),
+                cte_references: gr.cte_references.clone(),
+                pattern_combinations: gr.pattern_combinations.clone(),
+                was_undirected: gr.was_undirected,
+            }))
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            let new_left = collapse_passthrough_with(&cp.left, target_alias, target_cte_name)?;
+            let new_right = collapse_passthrough_with(&cp.right, target_alias, target_cte_name)?;
+            Ok(LogicalPlan::CartesianProduct(CartesianProduct {
+                left: Arc::new(new_left),
+                right: Arc::new(new_right),
+                is_optional: cp.is_optional,
+                join_condition: cp.join_condition.clone(),
+            }))
+        }
+        LogicalPlan::Union(u) => {
+            let new_inputs = u
+                .inputs
+                .iter()
+                .map(|i| {
+                    collapse_passthrough_with(i, target_alias, target_cte_name).map(|p| Arc::new(p))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(LogicalPlan::Union(Union {
+                inputs: new_inputs,
+                union_type: u.union_type.clone(),
+            }))
+        }
+        LogicalPlan::Unwind(uw) => {
+            let new_input = collapse_passthrough_with(&uw.input, target_alias, target_cte_name)?;
+            Ok(LogicalPlan::Unwind(Unwind {
+                input: Arc::new(new_input),
+                expression: uw.expression.clone(),
+                alias: uw.alias.clone(),
+                label: uw.label.clone(),
+                tuple_properties: uw.tuple_properties.clone(),
+            }))
+        }
+        LogicalPlan::Cte(c) => {
+            let new_input = collapse_passthrough_with(&c.input, target_alias, target_cte_name)?;
+            Ok(LogicalPlan::Cte(Cte {
+                input: Arc::new(new_input),
+                name: c.name.clone(),
+            }))
+        }
+        // For other node types (leaves) return unchanged
         other => Ok(other.clone()),
     }
 }
