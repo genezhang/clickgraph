@@ -1,3 +1,62 @@
+## [0.6.3-dev] - 2026-03-01
+
+### 🚀 Features
+
+- **LDBC SNB benchmark: 14/37 → 36/37 (97%)** — 22 queries promoted from adapted to official Cypher. The only remaining gap is bi-16 (CALL subquery, a known language feature gap).
+  - **Official queries promoted**: complex-3, complex-5, complex-7, complex-10, complex-12, complex-13, bi-3, bi-8, bi-14, and others
+  - Adapted queries remaining: bi-17 (multi-VLP), complex-14 (weighted shortest path via `cost(path)`)
+
+- **GraphRAG structured output** (`format: "Graph"`) (PR #165): Query results returned as graph-structured JSON with nodes, edges, and properties — enables direct consumption by graph visualization and RAG pipelines.
+
+- **ClickHouse cluster load balancing** (`CLICKHOUSE_CLUSTER` env var) (PR #164): Distributes queries across ClickHouse cluster nodes for horizontal read scaling.
+
+- **`apoc.meta.schema()` for MCP server compatibility** (PR #163): Implements the Neo4j APOC procedure that MCP servers and graph tools use for schema introspection.
+
+- **LLM-powered schema discovery** (`:discover` command) (PR #146): Server formats a discovery prompt (`POST /schemas/discover-prompt`), client calls LLM (Anthropic or OpenAI-compatible) to generate YAML schema from ClickHouse table metadata. Replaced the GLiNER/gline-rs approach.
+
+- **Weighted shortest path** (`cost(path)` function) (PR #160): Supports Dijkstra-style weighted VLP traversal for queries like complex-14. `WeightCteConfig` carries weight info through the VLP pipeline; auto-creates bidirectional weight CTEs for undirected traversal.
+
+- **List comprehension → `arrayCount()` optimization** (PR #153): Parses `[x IN list WHERE cond | expr]` syntax, maps `size(ListComprehension)` to ClickHouse `arrayCount()` — avoids correlated subqueries that fail with UNION ALL ("Cannot clone Union plan step").
+
+- **Pattern comprehension → pre-aggregated CTE approach** (PR #159): Replaces correlated subqueries from `size(PatternComprehension)` with pre-aggregated CTEs + LEFT JOINs. Includes `arrayConcat()` for list concatenation (`list1 + list2`).
+
+- **Official complex-7 — chained map access + NOT EXISTS** (PR #152): Greedy chained property parsing (`a.b.c`), map literal node flattening (`head(collect({key: node}))`), split NOT EXISTS for undirected edges.
+
+- **Official complex-3 — supertype inference + IN→OR expansion** (PR #151): Supertype collapse (Post+Comment → Message), `IN [col1, col2]` → `OR` expansion for ClickHouse compatibility, 5-WITH chain support.
+
+- **Map property access** (`collect({score: x})[0].score` → ClickHouse map subscript) (PR #147): Tracks `map_keys` through CTE pipeline, generates `ArraySubscript` for map property access with 0-based → 1-based index conversion.
+
+- **UNWIND support** (ARRAY JOIN) (PR #133): Translates Cypher UNWIND to ClickHouse ARRAY JOIN.
+
+- **`--log-level` CLI flag** for runtime log level configuration.
+
+### 🐛 Bug Fixes
+
+- **Undirected edge fixes**: Removed `has_nested_undirected_edge` guard that prevented UNION split for mid-chain undirected edges (PR #147). Fixed BidirectionalUnion for multi-pattern MATCH with bound endpoints — collapses redundant Union to single Outgoing branch (PR #148).
+
+- **VLP (variable-length path) fixes**: Fixed path rewriting for reverse UNION branches (PR #135), composite ID support (PR #134, #136), `*N..N` exact-hop guard (PR #137), duplicate WITH RECURSIVE removal (PR #131), multi-VLP query support (PR #132), DISTINCT deduplication (PR #130), zero-lower-bound `*0..` for single-type and multi-type VLPs (PR #142), CROSS JOIN removal for VLP CTEs in downstream queries (PR #145).
+
+- **OPTIONAL MATCH fixes**: INNER→LEFT JOIN conversion for CTE-backed JOINs in OPTIONAL MATCH context, spurious duplicate JOIN removal, orphan JOIN removal guards, `collect(node)` expansion to ID-only for `has()` compatibility (PR #143).
+
+- **CTE/scope fixes**: Bare variable resolution after WITH barrier (PR #120, #121), `cte_references` preservation in UNION branches (PR #122), composite alias augmentation (PR #128), buried WithClause preservation in DuplicateScansRemoving (PR #138).
+
+- **shortestPath fixes**: `CASE path IS NULL` → `ifNull(minOrNull(hop_count), -1)` rewriting, spurious non-VLP JOIN cleanup, endpoint inline filter preservation (PR #157).
+
+- **Parser whitespace fix**: `MATCH`/`OPTIONAL MATCH` now handle leading whitespace after `$param` syntax (PR #145).
+
+- **Browser click-to-expand regressions**: Fixed 5 bugs from scope resolution redesign — filter_tagging crash, VLP multi-type inference, type mismatch, polymorphic label extraction, pruned MATCH detection (PR #156).
+
+- **Determinism fixes**: HashSet→BTreeSet in anchor node selection, HashMap→BTreeMap in GraphSchema, sorted conversions in CTE extraction (PR #137, #139).
+
+### ⚙️ Infrastructure
+
+- **Integration test cleanup**: 3,068 tests passing, 57 stale xfails removed (PR #169).
+- **Scoping-only WITH collapse + benchmark infrastructure** (PR #168): Optimizes scoping-only WITH clauses that don't need CTE materialization.
+- **Schema-parameterized SQL generation tests**: 76 tests across 6 schema variants (PR #162).
+- **Browser interaction tests** with full schema variant coverage (PR #161).
+- **Version bump to v0.6.3-dev** with README cleanup (PR #167).
+- **Roadmap and guide updates** (PR #166).
+
 ## [0.6.2-dev] - 2026-02-20
 
 ### ⚙️ Architecture
