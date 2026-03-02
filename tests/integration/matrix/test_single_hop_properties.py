@@ -321,7 +321,6 @@ class TestDenormalizedSingleHop:
         result = execute_query(query, schema_name="filesystem")
         assert result["success"], f"Query failed: {query}\nError: {result['body']}"
     
-    @pytest.mark.xfail(reason="Code bug: group_membership denormalized schema generates invalid SQL")
     def test_group_membership(self, server_running):
         """Test User-[MEMBER_OF]->Group pattern (traditional schema)"""
         query = "MATCH (a:User)-[r:MEMBER_OF]->(b:Group) RETURN a.name, b.name LIMIT 10"

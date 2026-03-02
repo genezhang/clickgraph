@@ -1,46 +1,65 @@
 # ClickGraph Status
 
-*Updated: February 20, 2026*
+*Updated: March 2, 2026*
 
 ## Current Version: v0.6.3-dev
 
 Read-only Cypher-to-ClickHouse SQL query engine with Neo4j Browser compatibility.
 
-**Tests**: 1,111 unit (zero regressions)  
-**LDBC Mini**: 13/37 (35%) — maintained baseline through 2 architecture PRs  
-**Benchmark**: 18/18 queries (100%) at 5000 scale (954.9M rows)  
-**Architecture**: ✅ Anchor-aware join generation (-374 net lines) + scope-aware CTE variable resolution (+411 lines)
+**Unit Tests**: 1,360 passing (100%, zero regressions)
+**Integration Tests**: 3,068 passing, 108 failing (environment-dependent), 171 xfailed
+**LDBC SNB**: 36/37 queries passing (97%) — bi-16 blocked by CALL subquery
+**Benchmark**: 14/14 queries (100%)
+**E2E Tests**: Bolt 4/4, Cache 5/5 (100%)
+
+### Integration Test Breakdown
+
+| Category | Tests | Status |
+|----------|-------|--------|
+| Core query patterns | ~2,400 | Passing |
+| Matrix cross-schema | ~350 | Passing |
+| VLP / shortest path | ~150 | Passing |
+| GraphRAG / vector | ~80 | Passing |
+| Schema variations | ~90 | ~37 need schemas not in default config |
+| Environment-dependent | ~70 | Need specific ClickHouse tables/fixtures |
 
 ## What Works
 
 - **Cypher queries**: MATCH, WHERE, RETURN, WITH, ORDER BY, LIMIT, SKIP, DISTINCT, OPTIONAL MATCH, UNWIND, UNION ALL
 - **Graph patterns**: Node/relationship patterns, variable-length paths (`*1..3`), shortest path, multi-hop traversals
-- **Path functions**: `length(p)`, `nodes(p)`, `relationships(p)`
+- **Path functions**: `length(p)`, `nodes(p)`, `relationships(p)`, `cost(p)` (weighted shortest path)
 - **Aggregations**: count, sum, avg, min, max, collect — with GROUP BY
-- **Functions**: String, numeric, date, type coercion, list operations
+- **Functions**: String, numeric, date, type coercion, list operations, CASE expressions
+- **List comprehension**: `[x IN list WHERE cond | expr]` with `arrayCount()` optimization
+- **Pattern comprehension**: `size([(a)-[:R]->(b) | b.prop])` via pre-aggregated CTEs
 - **Multi-relationship**: `[:TYPE1|TYPE2]` with UNION SQL generation
+- **Map literals**: `collect({key: val})` with map property access (`top.score`)
 - **Variable Scope Resolution**: `VariableScope` correctly resolves variables across WITH barriers — CTE-scoped vars use CTE columns, table vars use schema columns; covers SELECT, WHERE, ORDER BY, GROUP BY, HAVING, JOINs
 - **Scope-Aware CTE/UNION Rendering**: Task-local `VariableRegistry` with `property_mapping` on `VariableSource::Cte` enables correct column resolution during SQL rendering; per-CTE save/restore; WITH barrier scope clearing; UNION branch recursion
 - **Anchor-Aware Join Generation**: Generic 64-line loop + 810-line module replaces ~1200 lines of per-strategy handlers; topological sort on schema-independent join graph; handles OPTIONAL MATCH shared-node patterns without cartesian products
 - **Unified Type Inference**: Single 4-phase pass (SchemaInference merged Feb 2026) with direction-aware UNION generation
   - **Phase 0**: Relationship-based label inference
   - **Phase 1**: Filter→GraphRel UNION with WHERE constraint extraction
-  - **Phase 2**: Untyped node UNION with direction validation (🎯 Neo4j Browser expand fix)
-  - **Phase 3**: ViewScan resolution (Empty → table scans)
+  - **Phase 2**: Untyped node UNION with direction validation
+  - **Phase 3**: ViewScan resolution (Empty → table scans, denormalized nodes deferred to render phase)
 - **Property pruning**: Untyped queries skip tables missing referenced properties (10x–50x speedup)
 - **Multi-schema**: USE clause, per-request schema selection, GLOBAL_SCHEMAS registry
 - **Multi-tenancy**: Parameterized views with `tenant_id`, session commands (`CALL sys.set`)
 - **Neo4j Bolt v5.8**: Browser click-to-expand, schema procedures, session commands, EXPLAIN handling
 - **Schema variations**: Standard, denormalized, FK-edge, polymorphic, composite ID, multi-tenant
 - **Query cache**: Keyed by query + schema + tenant_id + view_parameters
+- **LLM-powered schema discovery**: Interactive schema generation from natural language via Anthropic/OpenAI
+- **GraphRAG structured output**: `format: "Graph"` returns deduplicated nodes, edges, and stats
+- **ClickHouse cluster load balancing**: `CLICKHOUSE_CLUSTER` for auto-discovery and load balancing
 
 ## Current Limitations
 
 See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for details.
 
 - ❌ Write operations (CREATE, SET, DELETE, MERGE) — out of scope by design
+- ⚠️ CALL subquery not supported (blocks LDBC bi-16)
 - ⚠️ Shortest path may OOM on dense graphs — use bounded ranges `*1..5`
-- ⚠️ CASE expressions not yet supported
+- ⚠️ Multiple standalone UNWIND without MATCH partially supported (single UNWIND works)
 - ⚠️ Neo4j Desktop/NeoDash WebSocket connection (issue #57)
 
 ## Architecture

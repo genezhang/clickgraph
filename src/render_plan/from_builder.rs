@@ -956,6 +956,32 @@ impl LogicalPlan {
 
         log::info!("🔍 No VLP found, proceeding with FROM marker...");
 
+        // If an anchor_table is set, prefer it as FROM (ensures OPTIONAL MATCH
+        // with incoming direction uses the required-MATCH anchor, not the optional node)
+        if let Some(ref anchor) = graph_joins.anchor_table {
+            if let Some(anchor_join) = graph_joins
+                .joins
+                .iter()
+                .find(|j| j.joining_on.is_empty() && &j.table_alias == anchor)
+            {
+                let table_name = parameterized_tables
+                    .get(&anchor_join.table_alias)
+                    .cloned()
+                    .unwrap_or_else(|| anchor_join.table_name.clone());
+                log::info!(
+                    "✅ Using anchor_table '{}' as FROM: table='{}'",
+                    anchor,
+                    table_name
+                );
+                return Ok(Some(ViewTableRef {
+                    source: Arc::new(LogicalPlan::Empty),
+                    name: table_name,
+                    alias: Some(anchor_join.table_alias.clone()),
+                    use_final: false,
+                }));
+            }
+        }
+
         for join in &graph_joins.joins {
             if join.joining_on.is_empty() {
                 // 🔧 PARAMETERIZED VIEW FIX: Use parameterized table reference if available

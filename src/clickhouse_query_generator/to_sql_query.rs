@@ -766,11 +766,11 @@ fn rewrite_vlp_branch_select(branch: &mut RenderPlan, parent_ctes: &[crate::rend
     }
 
     // 🔧 FIX: Remove spurious JOINs from VLP branches in multi-pattern MATCH.
-    // When FROM is a VLP CTE, JOINs to regular tables (not VLP/WITH CTEs) are redundant
-    // because the VLP CTE already encodes the full traversal with endpoint filters.
-    // These JOINs come from standalone pattern nodes in multi-pattern MATCH
-    // (e.g., `(person1:Person), (person2:Person), path = shortestPath(...)`).
-    if from_is_vlp {
+    // Only for shortestPath queries (path_variable is set): JOINs to regular tables
+    // are redundant because the VLP CTE already encodes the full traversal with
+    // endpoint filters. For non-shortestPath VLPs, chained JOINs are legitimate
+    // (e.g., VLP endpoint -> AUTHORED -> Post).
+    if from_is_vlp && path_variable.is_some() {
         let before_count = branch.joins.0.len();
         branch.joins.0.retain(|join| {
             // Keep JOINs to VLP CTEs or WITH CTEs
@@ -2124,6 +2124,11 @@ fn rewrite_vlp_in_cte_bodies(plan: &mut RenderPlan) {
             rewrite_cte_body_vlp_refs(inner, &vlp_info);
         }
     }
+
+    // Also process the outer plan itself — when an undirected VLP generates UNION
+    // branches in the outer query, the chained JOINs and filters from the base plan
+    // must be cloned to each branch (same logic as CTE bodies).
+    rewrite_cte_body_vlp_refs(plan, &vlp_info);
 }
 
 /// Rewrite VLP references in a single CTE body's RenderPlan.

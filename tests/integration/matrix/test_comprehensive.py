@@ -521,7 +521,6 @@ class TestUnwind:
         result = execute_query(query)  # UNWIND doesn't need schema
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
     
-    @pytest.mark.xfail(reason="UNWIND with MATCH has complex execution requirements")
     def test_unwind_with_match(self, server_running, schema_config, query_generator):
         """Test: UNWIND ... MATCH ..."""
         query = query_generator.unwind_with_match()

@@ -3,6 +3,7 @@ Test edge uniqueness optimization with single-column edge_id
 Verifies that single-column edge_id avoids tuple() overhead
 """
 
+import pytest
 import requests
 import os
 CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
@@ -19,7 +20,6 @@ def execute_cypher(query: str, schema_name: str = SCHEMA_NAME) -> dict:
     )
     return response.json()
 
-@pytest.mark.xfail(reason="Code bug: single column edge ID optimization fails")
 def test_single_column_edge_id():
     """Test that single-column edge_id (follow_id) avoids tuple() overhead"""
     print("\n" + "="*80)

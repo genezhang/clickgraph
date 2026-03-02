@@ -84,7 +84,6 @@ class TestSingleOptionalMatch:
         # Should return one row with NULL for b
         assert_row_count(response, 1)
     
-    @pytest.mark.xfail(reason="Undirected OPTIONAL MATCH with COUNT has scope issues in UNION subquery")
     def test_optional_match_undirected(self, simple_graph):
         """Test OPTIONAL MATCH with undirected relationship."""
         response = execute_cypher(
