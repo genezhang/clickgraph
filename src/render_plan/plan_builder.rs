@@ -2538,7 +2538,6 @@ impl RenderPlanBuilder for LogicalPlan {
         );
 
         if has_with_clause {
-            log::debug!("to_render_plan_with_ctx: Calling build_chained_with_match_cte_plan with plan_ctx={}", plan_ctx.is_some());
             return build_chained_with_match_cte_plan(self, schema, plan_ctx, scope);
         }
 
@@ -2733,6 +2732,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
             if !has_graph_joins {
                 // Unwrap all wrapper nodes to find Union
+                log::debug!("🔀 UNION PATH: contains_union=true, has_graph_joins=false");
                 let mut union_node = self;
                 loop {
                     match union_node {
@@ -2760,12 +2760,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
                     // Render each branch with plan_ctx
                     let mut branch_renders = Vec::new();
-                    for (idx, branch) in union.inputs.iter().enumerate() {
-                        log::debug!(
-                            "🔀 Rendering Union branch {} type: {:?}, with plan_ctx",
-                            idx,
-                            std::mem::discriminant(branch.as_ref())
-                        );
+                    for branch in union.inputs.iter() {
                         let branch_render =
                             branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
                         branch_renders.push(branch_render);
@@ -3188,6 +3183,31 @@ impl RenderPlanBuilder for LogicalPlan {
                                     distinct: FilterBuilder::extract_distinct(plan),
                                 };
                                 // Don't recurse — Union is below Projection
+                            }
+                            LogicalPlan::Filter(f) => {
+                                // Convert Filter predicate to RenderExpr and set on
+                                // base_render. plan_builder_utils.rs will propagate
+                                // to union.input branches during CTE building.
+                                log::info!("🔧 apply_wrappers Filter: predicate={:?}", f.predicate);
+                                let filter_expr = RenderExpr::try_from(f.predicate.clone())?;
+                                log::info!(
+                                    "🔧 apply_wrappers Filter: converted to RenderExpr: {:?}",
+                                    filter_expr
+                                );
+                                render.filters = match render.filters.0.take() {
+                                    Some(existing) => FilterItems(Some(
+                                        RenderExpr::OperatorApplicationExp(OperatorApplication {
+                                            operator: Operator::And,
+                                            operands: vec![existing, filter_expr],
+                                        }),
+                                    )),
+                                    None => FilterItems(Some(filter_expr)),
+                                };
+                                apply_wrappers(&f.input, render, plan_ctx)?;
+                            }
+                            LogicalPlan::Unwind(u) => {
+                                // Recurse through Unwind to reach deeper wrappers
+                                apply_wrappers(&u.input, render, plan_ctx)?;
                             }
                             _ => {}
                         }
@@ -3613,11 +3633,6 @@ impl RenderPlanBuilder for LogicalPlan {
 
         // GraphRel WITH plan_ctx (for UNION branches with path variables)
         if let LogicalPlan::GraphRel(graph_rel) = self {
-            log::debug!(
-                "to_render_plan_with_ctx: GraphRel MATCHED, path_variable='{:?}'",
-                graph_rel.path_variable
-            );
-
             // Extract CTEs WITH plan_ctx so VLP generator gets property requirements
             let mut context = super::cte_generation::CteGenerationContext::new();
             let ctes = CteItems(extract_ctes_with_context(
@@ -3881,12 +3896,6 @@ impl RenderPlanBuilder for LogicalPlan {
             }
             return Ok(render_plan);
         }
-
-        // For all other cases, log what type we're delegating
-        log::debug!(
-            "to_render_plan_with_ctx: delegating {:?} to old to_render_plan (no special handler, plan_ctx LOST)",
-            std::mem::discriminant(self)
-        );
 
         // For all other cases, delegate to the standard to_render_plan
         // TODO: This loses plan_ctx - each case should have a proper handler

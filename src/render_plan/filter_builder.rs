@@ -167,12 +167,8 @@ impl FilterBuilder for LogicalPlan {
                         }
                     } else {
                         // Fixed-length VLP uses chained JOINs - extract where_predicate
-                        log::info!(
-                            "🔧 Fixed-length VLP: Using chained JOINs, extracting where_predicate for outer WHERE"
-                        );
                         if let Some(ref predicate) = graph_rel.where_predicate {
                             if let Ok(expr) = RenderExpr::try_from(predicate.clone()) {
-                                log::info!("🔧 Fixed-length VLP: Extracted filter: {:?}", expr);
                                 return Ok(Some(expr));
                             }
                         }
@@ -395,7 +391,30 @@ impl FilterBuilder for LogicalPlan {
             LogicalPlan::Skip(skip) => skip.input.extract_filters()?,
             LogicalPlan::Limit(limit) => limit.input.extract_filters()?,
             LogicalPlan::Cte(cte) => cte.input.extract_filters()?,
-            LogicalPlan::Union(_) => None,
+            LogicalPlan::Union(union) => {
+                // For BidirectionalUnion: both branches have the same filters
+                // (where_predicate is cloned to both). Extract from first branch.
+                if !union.inputs.is_empty() {
+                    let first = union.inputs[0].extract_filters()?;
+                    if first.is_some() {
+                        // Verify all branches have filters (don't extract partial)
+                        let all_have = union
+                            .inputs
+                            .iter()
+                            .skip(1)
+                            .all(|b| b.extract_filters().ok().flatten().is_some());
+                        if all_have {
+                            first
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
             LogicalPlan::PageRank(_) => None,
             LogicalPlan::Unwind(u) => u.input.extract_filters()?,
             LogicalPlan::CartesianProduct(cp) => {

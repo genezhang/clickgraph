@@ -1566,10 +1566,9 @@ fn traverse_connected_pattern_with_mode<'a>(
                                     operands: vec![acc, filter],
                                 })
                             })
-                            .inspect(|_combined| {
-                                log::info!(
-                                    "🔧 VLP: Merged {} bound node filters into where_predicate for rel '{}'",
-                                    "multiple",
+                            .inspect(|_| {
+                                log::debug!(
+                                    "VLP: Merged bound node filters into where_predicate for rel '{}'",
                                     rel_alias
                                 );
                             })
