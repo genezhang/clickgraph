@@ -819,11 +819,9 @@ impl ProjectionTagging {
                                 if !table_ctx.is_relation() && table_ctx.get_label_opt().is_some() {
                                     if let Some(label) = table_ctx.get_label_opt() {
                                         if let Ok(node_schema) = graph_schema.node_schema(&label) {
-                                            let id_col =
-                                                node_schema.node_id.id.first_column().to_string();
                                             Some(LogicalExpr::PropertyAccessExp(PropertyAccess {
                                                 table_alias: TableAlias(alias.clone()),
-                                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_col),
+                                                column: node_schema.node_id.id.to_property_value(),
                                             }))
                                         } else {
                                             None
@@ -1110,24 +1108,26 @@ impl ProjectionTagging {
                 // startNode(r) → PropertyAccess(r.from_id_col), used in CASE WHEN comparisons
                 // to determine if a node is the source or target of a relationship.
                 if matches!(fn_name_lower.as_str(), "startnode" | "endnode") {
-                    if let Some(LogicalExpr::TableAlias(TableAlias(alias))) =
-                        scalar_fn_call.args.first()
-                    {
-                        if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias) {
-                            if table_ctx.is_relation() {
-                                if let Some(label) = table_ctx.get_label_opt() {
-                                    if let Ok(rel_schema) = graph_schema.get_rel_schema(&label) {
-                                        let col = if fn_name_lower == "startnode" {
-                                            rel_schema.from_id.first_column().to_string()
-                                        } else {
-                                            rel_schema.to_id.first_column().to_string()
-                                        };
-                                        item.expression =
-                                            LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                                table_alias: TableAlias(alias.clone()),
-                                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(col),
-                                            });
-                                        return Ok(());
+                    if scalar_fn_call.args.len() == 1 {
+                        if let Some(LogicalExpr::TableAlias(TableAlias(alias))) =
+                            scalar_fn_call.args.first()
+                        {
+                            if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias) {
+                                if table_ctx.is_relation() {
+                                    if let Some(label) = table_ctx.get_label_opt() {
+                                        if let Ok(rel_schema) = graph_schema.get_rel_schema(&label) {
+                                            let id = if fn_name_lower == "startnode" {
+                                                &rel_schema.from_id
+                                            } else {
+                                                &rel_schema.to_id
+                                            };
+                                            item.expression =
+                                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                                    table_alias: TableAlias(alias.clone()),
+                                                    column: id.to_property_value(),
+                                                });
+                                            return Ok(());
+                                        }
                                     }
                                 }
                             }

@@ -59,6 +59,7 @@ pub fn parse_with_clause(
 
     // Try parsing `WITH *` (star projection) before attempting regular items.
     // `WITH *` carries all visible aliases forward unchanged — used after UNWIND.
+    // Also supports `WITH *, x AS y` (star plus additional explicit projections).
     let (input, with_items, is_star) = if let Ok((rest, _)) =
         nom::combinator::peek(ws(nom::bytes::complete::tag::<
             _,
@@ -70,7 +71,16 @@ pub fn parse_with_clause(
         // Consume the `*`
         let (rest, _) =
             ws(nom::bytes::complete::tag::<_, _, OpenCypherParsingError<'_>>("*")).parse(rest)?;
-        (rest, vec![], true)
+        // Optionally parse `, extra_item, ...` after the `*`
+        let (rest, extra_items) = opt(preceded(
+            delimited(multispace0, char(','), multispace0),
+            separated_list1(
+                delimited(multispace0, char(','), multispace0),
+                cut(with_item_parser),
+            ),
+        ))
+        .parse(rest)?;
+        (rest, extra_items.unwrap_or_default(), true)
     } else {
         let (rest, items) = context(
             "Error in with clause",

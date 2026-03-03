@@ -103,27 +103,62 @@ pub fn evaluate_with_clause<'a>(
     // which forwards all prior aliases plus the unwind variable into the next scope.
     if with_clause.is_star {
         use crate::query_planner::logical_expr::{ColumnAlias, TableAlias};
-        let projection_items: Vec<ProjectionItem> = plan_ctx
+
+        // Only expand user-visible (explicitly named) aliases to avoid leaking internal
+        // generated aliases (e.g. anonymous pattern nodes with explicit_alias=false).
+        // Sort for deterministic SQL output regardless of HashMap iteration order.
+        let mut star_aliases: Vec<String> = plan_ctx
             .get_alias_table_ctx_map()
-            .keys()
+            .iter()
+            .filter(|(_, table_ctx)| table_ctx.is_explicit_alias())
+            .map(|(alias, _)| alias.clone())
+            .collect();
+        star_aliases.sort();
+
+        let mut projection_items: Vec<ProjectionItem> = star_aliases
+            .iter()
             .map(|alias| ProjectionItem {
                 expression: LogicalExpr::TableAlias(TableAlias(alias.clone())),
                 col_alias: Some(ColumnAlias(alias.clone())),
             })
             .collect();
 
+        // Append any explicit extra items that follow the `*` (e.g., `WITH *, x AS y`)
+        for item in &with_clause.with_items {
+            projection_items.push(ProjectionItem::try_from(item.clone())?);
+        }
+
         log::debug!(
             "WITH *: Expanding to {} aliases: {:?}",
             projection_items.len(),
-            plan_ctx
-                .get_alias_table_ctx_map()
-                .keys()
-                .collect::<Vec<_>>(),
+            &star_aliases,
         );
 
         let mut with_node =
-            crate::query_planner::logical_plan::WithClause::new(plan, projection_items)?;
+            crate::query_planner::logical_plan::WithClause::new(plan, projection_items)?
+                .with_distinct(with_clause.distinct);
 
+        // Apply ORDER BY, SKIP, LIMIT, and WHERE — same as the non-star path.
+        if let Some(ref order_by_ast) = with_clause.order_by {
+            let order_by_items: Result<Vec<OrderByItem>, _> = order_by_ast
+                .order_by_items
+                .iter()
+                .map(|item| OrderByItem::try_from(item.clone()))
+                .collect();
+            let order_by_items = order_by_items.map_err(|e| {
+                LogicalPlanError::QueryPlanningError(format!(
+                    "Failed to convert WITH * ORDER BY item: {}",
+                    e
+                ))
+            })?;
+            with_node = with_node.with_order_by(order_by_items);
+        }
+        if let Some(ref skip_ast) = with_clause.skip {
+            with_node = with_node.with_skip(skip_ast.skip_item as u64);
+        }
+        if let Some(ref limit_ast) = with_clause.limit {
+            with_node = with_node.with_limit(limit_ast.limit_item as u64);
+        }
         if let Some(ref where_ast) = with_clause.where_clause {
             let predicate: LogicalExpr = LogicalExpr::try_from(where_ast.conditions.clone())
                 .map_err(|e| {

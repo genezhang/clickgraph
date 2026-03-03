@@ -220,6 +220,33 @@ impl Identifier {
             Identifier::Composite(cols) => cols.first().map(|s| s.as_str()).unwrap_or("id"),
         }
     }
+
+    /// Build a `PropertyValue` for use in `PropertyAccessExp` for identity comparisons.
+    ///
+    /// For single-column identifiers uses `PropertyValue::Column` (simple and direct).
+    /// For composite identifiers uses `PropertyValue::Expression` with a bare concat
+    /// expression; `to_sql(alias)` at render time will prepend the alias to each column.
+    pub fn to_property_value(&self) -> crate::graph_catalog::expression_parser::PropertyValue {
+        match self {
+            Identifier::Single(col) => {
+                crate::graph_catalog::expression_parser::PropertyValue::Column(col.clone())
+            }
+            Identifier::Composite(cols) => {
+                let parts: Vec<String> = cols
+                    .iter()
+                    .map(|c| {
+                        let quoted =
+                            crate::clickhouse_query_generator::quote_identifier(c.as_str());
+                        format!("toString({})", quoted)
+                    })
+                    .collect();
+                crate::graph_catalog::expression_parser::PropertyValue::Expression(format!(
+                    "concat({})",
+                    parts.join(", '|', ")
+                ))
+            }
+        }
+    }
 }
 
 impl From<String> for Identifier {

@@ -639,23 +639,23 @@ async fn test_full_browser_sequence_expand() {
 // NeoDash node right-click expansion query (startNode/endNode + WITH *)
 // ===========================================================================
 
-/// `startNode(r)` resolves to the from-ID column of the relationship table.
+/// `startNode(r)` and `endNode(r)` resolve to the from/to ID columns of the relationship table.
 /// Used in NeoDash's non-APOC node expansion query.
 #[tokio::test]
-async fn test_startnode_endnode_in_case_expression() {
+async fn test_startnode_and_endnode_in_case_expression() {
     let schema = create_standard_schema();
-    // Simplified version using a labeled node (b:User) with a directed rel
+
+    // Test startNode(r) in CASE WHEN
     let cypher = "MATCH (b:User)-[r:FOLLOWS]->(u:User) \
                   WITH type(r) as type, CASE WHEN startNode(r) = b THEN 'out' ELSE 'in' END as dir, COUNT(*) as value \
                   RETURN type, dir, value";
     let sql = generate_expand_sql(&schema, cypher).await;
     let sql_lower = sql.to_lowercase();
-
     assert!(
         sql_lower.contains("select"),
         "startNode query should produce valid SQL"
     );
-    // startNode(r) = b should resolve to r.follower_id = b.user_id (FOLLOWS from_id = follower_id)
+    // startNode(r) = b → r.follower_id = b.user_id (FOLLOWS from_id = follower_id)
     assert!(
         sql_lower.contains("follower_id"),
         "startNode(r) should reference the from_id column (follower_id): got SQL:\n{sql}"
@@ -664,9 +664,17 @@ async fn test_startnode_endnode_in_case_expression() {
         sql_lower.contains("user_id"),
         "node comparison should reference the node id column (user_id): got SQL:\n{sql}"
     );
+    assert!(sql_lower.contains("case when"), "CASE WHEN should appear in SQL");
+
+    // Test endNode(r) in CASE WHEN
+    let cypher2 = "MATCH (b:User)-[r:FOLLOWS]->(u:User) \
+                   WITH type(r) as type, CASE WHEN endNode(r) = u THEN 'to' ELSE 'other' END as side \
+                   RETURN type, side";
+    let sql2 = generate_expand_sql(&schema, cypher2).await;
+    let sql2_lower = sql2.to_lowercase();
     assert!(
-        sql_lower.contains("case when"),
-        "CASE WHEN should appear in SQL"
+        sql2_lower.contains("followed_id"),
+        "endNode(r) should reference the to_id column (followed_id): got SQL:\n{sql2}"
     );
 }
 
@@ -699,7 +707,9 @@ async fn test_with_star_preserves_scope() {
 }
 
 /// Full NeoDash non-APOC node expansion query (regression test).
-/// This is the exact fallback query NeoDash sends when right-clicking a graph node.
+/// Uses labeled/typed pattern (ClickGraph requires labels to resolve tables).
+/// NeoDash's actual query uses `MATCH (b) WHERE id(b) = $id` (unlabeled) — that variant
+/// is tested separately in `test_neodash_expansion_with_id_parameter`.
 #[tokio::test]
 async fn test_neodash_node_expansion_query() {
     let schema = create_standard_schema();
@@ -731,4 +741,32 @@ async fn test_neodash_node_expansion_query() {
         sql_lower.contains("type"),
         "type from WITH should appear in output: {sql}"
     );
+}
+
+/// NeoDash actual expansion query structure with $id parameter and labeled node.
+/// NeoDash sends `MATCH (b) WHERE id(b) = $id` (unlabeled), which requires ClickGraph to
+/// infer the label from context. This test uses the labeled form as the closest approximation
+/// that ClickGraph can resolve. The unlabeled form requires label inference from `id()` which
+/// is a known limitation documented in KNOWN_ISSUES.md.
+#[tokio::test]
+async fn test_neodash_expansion_with_id_parameter() {
+    let schema = create_standard_schema();
+    // Closest approximation to the real NeoDash query using a labeled node + $id parameter
+    let cypher = "MATCH (b:User) WHERE b.user_id = $id \
+                  MATCH (b)-[r:FOLLOWS]-(u:User) \
+                  WITH type(r) as type, CASE WHEN startNode(r) = b THEN 'out' ELSE 'in' END as dir, COUNT(*) as value \
+                  UNWIND ['in', 'out', 'any'] as direction \
+                  WITH * \
+                  WHERE (direction = dir) OR direction = 'any' \
+                  RETURN type, direction, sum(value) as value ORDER BY type, direction";
+    let result = try_generate_expand_sql(&schema, cypher).await;
+    assert!(
+        result.is_ok(),
+        "NeoDash expansion with id parameter should compile: {:?}",
+        result.err()
+    );
+    let sql = result.unwrap();
+    let sql_lower = sql.to_lowercase();
+    assert!(sql_lower.contains("select"), "Should produce valid SQL: {sql}");
+    assert!(sql_lower.contains("follower_id"), "from_id should appear: {sql}");
 }

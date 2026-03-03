@@ -1382,16 +1382,15 @@ impl FilterTagging {
                             if table_ctx.is_relation() {
                                 if let Some(label) = table_ctx.get_label_opt() {
                                     if let Ok(rel_schema) = graph_schema.get_rel_schema(&label) {
-                                        let col = if fn_name_lower == "startnode" {
-                                            rel_schema.from_id.first_column().to_string()
+                                        let id = if fn_name_lower == "startnode" {
+                                            &rel_schema.from_id
                                         } else {
-                                            rel_schema.to_id.first_column().to_string()
+                                            &rel_schema.to_id
                                         };
-                                        use crate::graph_catalog::expression_parser::PropertyValue;
                                         return Ok(LogicalExpr::PropertyAccessExp(
                                             PropertyAccess {
                                                 table_alias: TableAlias(alias_str.clone()),
-                                                column: PropertyValue::Column(col),
+                                                column: id.to_property_value(),
                                             },
                                         ));
                                     }
@@ -1556,11 +1555,9 @@ impl FilterTagging {
                     if !table_ctx.is_relation() {
                         if let Some(label) = table_ctx.get_label_opt() {
                             if let Ok(node_schema) = graph_schema.node_schema(&label) {
-                                let id_col = node_schema.node_id.id.first_column().to_string();
-                                use crate::graph_catalog::expression_parser::PropertyValue;
                                 return Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(alias),
-                                    column: PropertyValue::Column(id_col),
+                                    column: node_schema.node_id.id.to_property_value(),
                                 }));
                             }
                         }
