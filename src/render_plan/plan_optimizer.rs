@@ -1389,6 +1389,9 @@ fn collect_referenced_aliases(plan: &RenderPlan) -> HashSet<String> {
     if let Some(ref having) = plan.having_clause {
         collect_aliases_from_expr(having, &mut aliases);
     }
+    for aj in &plan.array_join.0 {
+        collect_aliases_from_expr(&aj.expression, &mut aliases);
+    }
     aliases
 }
 
@@ -1456,23 +1459,41 @@ fn collect_aliases_from_expr(expr: &RenderExpr, aliases: &mut HashSet<String>) {
                 collect_aliases_from_expr(v, aliases);
             }
         }
+        RenderExpr::TableAlias(ta) => {
+            aliases.insert(ta.0.clone());
+        }
+        RenderExpr::ColumnAlias(ca) => {
+            aliases.insert(ca.0.clone());
+        }
+        RenderExpr::ExistsSubquery(es) => {
+            // Extract "alias." patterns from pre-rendered SQL
+            extract_aliases_from_sql(&es.sql, aliases);
+        }
+        RenderExpr::PatternCount(pc) => {
+            // Extract "alias." patterns from pre-rendered SQL
+            extract_aliases_from_sql(&pc.sql, aliases);
+        }
         RenderExpr::Raw(raw) => {
-            // Extract "alias." patterns from raw SQL
-            for word in raw.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '.') {
-                if let Some(alias) = word.strip_suffix('.') {
-                    if !alias.is_empty() {
-                        aliases.insert(alias.to_string());
-                    }
-                } else if word.contains('.') {
-                    if let Some(alias) = word.split('.').next() {
-                        if !alias.is_empty() {
-                            aliases.insert(alias.to_string());
-                        }
-                    }
+            extract_aliases_from_sql(raw, aliases);
+        }
+        _ => {}
+    }
+}
+
+/// Extract "alias." patterns from a SQL string.
+fn extract_aliases_from_sql(sql: &str, aliases: &mut HashSet<String>) {
+    for word in sql.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '.') {
+        if let Some(alias) = word.strip_suffix('.') {
+            if !alias.is_empty() {
+                aliases.insert(alias.to_string());
+            }
+        } else if word.contains('.') {
+            if let Some(alias) = word.split('.').next() {
+                if !alias.is_empty() {
+                    aliases.insert(alias.to_string());
                 }
             }
         }
-        _ => {}
     }
 }
 
