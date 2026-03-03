@@ -161,22 +161,38 @@ pub fn optimize_plan(plan: &mut RenderPlan) {
     remove_dead_ctes(plan);
     prune_vlp_columns(plan);
     prune_cte_columns(plan);
-    // Apply join optimization passes to main plan, UNION branches, and CTE bodies
-    optimize_joins_in_plan(plan);
+    let empty = HashSet::new();
 
+    // Apply join optimization passes to main plan, UNION branches, and CTE bodies
+    optimize_joins_in_plan(plan, &empty);
+
+    // For UNION branches: collect aliases referenced in the parent plan's SELECT/WHERE/etc.
+    // UNION branches often have empty SELECT items (populated later during SQL rendering),
+    // so we must protect aliases the parent plan references.
+    // Collect BEFORE taking mutable borrow of union.
+    let parent_aliases = if plan.union.0.is_some() {
+        collect_referenced_aliases(plan)
+    } else {
+        HashSet::new()
+    };
     if let Some(ref mut union) = plan.union.0 {
         for branch in union.input.iter_mut() {
-            optimize_joins_in_plan(branch);
+            optimize_joins_in_plan(branch, &parent_aliases);
         }
     }
 
     for cte in plan.ctes.0.iter_mut() {
         if let CteContent::Structured(ref mut cte_plan) = cte.content {
-            optimize_joins_in_plan(cte_plan);
+            optimize_joins_in_plan(cte_plan, &empty);
 
+            let cte_parent_aliases = if cte_plan.union.0.is_some() {
+                collect_referenced_aliases(cte_plan)
+            } else {
+                HashSet::new()
+            };
             if let Some(ref mut union) = cte_plan.union.0 {
                 for branch in union.input.iter_mut() {
-                    optimize_joins_in_plan(branch);
+                    optimize_joins_in_plan(branch, &cte_parent_aliases);
                 }
             }
         }
@@ -1349,9 +1365,136 @@ fn column_defines_alias(col_trimmed: &str, alias: &str) -> bool {
 // ─── Join Optimizations ──────────────────────────────────────────────────────
 
 /// Apply all join optimizations to a single plan.
-fn optimize_joins_in_plan(plan: &mut RenderPlan) {
-    remove_unreferenced_joins(plan);
-    eliminate_bridge_nodes_in_plan(plan);
+fn optimize_joins_in_plan(plan: &mut RenderPlan, protected_aliases: &HashSet<String>) {
+    remove_unreferenced_joins(plan, protected_aliases);
+    eliminate_bridge_nodes_in_plan(plan, protected_aliases);
+}
+
+/// Collect all table aliases referenced in a plan's SELECT, WHERE, ORDER BY, GROUP BY, HAVING.
+/// Used to build a "protected aliases" set for UNION branch optimization.
+fn collect_referenced_aliases(plan: &RenderPlan) -> HashSet<String> {
+    let mut aliases = HashSet::new();
+    for item in &plan.select.items {
+        collect_aliases_from_expr(&item.expression, &mut aliases);
+    }
+    if let Some(ref filter) = plan.filters.0 {
+        collect_aliases_from_expr(filter, &mut aliases);
+    }
+    for item in &plan.order_by.0 {
+        collect_aliases_from_expr(&item.expression, &mut aliases);
+    }
+    for expr in &plan.group_by.0 {
+        collect_aliases_from_expr(expr, &mut aliases);
+    }
+    if let Some(ref having) = plan.having_clause {
+        collect_aliases_from_expr(having, &mut aliases);
+    }
+    for aj in &plan.array_join.0 {
+        collect_aliases_from_expr(&aj.expression, &mut aliases);
+    }
+    aliases
+}
+
+/// Recursively collect all table aliases referenced in a RenderExpr.
+fn collect_aliases_from_expr(expr: &RenderExpr, aliases: &mut HashSet<String>) {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            aliases.insert(prop.table_alias.0.clone());
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in &op.operands {
+                collect_aliases_from_expr(operand, aliases);
+            }
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            for arg in &func.args {
+                collect_aliases_from_expr(arg, aliases);
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in &agg.args {
+                collect_aliases_from_expr(arg, aliases);
+            }
+        }
+        RenderExpr::Case(case) => {
+            if let Some(ref e) = case.expr {
+                collect_aliases_from_expr(e, aliases);
+            }
+            for (when, then) in &case.when_then {
+                collect_aliases_from_expr(when, aliases);
+                collect_aliases_from_expr(then, aliases);
+            }
+            if let Some(ref else_expr) = case.else_expr {
+                collect_aliases_from_expr(else_expr, aliases);
+            }
+        }
+        RenderExpr::List(exprs) => {
+            for e in exprs {
+                collect_aliases_from_expr(e, aliases);
+            }
+        }
+        RenderExpr::InSubquery(sub) => {
+            collect_aliases_from_expr(&sub.expr, aliases);
+        }
+        RenderExpr::ArraySubscript { array, index } => {
+            collect_aliases_from_expr(array, aliases);
+            collect_aliases_from_expr(index, aliases);
+        }
+        RenderExpr::ArraySlicing { array, from, to } => {
+            collect_aliases_from_expr(array, aliases);
+            if let Some(f) = from {
+                collect_aliases_from_expr(f, aliases);
+            }
+            if let Some(t) = to {
+                collect_aliases_from_expr(t, aliases);
+            }
+        }
+        RenderExpr::ReduceExpr(reduce) => {
+            collect_aliases_from_expr(&reduce.initial_value, aliases);
+            collect_aliases_from_expr(&reduce.list, aliases);
+            collect_aliases_from_expr(&reduce.expression, aliases);
+        }
+        RenderExpr::MapLiteral(entries) => {
+            for (_, v) in entries {
+                collect_aliases_from_expr(v, aliases);
+            }
+        }
+        RenderExpr::TableAlias(ta) => {
+            aliases.insert(ta.0.clone());
+        }
+        RenderExpr::ColumnAlias(ca) => {
+            aliases.insert(ca.0.clone());
+        }
+        RenderExpr::ExistsSubquery(es) => {
+            // Extract "alias." patterns from pre-rendered SQL
+            extract_aliases_from_sql(&es.sql, aliases);
+        }
+        RenderExpr::PatternCount(pc) => {
+            // Extract "alias." patterns from pre-rendered SQL
+            extract_aliases_from_sql(&pc.sql, aliases);
+        }
+        RenderExpr::Raw(raw) => {
+            extract_aliases_from_sql(raw, aliases);
+        }
+        _ => {}
+    }
+}
+
+/// Extract "alias." patterns from a SQL string.
+fn extract_aliases_from_sql(sql: &str, aliases: &mut HashSet<String>) {
+    for word in sql.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '.') {
+        if let Some(alias) = word.strip_suffix('.') {
+            if !alias.is_empty() {
+                aliases.insert(alias.to_string());
+            }
+        } else if word.contains('.') {
+            if let Some(alias) = word.split('.').next() {
+                if !alias.is_empty() {
+                    aliases.insert(alias.to_string());
+                }
+            }
+        }
+    }
 }
 
 /// Remove JOINs whose alias is completely unreferenced in the plan.
@@ -1363,7 +1506,7 @@ fn optimize_joins_in_plan(plan: &mut RenderPlan) {
 ///
 /// INNER JOINs are NOT removed because they can filter rows (if the ON condition
 /// eliminates non-matching rows), which would change Cypher bag semantics.
-fn remove_unreferenced_joins(plan: &mut RenderPlan) {
+fn remove_unreferenced_joins(plan: &mut RenderPlan, protected_aliases: &HashSet<String>) {
     // Collect indices to remove (in reverse order for safe removal)
     let mut to_remove = Vec::new();
 
@@ -1403,6 +1546,11 @@ fn remove_unreferenced_joins(plan: &mut RenderPlan) {
             if fpm.node_aliases.contains(alias) {
                 continue;
             }
+        }
+
+        // Keep if alias is protected by the parent plan (UNION branch optimization)
+        if protected_aliases.contains(alias) {
+            continue;
         }
 
         // Keep if alias is referenced in SELECT/WHERE/ORDER BY/GROUP BY/HAVING/ARRAY JOIN
@@ -1451,9 +1599,9 @@ fn remove_unreferenced_joins(plan: &mut RenderPlan) {
 
 /// Eliminate bridge nodes within a single plan's join list.
 /// Iterates until no more eliminations are found (handles chained bridges).
-fn eliminate_bridge_nodes_in_plan(plan: &mut RenderPlan) {
+fn eliminate_bridge_nodes_in_plan(plan: &mut RenderPlan, protected_aliases: &HashSet<String>) {
     loop {
-        let candidates = find_bridge_candidates(plan);
+        let candidates = find_bridge_candidates(plan, protected_aliases);
         if candidates.is_empty() {
             break;
         }
@@ -1482,7 +1630,10 @@ fn eliminate_bridge_nodes_in_plan(plan: &mut RenderPlan) {
 
 /// Pass 1: Identify bridge node candidates by iterating joins in reverse.
 /// Returns candidates sorted by descending index (safe for sequential removal).
-fn find_bridge_candidates(plan: &RenderPlan) -> Vec<BridgeCandidate> {
+fn find_bridge_candidates(
+    plan: &RenderPlan,
+    protected_aliases: &HashSet<String>,
+) -> Vec<BridgeCandidate> {
     let mut candidates = Vec::new();
 
     for (idx, join) in plan.joins.0.iter().enumerate().rev() {
@@ -1554,6 +1705,11 @@ fn find_bridge_candidates(plan: &RenderPlan) -> Vec<BridgeCandidate> {
         };
 
         let alias = &join.table_alias;
+
+        // Guard: alias must not be protected by parent plan (UNION branch optimization)
+        if protected_aliases.contains(alias) {
+            continue;
+        }
 
         // Guard: alias must not be referenced in SELECT, WHERE, ORDER BY, GROUP BY, HAVING
         if is_alias_referenced_in_plan(plan, alias) {
@@ -2014,7 +2170,7 @@ mod tests {
         let select = vec![prop("t3", "PersonId"), prop("t4", "MessageId")];
         let mut plan = make_plan(joins, select);
 
-        eliminate_bridge_nodes_in_plan(&mut plan);
+        eliminate_bridge_nodes_in_plan(&mut plan, &HashSet::new());
 
         // person2 should be eliminated
         assert_eq!(plan.joins.0.len(), 2);
@@ -2052,7 +2208,7 @@ mod tests {
         let select = vec![prop("person2", "name")];
         let mut plan = make_plan(joins, select);
 
-        eliminate_bridge_nodes_in_plan(&mut plan);
+        eliminate_bridge_nodes_in_plan(&mut plan, &HashSet::new());
 
         // person2 should NOT be eliminated
         assert_eq!(plan.joins.0.len(), 2);
@@ -2072,7 +2228,7 @@ mod tests {
         let select = vec![prop("message1", "id")];
         let mut plan = make_plan(joins, select);
 
-        eliminate_bridge_nodes_in_plan(&mut plan);
+        eliminate_bridge_nodes_in_plan(&mut plan, &HashSet::new());
 
         assert_eq!(plan.joins.0.len(), 1);
     }
@@ -2128,7 +2284,7 @@ mod tests {
         let select = vec![prop("edge3", "PersonId")];
         let mut plan = make_plan(joins, select);
 
-        eliminate_bridge_nodes_in_plan(&mut plan);
+        eliminate_bridge_nodes_in_plan(&mut plan, &HashSet::new());
 
         // Both person2 and message2 should be eliminated
         assert_eq!(plan.joins.0.len(), 3);
@@ -2165,7 +2321,7 @@ mod tests {
         let mut plan = make_plan(joins, vec![]);
         plan.joins.0[0].pre_filter = Some(RenderExpr::Raw("type = 'Person'".to_string()));
 
-        eliminate_bridge_nodes_in_plan(&mut plan);
+        eliminate_bridge_nodes_in_plan(&mut plan, &HashSet::new());
 
         // Should NOT be eliminated due to pre_filter
         assert_eq!(plan.joins.0.len(), 1);
@@ -2182,7 +2338,7 @@ mod tests {
 
         let mut plan = make_plan(joins, vec![]);
 
-        eliminate_bridge_nodes_in_plan(&mut plan);
+        eliminate_bridge_nodes_in_plan(&mut plan, &HashSet::new());
 
         assert_eq!(plan.joins.0.len(), 1);
     }
@@ -2214,7 +2370,7 @@ mod tests {
         let select = vec![prop("t3", "PersonId")];
         let mut plan = make_plan(joins, select);
 
-        eliminate_bridge_nodes_in_plan(&mut plan);
+        eliminate_bridge_nodes_in_plan(&mut plan, &HashSet::new());
 
         // person3 should be eliminated (unreferenced)
         assert_eq!(plan.joins.0.len(), 1);
@@ -2414,5 +2570,101 @@ mod tests {
                 assert_eq!(inner.select.items[0].col_alias.as_ref().unwrap().0, "col_a");
             }
         }
+    }
+
+    /// Regression test: UNION branches with empty select.items must not have
+    /// JOINs removed when those JOINs are referenced by the parent plan's SELECT.
+    ///
+    /// Scenario: parent SELECT references person2.id, UNION branches have empty
+    /// select (populated later during SQL rendering) but contain a LEFT JOIN for
+    /// person2. Without protection, remove_unreferenced_joins would remove it.
+    #[test]
+    fn test_union_branch_preserves_parent_referenced_joins() {
+        // Parent plan references person2.id in SELECT
+        let parent_select = vec![prop("person2", "id")];
+
+        // UNION branch: empty SELECT, but has JOINs including person2
+        let branch_joins = vec![
+            edge_join(
+                "t1",
+                "likes",
+                vec![eq_on(prop("person", "id"), prop("t1", "PersonId"))],
+                "PersonId",
+                "MessageId",
+            ),
+            node_join(
+                "person2",
+                "Person",
+                vec![eq_on(prop("person2", "id"), prop("t1", "PersonId"))],
+            ),
+        ];
+        let branch = make_plan(branch_joins, vec![]); // empty SELECT
+
+        let mut plan = make_plan(vec![], parent_select);
+        plan.union = UnionItems(Some(Union {
+            input: vec![branch],
+            union_type: crate::render_plan::UnionType::All,
+        }));
+
+        optimize_plan(&mut plan);
+
+        // person2 JOIN must survive in the branch
+        let branch = &plan.union.0.as_ref().unwrap().input[0];
+        let aliases: Vec<&str> = branch
+            .joins
+            .0
+            .iter()
+            .map(|j| j.table_alias.as_str())
+            .collect();
+        assert!(
+            aliases.contains(&"person2"),
+            "person2 JOIN should be preserved (parent SELECT references it), got: {:?}",
+            aliases
+        );
+    }
+
+    /// Test that collect_aliases_from_expr handles TableAlias, ExistsSubquery,
+    /// and PatternCount variants correctly.
+    #[test]
+    fn test_collect_aliases_covers_all_expr_variants() {
+        let mut aliases = HashSet::new();
+
+        // TableAlias
+        collect_aliases_from_expr(
+            &RenderExpr::TableAlias(TableAlias("node1".to_string())),
+            &mut aliases,
+        );
+        assert!(aliases.contains("node1"));
+
+        // ColumnAlias
+        collect_aliases_from_expr(
+            &RenderExpr::ColumnAlias(ColumnAlias("col1".to_string())),
+            &mut aliases,
+        );
+        assert!(aliases.contains("col1"));
+
+        // ExistsSubquery with alias.column pattern
+        collect_aliases_from_expr(
+            &RenderExpr::ExistsSubquery(render_expr::ExistsSubquery {
+                sql: "EXISTS (SELECT 1 FROM t WHERE friend.id = t.PersonId)".to_string(),
+            }),
+            &mut aliases,
+        );
+        assert!(
+            aliases.contains("friend"),
+            "ExistsSubquery should extract 'friend' from SQL"
+        );
+
+        // PatternCount with alias.column pattern
+        collect_aliases_from_expr(
+            &RenderExpr::PatternCount(render_expr::PatternCount {
+                sql: "(SELECT COUNT(*) FROM r WHERE person.id = r.Id)".to_string(),
+            }),
+            &mut aliases,
+        );
+        assert!(
+            aliases.contains("person"),
+            "PatternCount should extract 'person' from SQL"
+        );
     }
 }

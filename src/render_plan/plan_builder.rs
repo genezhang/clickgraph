@@ -1482,6 +1482,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     let filter_expr: RenderExpr = rewritten_predicate.try_into()?;
 
                     // Combine with existing filters if any
+                    let filter_expr_clone = filter_expr.clone();
                     render_plan.filters = match render_plan.filters.0 {
                         Some(existing) => FilterItems(Some(RenderExpr::OperatorApplicationExp(
                             crate::render_plan::render_expr::OperatorApplication {
@@ -1491,6 +1492,29 @@ impl RenderPlanBuilder for LogicalPlan {
                         ))),
                         None => FilterItems(Some(filter_expr)),
                     };
+
+                    // Also propagate filter to UNION branches so each branch
+                    // gets the WHERE clause (e.g., birthday filter from BidirectionalUnion)
+                    if let Some(ref mut union) = render_plan.union.0 {
+                        log::info!(
+                            "🔧 Filter propagation: propagating filter to {} UNION branches",
+                            union.input.len()
+                        );
+                        for branch in union.input.iter_mut() {
+                            branch.filters = match branch.filters.0.take() {
+                                Some(existing) => {
+                                    FilterItems(Some(RenderExpr::OperatorApplicationExp(
+                                        crate::render_plan::render_expr::OperatorApplication {
+                                            operator:
+                                                crate::render_plan::render_expr::Operator::And,
+                                            operands: vec![existing, filter_expr_clone.clone()],
+                                        },
+                                    )))
+                                }
+                                None => FilterItems(Some(filter_expr_clone.clone())),
+                            };
+                        }
+                    }
 
                     Ok(render_plan)
                 }
@@ -3732,6 +3756,7 @@ impl RenderPlanBuilder for LogicalPlan {
                     rewrite_expression_with_property_mapping(&f.predicate, &rewrite_ctx);
 
                 let filter_expr: super::render_expr::RenderExpr = rewritten_predicate.try_into()?;
+                let filter_expr_clone = filter_expr.clone();
 
                 render_plan.filters = match render_plan.filters.0 {
                     Some(existing) => super::FilterItems(Some(
@@ -3744,6 +3769,27 @@ impl RenderPlanBuilder for LogicalPlan {
                     )),
                     None => super::FilterItems(Some(filter_expr)),
                 };
+
+                // Also propagate filter to UNION branches
+                if let Some(ref mut union) = render_plan.union.0 {
+                    log::info!(
+                        "🔧 Filter propagation (with_ctx): propagating filter to {} UNION branches",
+                        union.input.len()
+                    );
+                    for branch in union.input.iter_mut() {
+                        branch.filters = match branch.filters.0.take() {
+                            Some(existing) => super::FilterItems(Some(
+                                super::render_expr::RenderExpr::OperatorApplicationExp(
+                                    super::render_expr::OperatorApplication {
+                                        operator: super::render_expr::Operator::And,
+                                        operands: vec![existing, filter_expr_clone.clone()],
+                                    },
+                                ),
+                            )),
+                            None => super::FilterItems(Some(filter_expr_clone.clone())),
+                        };
+                    }
+                }
             }
             return Ok(render_plan);
         }
