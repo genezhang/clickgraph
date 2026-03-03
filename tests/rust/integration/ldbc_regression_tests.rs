@@ -266,7 +266,7 @@ async fn ldbc_complex_10() {
     let schema = load_ldbc_schema();
     let sql = generate_sql(
         &schema,
-        "benchmarks/ldbc_snb/queries/adapted/interactive-complex-10.cypher",
+        "benchmarks/ldbc_snb/queries/official/interactive/complex-10.cypher",
     )
     .await;
     assert!(!sql.is_empty());

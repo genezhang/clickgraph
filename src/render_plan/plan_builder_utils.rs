@@ -8488,12 +8488,36 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 rendered.filters = FilterItems(None);
                                 rendered.joins = JoinItems(vec![]);
                             } else {
-                                // For UNION plans, we need to apply projection over the union
-                                // We do this by keeping the UNION structure but replacing SELECT items
-                                // The union branches already have all columns, so we wrap with our projection
-                                // This creates: SELECT <with_items> FROM (SELECT * FROM table1 UNION ALL SELECT * FROM table2) AS __union
+                                // Non-denormalized UNION: propagate plan-level filters
+                                // to each UNION branch. Filters (inline property filters,
+                                // WHERE predicates, NOT EXISTS) live in rendered.filters
+                                // but UNION branches render independently during SQL generation,
+                                // so each branch needs its own copy.
+                                // NOTE: rendered.filters is kept (not cleared) because the SQL
+                                // generator uses it for the first UNION branch's WHERE clause.
+                                if rendered.filters.0.is_some() {
+                                    if let Some(ref mut union) = rendered.union.0 {
+                                        let filter_expr = rendered.filters.0.clone().unwrap();
+                                        for branch in union.input.iter_mut() {
+                                            branch.filters = match branch.filters.0.take() {
+                                                Some(existing) => FilterItems(Some(
+                                                    RenderExpr::OperatorApplicationExp(
+                                                        OperatorApplication {
+                                                            operator: Operator::And,
+                                                            operands: vec![
+                                                                existing,
+                                                                filter_expr.clone(),
+                                                            ],
+                                                        },
+                                                    ),
+                                                )),
+                                                None => FilterItems(Some(filter_expr.clone())),
+                                            };
+                                        }
+                                    }
+                                }
 
-                                // For both UNION and non-UNION: apply projection to SELECT
+                                // Apply projection to SELECT
                                 rendered.select = SelectItems {
                                     items: select_items,
                                     distinct: with_distinct,

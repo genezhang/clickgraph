@@ -3715,19 +3715,29 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
     let mut predicates = Vec::new();
     match plan {
         LogicalPlan::GraphRel(gr) => {
-            // 🔧 VLP FIX: Skip predicates from VLP GraphRel nodes - they're already in the CTE
-            // This prevents duplicate filters like "WHERE u1.user_id = 1" appearing in both
-            // the CTE and the outer query when combining VLP with additional relationships.
+            // 🔧 VLP FIX: Skip predicates from CTE-based VLP GraphRel nodes - they're already in the CTE.
+            // Fixed-length VLPs (*N where N is exact) use inline chained JOINs instead of CTEs,
+            // so their predicates MUST be included in the outer WHERE clause.
             if gr.variable_length.is_some() {
-                log::debug!(
-                    "collect_graphrel_predicates: Skipping VLP GraphRel '{}' predicates (already in CTE)",
-                    gr.alias
-                );
-                // Still recurse into children to collect non-VLP predicates
-                predicates.extend(collect_graphrel_predicates(&gr.left));
-                predicates.extend(collect_graphrel_predicates(&gr.center));
-                predicates.extend(collect_graphrel_predicates(&gr.right));
-                return predicates;
+                let uses_cte = if let Some(ref spec) = gr.variable_length {
+                    let is_fixed_length =
+                        spec.exact_hop_count().is_some() && gr.shortest_path_mode.is_none();
+                    !is_fixed_length
+                } else {
+                    true
+                };
+                if uses_cte {
+                    log::debug!(
+                        "collect_graphrel_predicates: Skipping CTE-based VLP GraphRel '{}' predicates (already in CTE)",
+                        gr.alias
+                    );
+                    // Still recurse into children to collect non-VLP predicates
+                    predicates.extend(collect_graphrel_predicates(&gr.left));
+                    predicates.extend(collect_graphrel_predicates(&gr.center));
+                    predicates.extend(collect_graphrel_predicates(&gr.right));
+                    return predicates;
+                }
+                // Fixed-length VLP: fall through to include predicates
             }
 
             // Add this GraphRel's predicate, but filter out optional-only predicates
