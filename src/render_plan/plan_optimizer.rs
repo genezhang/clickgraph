@@ -20,14 +20,23 @@
 //! 5. **Bridge node elimination**: Removes node table JOINs that only serve as FK
 //!    bridges between edge tables, rewriting downstream ON conditions to chain FKs
 //!    directly. Critical for performance with `join_use_nulls=1`.
+//!
+//! 6. **Selective predicate FROM reordering**: When a WHERE filter has a constant
+//!    equality predicate on an INNER JOIN table (e.g., `tag.name = 'value'`),
+//!    promotes that table to FROM position so ClickHouse filters early instead of
+//!    processing millions of rows through chained LEFT JOINs. Re-roots the join
+//!    dependency tree and redistributes ON conditions along the path.
 
 use crate::graph_catalog::expression_parser::PropertyValue;
+use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::expression_utils::references_alias;
 use crate::render_plan::render_expr::{
     Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
 };
-use crate::render_plan::{CteContent, Join, JoinType, RenderPlan};
-use std::collections::{HashMap, HashSet};
+use crate::render_plan::view_table_ref::ViewTableRef;
+use crate::render_plan::{CteContent, FromTableItem, Join, JoinType, RenderPlan};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 /// Check if a table name is a generated CTE reference.
 fn is_cte_table(table_name: &str) -> bool {
@@ -1368,6 +1377,10 @@ fn column_defines_alias(col_trimmed: &str, alias: &str) -> bool {
 fn optimize_joins_in_plan(plan: &mut RenderPlan, protected_aliases: &HashSet<String>) {
     remove_unreferenced_joins(plan, protected_aliases);
     eliminate_bridge_nodes_in_plan(plan, protected_aliases);
+    // Anchor selection (select_anchor in join_generation.rs) handles inline property
+    // filters ({name: $tag}). This post-hoc pass catches WHERE clause filters that
+    // aren't inline — both are needed for defense-in-depth.
+    reorder_from_for_selective_predicate(plan);
 }
 
 /// Collect all table aliases referenced in a plan's SELECT, WHERE, ORDER BY, GROUP BY, HAVING.
@@ -3148,4 +3161,648 @@ mod tests {
             "PatternCount should extract 'person' from SQL"
         );
     }
+
+    // =========================================================================
+    // Pass 6: Selective predicate FROM reordering tests
+    // =========================================================================
+
+    /// Helper: make a FROM item
+    fn make_from(table: &str, alias: &str) -> FromTableItem {
+        FromTableItem(Some(ViewTableRef {
+            source: Arc::new(LogicalPlan::Empty),
+            name: table.to_string(),
+            alias: Some(alias.to_string()),
+            use_final: false,
+        }))
+    }
+
+    /// Helper: make an INNER JOIN (no edge columns)
+    fn inner_join(alias: &str, table: &str, on: Vec<OperatorApplication>) -> Join {
+        Join {
+            table_name: table.to_string(),
+            table_alias: alias.to_string(),
+            joining_on: on,
+            join_type: JoinType::Inner,
+            pre_filter: None,
+            from_id_column: None,
+            to_id_column: None,
+            graph_rel: None,
+        }
+    }
+
+    /// Helper: make a WHERE filter
+    fn make_filter(expr: RenderExpr) -> FilterItems {
+        FilterItems(Some(expr))
+    }
+
+    #[test]
+    fn test_selective_predicate_reorder_promotes_filtered_join_to_from() {
+        // FROM message → INNER JOIN edge ON edge.MessageId = message.id
+        //              → INNER JOIN tag ON tag.id = edge.TagId
+        // WHERE tag.name = 'Databases'
+        //
+        // Expected: FROM tag → INNER JOIN edge ON tag.id = edge.TagId
+        //                     → INNER JOIN message ON edge.MessageId = message.id
+
+        let mut plan = make_plan(vec![], vec![prop("tag", "name")]);
+        plan.from = make_from("Message", "message");
+        plan.joins = JoinItems(vec![
+            inner_join(
+                "edge",
+                "Message_hasTag_Tag",
+                vec![eq_on(prop("edge", "MessageId"), prop("message", "id"))],
+            ),
+            inner_join(
+                "tag",
+                "Tag",
+                vec![eq_on(prop("tag", "id"), prop("edge", "TagId"))],
+            ),
+        ]);
+        plan.filters = make_filter(RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Equal,
+            operands: vec![
+                prop("tag", "name"),
+                RenderExpr::Literal(Literal::String("Databases".to_string())),
+            ],
+        }));
+
+        reorder_from_for_selective_predicate(&mut plan);
+
+        // tag should now be FROM
+        let from = plan.from.0.as_ref().unwrap();
+        assert_eq!(from.alias.as_deref(), Some("tag"));
+
+        // message should now be a JOIN
+        let join_aliases: Vec<&str> = plan
+            .joins
+            .0
+            .iter()
+            .map(|j| j.table_alias.as_str())
+            .collect();
+        assert!(
+            join_aliases.contains(&"message"),
+            "old FROM should become a JOIN, got: {:?}",
+            join_aliases
+        );
+
+        // All joins should have ON conditions (no orphans)
+        for join in &plan.joins.0 {
+            assert!(
+                !join.joining_on.is_empty(),
+                "JOIN {} should have ON conditions",
+                join.table_alias
+            );
+        }
+    }
+
+    #[test]
+    fn test_selective_predicate_skips_when_from_already_filtered() {
+        // FROM tag WHERE tag.name = 'Databases' → INNER JOIN edge
+        // Should NOT reorder (FROM already has the selective predicate)
+        let mut plan = make_plan(vec![], vec![prop("tag", "name")]);
+        plan.from = make_from("Tag", "tag");
+        plan.joins = JoinItems(vec![inner_join(
+            "edge",
+            "Message_hasTag_Tag",
+            vec![eq_on(prop("edge", "TagId"), prop("tag", "id"))],
+        )]);
+        plan.filters = make_filter(RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Equal,
+            operands: vec![
+                prop("tag", "name"),
+                RenderExpr::Literal(Literal::String("Databases".to_string())),
+            ],
+        }));
+
+        reorder_from_for_selective_predicate(&mut plan);
+
+        // FROM should still be tag
+        let from = plan.from.0.as_ref().unwrap();
+        assert_eq!(from.alias.as_deref(), Some("tag"));
+    }
+
+    #[test]
+    fn test_selective_predicate_skips_left_join_path() {
+        // FROM message → LEFT JOIN tag ON ... WHERE tag.name = 'Databases'
+        // Should NOT reorder (can't promote through LEFT JOINs)
+        let mut plan = make_plan(vec![], vec![prop("tag", "name")]);
+        plan.from = make_from("Message", "message");
+        plan.joins = JoinItems(vec![node_join(
+            "tag",
+            "Tag",
+            vec![eq_on(prop("tag", "id"), prop("message", "tagId"))],
+        )]);
+        plan.filters = make_filter(RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::Equal,
+            operands: vec![
+                prop("tag", "name"),
+                RenderExpr::Literal(Literal::String("Databases".to_string())),
+            ],
+        }));
+
+        reorder_from_for_selective_predicate(&mut plan);
+
+        // FROM should still be message (LEFT JOIN blocks reordering)
+        let from = plan.from.0.as_ref().unwrap();
+        assert_eq!(from.alias.as_deref(), Some("message"));
+    }
+
+    #[test]
+    fn test_selective_predicate_range_predicate_fallback() {
+        // FROM message → INNER JOIN person ON ... WHERE person.age > 30
+        // Range predicate should also trigger reordering (Pass 2 fallback)
+        let mut plan = make_plan(vec![], vec![prop("person", "age")]);
+        plan.from = make_from("Message", "message");
+        plan.joins = JoinItems(vec![inner_join(
+            "person",
+            "Person",
+            vec![eq_on(prop("person", "id"), prop("message", "personId"))],
+        )]);
+        plan.filters = make_filter(RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::GreaterThan,
+            operands: vec![
+                prop("person", "age"),
+                RenderExpr::Literal(Literal::Integer(30)),
+            ],
+        }));
+
+        reorder_from_for_selective_predicate(&mut plan);
+
+        // person should now be FROM (range predicate triggered)
+        let from = plan.from.0.as_ref().unwrap();
+        assert_eq!(from.alias.as_deref(), Some("person"));
+    }
+
+    #[test]
+    fn test_is_non_table_reference_recursive() {
+        // `lower(person.name)` should NOT be considered a constant
+        let expr = RenderExpr::ScalarFnCall(render_expr::ScalarFnCall {
+            name: "lower".to_string(),
+            args: vec![prop("person", "name")],
+        });
+        assert!(
+            !is_non_table_reference(&expr),
+            "lower(person.name) should not be treated as constant"
+        );
+
+        // A literal should be considered constant
+        let lit = RenderExpr::Literal(Literal::String("hello".to_string()));
+        assert!(
+            is_non_table_reference(&lit),
+            "string literal should be treated as constant"
+        );
+
+        // A parameter should be considered constant
+        let param = RenderExpr::Parameter("$tag".to_string());
+        assert!(
+            is_non_table_reference(&param),
+            "parameter should be treated as constant"
+        );
+    }
+}
+
+// =============================================================================
+// Pass 6: Selective predicate FROM reordering
+// =============================================================================
+
+/// Reorder FROM for selective WHERE predicates.
+///
+/// When a WHERE filter has a constant equality predicate on an INNER JOIN table
+/// (e.g., `tag.name = 'value'`), promoting that table to FROM position allows
+/// ClickHouse to filter early and dramatically reduce intermediate join sizes.
+///
+/// The algorithm re-roots the join dependency tree: it finds the path from the
+/// selective table to the current FROM, redistributes ON conditions along that
+/// path, and re-sorts all JOINs by dependency.
+///
+/// Example (bi-6):
+///   Before: FROM Message (3M rows) → ... → INNER JOIN Tag WHERE tag.name = '...'
+///   After:  FROM Tag (1 row) → ... → INNER JOIN Message
+///   Result: 53s → 0.78s (68x speedup)
+fn reorder_from_for_selective_predicate(plan: &mut RenderPlan) {
+    // --- Guards ---
+    let from_ref = match plan.from.0.as_ref() {
+        Some(vtr) => vtr,
+        None => return,
+    };
+    let from_alias = from_ref
+        .alias
+        .clone()
+        .unwrap_or_else(|| from_ref.name.clone());
+    let from_name = from_ref.name.clone();
+
+    // Don't reorder if FROM uses FINAL (ReplacingMergeTree)
+    if from_ref.use_final {
+        return;
+    }
+    // Don't reorder if UNION present
+    if plan.union.0.is_some() {
+        return;
+    }
+    // Don't reorder if no joins
+    if plan.joins.0.is_empty() {
+        return;
+    }
+    // Don't reorder if FROM is a CTE
+    if is_cte_table(&from_name) {
+        return;
+    }
+
+    // --- Step 1: Find selective INNER JOIN alias ---
+    let target_alias = match find_selective_join_alias(plan, &from_alias) {
+        Some(a) => a,
+        None => return,
+    };
+
+    // --- Step 2: Find path from target to old FROM in join graph ---
+    let path = match find_join_path(&plan.joins.0, &target_alias, &from_alias) {
+        Some(p) => p,
+        None => return,
+    };
+
+    // Guard: all joins on the path must be INNER (not LEFT/RIGHT)
+    for alias in &path {
+        if *alias == from_alias {
+            continue; // Old FROM is not a join
+        }
+        if let Some(j) = plan.joins.0.iter().find(|j| j.table_alias == *alias) {
+            if !matches!(j.join_type, JoinType::Inner) {
+                return;
+            }
+            if is_cte_table(&j.table_name) {
+                return;
+            }
+        }
+    }
+
+    // --- Step 3: Collect edge conditions along the path ---
+    let mut edge_conditions: Vec<Vec<OperatorApplication>> = Vec::new();
+    for i in 0..path.len() - 1 {
+        let conds = find_connecting_conditions(&plan.joins.0, &path[i], &path[i + 1]);
+        if conds.is_empty() {
+            return; // No connection found — can't reorder safely
+        }
+        edge_conditions.push(conds);
+    }
+
+    // --- Step 4: Redistribute ON conditions along the path ---
+    // Remove path-edge conditions from their current owners
+    for i in 0..path.len() - 1 {
+        let a = &path[i].clone();
+        let b = &path[i + 1].clone();
+        for join in plan.joins.0.iter_mut() {
+            if join.table_alias == *a || join.table_alias == *b {
+                join.joining_on
+                    .retain(|c| !condition_connects_aliases(c, a, b));
+            }
+        }
+    }
+
+    // Add new ON conditions: each path node gets the edge connecting to its parent
+    for i in 1..path.len() {
+        let alias = &path[i];
+        let conditions = &edge_conditions[i - 1];
+
+        if *alias == from_alias {
+            // Old FROM becomes an INNER JOIN with the path-edge ON condition
+            let new_join = Join {
+                table_name: from_name.clone(),
+                table_alias: from_alias.clone(),
+                joining_on: conditions.clone(),
+                join_type: JoinType::Inner,
+                pre_filter: None,
+                from_id_column: None,
+                to_id_column: None,
+                graph_rel: None,
+            };
+            plan.joins.0.push(new_join);
+        } else if let Some(join) = plan.joins.0.iter_mut().find(|j| j.table_alias == *alias) {
+            for cond in conditions {
+                join.joining_on.push(cond.clone());
+            }
+        }
+    }
+
+    // --- Step 5: Remove target from JOINs and make it FROM ---
+    let target_idx = match plan
+        .joins
+        .0
+        .iter()
+        .position(|j| j.table_alias == target_alias)
+    {
+        Some(idx) => idx,
+        None => return,
+    };
+    let target_join = plan.joins.0.remove(target_idx);
+
+    // Compute FROM name with database prefix (match the old FROM's prefix)
+    let new_from_name = if target_join.table_name.contains('.') {
+        target_join.table_name.clone()
+    } else if let Some(dot_pos) = from_name.find('.') {
+        format!("{}.{}", &from_name[..dot_pos], target_join.table_name)
+    } else {
+        target_join.table_name.clone()
+    };
+
+    plan.from = FromTableItem(Some(ViewTableRef {
+        source: Arc::new(LogicalPlan::Empty),
+        name: new_from_name,
+        alias: Some(target_alias.clone()),
+        use_final: false,
+    }));
+
+    // --- Step 6: Re-sort JOINs by dependency ---
+    reorder_joins_by_dependency(plan, &target_alias);
+
+    log::debug!(
+        "Selective predicate FROM reorder: {} promoted to FROM (was {})",
+        target_alias,
+        from_alias
+    );
+}
+
+/// Find an INNER JOIN alias that has a constant predicate in WHERE.
+/// Prefers equality predicates (most selective), then falls back to any
+/// comparison/IN predicate with a constant operand.
+/// Returns None if no such alias exists or the FROM already has one.
+fn find_selective_join_alias(plan: &RenderPlan, from_alias: &str) -> Option<String> {
+    let filter = plan.filters.0.as_ref()?;
+
+    // Collect INNER JOIN aliases (excluding CTEs)
+    let inner_aliases: HashSet<String> = plan
+        .joins
+        .0
+        .iter()
+        .filter(|j| matches!(j.join_type, JoinType::Inner))
+        .filter(|j| !is_cte_table(&j.table_name))
+        .map(|j| j.table_alias.clone())
+        .collect();
+
+    if inner_aliases.is_empty() {
+        return None;
+    }
+
+    // Decompose AND-connected predicates
+    let predicates = decompose_and_predicates(filter);
+
+    // Check if FROM already has a constant predicate (no benefit to reordering)
+    if predicates
+        .iter()
+        .any(|p| get_constant_predicate_alias(p).is_some_and(|a| a == from_alias))
+    {
+        return None;
+    }
+
+    // Pass 1: Prefer equality predicates (most selective)
+    for pred in &predicates {
+        if let Some(alias) = get_constant_eq_alias(pred) {
+            if inner_aliases.contains(&alias) {
+                return Some(alias);
+            }
+        }
+    }
+
+    // Pass 2: Fall back to any constant predicate (range, IN, STARTS WITH, etc.)
+    for pred in &predicates {
+        if let Some(alias) = get_constant_predicate_alias(pred) {
+            if inner_aliases.contains(&alias) {
+                return Some(alias);
+            }
+        }
+    }
+
+    None
+}
+
+/// Decompose AND-connected predicates into a flat list.
+fn decompose_and_predicates(expr: &RenderExpr) -> Vec<&RenderExpr> {
+    if let RenderExpr::OperatorApplicationExp(op) = expr {
+        if op.operator == Operator::And {
+            let mut result = Vec::new();
+            for operand in &op.operands {
+                result.extend(decompose_and_predicates(operand));
+            }
+            return result;
+        }
+    }
+    vec![expr]
+}
+
+/// Extract the table alias from a constant equality predicate.
+/// Matches patterns like `alias.col = 'literal'` or `alias.col = $param`.
+fn get_constant_eq_alias(expr: &RenderExpr) -> Option<String> {
+    if let RenderExpr::OperatorApplicationExp(op) = expr {
+        if op.operator == Operator::Equal && op.operands.len() == 2 {
+            let (left, right) = (&op.operands[0], &op.operands[1]);
+
+            if let RenderExpr::PropertyAccessExp(prop) = left {
+                if is_non_table_reference(right) {
+                    return Some(prop.table_alias.0.clone());
+                }
+            }
+            if let RenderExpr::PropertyAccessExp(prop) = right {
+                if is_non_table_reference(left) {
+                    return Some(prop.table_alias.0.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Operators that indicate a filtering predicate (not arithmetic or logical connectors).
+const FILTER_OPERATORS: &[Operator] = &[
+    Operator::Equal,
+    Operator::NotEqual,
+    Operator::LessThan,
+    Operator::GreaterThan,
+    Operator::LessThanEqual,
+    Operator::GreaterThanEqual,
+    Operator::In,
+    Operator::NotIn,
+    Operator::StartsWith,
+    Operator::EndsWith,
+    Operator::Contains,
+    Operator::RegexMatch,
+];
+
+/// Extract the table alias from any constant predicate (equality, range, IN, etc.).
+/// Matches patterns like `alias.col < $param`, `alias.col IN [...]`,
+/// `alias.col STARTS WITH 'prefix'`, etc.
+fn get_constant_predicate_alias(expr: &RenderExpr) -> Option<String> {
+    if let RenderExpr::OperatorApplicationExp(op) = expr {
+        if FILTER_OPERATORS.contains(&op.operator) && op.operands.len() == 2 {
+            let (left, right) = (&op.operands[0], &op.operands[1]);
+
+            if let RenderExpr::PropertyAccessExp(prop) = left {
+                if is_non_table_reference(right) {
+                    return Some(prop.table_alias.0.clone());
+                }
+            }
+            if let RenderExpr::PropertyAccessExp(prop) = right {
+                if is_non_table_reference(left) {
+                    return Some(prop.table_alias.0.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Check if an expression contains no table/alias references at any depth
+/// (i.e., is a constant-like value: literal, parameter, or function of constants).
+fn is_non_table_reference(expr: &RenderExpr) -> bool {
+    let mut aliases = HashSet::new();
+    collect_aliases_from_expr(expr, &mut aliases);
+    aliases.is_empty()
+}
+
+/// BFS to find the shortest path between two aliases in the join dependency graph.
+/// Returns the path as a vec of aliases: [start, ..., end].
+fn find_join_path(joins: &[Join], start: &str, end: &str) -> Option<Vec<String>> {
+    // Build adjacency list from ON conditions
+    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+
+    for join in joins {
+        for cond in &join.joining_on {
+            let aliases = get_condition_aliases(cond);
+            let alias_vec: Vec<&String> = aliases.iter().collect();
+            for i in 0..alias_vec.len() {
+                for j in (i + 1)..alias_vec.len() {
+                    adj.entry(alias_vec[i].clone())
+                        .or_default()
+                        .push(alias_vec[j].clone());
+                    adj.entry(alias_vec[j].clone())
+                        .or_default()
+                        .push(alias_vec[i].clone());
+                }
+            }
+        }
+    }
+
+    // BFS
+    let mut visited = HashSet::new();
+    let mut queue = VecDeque::new();
+    let mut parent: HashMap<String, String> = HashMap::new();
+
+    visited.insert(start.to_string());
+    queue.push_back(start.to_string());
+
+    while let Some(current) = queue.pop_front() {
+        if current == end {
+            // Reconstruct path
+            let mut path = Vec::new();
+            let mut node = end.to_string();
+            while node != start {
+                path.push(node.clone());
+                node = parent[&node].clone();
+            }
+            path.push(start.to_string());
+            path.reverse();
+            return Some(path);
+        }
+
+        if let Some(neighbors) = adj.get(&current) {
+            for neighbor in neighbors {
+                if !visited.contains(neighbor) {
+                    visited.insert(neighbor.clone());
+                    parent.insert(neighbor.clone(), current.clone());
+                    queue.push_back(neighbor.clone());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Extract all table aliases referenced in an ON condition.
+fn get_condition_aliases(cond: &OperatorApplication) -> HashSet<String> {
+    let mut aliases = HashSet::new();
+    for operand in &cond.operands {
+        collect_aliases_from_expr(operand, &mut aliases);
+    }
+    aliases
+}
+
+/// Find ON conditions that connect two specific aliases.
+fn find_connecting_conditions(joins: &[Join], a: &str, b: &str) -> Vec<OperatorApplication> {
+    let mut result = Vec::new();
+    for join in joins {
+        for cond in &join.joining_on {
+            if condition_connects_aliases(cond, a, b) {
+                result.push(cond.clone());
+            }
+        }
+    }
+    result
+}
+
+/// Check if an ON condition references both aliases.
+fn condition_connects_aliases(cond: &OperatorApplication, a: &str, b: &str) -> bool {
+    let aliases = get_condition_aliases(cond);
+    aliases.contains(a) && aliases.contains(b)
+}
+
+/// Re-sort JOINs by dependency after FROM reordering.
+/// INNER JOINs are sorted first, then LEFT JOINs, each in topological order.
+fn reorder_joins_by_dependency(plan: &mut RenderPlan, from_alias: &str) {
+    let mut inner_joins: Vec<Join> = Vec::new();
+    let mut left_joins: Vec<Join> = Vec::new();
+
+    for join in plan.joins.0.drain(..) {
+        match join.join_type {
+            JoinType::Left | JoinType::Right => left_joins.push(join),
+            _ => inner_joins.push(join),
+        }
+    }
+
+    // Topological sort for INNER JOINs
+    let mut available: HashSet<String> = HashSet::new();
+    available.insert(from_alias.to_string());
+
+    let mut sorted_inner = topo_sort_joins(inner_joins, &mut available);
+    let sorted_left = topo_sort_joins(left_joins, &mut available);
+
+    sorted_inner.extend(sorted_left);
+    plan.joins.0 = sorted_inner;
+}
+
+/// Topological sort a list of joins given the set of currently available aliases.
+/// Updates `available` as joins are sorted.
+fn topo_sort_joins(mut remaining: Vec<Join>, available: &mut HashSet<String>) -> Vec<Join> {
+    let mut sorted = Vec::new();
+
+    while !remaining.is_empty() {
+        let mut found = false;
+        for i in 0..remaining.len() {
+            let deps = get_join_dependencies(&remaining[i]);
+            if deps.iter().all(|d| available.contains(d)) {
+                let join = remaining.remove(i);
+                available.insert(join.table_alias.clone());
+                sorted.push(join);
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            // Can't resolve dependencies — append remaining as-is
+            sorted.extend(remaining);
+            break;
+        }
+    }
+
+    sorted
+}
+
+/// Extract table aliases that a join depends on (from ON conditions, excluding self).
+fn get_join_dependencies(join: &Join) -> HashSet<String> {
+    let mut deps = HashSet::new();
+    for cond in &join.joining_on {
+        for operand in &cond.operands {
+            collect_aliases_from_expr(operand, &mut deps);
+        }
+    }
+    deps.remove(&join.table_alias);
+    deps
 }
