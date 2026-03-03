@@ -24,9 +24,9 @@
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::render_plan::expression_utils::references_alias;
 use crate::render_plan::render_expr::{
-    Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+    Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
 };
-use crate::render_plan::{CteContent, Join, RenderPlan};
+use crate::render_plan::{CteContent, Join, JoinType, RenderPlan};
 use std::collections::{HashMap, HashSet};
 
 /// Check if a table name is a generated CTE reference.
@@ -35,6 +35,19 @@ fn is_cte_table(table_name: &str) -> bool {
         || table_name.starts_with("vlp_")
         || table_name.starts_with("pc_")
         || table_name.starts_with("bidi_")
+}
+
+/// Check if an ON condition is a tautology (always true), e.g., `1 = 1`.
+fn is_tautology_condition(cond: &OperatorApplication) -> bool {
+    if cond.operator != Operator::Equal || cond.operands.len() != 2 {
+        return false;
+    }
+    // Check for literal = literal where both sides are the same value
+    if let (RenderExpr::Literal(l), RenderExpr::Literal(r)) = (&cond.operands[0], &cond.operands[1])
+    {
+        return l == r;
+    }
+    false
 }
 
 /// Upstream FK reference extracted from a bridge node's ON condition.
@@ -138,13 +151,13 @@ fn remove_dead_ctes(plan: &mut RenderPlan) {
     }
 }
 
-/// Top-level entry point: run all plan optimizations.
+/// Top-level entry point: run all post-hoc plan optimizations.
 /// 1. Dead CTE elimination
 /// 2. VLP column pruning
 /// 3. CTE column pruning (removes unused carry-forward columns from chained CTEs)
 /// 4. Unreferenced join elimination
 /// 5. Bridge node join elimination
-pub fn eliminate_bridge_nodes(plan: &mut RenderPlan) {
+pub fn optimize_plan(plan: &mut RenderPlan) {
     remove_dead_ctes(plan);
     prune_vlp_columns(plan);
     prune_cte_columns(plan);
@@ -1342,13 +1355,33 @@ fn optimize_joins_in_plan(plan: &mut RenderPlan) {
 }
 
 /// Remove JOINs whose alias is completely unreferenced in the plan.
-/// Catches CROSS JOINs (ON 1=1), spurious node JOINs, etc.
+///
+/// Only removes JOINs that are semantically safe to eliminate:
+/// - LEFT JOINs: removing an unreferenced LEFT JOIN never changes row cardinality
+/// - CROSS JOINs (ON 1=1): these are typically spurious joins added by orphan alias
+///   resolution; removing them eliminates unwanted row multiplication
+///
+/// INNER JOINs are NOT removed because they can filter rows (if the ON condition
+/// eliminates non-matching rows), which would change Cypher bag semantics.
 fn remove_unreferenced_joins(plan: &mut RenderPlan) {
     // Collect indices to remove (in reverse order for safe removal)
     let mut to_remove = Vec::new();
 
     for (idx, join) in plan.joins.0.iter().enumerate().rev() {
         let alias = &join.table_alias;
+
+        // Only remove LEFT JOINs and CROSS JOINs (ON 1=1)
+        let is_safe_to_remove = match join.join_type {
+            JoinType::Left => true,
+            // JoinType::Join with ON 1=1 is a CROSS JOIN — safe to remove when unreferenced
+            JoinType::Join => {
+                join.joining_on.len() == 1 && is_tautology_condition(&join.joining_on[0])
+            }
+            _ => false,
+        };
+        if !is_safe_to_remove {
+            continue;
+        }
 
         // Never remove edge tables — they provide the traversal
         if join.from_id_column.is_some() || join.to_id_column.is_some() {
@@ -1485,10 +1518,7 @@ fn find_bridge_candidates(plan: &RenderPlan) -> Vec<BridgeCandidate> {
         };
 
         // Guard: table_name must not be a CTE reference
-        if join.table_name.starts_with("with_")
-            || join.table_name.starts_with("vlp_")
-            || join.table_name.starts_with("pc_")
-        {
+        if is_cte_table(&join.table_name) {
             continue;
         }
 
@@ -1572,35 +1602,39 @@ fn find_bridge_candidates(plan: &RenderPlan) -> Vec<BridgeCandidate> {
 fn is_alias_referenced_in_plan(plan: &RenderPlan, alias: &str) -> bool {
     // Check SELECT items
     for item in &plan.select.items {
-        if references_alias(&item.expression, alias) {
+        if references_alias(&item.expression, alias)
+            || expr_has_correlated_ref(&item.expression, alias)
+        {
             return true;
         }
     }
 
     // Check WHERE clause
     if let Some(ref filter) = plan.filters.0 {
-        if references_alias(filter, alias) {
+        if references_alias(filter, alias) || expr_has_correlated_ref(filter, alias) {
             return true;
         }
     }
 
     // Check ORDER BY
     for item in &plan.order_by.0 {
-        if references_alias(&item.expression, alias) {
+        if references_alias(&item.expression, alias)
+            || expr_has_correlated_ref(&item.expression, alias)
+        {
             return true;
         }
     }
 
     // Check GROUP BY
     for expr in &plan.group_by.0 {
-        if references_alias(expr, alias) {
+        if references_alias(expr, alias) || expr_has_correlated_ref(expr, alias) {
             return true;
         }
     }
 
     // Check HAVING
     if let Some(ref having) = plan.having_clause {
-        if references_alias(having, alias) {
+        if references_alias(having, alias) || expr_has_correlated_ref(having, alias) {
             return true;
         }
     }
@@ -1613,22 +1647,26 @@ fn is_alias_referenced_in_plan(plan: &RenderPlan, alias: &str) -> bool {
     if let Some(ref union) = plan.union.0 {
         for branch in &union.input {
             for item in &branch.select.items {
-                if references_alias(&item.expression, alias) {
+                if references_alias(&item.expression, alias)
+                    || expr_has_correlated_ref(&item.expression, alias)
+                {
                     return true;
                 }
             }
             if let Some(ref filter) = branch.filters.0 {
-                if references_alias(filter, alias) {
+                if references_alias(filter, alias) || expr_has_correlated_ref(filter, alias) {
                     return true;
                 }
             }
             for item in &branch.order_by.0 {
-                if references_alias(&item.expression, alias) {
+                if references_alias(&item.expression, alias)
+                    || expr_has_correlated_ref(&item.expression, alias)
+                {
                     return true;
                 }
             }
             for expr in &branch.group_by.0 {
-                if references_alias(expr, alias) {
+                if references_alias(expr, alias) || expr_has_correlated_ref(expr, alias) {
                     return true;
                 }
             }
@@ -1637,12 +1675,52 @@ fn is_alias_referenced_in_plan(plan: &RenderPlan, alias: &str) -> bool {
 
     // Check ARRAY JOIN expressions
     for aj in &plan.array_join.0 {
-        if references_alias(&aj.expression, alias) {
+        if references_alias(&aj.expression, alias) || expr_has_correlated_ref(&aj.expression, alias)
+        {
             return true;
         }
     }
 
     false
+}
+
+/// Check if an expression tree contains ExistsSubquery or PatternCount nodes
+/// whose embedded SQL references the given alias. These carry pre-rendered correlated
+/// SQL strings that `references_alias()` doesn't inspect.
+fn expr_has_correlated_ref(expr: &RenderExpr, alias: &str) -> bool {
+    let alias_dot = format!("{}.", alias);
+    match expr {
+        RenderExpr::ExistsSubquery(es) => es.sql.contains(&alias_dot),
+        RenderExpr::PatternCount(pc) => pc.sql.contains(&alias_dot),
+        RenderExpr::OperatorApplicationExp(op) => op
+            .operands
+            .iter()
+            .any(|o| expr_has_correlated_ref(o, alias)),
+        RenderExpr::ScalarFnCall(func) => {
+            func.args.iter().any(|a| expr_has_correlated_ref(a, alias))
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            agg.args.iter().any(|a| expr_has_correlated_ref(a, alias))
+        }
+        RenderExpr::Case(case) => {
+            case.expr
+                .as_ref()
+                .is_some_and(|e| expr_has_correlated_ref(e, alias))
+                || case.when_then.iter().any(|(w, t)| {
+                    expr_has_correlated_ref(w, alias) || expr_has_correlated_ref(t, alias)
+                })
+                || case
+                    .else_expr
+                    .as_ref()
+                    .is_some_and(|e| expr_has_correlated_ref(e, alias))
+        }
+        RenderExpr::List(items) => items.iter().any(|i| expr_has_correlated_ref(i, alias)),
+        RenderExpr::ArraySubscript { array, index } => {
+            expr_has_correlated_ref(array, alias) || expr_has_correlated_ref(index, alias)
+        }
+        RenderExpr::InSubquery(subq) => expr_has_correlated_ref(&subq.expr, alias),
+        _ => false,
+    }
 }
 
 /// Check if an expression references an alias with a column OTHER than the given id_column.
@@ -1816,7 +1894,7 @@ fn rewrite_bridge_in_expr(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render_plan::render_expr::{Column, Operator};
+    use crate::render_plan::render_expr::{ColumnAlias, Operator};
     use crate::render_plan::*;
 
     /// Helper to create a simple PropertyAccessExp
@@ -2141,5 +2219,200 @@ mod tests {
         // person3 should be eliminated (unreferenced)
         assert_eq!(plan.joins.0.len(), 1);
         assert_eq!(plan.joins.0[0].table_alias, "t3");
+    }
+
+    // ─── Dead CTE Elimination Tests ─────────────────────────────────────────
+
+    /// Helper to create a ViewTableRef for test purposes
+    fn test_view_ref(name: &str, alias: Option<&str>) -> ViewTableRef {
+        use crate::query_planner::logical_plan::LogicalPlan;
+        ViewTableRef {
+            source: std::sync::Arc::new(LogicalPlan::Empty),
+            name: name.to_string(),
+            alias: alias.map(|s| s.to_string()),
+            use_final: false,
+        }
+    }
+
+    /// Helper to create a CTE with given name and a structured plan
+    fn make_cte(name: &str, select_exprs: Vec<(RenderExpr, &str)>) -> Cte {
+        let items = select_exprs
+            .into_iter()
+            .map(|(expr, alias)| SelectItem {
+                expression: expr,
+                col_alias: Some(ColumnAlias(alias.to_string())),
+            })
+            .collect();
+        Cte {
+            cte_name: name.to_string(),
+            content: CteContent::Structured(Box::new(RenderPlan {
+                ctes: CteItems(vec![]),
+                select: SelectItems {
+                    items,
+                    distinct: false,
+                },
+                from: FromTableItem(None),
+                joins: JoinItems(vec![]),
+                array_join: ArrayJoinItem(vec![]),
+                filters: FilterItems(None),
+                group_by: GroupByExpressions(vec![]),
+                having_clause: None,
+                order_by: OrderByItems(vec![]),
+                skip: SkipItem(None),
+                limit: LimitItem(None),
+                union: UnionItems(None),
+                fixed_path_info: None,
+                is_multi_label_scan: false,
+                variable_registry: None,
+            })),
+            is_recursive: false,
+            vlp_start_alias: None,
+            vlp_end_alias: None,
+            vlp_start_table: None,
+            vlp_end_table: None,
+            vlp_cypher_start_alias: None,
+            vlp_cypher_end_alias: None,
+            vlp_start_id_col: None,
+            vlp_end_id_col: None,
+            vlp_path_variable: None,
+            columns: vec![],
+            from_alias: None,
+            outer_where_filters: None,
+            with_exported_aliases: vec![],
+            variable_registry: None,
+        }
+    }
+
+    /// Helper to set FROM on a CTE's inner plan
+    fn set_cte_from(cte: &mut Cte, table_name: &str, alias: &str) {
+        if let CteContent::Structured(ref mut plan) = cte.content {
+            plan.from = FromTableItem(Some(test_view_ref(table_name, Some(alias))));
+        }
+    }
+
+    #[test]
+    fn test_dead_cte_elimination() {
+        // cte_1 is referenced by outer query, cte_2 is not → cte_2 removed
+        let mut plan = make_plan(vec![], vec![prop("cte1_alias", "col_a")]);
+        let mut cte1 = make_cte("with_cte_1", vec![(prop("x", "a"), "col_a")]);
+        set_cte_from(&mut cte1, "some_table", "x");
+        let mut cte2 = make_cte("with_cte_2", vec![(prop("y", "b"), "col_b")]);
+        set_cte_from(&mut cte2, "other_table", "y");
+        plan.ctes = CteItems(vec![cte1, cte2]);
+        plan.from = FromTableItem(Some(test_view_ref("with_cte_1", Some("cte1_alias"))));
+
+        remove_dead_ctes(&mut plan);
+
+        assert_eq!(plan.ctes.0.len(), 1);
+        assert_eq!(plan.ctes.0[0].cte_name, "with_cte_1");
+    }
+
+    #[test]
+    fn test_dead_cte_keeps_transitively_referenced() {
+        // cte_1 is referenced by cte_2, cte_2 is referenced by outer → both kept
+        let mut plan = make_plan(vec![], vec![prop("cte2_alias", "col_b")]);
+        let mut cte1 = make_cte("with_cte_1", vec![(prop("x", "a"), "col_a")]);
+        set_cte_from(&mut cte1, "some_table", "x");
+        let mut cte2 = make_cte("with_cte_2", vec![(prop("c1", "col_a"), "col_b")]);
+        set_cte_from(&mut cte2, "with_cte_1", "c1");
+        plan.ctes = CteItems(vec![cte1, cte2]);
+        plan.from = FromTableItem(Some(test_view_ref("with_cte_2", Some("cte2_alias"))));
+
+        remove_dead_ctes(&mut plan);
+
+        assert_eq!(plan.ctes.0.len(), 2);
+    }
+
+    // ─── CTE Column Pruning Tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_cte_column_pruning_removes_unused() {
+        // CTE has columns col_a, col_b, col_c; outer query only uses col_a
+        let mut plan = make_plan(vec![], vec![prop("c1", "col_a")]);
+        let mut cte = make_cte(
+            "with_test_cte_1",
+            vec![
+                (prop("x", "a"), "col_a"),
+                (prop("x", "b"), "col_b"),
+                (prop("x", "c"), "col_c"),
+            ],
+        );
+        set_cte_from(&mut cte, "some_table", "x");
+        plan.ctes = CteItems(vec![cte]);
+        plan.from = FromTableItem(Some(test_view_ref("with_test_cte_1", Some("c1"))));
+
+        prune_cte_columns(&mut plan);
+
+        if let CteContent::Structured(ref inner) = plan.ctes.0[0].content {
+            assert_eq!(inner.select.items.len(), 1);
+            assert_eq!(inner.select.items[0].col_alias.as_ref().unwrap().0, "col_a");
+        } else {
+            panic!("Expected Structured CTE");
+        }
+    }
+
+    #[test]
+    fn test_cte_column_pruning_preserves_self_refs() {
+        // CTE has col_a, col_b; HAVING references col_b → both kept
+        let mut plan = make_plan(vec![], vec![prop("c1", "col_a")]);
+        let mut cte = make_cte(
+            "with_test_cte_1",
+            vec![(prop("x", "a"), "col_a"), (prop("x", "b"), "col_b")],
+        );
+        set_cte_from(&mut cte, "some_table", "x");
+        // Add HAVING that references col_b
+        if let CteContent::Structured(ref mut inner) = cte.content {
+            inner.having_clause = Some(RenderExpr::ColumnAlias(ColumnAlias("col_b".to_string())));
+        }
+        plan.ctes = CteItems(vec![cte]);
+        plan.from = FromTableItem(Some(test_view_ref("with_test_cte_1", Some("c1"))));
+
+        prune_cte_columns(&mut plan);
+
+        if let CteContent::Structured(ref inner) = plan.ctes.0[0].content {
+            assert_eq!(inner.select.items.len(), 2);
+        } else {
+            panic!("Expected Structured CTE");
+        }
+    }
+
+    #[test]
+    fn test_cte_column_pruning_backward_propagation() {
+        // Chain: cte_1 → cte_2 → outer. Outer uses col_a from cte_2, which
+        // carry-forwards col_a from cte_1. col_b should be pruned from both.
+        let mut plan = make_plan(vec![], vec![prop("c2", "col_a")]);
+
+        let mut cte1 = make_cte(
+            "with_cte_1",
+            vec![(prop("x", "a"), "col_a"), (prop("x", "b"), "col_b")],
+        );
+        set_cte_from(&mut cte1, "some_table", "x");
+
+        let mut cte2 = make_cte(
+            "with_cte_2",
+            vec![
+                (prop("c1", "col_a"), "col_a"),
+                (prop("c1", "col_b"), "col_b"),
+            ],
+        );
+        set_cte_from(&mut cte2, "with_cte_1", "c1");
+
+        plan.ctes = CteItems(vec![cte1, cte2]);
+        plan.from = FromTableItem(Some(test_view_ref("with_cte_2", Some("c2"))));
+
+        prune_cte_columns(&mut plan);
+
+        // Both CTEs should have col_b pruned
+        for cte in &plan.ctes.0 {
+            if let CteContent::Structured(ref inner) = cte.content {
+                assert_eq!(
+                    inner.select.items.len(),
+                    1,
+                    "CTE {} should have 1 column after pruning",
+                    cte.cte_name
+                );
+                assert_eq!(inner.select.items[0].col_alias.as_ref().unwrap().0, "col_a");
+            }
+        }
     }
 }

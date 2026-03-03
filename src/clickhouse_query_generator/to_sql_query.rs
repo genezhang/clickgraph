@@ -2349,11 +2349,13 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
         }
     }
 
-    // STEP: Eliminate bridge node JOINs
-    // Removes node tables that only serve as FK bridges between edge tables.
-    // e.g., edge1.PersonId = person.id AND person.id = edge2.PersonId
-    //     → edge1.PersonId = edge2.PersonId (person JOIN removed)
-    crate::render_plan::bridge_node_eliminator::eliminate_bridge_nodes(&mut plan);
+    // STEP: Post-hoc plan optimizations
+    // 1. Dead CTE elimination — removes CTEs never referenced downstream
+    // 2. VLP column pruning — removes unused property columns from recursive VLP CTEs
+    // 3. CTE column pruning — backward dataflow removes unused carry-forward columns
+    // 4. Unreferenced join elimination — removes JOINs whose alias is unused
+    // 5. Bridge node elimination — removes FK-bridge node JOINs, rewrites ON conditions
+    crate::render_plan::plan_optimizer::optimize_plan(&mut plan);
 
     // Rewrite path function calls for fixed (non-VLP) path patterns
     // Converts length(p) → hop_count, etc.
