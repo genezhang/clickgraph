@@ -296,6 +296,11 @@ impl TableCtx {
         self.properties.append(&mut props);
     }
 
+    /// Check if this table context has inline property filters (e.g., `{name: $tag}`).
+    pub fn has_properties(&self) -> bool {
+        !self.properties.is_empty()
+    }
+
     /// Get and clear properties (takes ownership).
     pub fn get_and_clear_properties(&mut self) -> Vec<Property> {
         std::mem::take(&mut self.properties)

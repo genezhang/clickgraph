@@ -900,8 +900,11 @@ impl GraphJoinInference {
                                 branch_joins.len()
                             );
                             let deduped = helpers::deduplicate_joins(branch_joins);
+                            // Don't use property-based anchor preference for UNION branches —
+                            // BidirectionalUnion branches have direction-specific join chains
+                            // where the anchor must match the branch direction.
                             let anchor_table =
-                                super::join_generation::select_anchor(&deduped);
+                                super::join_generation::select_anchor(&deduped, None);
                             let reordered =
                                 super::join_generation::topo_sort_joins(deduped, &HashSet::new())?;
                             let mut cte_references = std::collections::HashMap::new();
@@ -989,7 +992,8 @@ impl GraphJoinInference {
                 }
 
                 // Reorder JOINs using clean topological sort
-                let anchor_table = super::join_generation::select_anchor(&deduped_joins);
+                let anchor_table =
+                    super::join_generation::select_anchor(&deduped_joins, Some(plan_ctx));
                 let reordered_joins =
                     super::join_generation::topo_sort_joins(deduped_joins, &vlp_available)?;
 
@@ -1730,7 +1734,9 @@ impl GraphJoinInference {
                     }
 
                     // Topological sort and anchor selection
-                    let anchor_table = super::join_generation::select_anchor(&inner_joins);
+                    // Don't use property-based anchor preference for inner scope —
+                    // the structural ordering takes priority here.
+                    let anchor_table = super::join_generation::select_anchor(&inner_joins, None);
                     let topo_result =
                         super::join_generation::topo_sort_joins(inner_joins, &HashSet::new());
 

@@ -413,33 +413,56 @@ fn redistribute_conditions(joins: &mut [Join], duplicate: &Join) {
 // =============================================================================
 
 /// Select the anchor (FROM) table from collected joins.
-/// Prefers non-optional FROM markers (INNER), falls back to optional (LEFT).
-pub fn select_anchor(joins: &[Join]) -> Option<String> {
-    // Prefer non-optional FROM marker, picking alphabetically smallest for determinism
-    let mut best: Option<&str> = None;
+///
+/// Priority:
+/// 1. Non-optional FROM markers with inline property filters (most selective)
+/// 2. Non-optional FROM markers without filters (alphabetically smallest)
+/// 3. Optional FROM markers (LEFT JOIN, alphabetically smallest)
+///
+/// When `plan_ctx` is provided, aliases with inline property filters (like
+/// `{name: $tag}`) are preferred because they're highly selective — starting
+/// FROM a filtered table lets ClickHouse process far fewer rows through
+/// downstream JOINs.
+pub fn select_anchor(joins: &[Join], plan_ctx: Option<&PlanCtx>) -> Option<String> {
+    // Collect non-optional FROM markers
+    let mut non_optional: Vec<&str> = Vec::new();
     for join in joins {
         if join.joining_on.is_empty() && join.join_type != JoinType::Left {
-            match best {
-                None => best = Some(&join.table_alias),
-                Some(b) if join.table_alias.as_str() < b => best = Some(&join.table_alias),
-                _ => {}
-            }
+            non_optional.push(&join.table_alias);
         }
     }
-    if let Some(b) = best {
-        return Some(b.to_string());
+
+    if !non_optional.is_empty() {
+        // If plan_ctx is available, prefer aliases with inline property filters
+        if let Some(ctx) = plan_ctx {
+            let mut filtered: Vec<&str> = non_optional
+                .iter()
+                .copied()
+                .filter(|alias| {
+                    ctx.get_table_ctx(alias)
+                        .map_or(false, |tc| tc.has_properties())
+                })
+                .collect();
+            if !filtered.is_empty() {
+                filtered.sort();
+                return Some(filtered[0].to_string());
+            }
+        }
+
+        // No filtered nodes — fall back to alphabetically smallest
+        non_optional.sort();
+        return Some(non_optional[0].to_string());
     }
+
     // Fall back to any FROM marker (including Left), alphabetically smallest
+    let mut optional: Vec<&str> = Vec::new();
     for join in joins {
         if join.joining_on.is_empty() {
-            match best {
-                None => best = Some(&join.table_alias),
-                Some(b) if join.table_alias.as_str() < b => best = Some(&join.table_alias),
-                _ => {}
-            }
+            optional.push(&join.table_alias);
         }
     }
-    best.map(|s| s.to_string())
+    optional.sort();
+    optional.first().map(|s| s.to_string())
 }
 
 /// Topological sort of joins ensuring each JOIN only references already-available tables.
@@ -897,7 +920,7 @@ mod tests {
                 .join_type(JoinType::Inner)
                 .build(),
         ];
-        assert_eq!(select_anchor(&joins), Some("b".to_string()));
+        assert_eq!(select_anchor(&joins, None), Some("b".to_string()));
     }
 
     #[test]
