@@ -1842,6 +1842,21 @@ fn has_unresolved_bare_ref_in_plan(plan: &RenderPlan, alias: &str) -> bool {
                     return true;
                 }
             }
+            for item in &branch.order_by.0 {
+                if has_unresolved_bare_ref(&item.expression, alias) {
+                    return true;
+                }
+            }
+            for expr in &branch.group_by.0 {
+                if has_unresolved_bare_ref(expr, alias) {
+                    return true;
+                }
+            }
+            if let Some(ref having) = branch.having_clause {
+                if has_unresolved_bare_ref(having, alias) {
+                    return true;
+                }
+            }
         }
     }
     false
@@ -2152,6 +2167,16 @@ fn rewrite_plan_exprs_for_bridge(
         rewrite_bridge_in_expr(having, eliminated_alias, eliminated_id_col, upstream);
     }
 
+    // Rewrite ARRAY JOIN
+    for aj in plan.array_join.0.iter_mut() {
+        rewrite_bridge_in_expr(
+            &mut aj.expression,
+            eliminated_alias,
+            eliminated_id_col,
+            upstream,
+        );
+    }
+
     // Rewrite UNION branches
     if let Some(ref mut union) = plan.union.0 {
         for branch in union.input.iter_mut() {
@@ -2176,6 +2201,17 @@ fn rewrite_plan_exprs_for_bridge(
             }
             for expr in branch.group_by.0.iter_mut() {
                 rewrite_bridge_in_expr(expr, eliminated_alias, eliminated_id_col, upstream);
+            }
+            if let Some(ref mut having) = branch.having_clause {
+                rewrite_bridge_in_expr(having, eliminated_alias, eliminated_id_col, upstream);
+            }
+            for aj in branch.array_join.0.iter_mut() {
+                rewrite_bridge_in_expr(
+                    &mut aj.expression,
+                    eliminated_alias,
+                    eliminated_id_col,
+                    upstream,
+                );
             }
             // Also rewrite UNION branch JOINs
             rewrite_joins_for_bridge(

@@ -393,26 +393,29 @@ impl FilterBuilder for LogicalPlan {
             LogicalPlan::Cte(cte) => cte.input.extract_filters()?,
             LogicalPlan::Union(union) => {
                 // For BidirectionalUnion: both branches have the same filters
-                // (where_predicate is cloned to both). Extract from first branch.
-                if !union.inputs.is_empty() {
-                    let first = union.inputs[0].extract_filters()?;
-                    if first.is_some() {
-                        // Verify all branches have filters (don't extract partial)
-                        let all_have = union
-                            .inputs
-                            .iter()
-                            .skip(1)
-                            .all(|b| b.extract_filters().ok().flatten().is_some());
-                        if all_have {
-                            first
+                // (where_predicate is cloned to both). Extract from first branch,
+                // but only if all branches have filters. Propagate errors instead
+                // of swallowing them.
+                if union.inputs.is_empty() {
+                    return Ok(None);
+                }
+
+                let mut filters = Vec::with_capacity(union.inputs.len());
+                for input in &union.inputs {
+                    filters.push(input.extract_filters()?);
+                }
+
+                let mut iter = filters.into_iter();
+                let first = iter.next().unwrap();
+                match first {
+                    Some(first_expr) => {
+                        if iter.all(|f| f.is_some()) {
+                            Some(first_expr)
                         } else {
                             None
                         }
-                    } else {
-                        None
                     }
-                } else {
-                    None
+                    None => None,
                 }
             }
             LogicalPlan::PageRank(_) => None,
