@@ -60,9 +60,11 @@ pub fn parse_with_clause(
     // Try parsing `WITH *` (star projection) before attempting regular items.
     // `WITH *` carries all visible aliases forward unchanged — used after UNWIND.
     let (input, with_items, is_star) = if let Ok((rest, _)) =
-        nom::combinator::peek(ws(
-            nom::bytes::complete::tag::<_, _, OpenCypherParsingError<'_>>("*"),
-        ))
+        nom::combinator::peek(ws(nom::bytes::complete::tag::<
+            _,
+            _,
+            OpenCypherParsingError<'_>,
+        >("*")))
         .parse(input)
     {
         // Consume the `*`

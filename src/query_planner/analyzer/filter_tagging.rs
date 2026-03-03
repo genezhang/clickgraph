@@ -1388,10 +1388,12 @@ impl FilterTagging {
                                             rel_schema.to_id.first_column().to_string()
                                         };
                                         use crate::graph_catalog::expression_parser::PropertyValue;
-                                        return Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                            table_alias: TableAlias(alias_str.clone()),
-                                            column: PropertyValue::Column(col),
-                                        }));
+                                        return Ok(LogicalExpr::PropertyAccessExp(
+                                            PropertyAccess {
+                                                table_alias: TableAlias(alias_str.clone()),
+                                                column: PropertyValue::Column(col),
+                                            },
+                                        ));
                                     }
                                 }
                             }
