@@ -79,7 +79,7 @@ CALL db.schema.relTypeProperties()
 
 ### Quick Start
 
-1. **Start ClickGraph server:**
+1. **Start ClickGraph server with compatibility mode:**
    ```bash
    export CLICKHOUSE_URL="http://localhost:8123"
    export CLICKHOUSE_USER="test_user"
@@ -87,7 +87,9 @@ CALL db.schema.relTypeProperties()
    export CLICKHOUSE_DATABASE="brahmand"
    export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml"
    
-   ./target/release/clickgraph --http-port 8086 --bolt-port 7687
+   # --neo4j-compat-mode is REQUIRED: makes ClickGraph report "Neo4j/5.8.0"
+   # so NeoDash doesn't wrap queries in CALL {} subquery syntax
+   ./target/release/clickgraph --http-port 8086 --bolt-port 7687 --neo4j-compat-mode
    ```
 
 2. **Connect Neodash to ClickGraph:**
@@ -116,6 +118,28 @@ With these procedures, Neodash can now:
 ✅ **Type Validation**: Neodash knows which properties exist on which types, preventing invalid queries
 
 ✅ **Schema Visualization**: Dashboard designers can see the full property schema
+
+✅ **Graph Chart Node Expansion**: Right-clicking a graph node shows relationship types and counts (requires `startNode`/`endNode` + `WITH *` support — implemented)
+
+### Node Right-Click Expansion
+
+When a user right-clicks a graph node in NeoDash, NeoDash sends this query to discover relationship counts:
+
+```cypher
+MATCH (b) WHERE id(b) = $id
+MATCH (b)-[r]-()
+WITH type(r) as type, CASE WHEN startNode(r) = b THEN "out" ELSE "in" END as dir, COUNT(*) as value
+UNWIND ["in", "out","any"] as direction
+WITH *
+WHERE (direction = dir) OR direction="any"
+RETURN type, direction, sum(value) as value ORDER BY type, direction
+```
+
+ClickGraph supports:
+- `startNode(r)` / `endNode(r)` — resolves to relationship from/to ID columns
+- `WITH *` — carries all scope variables forward (used after `UNWIND`)
+
+**Note**: NeoDash tries APOC functions (`apoc.node.relationship.types`, `apoc.node.degree.in/out`) first, which ClickGraph does not implement. NeoDash catches the error and falls through to the non-APOC fallback above automatically.
 
 ## Type Mapping
 

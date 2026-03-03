@@ -93,9 +93,47 @@ pub fn evaluate_with_clause<'a>(
     }
 
     log::debug!(
-        "evaluate_with_clause: Starting with {} items",
-        with_clause.with_items.len()
+        "evaluate_with_clause: Starting with {} items, is_star={}",
+        with_clause.with_items.len(),
+        with_clause.is_star,
     );
+
+    // For `WITH *`, build projection items directly from all visible scope aliases.
+    // This handles: `UNWIND [...] as x  WITH *  WHERE ...`
+    // which forwards all prior aliases plus the unwind variable into the next scope.
+    if with_clause.is_star {
+        use crate::query_planner::logical_expr::{ColumnAlias, TableAlias};
+        let projection_items: Vec<ProjectionItem> = plan_ctx
+            .get_alias_table_ctx_map()
+            .keys()
+            .map(|alias| ProjectionItem {
+                expression: LogicalExpr::TableAlias(TableAlias(alias.clone())),
+                col_alias: Some(ColumnAlias(alias.clone())),
+            })
+            .collect();
+
+        log::debug!(
+            "WITH *: Expanding to {} aliases: {:?}",
+            projection_items.len(),
+            plan_ctx.get_alias_table_ctx_map().keys().collect::<Vec<_>>(),
+        );
+
+        let mut with_node =
+            crate::query_planner::logical_plan::WithClause::new(plan, projection_items)?;
+
+        if let Some(ref where_ast) = with_clause.where_clause {
+            let predicate: LogicalExpr =
+                LogicalExpr::try_from(where_ast.conditions.clone()).map_err(|e| {
+                    LogicalPlanError::QueryPlanningError(format!(
+                        "Failed to convert WITH * WHERE expression: {}",
+                        e
+                    ))
+                })?;
+            with_node = with_node.with_where(predicate);
+        }
+
+        return Ok(Arc::new(LogicalPlan::WithClause(with_node)));
+    }
 
     // Rewrite pattern comprehensions before converting to ProjectionItems
     // This handles patterns like: WITH a, size([(a)--() | 1]) AS neighborCount

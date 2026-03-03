@@ -634,3 +634,101 @@ async fn test_full_browser_sequence_expand() {
     );
     assert!(sql_lower.contains("limit"), "LIMIT should appear in SQL");
 }
+
+// ===========================================================================
+// NeoDash node right-click expansion query (startNode/endNode + WITH *)
+// ===========================================================================
+
+/// `startNode(r)` resolves to the from-ID column of the relationship table.
+/// Used in NeoDash's non-APOC node expansion query.
+#[tokio::test]
+async fn test_startnode_endnode_in_case_expression() {
+    let schema = create_standard_schema();
+    // Simplified version using a labeled node (b:User) with a directed rel
+    let cypher = "MATCH (b:User)-[r:FOLLOWS]->(u:User) \
+                  WITH type(r) as type, CASE WHEN startNode(r) = b THEN 'out' ELSE 'in' END as dir, COUNT(*) as value \
+                  RETURN type, dir, value";
+    let sql = generate_expand_sql(&schema, cypher).await;
+    let sql_lower = sql.to_lowercase();
+
+    assert!(
+        sql_lower.contains("select"),
+        "startNode query should produce valid SQL"
+    );
+    // startNode(r) = b should resolve to r.follower_id = b.user_id (FOLLOWS from_id = follower_id)
+    assert!(
+        sql_lower.contains("follower_id"),
+        "startNode(r) should reference the from_id column (follower_id): got SQL:\n{sql}"
+    );
+    assert!(
+        sql_lower.contains("user_id"),
+        "node comparison should reference the node id column (user_id): got SQL:\n{sql}"
+    );
+    assert!(
+        sql_lower.contains("case when"),
+        "CASE WHEN should appear in SQL"
+    );
+}
+
+/// `WITH *` carries all visible aliases forward unchanged (no re-enumeration needed).
+/// Used in NeoDash's fallback node expansion query after UNWIND.
+#[tokio::test]
+async fn test_with_star_preserves_scope() {
+    let schema = create_standard_schema();
+    let cypher = "MATCH (b:User)-[r:FOLLOWS]->(u:User) \
+                  WITH type(r) as type, COUNT(*) as value \
+                  UNWIND ['in', 'out', 'any'] as direction \
+                  WITH * \
+                  WHERE direction = 'out' OR direction = 'any' \
+                  RETURN type, direction, sum(value) as total";
+    let sql = generate_expand_sql(&schema, cypher).await;
+    let sql_lower = sql.to_lowercase();
+
+    assert!(
+        sql_lower.contains("select"),
+        "WITH * query should produce valid SQL"
+    );
+    assert!(
+        sql_lower.contains("direction"),
+        "direction alias should appear in final SELECT: got SQL:\n{sql}"
+    );
+    assert!(
+        sql_lower.contains("type"),
+        "type alias from earlier WITH should still be visible: got SQL:\n{sql}"
+    );
+}
+
+/// Full NeoDash non-APOC node expansion query (regression test).
+/// This is the exact fallback query NeoDash sends when right-clicking a graph node.
+#[tokio::test]
+async fn test_neodash_node_expansion_query() {
+    let schema = create_standard_schema();
+    // NeoDash sends this after APOC fails; uses startNode(r) + WITH *
+    let cypher = "MATCH (b:User)-[r:FOLLOWS]-(u:User) \
+                  WITH type(r) as type, CASE WHEN startNode(r) = b THEN 'out' ELSE 'in' END as dir, COUNT(*) as value \
+                  UNWIND ['in', 'out', 'any'] as direction \
+                  WITH * \
+                  WHERE (direction = dir) OR direction = 'any' \
+                  RETURN type, direction, sum(value) as value ORDER BY type, direction";
+    let result = try_generate_expand_sql(&schema, cypher).await;
+    assert!(
+        result.is_ok(),
+        "NeoDash node expansion query should compile successfully: {:?}",
+        result.err()
+    );
+    let sql = result.unwrap();
+    let sql_lower = sql.to_lowercase();
+
+    assert!(
+        sql_lower.contains("select"),
+        "Should produce valid SQL: {sql}"
+    );
+    assert!(
+        sql_lower.contains("direction"),
+        "direction from UNWIND should appear in output: {sql}"
+    );
+    assert!(
+        sql_lower.contains("type"),
+        "type from WITH should appear in output: {sql}"
+    );
+}

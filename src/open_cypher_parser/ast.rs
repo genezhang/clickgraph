@@ -143,6 +143,8 @@ pub struct ReturnItem<'a> {
 #[derive(Debug, PartialEq, Clone)]
 pub struct WithClause<'a> {
     pub with_items: Vec<WithItem<'a>>,
+    /// Whether this is a `WITH *` (star projection) clause — carries all visible aliases forward
+    pub is_star: bool,
     /// Optional DISTINCT modifier
     pub distinct: bool,
     /// Optional ORDER BY clause - part of WITH syntax per OpenCypher spec

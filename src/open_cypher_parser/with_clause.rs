@@ -57,14 +57,29 @@ pub fn parse_with_clause(
     let (input, distinct) = opt(ws(tag_no_case("DISTINCT"))).parse(input)?;
     let distinct = distinct.is_some();
 
-    let (input, with_items) = context(
-        "Error in with clause",
-        separated_list1(
-            delimited(multispace0, char(','), multispace0),
-            cut(with_item_parser),
-        ),
-    )
-    .parse(input)?;
+    // Try parsing `WITH *` (star projection) before attempting regular items.
+    // `WITH *` carries all visible aliases forward unchanged — used after UNWIND.
+    let (input, with_items, is_star) = if let Ok((rest, _)) =
+        nom::combinator::peek(ws(
+            nom::bytes::complete::tag::<_, _, OpenCypherParsingError<'_>>("*"),
+        ))
+        .parse(input)
+    {
+        // Consume the `*`
+        let (rest, _) =
+            ws(nom::bytes::complete::tag::<_, _, OpenCypherParsingError<'_>>("*")).parse(rest)?;
+        (rest, vec![], true)
+    } else {
+        let (rest, items) = context(
+            "Error in with clause",
+            separated_list1(
+                delimited(multispace0, char(','), multispace0),
+                cut(with_item_parser),
+            ),
+        )
+        .parse(input)?;
+        (rest, items, false)
+    };
 
     // Parse optional ORDER BY clause (part of WITH syntax per OpenCypher spec)
     let (input, order_by) = opt(parse_order_by_clause).parse(input)?;
@@ -97,6 +112,7 @@ pub fn parse_with_clause(
 
     let with_clause = WithClause {
         with_items,
+        is_star,
         distinct,
         order_by,
         skip,
