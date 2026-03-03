@@ -296,6 +296,15 @@ impl TableCtx {
         self.properties.append(&mut props);
     }
 
+    /// Check if this table context has selective filters.
+    ///
+    /// Returns `true` if either:
+    /// - there are pending inline property filters in `properties` (not yet converted), or
+    /// - there are filter predicates (converted inline properties or pushed-down WHERE filters).
+    pub fn has_selective_filters(&self) -> bool {
+        !self.properties.is_empty() || !self.filter_predicates.is_empty()
+    }
+
     /// Get and clear properties (takes ownership).
     pub fn get_and_clear_properties(&mut self) -> Vec<Property> {
         std::mem::take(&mut self.properties)
