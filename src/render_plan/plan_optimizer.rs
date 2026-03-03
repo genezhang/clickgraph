@@ -2571,4 +2571,100 @@ mod tests {
             }
         }
     }
+
+    /// Regression test: UNION branches with empty select.items must not have
+    /// JOINs removed when those JOINs are referenced by the parent plan's SELECT.
+    ///
+    /// Scenario: parent SELECT references person2.id, UNION branches have empty
+    /// select (populated later during SQL rendering) but contain a LEFT JOIN for
+    /// person2. Without protection, remove_unreferenced_joins would remove it.
+    #[test]
+    fn test_union_branch_preserves_parent_referenced_joins() {
+        // Parent plan references person2.id in SELECT
+        let parent_select = vec![prop("person2", "id")];
+
+        // UNION branch: empty SELECT, but has JOINs including person2
+        let branch_joins = vec![
+            edge_join(
+                "t1",
+                "likes",
+                vec![eq_on(prop("person", "id"), prop("t1", "PersonId"))],
+                "PersonId",
+                "MessageId",
+            ),
+            node_join(
+                "person2",
+                "Person",
+                vec![eq_on(prop("person2", "id"), prop("t1", "PersonId"))],
+            ),
+        ];
+        let branch = make_plan(branch_joins, vec![]); // empty SELECT
+
+        let mut plan = make_plan(vec![], parent_select);
+        plan.union = UnionItems(Some(Union {
+            input: vec![branch],
+            union_type: crate::render_plan::UnionType::All,
+        }));
+
+        optimize_plan(&mut plan);
+
+        // person2 JOIN must survive in the branch
+        let branch = &plan.union.0.as_ref().unwrap().input[0];
+        let aliases: Vec<&str> = branch
+            .joins
+            .0
+            .iter()
+            .map(|j| j.table_alias.as_str())
+            .collect();
+        assert!(
+            aliases.contains(&"person2"),
+            "person2 JOIN should be preserved (parent SELECT references it), got: {:?}",
+            aliases
+        );
+    }
+
+    /// Test that collect_aliases_from_expr handles TableAlias, ExistsSubquery,
+    /// and PatternCount variants correctly.
+    #[test]
+    fn test_collect_aliases_covers_all_expr_variants() {
+        let mut aliases = HashSet::new();
+
+        // TableAlias
+        collect_aliases_from_expr(
+            &RenderExpr::TableAlias(TableAlias("node1".to_string())),
+            &mut aliases,
+        );
+        assert!(aliases.contains("node1"));
+
+        // ColumnAlias
+        collect_aliases_from_expr(
+            &RenderExpr::ColumnAlias(ColumnAlias("col1".to_string())),
+            &mut aliases,
+        );
+        assert!(aliases.contains("col1"));
+
+        // ExistsSubquery with alias.column pattern
+        collect_aliases_from_expr(
+            &RenderExpr::ExistsSubquery(render_expr::ExistsSubquery {
+                sql: "EXISTS (SELECT 1 FROM t WHERE friend.id = t.PersonId)".to_string(),
+            }),
+            &mut aliases,
+        );
+        assert!(
+            aliases.contains("friend"),
+            "ExistsSubquery should extract 'friend' from SQL"
+        );
+
+        // PatternCount with alias.column pattern
+        collect_aliases_from_expr(
+            &RenderExpr::PatternCount(render_expr::PatternCount {
+                sql: "(SELECT COUNT(*) FROM r WHERE person.id = r.Id)".to_string(),
+            }),
+            &mut aliases,
+        );
+        assert!(
+            aliases.contains("person"),
+            "PatternCount should extract 'person' from SQL"
+        );
+    }
 }
