@@ -433,14 +433,15 @@ pub fn select_anchor(joins: &[Join], plan_ctx: Option<&PlanCtx>) -> Option<Strin
     }
 
     if !non_optional.is_empty() {
-        // If plan_ctx is available, prefer aliases with inline property filters
+        // If plan_ctx is available, prefer aliases with selective filters
+        // (inline properties like {name: $tag} or pushed-down WHERE predicates)
         if let Some(ctx) = plan_ctx {
             let mut filtered: Vec<&str> = non_optional
                 .iter()
                 .copied()
                 .filter(|alias| {
                     ctx.get_table_ctx(alias)
-                        .map_or(false, |tc| tc.has_properties())
+                        .map_or(false, |tc| tc.has_selective_filters())
                 })
                 .collect();
             if !filtered.is_empty() {
@@ -940,5 +941,55 @@ mod tests {
         assert_ne!(joins[0].join_type, JoinType::Left); // a stays Inner
         assert_eq!(joins[1].join_type, JoinType::Left); // r marked Left
         assert_eq!(joins[2].join_type, JoinType::Left); // b marked Left
+    }
+
+    #[test]
+    fn test_select_anchor_prefers_filtered_alias() {
+        use crate::query_planner::logical_expr::LogicalExpr;
+        use crate::query_planner::plan_ctx::{PlanCtx, TableCtx};
+
+        // Two non-optional FROM markers: "a" and "tag"
+        let joins = vec![
+            JoinBuilder::from_marker("users", "a")
+                .join_type(JoinType::Inner)
+                .build(),
+            JoinBuilder::from_marker("tags", "tag")
+                .join_type(JoinType::Inner)
+                .build(),
+        ];
+
+        // Without plan_ctx: alphabetically "a" wins
+        assert_eq!(select_anchor(&joins, None), Some("a".to_string()));
+
+        // With plan_ctx where "tag" has a filter predicate
+        let mut plan_ctx = PlanCtx::new_empty();
+        let mut tag_ctx = TableCtx::build(
+            "tag".to_string(),
+            Some(vec!["Tag".to_string()]),
+            vec![],
+            false,
+            true,
+        );
+        // Simulate a pushed-down WHERE filter (e.g., tag.name = 'Databases')
+        tag_ctx.insert_filter(LogicalExpr::Literal(
+            crate::query_planner::logical_expr::Literal::String("placeholder".to_string()),
+        ));
+        plan_ctx.insert_table_ctx("tag".to_string(), tag_ctx);
+
+        // "a" has no filters
+        let a_ctx = TableCtx::build(
+            "a".to_string(),
+            Some(vec!["User".to_string()]),
+            vec![],
+            false,
+            true,
+        );
+        plan_ctx.insert_table_ctx("a".to_string(), a_ctx);
+
+        // With plan_ctx: "tag" wins because it has filters
+        assert_eq!(
+            select_anchor(&joins, Some(&plan_ctx)),
+            Some("tag".to_string())
+        );
     }
 }
