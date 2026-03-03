@@ -44,7 +44,7 @@ All failures at sf10 are ClickHouse resource limits. The only ClickGraph languag
 | bi-3 | OK | OK (290ms) | **Timeout** | Tag co-occurrence in country (VLP `*0..`) |
 | bi-4 | OK | OK (47ms) | OK (1-10s) | Popular moderators |
 | bi-5 | OK | OK (269ms) | OK (1-10s) | Active posters by tag |
-| bi-6 | OK | OK (56.2s) | **Timeout** | Active users (3-level OPTIONAL MATCH, O(n^3)) |
+| bi-6 | OK | OK (0.8s) | **Timeout** | Active users (selective predicate FROM reorder) |
 | bi-7 | OK | OK (406ms) | OK (1-10s) | Authoritative users |
 | bi-8 | OK | OK (1.2s) | OK (>60s) | Related tags (CTE-based pattern comprehension) |
 | bi-9 | OK | OK (285ms) | **Timeout** | Forum with related tags (unbounded `REPLY_OF*0..`) |
@@ -67,7 +67,7 @@ At sf1 scale, all 36 testable queries now pass with 0 timeouts and 0 OOM failure
 | complex-10 | Timeout (>300s) | 9.7s | Missing WHERE filters for fixed-length VLP + undirected edge UNION queries |
 | complex-13 | OOM | 28ms | Bridge node elimination optimization |
 | complex-14 | OOM | 279ms | Bridge node elimination optimization |
-| bi-6 | Timeout | 56.2s | Optimization improvements |
+| bi-6 | Timeout (56.2s) | 0.8s | Selective predicate FROM reordering (70x speedup) |
 | bi-9 | Timeout | 285ms | Optimization improvements |
 
 ### sf10: OOM and Timeouts
@@ -85,7 +85,7 @@ These queries exhaust ClickHouse's ~70GB server memory limit due to recursive CT
 | Query | sf1 | sf10 (300s) | Root Cause |
 |-------|-----|-------------|-----------|
 | bi-3 | 290ms | Timeout | Recursive VLP `*0..` over messages -- fits at sf1, too large at sf10 |
-| bi-6 | 56.2s | Timeout | 3-level OPTIONAL MATCH creates O(n^3) Cartesian product |
+| bi-6 | 0.8s | **Timeout** | 3-level OPTIONAL MATCH — sf1 fixed by FROM reordering, sf10 too large |
 | bi-9 | 285ms | Timeout | Unbounded `REPLY_OF*0..` over all messages (25M at sf10) |
 
 ### Language Gap
@@ -107,10 +107,9 @@ Two queries use adapted Cypher (equivalent semantics, different syntax):
 
 | Tier | Count | Queries |
 |------|-------|---------|
-| Fast (<1s) | 32 | short-1,2,3,4,5,6,7, complex-1,2,3,4,5,6,7,8,9,11,12,13,14, bi-1,2,3,4,5,7,9,11,12,13,14,18 |
+| Fast (<1s) | 33 | short-1,2,3,4,5,6,7, complex-1,2,3,4,5,6,7,8,9,11,12,13,14, bi-1,2,3,4,5,6,7,9,11,12,13,14,18 |
 | Medium (1-10s) | 3 | complex-10 (9.7s), bi-8 (1.2s), bi-17 (1.4s) |
-| Slow (10-60s) | 1 | bi-6 (56.2s) |
-| **Total** | 36 | 75.1s total, 2.1s avg |
+| **Total** | 36 | 19.7s total, 0.5s avg |
 
 ## Data Scales
 
@@ -122,6 +121,7 @@ Two queries use adapted Cypher (equivalent semantics, different syntax):
 
 ## Key Optimizations
 
+- **Selective predicate FROM reordering** (Mar 2026): When a WHERE filter references a joined table (e.g., `tag.name = 'value'`), promotes it to FROM position so ClickHouse filters early. Re-roots the join dependency tree and redistributes ON conditions. Fixed bi-6 from 56s to 0.8s (70x speedup) at sf1.
 - **Bridge node elimination** (Mar 2026): Post-hoc optimizer removes FK pass-through node tables (e.g., intermediate join tables that only relay foreign keys). Key factor in fixing complex-13 and complex-14 OOM at sf1.
 - **Fixed-length VLP WHERE filter propagation** (Mar 2026): WHERE filters now correctly propagate into fixed-length VLP + undirected edge UNION queries. Fixed complex-10 from >300s timeout to 9.7s at sf1.
 - **Scoping-only WITH collapse** (Mar 2026): Detects `WITH a, b` clauses that purely pass variables through for scoping and skips CTE creation. Improved bi-13 from >300s timeout to 8.7s at sf10 scale.
