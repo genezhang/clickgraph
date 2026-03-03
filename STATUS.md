@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: March 2, 2026*
+*Updated: March 3, 2026*
 
 ## Current Version: v0.6.3-dev
 
@@ -8,7 +8,7 @@ Read-only Cypher-to-ClickHouse SQL query engine with Neo4j Browser compatibility
 
 **Unit Tests**: 1,360 passing (100%, zero regressions)
 **Integration Tests**: 3,068 passing, 108 failing (environment-dependent), 171 xfailed
-**LDBC SNB**: 36/37 queries passing (97%) — bi-16 blocked by CALL subquery
+**LDBC SNB**: 36/37 queries passing at sf0.003 and sf1 (97%) -- bi-16 blocked by CALL subquery
 **Benchmark**: 14/14 queries (100%)
 **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)
 
