@@ -2349,6 +2349,14 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
         }
     }
 
+    // STEP: Post-hoc plan optimizations
+    // 1. Dead CTE elimination — removes CTEs never referenced downstream
+    // 2. VLP column pruning — removes unused property columns from recursive VLP CTEs
+    // 3. CTE column pruning — backward dataflow removes unused carry-forward columns
+    // 4. Unreferenced join elimination — removes JOINs whose alias is unused
+    // 5. Bridge node elimination — removes FK-bridge node JOINs, rewrites ON conditions
+    crate::render_plan::plan_optimizer::optimize_plan(&mut plan);
+
     // Rewrite path function calls for fixed (non-VLP) path patterns
     // Converts length(p) → hop_count, etc.
     plan = rewrite_fixed_path_functions(plan);
