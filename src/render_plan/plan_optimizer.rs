@@ -1606,10 +1606,16 @@ fn eliminate_bridge_nodes_in_plan(plan: &mut RenderPlan, protected_aliases: &Has
             break;
         }
 
-        // Pass 2: Rewrite downstream JOINs to bypass eliminated nodes
+        // Pass 2: Rewrite all references to eliminated nodes
         for candidate in &candidates {
             rewrite_joins_for_bridge(
                 &mut plan.joins.0,
+                &candidate.alias,
+                &candidate.id_column,
+                &candidate.upstream,
+            );
+            rewrite_plan_exprs_for_bridge(
+                plan,
                 &candidate.alias,
                 &candidate.id_column,
                 &candidate.upstream,
@@ -1711,8 +1717,20 @@ fn find_bridge_candidates(
             continue;
         }
 
-        // Guard: alias must not be referenced in SELECT, WHERE, ORDER BY, GROUP BY, HAVING
-        if is_alias_referenced_in_plan(plan, alias) {
+        // Guard: alias must not be referenced via non-ID columns in any plan part.
+        // If only the ID column is referenced (SELECT, WHERE, ORDER BY, etc.),
+        // those references can be rewritten to the upstream FK — still a valid bridge.
+        // But correlated refs in pre-rendered SQL strings (ExistsSubquery, PatternCount)
+        // cannot be structurally rewritten, so any such reference blocks elimination.
+        if has_non_id_ref_in_plan(plan, alias, &id_column) {
+            continue;
+        }
+
+        // Guard: alias must not appear as unresolved bare TableAlias/ColumnAlias.
+        // These are bare variable references that rewrite_bare_variables couldn't resolve.
+        // While we CAN rewrite them, the context they appear in (e.g., `forum1 <> forum2`)
+        // may have other unresolved aliases that stay as-is, producing invalid SQL.
+        if has_unresolved_bare_ref_in_plan(plan, alias) {
             continue;
         }
 
@@ -1750,6 +1768,176 @@ fn find_bridge_candidates(
     }
 
     candidates
+}
+
+/// Check if an expression contains unresolved TableAlias/ColumnAlias for the given alias.
+/// These are bare variable references that `rewrite_bare_variables` couldn't resolve.
+/// Bridge elimination rewrites them, but if the SAME expression contains OTHER unresolved
+/// bare aliases (e.g., `forum1 <> forum2` where both are TableAlias), rewriting only one
+/// produces inconsistent SQL. We block elimination in this case.
+fn has_unresolved_bare_ref(expr: &RenderExpr, alias: &str) -> bool {
+    match expr {
+        RenderExpr::TableAlias(ta) => ta.0 == alias,
+        RenderExpr::ColumnAlias(ca) => ca.0 == alias,
+        RenderExpr::OperatorApplicationExp(op) => op
+            .operands
+            .iter()
+            .any(|o| has_unresolved_bare_ref(o, alias)),
+        RenderExpr::ScalarFnCall(func) => {
+            func.args.iter().any(|a| has_unresolved_bare_ref(a, alias))
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            agg.args.iter().any(|a| has_unresolved_bare_ref(a, alias))
+        }
+        RenderExpr::Case(case) => {
+            case.when_then.iter().any(|(w, t)| {
+                has_unresolved_bare_ref(w, alias) || has_unresolved_bare_ref(t, alias)
+            }) || case
+                .else_expr
+                .as_ref()
+                .is_some_and(|e| has_unresolved_bare_ref(e, alias))
+        }
+        RenderExpr::List(items) => items.iter().any(|i| has_unresolved_bare_ref(i, alias)),
+        RenderExpr::InSubquery(subq) => has_unresolved_bare_ref(&subq.expr, alias),
+        _ => false,
+    }
+}
+
+/// Check if an alias has unresolved bare references in plan expressions.
+fn has_unresolved_bare_ref_in_plan(plan: &RenderPlan, alias: &str) -> bool {
+    for item in &plan.select.items {
+        if has_unresolved_bare_ref(&item.expression, alias) {
+            return true;
+        }
+    }
+    if let Some(ref filter) = plan.filters.0 {
+        if has_unresolved_bare_ref(filter, alias) {
+            return true;
+        }
+    }
+    for item in &plan.order_by.0 {
+        if has_unresolved_bare_ref(&item.expression, alias) {
+            return true;
+        }
+    }
+    for expr in &plan.group_by.0 {
+        if has_unresolved_bare_ref(expr, alias) {
+            return true;
+        }
+    }
+    if let Some(ref having) = plan.having_clause {
+        if has_unresolved_bare_ref(having, alias) {
+            return true;
+        }
+    }
+    if let Some(ref union) = plan.union.0 {
+        for branch in &union.input {
+            for item in &branch.select.items {
+                if has_unresolved_bare_ref(&item.expression, alias) {
+                    return true;
+                }
+            }
+            if let Some(ref filter) = branch.filters.0 {
+                if has_unresolved_bare_ref(filter, alias) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Check if an alias is referenced with a non-ID column in plan expressions
+/// (SELECT, WHERE, ORDER BY, GROUP BY, HAVING, ARRAY JOIN, UNION branches).
+/// Returns true if ANY reference uses a column other than `id_column`, OR if
+/// the alias appears in pre-rendered correlated SQL (ExistsSubquery/PatternCount)
+/// which cannot be structurally rewritten.
+fn has_non_id_ref_in_plan(plan: &RenderPlan, alias: &str, id_column: &str) -> bool {
+    // Check SELECT items
+    for item in &plan.select.items {
+        if has_non_id_column_ref(&item.expression, alias, id_column)
+            || expr_has_correlated_ref(&item.expression, alias)
+        {
+            return true;
+        }
+    }
+
+    // Check WHERE clause
+    if let Some(ref filter) = plan.filters.0 {
+        if has_non_id_column_ref(filter, alias, id_column) || expr_has_correlated_ref(filter, alias)
+        {
+            return true;
+        }
+    }
+
+    // Check ORDER BY
+    for item in &plan.order_by.0 {
+        if has_non_id_column_ref(&item.expression, alias, id_column)
+            || expr_has_correlated_ref(&item.expression, alias)
+        {
+            return true;
+        }
+    }
+
+    // Check GROUP BY
+    for expr in &plan.group_by.0 {
+        if has_non_id_column_ref(expr, alias, id_column) || expr_has_correlated_ref(expr, alias) {
+            return true;
+        }
+    }
+
+    // Check HAVING
+    if let Some(ref having) = plan.having_clause {
+        if has_non_id_column_ref(having, alias, id_column) || expr_has_correlated_ref(having, alias)
+        {
+            return true;
+        }
+    }
+
+    // Check UNION branches
+    if let Some(ref union) = plan.union.0 {
+        for branch in &union.input {
+            for item in &branch.select.items {
+                if has_non_id_column_ref(&item.expression, alias, id_column)
+                    || expr_has_correlated_ref(&item.expression, alias)
+                {
+                    return true;
+                }
+            }
+            if let Some(ref filter) = branch.filters.0 {
+                if has_non_id_column_ref(filter, alias, id_column)
+                    || expr_has_correlated_ref(filter, alias)
+                {
+                    return true;
+                }
+            }
+            for item in &branch.order_by.0 {
+                if has_non_id_column_ref(&item.expression, alias, id_column)
+                    || expr_has_correlated_ref(&item.expression, alias)
+                {
+                    return true;
+                }
+            }
+            for expr in &branch.group_by.0 {
+                if has_non_id_column_ref(expr, alias, id_column)
+                    || expr_has_correlated_ref(expr, alias)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Check ARRAY JOIN expressions
+    for aj in &plan.array_join.0 {
+        if has_non_id_column_ref(&aj.expression, alias, id_column)
+            || expr_has_correlated_ref(&aj.expression, alias)
+        {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Check if an alias is referenced in non-rewritable parts of the plan
@@ -1912,7 +2100,91 @@ fn has_non_id_column_ref(expr: &RenderExpr, alias: &str, id_column: &str) -> boo
             .iter()
             .any(|i| has_non_id_column_ref(i, alias, id_column)),
         RenderExpr::InSubquery(subq) => has_non_id_column_ref(&subq.expr, alias, id_column),
+        // Raw SQL strings may contain alias references we can't structurally analyze.
+        // Conservatively treat any mention of the alias as a non-ID reference.
+        RenderExpr::Raw(sql) => sql.contains(&format!("{}.", alias)),
+        RenderExpr::ExistsSubquery(es) => es.sql.contains(&format!("{}.", alias)),
+        RenderExpr::PatternCount(pc) => pc.sql.contains(&format!("{}.", alias)),
         _ => false,
+    }
+}
+
+/// Rewrite plan expressions (SELECT, WHERE, ORDER BY, GROUP BY, HAVING, UNION branches)
+/// to replace bridge node ID references with upstream FK references.
+fn rewrite_plan_exprs_for_bridge(
+    plan: &mut RenderPlan,
+    eliminated_alias: &str,
+    eliminated_id_col: &str,
+    upstream: &UpstreamRef,
+) {
+    // Rewrite SELECT items
+    for item in plan.select.items.iter_mut() {
+        rewrite_bridge_in_expr(
+            &mut item.expression,
+            eliminated_alias,
+            eliminated_id_col,
+            upstream,
+        );
+    }
+
+    // Rewrite WHERE clause
+    if let Some(ref mut filter) = plan.filters.0 {
+        rewrite_bridge_in_expr(filter, eliminated_alias, eliminated_id_col, upstream);
+    }
+
+    // Rewrite ORDER BY
+    for item in plan.order_by.0.iter_mut() {
+        rewrite_bridge_in_expr(
+            &mut item.expression,
+            eliminated_alias,
+            eliminated_id_col,
+            upstream,
+        );
+    }
+
+    // Rewrite GROUP BY
+    for expr in plan.group_by.0.iter_mut() {
+        rewrite_bridge_in_expr(expr, eliminated_alias, eliminated_id_col, upstream);
+    }
+
+    // Rewrite HAVING
+    if let Some(ref mut having) = plan.having_clause {
+        rewrite_bridge_in_expr(having, eliminated_alias, eliminated_id_col, upstream);
+    }
+
+    // Rewrite UNION branches
+    if let Some(ref mut union) = plan.union.0 {
+        for branch in union.input.iter_mut() {
+            for item in branch.select.items.iter_mut() {
+                rewrite_bridge_in_expr(
+                    &mut item.expression,
+                    eliminated_alias,
+                    eliminated_id_col,
+                    upstream,
+                );
+            }
+            if let Some(ref mut filter) = branch.filters.0 {
+                rewrite_bridge_in_expr(filter, eliminated_alias, eliminated_id_col, upstream);
+            }
+            for item in branch.order_by.0.iter_mut() {
+                rewrite_bridge_in_expr(
+                    &mut item.expression,
+                    eliminated_alias,
+                    eliminated_id_col,
+                    upstream,
+                );
+            }
+            for expr in branch.group_by.0.iter_mut() {
+                rewrite_bridge_in_expr(expr, eliminated_alias, eliminated_id_col, upstream);
+            }
+            // Also rewrite UNION branch JOINs
+            rewrite_joins_for_bridge(
+                &mut branch.joins.0,
+                eliminated_alias,
+                eliminated_id_col,
+                upstream,
+            );
+        }
     }
 }
 
@@ -2033,13 +2305,30 @@ fn rewrite_bridge_in_expr(
                 rewrite_bridge_in_expr(value, eliminated_alias, eliminated_id_col, upstream);
             }
         }
+        // TableAlias represents a bare node reference (resolves to node.id).
+        // If it matches the eliminated alias, rewrite to upstream FK.
+        RenderExpr::TableAlias(ta) => {
+            if ta.0 == eliminated_alias {
+                *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(upstream.alias.clone()),
+                    column: PropertyValue::Column(upstream.column.clone()),
+                });
+            }
+        }
+        // ColumnAlias can also represent a bare node reference in some contexts.
+        RenderExpr::ColumnAlias(ca) => {
+            if ca.0 == eliminated_alias {
+                *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(upstream.alias.clone()),
+                    column: PropertyValue::Column(upstream.column.clone()),
+                });
+            }
+        }
         // Leaf nodes — no rewriting needed
-        RenderExpr::TableAlias(_)
-        | RenderExpr::Literal(_)
+        RenderExpr::Literal(_)
         | RenderExpr::Raw(_)
         | RenderExpr::Star
         | RenderExpr::Column(_)
-        | RenderExpr::ColumnAlias(_)
         | RenderExpr::ExistsSubquery(_)
         | RenderExpr::PatternCount(_)
         | RenderExpr::CteEntityRef(_)
@@ -2375,6 +2664,162 @@ mod tests {
         // person3 should be eliminated (unreferenced)
         assert_eq!(plan.joins.0.len(), 1);
         assert_eq!(plan.joins.0[0].table_alias, "t3");
+    }
+
+    #[test]
+    fn test_id_only_bridge_elimination_with_select_rewrite() {
+        // Bridge node referenced only via ID column in SELECT/GROUP BY/ORDER BY.
+        // Pattern (bi-6):
+        //   edge(t2) ON t2.MessageId = message1.id
+        //   person1  ON person1.id = t2.PersonId   <- BRIDGE (ID-only ref in SELECT)
+        //
+        // SELECT person1.id, GROUP BY person1.id, ORDER BY person1.id
+        // → should rewrite to t2.PersonId and eliminate person1
+
+        let joins = vec![
+            edge_join(
+                "t2",
+                "Message_hasCreator_Person",
+                vec![eq_on(prop("t2", "MessageId"), prop("message1", "id"))],
+                "PersonId",
+                "MessageId",
+            ),
+            node_join(
+                "person1",
+                "Person",
+                vec![eq_on(prop("person1", "id"), prop("t2", "PersonId"))],
+            ),
+        ];
+
+        let select = vec![prop("person1", "id")];
+        let mut plan = make_plan(joins, select);
+        plan.group_by.0.push(prop("person1", "id"));
+        plan.order_by.0.push(OrderByItem {
+            expression: prop("person1", "id"),
+            order: OrderByOrder::Asc,
+        });
+
+        eliminate_bridge_nodes_in_plan(&mut plan, &HashSet::new());
+
+        // person1 should be eliminated
+        assert_eq!(plan.joins.0.len(), 1, "person1 should be eliminated");
+        assert_eq!(plan.joins.0[0].table_alias, "t2");
+
+        // SELECT should be rewritten: person1.id → t2.PersonId
+        if let RenderExpr::PropertyAccessExp(ref pa) = plan.select.items[0].expression {
+            assert_eq!(pa.table_alias.0, "t2");
+            assert_eq!(pa.column.raw(), "PersonId");
+        } else {
+            panic!("Expected rewritten SELECT expression");
+        }
+
+        // GROUP BY should be rewritten
+        if let RenderExpr::PropertyAccessExp(ref pa) = plan.group_by.0[0] {
+            assert_eq!(pa.table_alias.0, "t2");
+            assert_eq!(pa.column.raw(), "PersonId");
+        } else {
+            panic!("Expected rewritten GROUP BY expression");
+        }
+
+        // ORDER BY should be rewritten
+        if let RenderExpr::PropertyAccessExp(ref pa) = plan.order_by.0[0].expression {
+            assert_eq!(pa.table_alias.0, "t2");
+            assert_eq!(pa.column.raw(), "PersonId");
+        } else {
+            panic!("Expected rewritten ORDER BY expression");
+        }
+    }
+
+    #[test]
+    fn test_no_id_bridge_elimination_when_non_id_column_referenced() {
+        // Node referenced via non-ID column (e.g., tag.name) should NOT be eliminated
+        let joins = vec![
+            edge_join(
+                "t1",
+                "Message_hasTag_Tag",
+                vec![eq_on(prop("t1", "MessageId"), prop("message1", "id"))],
+                "TagId",
+                "MessageId",
+            ),
+            node_join(
+                "tag",
+                "Tag",
+                vec![eq_on(prop("tag", "id"), prop("t1", "TagId"))],
+            ),
+        ];
+
+        let select = vec![prop("message1", "id")];
+        let mut plan = make_plan(joins, select);
+        // WHERE tag.name = 'Databases' — non-ID column reference
+        plan.filters = FilterItems(Some(RenderExpr::OperatorApplicationExp(
+            OperatorApplication {
+                operator: Operator::Equal,
+                operands: vec![
+                    prop("tag", "name"),
+                    RenderExpr::Literal(Literal::String("Databases".to_string())),
+                ],
+            },
+        )));
+
+        eliminate_bridge_nodes_in_plan(&mut plan, &HashSet::new());
+
+        // tag should NOT be eliminated (referenced by non-ID column)
+        assert_eq!(plan.joins.0.len(), 2, "tag should NOT be eliminated");
+    }
+
+    #[test]
+    fn test_no_bridge_elimination_with_unresolved_bare_ref() {
+        // Node referenced as unresolved TableAlias should NOT be eliminated
+        let joins = vec![node_join(
+            "forum1",
+            "Forum",
+            vec![eq_on(prop("forum1", "id"), prop("t3", "ForumId"))],
+        )];
+
+        let mut plan = make_plan(joins, vec![]);
+        // WHERE forum1 <> forum2 — both unresolved TableAlias
+        plan.filters = FilterItems(Some(RenderExpr::OperatorApplicationExp(
+            OperatorApplication {
+                operator: Operator::NotEqual,
+                operands: vec![
+                    RenderExpr::TableAlias(TableAlias("forum1".to_string())),
+                    RenderExpr::TableAlias(TableAlias("forum2".to_string())),
+                ],
+            },
+        )));
+
+        eliminate_bridge_nodes_in_plan(&mut plan, &HashSet::new());
+
+        // forum1 should NOT be eliminated (unresolved bare ref)
+        assert_eq!(
+            plan.joins.0.len(),
+            1,
+            "forum1 should NOT be eliminated due to unresolved bare ref"
+        );
+    }
+
+    #[test]
+    fn test_no_bridge_elimination_with_raw_schema_filter_in_where() {
+        // Node referenced via Raw expression in WHERE (schema filter) should NOT be eliminated
+        let joins = vec![node_join(
+            "p",
+            "Place",
+            vec![eq_on(prop("p", "id"), prop("t1", "CityId"))],
+        )];
+
+        let select = vec![prop("p", "id")];
+        let mut plan = make_plan(joins, select);
+        // WHERE (p.type = 'City') — as Raw expression (how schema filters are stored)
+        plan.filters = FilterItems(Some(RenderExpr::Raw("(p.type = 'City')".to_string())));
+
+        eliminate_bridge_nodes_in_plan(&mut plan, &HashSet::new());
+
+        // p should NOT be eliminated (Raw expression references alias)
+        assert_eq!(
+            plan.joins.0.len(),
+            1,
+            "p should NOT be eliminated due to Raw filter reference"
+        );
     }
 
     // ─── Dead CTE Elimination Tests ─────────────────────────────────────────
