@@ -1371,6 +1371,35 @@ impl FilterTagging {
                     }));
                 }
 
+                // startNode(r) → r.from_id_col, endNode(r) → r.to_id_col
+                // Used in WHERE: WHERE startNode(r) = b → r.from_id = b.user_id
+                if matches!(fn_name_lower.as_str(), "startnode" | "endnode")
+                    && fn_call.args.len() == 1
+                {
+                    if let LogicalExpr::TableAlias(ref alias) = fn_call.args[0] {
+                        let alias_str = &alias.0;
+                        if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias_str) {
+                            if table_ctx.is_relation() {
+                                if let Some(label) = table_ctx.get_label_opt() {
+                                    if let Ok(rel_schema) = graph_schema.get_rel_schema(&label) {
+                                        let id = if fn_name_lower == "startnode" {
+                                            &rel_schema.from_id
+                                        } else {
+                                            &rel_schema.to_id
+                                        };
+                                        return Ok(LogicalExpr::PropertyAccessExp(
+                                            PropertyAccess {
+                                                table_alias: TableAlias(alias_str.clone()),
+                                                column: id.to_property_value(),
+                                            },
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // For other scalar functions, recursively apply property mapping to arguments
                 let mut mapped_args = Vec::new();
                 for arg in fn_call.args {
@@ -1517,6 +1546,24 @@ impl FilterTagging {
                     variable,
                     label: check_label,
                 })
+            }
+            // Bare node variable in filter context → resolve to node.{id_col}.
+            // This handles: startNode(r) = b → r.from_id = b.user_id
+            // where `b` appears as a TableAlias operand in a comparison.
+            LogicalExpr::TableAlias(TableAlias(alias)) if !preserve_id_function => {
+                if let Ok(table_ctx) = plan_ctx.get_table_ctx(&alias) {
+                    if !table_ctx.is_relation() {
+                        if let Some(label) = table_ctx.get_label_opt() {
+                            if let Ok(node_schema) = graph_schema.node_schema(&label) {
+                                return Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(alias),
+                                    column: node_schema.node_id.id.to_property_value(),
+                                }));
+                            }
+                        }
+                    }
+                }
+                Ok(LogicalExpr::TableAlias(TableAlias(alias)))
             }
             // For other expression types, return as-is
             other => Ok(other),

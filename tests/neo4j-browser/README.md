@@ -165,7 +165,7 @@ Neo4j Browser (http://7474)
 
 ### What Doesn't Work Yet
 - ❌ Neo4j Desktop (WebSocket connection)
-- ❌ NeoDash (dashboard integration)
+- ⚠️ NeoDash (dashboard integration — works with `--neo4j-compat-mode`; node expansion via `startNode`/`WITH *` implemented)
 - ❌ Transactions (read-only mode)
 - ❌ Streaming results
 
