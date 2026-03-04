@@ -809,49 +809,12 @@ impl ProjectionTagging {
                 // Recursively process operands and collect the transformed expressions
                 let mut transformed_operands = Vec::new();
                 for operand in &operator_application.operands {
-                    // Special case: bare node variable (TableAlias) in operator context.
-                    // In Cypher, comparing a node variable against another scalar implies
-                    // identity comparison by ID (e.g., startNode(r) = b → r.from_id = b.user_id).
-                    // Resolve node TableAlias to node.{id_col} instead of expanding to node.*.
-                    let resolved = if let LogicalExpr::TableAlias(TableAlias(alias)) = operand {
-                        if !plan_ctx.is_projection_alias(alias) {
-                            if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias) {
-                                if !table_ctx.is_relation() && table_ctx.get_label_opt().is_some() {
-                                    if let Some(label) = table_ctx.get_label_opt() {
-                                        if let Ok(node_schema) = graph_schema.node_schema(&label) {
-                                            Some(LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                                table_alias: TableAlias(alias.clone()),
-                                                column: node_schema.node_id.id.to_property_value(),
-                                            }))
-                                        } else {
-                                            None
-                                        }
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
+                    let mut operand_return_item = ProjectionItem {
+                        expression: operand.clone(),
+                        col_alias: None,
                     };
-
-                    if let Some(resolved_expr) = resolved {
-                        transformed_operands.push(resolved_expr);
-                    } else {
-                        let mut operand_return_item = ProjectionItem {
-                            expression: operand.clone(),
-                            col_alias: None,
-                        };
-                        Self::tag_projection(&mut operand_return_item, plan_ctx, graph_schema)?;
-                        transformed_operands.push(operand_return_item.expression);
-                    }
+                    Self::tag_projection(&mut operand_return_item, plan_ctx, graph_schema)?;
+                    transformed_operands.push(operand_return_item.expression);
                 }
 
                 // Update the item's expression with transformed operands

@@ -1547,24 +1547,6 @@ impl FilterTagging {
                     label: check_label,
                 })
             }
-            // Bare node variable in filter context → resolve to node.{id_col}.
-            // This handles: startNode(r) = b → r.from_id = b.user_id
-            // where `b` appears as a TableAlias operand in a comparison.
-            LogicalExpr::TableAlias(TableAlias(alias)) if !preserve_id_function => {
-                if let Ok(table_ctx) = plan_ctx.get_table_ctx(&alias) {
-                    if !table_ctx.is_relation() {
-                        if let Some(label) = table_ctx.get_label_opt() {
-                            if let Ok(node_schema) = graph_schema.node_schema(&label) {
-                                return Ok(LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(alias),
-                                    column: node_schema.node_id.id.to_property_value(),
-                                }));
-                            }
-                        }
-                    }
-                }
-                Ok(LogicalExpr::TableAlias(TableAlias(alias)))
-            }
             // For other expression types, return as-is
             other => Ok(other),
         }
