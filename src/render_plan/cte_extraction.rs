@@ -2689,40 +2689,66 @@ pub fn extract_ctes_with_context(
 
                     props
                 } else {
-                    // ✨ BUG #7 FIX: For regular VLP queries, include ALL node properties
-                    // This handles queries like MATCH (a)-[*]->(b) RETURN a, b
-                    // where both nodes need all their properties in the CTE for the final SELECT
+                    // For regular VLP queries, include node properties needed by the query.
+                    // Uses PropertyRequirements to prune unused properties from the recursive CTE.
+                    // Fallback: include ALL properties when requirements are unknown or wildcard.
                     log::debug!(
-                        "🔧 BUG #7: Extracting all properties for VLP query ({}-{})",
+                        "VLP property extraction for ({}-{})",
                         start_label,
                         end_label
                     );
                     let mut props = Vec::new();
 
-                    // Get all properties for start node using the schema parameter (which is already in scope)
+                    // Get property requirements for pruning (if available)
+                    let prop_reqs = plan_ctx.and_then(|ctx| ctx.get_property_requirements());
+
+                    // Helper: check if we should include all properties for this alias
+                    let needs_all = |alias: &str| -> bool {
+                        match prop_reqs {
+                            None => true, // No requirements tracked → safe fallback
+                            Some(reqs) => {
+                                if reqs.requires_all(alias) {
+                                    return true; // Wildcard (bare node ref like RETURN a)
+                                }
+                                // If alias has no entry at all, include all (safe fallback)
+                                reqs.get_requirements(alias).is_none()
+                            }
+                        }
+                    };
+
+                    // Get required property set for an alias (None = include all)
+                    let required_props_for =
+                        |alias: &str| -> Option<&std::collections::HashSet<String>> {
+                            prop_reqs.and_then(|reqs| {
+                                if reqs.requires_all(alias) {
+                                    None
+                                } else {
+                                    reqs.get_requirements(alias)
+                                }
+                            })
+                        };
+
+                    // Get all properties for start node
                     if !start_label.is_empty() {
                         if let Ok(start_node_schema) = schema.node_schema(&start_label) {
-                            log::debug!(
-                                "🔧 BUG #7: Found start node schema with {} properties",
-                                start_node_schema.property_mappings.len()
-                            );
-                            // Get the node's ID columns to skip them from properties
-                            // Use columns() for composite ID support
                             let start_id_columns = start_node_schema.node_id.columns();
-                            // Sort keys for deterministic column ordering
+                            let required = required_props_for(&start_alias);
+                            let include_all = needs_all(&start_alias);
+
                             let mut sorted_props: Vec<_> =
                                 start_node_schema.property_mappings.iter().collect();
                             sorted_props.sort_by_key(|(k, _)| k.as_str());
                             for (prop_name, prop_value) in sorted_props {
-                                // Skip ID property - it's already added as start_id/end_id in CTE
-                                // Check DB column name (not Cypher property name) for schema-independence
-                                // For composite IDs, skip all ID columns
                                 if start_id_columns.contains(&prop_value.raw()) {
-                                    log::debug!(
-                                        "Skipping ID property '{}' → '{}' (already added as start_id)",
-                                        prop_name, prop_value.raw()
-                                    );
                                     continue;
+                                }
+                                // Prune: skip if requirements exist and this property isn't needed
+                                if !include_all {
+                                    if let Some(ref req_set) = required {
+                                        if !req_set.contains(prop_name.as_str()) {
+                                            continue;
+                                        }
+                                    }
                                 }
                                 props.push(NodeProperty {
                                     cypher_alias: start_alias.clone(),
@@ -2730,38 +2756,39 @@ pub fn extract_ctes_with_context(
                                     alias: prop_name.clone(),
                                 });
                             }
-                        } else {
-                            log::debug!(
-                                "🔧 BUG #7: No schema found for start node {}",
-                                start_label
-                            );
+                            if !include_all {
+                                log::debug!(
+                                    "VLP property pruning: start node '{}' ({}) — {} of {} properties kept",
+                                    start_alias,
+                                    start_label,
+                                    props.len(),
+                                    start_node_schema.property_mappings.len()
+                                );
+                            }
                         }
                     }
 
-                    // Get all properties for end node
+                    // Get properties for end node
+                    let start_count = props.len();
                     if !end_label.is_empty() {
                         if let Ok(end_node_schema) = schema.node_schema(&end_label) {
-                            log::debug!(
-                                "🔧 BUG #7: Found end node schema with {} properties",
-                                end_node_schema.property_mappings.len()
-                            );
-                            // Get the node's ID columns to skip them from properties
-                            // Use columns() for composite ID support
                             let end_id_columns = end_node_schema.node_id.columns();
-                            // Sort keys for deterministic column ordering
+                            let required = required_props_for(&end_alias);
+                            let include_all = needs_all(&end_alias);
+
                             let mut sorted_props: Vec<_> =
                                 end_node_schema.property_mappings.iter().collect();
                             sorted_props.sort_by_key(|(k, _)| k.as_str());
                             for (prop_name, prop_value) in sorted_props {
-                                // Skip ID property - it's already added as start_id/end_id in CTE
-                                // Check DB column name (not Cypher property name) for schema-independence
-                                // For composite IDs, skip all ID columns
                                 if end_id_columns.contains(&prop_value.raw()) {
-                                    log::debug!(
-                                        "Skipping ID property '{}' → '{}' (already added as end_id)",
-                                        prop_name, prop_value.raw()
-                                    );
                                     continue;
+                                }
+                                if !include_all {
+                                    if let Some(ref req_set) = required {
+                                        if !req_set.contains(prop_name.as_str()) {
+                                            continue;
+                                        }
+                                    }
                                 }
                                 props.push(NodeProperty {
                                     cypher_alias: end_alias.clone(),
@@ -2769,12 +2796,19 @@ pub fn extract_ctes_with_context(
                                     alias: prop_name.clone(),
                                 });
                             }
-                        } else {
-                            log::debug!("🔧 BUG #7: No schema found for end node {}", end_label);
+                            if !include_all {
+                                log::debug!(
+                                    "VLP property pruning: end node '{}' ({}) — {} of {} properties kept",
+                                    end_alias,
+                                    end_label,
+                                    props.len() - start_count,
+                                    end_node_schema.property_mappings.len()
+                                );
+                            }
                         }
                     }
 
-                    log::debug!("🔧 BUG #7: Total properties extracted: {}", props.len());
+                    log::debug!("VLP properties extracted: {}", props.len());
                     props
                 };
 
@@ -3447,18 +3481,41 @@ pub fn extract_ctes_with_context(
 
                     // Determine properties based on pattern type
                     let vlp_properties = if both_denormalized {
-                        log::debug!("🔧 CTE: Using denormalized generator for variable-length path (both nodes virtual)");
-                        log::debug!(
-                            "🔧 CTE: rel_table={}, filter_properties count={}",
-                            rel_table,
-                            filter_properties.len()
-                        );
+                        log::debug!("CTE: Using denormalized generator for variable-length path (both nodes virtual)");
 
-                        // For denormalized nodes, extract ALL properties from the node schema
-                        // (not just filter properties, since properties come from the edge table)
+                        // For denormalized nodes, properties come from the edge table
                         let mut all_denorm_properties = filter_properties.clone();
 
-                        // Get node schema to extract all from_properties and to_properties
+                        // Get PropertyRequirements for pruning
+                        let prop_reqs = plan_ctx.and_then(|ctx| ctx.get_property_requirements());
+                        let start_conn = &graph_rel.left_connection;
+                        let end_conn = &graph_rel.right_connection;
+
+                        let needs_all_for = |alias: &str| -> bool {
+                            match prop_reqs {
+                                None => true,
+                                Some(reqs) => {
+                                    reqs.requires_all(alias)
+                                        || reqs.get_requirements(alias).is_none()
+                                }
+                            }
+                        };
+                        let required_for =
+                            |alias: &str| -> Option<&std::collections::HashSet<String>> {
+                                prop_reqs.and_then(|reqs| {
+                                    if reqs.requires_all(alias) {
+                                        None
+                                    } else {
+                                        reqs.get_requirements(alias)
+                                    }
+                                })
+                            };
+
+                        let start_include_all = needs_all_for(start_conn);
+                        let end_include_all = needs_all_for(end_conn);
+                        let start_required = required_for(start_conn);
+                        let end_required = required_for(end_conn);
+
                         // Handle both "table" and "database.table" formats
                         let rel_table_name = rel_table.rsplit('.').next().unwrap_or(&rel_table);
 
@@ -3467,55 +3524,53 @@ pub fn extract_ctes_with_context(
                                 n.table_name.rsplit('.').next().unwrap_or(&n.table_name);
                             schema_table == rel_table_name
                         }) {
-                            log::debug!("🔧 CTE: Found node schema for table {}", rel_table);
-
-                            // Add all from_node properties
+                            // Add from_node properties (filtered by requirements)
                             if let Some(ref from_props) = node_schema.from_properties {
-                                log::debug!(
-                                    "🔧 CTE: Adding {} from_node properties",
-                                    from_props.len()
-                                );
-                                for logical_prop in from_props.keys() {
+                                for (logical_prop, physical_col) in from_props {
+                                    if !start_include_all {
+                                        if let Some(ref req_set) = start_required {
+                                            if !req_set.contains(logical_prop.as_str()) {
+                                                continue;
+                                            }
+                                        }
+                                    }
                                     if !all_denorm_properties.iter().any(|p| {
-                                        p.cypher_alias == graph_rel.left_connection
-                                            && p.alias == *logical_prop
+                                        p.cypher_alias == *start_conn && p.alias == *logical_prop
                                     }) {
-                                        log::trace!(
-                                            "🔧 CTE: Adding from property: {}",
-                                            logical_prop
-                                        );
                                         all_denorm_properties.push(NodeProperty {
-                                            cypher_alias: graph_rel.left_connection.clone(),
-                                            column_name: logical_prop.clone(),
+                                            cypher_alias: start_conn.clone(),
+                                            column_name: physical_col.clone(),
                                             alias: logical_prop.clone(),
                                         });
                                     }
                                 }
                             }
 
-                            // Add all to_node properties
+                            // Add to_node properties (filtered by requirements)
                             if let Some(ref to_props) = node_schema.to_properties {
-                                log::debug!("🔧 CTE: Adding {} to_node properties", to_props.len());
-                                for logical_prop in to_props.keys() {
+                                for (logical_prop, physical_col) in to_props {
+                                    if !end_include_all {
+                                        if let Some(ref req_set) = end_required {
+                                            if !req_set.contains(logical_prop.as_str()) {
+                                                continue;
+                                            }
+                                        }
+                                    }
                                     if !all_denorm_properties.iter().any(|p| {
-                                        p.cypher_alias == graph_rel.right_connection
-                                            && p.alias == *logical_prop
+                                        p.cypher_alias == *end_conn && p.alias == *logical_prop
                                     }) {
-                                        log::trace!("🔧 CTE: Adding to property: {}", logical_prop);
                                         all_denorm_properties.push(NodeProperty {
-                                            cypher_alias: graph_rel.right_connection.clone(),
-                                            column_name: logical_prop.clone(),
+                                            cypher_alias: end_conn.clone(),
+                                            column_name: physical_col.clone(),
                                             alias: logical_prop.clone(),
                                         });
                                     }
                                 }
                             }
-                        } else {
-                            log::debug!("❌ CTE: No node schema found for table {}", rel_table);
                         }
 
                         log::debug!(
-                            "🔧 CTE: Final all_denorm_properties count: {}",
+                            "CTE: Denormalized properties count: {}",
                             all_denorm_properties.len()
                         );
                         all_denorm_properties
