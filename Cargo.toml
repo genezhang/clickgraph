@@ -35,7 +35,6 @@ bytes = { version = "1.8", features = ["serde"] }  # For PackStream (vendored fr
 validator = { version = "0.20", features = ["derive"] }
 # Query cache dependencies
 hex = "0.4"
-lru = "0.12"
 # Function registry
 lazy_static = "1.5"
 # NOTE: regex is used in handler.rs for Cypher→SQL ID pattern rewriting
