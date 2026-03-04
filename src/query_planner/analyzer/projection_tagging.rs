@@ -1115,7 +1115,8 @@ impl ProjectionTagging {
                             if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias) {
                                 if table_ctx.is_relation() {
                                     if let Some(label) = table_ctx.get_label_opt() {
-                                        if let Ok(rel_schema) = graph_schema.get_rel_schema(&label) {
+                                        if let Ok(rel_schema) = graph_schema.get_rel_schema(&label)
+                                        {
                                             let id = if fn_name_lower == "startnode" {
                                                 &rel_schema.from_id
                                             } else {

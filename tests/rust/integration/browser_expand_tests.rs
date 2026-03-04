@@ -664,7 +664,10 @@ async fn test_startnode_and_endnode_in_case_expression() {
         sql_lower.contains("user_id"),
         "node comparison should reference the node id column (user_id): got SQL:\n{sql}"
     );
-    assert!(sql_lower.contains("case when"), "CASE WHEN should appear in SQL");
+    assert!(
+        sql_lower.contains("case when"),
+        "CASE WHEN should appear in SQL"
+    );
 
     // Test endNode(r) in CASE WHEN
     let cypher2 = "MATCH (b:User)-[r:FOLLOWS]->(u:User) \
@@ -767,6 +770,12 @@ async fn test_neodash_expansion_with_id_parameter() {
     );
     let sql = result.unwrap();
     let sql_lower = sql.to_lowercase();
-    assert!(sql_lower.contains("select"), "Should produce valid SQL: {sql}");
-    assert!(sql_lower.contains("follower_id"), "from_id should appear: {sql}");
+    assert!(
+        sql_lower.contains("select"),
+        "Should produce valid SQL: {sql}"
+    );
+    assert!(
+        sql_lower.contains("follower_id"),
+        "from_id should appear: {sql}"
+    );
 }
