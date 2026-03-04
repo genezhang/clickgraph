@@ -14,17 +14,15 @@ const DEFAULT_MAX_HOPS: u32 = 5;
 
 /// Get configurable default max hops with environment variable override.
 /// `CLICKGRAPH_VLP_MAX_HOPS` overrides the compiled-in default for all VLP queries.
-fn get_default_max_hops(is_shortest_path: bool) -> u32 {
+/// Uses the same default for all variable-length patterns (including shortestPath)
+/// to avoid silently changing query semantics.
+fn get_default_max_hops() -> u32 {
     if let Ok(val) = std::env::var("CLICKGRAPH_VLP_MAX_HOPS") {
         if let Ok(n) = val.parse::<u32>() {
             return n;
         }
     }
-    if is_shortest_path {
-        3 // Social graphs: 3 hops covers most shortest paths
-    } else {
-        DEFAULT_MAX_HOPS
-    }
+    DEFAULT_MAX_HOPS
 }
 
 /// Property to include in the CTE (column name and which node it belongs to)
@@ -775,15 +773,20 @@ impl<'a> VariableLengthCteGenerator<'a> {
         self.weight_cte = Some(config);
     }
 
-    /// Whether this VLP query needs full path data (path_edges, path_relationships).
-    /// When false, these arrays are kept empty to save memory — only path_nodes is
-    /// maintained for cycle detection.
+    /// Whether this VLP query needs full path return data (path_relationships).
+    ///
+    /// `path_edges` is always maintained for relationship-uniqueness (Cypher semantics
+    /// require edge uniqueness in variable-length patterns regardless of path binding).
+    /// Only `path_relationships` is gated — it's only needed when the query binds a
+    /// path variable (`MATCH p = ...`, `shortestPath(...)`) for `relationships(p)` or
+    /// Bolt Path protocol.
     fn needs_path_data(&self) -> bool {
         self.path_variable.is_some()
     }
 
-    /// Build the SQL expression for the end node ID (for path_nodes cycle detection).
+    /// Build the SQL expression for the end node ID.
     /// Returns expression like `end_node.PersonId` or `concat(toString(end_node.col1), ...)`.
+    #[allow(dead_code)]
     fn build_end_node_id_expr(&self) -> String {
         let end_id_identifier = Identifier::from_comma_separated(&self.end_node_id_column);
         match &end_id_identifier {
@@ -815,31 +818,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
     }
 
     /// Extract target node ID condition from end_node_filters for early termination.
-    /// Returns a condition like `"vp.end_id != $param"` when the end_node_filters contain
-    /// a simple equality on the end node ID column. Used to prevent expanding from the
-    /// target node in shortestPath queries.
+    ///
+    /// Disabled: raw SQL string parsing is brittle — it depends on exact spacing,
+    /// aliasing, and predicate layout, and could silently change the result set for
+    /// complex filters. Re-enable when structured filter information (expression AST)
+    /// is available for safe pattern matching.
     fn extract_target_id_negation(&self) -> Option<String> {
-        if self.shortest_path_mode.is_none() {
-            return None;
-        }
-        if let Some(ref filters) = self.end_node_filters {
-            // Look for "end_node.{id_col} = VALUE" pattern
-            let pattern = format!("{}.{} = ", self.end_node_alias, self.end_node_id_column);
-            if let Some(start_pos) = filters.find(&pattern) {
-                // Extract the full condition: "end_node.id = VALUE"
-                let rest = &filters[start_pos..];
-                let condition_end = rest.find(" AND ").unwrap_or(rest.len());
-                let condition = &rest[..condition_end];
-                // Rewrite to use vp.end_id and negate
-                let rewritten = condition
-                    .replace(
-                        &format!("{}.{}", self.end_node_alias, self.end_node_id_column),
-                        "vp.end_id",
-                    )
-                    .replace(" = ", " != ");
-                return Some(rewritten);
-            }
-        }
         None
     }
 
@@ -1082,7 +1066,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 if min_hops == 0 {
                     3 // Lower limit for zero-hop base queries
                 } else {
-                    get_default_max_hops(self.shortest_path_mode.is_some())
+                    get_default_max_hops()
                 }
             });
 
@@ -1702,14 +1686,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 end_id_selection,
                 "1 as hop_count".to_string(),
             ];
+            // path_edges always populated for edge-uniqueness (Cypher semantics)
+            select_items.push(format!("[{}] as path_edges", edge_tuple));
             if self.needs_path_data() {
-                select_items.push(format!("[{}] as path_edges", edge_tuple));
                 select_items.push(self.generate_relationship_type_for_hop(1));
             } else {
-                select_items.push(format!(
-                    "CAST([] AS {}) as path_edges",
-                    self.get_path_edges_array_type()
-                ));
                 select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
             }
             select_items.push(path_nodes_selection);
@@ -1898,21 +1879,14 @@ impl<'a> VariableLengthCteGenerator<'a> {
         max_hops: u32,
         cte_name: &str,
     ) -> String {
-        // Early termination: don't expand from the target node
-        let target_exclusion = self
-            .extract_target_id_negation()
-            .map(|neg| format!("\n      AND {}", neg))
-            .unwrap_or_default();
-
         format!(
-            "    SELECT\n        vp.start_id,\n        ew.{target} AS end_id,\n        vp.hop_count + 1 AS hop_count,\n        vp.total_weight + ew.{weight} AS total_weight,\n        arrayConcat(vp.path_nodes, [ew.{target}]) AS path_nodes,\n        vp.path_edges AS path_edges,\n        vp.path_relationships AS path_relationships\n    FROM {cte_name} vp\n    JOIN {weight_cte} ew ON ew.{source} = vp.end_id\n    WHERE vp.hop_count < {max_hops}\n      AND NOT has(vp.path_nodes, ew.{target}){target_exclusion}",
+            "    SELECT\n        vp.start_id,\n        ew.{target} AS end_id,\n        vp.hop_count + 1 AS hop_count,\n        vp.total_weight + ew.{weight} AS total_weight,\n        arrayConcat(vp.path_nodes, [ew.{target}]) AS path_nodes,\n        vp.path_edges AS path_edges,\n        vp.path_relationships AS path_relationships\n    FROM {cte_name} vp\n    JOIN {weight_cte} ew ON ew.{source} = vp.end_id\n    WHERE vp.hop_count < {max_hops}\n      AND NOT has(vp.path_nodes, ew.{target})",
             target = wc.target_column,
             weight = wc.weight_column,
             source = wc.source_column,
             cte_name = cte_name,
             weight_cte = wc.cte_name,
             max_hops = max_hops,
-            target_exclusion = target_exclusion,
         )
     }
 
@@ -2025,20 +1999,19 @@ impl<'a> VariableLengthCteGenerator<'a> {
             end_id_selection,
             "vp.hop_count + 1 as hop_count".to_string(),
         ];
+        // path_edges always populated for edge-uniqueness (Cypher semantics)
+        select_items.push(format!(
+            "arrayConcat(vp.path_edges, [{}]) as path_edges",
+            edge_tuple_recursive
+        ));
         if self.needs_path_data() {
-            select_items.push(format!(
-                "arrayConcat(vp.path_edges, [{}]) as path_edges",
-                edge_tuple_recursive
-            ));
             select_items.push(format!(
                 "arrayConcat(vp.path_relationships, {}) as path_relationships",
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("vp.path_edges as path_edges".to_string());
             select_items.push("vp.path_relationships as path_relationships".to_string());
         }
-        // path_nodes always maintained for cycle detection
         select_items.push(path_nodes_selection);
 
         // For composite IDs, add individual ID component columns
@@ -2094,22 +2067,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let select_clause = select_items.join(",\n        ");
 
-        // Cycle prevention: use path_edges (edge uniqueness) when path data needed,
-        // otherwise use path_nodes (node uniqueness, cheaper Int64 comparison)
-        let cycle_check = if self.needs_path_data() {
-            let edge_tuple_check = self.build_edge_tuple_recursive(&self.relationship_alias);
-            format!("NOT has(vp.path_edges, {})", edge_tuple_check)
-        } else {
-            let end_node_id_expr = self.build_end_node_id_expr();
-            format!("NOT has(vp.path_nodes, {})", end_node_id_expr)
-        };
+        // Edge-uniqueness cycle prevention (Cypher semantics)
+        let edge_tuple_check = self.build_edge_tuple_recursive(&self.relationship_alias);
 
-        let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_check];
-
-        // Early termination: don't expand from the target node in shortestPath queries
-        if let Some(negated_condition) = self.extract_target_id_negation() {
-            where_conditions.push(negated_condition);
-        }
+        let mut where_conditions = vec![
+            format!("vp.hop_count < {}", max_hops),
+            format!("NOT has(vp.path_edges, {})", edge_tuple_check),
+        ];
 
         // Add polymorphic edge filter if this is a polymorphic edge table
         if let Some(poly_filter) = self.generate_polymorphic_edge_filter() {
@@ -2272,20 +2236,20 @@ impl<'a> VariableLengthCteGenerator<'a> {
             format!("intermediate_node.{} as end_id", intermediate_id_col),
             "vp.hop_count + 1 as hop_count".to_string(),
         ];
+        // path_edges always populated for edge-uniqueness (Cypher semantics)
+        select_items.push(format!(
+            "arrayConcat(vp.path_edges, [{}]) as path_edges",
+            edge_tuple_recursive
+        ));
         if self.needs_path_data() {
-            select_items.push(format!(
-                "arrayConcat(vp.path_edges, [{}]) as path_edges",
-                edge_tuple_recursive
-            ));
             select_items.push(format!(
                 "arrayConcat(vp.path_relationships, {}) as path_relationships",
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("vp.path_edges as path_edges".to_string());
             select_items.push("vp.path_relationships as path_relationships".to_string());
         }
-        // Track intermediate node IDs in path_nodes (always needed for cycle detection)
+        // Track intermediate node IDs in path_nodes
         select_items.push(format!(
             "arrayConcat(vp.path_nodes, [intermediate_node.{}]) as path_nodes",
             intermediate_id_col
@@ -2303,18 +2267,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let select_clause = select_items.join(",\n        ");
 
-        // Cycle prevention
-        let cycle_check = if self.needs_path_data() {
-            let edge_tuple_check = self.build_edge_tuple_recursive(&self.relationship_alias);
-            format!("NOT has(vp.path_edges, {})", edge_tuple_check)
-        } else {
-            format!(
-                "NOT has(vp.path_nodes, intermediate_node.{})",
-                intermediate_id_col
-            )
-        };
+        // Edge-uniqueness cycle prevention
+        let edge_tuple_check = self.build_edge_tuple_recursive(&self.relationship_alias);
 
-        let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_check];
+        let mut where_conditions = vec![
+            format!("vp.hop_count < {}", max_hops),
+            format!("NOT has(vp.path_edges, {})", edge_tuple_check),
+        ];
 
         // Add polymorphic edge filter for INTERMEDIATE hops (e.g., member_type = 'Group')
         if let Some(poly_filter) = self.generate_polymorphic_edge_filter_intermediate() {
@@ -2397,14 +2356,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
             ),
             "1 as hop_count".to_string(),
         ];
+        select_items.push(format!("[{}] as path_edges", edge_tuple));
         if self.needs_path_data() {
-            select_items.push(format!("[{}] as path_edges", edge_tuple));
             select_items.push(self.generate_relationship_type_for_hop(1));
         } else {
-            select_items.push(format!(
-                "CAST([] AS {}) as path_edges",
-                self.get_path_edges_array_type()
-            ));
             select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
         }
         select_items.push(format!(
@@ -2531,20 +2486,19 @@ impl<'a> VariableLengthCteGenerator<'a> {
             format!("{}.{} as end_id", "new_end", self.end_node_id_column), // new parent
             "vp.hop_count + 1 as hop_count".to_string(),
         ];
+        select_items.push(format!(
+            "arrayConcat(vp.path_edges, [{}]) as path_edges",
+            edge_tuple_recursive
+        ));
         if self.needs_path_data() {
-            select_items.push(format!(
-                "arrayConcat(vp.path_edges, [{}]) as path_edges",
-                edge_tuple_recursive
-            ));
             select_items.push(format!(
                 "arrayConcat(vp.path_relationships, {}) as path_relationships",
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("vp.path_edges as path_edges".to_string());
             select_items.push("vp.path_relationships as path_relationships".to_string());
         }
-        // APPEND the new node to path_nodes (always needed for cycle detection)
+        // APPEND the new node to path_nodes
         select_items.push(format!(
             "arrayConcat(vp.path_nodes, [{}.{}]) as path_nodes",
             "new_end", self.end_node_id_column
@@ -2565,20 +2519,15 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let select_clause = select_items.join(",\n        ");
 
-        let cycle_check = if self.needs_path_data() {
-            let edge_tuple_check = format!(
-                "tuple(current_node.{}, new_end.{})",
-                self.end_node_id_column, self.end_node_id_column
-            );
-            format!("NOT has(vp.path_edges, {})", edge_tuple_check)
-        } else {
-            format!(
-                "NOT has(vp.path_nodes, new_end.{})",
-                self.end_node_id_column
-            )
-        };
+        let edge_tuple_check = format!(
+            "tuple(current_node.{}, new_end.{})",
+            self.end_node_id_column, self.end_node_id_column
+        );
 
-        let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_check];
+        let mut where_conditions = vec![
+            format!("vp.hop_count < {}", max_hops),
+            format!("NOT has(vp.path_edges, {})", edge_tuple_check),
+        ];
 
         // Add edge constraints if defined in schema
         // FK-edge APPEND: from=current_node (previous end), to=new_end (parent)
@@ -2636,20 +2585,19 @@ impl<'a> VariableLengthCteGenerator<'a> {
             "vp.end_id".to_string(), // end_id stays the same (root)
             "vp.hop_count + 1 as hop_count".to_string(),
         ];
+        select_items.push(format!(
+            "arrayConcat([{}], vp.path_edges) as path_edges",
+            edge_tuple_recursive
+        ));
         if self.needs_path_data() {
-            select_items.push(format!(
-                "arrayConcat([{}], vp.path_edges) as path_edges",
-                edge_tuple_recursive
-            ));
             select_items.push(format!(
                 "arrayConcat({}, vp.path_relationships) as path_relationships",
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("vp.path_edges as path_edges".to_string());
             select_items.push("vp.path_relationships as path_relationships".to_string());
         }
-        // PREPEND the new node to path_nodes (always needed for cycle detection)
+        // PREPEND the new node to path_nodes
         select_items.push(format!(
             "arrayConcat([{}.{}], vp.path_nodes) as path_nodes",
             "new_start", self.start_node_id_column
@@ -2670,20 +2618,15 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let select_clause = select_items.join(",\n        ");
 
-        let cycle_check = if self.needs_path_data() {
-            let edge_tuple_check = format!(
-                "tuple(new_start.{}, current_node.{})",
-                self.relationship_from_column, self.end_node_id_column
-            );
-            format!("NOT has(vp.path_edges, {})", edge_tuple_check)
-        } else {
-            format!(
-                "NOT has(vp.path_nodes, new_start.{})",
-                self.start_node_id_column
-            )
-        };
+        let edge_tuple_check = format!(
+            "tuple(new_start.{}, current_node.{})",
+            self.relationship_from_column, self.end_node_id_column
+        );
 
-        let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_check];
+        let mut where_conditions = vec![
+            format!("vp.hop_count < {}", max_hops),
+            format!("NOT has(vp.path_edges, {})", edge_tuple_check),
+        ];
 
         // Add edge constraints if defined in schema
         // FK-edge PREPEND: from=new_start (child), to=current_node (previous start)
@@ -2762,14 +2705,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
             ),
             "1 as hop_count".to_string(),
         ];
+        select_items.push(format!("[{}] as path_edges", edge_tuple));
         if self.needs_path_data() {
-            select_items.push(format!("[{}] as path_edges", edge_tuple));
             select_items.push(self.generate_relationship_type_for_hop(1));
         } else {
-            select_items.push(format!(
-                "CAST([] AS {}) as path_edges",
-                self.get_path_edges_array_type()
-            ));
             select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
         }
         select_items.push(format!(
@@ -2989,17 +2928,16 @@ impl<'a> VariableLengthCteGenerator<'a> {
             ),
             "vp.hop_count + 1 as hop_count".to_string(),
         ];
+        select_items.push(format!(
+            "arrayConcat(vp.path_edges, [{}]) as path_edges",
+            edge_tuple_recursive
+        ));
         if self.needs_path_data() {
-            select_items.push(format!(
-                "arrayConcat(vp.path_edges, [{}]) as path_edges",
-                edge_tuple_recursive
-            ));
             select_items.push(format!(
                 "arrayConcat(vp.path_relationships, {}) as path_relationships",
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("vp.path_edges as path_edges".to_string());
             select_items.push("vp.path_relationships as path_relationships".to_string());
         }
         select_items.push(format!(
@@ -3111,14 +3049,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let select_clause = select_items.join(",\n        ");
 
-        let cycle_check = if self.needs_path_data() {
-            format!("NOT has(vp.path_edges, {})", edge_tuple_recursive)
-        } else {
-            format!(
-                "NOT has(vp.path_nodes, {}.{})",
-                self.relationship_alias, self.relationship_to_column
-            )
-        };
+        let cycle_check = format!("NOT has(vp.path_edges, {})", edge_tuple_recursive);
 
         let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_check];
 
@@ -3224,14 +3155,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
             format!("{} as end_id", end_id_expr),
             "1 as hop_count".to_string(),
         ];
+        select_items.push(format!("[{}] as path_edges", edge_tuple));
         if self.needs_path_data() {
-            select_items.push(format!("[{}] as path_edges", edge_tuple));
             select_items.push(self.generate_relationship_type_for_hop(1));
         } else {
-            select_items.push(format!(
-                "CAST([] AS {}) as path_edges",
-                self.get_path_edges_array_type()
-            ));
             select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
         }
         select_items.push(format!(
@@ -3354,17 +3281,16 @@ impl<'a> VariableLengthCteGenerator<'a> {
             format!("{} as end_id", end_id_expr),
             "vp.hop_count + 1 as hop_count".to_string(),
         ];
+        select_items.push(format!(
+            "arrayConcat(vp.path_edges, [{}]) as path_edges",
+            edge_tuple_recursive
+        ));
         if self.needs_path_data() {
-            select_items.push(format!(
-                "arrayConcat(vp.path_edges, [{}]) as path_edges",
-                edge_tuple_recursive
-            ));
             select_items.push(format!(
                 "arrayConcat(vp.path_relationships, {}) as path_relationships",
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("vp.path_edges as path_edges".to_string());
             select_items.push("vp.path_relationships as path_relationships".to_string());
         }
         // path_nodes always maintained for cycle detection
@@ -3423,11 +3349,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             )
         };
 
-        let cycle_check = if self.needs_path_data() {
-            format!("NOT has(vp.path_edges, {})", edge_tuple_recursive)
-        } else {
-            format!("NOT has(vp.path_nodes, {})", end_id_expr)
-        };
+        let cycle_check = format!("NOT has(vp.path_edges, {})", edge_tuple_recursive);
 
         let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_check];
 
