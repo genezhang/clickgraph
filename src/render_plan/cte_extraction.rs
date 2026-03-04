@@ -3526,7 +3526,7 @@ pub fn extract_ctes_with_context(
                         }) {
                             // Add from_node properties (filtered by requirements)
                             if let Some(ref from_props) = node_schema.from_properties {
-                                for logical_prop in from_props.keys() {
+                                for (logical_prop, physical_col) in from_props {
                                     if !start_include_all {
                                         if let Some(ref req_set) = start_required {
                                             if !req_set.contains(logical_prop.as_str()) {
@@ -3539,7 +3539,7 @@ pub fn extract_ctes_with_context(
                                     }) {
                                         all_denorm_properties.push(NodeProperty {
                                             cypher_alias: start_conn.clone(),
-                                            column_name: logical_prop.clone(),
+                                            column_name: physical_col.clone(),
                                             alias: logical_prop.clone(),
                                         });
                                     }
@@ -3548,7 +3548,7 @@ pub fn extract_ctes_with_context(
 
                             // Add to_node properties (filtered by requirements)
                             if let Some(ref to_props) = node_schema.to_properties {
-                                for logical_prop in to_props.keys() {
+                                for (logical_prop, physical_col) in to_props {
                                     if !end_include_all {
                                         if let Some(ref req_set) = end_required {
                                             if !req_set.contains(logical_prop.as_str()) {
@@ -3561,7 +3561,7 @@ pub fn extract_ctes_with_context(
                                     }) {
                                         all_denorm_properties.push(NodeProperty {
                                             cypher_alias: end_conn.clone(),
-                                            column_name: logical_prop.clone(),
+                                            column_name: physical_col.clone(),
                                             alias: logical_prop.clone(),
                                         });
                                     }
