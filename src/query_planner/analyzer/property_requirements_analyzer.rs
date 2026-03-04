@@ -52,7 +52,7 @@ use crate::query_planner::{
         analyzer_pass::{AnalyzerPass, AnalyzerResult},
         property_requirements::PropertyRequirements,
     },
-    logical_expr::LogicalExpr,
+    logical_expr::{LogicalExpr, Operator},
     logical_plan::LogicalPlan,
     plan_ctx::PlanCtx,
     transformed::Transformed,
@@ -256,9 +256,23 @@ impl PropertyRequirementsAnalyzer {
                 }
 
                 // If the UNWIND expression is collect(alias), propagate requirements to that alias
+                // Handle both collect(alias) and collect(DISTINCT alias) forms
                 if let LogicalExpr::AggregateFnCall(agg) = &unwind.expression {
                     if agg.name.to_lowercase() == "collect" && agg.args.len() == 1 {
-                        if let LogicalExpr::TableAlias(ref source_alias) = agg.args[0] {
+                        // Unwrap optional Distinct wrapper to get the inner alias
+                        let inner = if let LogicalExpr::OperatorApplicationExp(op_app) =
+                            &agg.args[0]
+                        {
+                            if op_app.operator == Operator::Distinct && op_app.operands.len() == 1 {
+                                &op_app.operands[0]
+                            } else {
+                                &agg.args[0]
+                            }
+                        } else {
+                            &agg.args[0]
+                        };
+
+                        if let LogicalExpr::TableAlias(ref source_alias) = inner {
                             let source = &source_alias.0;
                             log::info!(
                                 "🔍 Mapping UNWIND requirements from '{}' to source '{}'",
@@ -384,7 +398,27 @@ impl PropertyRequirementsAnalyzer {
             }
 
             LogicalExpr::OperatorApplicationExp(op_app) => {
+                // For comparison/equality operators, bare node refs only need their ID
+                // (e.g., `friend = root` compares node identity, not all properties)
+                let is_comparison = matches!(
+                    op_app.operator,
+                    Operator::Equal
+                        | Operator::NotEqual
+                        | Operator::LessThan
+                        | Operator::GreaterThan
+                        | Operator::LessThanEqual
+                        | Operator::GreaterThanEqual
+                        | Operator::In
+                        | Operator::NotIn
+                );
                 for operand in &op_app.operands {
+                    if is_comparison {
+                        if let LogicalExpr::TableAlias(_) = operand {
+                            // Skip — bare node in comparison only needs ID,
+                            // which is always included. Don't escalate to require_all.
+                            continue;
+                        }
+                    }
                     Self::analyze_expression(operand, requirements);
                 }
             }

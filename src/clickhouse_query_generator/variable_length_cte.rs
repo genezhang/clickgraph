@@ -12,6 +12,19 @@ use crate::render_plan::Cte;
 /// Original value: 10, reduced to 5 for memory safety in dense graphs.
 const DEFAULT_MAX_HOPS: u32 = 5;
 
+/// Get configurable default max hops with environment variable override.
+/// `CLICKGRAPH_VLP_MAX_HOPS` overrides the compiled-in default for all VLP queries.
+/// Uses the same default for all variable-length patterns (including shortestPath)
+/// to avoid silently changing query semantics.
+fn get_default_max_hops() -> u32 {
+    if let Ok(val) = std::env::var("CLICKGRAPH_VLP_MAX_HOPS") {
+        if let Ok(n) = val.parse::<u32>() {
+            return n;
+        }
+    }
+    DEFAULT_MAX_HOPS
+}
+
 /// Property to include in the CTE (column name and which node it belongs to)
 #[derive(Debug, Clone)]
 pub struct NodeProperty {
@@ -760,6 +773,60 @@ impl<'a> VariableLengthCteGenerator<'a> {
         self.weight_cte = Some(config);
     }
 
+    /// Whether this VLP query needs full path return data (path_relationships).
+    ///
+    /// `path_edges` is always maintained for relationship-uniqueness (Cypher semantics
+    /// require edge uniqueness in variable-length patterns regardless of path binding).
+    /// Only `path_relationships` is gated — it's only needed when the query binds a
+    /// path variable (`MATCH p = ...`, `shortestPath(...)`) for `relationships(p)` or
+    /// Bolt Path protocol.
+    fn needs_path_data(&self) -> bool {
+        self.path_variable.is_some()
+    }
+
+    /// Build the SQL expression for the end node ID.
+    /// Returns expression like `end_node.PersonId` or `concat(toString(end_node.col1), ...)`.
+    #[allow(dead_code)]
+    fn build_end_node_id_expr(&self) -> String {
+        let end_id_identifier = Identifier::from_comma_separated(&self.end_node_id_column);
+        match &end_id_identifier {
+            Identifier::Single(col) => {
+                format!(
+                    "{}.{}",
+                    self.end_node_alias,
+                    crate::clickhouse_query_generator::quote_identifier(col)
+                )
+            }
+            Identifier::Composite(cols) => {
+                let concat_parts: Vec<String> = cols
+                    .iter()
+                    .map(|c| {
+                        format!(
+                            "toString({}.{})",
+                            self.end_node_alias,
+                            crate::clickhouse_query_generator::quote_identifier(c)
+                        )
+                    })
+                    .collect();
+                format!(
+                    "concat({}, '|', {})",
+                    concat_parts[0],
+                    concat_parts[1..].join(", '|', ")
+                )
+            }
+        }
+    }
+
+    /// Extract target node ID condition from end_node_filters for early termination.
+    ///
+    /// Disabled: raw SQL string parsing is brittle — it depends on exact spacing,
+    /// aliasing, and predicate layout, and could silently change the result set for
+    /// complex filters. Re-enable when structured filter information (expression AST)
+    /// is available for safe pattern matching.
+    fn extract_target_id_negation(&self) -> Option<String> {
+        None
+    }
+
     /// Build edge tuple expression for the base case (first hop)
     /// Returns SQL expression like: `tuple(rel.from_id, rel.to_id)` or `tuple(rel.date, rel.num, ...)`
     fn build_edge_tuple_base(&self) -> String {
@@ -996,19 +1063,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
             query_body.push_str("\n    UNION ALL\n");
 
             let default_depth = max_hops.unwrap_or_else(|| {
-                // Unbounded case: use conservative default to prevent memory exhaustion
-                // In dense graphs, each hop can multiply rows exponentially
-                // Users who need longer paths should specify explicit bounds
-                if self.shortest_path_mode.is_some() {
-                    // For shortestPath queries, use lower limit
-                    // Most social graphs have small-world property (6 degrees of separation)
-                    5
-                } else if min_hops == 0 {
+                if min_hops == 0 {
                     3 // Lower limit for zero-hop base queries
                 } else {
-                    // Standard default for regular variable-length paths
-                    // Reduced from 10 to 5 to prevent row explosion in dense graphs
-                    5
+                    get_default_max_hops()
                 }
             });
 
@@ -1627,10 +1685,15 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 start_id_selection,
                 end_id_selection,
                 "1 as hop_count".to_string(),
-                format!("[{}] as path_edges", edge_tuple), // Track edge IDs, not node IDs
-                self.generate_relationship_type_for_hop(1), // path_relationships for single hop
-                path_nodes_selection,
             ];
+            // path_edges always populated for edge-uniqueness (Cypher semantics)
+            select_items.push(format!("[{}] as path_edges", edge_tuple));
+            if self.needs_path_data() {
+                select_items.push(self.generate_relationship_type_for_hop(1));
+            } else {
+                select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
+            }
+            select_items.push(path_nodes_selection);
 
             // For composite IDs, add individual ID component columns
             // This allows queries like RETURN dest.bank_id, dest.account_number
@@ -1935,17 +1998,21 @@ impl<'a> VariableLengthCteGenerator<'a> {
             "vp.start_id".to_string(),
             end_id_selection,
             "vp.hop_count + 1 as hop_count".to_string(),
-            format!(
-                "arrayConcat(vp.path_edges, [{}]) as path_edges",
-                edge_tuple_recursive
-            ), // Append edge ID/tuple, not node ID
-            format!(
+        ];
+        // path_edges always populated for edge-uniqueness (Cypher semantics)
+        select_items.push(format!(
+            "arrayConcat(vp.path_edges, [{}]) as path_edges",
+            edge_tuple_recursive
+        ));
+        if self.needs_path_data() {
+            select_items.push(format!(
                 "arrayConcat(vp.path_relationships, {}) as path_relationships",
                 self.get_relationship_type_array()
-            ),
-            // Add path_nodes array for UNWIND nodes(p) support
-            path_nodes_selection,
-        ];
+            ));
+        } else {
+            select_items.push("vp.path_relationships as path_relationships".to_string());
+        }
+        select_items.push(path_nodes_selection);
 
         // For composite IDs, add individual ID component columns
         // Pass through start ID components from vp, add end ID components from joined node
@@ -2000,12 +2067,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let select_clause = select_items.join(",\n        ");
 
-        // Build edge tuple check for cycle prevention
+        // Edge-uniqueness cycle prevention (Cypher semantics)
         let edge_tuple_check = self.build_edge_tuple_recursive(&self.relationship_alias);
 
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
-            format!("NOT has(vp.path_edges, {})", edge_tuple_check), // Edge uniqueness check (Neo4j semantics)
+            format!("NOT has(vp.path_edges, {})", edge_tuple_check),
         ];
 
         // Add polymorphic edge filter if this is a polymorphic edge table
@@ -2168,20 +2235,25 @@ impl<'a> VariableLengthCteGenerator<'a> {
             // end_id comes from the intermediate node (Group), not the end table (User)
             format!("intermediate_node.{} as end_id", intermediate_id_col),
             "vp.hop_count + 1 as hop_count".to_string(),
-            format!(
-                "arrayConcat(vp.path_edges, [{}]) as path_edges",
-                edge_tuple_recursive
-            ),
-            format!(
+        ];
+        // path_edges always populated for edge-uniqueness (Cypher semantics)
+        select_items.push(format!(
+            "arrayConcat(vp.path_edges, [{}]) as path_edges",
+            edge_tuple_recursive
+        ));
+        if self.needs_path_data() {
+            select_items.push(format!(
                 "arrayConcat(vp.path_relationships, {}) as path_relationships",
                 self.get_relationship_type_array()
-            ),
-            // Track intermediate node IDs in path_nodes
-            format!(
-                "arrayConcat(vp.path_nodes, [intermediate_node.{}]) as path_nodes",
-                intermediate_id_col
-            ),
-        ];
+            ));
+        } else {
+            select_items.push("vp.path_relationships as path_relationships".to_string());
+        }
+        // Track intermediate node IDs in path_nodes
+        select_items.push(format!(
+            "arrayConcat(vp.path_nodes, [intermediate_node.{}]) as path_nodes",
+            intermediate_id_col
+        ));
 
         // Add properties: start properties pass through, end properties NOT available yet
         // (end properties will be populated in the final outer SELECT that joins to end_node_table)
@@ -2195,7 +2267,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let select_clause = select_items.join(",\n        ");
 
-        // Build edge tuple check for cycle prevention
+        // Edge-uniqueness cycle prevention
         let edge_tuple_check = self.build_edge_tuple_recursive(&self.relationship_alias);
 
         let mut where_conditions = vec![
@@ -2283,16 +2355,20 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 self.end_node_alias, self.end_node_id_column
             ),
             "1 as hop_count".to_string(),
-            format!("[{}] as path_edges", edge_tuple),
-            self.generate_relationship_type_for_hop(1),
-            format!(
-                "[{}.{}, {}.{}] as path_nodes",
-                self.start_node_alias,
-                self.start_node_id_column,
-                self.end_node_alias,
-                self.end_node_id_column
-            ),
         ];
+        select_items.push(format!("[{}] as path_edges", edge_tuple));
+        if self.needs_path_data() {
+            select_items.push(self.generate_relationship_type_for_hop(1));
+        } else {
+            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
+        }
+        select_items.push(format!(
+            "[{}.{}, {}.{}] as path_nodes",
+            self.start_node_alias,
+            self.start_node_id_column,
+            self.end_node_alias,
+            self.end_node_id_column
+        ));
 
         // Add properties for start and end nodes
         for prop in &self.properties {
@@ -2409,21 +2485,24 @@ impl<'a> VariableLengthCteGenerator<'a> {
             "vp.start_id".to_string(), // start stays the same
             format!("{}.{} as end_id", "new_end", self.end_node_id_column), // new parent
             "vp.hop_count + 1 as hop_count".to_string(),
-            // APPEND the new edge to path_edges
-            format!(
-                "arrayConcat(vp.path_edges, [{}]) as path_edges",
-                edge_tuple_recursive
-            ),
-            format!(
+        ];
+        select_items.push(format!(
+            "arrayConcat(vp.path_edges, [{}]) as path_edges",
+            edge_tuple_recursive
+        ));
+        if self.needs_path_data() {
+            select_items.push(format!(
                 "arrayConcat(vp.path_relationships, {}) as path_relationships",
                 self.get_relationship_type_array()
-            ),
-            // APPEND the new node to path_nodes
-            format!(
-                "arrayConcat(vp.path_nodes, [{}.{}]) as path_nodes",
-                "new_end", self.end_node_id_column
-            ),
-        ];
+            ));
+        } else {
+            select_items.push("vp.path_relationships as path_relationships".to_string());
+        }
+        // APPEND the new node to path_nodes
+        select_items.push(format!(
+            "arrayConcat(vp.path_nodes, [{}.{}]) as path_nodes",
+            "new_end", self.end_node_id_column
+        ));
 
         // Add properties: start properties from CTE, end properties from new joined node
         for prop in &self.properties {
@@ -2505,21 +2584,24 @@ impl<'a> VariableLengthCteGenerator<'a> {
             format!("{}.{} as start_id", "new_start", self.start_node_id_column),
             "vp.end_id".to_string(), // end_id stays the same (root)
             "vp.hop_count + 1 as hop_count".to_string(),
-            // PREPEND the new edge to path_edges
-            format!(
-                "arrayConcat([{}], vp.path_edges) as path_edges",
-                edge_tuple_recursive
-            ),
-            format!(
+        ];
+        select_items.push(format!(
+            "arrayConcat([{}], vp.path_edges) as path_edges",
+            edge_tuple_recursive
+        ));
+        if self.needs_path_data() {
+            select_items.push(format!(
                 "arrayConcat({}, vp.path_relationships) as path_relationships",
                 self.get_relationship_type_array()
-            ),
-            // PREPEND the new node to path_nodes
-            format!(
-                "arrayConcat([{}.{}], vp.path_nodes) as path_nodes",
-                "new_start", self.start_node_id_column
-            ),
-        ];
+            ));
+        } else {
+            select_items.push("vp.path_relationships as path_relationships".to_string());
+        }
+        // PREPEND the new node to path_nodes
+        select_items.push(format!(
+            "arrayConcat([{}.{}], vp.path_nodes) as path_nodes",
+            "new_start", self.start_node_id_column
+        ));
 
         // Add properties: end properties from CTE, start properties from new joined node
         for prop in &self.properties {
@@ -2622,16 +2704,20 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 self.relationship_alias, self.relationship_to_column
             ),
             "1 as hop_count".to_string(),
-            format!("[{}] as path_edges", edge_tuple),
-            self.generate_relationship_type_for_hop(1),
-            format!(
-                "[{}.{}, {}.{}] as path_nodes",
-                self.relationship_alias,
-                self.relationship_from_column,
-                self.relationship_alias,
-                self.relationship_to_column
-            ),
         ];
+        select_items.push(format!("[{}] as path_edges", edge_tuple));
+        if self.needs_path_data() {
+            select_items.push(self.generate_relationship_type_for_hop(1));
+        } else {
+            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
+        }
+        select_items.push(format!(
+            "[{}.{}, {}.{}] as path_nodes",
+            self.relationship_alias,
+            self.relationship_from_column,
+            self.relationship_alias,
+            self.relationship_to_column
+        ));
 
         // Generate JSON property blobs for start and end nodes (denormalized)
         // Instead of flat columns, generate formatRowNoNewline JSON to match
@@ -2841,19 +2927,23 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 self.relationship_alias, self.relationship_to_column
             ),
             "vp.hop_count + 1 as hop_count".to_string(),
-            format!(
-                "arrayConcat(vp.path_edges, [{}]) as path_edges",
-                edge_tuple_recursive
-            ),
-            format!(
+        ];
+        select_items.push(format!(
+            "arrayConcat(vp.path_edges, [{}]) as path_edges",
+            edge_tuple_recursive
+        ));
+        if self.needs_path_data() {
+            select_items.push(format!(
                 "arrayConcat(vp.path_relationships, {}) as path_relationships",
                 self.get_relationship_type_array()
-            ),
-            format!(
-                "arrayConcat(vp.path_nodes, [{}.{}]) as path_nodes",
-                self.relationship_alias, self.relationship_to_column
-            ),
-        ];
+            ));
+        } else {
+            select_items.push("vp.path_relationships as path_relationships".to_string());
+        }
+        select_items.push(format!(
+            "arrayConcat(vp.path_nodes, [{}.{}]) as path_nodes",
+            self.relationship_alias, self.relationship_to_column
+        ));
 
         // Add denormalized properties as JSON blobs matching base case columns.
         // Carry forward start_properties from CTE, generate new end_properties from joined edge.
@@ -2959,10 +3049,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let select_clause = select_items.join(",\n        ");
 
-        let mut where_conditions = vec![
-            format!("vp.hop_count < {}", max_hops),
-            format!("NOT has(vp.path_edges, {})", edge_tuple_recursive),
-        ];
+        let cycle_check = format!("NOT has(vp.path_edges, {})", edge_tuple_recursive);
+
+        let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_check];
 
         // Add edge constraints if defined in schema
         // Denormalized recursive: no separate node tables, constraints not applicable
@@ -3065,11 +3154,17 @@ impl<'a> VariableLengthCteGenerator<'a> {
             format!("{} as start_id", start_id_expr),
             format!("{} as end_id", end_id_expr),
             "1 as hop_count".to_string(),
-            format!("[{}] as path_edges", edge_tuple),
-            self.generate_relationship_type_for_hop(1),
-            // Add path_nodes for UNWIND nodes(p) support
-            format!("[{}, {}] as path_nodes", start_id_expr, end_id_expr),
         ];
+        select_items.push(format!("[{}] as path_edges", edge_tuple));
+        if self.needs_path_data() {
+            select_items.push(self.generate_relationship_type_for_hop(1));
+        } else {
+            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
+        }
+        select_items.push(format!(
+            "[{}, {}] as path_nodes",
+            start_id_expr, end_id_expr
+        ));
 
         // Add properties for non-denormalized nodes
         for prop in &self.properties {
@@ -3185,20 +3280,24 @@ impl<'a> VariableLengthCteGenerator<'a> {
             "vp.start_id".to_string(),
             format!("{} as end_id", end_id_expr),
             "vp.hop_count + 1 as hop_count".to_string(),
-            format!(
-                "arrayConcat(vp.path_edges, [{}]) as path_edges",
-                edge_tuple_recursive
-            ),
-            format!(
+        ];
+        select_items.push(format!(
+            "arrayConcat(vp.path_edges, [{}]) as path_edges",
+            edge_tuple_recursive
+        ));
+        if self.needs_path_data() {
+            select_items.push(format!(
                 "arrayConcat(vp.path_relationships, {}) as path_relationships",
                 self.get_relationship_type_array()
-            ),
-            // Add path_nodes for UNWIND nodes(p) support
-            format!(
-                "arrayConcat(vp.path_nodes, [{}]) as path_nodes",
-                end_id_expr
-            ),
-        ];
+            ));
+        } else {
+            select_items.push("vp.path_relationships as path_relationships".to_string());
+        }
+        // path_nodes always maintained for cycle detection
+        select_items.push(format!(
+            "arrayConcat(vp.path_nodes, [{}]) as path_nodes",
+            end_id_expr
+        ));
 
         // Add properties - start from CTE, end from joined node (if not denorm)
         for prop in &self.properties {
@@ -3250,10 +3349,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
             )
         };
 
-        let mut where_conditions = vec![
-            format!("vp.hop_count < {}", max_hops),
-            format!("NOT has(vp.path_edges, {})", edge_tuple_recursive),
-        ];
+        let cycle_check = format!("NOT has(vp.path_edges, {})", edge_tuple_recursive);
+
+        let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_check];
 
         if self.shortest_path_mode.is_none() {
             if let Some(ref filters) = self.end_node_filters {
