@@ -5,7 +5,6 @@
 # Check for security vulnerabilities from the RustSec advisory database
 db-urls = ["https://github.com/rustsec/advisory-db"]
 # Deny crates with known vulnerabilities
-version = 2
 ignore = []
 
 [licenses]
