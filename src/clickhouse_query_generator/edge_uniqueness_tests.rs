@@ -14,6 +14,7 @@ mod edge_uniqueness_tests {
     #[test]
     fn test_default_edge_id_tuple() {
         // Test that when edge_id is None, we use tuple(from_id, to_id)
+        // path_variable must be set to enable edge-based cycle detection
         let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 2);
         let generator = VariableLengthCteGenerator::new(
@@ -32,7 +33,7 @@ mod edge_uniqueness_tests {
             None,
             None,
             None,
-            None,
+            Some("p".to_string()), // path_variable enables edge-based path tracking
             None,
             None, // No edge_id - should default to tuple(from_id, to_id)
         );
@@ -80,6 +81,7 @@ mod edge_uniqueness_tests {
     #[test]
     fn test_composite_edge_id() {
         // Test composite edge ID (like OnTime schema)
+        // path_variable must be set to enable edge-based cycle detection
         let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 2);
         let edge_id = Some(Identifier::Composite(vec![
@@ -105,7 +107,7 @@ mod edge_uniqueness_tests {
             None,
             None,
             None,
-            None,
+            Some("p".to_string()), // path_variable enables edge-based path tracking
             None,
             edge_id,
         );
@@ -147,6 +149,7 @@ mod edge_uniqueness_tests {
     #[test]
     fn test_simple_edge_id() {
         // Test single column edge ID
+        // path_variable must be set to enable edge-based cycle detection
         let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 2);
         let edge_id = Some(Identifier::Single("transaction_id".to_string()));
@@ -167,7 +170,7 @@ mod edge_uniqueness_tests {
             None,
             None,
             None,
-            None,
+            Some("p".to_string()), // path_variable enables edge-based path tracking
             None,
             edge_id,
         );
