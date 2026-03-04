@@ -563,6 +563,7 @@ mod tests {
                     alias: Some("foaf"),
                 },
             ],
+            is_star: false,
             subsequent_unwind: None,
             subsequent_match: None,
             subsequent_optional_matches: vec![],

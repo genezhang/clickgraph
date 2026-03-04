@@ -60,7 +60,7 @@ See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for details.
 - ⚠️ CALL subquery not supported (blocks LDBC bi-16)
 - ⚠️ Shortest path may OOM on dense graphs — use bounded ranges `*1..5`
 - ⚠️ Multiple standalone UNWIND without MATCH partially supported (single UNWIND works)
-- ⚠️ Neo4j Desktop/NeoDash WebSocket connection (issue #57)
+- ⚠️ Neo4j Desktop/NeoDash: works with `--neo4j-compat-mode`; `startNode`/`endNode` and `WITH *` now implemented for node expansion
 
 ## Architecture
 

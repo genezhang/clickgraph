@@ -809,12 +809,49 @@ impl ProjectionTagging {
                 // Recursively process operands and collect the transformed expressions
                 let mut transformed_operands = Vec::new();
                 for operand in &operator_application.operands {
-                    let mut operand_return_item = ProjectionItem {
-                        expression: operand.clone(),
-                        col_alias: None,
+                    // Special case: bare node variable (TableAlias) in operator context.
+                    // In Cypher, comparing a node variable against another scalar implies
+                    // identity comparison by ID (e.g., startNode(r) = b → r.from_id = b.user_id).
+                    // Resolve node TableAlias to node.{id_col} instead of expanding to node.*.
+                    let resolved = if let LogicalExpr::TableAlias(TableAlias(alias)) = operand {
+                        if !plan_ctx.is_projection_alias(alias) {
+                            if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias) {
+                                if !table_ctx.is_relation() && table_ctx.get_label_opt().is_some() {
+                                    if let Some(label) = table_ctx.get_label_opt() {
+                                        if let Ok(node_schema) = graph_schema.node_schema(&label) {
+                                            Some(LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: TableAlias(alias.clone()),
+                                                column: node_schema.node_id.id.to_property_value(),
+                                            }))
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
                     };
-                    Self::tag_projection(&mut operand_return_item, plan_ctx, graph_schema)?;
-                    transformed_operands.push(operand_return_item.expression);
+
+                    if let Some(resolved_expr) = resolved {
+                        transformed_operands.push(resolved_expr);
+                    } else {
+                        let mut operand_return_item = ProjectionItem {
+                            expression: operand.clone(),
+                            col_alias: None,
+                        };
+                        Self::tag_projection(&mut operand_return_item, plan_ctx, graph_schema)?;
+                        transformed_operands.push(operand_return_item.expression);
+                    }
                 }
 
                 // Update the item's expression with transformed operands
@@ -1063,6 +1100,38 @@ impl ProjectionTagging {
                                 }
                             }
                             _ => {}
+                        }
+                    }
+                }
+
+                // Handle startNode(r) and endNode(r) — relationship direction functions.
+                // startNode(r) → PropertyAccess(r.from_id_col), used in CASE WHEN comparisons
+                // to determine if a node is the source or target of a relationship.
+                if matches!(fn_name_lower.as_str(), "startnode" | "endnode") {
+                    if scalar_fn_call.args.len() == 1 {
+                        if let Some(LogicalExpr::TableAlias(TableAlias(alias))) =
+                            scalar_fn_call.args.first()
+                        {
+                            if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias) {
+                                if table_ctx.is_relation() {
+                                    if let Some(label) = table_ctx.get_label_opt() {
+                                        if let Ok(rel_schema) = graph_schema.get_rel_schema(&label)
+                                        {
+                                            let id = if fn_name_lower == "startnode" {
+                                                &rel_schema.from_id
+                                            } else {
+                                                &rel_schema.to_id
+                                            };
+                                            item.expression =
+                                                LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                                    table_alias: TableAlias(alias.clone()),
+                                                    column: id.to_property_value(),
+                                                });
+                                            return Ok(());
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
