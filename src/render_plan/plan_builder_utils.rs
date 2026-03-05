@@ -14789,6 +14789,7 @@ fn generate_pattern_comprehension_correlated_subquery(
     pc_meta: &crate::query_planner::logical_plan::PatternComprehensionMeta,
     schema: &GraphSchema,
     cte_column_map: &HashMap<(String, String), String>,
+    from_cte_name: Option<String>,
 ) -> Option<String> {
     use crate::query_planner::logical_plan::{ConnectedPatternInfo, PatternPosition};
 
@@ -14800,7 +14801,7 @@ fn generate_pattern_comprehension_correlated_subquery(
     // use arrayCount() instead of correlated subquery to avoid ClickHouse
     // "Cannot clone Union plan step" error when outer query has UNION ALL.
     if pc_meta.list_constraint.is_some() {
-        return generate_list_comp_array_count(pc_meta, schema, cte_column_map);
+        return generate_list_comp_array_count(pc_meta, schema, cte_column_map, from_cte_name);
     }
 
     log::info!(
@@ -15395,6 +15396,7 @@ fn generate_list_comp_array_count(
     pc_meta: &crate::query_planner::logical_plan::PatternComprehensionMeta,
     schema: &GraphSchema,
     cte_column_map: &HashMap<(String, String), String>,
+    from_cte_name: Option<String>,
 ) -> Option<String> {
     use crate::query_planner::logical_plan::ConnectedPatternInfo;
 
@@ -15541,9 +15543,61 @@ fn generate_list_comp_array_count(
         }
     }
 
-    // Build the inner SELECT columns: list_element_col, then correlation columns
-    let mut select_cols = vec![list_element_col.clone()];
-    select_cols.extend(corr_edge_cols);
+    // Optimization: push correlation variables into WHERE as non-correlated
+    // subqueries against the source CTE. This avoids the massive tuple hash
+    // set from the full cross-product.
+    //
+    // Transforms:
+    //   arrayCount(x -> (x, P) IN (SELECT PostId, PersonId FROM A JOIN B), arr)
+    // into:
+    //   arrayCount(x -> x IN (SELECT PostId FROM A JOIN B
+    //     WHERE PersonId IN (SELECT DISTINCT p6_person_id FROM source_cte)), arr)
+    //
+    // The IN subquery is fully non-correlated: both the inner filter and the
+    // outer IN reference only CTE names and literal columns.
+    let select_cols = vec![list_element_col.clone()];
+
+    if !corr_outer_cols.is_empty() {
+        for (edge_col, outer_col) in corr_edge_cols.iter().zip(corr_outer_cols.iter()) {
+            // outer_col is like "alias.p6_person_id" — extract column name and
+            // resolve the CTE name from the FROM alias.
+            if let Some(dot_pos) = outer_col.find('.') {
+                let col_name = &outer_col[dot_pos + 1..];
+                // Use from_cte_name if available, otherwise fall back to tuple approach
+                if let Some(ref cte_name) = from_cte_name {
+                    where_conditions.push(format!(
+                        "{} IN (SELECT DISTINCT {} FROM {})",
+                        edge_col, col_name, cte_name
+                    ));
+                } else {
+                    // Can't resolve CTE name — fall back to tuple approach
+                    log::warn!(
+                        "⚠️ No from_cte_name for arrayCount optimization, using tuple fallback"
+                    );
+                    return generate_list_comp_array_count_tuple_fallback(
+                        &list_element_col,
+                        &corr_edge_cols,
+                        &corr_outer_cols,
+                        &from_clause,
+                        &join_clauses,
+                        &where_conditions,
+                        &list_col,
+                    );
+                }
+            } else {
+                // No dot — fall back to tuple approach
+                return generate_list_comp_array_count_tuple_fallback(
+                    &list_element_col,
+                    &corr_edge_cols,
+                    &corr_outer_cols,
+                    &from_clause,
+                    &join_clauses,
+                    &where_conditions,
+                    &list_col,
+                );
+            }
+        }
+    }
 
     let joins_str = if join_clauses.is_empty() {
         String::new()
@@ -15557,12 +15611,55 @@ fn generate_list_comp_array_count(
         format!(" WHERE {}", where_conditions.join(" AND "))
     };
 
-    // Build the tuple for arrayCount lambda
+    let inner_select = format!(
+        "SELECT {} FROM {}{}{}",
+        select_cols.join(", "),
+        from_clause,
+        joins_str,
+        where_str
+    );
+
+    let result = format!("arrayCount(x -> x IN ({}), {})", inner_select, list_col);
+
+    log::info!(
+        "🔧 arrayCount expression: {}",
+        &result[..result.len().min(300)]
+    );
+
+    Some(result)
+}
+
+/// Fallback: generate arrayCount with the original tuple-based approach.
+/// Used when from_cte_name is unavailable for the optimized non-correlated filter.
+fn generate_list_comp_array_count_tuple_fallback(
+    list_element_col: &str,
+    corr_edge_cols: &[String],
+    corr_outer_cols: &[String],
+    from_clause: &str,
+    join_clauses: &[String],
+    where_conditions: &[String],
+    list_col: &str,
+) -> Option<String> {
+    let mut select_cols = vec![list_element_col.to_string()];
+    select_cols.extend(corr_edge_cols.iter().cloned());
+
+    let joins_str = if join_clauses.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", join_clauses.join(" "))
+    };
+
+    let where_str = if where_conditions.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", where_conditions.join(" AND "))
+    };
+
     let lambda_tuple = if corr_outer_cols.is_empty() {
         "x".to_string()
     } else {
         let mut parts = vec!["x".to_string()];
-        parts.extend(corr_outer_cols);
+        parts.extend(corr_outer_cols.iter().cloned());
         format!("({})", parts.join(", "))
     };
 
@@ -15580,7 +15677,7 @@ fn generate_list_comp_array_count(
     );
 
     log::info!(
-        "🔧 arrayCount expression: {}",
+        "🔧 arrayCount tuple fallback: {}",
         &result[..result.len().min(300)]
     );
 
@@ -17030,6 +17127,13 @@ fn generate_and_replace_arraycount_pc_subqueries(
         }
     }
 
+    // Extract FROM CTE name for arrayCount optimization
+    let from_cte_name = if let FromTableItem(Some(ref from)) = plan.from {
+        Some(from.name.clone())
+    } else {
+        None
+    };
+
     // Only generate subqueries for list_constraint PCs (arrayCount path)
     let mut pc_subqueries: Vec<String> = Vec::new();
     for pc_meta in pattern_comprehensions {
@@ -17037,9 +17141,12 @@ fn generate_and_replace_arraycount_pc_subqueries(
             continue;
         }
         if pc_meta.list_constraint.is_some() {
-            if let Some(subquery_sql) =
-                generate_pattern_comprehension_correlated_subquery(pc_meta, schema, &branch_col_map)
-            {
+            if let Some(subquery_sql) = generate_pattern_comprehension_correlated_subquery(
+                pc_meta,
+                schema,
+                &branch_col_map,
+                from_cte_name.clone(),
+            ) {
                 pc_subqueries.push(subquery_sql);
             } else {
                 pc_subqueries.push("0".to_string());
