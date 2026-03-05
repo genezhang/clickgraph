@@ -9,7 +9,6 @@ use axum::{
 use clickhouse::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::AsyncBufReadExt;
 
 use crate::{
     clickhouse_query_generator,
@@ -1062,40 +1061,16 @@ async fn execute_json_rows(
 
     log::debug!("Executing SQL (graph format):\n{}", final_sql);
 
-    let client = app_state.connection_pool.get_client(role.as_deref()).await;
-    let mut lines = client
-        .query(&final_sql)
-        .fetch_bytes("JSONEachRow")
+    app_state
+        .executor
+        .execute_json(&final_sql, role.as_deref())
+        .await
         .map_err(|e| {
-            log::error!(
-                "ClickHouse query failed. SQL was:\n{}\nError: {}",
-                final_sql,
-                e
-            );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Clickhouse Error: {}", e),
+                format!("Executor error: {}", e),
             )
-        })?
-        .lines();
-
-    let mut rows = Vec::new();
-    while let Some(line) = lines.next_line().await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Clickhouse Error: {}", e),
-        )
-    })? {
-        let value: Value = serde_json::from_str(&line).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Invalid JSON from ClickHouse: {}", e),
-            )
-        })?;
-        rows.push(value);
-    }
-
-    Ok(rows)
+        })
 }
 
 async fn execute_cte_queries(
@@ -1110,45 +1085,22 @@ async fn execute_cte_queries(
     // Log full SQL for debugging (especially helpful when ClickHouse truncates errors)
     log::debug!("Executing SQL:\n{}", final_sql);
 
-    // Get role-based connection from pool
-    // Note: We use role-specific connection pools instead of SET ROLE for better performance
-    // and to avoid race conditions. The connection pool maintains separate pools per role.
-    let client = app_state.connection_pool.get_client(role.as_deref()).await;
-
     if output_format == OutputFormat::Pretty
         || output_format == OutputFormat::PrettyCompact
         || output_format == OutputFormat::Csv
         || output_format == OutputFormat::CSVWithNames
     {
-        let mut lines = client
-            .query(&final_sql)
-            .fetch_bytes(output_format)
+        let format_str: String = output_format.into();
+        let text = app_state
+            .executor
+            .execute_text(&final_sql, &format_str, role.as_deref())
+            .await
             .map_err(|e| {
-                // Log full SQL on error for debugging
-                log::error!(
-                    "ClickHouse query failed. SQL was:\n{}\nError: {}",
-                    final_sql,
-                    e
-                );
                 (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Clickhouse Error: {}", e),
+                    format!("Executor error: {}", e),
                 )
-            })?
-            .lines();
-
-        let mut rows: Vec<String> = vec![];
-        while let Some(line) = lines.next_line().await.map_err(|e| {
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Clickhouse Error: {}", e),
-            )
-        })? {
-            // let value: serde_json::Value = serde_json::de::from_str(&line).unwrap();
-            rows.push(line);
-        }
-
-        let text = rows.join("\n");
+            })?;
 
         let mut response = (StatusCode::OK, text).into_response();
         response
@@ -1156,46 +1108,16 @@ async fn execute_cte_queries(
             .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
         Ok(response)
     } else {
-        let mut lines = client
-            .query(&final_sql)
-            .fetch_bytes("JSONEachRow")
+        let rows = app_state
+            .executor
+            .execute_json(&final_sql, role.as_deref())
+            .await
             .map_err(|e| {
-                // Log full SQL on error for debugging
-                log::error!(
-                    "ClickHouse query failed. SQL was:\n{}\nError: {}",
-                    final_sql,
-                    e
-                );
                 (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Clickhouse Error: {}", e),
-                )
-            })?
-            .lines();
-
-        let mut rows: Vec<Value> = vec![];
-        while let Some(line) = lines.next_line().await.map_err(|e| {
-            // Log full SQL on error for debugging
-            log::error!(
-                "ClickHouse response parsing failed. SQL was:\n{}\nError: {}",
-                final_sql,
-                e
-            );
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Clickhouse Error: {}", e),
-            )
-        })? {
-            let value: serde_json::Value = serde_json::de::from_str(&line).map_err(|e| {
-                log::error!("Failed to parse JSON from ClickHouse response: {}", e);
-                log::error!("Invalid JSON line: {}", line);
-                (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Invalid JSON from ClickHouse: {}", e),
+                    format!("Executor error: {}", e),
                 )
             })?;
-            rows.push(value);
-        }
 
         // Wrap results in an object with "results" key for consistency with Neo4j format
         let response_obj = serde_json::json!({

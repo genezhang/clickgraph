@@ -42,6 +42,11 @@ struct Cli {
     #[arg(long)]
     neo4j_compat_mode: bool,
 
+    /// Run in embedded mode using in-process chdb (no ClickHouse server required).
+    /// Requires the `embedded` Cargo feature.
+    #[arg(long)]
+    embedded: bool,
+
     /// Log level (overridden by RUST_LOG env var)
     #[arg(long, default_value = "info")]
     log_level: String,
@@ -59,6 +64,7 @@ impl From<Cli> for config::CliConfig {
             validate_schema: cli.validate_schema,
             daemon: cli.daemon,
             neo4j_compat_mode: cli.neo4j_compat_mode,
+            embedded: cli.embedded,
         }
     }
 }

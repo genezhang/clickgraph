@@ -1379,6 +1379,7 @@ mod tests {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         }
     }
 
@@ -1404,6 +1405,7 @@ mod tests {
             from_properties: Some(HashMap::from([("code".to_string(), "Origin".to_string())])),
             to_properties: Some(HashMap::from([("code".to_string(), "Dest".to_string())])),
             node_id_types: None,
+            source: None,
         }
     }
 
@@ -1436,6 +1438,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         }
     }
 
@@ -1479,6 +1482,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         }
     }
 

@@ -1,0 +1,19 @@
+[package]
+name = "clickgraph-embedded"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Embedded graph query engine (ClickGraph with in-process chdb)"
+repository = "https://github.com/your-org/clickgraph"
+license = "Apache-2.0"
+
+[dependencies]
+clickgraph = { path = "..", features = ["embedded"] }
+thiserror = "2.0"
+serde_json = { version = "1.0", features = ["preserve_order"] }
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["full"] }
+log = "0.4"
+
+[dev-dependencies]
+async-trait = "0.1"

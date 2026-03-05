@@ -469,6 +469,21 @@ pub struct NodeDefinition {
     /// Must have same length as node_id columns
     #[serde(default)]
     pub types: Option<Vec<String>>,
+
+    /// Optional: chdb/ClickHouse data source URI.
+    ///
+    /// When set in embedded mode, ClickGraph will create a `CREATE VIEW {table} AS
+    /// SELECT * FROM <resolved_function>` in the chdb session at startup, so the
+    /// SQL generator can reference `{table}` by name as usual.
+    ///
+    /// URI formats supported:
+    /// - Bare path: `/data/users.parquet` or `./users.parquet`
+    /// - `s3://bucket/prefix/users.parquet`
+    /// - `iceberg+s3://bucket/prefix/table/`
+    /// - `delta+s3://bucket/prefix/table/`
+    /// - `table_function:...` — raw chdb table function (escape hatch)
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 fn default_naming_convention() -> String {
@@ -556,6 +571,10 @@ pub struct RelationshipDefinition {
     /// Example: ["string", "integer"]
     #[serde(default, rename = "id_types")]
     pub id_types: Option<Vec<String>>,
+
+    /// Optional: chdb/ClickHouse data source URI (see `NodeDefinition::source`).
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 /// Edge definition - supporting both standard and polymorphic patterns
@@ -649,9 +668,13 @@ pub struct StandardEdgeDefinition {
     /// Example: ["string", "integer"]
     #[serde(default, rename = "id_types")]
     pub id_types: Option<Vec<String>>,
+
+    /// Optional: chdb/ClickHouse data source URI (see `NodeDefinition::source`).
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
-/// Polymorphic edge definition (one config → many edge types from explicit list)
+/// Polymorphic edge definition
 ///
 /// Supports two patterns:
 /// 1. **Full polymorphic**: Both endpoints vary based on label columns
@@ -1169,6 +1192,7 @@ fn build_node_schema(
         label_column: node_def.label_column.clone(),
         label_value: node_def.label_value.clone(),
         node_id_types,
+        source: node_def.source.clone(),
     })
 }
 
@@ -1314,6 +1338,7 @@ fn build_relationship_schema(
         is_fk_edge,
         constraints: rel_def.constraints.clone(),
         edge_id_types,
+        source: rel_def.source.clone(),
     })
 }
 
@@ -1450,6 +1475,7 @@ fn build_standard_edge_schema(
         is_fk_edge,
         constraints: std_edge.constraints.clone(),
         edge_id_types,
+        source: std_edge.source.clone(),
     })
 }
 
@@ -1522,6 +1548,7 @@ fn build_polymorphic_edge_schemas(
             is_fk_edge: false, // Polymorphic edges are never FK-edge pattern
             constraints: poly_edge.constraints.clone(),
             edge_id_types: None,
+            source: None, // Polymorphic edges don't currently support source: URI
         };
         // Use simple key (just the type name) for polymorphic edges.
         // Composite keys like "AUTHORED::$any::$any" cause issues downstream because $any
@@ -2332,6 +2359,7 @@ graph_schema:
                     }),
                     r#type: None,
                     types: None,
+                    source: None,
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Standard(StandardEdgeDefinition {
@@ -2359,6 +2387,7 @@ graph_schema:
                     constraints: None,
                     id_type: None,
                     id_types: None,
+                    source: None,
                 })],
             },
         };
@@ -2395,6 +2424,7 @@ graph_schema:
                     }),
                     r#type: None,
                     types: None,
+                    source: None,
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Standard(StandardEdgeDefinition {
@@ -2416,6 +2446,7 @@ graph_schema:
                     constraints: None,
                     id_type: None,
                     id_types: None,
+                    source: None,
                 })],
             },
         };
@@ -2452,6 +2483,7 @@ graph_schema:
                     to_node_properties: None,
                     r#type: None,
                     types: None,
+                    source: None,
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Polymorphic(PolymorphicEdgeDefinition {
@@ -2510,6 +2542,7 @@ graph_schema:
                     to_node_properties: None,
                     r#type: None,
                     types: None,
+                    source: None,
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Polymorphic(PolymorphicEdgeDefinition {
@@ -2570,6 +2603,7 @@ graph_schema:
                         to_node_properties: None,
                         r#type: None,
                         types: None,
+                        source: None,
                     },
                     NodeDefinition {
                         label: "User".to_string(),
@@ -2589,6 +2623,7 @@ graph_schema:
                         to_node_properties: None,
                         r#type: None,
                         types: None,
+                        source: None,
                     },
                 ],
                 relationships: vec![],
@@ -2652,6 +2687,7 @@ graph_schema:
                     to_node_properties: None,
                     r#type: None,
                     types: None,
+                    source: None,
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Polymorphic(PolymorphicEdgeDefinition {
@@ -2716,6 +2752,7 @@ graph_schema:
                     to_node_properties: None,
                     r#type: None,
                     types: None,
+                    source: None,
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Polymorphic(PolymorphicEdgeDefinition {
@@ -2922,6 +2959,7 @@ mod node_id_identity_mapping_tests {
             to_node_properties: None,
             r#type: None,
             types: None,
+            source: None,
         };
 
         let discovery = TableDiscovery {
@@ -2975,6 +3013,7 @@ mod node_id_identity_mapping_tests {
             to_node_properties: None,
             r#type: None,
             types: None,
+            source: None,
         };
 
         let discovery = TableDiscovery {
@@ -3029,6 +3068,7 @@ mod node_id_identity_mapping_tests {
             to_node_properties: None,
             r#type: None,
             types: None,
+            source: None,
         };
 
         let discovery = TableDiscovery {

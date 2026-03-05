@@ -46,6 +46,7 @@ fn create_test_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         },
     );
 
@@ -78,6 +79,7 @@ fn create_test_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         },
     );
 
@@ -114,6 +116,7 @@ fn create_test_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         },
     );
 
@@ -146,6 +149,7 @@ fn create_test_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         },
     );
 
@@ -178,6 +182,7 @@ fn create_test_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         },
     );
 
@@ -210,6 +215,7 @@ fn create_test_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         },
     );
 

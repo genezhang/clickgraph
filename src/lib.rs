@@ -29,6 +29,7 @@ pub mod utils;
 
 pub mod clickhouse_query_generator;
 pub mod config;
+pub mod executor;
 pub mod graph_catalog;
 pub mod open_cypher_parser;
 pub mod packstream; // Vendored from neo4rs for Bolt protocol support

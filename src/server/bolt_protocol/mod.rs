@@ -8,7 +8,7 @@
 //! Reference: Neo4j Bolt Protocol Specification v4.4
 //! https://7687.org/bolt/bolt-protocol-message-specification-4.html
 
-use clickhouse::Client;
+use crate::executor::QueryExecutor;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -192,16 +192,16 @@ impl Default for BoltConfig {
 pub struct BoltServer {
     /// Server configuration
     pub config: Arc<BoltConfig>,
-    /// ClickHouse client for query execution
-    clickhouse_client: Client,
+    /// SQL executor for query execution
+    executor: Arc<dyn QueryExecutor>,
 }
 
 impl BoltServer {
     /// Create a new Bolt server
-    pub fn new(config: BoltConfig, clickhouse_client: Client) -> Self {
+    pub fn new(config: BoltConfig, executor: Arc<dyn QueryExecutor>) -> Self {
         BoltServer {
             config: Arc::new(config),
-            clickhouse_client,
+            executor,
         }
     }
 
@@ -216,7 +216,7 @@ impl BoltServer {
             stream,
             context.clone(),
             self.config.clone(),
-            self.clickhouse_client.clone(),
+            self.executor.clone(),
         );
         connection.handle().await?;
 
@@ -360,11 +360,31 @@ mod tests {
 
     #[test]
     fn test_bolt_server_creation() {
+        use crate::executor::{ExecutorError, QueryExecutor};
+        use async_trait::async_trait;
+        use serde_json::Value;
+        struct StubExec;
+        #[async_trait]
+        impl QueryExecutor for StubExec {
+            async fn execute_json(
+                &self,
+                _sql: &str,
+                _role: Option<&str>,
+            ) -> Result<Vec<Value>, ExecutorError> {
+                Ok(vec![])
+            }
+            async fn execute_text(
+                &self,
+                _sql: &str,
+                _fmt: &str,
+                _role: Option<&str>,
+            ) -> Result<String, ExecutorError> {
+                Ok(String::new())
+            }
+        }
         let config = BoltConfig::default();
-        // Create a test ClickHouse client (won't be used in unit tests)
-        let clickhouse_client = Client::default().with_url("http://localhost:8123");
-        let _server = BoltServer::new(config, clickhouse_client);
-        // Just test that we can create the server
+        let executor: Arc<dyn QueryExecutor> = Arc::new(StubExec);
+        let _server = BoltServer::new(config, executor);
         assert!(true);
     }
 

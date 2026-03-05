@@ -4,7 +4,6 @@
 //! It handles the complete Bolt protocol state machine and integrates with
 //! Brahmand's query processing pipeline.
 
-use clickhouse::Client;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -16,6 +15,7 @@ use super::result_transformer::extract_return_metadata;
 use super::{BoltConfig, BoltContext, ConnectionState};
 
 use crate::clickhouse_query_generator;
+use crate::executor::QueryExecutor;
 use crate::open_cypher_parser;
 use crate::query_planner;
 
@@ -314,8 +314,8 @@ pub struct BoltHandler {
     authenticator: Authenticator,
     /// Current authenticated user
     authenticated_user: Option<AuthenticatedUser>,
-    /// ClickHouse client for query execution
-    clickhouse_client: Client,
+    /// SQL executor for query execution
+    executor: Arc<dyn QueryExecutor>,
     /// Cached query results for streaming
     cached_results: Option<Vec<Vec<BoltValue>>>,
 }
@@ -325,14 +325,14 @@ impl BoltHandler {
     pub fn new(
         context: Arc<Mutex<BoltContext>>,
         config: Arc<BoltConfig>,
-        clickhouse_client: Client,
+        executor: Arc<dyn QueryExecutor>,
     ) -> Self {
         BoltHandler {
             context,
             config: config.clone(),
             authenticator: Authenticator::new(config.enable_auth, config.default_user.clone()),
             authenticated_user: None,
-            clickhouse_client,
+            executor,
             cached_results: None,
         }
     }
@@ -1898,71 +1898,31 @@ impl BoltHandler {
 
         log::info!("📊 Executing SQL: {}", final_sql);
 
-        // Apply role for ClickHouse RBAC (Phase 2)
-        if let Some(ref role_name) = role {
-            crate::server::clickhouse_client::set_role(&self.clickhouse_client, role_name)
-                .await
-                .map_err(|e| {
-                    BoltError::query_error(format!(
-                        "Failed to set ClickHouse role: {}. Ensure role is granted to user.",
-                        e
-                    ))
-                })?;
-        }
+        // Execute the query using the backend-agnostic executor
+        let rows_values = self
+            .executor
+            .execute_json(&final_sql, role.as_deref())
+            .await
+            .map_err(|e| BoltError::query_error(format!("Query execution failed: {}", e)))?;
 
-        // Execute the query and fetch results as JSON bytes
-        use tokio::io::AsyncBufReadExt;
-        let result_reader = self
-            .clickhouse_client
-            .query(&final_sql)
-            .fetch_bytes("JSONEachRow")
-            .map_err(|e| {
-                BoltError::query_error(format!("ClickHouse query execution failed: {}", e))
-            })?;
-
-        // Parse JSON results line by line
+        // Parse JSON results into field_names + row vectors
         let mut rows = Vec::new();
         let mut field_names = Vec::new();
 
-        let mut lines = result_reader.lines();
-
-        loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    if line.trim().is_empty() {
-                        continue;
+        for value in rows_values {
+            match value {
+                Value::Object(obj) => {
+                    if field_names.is_empty() {
+                        field_names = obj.keys().cloned().collect();
                     }
-
-                    match serde_json::from_str::<serde_json::Value>(&line) {
-                        Ok(Value::Object(obj)) => {
-                            // Extract field names from first row
-                            if field_names.is_empty() {
-                                field_names = obj.keys().cloned().collect();
-                            }
-
-                            // Extract field values in consistent order
-                            let mut row_fields = Vec::new();
-                            for field_name in &field_names {
-                                row_fields
-                                    .push(obj.get(field_name).cloned().unwrap_or(Value::Null));
-                            }
-                            rows.push(row_fields);
-                        }
-                        _ => {
-                            log::warn!("Unexpected JSON format in result row: {}", line);
-                        }
+                    let mut row_fields = Vec::new();
+                    for field_name in &field_names {
+                        row_fields.push(obj.get(field_name).cloned().unwrap_or(Value::Null));
                     }
+                    rows.push(row_fields);
                 }
-                Ok(None) => {
-                    // End of stream - normal completion
-                    break;
-                }
-                Err(e) => {
-                    // ClickHouse error during result streaming (e.g., unknown column)
-                    return Err(BoltError::query_error(format!(
-                        "ClickHouse error while reading results: {}",
-                        e
-                    )));
+                _ => {
+                    log::warn!("Unexpected JSON format in result row");
                 }
             }
         }
@@ -2064,13 +2024,37 @@ impl BoltHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::executor::{ExecutorError, QueryExecutor};
+    use async_trait::async_trait;
+    use serde_json::Value;
+
+    /// Minimal no-op executor for unit tests (never actually called).
+    struct StubExecutor;
+
+    #[async_trait]
+    impl QueryExecutor for StubExecutor {
+        async fn execute_json(
+            &self,
+            _sql: &str,
+            _role: Option<&str>,
+        ) -> Result<Vec<Value>, ExecutorError> {
+            Ok(vec![])
+        }
+        async fn execute_text(
+            &self,
+            _sql: &str,
+            _format: &str,
+            _role: Option<&str>,
+        ) -> Result<String, ExecutorError> {
+            Ok(String::new())
+        }
+    }
 
     fn create_test_handler() -> BoltHandler {
         let context = Arc::new(Mutex::new(BoltContext::new()));
         let config = Arc::new(BoltConfig::default());
-        // Create a test ClickHouse client (won't be used in unit tests)
-        let clickhouse_client = clickhouse::Client::default().with_url("http://localhost:8123");
-        BoltHandler::new(context, config, clickhouse_client)
+        let executor: Arc<dyn QueryExecutor> = Arc::new(StubExecutor);
+        BoltHandler::new(context, config, executor)
     }
 
     #[tokio::test]

@@ -60,6 +60,7 @@ fn setup_denormalized_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         },
     );
 
@@ -145,6 +146,7 @@ fn setup_denormalized_schema() -> GraphSchema {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -370,6 +372,7 @@ fn test_multiple_relationships_same_node() {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -460,6 +463,7 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         },
     );
 
@@ -543,6 +547,7 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
