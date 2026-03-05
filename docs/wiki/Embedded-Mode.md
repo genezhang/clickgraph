@@ -114,12 +114,41 @@ result = conn.query("MATCH (u:User) RETURN u.name, u.email LIMIT 5")
 print(result.column_names)   # ['u.name', 'u.email']
 print(result.num_rows)       # 5
 print(len(result))           # 5
+print(result[0])             # {'u.name': 'Alice', 'u.email': '...'}
+print(result[-1])            # last row
 print(result.as_dicts())     # [{'u.name': 'Alice', 'u.email': '...'}, ...]
-print(result.get_row(0))     # {'u.name': 'Alice', 'u.email': '...'}
 
-# Or iterate:
+# Dict-style iteration (default):
 for row in result:
     print(row)               # each row is a dict
+```
+
+**Kuzu-compatible API:**
+
+If you're coming from Kuzu, the same patterns work:
+
+```python
+from clickgraph import Database, Connection
+
+db = Database("schema.yaml")
+conn = Connection(db)              # same as db.connect()
+result = conn.execute("MATCH (u:User) RETURN u.name")  # same as conn.query()
+
+# Tuple-style cursor iteration (like Kuzu):
+while result.has_next():
+    row = result.get_next()        # list of values in column order
+    print(row[0])
+
+result.reset_iterator()            # restart from beginning
+```
+
+**Neo4j-compatible API:**
+
+```python
+conn = db.connect()
+result = conn.run("MATCH (u:User) RETURN u.name")  # same as conn.query()
+for row in result:
+    print(row["u.name"])           # dict access, same as Neo4j Record
 ```
 
 ---

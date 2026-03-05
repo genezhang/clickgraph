@@ -14,6 +14,39 @@ for row in conn.query("MATCH (u:User) RETURN u.name LIMIT 5"):
     print(row["u.name"])
 ```
 
+## API Compatibility
+
+ClickGraph's Python API is designed to be familiar to users of other graph databases:
+
+| Operation | ClickGraph | Kuzu | Neo4j |
+|-----------|-----------|------|-------|
+| Open database | `Database("schema.yaml")` | `Database("path")` | `GraphDatabase.driver(uri)` |
+| Get connection | `db.connect()` or `Connection(db)` | `Connection(db)` | `driver.session()` |
+| Run query | `conn.query(cypher)` | `conn.execute(cypher)` | `session.run(cypher)` |
+| Iterate rows | `for row in result:` | `while result.has_next():` | `for record in result:` |
+| Access by name | `row["col"]` (dict) | `row[0]` (tuple) | `record["col"]` (dict-like) |
+
+All three calling styles work — use whichever feels natural:
+
+```python
+# ClickGraph style
+conn = db.connect()
+result = conn.query("MATCH (u:User) RETURN u.name")
+
+# Kuzu style
+conn = clickgraph.Connection(db)
+result = conn.execute("MATCH (u:User) RETURN u.name")
+while result.has_next():
+    row = result.get_next()
+    print(row[0])
+
+# Neo4j style
+conn = db.connect()
+result = conn.run("MATCH (u:User) RETURN u.name")
+for row in result:
+    print(row["u.name"])
+```
+
 ## API
 
 ### `Database(schema_path, **kwargs)`
@@ -32,6 +65,10 @@ Open an embedded database from a YAML schema file.
 
 Create a connection for executing queries.
 
+### `Connection(db)` *(Kuzu-compatible constructor)*
+
+Alternative to `db.connect()` — creates a connection from a Database instance.
+
 ### `Database.execute(cypher) → QueryResult`
 
 Shorthand — execute a query without creating a separate connection.
@@ -40,18 +77,33 @@ Shorthand — execute a query without creating a separate connection.
 
 Execute a Cypher query. Returns an iterable of row dicts.
 
+### `Connection.execute(cypher) → QueryResult` *(Kuzu-compatible alias)*
+
+Alias for `query()`.
+
+### `Connection.run(cypher) → QueryResult` *(Neo4j-compatible alias)*
+
+Alias for `query()`.
+
 ### `Connection.query_to_sql(cypher) → str`
 
 Translate Cypher to ClickHouse SQL without executing.
 
 ### `QueryResult`
 
+**Dict-style access** (ClickGraph/Neo4j pattern):
 - Iterable: `for row in result:` — each row is a `dict`
+- `result[i]` — access row by index (supports negative indexing)
 - `result.column_names` — list of column names
 - `result.num_rows` — number of rows
 - `result.as_dicts()` — all rows as a list of dicts
 - `result.get_row(i)` — single row by index as dict
 - `len(result)` — number of rows
+
+**Tuple-style access** (Kuzu pattern):
+- `result.has_next()` — True if more rows remain
+- `result.get_next()` — next row as a list of values (column order)
+- `result.reset_iterator()` — restart the cursor
 
 ## Installation
 

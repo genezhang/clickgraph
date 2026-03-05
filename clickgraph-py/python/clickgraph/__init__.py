@@ -12,6 +12,17 @@ Quick start::
     for row in conn.query("MATCH (u:User) RETURN u.name LIMIT 5"):
         print(row["u.name"])
 
+Kuzu-compatible style::
+
+    from clickgraph import Database, Connection
+
+    db = Database("schema.yaml")
+    conn = Connection(db)
+    result = conn.execute("MATCH (u:User) RETURN u.name")
+    while result.has_next():
+        row = result.get_next()
+        print(row[0])
+
 With S3 credentials::
 
     db = clickgraph.Database(
