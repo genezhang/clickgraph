@@ -69,6 +69,7 @@ curl -X POST http://localhost:8080/query \
 
 ### Getting Started
 - **[Quick Start Guide](Quick-Start-Guide.md)** - 5-minute Docker setup
+- **[Embedded Mode](Embedded-Mode.md)** - 🆕 In-process graph queries over Parquet/Iceberg/Delta (no ClickHouse needed)
 - **[Installation Guide](Installation-Guide.md)** - Detailed installation options
 - **[Your First Graph](Your-First-Graph.md)** - Build a simple social network graph
 
@@ -92,6 +93,7 @@ curl -X POST http://localhost:8080/query \
 ### Production Deployment
 - **[Docker Deployment](Docker-Deployment.md)** - Production Docker setup
 - **[Kubernetes Deployment](Kubernetes-Deployment.md)** - Helm charts and K8s manifests
+- **[Embedded Mode](Embedded-Mode.md)** - Serverless / edge deployments without ClickHouse
 - **[Production Best Practices](Production-Best-Practices.md)** - Security, performance, monitoring
 - **[Performance Tuning](Performance-Query-Optimization.md)** - Query and schema optimization
 
