@@ -42,10 +42,12 @@ pub fn load_schema_sources(
             );
 
             log::info!(
-                "Creating chdb VIEW for node '{}': {}",
+                "Creating chdb VIEW for node '{}' → `{}`.`{}`",
                 node_schema.table_name,
-                view_sql
+                node_schema.database,
+                node_schema.table_name
             );
+            log::debug!("VIEW DDL: {}", view_sql);
 
             executor.execute_blocking_ddl(&view_sql)?;
             count += 1;
@@ -68,10 +70,12 @@ pub fn load_schema_sources(
             );
 
             log::info!(
-                "Creating chdb VIEW for relationship '{}': {}",
+                "Creating chdb VIEW for relationship '{}' → `{}`.`{}`",
                 rel_schema.table_name,
-                view_sql
+                rel_schema.database,
+                rel_schema.table_name
             );
+            log::debug!("VIEW DDL: {}", view_sql);
 
             executor.execute_blocking_ddl(&view_sql)?;
             count += 1;

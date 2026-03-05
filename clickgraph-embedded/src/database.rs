@@ -56,6 +56,9 @@ pub struct SystemConfig {
 pub struct Database {
     pub(crate) executor: Arc<dyn QueryExecutor>,
     pub(crate) schema: Arc<GraphSchema>,
+    /// Shared Tokio runtime for blocking `Connection::query()` calls.
+    /// Created once, reused by all connections — avoids per-call overhead.
+    pub(crate) runtime: tokio::runtime::Runtime,
 }
 
 impl Database {
@@ -127,6 +130,7 @@ impl Database {
         Ok(Database {
             executor: Arc::new(executor),
             schema,
+            runtime: build_runtime()?,
         })
     }
 
@@ -139,9 +143,24 @@ impl Database {
     ///
     /// Primarily intended for testing — allows injection of a custom executor
     /// (e.g. a stub) without needing a chdb session.
-    pub fn from_executor(schema: Arc<GraphSchema>, executor: Arc<dyn QueryExecutor>) -> Self {
-        Database { executor, schema }
+    pub fn from_executor(
+        schema: Arc<GraphSchema>,
+        executor: Arc<dyn QueryExecutor>,
+    ) -> Result<Self, EmbeddedError> {
+        Ok(Database {
+            executor,
+            schema,
+            runtime: build_runtime()?,
+        })
     }
+}
+
+/// Build a single-threaded Tokio runtime for blocking `Connection` calls.
+fn build_runtime() -> Result<tokio::runtime::Runtime, EmbeddedError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| EmbeddedError::Query(format!("Failed to create runtime: {}", e)))
 }
 
 fn pseudo_random_suffix() -> String {

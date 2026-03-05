@@ -31,7 +31,7 @@ use super::value::Value;
 pub struct Connection<'db> {
     executor: Arc<dyn QueryExecutor>,
     schema: Arc<GraphSchema>,
-    _db: std::marker::PhantomData<&'db Database>,
+    db: &'db Database,
 }
 
 impl<'db> Connection<'db> {
@@ -40,7 +40,7 @@ impl<'db> Connection<'db> {
         Ok(Connection {
             executor: Arc::clone(&db.executor),
             schema: Arc::clone(&db.schema),
-            _db: std::marker::PhantomData,
+            db,
         })
     }
 
@@ -60,13 +60,7 @@ impl<'db> Connection<'db> {
     /// }
     /// ```
     pub fn query(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
-        // Run inside a tokio runtime (blocking-safe: creates a current-thread runtime)
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| EmbeddedError::Query(format!("Failed to create runtime: {}", e)))?;
-
-        rt.block_on(self.query_async(cypher))
+        self.db.runtime.block_on(self.query_async(cypher))
     }
 
     /// Execute a Cypher query and return the generated SQL without executing it.
@@ -78,15 +72,10 @@ impl<'db> Connection<'db> {
             set_current_schema, with_query_context, QueryContext,
         };
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| EmbeddedError::Query(format!("Failed to create runtime: {}", e)))?;
-
         let schema = Arc::clone(&self.schema);
         let cypher = cypher.to_string();
 
-        rt.block_on(async move {
+        self.db.runtime.block_on(async move {
             let context = QueryContext::new(None);
             with_query_context(context, async move {
                 set_current_schema(Arc::clone(&schema));
@@ -205,6 +194,10 @@ graph_schema:
         Database {
             executor: Arc::new(StubExecutor),
             schema: build_test_schema(),
+            runtime: tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
         }
     }
 

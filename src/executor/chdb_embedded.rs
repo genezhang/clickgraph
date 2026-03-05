@@ -82,11 +82,13 @@ impl StorageCredentials {
     ///
     /// Only entries that are `Some` are emitted.
     pub fn to_set_statements(&self) -> Vec<String> {
+        use super::source_resolver::escape_sql_string;
+
         let mut stmts = Vec::new();
         macro_rules! set_if_some {
             ($field:expr, $ch_key:expr) => {
                 if let Some(ref v) = $field {
-                    stmts.push(format!("SET {} = '{}'", $ch_key, v.replace('\'', "\\'")));
+                    stmts.push(format!("SET {} = '{}'", $ch_key, escape_sql_string(v)));
                 }
             };
         }
@@ -378,6 +380,22 @@ mod tests {
         assert_eq!(stmts.len(), 1);
         // The single quote in "it's" must be escaped
         assert!(stmts[0].contains("\\'"), "single quote should be escaped");
+    }
+
+    #[test]
+    fn test_credentials_backslash_escaping() {
+        // Backslashes in secret values must be escaped to avoid SQL interpretation issues.
+        let creds = StorageCredentials {
+            s3_secret_access_key: Some("secret\\with\\backslash".to_string()),
+            ..Default::default()
+        };
+        let stmts = creds.to_set_statements();
+        assert_eq!(stmts.len(), 1);
+        assert!(
+            stmts[0].contains("\\\\"),
+            "backslash should be escaped: {}",
+            stmts[0]
+        );
     }
 
     #[test]

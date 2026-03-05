@@ -915,12 +915,14 @@ async fn query_handler_inner(
         )
         .await
     } else {
-        ddl_handler(
-            app_state.clickhouse_client.clone(),
-            ch_sql_queries,
-            maybe_schema_elem,
-        )
-        .await
+        let ch_client = app_state.clickhouse_client.clone().ok_or_else(|| {
+            (
+                StatusCode::NOT_IMPLEMENTED,
+                "DDL operations are not available in embedded mode (no ClickHouse connection)"
+                    .to_string(),
+            )
+        })?;
+        ddl_handler(ch_client, ch_sql_queries, maybe_schema_elem).await
     };
     metrics.execution_time = execution_start.elapsed().as_secs_f64();
 
@@ -1338,7 +1340,7 @@ pub async fn load_schema_handler(
     match graph_catalog::load_schema_from_content(
         &payload.schema_name,
         &payload.config_content,
-        Some(app_state.clickhouse_client.clone()),
+        app_state.clickhouse_client.clone(),
         validate_schema,
     )
     .await
@@ -1458,8 +1460,19 @@ pub async fn introspect_handler(
         ));
     }
 
-    let response =
-        SchemaDiscovery::introspect(&app_state.clickhouse_client, &payload.database).await;
+    let ch_client = match &app_state.clickhouse_client {
+        Some(c) => c,
+        None => {
+            return Err((
+                StatusCode::NOT_IMPLEMENTED,
+                Json(
+                    serde_json::json!({ "error": "Schema introspection is not available in embedded mode (no ClickHouse connection)" }),
+                ),
+            ));
+        }
+    };
+
+    let response = SchemaDiscovery::introspect(ch_client, &payload.database).await;
 
     match response {
         Ok(resp) => Ok(Json(serde_json::to_value(resp).unwrap())),
@@ -1497,8 +1510,19 @@ pub async fn discover_prompt_handler(
     }
 
     // Introspect the database
-    let introspect_result =
-        SchemaDiscovery::introspect(&app_state.clickhouse_client, &payload.database).await;
+    let ch_client = match &app_state.clickhouse_client {
+        Some(c) => c,
+        None => {
+            return Err((
+                StatusCode::NOT_IMPLEMENTED,
+                Json(
+                    serde_json::json!({ "error": "Schema discovery is not available in embedded mode (no ClickHouse connection)" }),
+                ),
+            ));
+        }
+    };
+
+    let introspect_result = SchemaDiscovery::introspect(ch_client, &payload.database).await;
 
     match introspect_result {
         Ok(resp) => {

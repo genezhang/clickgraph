@@ -35,12 +35,12 @@ mod query_cache;
 pub mod query_context;
 mod sql_generation_handler;
 
-// #[derive(Clone)]
 #[derive(Clone)]
 pub struct AppState {
     pub executor: Arc<dyn QueryExecutor>,
-    /// Raw ClickHouse client for admin/DDL operations (None in embedded mode).
-    pub clickhouse_client: Client,
+    /// Raw ClickHouse client for admin/DDL operations.
+    /// `None` in embedded mode — admin endpoints return 501.
+    pub clickhouse_client: Option<Client>,
     pub config: ServerConfig,
 }
 
@@ -138,7 +138,7 @@ pub async fn run_with_config(config: ServerConfig) {
         let executor: Arc<dyn QueryExecutor> = Arc::new(chdb_executor);
         let app_state = AppState {
             executor,
-            clickhouse_client: Client::default(),
+            clickhouse_client: None,
             config: config.clone(),
         };
 
@@ -185,7 +185,7 @@ pub async fn run_with_config(config: ServerConfig) {
             Arc::new(RemoteClickHouseExecutor::new(connection_pool.clone()));
         AppState {
             executor,
-            clickhouse_client: client_opt.clone().unwrap_or_default(),
+            clickhouse_client: client_opt.clone(),
             config: config.clone(),
         }
     } else {
@@ -200,7 +200,7 @@ pub async fn run_with_config(config: ServerConfig) {
             Arc::new(RemoteClickHouseExecutor::new(connection_pool.clone()));
         AppState {
             executor,
-            clickhouse_client: Client::default(),
+            clickhouse_client: None,
             config: config.clone(),
         }
     };

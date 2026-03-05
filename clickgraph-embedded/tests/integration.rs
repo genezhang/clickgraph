@@ -63,6 +63,7 @@ impl QueryExecutor for StubExecutor {
 /// Build a `Database` backed by a `StubExecutor`.
 fn stub_db(schema: Arc<GraphSchema>, rows: Vec<serde_json::Value>) -> Database {
     Database::from_executor(Arc::clone(&schema), Arc::new(StubExecutor::returning(rows)))
+        .expect("failed to create stub database")
 }
 
 // ---------------------------------------------------------------------------
@@ -99,7 +100,8 @@ graph_schema:
 #[test]
 fn test_database_loads_schema() {
     let schema = build_schema(SOCIAL_YAML);
-    let db = Database::from_executor(Arc::clone(&schema), Arc::new(StubExecutor::empty()));
+    let db = Database::from_executor(Arc::clone(&schema), Arc::new(StubExecutor::empty()))
+        .expect("failed to create stub database");
     let node_schema = db.schema().all_node_schemas();
     assert!(
         node_schema.contains_key("User"),

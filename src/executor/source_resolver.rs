@@ -41,10 +41,31 @@ pub fn resolve_source_uri(source: &str) -> Result<String, String> {
     }
 
     // s3://bucket/key.ext → s3('s3://bucket/key.ext', Format)
-    if source.starts_with("s3://") || source.starts_with("gs://") || source.starts_with("azure://")
-    {
+    // gs://bucket/key.ext → s3('https://storage.googleapis.com/bucket/key.ext', Format)
+    //   (GCS is S3-compatible when using HMAC credentials)
+    if source.starts_with("s3://") || source.starts_with("gs://") {
+        let url = if let Some(rest) = source.strip_prefix("gs://") {
+            format!("https://storage.googleapis.com/{}", rest)
+        } else {
+            source.to_string()
+        };
         let fmt = detect_format_from_path(source);
-        return Ok(format!("s3('{}', '{}')", escape_sql_string(source), fmt));
+        return Ok(format!("s3('{}', '{}')", escape_sql_string(&url), fmt));
+    }
+
+    // azure://container/blob.ext → azureBlobStorage(connection_string, container, blob, Format)
+    // Users must supply connection_string via table_function: for full control.
+    // This convenience form requires AZURE_STORAGE_CONNECTION_STRING env var.
+    if let Some(rest) = source.strip_prefix("azure://") {
+        let fmt = detect_format_from_path(source);
+        // Split into container/blob_path
+        let (container, blob_path) = rest.split_once('/').unwrap_or((rest, ""));
+        return Ok(format!(
+            "azureBlobStorage(getenv('AZURE_STORAGE_CONNECTION_STRING'), '{}', '{}', '{}')",
+            escape_sql_string(container),
+            escape_sql_string(blob_path),
+            fmt,
+        ));
     }
 
     // Local file path (absolute or relative)
@@ -56,14 +77,14 @@ pub fn resolve_source_uri(source: &str) -> Result<String, String> {
 
     Err(format!(
         "Unrecognised source URI scheme: '{}'. \
-         Supported schemes: file://, s3://, iceberg+s3://, iceberg+local://, delta+s3://, \
+         Supported schemes: file://, s3://, gs://, azure://, iceberg+s3://, iceberg+local://, delta+s3://, \
          table_function:<raw>",
         source
     ))
 }
 
 /// Escape single quotes and backslashes in a string for safe embedding in SQL literals.
-fn escape_sql_string(s: &str) -> String {
+pub(crate) fn escape_sql_string(s: &str) -> String {
     s.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
@@ -159,5 +180,31 @@ mod tests {
             "backslash must be escaped: {}",
             result
         );
+    }
+
+    #[test]
+    fn test_gs_maps_to_s3_compatible_url() {
+        let result = resolve_source_uri("gs://mybucket/data/users.parquet").unwrap();
+        assert_eq!(
+            result,
+            "s3('https://storage.googleapis.com/mybucket/data/users.parquet', 'Parquet')"
+        );
+    }
+
+    #[test]
+    fn test_azure_maps_to_azure_blob_storage() {
+        let result = resolve_source_uri("azure://mycontainer/path/to/data.parquet").unwrap();
+        assert_eq!(
+            result,
+            "azureBlobStorage(getenv('AZURE_STORAGE_CONNECTION_STRING'), 'mycontainer', 'path/to/data.parquet', 'Parquet')"
+        );
+    }
+
+    #[test]
+    fn test_azure_container_only() {
+        let result = resolve_source_uri("azure://mycontainer/data.csv").unwrap();
+        assert!(result.contains("azureBlobStorage("));
+        assert!(result.contains("'mycontainer'"));
+        assert!(result.contains("'CSV'"));
     }
 }
