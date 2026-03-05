@@ -2808,6 +2808,44 @@ pub fn extract_ctes_with_context(
                         }
                     }
 
+                    // Bidirectional VLP fix: when start and end have the same label
+                    // (e.g., Person-[:KNOWS]-Person), the UNION ALL SELECT for the
+                    // WITH CTE uses the same column names (end_firstName) for both
+                    // forward and reverse branches. Ensure properties required by one
+                    // alias are mirrored to the other, so both branches produce
+                    // matching columns regardless of start_/end_ prefix assignment.
+                    if start_label == end_label && !start_label.is_empty() && start_alias != end_alias {
+                        let mut mirrored = Vec::new();
+                        for p in &props {
+                            if p.cypher_alias == start_alias {
+                                // Check if this property already exists for end_alias
+                                if !props.iter().any(|ep| ep.cypher_alias == end_alias && ep.alias == p.alias) {
+                                    mirrored.push(NodeProperty {
+                                        cypher_alias: end_alias.clone(),
+                                        column_name: p.column_name.clone(),
+                                        alias: p.alias.clone(),
+                                    });
+                                }
+                            } else if p.cypher_alias == end_alias {
+                                // Check if this property already exists for start_alias
+                                if !props.iter().any(|sp| sp.cypher_alias == start_alias && sp.alias == p.alias) {
+                                    mirrored.push(NodeProperty {
+                                        cypher_alias: start_alias.clone(),
+                                        column_name: p.column_name.clone(),
+                                        alias: p.alias.clone(),
+                                    });
+                                }
+                            }
+                        }
+                        if !mirrored.is_empty() {
+                            log::info!(
+                                "VLP bidirectional mirror: adding {} mirrored properties for same-label nodes ({} = {})",
+                                mirrored.len(), start_label, end_label
+                            );
+                            props.extend(mirrored);
+                        }
+                    }
+
                     log::debug!("VLP properties extracted: {}", props.len());
                     props
                 };
