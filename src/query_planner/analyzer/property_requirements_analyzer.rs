@@ -151,6 +151,12 @@ impl PropertyRequirementsAnalyzer {
             LogicalPlan::GraphRel(rel) => {
                 log::info!("🔍 PropertyRequirementsAnalyzer: Analyzing GraphRel");
 
+                // Analyze where_predicate — contains pushed-down filters from
+                // FilterIntoGraphRel that may reference node properties
+                if let Some(ref predicate) = rel.where_predicate {
+                    Self::analyze_expression(predicate, requirements);
+                }
+
                 Self::analyze_node(&rel.left, requirements);
                 Self::analyze_node(&rel.center, requirements);
                 Self::analyze_node(&rel.right, requirements);
