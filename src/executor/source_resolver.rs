@@ -19,40 +19,39 @@
 ///
 /// Returns an error if the URI scheme is not recognised.
 pub fn resolve_source_uri(source: &str) -> Result<String, String> {
-    // Escape hatch: pass raw function through verbatim
+    // Escape hatch: pass raw function through verbatim (deliberately unescaped)
     if let Some(raw) = source.strip_prefix("table_function:") {
         return Ok(raw.trim().to_string());
     }
 
     // iceberg+local:///abs/path/table/ → icebergLocal('/abs/path/table/')
     if let Some(rest) = source.strip_prefix("iceberg+local://") {
-        // strip leading slash so we get an absolute path
         let path = rest.trim_start_matches('/');
-        return Ok(format!("icebergLocal('/{}')", path));
+        return Ok(format!("icebergLocal('/{}')", escape_sql_string(path)));
     }
 
     // iceberg+s3://bucket/prefix/ → iceberg('s3://bucket/prefix/')
     if let Some(rest) = source.strip_prefix("iceberg+") {
-        return Ok(format!("iceberg('{}')", rest));
+        return Ok(format!("iceberg('{}')", escape_sql_string(rest)));
     }
 
     // delta+s3://bucket/prefix/ → deltaLake('s3://bucket/prefix/')
     if let Some(rest) = source.strip_prefix("delta+") {
-        return Ok(format!("deltaLake('{}')", rest));
+        return Ok(format!("deltaLake('{}')", escape_sql_string(rest)));
     }
 
     // s3://bucket/key.ext → s3('s3://bucket/key.ext', Format)
     if source.starts_with("s3://") || source.starts_with("gs://") || source.starts_with("azure://")
     {
         let fmt = detect_format_from_path(source);
-        return Ok(format!("s3('{}', '{}')", source, fmt));
+        return Ok(format!("s3('{}', '{}')", escape_sql_string(source), fmt));
     }
 
     // Local file path (absolute or relative)
     if source.starts_with('/') || source.starts_with('.') || source.starts_with("file://") {
         let path = source.strip_prefix("file://").unwrap_or(source);
         let fmt = detect_format_from_path(path);
-        return Ok(format!("file('{}', '{}')", path, fmt));
+        return Ok(format!("file('{}', '{}')", escape_sql_string(path), fmt));
     }
 
     Err(format!(
@@ -61,6 +60,11 @@ pub fn resolve_source_uri(source: &str) -> Result<String, String> {
          table_function:<raw>",
         source
     ))
+}
+
+/// Escape single quotes and backslashes in a string for safe embedding in SQL literals.
+fn escape_sql_string(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
 /// Infer a ClickHouse format string from a file extension.
@@ -132,5 +136,28 @@ mod tests {
     #[test]
     fn test_unknown_scheme() {
         assert!(resolve_source_uri("ftp://server/path").is_err());
+    }
+
+    #[test]
+    fn test_single_quote_in_path_is_escaped() {
+        // Defense-in-depth: even though schema YAML is trusted, paths with
+        // special characters should not break the generated SQL.
+        let result = resolve_source_uri("/data/it's-a-file.parquet").unwrap();
+        assert!(
+            result.contains("\\'"),
+            "single quote must be escaped: {}",
+            result
+        );
+        assert_eq!(result, "file('/data/it\\'s-a-file.parquet', 'Parquet')");
+    }
+
+    #[test]
+    fn test_backslash_in_s3_key_is_escaped() {
+        let result = resolve_source_uri("s3://bucket/path\\with\\backslash.csv").unwrap();
+        assert!(
+            result.contains("\\\\"),
+            "backslash must be escaped: {}",
+            result
+        );
     }
 }

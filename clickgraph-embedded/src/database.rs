@@ -25,10 +25,12 @@ pub struct SystemConfig {
 
     /// Base directory for resolving relative `source:` paths in the schema.
     /// If `None`, relative paths are resolved from the current working directory.
+    /// Reserved for future use — not yet wired into source resolution.
     pub data_dir: Option<PathBuf>,
 
     /// Maximum number of threads for chdb query execution.
     /// `None` uses the chdb default (typically number of CPU cores).
+    /// Reserved for future use — not yet passed to chdb session.
     pub max_threads: Option<usize>,
 
     /// Storage credentials for remote sources (S3, GCS, Azure Blob, Iceberg).

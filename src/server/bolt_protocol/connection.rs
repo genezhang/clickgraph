@@ -578,21 +578,37 @@ mod tests {
 
     #[tokio::test]
     async fn test_bolt_connection_creation() {
-        use crate::executor::remote::RemoteClickHouseExecutor;
-        use crate::server::connection_pool::RoleConnectionPool;
+        use crate::executor::{ExecutorError, QueryExecutor};
+        use async_trait::async_trait;
+        use serde_json::Value;
+
+        struct StubExecutor;
+        #[async_trait]
+        impl QueryExecutor for StubExecutor {
+            async fn execute_json(
+                &self,
+                _sql: &str,
+                _role: Option<&str>,
+            ) -> Result<Vec<Value>, ExecutorError> {
+                Ok(vec![])
+            }
+            async fn execute_text(
+                &self,
+                _sql: &str,
+                _fmt: &str,
+                _role: Option<&str>,
+            ) -> Result<String, ExecutorError> {
+                Ok(String::new())
+            }
+        }
+
         let stream = MockStream::new(vec![]);
         let context = Arc::new(Mutex::new(BoltContext::new()));
         let config = Arc::new(BoltConfig::default());
-        // Create a minimal executor for the test (won't actually execute queries)
-        // Use a dummy pool — the connection won't be used in unit tests
-        unsafe {
-            std::env::set_var("CLICKHOUSE_URL", "http://localhost:8123");
-            std::env::set_var("CLICKHOUSE_USER", "test");
-            std::env::set_var("CLICKHOUSE_PASSWORD", "test");
-        }
-        // We can't easily create an executor without a real pool in a unit test,
-        // so we skip the actual creation and just test BoltConfig defaults.
-        let _ = (stream, context, config);
+        let executor: Arc<dyn QueryExecutor> = Arc::new(StubExecutor);
+
+        let _connection = BoltConnection::new(stream, context, config, executor);
+        // Verify the connection is created without panics
         assert!(true);
     }
 
