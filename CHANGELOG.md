@@ -1,4 +1,18 @@
-## [0.6.3-dev] - 2026-03-01
+## [0.6.3-dev] - 2026-03-05
+
+### 🚀 Features
+
+- **Embedded mode** (PR #179): Run Cypher graph queries entirely in-process via [chdb](https://github.com/chdb-io/chdb) — no external ClickHouse server required. Supports Parquet, CSV, Iceberg, Delta Lake, and S3-compatible storage.
+  - **`QueryExecutor` trait**: Abstracts SQL execution; `RemoteClickHouseExecutor` (existing) and `ChdbExecutor` (new) are the two backends. Default behaviour is unchanged.
+  - **`clickgraph-embedded` crate**: Kuzu-compatible Rust library API — `Database::new(schema, config)`, `Connection::new(&db)`, `conn.query(cypher)`, `result.next()` → `Row`.
+  - **`source:` schema field**: Optional per-node/relationship URI pointing to the data file. At startup, ClickGraph creates chdb VIEWs named after the schema `table:` field so existing SQL generation requires no changes.
+  - **URI schemes**: `file://`, `s3://`, `gs://`, `iceberg+s3://`, `iceberg+local://`, `delta+s3://`, `table_function:<raw>`.
+  - **`StorageCredentials`**: S3/GCS/Azure credentials applied as chdb `SET` commands at session init; falls back to environment variables and instance-profile credentials automatically.
+  - **Server embedded flag**: `--embedded` CLI flag / `CLICKGRAPH_EMBEDDED=true` env var; HTTP and Bolt endpoints work as normal.
+  - **Tests**: 9 source_resolver tests, 8 credential tests, 17 embedded unit tests, 10 e2e integration tests.
+  - **Docs**: [Embedded Mode wiki page](docs/wiki/Embedded-Mode.md)
+
+
 
 ### 🚀 Features
 

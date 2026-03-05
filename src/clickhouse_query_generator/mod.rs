@@ -49,3 +49,36 @@ pub use variable_length_cte::{NodeProperty, VariableLengthCteGenerator, WeightCt
 pub fn generate_sql(plan: RenderPlan, max_cte_depth: u32) -> String {
     to_sql_query::render_plan_to_sql(plan, max_cte_depth)
 }
+
+/// Convert a Cypher query string directly to ClickHouse SQL.
+///
+/// This is a convenience function for library consumers (e.g., `clickgraph-embedded`)
+/// that need to run the full Cypher→SQL pipeline without calling internal APIs.
+///
+/// # Arguments
+/// * `cypher` — Cypher query string
+/// * `schema` — resolved graph schema
+/// * `max_cte_depth` — maximum recursion depth for variable-length paths
+///
+/// # Returns
+/// Generated ClickHouse SQL string, or an error message string.
+pub fn cypher_to_sql(
+    cypher: &str,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+    max_cte_depth: u32,
+) -> Result<String, String> {
+    use crate::render_plan::plan_builder::RenderPlanBuilder;
+
+    let ast = crate::open_cypher_parser::parse_query(cypher)
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    let (logical_plan, plan_ctx) =
+        crate::query_planner::evaluate_read_query(ast, schema, None, None)
+            .map_err(|e| format!("Plan error: {}", e))?;
+
+    let render_plan = logical_plan
+        .to_render_plan_with_ctx(schema, Some(&plan_ctx), None)
+        .map_err(|e| format!("Render error: {}", e))?;
+
+    Ok(generate_sql(render_plan, max_cte_depth))
+}

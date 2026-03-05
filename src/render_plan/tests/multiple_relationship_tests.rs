@@ -76,6 +76,7 @@ fn setup_test_schema() {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -110,6 +111,7 @@ fn setup_test_schema() {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -144,6 +146,7 @@ fn setup_test_schema() {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -178,6 +181,7 @@ fn setup_test_schema() {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -212,6 +216,7 @@ fn setup_test_schema() {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -240,6 +245,7 @@ fn setup_test_schema() {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         },
     );
 
@@ -264,6 +270,7 @@ fn setup_test_schema() {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         },
     );
 
@@ -288,6 +295,7 @@ fn setup_test_schema() {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         },
     );
 
@@ -312,6 +320,7 @@ fn setup_test_schema() {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         },
     );
 

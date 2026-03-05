@@ -167,6 +167,7 @@ property_mappings:
             to_node_properties: None,
             r#type: Some("string".to_string()),
             types: None,
+            source: None,
         };
 
         // Serialize to YAML

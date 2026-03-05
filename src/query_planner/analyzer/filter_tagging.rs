@@ -2511,6 +2511,7 @@ mod tests {
                 label_column: None,
                 label_value: None,
                 node_id_types: None,
+                source: None,
             },
         );
 
@@ -2549,6 +2550,7 @@ mod tests {
                 label_column: None,
                 label_value: None,
                 node_id_types: None,
+                source: None,
             },
         );
 
@@ -2595,6 +2597,7 @@ mod tests {
                 is_fk_edge: false,
                 constraints: None,
                 edge_id_types: None,
+                source: None,
             },
         );
 

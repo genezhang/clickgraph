@@ -293,6 +293,7 @@ fn build_cluster_urls(seed_url: &str, hosts: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[tokio::test]
     #[ignore] // Requires ClickHouse connection
@@ -323,6 +324,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_single_node_config() {
         unsafe {
             env::set_var("CLICKHOUSE_URL", "http://localhost:8123");
@@ -338,6 +340,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_cluster_config_env() {
         unsafe {
             env::set_var("CLICKHOUSE_URL", "http://localhost:8123");
@@ -358,6 +361,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_round_robin_distribution() {
         unsafe {
             env::set_var("CLICKHOUSE_URL", "http://localhost:8123");

@@ -62,6 +62,7 @@ fn setup_person_schema() -> GraphSchema {
         label_column: None,
         label_value: None,
         node_id_types: None,
+        source: None,
     };
     nodes.insert("Person".to_string(), person_node);
 
@@ -93,6 +94,7 @@ fn setup_person_schema() -> GraphSchema {
         is_fk_edge: false,
         constraints: None,
         edge_id_types: None,
+        source: None,
     };
     relationships.insert("KNOWS::Person::Person".to_string(), knows_rel);
 

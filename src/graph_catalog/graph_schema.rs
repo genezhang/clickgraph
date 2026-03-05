@@ -88,6 +88,11 @@ pub struct NodeSchema {
     /// Required for Neo4j compatibility (elementId function support)
     #[serde(skip)]
     pub node_id_types: Option<Vec<SchemaType>>,
+
+    /// Optional: chdb data source URI (for embedded mode).
+    /// Used by the data loader to create a `CREATE VIEW` in the chdb session.
+    #[serde(skip)]
+    pub source: Option<String>,
 }
 
 impl NodeSchema {
@@ -175,6 +180,7 @@ impl NodeSchema {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         }
     }
 }
@@ -300,6 +306,10 @@ pub struct RelationshipSchema {
     /// Required for Neo4j compatibility (elementId function support for relationships)
     #[serde(skip)]
     pub edge_id_types: Option<Vec<SchemaType>>,
+
+    /// Optional: chdb data source URI (for embedded mode).
+    #[serde(skip)]
+    pub source: Option<String>,
 }
 
 impl RelationshipSchema {
@@ -1643,6 +1653,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         };
 
         relationships.insert("FLIGHT::Airport::Airport".to_string(), flight_rel);
@@ -1710,6 +1721,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         };
 
         relationships.insert("AUTHORED::User::Post".to_string(), authored_rel);
@@ -1758,6 +1770,7 @@ mod tests {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         };
 
         let flight_edge = RelationshipSchema {
@@ -1788,6 +1801,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         };
 
         // Test detection
@@ -1835,6 +1849,7 @@ mod tests {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         };
 
         let flight_edge = RelationshipSchema {
@@ -1865,6 +1880,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         };
 
         // Test detection
@@ -1905,6 +1921,7 @@ mod tests {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         };
 
         let user = NodeSchema {
@@ -1936,6 +1953,7 @@ mod tests {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         };
 
         let mut from_props = HashMap::new();
@@ -1970,6 +1988,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         };
 
         // Test detection
@@ -2019,6 +2038,7 @@ mod tests {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         };
 
         let mut to_props_post = HashMap::new();
@@ -2043,6 +2063,7 @@ mod tests {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         };
 
         let mut to_props = HashMap::new();
@@ -2077,6 +2098,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         };
 
         // Test detection
@@ -2130,6 +2152,7 @@ mod tests {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         };
 
         let mut from_props = HashMap::new();
@@ -2167,6 +2190,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         };
 
         // Should still be detected as denormalized (1-2 mappings allowed)
@@ -2200,6 +2224,7 @@ mod tests {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         };
 
         let flight_edge = RelationshipSchema {
@@ -2230,6 +2255,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         };
 
         // Should NOT be detected as denormalized (missing props)
@@ -2267,6 +2293,7 @@ mod tests {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         };
 
         let mut from_props = HashMap::new();
@@ -2300,6 +2327,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         };
 
         // Should NOT be detected (different databases)
@@ -2347,6 +2375,7 @@ mod tests {
             use_final: None,
             filter: None,
             node_id_types: None,
+            source: None,
         };
 
         let mut from_props = HashMap::new();
@@ -2380,6 +2409,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         };
 
         // Should NOT be detected (too many property_mappings)
@@ -2424,6 +2454,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         };
 
         // RESOLVED_TO: (Domain)-[:RESOLVED_TO]->(ResolvedIP)
@@ -2455,6 +2486,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         };
 
         relationships.insert("REQUESTED::IP::Domain".to_string(), requested);
@@ -2509,6 +2541,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         };
 
         let edge2 = RelationshipSchema {
@@ -2539,6 +2572,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         };
 
         relationships.insert("REL1::A::B".to_string(), edge1);
@@ -2584,6 +2618,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         };
 
         let edge2 = RelationshipSchema {
@@ -2614,6 +2649,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         };
 
         relationships.insert("REL1::A::B".to_string(), edge1);
@@ -2695,6 +2731,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         };
 
         // Person IS_LOCATED_IN City (uses Place table)

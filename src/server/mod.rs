@@ -19,6 +19,7 @@ use tokio::signal;
 use tokio::sync::{OnceCell, RwLock};
 
 use crate::config::ServerConfig;
+use crate::executor::{remote::RemoteClickHouseExecutor, QueryExecutor};
 use crate::graph_catalog::graph_schema::GraphSchema;
 use bolt_protocol::{BoltConfig, BoltServer};
 
@@ -34,11 +35,12 @@ mod query_cache;
 pub mod query_context;
 mod sql_generation_handler;
 
-// #[derive(Clone)]
 #[derive(Clone)]
 pub struct AppState {
-    pub clickhouse_client: Client,
-    pub connection_pool: Arc<connection_pool::RoleConnectionPool>,
+    pub executor: Arc<dyn QueryExecutor>,
+    /// Raw ClickHouse client for admin/DDL operations.
+    /// `None` in embedded mode — admin endpoints return 501.
+    pub clickhouse_client: Option<Client>,
     pub config: ServerConfig,
 }
 
@@ -96,6 +98,65 @@ pub async fn run_with_config(config: ServerConfig) {
         config.bolt_port
     );
 
+    // ── Embedded mode: use in-process chdb instead of remote ClickHouse ────────
+    #[cfg(feature = "embedded")]
+    if config.embedded {
+        log::info!("🔌 Embedded mode: using in-process chdb (no ClickHouse server required)");
+
+        // Initialize schema (no ClickHouse client needed)
+        let _schema_source =
+            match graph_catalog::initialize_global_schema(None, config.validate_schema).await {
+                Ok(source) => source,
+                Err(e) => {
+                    log::error!("✗ Failed to initialize schema: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+        // Build ChdbExecutor with ephemeral session
+        let chdb_executor = match crate::executor::chdb_embedded::ChdbExecutor::new_ephemeral() {
+            Ok(e) => e,
+            Err(e) => {
+                log::error!("✗ Failed to create chdb executor: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        // Load schema source: VIEWs if any schema entries have source: URIs
+        if let Some(schema_lock) = GLOBAL_SCHEMAS.get() {
+            if let Ok(schemas) = schema_lock.try_read() {
+                for schema in schemas.values() {
+                    if let Err(e) =
+                        crate::executor::data_loader::load_schema_sources(&chdb_executor, schema)
+                    {
+                        log::warn!("⚠ Failed to load schema sources: {}", e);
+                    }
+                }
+            }
+        }
+
+        let executor: Arc<dyn QueryExecutor> = Arc::new(chdb_executor);
+        let app_state = AppState {
+            executor,
+            clickhouse_client: None,
+            config: config.clone(),
+        };
+
+        // Initialize query cache
+        let cache_config = query_cache::QueryCacheConfig::from_env();
+        let _ = GLOBAL_QUERY_CACHE.set(query_cache::QueryCache::new(cache_config));
+
+        return run_server(app_state, config).await;
+    }
+
+    #[cfg(not(feature = "embedded"))]
+    if config.embedded {
+        log::error!("✗ --embedded flag set but the `embedded` feature is not compiled in.");
+        log::error!("  Recompile with: cargo build --features embedded");
+        std::process::exit(1);
+    }
+
+    // ── Remote ClickHouse mode (default) ────────────────────────────────────────
     // Try to create ClickHouse client (optional for YAML-only mode)
     let client_opt = clickhouse_client::try_get_client();
 
@@ -119,10 +180,12 @@ pub async fn run_with_config(config: ServerConfig) {
         }
     };
 
-    let app_state = if let Some(client) = client_opt.as_ref() {
+    let app_state = if client_opt.is_some() {
+        let executor: Arc<dyn QueryExecutor> =
+            Arc::new(RemoteClickHouseExecutor::new(connection_pool.clone()));
         AppState {
-            clickhouse_client: client.clone(),
-            connection_pool: connection_pool.clone(),
+            executor,
+            clickhouse_client: client_opt.clone(),
             config: config.clone(),
         }
     } else {
@@ -133,11 +196,11 @@ pub async fn run_with_config(config: ServerConfig) {
             "  Note: Some query functionality may be limited without ClickHouse connection."
         );
 
-        // Create a dummy client for now - this is not ideal but allows server to start
-        let dummy_client = clickhouse::Client::default().with_url("http://localhost:8123");
+        let executor: Arc<dyn QueryExecutor> =
+            Arc::new(RemoteClickHouseExecutor::new(connection_pool.clone()));
         AppState {
-            clickhouse_client: dummy_client,
-            connection_pool: connection_pool.clone(),
+            executor,
+            clickhouse_client: None,
             config: config.clone(),
         }
     };
@@ -170,28 +233,13 @@ pub async fn run_with_config(config: ServerConfig) {
     );
     let _ = GLOBAL_QUERY_CACHE.set(query_cache::QueryCache::new(cache_config));
 
-    // Schema monitoring disabled - our YAML-based schema format differs from upstream Brahmand
-    // Re-enable when we implement proper schema versioning in ClickHouse tables
     log::debug!("Schema monitoring disabled: Using in-memory schema management");
 
-    // // Start background schema monitoring (only for database-loaded schemas)
-    // if let Some(schema_client) = client_opt {
-    //     match schema_source {
-    //         SchemaSource::Database => {
-    //             tokio::spawn(async move {
-    //                 println!("Starting background schema monitoring (checks every 60 seconds)");
-    //                 graph_catalog::monitor_schema_updates(schema_client).await;
-    //             });
-    //         }
-    //         SchemaSource::Yaml => {
-    //             println!("Schema monitoring disabled: Schema loaded from YAML (static configuration)");
-    //         }
-    //     }
-    // } else {
-    //     println!("Schema monitoring disabled: No ClickHouse client available");
-    // }
+    run_server(app_state, config).await;
+}
 
-    // Start HTTP server
+/// Bind and serve HTTP (and optionally Bolt) using the given `app_state`.
+async fn run_server(app_state: AppState, config: ServerConfig) {
     let http_bind_address = format!("{}:{}", config.http_host, config.http_port);
     log::info!("Starting HTTP server on {}", http_bind_address);
 
@@ -253,9 +301,9 @@ pub async fn run_with_config(config: ServerConfig) {
             port: config.bolt_port,
         };
 
-        // Clone the ClickHouse client from app_state for Bolt server
-        let bolt_clickhouse_client = app_state.clickhouse_client.clone();
-        let bolt_server = Arc::new(BoltServer::new(bolt_config, bolt_clickhouse_client));
+        // Clone the executor from app_state for Bolt server
+        let bolt_executor = app_state.executor.clone();
+        let bolt_server = Arc::new(BoltServer::new(bolt_config, bolt_executor));
         let bolt_listener = match TcpListener::bind(&bolt_bind_address).await {
             Ok(listener) => {
                 println!("Successfully bound Bolt listener to {}", bolt_bind_address);

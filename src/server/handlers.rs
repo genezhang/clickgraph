@@ -9,7 +9,6 @@ use axum::{
 use clickhouse::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::AsyncBufReadExt;
 
 use crate::{
     clickhouse_query_generator,
@@ -916,12 +915,14 @@ async fn query_handler_inner(
         )
         .await
     } else {
-        ddl_handler(
-            app_state.clickhouse_client.clone(),
-            ch_sql_queries,
-            maybe_schema_elem,
-        )
-        .await
+        let ch_client = app_state.clickhouse_client.clone().ok_or_else(|| {
+            (
+                StatusCode::NOT_IMPLEMENTED,
+                "DDL operations are not available in embedded mode (no ClickHouse connection)"
+                    .to_string(),
+            )
+        })?;
+        ddl_handler(ch_client, ch_sql_queries, maybe_schema_elem).await
     };
     metrics.execution_time = execution_start.elapsed().as_secs_f64();
 
@@ -1062,40 +1063,16 @@ async fn execute_json_rows(
 
     log::debug!("Executing SQL (graph format):\n{}", final_sql);
 
-    let client = app_state.connection_pool.get_client(role.as_deref()).await;
-    let mut lines = client
-        .query(&final_sql)
-        .fetch_bytes("JSONEachRow")
+    app_state
+        .executor
+        .execute_json(&final_sql, role.as_deref())
+        .await
         .map_err(|e| {
-            log::error!(
-                "ClickHouse query failed. SQL was:\n{}\nError: {}",
-                final_sql,
-                e
-            );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Clickhouse Error: {}", e),
+                format!("Executor error: {}", e),
             )
-        })?
-        .lines();
-
-    let mut rows = Vec::new();
-    while let Some(line) = lines.next_line().await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Clickhouse Error: {}", e),
-        )
-    })? {
-        let value: Value = serde_json::from_str(&line).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Invalid JSON from ClickHouse: {}", e),
-            )
-        })?;
-        rows.push(value);
-    }
-
-    Ok(rows)
+        })
 }
 
 async fn execute_cte_queries(
@@ -1110,45 +1087,22 @@ async fn execute_cte_queries(
     // Log full SQL for debugging (especially helpful when ClickHouse truncates errors)
     log::debug!("Executing SQL:\n{}", final_sql);
 
-    // Get role-based connection from pool
-    // Note: We use role-specific connection pools instead of SET ROLE for better performance
-    // and to avoid race conditions. The connection pool maintains separate pools per role.
-    let client = app_state.connection_pool.get_client(role.as_deref()).await;
-
     if output_format == OutputFormat::Pretty
         || output_format == OutputFormat::PrettyCompact
         || output_format == OutputFormat::Csv
         || output_format == OutputFormat::CSVWithNames
     {
-        let mut lines = client
-            .query(&final_sql)
-            .fetch_bytes(output_format)
+        let format_str: String = output_format.into();
+        let text = app_state
+            .executor
+            .execute_text(&final_sql, &format_str, role.as_deref())
+            .await
             .map_err(|e| {
-                // Log full SQL on error for debugging
-                log::error!(
-                    "ClickHouse query failed. SQL was:\n{}\nError: {}",
-                    final_sql,
-                    e
-                );
                 (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Clickhouse Error: {}", e),
+                    format!("Executor error: {}", e),
                 )
-            })?
-            .lines();
-
-        let mut rows: Vec<String> = vec![];
-        while let Some(line) = lines.next_line().await.map_err(|e| {
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Clickhouse Error: {}", e),
-            )
-        })? {
-            // let value: serde_json::Value = serde_json::de::from_str(&line).unwrap();
-            rows.push(line);
-        }
-
-        let text = rows.join("\n");
+            })?;
 
         let mut response = (StatusCode::OK, text).into_response();
         response
@@ -1156,46 +1110,16 @@ async fn execute_cte_queries(
             .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
         Ok(response)
     } else {
-        let mut lines = client
-            .query(&final_sql)
-            .fetch_bytes("JSONEachRow")
+        let rows = app_state
+            .executor
+            .execute_json(&final_sql, role.as_deref())
+            .await
             .map_err(|e| {
-                // Log full SQL on error for debugging
-                log::error!(
-                    "ClickHouse query failed. SQL was:\n{}\nError: {}",
-                    final_sql,
-                    e
-                );
                 (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Clickhouse Error: {}", e),
-                )
-            })?
-            .lines();
-
-        let mut rows: Vec<Value> = vec![];
-        while let Some(line) = lines.next_line().await.map_err(|e| {
-            // Log full SQL on error for debugging
-            log::error!(
-                "ClickHouse response parsing failed. SQL was:\n{}\nError: {}",
-                final_sql,
-                e
-            );
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Clickhouse Error: {}", e),
-            )
-        })? {
-            let value: serde_json::Value = serde_json::de::from_str(&line).map_err(|e| {
-                log::error!("Failed to parse JSON from ClickHouse response: {}", e);
-                log::error!("Invalid JSON line: {}", line);
-                (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Invalid JSON from ClickHouse: {}", e),
+                    format!("Executor error: {}", e),
                 )
             })?;
-            rows.push(value);
-        }
 
         // Wrap results in an object with "results" key for consistency with Neo4j format
         let response_obj = serde_json::json!({
@@ -1416,7 +1340,7 @@ pub async fn load_schema_handler(
     match graph_catalog::load_schema_from_content(
         &payload.schema_name,
         &payload.config_content,
-        Some(app_state.clickhouse_client.clone()),
+        app_state.clickhouse_client.clone(),
         validate_schema,
     )
     .await
@@ -1536,8 +1460,19 @@ pub async fn introspect_handler(
         ));
     }
 
-    let response =
-        SchemaDiscovery::introspect(&app_state.clickhouse_client, &payload.database).await;
+    let ch_client = match &app_state.clickhouse_client {
+        Some(c) => c,
+        None => {
+            return Err((
+                StatusCode::NOT_IMPLEMENTED,
+                Json(
+                    serde_json::json!({ "error": "Schema introspection is not available in embedded mode (no ClickHouse connection)" }),
+                ),
+            ));
+        }
+    };
+
+    let response = SchemaDiscovery::introspect(ch_client, &payload.database).await;
 
     match response {
         Ok(resp) => Ok(Json(serde_json::to_value(resp).unwrap())),
@@ -1575,8 +1510,19 @@ pub async fn discover_prompt_handler(
     }
 
     // Introspect the database
-    let introspect_result =
-        SchemaDiscovery::introspect(&app_state.clickhouse_client, &payload.database).await;
+    let ch_client = match &app_state.clickhouse_client {
+        Some(c) => c,
+        None => {
+            return Err((
+                StatusCode::NOT_IMPLEMENTED,
+                Json(
+                    serde_json::json!({ "error": "Schema discovery is not available in embedded mode (no ClickHouse connection)" }),
+                ),
+            ));
+        }
+    };
+
+    let introspect_result = SchemaDiscovery::introspect(ch_client, &payload.database).await;
 
     match introspect_result {
         Ok(resp) => {
