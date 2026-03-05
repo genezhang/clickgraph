@@ -13,13 +13,14 @@ This is similar to how [DuckDB](https://duckdb.org/) and [Kuzu](https://kuzudb.c
 | Existing ClickHouse cluster | Standard mode (default) |
 | Query local Parquet / CSV files | **Embedded mode** |
 | Query S3 / Iceberg / Delta Lake without a server | **Embedded mode** |
-| Embed graph queries in a Rust application | **Embedded mode (library)** |
+| Embed graph queries in a Rust application | **Embedded mode (Rust library)** |
+| Embed graph queries in a Python application | **Embedded mode (Python library)** |
 | Edge / serverless deployment | **Embedded mode** |
 | Development & prototyping without a database | **Embedded mode** |
 
 ---
 
-## Two Ways to Use Embedded Mode
+## Three Ways to Use Embedded Mode
 
 ### Option A — Standalone Server (HTTP + Bolt)
 
@@ -65,6 +66,60 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+```
+
+### Option C — Python Library
+
+Use ClickGraph from Python — ideal for data science and analytics:
+
+```bash
+cd clickgraph-py
+pip install maturin
+maturin develop    # builds and installs the 'clickgraph' package
+```
+
+```python
+import clickgraph
+
+db = clickgraph.Database("schema.yaml")
+conn = db.connect()
+
+for row in conn.query("MATCH (u:User)-[:FOLLOWS]->(f:User) RETURN u.name, f.name LIMIT 10"):
+    print(f"{row['u.name']} → {row['f.name']}")
+```
+
+**With S3 credentials:**
+
+```python
+db = clickgraph.Database(
+    "schema.yaml",
+    s3_access_key_id="AKIA...",
+    s3_secret_access_key="...",
+    s3_region="us-east-1",
+)
+```
+
+**SQL debugging:**
+
+```python
+conn = db.connect()
+print(conn.query_to_sql("MATCH (u:User) RETURN u.name"))
+# → SELECT users.full_name AS `u.name` FROM test_db.users
+```
+
+**QueryResult API:**
+
+```python
+result = conn.query("MATCH (u:User) RETURN u.name, u.email LIMIT 5")
+print(result.column_names)   # ['u.name', 'u.email']
+print(result.num_rows)       # 5
+print(len(result))           # 5
+print(result.as_dicts())     # [{'u.name': 'Alice', 'u.email': '...'}, ...]
+print(result.get_row(0))     # {'u.name': 'Alice', 'u.email': '...'}
+
+# Or iterate:
+for row in result:
+    print(row)               # each row is a dict
 ```
 
 ---
