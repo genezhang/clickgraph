@@ -1,0 +1,40 @@
+name: Security Audit
+
+on:
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    # Run weekly on Monday at 08:00 UTC to catch new advisories
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.22.0
+
+      - name: Run cargo audit
+        run: cargo audit
+
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          log-level: warn
+          arguments: --all-features
