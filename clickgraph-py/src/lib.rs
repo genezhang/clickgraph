@@ -8,7 +8,9 @@ use pyo3::types::{PyDict, PyList};
 
 use clickgraph_embedded::database::{Database as RustDatabase, SystemConfig as RustSystemConfig};
 use clickgraph_embedded::error::EmbeddedError;
-use clickgraph_embedded::export::{ExportFormat as RustExportFormat, ExportOptions as RustExportOptions};
+use clickgraph_embedded::export::{
+    ExportFormat as RustExportFormat, ExportOptions as RustExportOptions,
+};
 use clickgraph_embedded::value::Value as RustValue;
 
 // ---------------------------------------------------------------------------
@@ -320,7 +322,8 @@ impl PyConnection {
             compression,
         };
         let conn = clickgraph_embedded::Connection::new(&self.db).map_err(to_pyerr)?;
-        conn.export_to_sql(cypher, output_path, opts).map_err(to_pyerr)
+        conn.export_to_sql(cypher, output_path, opts)
+            .map_err(to_pyerr)
     }
 
     fn __repr__(&self) -> String {

@@ -120,25 +120,46 @@ mod tests {
 
     #[test]
     fn test_format_from_extension_parquet() {
-        assert_eq!(format_from_extension("output.parquet"), Some(ExportFormat::Parquet));
-        assert_eq!(format_from_extension("data.pq"), Some(ExportFormat::Parquet));
+        assert_eq!(
+            format_from_extension("output.parquet"),
+            Some(ExportFormat::Parquet)
+        );
+        assert_eq!(
+            format_from_extension("data.pq"),
+            Some(ExportFormat::Parquet)
+        );
     }
 
     #[test]
     fn test_format_from_extension_csv() {
-        assert_eq!(format_from_extension("results.csv"), Some(ExportFormat::CSVWithNames));
+        assert_eq!(
+            format_from_extension("results.csv"),
+            Some(ExportFormat::CSVWithNames)
+        );
     }
 
     #[test]
     fn test_format_from_extension_tsv() {
-        assert_eq!(format_from_extension("results.tsv"), Some(ExportFormat::TSVWithNames));
+        assert_eq!(
+            format_from_extension("results.tsv"),
+            Some(ExportFormat::TSVWithNames)
+        );
     }
 
     #[test]
     fn test_format_from_extension_json() {
-        assert_eq!(format_from_extension("output.json"), Some(ExportFormat::JSON));
-        assert_eq!(format_from_extension("output.ndjson"), Some(ExportFormat::JSONEachRow));
-        assert_eq!(format_from_extension("output.jsonl"), Some(ExportFormat::JSONEachRow));
+        assert_eq!(
+            format_from_extension("output.json"),
+            Some(ExportFormat::JSON)
+        );
+        assert_eq!(
+            format_from_extension("output.ndjson"),
+            Some(ExportFormat::JSONEachRow)
+        );
+        assert_eq!(
+            format_from_extension("output.jsonl"),
+            Some(ExportFormat::JSONEachRow)
+        );
     }
 
     #[test]
@@ -149,8 +170,14 @@ mod tests {
 
     #[test]
     fn test_format_from_extension_case_insensitive() {
-        assert_eq!(format_from_extension("data.PARQUET"), Some(ExportFormat::Parquet));
-        assert_eq!(format_from_extension("data.Csv"), Some(ExportFormat::CSVWithNames));
+        assert_eq!(
+            format_from_extension("data.PARQUET"),
+            Some(ExportFormat::Parquet)
+        );
+        assert_eq!(
+            format_from_extension("data.Csv"),
+            Some(ExportFormat::CSVWithNames)
+        );
     }
 
     #[test]
@@ -169,12 +196,8 @@ mod tests {
 
     #[test]
     fn test_build_export_sql_csv() {
-        let sql = build_export_sql(
-            "SELECT * FROM t",
-            "results.csv",
-            &ExportOptions::default(),
-        )
-        .unwrap();
+        let sql =
+            build_export_sql("SELECT * FROM t", "results.csv", &ExportOptions::default()).unwrap();
         assert_eq!(
             sql,
             "INSERT INTO FUNCTION file('results.csv', CSVWithNames) SELECT * FROM t"
@@ -220,7 +243,9 @@ mod tests {
     fn test_build_export_sql_unknown_extension_no_format() {
         let result = build_export_sql("SELECT 1", "output.xyz", &ExportOptions::default());
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Cannot determine export format"));
+        assert!(result
+            .unwrap_err()
+            .contains("Cannot determine export format"));
     }
 
     #[test]

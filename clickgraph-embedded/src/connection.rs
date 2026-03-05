@@ -146,10 +146,9 @@ impl<'db> Connection<'db> {
         with_query_context(QueryContext::new(None), async move {
             set_current_schema(Arc::clone(&schema));
 
-            let select_sql =
-                cypher_to_sql(&cypher, &schema, 100).map_err(EmbeddedError::Query)?;
-            let export_sql =
-                build_export_sql(&select_sql, &output_path, &options).map_err(EmbeddedError::Query)?;
+            let select_sql = cypher_to_sql(&cypher, &schema, 100).map_err(EmbeddedError::Query)?;
+            let export_sql = build_export_sql(&select_sql, &output_path, &options)
+                .map_err(EmbeddedError::Query)?;
 
             // Execute the INSERT INTO FUNCTION file(...) — no result rows expected
             executor
@@ -346,7 +345,11 @@ graph_schema:
                 ExportOptions::default(),
             )
             .expect("should generate export SQL");
-        assert!(sql.contains("CSVWithNames"), "CSV should include header: {}", sql);
+        assert!(
+            sql.contains("CSVWithNames"),
+            "CSV should include header: {}",
+            sql
+        );
     }
 
     #[test]
@@ -361,7 +364,11 @@ graph_schema:
         let sql = conn
             .export_to_sql("MATCH (u:User) RETURN u.name", "data.txt", opts)
             .expect("should generate export SQL");
-        assert!(sql.contains("JSONEachRow"), "explicit format should apply: {}", sql);
+        assert!(
+            sql.contains("JSONEachRow"),
+            "explicit format should apply: {}",
+            sql
+        );
     }
 
     #[test]
@@ -374,6 +381,9 @@ graph_schema:
             "output.xyz",
             ExportOptions::default(),
         );
-        assert!(result.is_err(), "unknown extension without format should error");
+        assert!(
+            result.is_err(),
+            "unknown extension without format should error"
+        );
     }
 }
