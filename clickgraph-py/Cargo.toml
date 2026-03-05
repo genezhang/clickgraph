@@ -1,0 +1,16 @@
+[package]
+name = "clickgraph-py"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Python bindings for ClickGraph embedded graph query engine"
+repository = "https://github.com/genezhang/clickgraph"
+license = "Apache-2.0"
+
+[lib]
+name = "_clickgraph"
+crate-type = ["cdylib"]
+
+[dependencies]
+clickgraph-embedded = { path = "../clickgraph-embedded" }
+pyo3 = { version = "0.24", features = ["extension-module"] }

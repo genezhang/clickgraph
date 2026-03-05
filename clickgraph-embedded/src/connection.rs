@@ -10,7 +10,7 @@ use clickgraph::graph_catalog::graph_schema::GraphSchema;
 
 use super::database::Database;
 use super::error::EmbeddedError;
-use super::query_result::{QueryResult, Row};
+use super::query_result::QueryResult;
 use super::value::Value;
 
 /// A connection to an embedded ClickGraph database.

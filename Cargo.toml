@@ -2,6 +2,7 @@
 members = [
     "clickgraph-client",
     "clickgraph-embedded",
+    "clickgraph-py",
 ]
 
 [package]
