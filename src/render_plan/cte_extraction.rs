@@ -2814,12 +2814,18 @@ pub fn extract_ctes_with_context(
                     // forward and reverse branches. Ensure properties required by one
                     // alias are mirrored to the other, so both branches produce
                     // matching columns regardless of start_/end_ prefix assignment.
-                    if start_label == end_label && !start_label.is_empty() && start_alias != end_alias {
+                    if start_label == end_label
+                        && !start_label.is_empty()
+                        && start_alias != end_alias
+                    {
                         let mut mirrored = Vec::new();
                         for p in &props {
                             if p.cypher_alias == start_alias {
                                 // Check if this property already exists for end_alias
-                                if !props.iter().any(|ep| ep.cypher_alias == end_alias && ep.alias == p.alias) {
+                                if !props
+                                    .iter()
+                                    .any(|ep| ep.cypher_alias == end_alias && ep.alias == p.alias)
+                                {
                                     mirrored.push(NodeProperty {
                                         cypher_alias: end_alias.clone(),
                                         column_name: p.column_name.clone(),
@@ -2828,7 +2834,10 @@ pub fn extract_ctes_with_context(
                                 }
                             } else if p.cypher_alias == end_alias {
                                 // Check if this property already exists for start_alias
-                                if !props.iter().any(|sp| sp.cypher_alias == start_alias && sp.alias == p.alias) {
+                                if !props
+                                    .iter()
+                                    .any(|sp| sp.cypher_alias == start_alias && sp.alias == p.alias)
+                                {
                                     mirrored.push(NodeProperty {
                                         cypher_alias: start_alias.clone(),
                                         column_name: p.column_name.clone(),

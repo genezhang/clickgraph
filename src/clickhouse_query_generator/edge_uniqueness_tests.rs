@@ -13,12 +13,11 @@ mod edge_uniqueness_tests {
 
     #[test]
     fn test_default_edge_id_tuple() {
-        // Test that when edge_id is None, we use tuple(from_id, to_id)
-        // Edge uniqueness (path_edges) is always enforced regardless of path_variable
+        // Test that cycle detection uses path_nodes (node-uniqueness)
         let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 2);
         let generator = VariableLengthCteGenerator::new(
-            &schema, // Add schema as first parameter
+            &schema,
             spec,
             "users",
             "user_id",
@@ -33,9 +32,9 @@ mod edge_uniqueness_tests {
             None,
             None,
             None,
-            None, // No path_variable — edge uniqueness still enforced
             None,
-            None, // No edge_id - should default to tuple(from_id, to_id)
+            None,
+            None,
         );
 
         let cte = generator.generate_cte();
@@ -47,31 +46,24 @@ mod edge_uniqueness_tests {
             ),
         };
 
-        // Check for path_edges (for edge uniqueness)
-        assert!(
-            sql.contains("path_edges"),
-            "SQL should use path_edges for edge uniqueness. SQL:\n{}",
-            sql
-        );
-        // path_nodes is now included for UNWIND nodes(p) support
+        // path_nodes is maintained for cycle detection and UNWIND nodes(p) support
         assert!(
             sql.contains("path_nodes"),
-            "SQL should contain path_nodes for UNWIND nodes(p) support. SQL:\n{}",
+            "SQL should contain path_nodes for cycle detection. SQL:\n{}",
             sql
         );
 
-        // Check for tuple construction with from_id/to_id
+        // Cycle detection uses path_nodes (node-uniqueness), not path_edges
         assert!(
-            sql.contains("tuple(rel.follower_id, rel.followed_id)")
-                || sql.contains("tuple(r.follower_id, r.followed_id)"),
-            "SQL should use tuple(from_id, to_id) as default edge ID. SQL:\n{}",
+            sql.contains("NOT has(vp.path_nodes,"),
+            "SQL should check node uniqueness via path_nodes. SQL:\n{}",
             sql
         );
 
-        // Check for edge uniqueness check
+        // path_edges should NOT be present (removed for memory optimization)
         assert!(
-            sql.contains("NOT has(vp.path_edges,") || sql.contains("NOT has(path_edges,"),
-            "SQL should check edge uniqueness in path_edges. SQL:\n{}",
+            !sql.contains("path_edges"),
+            "SQL should NOT contain path_edges (removed for memory optimization). SQL:\n{}",
             sql
         );
 
@@ -80,8 +72,7 @@ mod edge_uniqueness_tests {
 
     #[test]
     fn test_composite_edge_id() {
-        // Test composite edge ID (like OnTime schema)
-        // Edge uniqueness (path_edges) is always enforced regardless of path_variable
+        // Test composite edge ID — cycle detection still uses path_nodes
         let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 2);
         let edge_id = Some(Identifier::Composite(vec![
@@ -92,7 +83,7 @@ mod edge_uniqueness_tests {
         ]));
 
         let generator = VariableLengthCteGenerator::new(
-            &schema, // Add schema parameter
+            &schema,
             spec,
             "airports",
             "airport_code",
@@ -107,7 +98,7 @@ mod edge_uniqueness_tests {
             None,
             None,
             None,
-            None, // No path_variable — edge uniqueness still enforced
+            None,
             None,
             edge_id,
         );
@@ -121,25 +112,17 @@ mod edge_uniqueness_tests {
             ),
         };
 
-        // Check for path_edges
+        // Cycle detection uses path_nodes (node-uniqueness)
         assert!(
-            sql.contains("path_edges"),
-            "SQL should use path_edges. SQL:\n{}",
+            sql.contains("NOT has(vp.path_nodes,"),
+            "SQL should check node uniqueness via path_nodes. SQL:\n{}",
             sql
         );
 
-        // Check for composite tuple construction
+        // path_edges should NOT be present
         assert!(
-            sql.contains("tuple(rel.FlightDate, rel.FlightNum, rel.Origin, rel.Dest)")
-                || sql.contains("tuple(r.FlightDate, r.FlightNum, r.Origin, r.Dest)"),
-            "SQL should use composite tuple for edge ID. SQL:\n{}",
-            sql
-        );
-
-        // Check for edge uniqueness check
-        assert!(
-            sql.contains("NOT has(vp.path_edges,"),
-            "SQL should check edge uniqueness. SQL:\n{}",
+            !sql.contains("path_edges"),
+            "SQL should NOT contain path_edges (removed for memory optimization). SQL:\n{}",
             sql
         );
 
@@ -148,14 +131,13 @@ mod edge_uniqueness_tests {
 
     #[test]
     fn test_simple_edge_id() {
-        // Test single column edge ID
-        // Edge uniqueness (path_edges) is always enforced regardless of path_variable
+        // Test single column edge ID — cycle detection still uses path_nodes
         let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 2);
         let edge_id = Some(Identifier::Single("transaction_id".to_string()));
 
         let generator = VariableLengthCteGenerator::new(
-            &schema, // Add schema parameter
+            &schema,
             spec,
             "accounts",
             "account_id",
@@ -170,7 +152,7 @@ mod edge_uniqueness_tests {
             None,
             None,
             None,
-            None, // No path_variable — edge uniqueness still enforced
+            None,
             None,
             edge_id,
         );
@@ -184,24 +166,17 @@ mod edge_uniqueness_tests {
             ),
         };
 
-        // Check for path_edges
+        // Cycle detection uses path_nodes (node-uniqueness)
         assert!(
-            sql.contains("path_edges"),
-            "SQL should use path_edges. SQL:\n{}",
+            sql.contains("NOT has(vp.path_nodes,"),
+            "SQL should check node uniqueness via path_nodes. SQL:\n{}",
             sql
         );
 
-        // Check for simple column reference (no tuple for single column)
+        // path_edges should NOT be present
         assert!(
-            sql.contains("rel.transaction_id") || sql.contains("r.transaction_id"),
-            "SQL should reference transaction_id column. SQL:\n{}",
-            sql
-        );
-
-        // Check for edge uniqueness check
-        assert!(
-            sql.contains("NOT has(vp.path_edges,"),
-            "SQL should check edge uniqueness. SQL:\n{}",
+            !sql.contains("path_edges"),
+            "SQL should NOT contain path_edges (removed for memory optimization). SQL:\n{}",
             sql
         );
 
