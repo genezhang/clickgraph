@@ -104,7 +104,7 @@ db = clickgraph.Database(
 ```python
 conn = db.connect()
 print(conn.query_to_sql("MATCH (u:User) RETURN u.name"))
-# → SELECT users.full_name AS `u.name` FROM test_db.users
+# → SELECT <table>.<column> AS `u.name` FROM <database>.<table>
 ```
 
 **QueryResult API:**

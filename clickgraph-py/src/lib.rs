@@ -18,23 +18,24 @@ fn to_pyerr(e: EmbeddedError) -> PyErr {
     PyRuntimeError::new_err(e.to_string())
 }
 
-fn rust_value_to_py(py: Python<'_>, v: &RustValue) -> PyObject {
+fn rust_value_to_py(py: Python<'_>, v: &RustValue) -> PyResult<PyObject> {
     match v {
-        RustValue::Null => py.None(),
-        RustValue::Bool(b) => b.into_pyobject(py).unwrap().to_owned().into_any().unbind(),
-        RustValue::Int64(n) => n.into_pyobject(py).unwrap().into_any().unbind(),
-        RustValue::Float64(f) => f.into_pyobject(py).unwrap().into_any().unbind(),
-        RustValue::String(s) => s.into_pyobject(py).unwrap().into_any().unbind(),
+        RustValue::Null => Ok(py.None()),
+        RustValue::Bool(b) => Ok(b.into_pyobject(py)?.to_owned().into_any().unbind()),
+        RustValue::Int64(n) => Ok(n.into_pyobject(py)?.into_any().unbind()),
+        RustValue::Float64(f) => Ok(f.into_pyobject(py)?.into_any().unbind()),
+        RustValue::String(s) => Ok(s.into_pyobject(py)?.into_any().unbind()),
         RustValue::List(items) => {
-            let py_items: Vec<PyObject> = items.iter().map(|v| rust_value_to_py(py, v)).collect();
-            PyList::new(py, &py_items).unwrap().into_any().unbind()
+            let py_items: Result<Vec<PyObject>, PyErr> =
+                items.iter().map(|v| rust_value_to_py(py, v)).collect();
+            Ok(PyList::new(py, &py_items?)?.into_any().unbind())
         }
         RustValue::Map(pairs) => {
             let dict = PyDict::new(py);
             for (k, v) in pairs {
-                dict.set_item(k, rust_value_to_py(py, v)).unwrap();
+                dict.set_item(k, rust_value_to_py(py, v)?)?;
             }
-            dict.into_any().unbind()
+            Ok(dict.into_any().unbind())
         }
     }
 }
@@ -93,8 +94,9 @@ impl PyQueryResult {
         }
         let row = &self.rows[self.position];
         self.position += 1;
-        let py_vals: Vec<PyObject> = row.iter().map(|v| rust_value_to_py(py, v)).collect();
-        Ok(PyList::new(py, &py_vals).unwrap().into_any().unbind())
+        let py_vals: Result<Vec<PyObject>, PyErr> =
+            row.iter().map(|v| rust_value_to_py(py, v)).collect();
+        Ok(PyList::new(py, &py_vals?)?.into_any().unbind())
     }
 
     /// Reset the cursor to the beginning.
@@ -108,15 +110,15 @@ impl PyQueryResult {
         for row in &self.rows {
             let dict = PyDict::new(py);
             for (i, col) in self.column_names.iter().enumerate() {
-                let val = row
-                    .get(i)
-                    .map(|v| rust_value_to_py(py, v))
-                    .unwrap_or_else(|| py.None());
+                let val = match row.get(i) {
+                    Some(v) => rust_value_to_py(py, v)?,
+                    None => py.None(),
+                };
                 dict.set_item(col, val)?;
             }
             result.append(dict)?;
         }
-        Ok(result.into_pyobject(py).unwrap().into_any().unbind())
+        Ok(result.into_pyobject(py)?.into_any().unbind())
     }
 
     /// Get a single row by index as a dict.
@@ -130,13 +132,13 @@ impl PyQueryResult {
         }
         let dict = PyDict::new(py);
         for (i, col) in self.column_names.iter().enumerate() {
-            let val = self.rows[index]
-                .get(i)
-                .map(|v| rust_value_to_py(py, v))
-                .unwrap_or_else(|| py.None());
+            let val = match self.rows[index].get(i) {
+                Some(v) => rust_value_to_py(py, v)?,
+                None => py.None(),
+            };
             dict.set_item(col, val)?;
         }
-        Ok(dict.into_pyobject(py).unwrap().into_any().unbind())
+        Ok(dict.into_pyobject(py)?.into_any().unbind())
     }
 
     fn __iter__(mut slf: PyRefMut<'_, Self>) -> PyRefMut<'_, Self> {
@@ -144,22 +146,22 @@ impl PyQueryResult {
         slf
     }
 
-    fn __next__(&mut self, py: Python<'_>) -> Option<PyObject> {
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<PyObject>> {
         if self.position >= self.rows.len() {
-            return None;
+            return Ok(None);
         }
         let row = &self.rows[self.position];
         self.position += 1;
 
         let dict = PyDict::new(py);
         for (i, col) in self.column_names.iter().enumerate() {
-            let val = row
-                .get(i)
-                .map(|v| rust_value_to_py(py, v))
-                .unwrap_or_else(|| py.None());
-            dict.set_item(col, val).ok();
+            let val = match row.get(i) {
+                Some(v) => rust_value_to_py(py, v)?,
+                None => py.None(),
+            };
+            dict.set_item(col, val)?;
         }
-        Some(dict.into_pyobject(py).unwrap().into_any().unbind())
+        Ok(Some(dict.into_pyobject(py)?.into_any().unbind()))
     }
 
     fn __len__(&self) -> usize {

@@ -1,17 +1,15 @@
 """Tests for clickgraph Python bindings.
 
-These tests use the benchmark schema and verify that:
-1. Database/Connection/QueryResult classes work correctly
-2. Cypher → SQL translation produces expected output
-3. Error handling is proper
-4. All value types round-trip correctly
+These tests use a minimal inline test schema (defined below) and verify that:
+1. Database/Connection/QueryResult classes can be constructed and used
+2. Cypher → SQL translation produces the expected output in sql_only mode
+3. Error handling for invalid schemas and missing files behaves as expected
 
 Note: These tests exercise the Cypher→SQL pipeline only (sql_only mode).
-Full end-to-end tests with chdb require the embedded feature + chdb binary.
+Full end-to-end tests with chdb, including value-type round-tripping, require
+the embedded feature + chdb binary and are covered by separate tests.
 """
 
-import os
-import tempfile
 import textwrap
 
 import pytest
