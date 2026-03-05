@@ -234,6 +234,53 @@ fn build_cte_property_mappings(plan: &RenderPlan) -> HashMap<String, HashMap<Str
     map
 }
 
+/// Build CTE alias → CTE name mapping for a specific RenderPlan scope.
+/// Scans FROM/JOINs for references to known CTEs. Used per-scope (per CTE body
+/// or main plan) to correctly resolve `IN alias.column` → `IN (SELECT col FROM cte)`.
+fn build_cte_alias_mapping_for_scope(
+    scope: &RenderPlan,
+    cte_names: &HashSet<String>,
+) -> HashMap<String, String> {
+    let mut mapping = HashMap::new();
+
+    // Map CTE names to themselves (for direct references like `with_x.col`)
+    for name in cte_names {
+        mapping.insert(name.clone(), name.clone());
+    }
+
+    // Check FROM clause
+    if let Some(ref from_table) = scope.from.0 {
+        if cte_names.contains(&from_table.name) {
+            let alias = from_table.alias.as_ref().unwrap_or(&from_table.name);
+            mapping.insert(alias.clone(), from_table.name.clone());
+        }
+    }
+    // Check JOINs
+    for join in &scope.joins.0 {
+        if cte_names.contains(&join.table_name) {
+            mapping.insert(join.table_alias.clone(), join.table_name.clone());
+        }
+    }
+    // Check UNION branch FROM/JOINs
+    if let Some(ref union) = scope.union.0 {
+        for branch in &union.input {
+            if let Some(ref from_table) = branch.from.0 {
+                if cte_names.contains(&from_table.name) {
+                    let alias = from_table.alias.as_ref().unwrap_or(&from_table.name);
+                    mapping.insert(alias.clone(), from_table.name.clone());
+                }
+            }
+            for join in &branch.joins.0 {
+                if cte_names.contains(&join.table_name) {
+                    mapping.insert(join.table_alias.clone(), join.table_name.clone());
+                }
+            }
+        }
+    }
+
+    mapping
+}
+
 /// Build multi-type VLP aliases tracking from RenderPlan
 /// Returns mapping of Cypher alias → CTE name for multi-type VLP queries
 fn build_multi_type_vlp_aliases(plan: &RenderPlan) -> HashMap<String, String> {
@@ -2357,8 +2404,21 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
     let cte_mappings = build_cte_property_mappings(&plan);
     let multi_type_aliases = build_multi_type_vlp_aliases(&plan);
 
+    // Collect all CTE names for scope-specific alias resolution in Cte::to_sql()
+    let all_cte_names: HashSet<String> = plan.ctes.0.iter().map(|c| c.cte_name.clone()).collect();
+
+    // Build main plan's CTE alias mapping
+    let main_plan_alias_mapping = build_cte_alias_mapping_for_scope(&plan, &all_cte_names);
+
     // TASK-LOCAL: Set ALL contexts for this async task's rendering context
-    set_all_render_contexts(relationship_columns, cte_mappings, multi_type_aliases);
+    set_all_render_contexts(
+        relationship_columns,
+        cte_mappings,
+        multi_type_aliases,
+        main_plan_alias_mapping,
+    );
+    // Store all CTE names for per-scope mapping in Cte::to_sql()
+    crate::server::query_context::set_all_cte_names(all_cte_names);
 
     // Set the variable registry from the outer render plan for property resolution
     if let Some(ref registry) = plan.variable_registry {
@@ -3011,6 +3071,12 @@ impl ToSql for Cte {
         // Handle both structured and raw SQL content
         let result = match &self.content {
             CteContent::Structured(plan) => {
+                // Set scope-specific CTE alias mapping so `IN alias.col` resolves correctly
+                let cte_names = crate::server::query_context::get_all_cte_names();
+                let scope_mapping = build_cte_alias_mapping_for_scope(plan, &cte_names);
+                let saved_aliases =
+                    crate::server::query_context::set_cte_alias_scope(scope_mapping);
+
                 // For structured content, render only the query body (not nested CTEs)
                 // CTEs should already be hoisted to the top level
                 let mut cte_body = String::new();
@@ -3202,6 +3268,9 @@ impl ToSql for Cte {
                         cte_body.push_str(&format!("LIMIT {skip_str}{limit_val}\n"));
                     }
                 }
+
+                // Restore previous CTE alias scope
+                crate::server::query_context::set_cte_alias_scope(saved_aliases);
 
                 format!("{} AS ({})", self.cte_name, cte_body)
             }
@@ -3964,6 +4033,35 @@ impl RenderExpr {
                     return format!("match({}, {})", &rendered[0], &rendered[1]);
                 }
 
+                // IN/NOT IN with CTE entity column → subquery for set membership.
+                // After CollectUnwindElimination, `x IN collected_list` becomes
+                // `x IN cte.p{N}_{alias}_{property}`. CTE entity columns are scalar,
+                // not arrays. Only matches CTE-format columns (is_cte_column check)
+                // to avoid converting legitimate array column references.
+                if (op.operator == Operator::In || op.operator == Operator::NotIn)
+                    && rendered.len() == 2
+                {
+                    if let RenderExpr::PropertyAccessExp(ref prop) = &op.operands[1] {
+                        let col_name = prop.column.to_sql_column_only();
+                        if crate::utils::cte_column_naming::is_cte_column(&col_name) {
+                            let table_alias = &prop.table_alias.0;
+                            if let Some(cte_name) =
+                                crate::server::query_context::get_cte_name_for_alias(table_alias)
+                            {
+                                let op_word = if op.operator == Operator::In {
+                                    "IN"
+                                } else {
+                                    "NOT IN"
+                                };
+                                return format!(
+                                    "{} {} (SELECT {} FROM {})",
+                                    &rendered[0], op_word, col_name, cte_name
+                                );
+                            }
+                        }
+                    }
+                }
+
                 // Special handling for IN/NOT IN with array columns
                 // Cypher: x IN array_property → ClickHouse: has(array, x)
                 if op.operator == Operator::In
@@ -4356,6 +4454,31 @@ impl RenderExpr {
                     return format!("match({}, {})", &rendered[0], &rendered[1]);
                 }
 
+                // IN/NOT IN with CTE entity column → subquery for set membership.
+                if (op.operator == Operator::In || op.operator == Operator::NotIn)
+                    && rendered.len() == 2
+                {
+                    if let RenderExpr::PropertyAccessExp(ref prop) = &op.operands[1] {
+                        let col_name = prop.column.to_sql_column_only();
+                        if crate::utils::cte_column_naming::is_cte_column(&col_name) {
+                            let table_alias = &prop.table_alias.0;
+                            if let Some(cte_name) =
+                                crate::server::query_context::get_cte_name_for_alias(table_alias)
+                            {
+                                let op_word = if op.operator == Operator::In {
+                                    "IN"
+                                } else {
+                                    "NOT IN"
+                                };
+                                return format!(
+                                    "{} {} (SELECT {} FROM {})",
+                                    &rendered[0], op_word, col_name, cte_name
+                                );
+                            }
+                        }
+                    }
+                }
+
                 // Special handling for IN/NOT IN with array columns
                 if op.operator == Operator::In
                     && rendered.len() == 2
@@ -4566,6 +4689,31 @@ impl ToSql for OperatorApplication {
         // Special handling for RegexMatch - ClickHouse uses match() function
         if self.operator == Operator::RegexMatch && rendered.len() == 2 {
             return format!("match({}, {})", &rendered[0], &rendered[1]);
+        }
+
+        // IN/NOT IN with CTE entity column → subquery for set membership.
+        if (self.operator == Operator::In || self.operator == Operator::NotIn)
+            && rendered.len() == 2
+        {
+            if let RenderExpr::PropertyAccessExp(ref prop) = &self.operands[1] {
+                let col_name = prop.column.to_sql_column_only();
+                if crate::utils::cte_column_naming::is_cte_column(&col_name) {
+                    let table_alias = &prop.table_alias.0;
+                    if let Some(cte_name) =
+                        crate::server::query_context::get_cte_name_for_alias(table_alias)
+                    {
+                        let op_word = if self.operator == Operator::In {
+                            "IN"
+                        } else {
+                            "NOT IN"
+                        };
+                        return format!(
+                            "{} {} (SELECT {} FROM {})",
+                            &rendered[0], op_word, col_name, cte_name
+                        );
+                    }
+                }
+            }
         }
 
         // Special handling for IN/NOT IN with array columns

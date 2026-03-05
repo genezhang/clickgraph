@@ -31,7 +31,7 @@
 //! The `.scope()` wrapper is REQUIRED for task_local to work. Without it, `try_with()` returns None.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 
@@ -81,6 +81,17 @@ pub struct QueryContext {
     /// Set in build_chained_with_match_cte_plan when a weight CTE is detected.
     /// Read by VLP CTE generation to use weighted mode.
     pub weight_cte_config: Option<crate::clickhouse_query_generator::WeightCteConfig>,
+
+    /// CTE alias → CTE name mapping for the CURRENT rendering scope (CTE body or main plan).
+    /// Set per-scope during to_sql() rendering so `IN alias.column` can resolve to
+    /// `IN (SELECT column FROM cte_name)` when the alias refers to a CTE (scalar column).
+    /// Updated before each CTE body render and restored after.
+    pub cte_alias_to_cte_name: HashMap<String, String>,
+
+    /// All known CTE names in the current query plan.
+    /// Set once during render_plan_to_sql() so Cte::to_sql() can build scope-specific
+    /// alias mappings without needing access to the full plan.
+    pub all_cte_names: HashSet<String>,
 }
 
 impl QueryContext {
@@ -439,12 +450,14 @@ pub fn set_all_render_contexts(
     relationship_columns: HashMap<String, (String, String)>,
     cte_mappings: HashMap<String, HashMap<String, String>>,
     multi_type_aliases: HashMap<String, String>,
+    cte_alias_to_cte_name: HashMap<String, String>,
 ) {
     let _ = QUERY_CONTEXT.try_with(|ctx| {
         let mut ctx = ctx.borrow_mut();
         ctx.relationship_columns = relationship_columns;
         ctx.cte_property_mappings = cte_mappings;
         ctx.multi_type_vlp_aliases = multi_type_aliases;
+        ctx.cte_alias_to_cte_name = cte_alias_to_cte_name;
     });
 }
 
@@ -455,8 +468,43 @@ pub fn clear_all_render_contexts() {
         ctx.relationship_columns.clear();
         ctx.cte_property_mappings.clear();
         ctx.multi_type_vlp_aliases.clear();
+        ctx.cte_alias_to_cte_name.clear();
+        ctx.all_cte_names.clear();
         ctx.weight_cte_config = None;
     });
+}
+
+/// Get the set of all known CTE names in the current query
+pub fn get_all_cte_names() -> HashSet<String> {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().all_cte_names.clone())
+        .unwrap_or_default()
+}
+
+/// Set the set of all CTE names for the current query
+pub fn set_all_cte_names(names: HashSet<String>) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().all_cte_names = names;
+    });
+}
+
+/// Look up the CTE name for a given SQL alias (FROM/JOIN alias that references a CTE)
+pub fn get_cte_name_for_alias(alias: &str) -> Option<String> {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().cte_alias_to_cte_name.get(alias).cloned())
+        .ok()
+        .flatten()
+}
+
+/// Set the CTE alias mapping for the current rendering scope.
+/// Returns the previous mapping so it can be restored after rendering.
+pub fn set_cte_alias_scope(mapping: HashMap<String, String>) -> HashMap<String, String> {
+    QUERY_CONTEXT
+        .try_with(|ctx| {
+            let mut ctx = ctx.borrow_mut();
+            std::mem::replace(&mut ctx.cte_alias_to_cte_name, mapping)
+        })
+        .unwrap_or_default()
 }
 
 /// Set weight CTE config for weighted shortest path
