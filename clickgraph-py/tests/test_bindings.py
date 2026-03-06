@@ -319,3 +319,104 @@ class TestNeo4jCompatibility:
             "MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN a.name, b.name"
         )
         assert "follows" in sql.lower()
+
+
+# ---------------------------------------------------------------------------
+# Export API tests
+# ---------------------------------------------------------------------------
+
+
+class TestExport:
+    """Test result export API (Cypher → INSERT INTO FUNCTION file(...) SQL)."""
+
+    def test_export_to_sql_parquet(self, db):
+        """export_to_sql() wraps Cypher→SQL with INSERT INTO FUNCTION file(...)."""
+        conn = db.connect()
+        sql = conn.export_to_sql(
+            "MATCH (u:User) RETURN u.name",
+            "output.parquet",
+        )
+        assert sql.startswith("INSERT INTO FUNCTION file(")
+        assert "'output.parquet'" in sql
+        assert "Parquet" in sql
+
+    def test_export_to_sql_csv(self, db):
+        """CSV auto-detection from .csv extension."""
+        conn = db.connect()
+        sql = conn.export_to_sql(
+            "MATCH (u:User) RETURN u.name",
+            "results.csv",
+        )
+        assert "'results.csv'" in sql
+        assert "CSVWithNames" in sql
+
+    def test_export_to_sql_json(self, db):
+        """JSON auto-detection from .json extension."""
+        conn = db.connect()
+        sql = conn.export_to_sql(
+            "MATCH (u:User) RETURN u.name",
+            "results.json",
+        )
+        assert "'results.json'" in sql
+        assert "JSON" in sql
+
+    def test_export_to_sql_ndjson(self, db):
+        """NDJSON auto-detection from .ndjson extension."""
+        conn = db.connect()
+        sql = conn.export_to_sql(
+            "MATCH (u:User) RETURN u.name",
+            "data.ndjson",
+        )
+        assert "'data.ndjson'" in sql
+        assert "JSONEachRow" in sql
+
+    def test_export_to_sql_explicit_format(self, db):
+        """Explicit format overrides extension."""
+        conn = db.connect()
+        sql = conn.export_to_sql(
+            "MATCH (u:User) RETURN u.name",
+            "data.out",
+            format="parquet",
+        )
+        assert "'data.out'" in sql
+        assert "Parquet" in sql
+
+    def test_export_to_sql_compression(self, db):
+        """Compression option appends SETTINGS clause."""
+        conn = db.connect()
+        sql = conn.export_to_sql(
+            "MATCH (u:User) RETURN u.name",
+            "output.parquet",
+            compression="zstd",
+        )
+        assert "output_format_parquet_compression_method" in sql
+        assert "zstd" in sql
+
+    def test_export_unknown_format_raises(self, db):
+        """Unknown extension without explicit format raises error."""
+        conn = db.connect()
+        with pytest.raises(RuntimeError, match="Cannot determine"):
+            conn.export_to_sql(
+                "MATCH (u:User) RETURN u.name",
+                "data.xyz",
+            )
+
+    def test_export_invalid_format_string(self, db):
+        """Invalid format string raises error."""
+        conn = db.connect()
+        with pytest.raises(RuntimeError, match="Unknown export format"):
+            conn.export_to_sql(
+                "MATCH (u:User) RETURN u.name",
+                "data.out",
+                format="xlsx",
+            )
+
+    def test_export_invalid_compression_codec(self, db):
+        """Invalid compression codec raises error."""
+        conn = db.connect()
+        with pytest.raises(RuntimeError, match="Unsupported Parquet compression"):
+            conn.export_to_sql(
+                "MATCH (u:User) RETURN u.name",
+                "output.parquet",
+                compression="lzma",
+            )

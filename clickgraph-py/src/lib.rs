@@ -8,6 +8,9 @@ use pyo3::types::{PyDict, PyList};
 
 use clickgraph_embedded::database::{Database as RustDatabase, SystemConfig as RustSystemConfig};
 use clickgraph_embedded::error::EmbeddedError;
+use clickgraph_embedded::export::{
+    ExportFormat as RustExportFormat, ExportOptions as RustExportOptions,
+};
 use clickgraph_embedded::value::Value as RustValue;
 
 // ---------------------------------------------------------------------------
@@ -16,6 +19,23 @@ use clickgraph_embedded::value::Value as RustValue;
 
 fn to_pyerr(e: EmbeddedError) -> PyErr {
     PyRuntimeError::new_err(e.to_string())
+}
+
+fn parse_export_format(name: &str) -> PyResult<RustExportFormat> {
+    match name.to_lowercase().as_str() {
+        "parquet" | "pq" => Ok(RustExportFormat::Parquet),
+        "csv" => Ok(RustExportFormat::CSVWithNames),
+        "csvwithnames" => Ok(RustExportFormat::CSVWithNames),
+        "csvnoheader" => Ok(RustExportFormat::CSV),
+        "tsv" | "tabseparated" => Ok(RustExportFormat::TSVWithNames),
+        "tsvwithnames" => Ok(RustExportFormat::TSVWithNames),
+        "json" => Ok(RustExportFormat::JSON),
+        "jsoneachrow" | "ndjson" | "jsonl" => Ok(RustExportFormat::JSONEachRow),
+        other => Err(PyRuntimeError::new_err(format!(
+            "Unknown export format '{}'. Supported: parquet, csv, tsv, json, ndjson",
+            other
+        ))),
+    }
 }
 
 fn rust_value_to_py(py: Python<'_>, v: &RustValue) -> PyResult<PyObject> {
@@ -257,6 +277,53 @@ impl PyConnection {
     fn query_to_sql(&self, cypher: &str) -> PyResult<String> {
         let conn = clickgraph_embedded::Connection::new(&self.db).map_err(to_pyerr)?;
         conn.query_to_sql(cypher).map_err(to_pyerr)
+    }
+
+    /// Export query results to a file (Parquet, CSV, TSV, JSON, NDJSON).
+    ///
+    /// The format is auto-detected from the file extension, or can be
+    /// specified explicitly. Results are streamed directly to disk by chdb —
+    /// no in-memory buffering of the full result set.
+    ///
+    /// >>> conn.export("MATCH (u:User) RETURN u.name", "users.parquet")
+    /// >>> conn.export("MATCH (u:User) RETURN u.name", "users.csv")
+    /// >>> conn.export("MATCH (u:User) RETURN u.name", "data.out", format="parquet")
+    #[pyo3(signature = (cypher, output_path, *, format=None, compression=None))]
+    fn export(
+        &self,
+        cypher: &str,
+        output_path: &str,
+        format: Option<&str>,
+        compression: Option<String>,
+    ) -> PyResult<()> {
+        let opts = RustExportOptions {
+            format: format.map(parse_export_format).transpose()?,
+            compression,
+        };
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(to_pyerr)?;
+        conn.export(cypher, output_path, opts).map_err(to_pyerr)
+    }
+
+    /// Generate export SQL without executing (for debugging).
+    ///
+    /// >>> sql = conn.export_to_sql("MATCH (u:User) RETURN u.name", "users.parquet")
+    /// >>> print(sql)
+    /// INSERT INTO FUNCTION file('users.parquet', 'Parquet') SELECT ...
+    #[pyo3(signature = (cypher, output_path, *, format=None, compression=None))]
+    fn export_to_sql(
+        &self,
+        cypher: &str,
+        output_path: &str,
+        format: Option<&str>,
+        compression: Option<String>,
+    ) -> PyResult<String> {
+        let opts = RustExportOptions {
+            format: format.map(parse_export_format).transpose()?,
+            compression,
+        };
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(to_pyerr)?;
+        conn.export_to_sql(cypher, output_path, opts)
+            .map_err(to_pyerr)
     }
 
     fn __repr__(&self) -> String {

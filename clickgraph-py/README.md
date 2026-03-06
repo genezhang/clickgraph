@@ -89,6 +89,27 @@ Alias for `query()`.
 
 Translate Cypher to ClickHouse SQL without executing.
 
+### `Connection.export(cypher, output_path, *, format=None, compression=None)`
+
+Export query results directly to a file. The format is auto-detected from the file extension, or can be specified explicitly. Results are streamed to disk by the embedded engine — no in-memory buffering of the full result set.
+
+**Supported formats**: Parquet (`.parquet`, `.pq`), CSV (`.csv`), TSV (`.tsv`), JSON (`.json`), NDJSON (`.ndjson`, `.jsonl`)
+
+**Keyword arguments** (all optional):
+- `format` — explicit format string: `"parquet"`, `"csv"`, `"tsv"`, `"json"`, `"ndjson"`
+- `compression` — Parquet compression: `"snappy"`, `"gzip"`, `"lz4"`, `"zstd"`
+
+```python
+conn.export("MATCH (u:User) RETURN u.name, u.email", "users.parquet")
+conn.export("MATCH (u:User) RETURN u.name", "users.csv")
+conn.export("MATCH (u:User) RETURN u.name", "data.parquet", compression="zstd")
+conn.export("MATCH (u:User) RETURN u.name", "data.out", format="parquet")
+```
+
+### `Connection.export_to_sql(cypher, output_path, *, format=None, compression=None) → str`
+
+Generate the export SQL without executing (for debugging). Returns the `INSERT INTO FUNCTION file(...)` statement.
+
 ### `QueryResult`
 
 **Dict-style access** (ClickGraph/Neo4j pattern):

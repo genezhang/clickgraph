@@ -151,6 +151,32 @@ for row in result:
     print(row["u.name"])           # dict access, same as Neo4j Record
 ```
 
+**Export results to files:**
+
+Write query results directly to Parquet, CSV, TSV, JSON, or NDJSON files. The format is auto-detected from the file extension:
+
+```python
+conn = db.connect()
+
+# Export to Parquet (default, great for downstream pipelines)
+conn.export("MATCH (u:User) RETURN u.name, u.email", "users.parquet")
+
+# Export to CSV
+conn.export("MATCH (u:User) RETURN u.name, u.email", "users.csv")
+
+# Export with Parquet compression
+conn.export("MATCH (u:User) RETURN u.name", "users.parquet", compression="zstd")
+
+# Explicit format when extension doesn't match
+conn.export("MATCH (u:User) RETURN u.name", "output.dat", format="parquet")
+
+# Debug: see the generated SQL without executing
+print(conn.export_to_sql("MATCH (u:User) RETURN u.name", "users.parquet"))
+# → INSERT INTO FUNCTION file('users.parquet', 'Parquet') SELECT ...
+```
+
+Supported file extensions: `.parquet` / `.pq`, `.csv`, `.tsv`, `.json`, `.ndjson` / `.jsonl`
+
 ---
 
 ## Schema Configuration
@@ -304,6 +330,19 @@ let result = conn.query("MATCH (u:User) RETURN u.name LIMIT 5")?;
 // Inspect generated SQL (useful for debugging)
 let sql = conn.query_to_sql("MATCH (u:User) RETURN u.name")?;
 println!("{}", sql);
+
+// Export results to a file (Parquet, CSV, TSV, JSON, NDJSON)
+conn.export("MATCH (u:User) RETURN u.name, u.email", "users.parquet", ExportOptions::default())?;
+
+// Export with compression
+conn.export("MATCH (u:User) RETURN u.name", "users.parquet", ExportOptions {
+    compression: Some("zstd".to_string()),
+    ..Default::default()
+})?;
+
+// Debug: inspect the export SQL without executing
+let sql = conn.export_to_sql("MATCH (u:User) RETURN u.name", "users.parquet", ExportOptions::default())?;
+// → INSERT INTO FUNCTION file('users.parquet', 'Parquet') SELECT ...
 ```
 
 ### `QueryResult` and `Row`
@@ -471,6 +510,7 @@ let db = Database::new("schema.yaml", SystemConfig {
 | Data source | ClickHouse tables | Parquet, Iceberg, Delta, CSV, S3 |
 | External server required | ✅ ClickHouse | ❌ None |
 | Write operations | ❌ Read-only | ❌ Read-only |
+| **Export to file** | ❌ | ✅ Parquet, CSV, TSV, JSON, NDJSON |
 | HTTP + Bolt endpoints | ✅ | ✅ (`--embedded` flag) |
 | Rust library API | ❌ | ✅ (`clickgraph-embedded`) |
 | Performance at scale | ✅ Full ClickHouse cluster | ✅ Single-node chdb |

@@ -10,6 +10,7 @@ use clickgraph::graph_catalog::graph_schema::GraphSchema;
 
 use super::database::Database;
 use super::error::EmbeddedError;
+use super::export::{build_export_sql, ExportOptions};
 use super::query_result::QueryResult;
 use super::value::Value;
 
@@ -83,6 +84,81 @@ impl<'db> Connection<'db> {
             })
             .await
         })
+    }
+
+    /// Export Cypher query results to a file.
+    ///
+    /// Translates the Cypher query to SQL, wraps it in
+    /// `INSERT INTO FUNCTION file(...)`, and executes via chdb.
+    /// The file is written directly by chdb — results are streamed to disk
+    /// without buffering the full result set in memory.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use clickgraph_embedded::{Database, Connection, SystemConfig, ExportOptions};
+    /// # let db = Database::new("schema.yaml", SystemConfig::default()).unwrap();
+    /// # let conn = Connection::new(&db).unwrap();
+    /// // Auto-detect format from extension
+    /// conn.export("MATCH (u:User) RETURN u.name", "users.parquet", ExportOptions::default()).unwrap();
+    ///
+    /// // CSV with explicit options
+    /// conn.export("MATCH (u:User) RETURN u.name", "users.csv", ExportOptions::default()).unwrap();
+    /// ```
+    pub fn export(
+        &self,
+        cypher: &str,
+        output_path: &str,
+        options: ExportOptions,
+    ) -> Result<(), EmbeddedError> {
+        self.db
+            .runtime
+            .block_on(self.export_async(cypher, output_path, options))
+    }
+
+    /// Generate the export SQL without executing it (for debugging).
+    pub fn export_to_sql(
+        &self,
+        cypher: &str,
+        output_path: &str,
+        options: ExportOptions,
+    ) -> Result<String, EmbeddedError> {
+        let select_sql = self.query_to_sql(cypher)?;
+        build_export_sql(&select_sql, output_path, &options).map_err(EmbeddedError::Query)
+    }
+
+    async fn export_async(
+        &self,
+        cypher: &str,
+        output_path: &str,
+        options: ExportOptions,
+    ) -> Result<(), EmbeddedError> {
+        use clickgraph::clickhouse_query_generator::cypher_to_sql;
+        use clickgraph::server::query_context::{
+            set_current_schema, with_query_context, QueryContext,
+        };
+
+        let schema = Arc::clone(&self.schema);
+        let executor = Arc::clone(&self.executor);
+        let cypher = cypher.to_string();
+        let output_path = output_path.to_string();
+
+        with_query_context(QueryContext::new(None), async move {
+            set_current_schema(Arc::clone(&schema));
+
+            let select_sql = cypher_to_sql(&cypher, &schema, 100).map_err(EmbeddedError::Query)?;
+            let export_sql = build_export_sql(&select_sql, &output_path, &options)
+                .map_err(EmbeddedError::Query)?;
+
+            // Execute the INSERT INTO FUNCTION file(...) — no result rows expected
+            executor
+                .execute_text(&export_sql, "TabSeparated", None)
+                .await
+                .map_err(EmbeddedError::from)?;
+
+            Ok(())
+        })
+        .await
     }
 
     async fn query_async(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
@@ -235,5 +311,79 @@ graph_schema:
         let conn = Connection::new(&db).unwrap();
         let result = conn.query_to_sql("NOT VALID CYPHER @@@@");
         assert!(result.is_err(), "invalid Cypher should return error");
+    }
+
+    #[test]
+    fn test_export_to_sql_parquet() {
+        use crate::export::ExportOptions;
+        let db = make_stub_db();
+        let conn = Connection::new(&db).unwrap();
+        let sql = conn
+            .export_to_sql(
+                "MATCH (u:User) RETURN u.name",
+                "output.parquet",
+                ExportOptions::default(),
+            )
+            .expect("should generate export SQL");
+        assert!(
+            sql.starts_with("INSERT INTO FUNCTION file('output.parquet', 'Parquet')"),
+            "should wrap in INSERT INTO FUNCTION file: {}",
+            sql
+        );
+        assert!(sql.contains("full_name"), "property mapping should apply");
+    }
+
+    #[test]
+    fn test_export_to_sql_csv() {
+        use crate::export::ExportOptions;
+        let db = make_stub_db();
+        let conn = Connection::new(&db).unwrap();
+        let sql = conn
+            .export_to_sql(
+                "MATCH (u:User) RETURN u.name",
+                "results.csv",
+                ExportOptions::default(),
+            )
+            .expect("should generate export SQL");
+        assert!(
+            sql.contains("CSVWithNames"),
+            "CSV should include header: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn test_export_to_sql_explicit_format() {
+        use crate::export::{ExportFormat, ExportOptions};
+        let db = make_stub_db();
+        let conn = Connection::new(&db).unwrap();
+        let opts = ExportOptions {
+            format: Some(ExportFormat::JSONEachRow),
+            ..Default::default()
+        };
+        let sql = conn
+            .export_to_sql("MATCH (u:User) RETURN u.name", "data.txt", opts)
+            .expect("should generate export SQL");
+        assert!(
+            sql.contains("JSONEachRow"),
+            "explicit format should apply: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn test_export_to_sql_unknown_extension() {
+        use crate::export::ExportOptions;
+        let db = make_stub_db();
+        let conn = Connection::new(&db).unwrap();
+        let result = conn.export_to_sql(
+            "MATCH (u:User) RETURN u.name",
+            "output.xyz",
+            ExportOptions::default(),
+        );
+        assert!(
+            result.is_err(),
+            "unknown extension without format should error"
+        );
     }
 }

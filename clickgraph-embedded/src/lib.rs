@@ -38,11 +38,13 @@
 pub mod connection;
 pub mod database;
 pub mod error;
+pub mod export;
 pub mod query_result;
 pub mod value;
 
 pub use connection::Connection;
 pub use database::{Database, StorageCredentials, SystemConfig};
 pub use error::EmbeddedError;
+pub use export::{ExportFormat, ExportOptions};
 pub use query_result::{QueryResult, Row};
 pub use value::Value;
