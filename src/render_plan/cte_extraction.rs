@@ -3651,10 +3651,13 @@ pub fn extract_ctes_with_context(
                         None
                     };
 
-                    // Check if query uses relationships(path) — if not, skip
-                    // path_relationships array growth to save memory
+                    // Check if query needs path_relationships array. This is needed when:
+                    // - relationships(path) is called explicitly, OR
+                    // - the path variable is returned bare (RETURN p) for Bolt Path encoding
                     let needs_path_rels = if let Some(ref pv) = graph_rel.path_variable {
-                        plan_uses_relationships_fn(plan, pv)
+                        let check = context.root_plan.as_deref().unwrap_or(plan);
+                        plan_uses_relationships_fn(check, pv)
+                            || plan_uses_bare_path_variable(check, pv)
                     } else {
                         false
                     };

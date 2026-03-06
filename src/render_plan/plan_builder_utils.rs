@@ -15558,21 +15558,35 @@ fn generate_list_comp_array_count(
     let select_cols = vec![list_element_col.clone()];
 
     if !corr_outer_cols.is_empty() {
+        // Derive the FROM alias from the CTE name for validation.
+        // outer_col is like "from_alias.p6_person_id" — we must verify the alias
+        // prefix matches the FROM source to avoid binding the column to the wrong CTE.
+        let from_alias_prefix = from_cte_name
+            .as_deref()
+            .map(|n| extract_from_alias_from_cte_name(n).to_string());
+
         for (edge_col, outer_col) in corr_edge_cols.iter().zip(corr_outer_cols.iter()) {
-            // outer_col is like "alias.p6_person_id" — extract column name and
-            // resolve the CTE name from the FROM alias.
             if let Some(dot_pos) = outer_col.find('.') {
+                let alias_prefix = &outer_col[..dot_pos];
                 let col_name = &outer_col[dot_pos + 1..];
-                // Use from_cte_name if available, otherwise fall back to tuple approach
-                if let Some(ref cte_name) = from_cte_name {
+
+                // Only apply optimized path when the alias matches the FROM source
+                let alias_matches_from = from_alias_prefix
+                    .as_ref()
+                    .is_some_and(|from_alias| alias_prefix == from_alias.as_str());
+
+                if alias_matches_from {
+                    let cte_name = from_cte_name.as_ref().unwrap();
                     where_conditions.push(format!(
                         "{} IN (SELECT DISTINCT {} FROM {})",
                         edge_col, col_name, cte_name
                     ));
                 } else {
-                    // Can't resolve CTE name — fall back to tuple approach
+                    // Alias doesn't match FROM source — fall back to tuple approach
+                    // to avoid binding the column to the wrong CTE
                     log::warn!(
-                        "⚠️ No from_cte_name for arrayCount optimization, using tuple fallback"
+                        "arrayCount optimization skipped: outer column '{}' alias '{}' doesn't match FROM alias {:?}",
+                        outer_col, alias_prefix, from_alias_prefix
                     );
                     return generate_list_comp_array_count_tuple_fallback(
                         &list_element_col,

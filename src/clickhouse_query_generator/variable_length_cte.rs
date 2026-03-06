@@ -795,8 +795,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// Whether this VLP query needs full path return data (path_relationships).
     ///
     /// Cycle detection uses node-uniqueness via `path_nodes` arrays (NOT has(vp.path_nodes, end_id)).
-    /// This is more memory-efficient than the previous edge-uniqueness approach (path_edges arrays)
-    /// and equivalent for simple graphs. `path_relationships` is only needed when the query binds a
+    /// This is more memory-efficient than edge-uniqueness (no separate path_edges arrays) and
+    /// equivalent for simple graphs (at most one edge per type between any node pair).
+    /// `path_relationships` is only needed when the query binds a
     /// path variable (`MATCH p = ...`, `shortestPath(...)`) for `relationships(p)` or
     /// Bolt Path protocol.
     fn needs_path_data(&self) -> bool {
@@ -1045,13 +1046,24 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
     // Note: extract_simple_equality_filter was removed as dead code (never called)
 
-    /// Extract an ID value from a filter string like "start_node.PersonId = CAST(14, 'UInt64')"
-    /// or "start_node.PersonId = {person1Id}". Returns the RHS value expression.
+    /// Extract an ID value from a simple equality filter like
+    /// `"start_node.PersonId = CAST(14, 'UInt64')"` or `"start_node.PersonId = {person1Id}"`.
+    /// Returns the RHS value expression.
+    ///
+    /// Rejects filters containing OR or multiple equality predicates beyond simple
+    /// `alias.col = VALUE [AND ...]` form to avoid enabling BFS mode with compound
+    /// expressions that would produce invalid SQL.
     pub fn extract_id_from_filter(
         filter: &str,
         node_alias: &str,
         id_column: &str,
     ) -> Option<String> {
+        // Reject filters with OR (case-insensitive) — these are compound predicates
+        // that cannot be safely reduced to a single ID value.
+        if filter.contains(" OR ") || filter.contains(" or ") {
+            return None;
+        }
+
         // Try patterns: "alias.col = VALUE" or "alias.`col` = VALUE"
         let patterns = [
             format!("{}.{} = ", node_alias, id_column),
@@ -1073,9 +1085,16 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 };
                 // Strip trailing parentheses that might be from wrapping
                 let value = value.trim_end_matches(')');
-                if !value.is_empty() {
-                    return Some(value.to_string());
+                // Reject if the extracted value contains operators (compound expression)
+                if value.is_empty()
+                    || value.contains(" OR ")
+                    || value.contains(" or ")
+                    || value.contains(" != ")
+                    || value.contains(" <> ")
+                {
+                    return None;
                 }
+                return Some(value.to_string());
             }
         }
         None
@@ -2372,8 +2391,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let select_clause = select_items.join(",\n        ");
 
-        // Node-uniqueness cycle prevention (more memory-efficient than edge-uniqueness;
-        // uses the already-maintained path_nodes array instead of a separate path_edges array)
+        // Cycle prevention via node-uniqueness (NOT has(path_nodes, end_id)).
+        // This is stronger than Cypher's relationship-uniqueness semantics: it prevents
+        // revisiting a node even via a different relationship. This is equivalent for
+        // simple graphs (at most one edge of a given type between any node pair, which
+        // covers LDBC KNOWS, REPLY_OF, HAS_CREATOR, etc.) and for shortestPath queries
+        // (where revisiting a node can never produce a shorter path). For multigraphs
+        // with parallel edges of the same type, this could prune valid paths.
         let end_id_for_cycle = self.build_end_node_id_expr();
 
         let mut where_conditions = vec![

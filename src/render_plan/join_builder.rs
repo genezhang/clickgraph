@@ -3369,11 +3369,18 @@ impl JoinBuilder for LogicalPlan {
             _ => vec![],
         };
 
-        // Deduplicate joins by table_alias — nested pattern handling + standard
-        // path can produce overlapping joins for shared nodes/edges in multi-hop chains.
-        // Keep first occurrence (correct join conditions from the phase that built it first).
-        let mut seen_aliases = std::collections::HashSet::new();
-        joins.retain(|j| seen_aliases.insert(j.table_alias.clone()));
+        // Deduplicate joins by (table_alias, table_name) — nested pattern handling
+        // + standard path can produce overlapping joins for shared nodes/edges in
+        // multi-hop chains (e.g., both phases emit a join for the same relationship
+        // table with the same alias but potentially different ON conditions).
+        // We keep the first occurrence and drop later duplicates for the same
+        // (alias, table) pair. The first occurrence has correct join conditions
+        // from the phase that resolved the edge's connectivity first.
+        {
+            let mut seen: std::collections::HashSet<(String, String)> =
+                std::collections::HashSet::new();
+            joins.retain(|j| seen.insert((j.table_alias.clone(), j.table_name.clone())));
+        }
 
         Ok(joins)
     }

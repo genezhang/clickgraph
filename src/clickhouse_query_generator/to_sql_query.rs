@@ -136,6 +136,43 @@ fn is_known_scalar(expr: &RenderExpr) -> bool {
     )
 }
 
+/// Rewrite `x IN cte.p{N}_col` / `x NOT IN cte.p{N}_col` to a subquery form:
+/// `x IN (SELECT col FROM cte_name)`. Returns `Some(sql)` if rewritten.
+///
+/// After CollectUnwindElimination, `x IN collected_list` becomes
+/// `x IN cte.p{N}_{alias}_{property}`. CTE entity columns are scalar, not arrays,
+/// so we must expand to a subquery. Only matches CTE-format columns (is_cte_column)
+/// to avoid converting legitimate array column references.
+fn try_rewrite_in_cte_subquery(
+    operator: &Operator,
+    lhs_sql: &str,
+    rhs_expr: &RenderExpr,
+) -> Option<String> {
+    if !matches!(operator, Operator::In | Operator::NotIn) {
+        return None;
+    }
+    if let RenderExpr::PropertyAccessExp(ref prop) = rhs_expr {
+        let col_name = prop.column.to_sql_column_only();
+        if crate::utils::cte_column_naming::is_cte_column(&col_name) {
+            let table_alias = &prop.table_alias.0;
+            if let Some(cte_name) =
+                crate::server::query_context::get_cte_name_for_alias(table_alias)
+            {
+                let op_word = if *operator == Operator::In {
+                    "IN"
+                } else {
+                    "NOT IN"
+                };
+                return Some(format!(
+                    "{} {} (SELECT {} FROM {})",
+                    lhs_sql, op_word, col_name, cte_name
+                ));
+            }
+        }
+    }
+    None
+}
+
 /// Build the relationship columns mapping from a RenderPlan (for collecting data)
 /// Returns the mapping of alias → (from_id_column, to_id_column)
 fn build_relationship_columns_from_plan(plan: &RenderPlan) -> HashMap<String, (String, String)> {
@@ -3477,9 +3514,9 @@ impl RenderExpr {
                 if raw_value.contains('.') {
                     raw_value.to_string() // Already has table prefix
                 } else {
-                    // 🔧 CRITICAL FIX (Jan 23, 2026): Detect VLP CTE columns by prefix or name
+                    // Detect VLP CTE columns by prefix or name.
                     // VLP CTE columns are named: start_id, end_id, start_city, end_name, etc.
-                    // Plus internal path metadata: hop_count, path_edges, path_relationships, path_nodes
+                    // Plus internal path metadata: hop_count, path_relationships, path_nodes
                     // These should NOT be qualified with a table alias because they come from
                     // the VLP CTE and the rendering pipeline handles FROM alias separately
                     if raw_value.starts_with("start_")
@@ -4034,31 +4071,11 @@ impl RenderExpr {
                 }
 
                 // IN/NOT IN with CTE entity column → subquery for set membership.
-                // After CollectUnwindElimination, `x IN collected_list` becomes
-                // `x IN cte.p{N}_{alias}_{property}`. CTE entity columns are scalar,
-                // not arrays. Only matches CTE-format columns (is_cte_column check)
-                // to avoid converting legitimate array column references.
-                if (op.operator == Operator::In || op.operator == Operator::NotIn)
-                    && rendered.len() == 2
-                {
-                    if let RenderExpr::PropertyAccessExp(ref prop) = &op.operands[1] {
-                        let col_name = prop.column.to_sql_column_only();
-                        if crate::utils::cte_column_naming::is_cte_column(&col_name) {
-                            let table_alias = &prop.table_alias.0;
-                            if let Some(cte_name) =
-                                crate::server::query_context::get_cte_name_for_alias(table_alias)
-                            {
-                                let op_word = if op.operator == Operator::In {
-                                    "IN"
-                                } else {
-                                    "NOT IN"
-                                };
-                                return format!(
-                                    "{} {} (SELECT {} FROM {})",
-                                    &rendered[0], op_word, col_name, cte_name
-                                );
-                            }
-                        }
+                if rendered.len() == 2 {
+                    if let Some(sql) =
+                        try_rewrite_in_cte_subquery(&op.operator, &rendered[0], &op.operands[1])
+                    {
+                        return sql;
                     }
                 }
 
@@ -4455,27 +4472,11 @@ impl RenderExpr {
                 }
 
                 // IN/NOT IN with CTE entity column → subquery for set membership.
-                if (op.operator == Operator::In || op.operator == Operator::NotIn)
-                    && rendered.len() == 2
-                {
-                    if let RenderExpr::PropertyAccessExp(ref prop) = &op.operands[1] {
-                        let col_name = prop.column.to_sql_column_only();
-                        if crate::utils::cte_column_naming::is_cte_column(&col_name) {
-                            let table_alias = &prop.table_alias.0;
-                            if let Some(cte_name) =
-                                crate::server::query_context::get_cte_name_for_alias(table_alias)
-                            {
-                                let op_word = if op.operator == Operator::In {
-                                    "IN"
-                                } else {
-                                    "NOT IN"
-                                };
-                                return format!(
-                                    "{} {} (SELECT {} FROM {})",
-                                    &rendered[0], op_word, col_name, cte_name
-                                );
-                            }
-                        }
+                if rendered.len() == 2 {
+                    if let Some(sql) =
+                        try_rewrite_in_cte_subquery(&op.operator, &rendered[0], &op.operands[1])
+                    {
+                        return sql;
                     }
                 }
 
@@ -4692,27 +4693,11 @@ impl ToSql for OperatorApplication {
         }
 
         // IN/NOT IN with CTE entity column → subquery for set membership.
-        if (self.operator == Operator::In || self.operator == Operator::NotIn)
-            && rendered.len() == 2
-        {
-            if let RenderExpr::PropertyAccessExp(ref prop) = &self.operands[1] {
-                let col_name = prop.column.to_sql_column_only();
-                if crate::utils::cte_column_naming::is_cte_column(&col_name) {
-                    let table_alias = &prop.table_alias.0;
-                    if let Some(cte_name) =
-                        crate::server::query_context::get_cte_name_for_alias(table_alias)
-                    {
-                        let op_word = if self.operator == Operator::In {
-                            "IN"
-                        } else {
-                            "NOT IN"
-                        };
-                        return format!(
-                            "{} {} (SELECT {} FROM {})",
-                            &rendered[0], op_word, col_name, cte_name
-                        );
-                    }
-                }
+        if rendered.len() == 2 {
+            if let Some(sql) =
+                try_rewrite_in_cte_subquery(&self.operator, &rendered[0], &self.operands[1])
+            {
+                return sql;
             }
         }
 
