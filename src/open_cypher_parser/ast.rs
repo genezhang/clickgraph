@@ -20,6 +20,9 @@ pub enum CypherStatement<'a> {
     },
     /// Standalone procedure call (e.g., CALL db.labels())
     ProcedureCall(StandaloneProcedureCall<'a>),
+    /// COPY TO statement for exporting query results
+    /// Syntax: COPY (<cypher>) TO '<destination>' [FORMAT <fmt>] [(options)]
+    CopyTo(CopyToStatement<'a>),
 }
 
 /// A UNION clause combining queries
@@ -39,6 +42,22 @@ pub struct StandaloneProcedureCall<'a> {
     pub arguments: Vec<Expression<'a>>,
     /// Optional YIELD clause to select specific return fields
     pub yield_items: Option<Vec<&'a str>>,
+}
+
+/// COPY TO statement for exporting query results to files/cloud storage.
+/// Compatible with Kuzu/DuckDB syntax.
+///
+/// Syntax: `COPY (<cypher-query>) TO '<destination>' [FORMAT <fmt>] [(options)]`
+#[derive(Debug, PartialEq, Clone)]
+pub struct CopyToStatement<'a> {
+    /// The inner Cypher query to execute
+    pub query: &'a str,
+    /// Destination URI (local path, s3://, gs://, etc.)
+    pub destination: &'a str,
+    /// Optional format specifier (CSV, PARQUET, JSON)
+    pub format: Option<&'a str>,
+    /// Optional key-value options (e.g., HEADER TRUE, DELIMITER ',')
+    pub options: Vec<(&'a str, Expression<'a>)>,
 }
 
 /// Enum representing a reading clause - either MATCH or OPTIONAL MATCH

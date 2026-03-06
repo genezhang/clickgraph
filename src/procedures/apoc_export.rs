@@ -52,6 +52,41 @@ pub fn is_export_procedure(name: &str) -> bool {
 }
 
 // ───────────────────────────────────────────────────────────────────────
+// COPY TO format helpers
+// ───────────────────────────────────────────────────────────────────────
+
+/// Map a COPY TO `FORMAT` keyword to a ClickHouse format name.
+///
+/// Accepts case-insensitive: CSV, PARQUET, JSON.
+pub fn format_from_copy_format(fmt: &str) -> Result<&'static str, String> {
+    match fmt.to_uppercase().as_str() {
+        "CSV" => Ok("CSVWithNames"),
+        "PARQUET" => Ok("Parquet"),
+        "JSON" => Ok("JSONEachRow"),
+        _ => Err(format!(
+            "Unsupported COPY TO format: '{}'. Supported: CSV, PARQUET, JSON",
+            fmt
+        )),
+    }
+}
+
+/// Auto-detect ClickHouse format from file extension.
+pub fn format_from_extension(path: &str) -> Option<&'static str> {
+    let lower = path.to_lowercase();
+    if lower.ends_with(".parquet") || lower.ends_with(".pq") {
+        Some("Parquet")
+    } else if lower.ends_with(".csv") {
+        Some("CSVWithNames")
+    } else if lower.ends_with(".tsv") {
+        Some("TSVWithNames")
+    } else if lower.ends_with(".json") || lower.ends_with(".ndjson") || lower.ends_with(".jsonl") {
+        Some("JSONEachRow")
+    } else {
+        None
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────
 // Destination resolver
 // ───────────────────────────────────────────────────────────────────────
 
@@ -140,6 +175,21 @@ pub fn resolve_destination(uri: &str, format: &str) -> Result<String, String> {
 pub struct ExportConfig {
     /// Parquet compression codec (snappy, gzip, lz4, zstd, brotli).
     pub compression: Option<String>,
+}
+
+impl ExportConfig {
+    /// Build config from COPY TO options like `(COMPRESSION 'zstd')`.
+    pub fn from_copy_options(options: &[(&str, Expression<'_>)]) -> Self {
+        let mut config = ExportConfig::default();
+        for (key, value) in options {
+            if key.eq_ignore_ascii_case("COMPRESSION") {
+                if let Expression::Literal(Literal::String(s)) = value {
+                    config.compression = Some(s.to_string());
+                }
+            }
+        }
+        config
+    }
 }
 
 /// Valid Parquet compression codecs.

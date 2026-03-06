@@ -88,6 +88,7 @@ pub fn is_procedure_union_query(stmt: &CypherStatement<'_>) -> bool {
         std::mem::discriminant(stmt)
     );
     match stmt {
+        CypherStatement::CopyTo(_) => false,
         CypherStatement::Query {
             query,
             union_clauses,
@@ -318,6 +319,9 @@ pub fn is_procedure_only_statement(stmt: &CypherStatement<'_>) -> bool {
     match stmt {
         // Standalone procedure calls are always procedure-only
         CypherStatement::ProcedureCall(_) => true,
+
+        // COPY TO is not a procedure call
+        CypherStatement::CopyTo(_) => false,
 
         // Query statements need deeper inspection
         CypherStatement::Query {
