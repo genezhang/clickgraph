@@ -52,6 +52,42 @@ pub fn is_export_procedure(name: &str) -> bool {
 }
 
 // ───────────────────────────────────────────────────────────────────────
+// COPY TO format helpers
+// ───────────────────────────────────────────────────────────────────────
+
+/// Map a COPY TO `FORMAT` keyword to a ClickHouse format name.
+///
+/// Accepts case-insensitive: CSV, TSV, PARQUET, JSON.
+pub fn format_from_copy_format(fmt: &str) -> Result<&'static str, String> {
+    match fmt.to_uppercase().as_str() {
+        "CSV" => Ok("CSVWithNames"),
+        "TSV" => Ok("TSVWithNames"),
+        "PARQUET" => Ok("Parquet"),
+        "JSON" => Ok("JSONEachRow"),
+        _ => Err(format!(
+            "Unsupported COPY TO format: '{}'. Supported: CSV, TSV, PARQUET, JSON",
+            fmt
+        )),
+    }
+}
+
+/// Auto-detect ClickHouse format from file extension.
+pub fn format_from_extension(path: &str) -> Option<&'static str> {
+    let lower = path.to_lowercase();
+    if lower.ends_with(".parquet") || lower.ends_with(".pq") {
+        Some("Parquet")
+    } else if lower.ends_with(".csv") {
+        Some("CSVWithNames")
+    } else if lower.ends_with(".tsv") {
+        Some("TSVWithNames")
+    } else if lower.ends_with(".json") || lower.ends_with(".ndjson") || lower.ends_with(".jsonl") {
+        Some("JSONEachRow")
+    } else {
+        None
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────
 // Destination resolver
 // ───────────────────────────────────────────────────────────────────────
 
@@ -140,6 +176,21 @@ pub fn resolve_destination(uri: &str, format: &str) -> Result<String, String> {
 pub struct ExportConfig {
     /// Parquet compression codec (snappy, gzip, lz4, zstd, brotli).
     pub compression: Option<String>,
+}
+
+impl ExportConfig {
+    /// Build config from COPY TO options like `(COMPRESSION 'zstd')`.
+    pub fn from_copy_options(options: &[(&str, Expression<'_>)]) -> Self {
+        let mut config = ExportConfig::default();
+        for (key, value) in options {
+            if key.eq_ignore_ascii_case("COMPRESSION") {
+                if let Expression::Literal(Literal::String(s)) = value {
+                    config.compression = Some(s.to_string());
+                }
+            }
+        }
+        config
+    }
 }
 
 /// Valid Parquet compression codecs.
@@ -545,5 +596,79 @@ mod tests {
         let args: Vec<&Expression> = vec![&arg0, &arg1, &arg2];
         let result = parse_export_call(&args).unwrap();
         assert!(result.config.compression.is_none());
+    }
+
+    // --- COPY TO helpers ---
+
+    #[test]
+    fn test_format_from_copy_format_csv() {
+        assert_eq!(format_from_copy_format("CSV").unwrap(), "CSVWithNames");
+        assert_eq!(format_from_copy_format("csv").unwrap(), "CSVWithNames");
+    }
+
+    #[test]
+    fn test_format_from_copy_format_tsv() {
+        assert_eq!(format_from_copy_format("TSV").unwrap(), "TSVWithNames");
+        assert_eq!(format_from_copy_format("tsv").unwrap(), "TSVWithNames");
+    }
+
+    #[test]
+    fn test_format_from_copy_format_parquet() {
+        assert_eq!(format_from_copy_format("PARQUET").unwrap(), "Parquet");
+        assert_eq!(format_from_copy_format("parquet").unwrap(), "Parquet");
+    }
+
+    #[test]
+    fn test_format_from_copy_format_json() {
+        assert_eq!(format_from_copy_format("JSON").unwrap(), "JSONEachRow");
+    }
+
+    #[test]
+    fn test_format_from_copy_format_unsupported() {
+        assert!(format_from_copy_format("XML").is_err());
+        assert!(format_from_copy_format("AVRO").is_err());
+    }
+
+    #[test]
+    fn test_format_from_extension_known() {
+        assert_eq!(format_from_extension("/tmp/out.csv"), Some("CSVWithNames"));
+        assert_eq!(format_from_extension("/tmp/out.tsv"), Some("TSVWithNames"));
+        assert_eq!(format_from_extension("/tmp/out.parquet"), Some("Parquet"));
+        assert_eq!(format_from_extension("/tmp/out.pq"), Some("Parquet"));
+        assert_eq!(format_from_extension("/tmp/out.json"), Some("JSONEachRow"));
+        assert_eq!(
+            format_from_extension("/tmp/out.ndjson"),
+            Some("JSONEachRow")
+        );
+        assert_eq!(format_from_extension("/tmp/out.jsonl"), Some("JSONEachRow"));
+    }
+
+    #[test]
+    fn test_format_from_extension_unknown() {
+        assert_eq!(format_from_extension("/tmp/out.xml"), None);
+        assert_eq!(format_from_extension("/tmp/data"), None);
+        assert_eq!(format_from_extension("s3://bucket/file.avro"), None);
+    }
+
+    #[test]
+    fn test_export_config_from_copy_options_compression() {
+        let options = vec![("COMPRESSION", Expression::Literal(Literal::String("zstd")))];
+        let config = ExportConfig::from_copy_options(&options);
+        assert_eq!(config.compression, Some("zstd".to_string()));
+    }
+
+    #[test]
+    fn test_export_config_from_copy_options_empty() {
+        let options: Vec<(&str, Expression)> = vec![];
+        let config = ExportConfig::from_copy_options(&options);
+        assert!(config.compression.is_none());
+    }
+
+    #[test]
+    fn test_export_config_from_copy_options_unknown_key() {
+        let options = vec![("DELIMITER", Expression::Literal(Literal::String(",")))];
+        let config = ExportConfig::from_copy_options(&options);
+        // Unknown keys are silently ignored
+        assert!(config.compression.is_none());
     }
 }

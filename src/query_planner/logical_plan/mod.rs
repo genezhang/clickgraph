@@ -188,6 +188,9 @@ pub fn evaluate_cypher_statement(
                 proc_call.procedure_name
             )))
         }
+        CypherStatement::CopyTo(_) => Err(LogicalPlanError::QueryPlanningError(
+            "COPY TO statements are handled at the handler level, not by query planner".to_string(),
+        )),
         CypherStatement::Query {
             query,
             union_clauses,

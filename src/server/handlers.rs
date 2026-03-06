@@ -265,6 +265,117 @@ pub async fn query_handler(
         }
     }
 
+    // ── COPY TO export statements ──
+    // Intercept COPY (<cypher>) TO '<dest>' before procedure or query dispatch.
+    // Extract all owned data in a sync block so no borrows persist across .await.
+    let copy_to_params = if clean_upper.starts_with("COPY") {
+        if let Ok((_, CypherStatement::CopyTo(copy_stmt))) =
+            open_cypher_parser::parse_cypher_statement(&clean_query)
+        {
+            let inner_query = copy_stmt.query.to_string();
+            let destination = copy_stmt.destination.to_string();
+            let ch_format = if let Some(fmt) = copy_stmt.format {
+                crate::procedures::apoc_export::format_from_copy_format(fmt)
+                    .map_err(|e| (StatusCode::BAD_REQUEST, e))?
+            } else {
+                crate::procedures::apoc_export::format_from_extension(&destination)
+                    .ok_or_else(|| {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            format!(
+                                "Cannot determine format from extension of '{}'. Use FORMAT clause.",
+                                destination
+                            ),
+                        )
+                    })?
+            };
+            let config =
+                crate::procedures::apoc_export::ExportConfig::from_copy_options(&copy_stmt.options);
+            Some((inner_query, destination, ch_format, config))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some((inner_query, destination, ch_format, config)) = copy_to_params {
+        log::info!("Detected COPY TO: destination={}", destination);
+        let export_start = Instant::now();
+
+        // Resolve schema
+        let schema_name_for_export = schema_name_param
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        let graph_schema =
+            match graph_catalog::get_graph_schema_by_name(&schema_name_for_export).await {
+                Ok(s) => s,
+                Err(e) => return Err((StatusCode::BAD_REQUEST, e)),
+            };
+
+        // Translate inside a task-local QueryContext so set_current_schema() works
+        let context = QueryContext::new(Some(schema_name_for_export.clone()));
+        let export_sql = with_query_context(context, async {
+            crate::server::query_context::set_current_schema(Arc::new(graph_schema.clone()));
+
+            let inner_sql = translate_cypher_to_sql(
+                &inner_query,
+                &graph_schema,
+                &schema_name_for_export,
+                app_state.config.max_cte_depth,
+            )
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+            crate::procedures::apoc_export::build_export_sql(
+                &inner_sql,
+                &destination,
+                ch_format,
+                &config,
+            )
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))
+        })
+        .await?;
+
+        log::debug!("COPY TO SQL: {}", export_sql);
+
+        // If sql_only, return the SQL
+        if sql_only {
+            let response = SqlOnlyResponse {
+                cypher_query: payload.query.clone(),
+                generated_sql: export_sql,
+                execution_mode: "sql_only".to_string(),
+            };
+            return Ok(Json(response).into_response());
+        }
+
+        // Execute
+        let role = payload.role.as_deref();
+        match app_state
+            .executor
+            .execute_text(&export_sql, "TabSeparated", role)
+            .await
+        {
+            Ok(_) => {
+                log::info!(
+                    "COPY TO completed in {:.3} seconds",
+                    export_start.elapsed().as_secs_f64()
+                );
+                let response = serde_json::json!({
+                    "file": destination,
+                    "format": ch_format,
+                    "source": inner_query,
+                });
+                return Ok(Json(response).into_response());
+            }
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("COPY TO execution failed: {}", e),
+                ));
+            }
+        }
+    }
+
     // Handle procedure calls early (before query context)
     // Parse to check if it's a procedure call or procedure-only query
     let (_is_procedure, is_union, proc_name_opt) =
@@ -292,6 +403,7 @@ pub async fn query_handler(
                         .call_clause
                         .as_ref()
                         .map(|cc| cc.procedure_name.to_string()),
+                    CypherStatement::CopyTo(_) => None,
                 }
             } else {
                 None
@@ -374,6 +486,12 @@ pub async fn query_handler(
                             )
                         })?;
                         cc.arguments.iter().map(|a| &a.value).collect()
+                    }
+                    CypherStatement::CopyTo(_) => {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            "COPY TO statements are handled separately".to_string(),
+                        ));
                     }
                 };
                 crate::procedures::apoc_export::parse_export_call(&expressions)
@@ -510,6 +628,10 @@ pub async fn query_handler(
                 }
                 open_cypher_parser::ast::CypherStatement::ProcedureCall(_) => {
                     // Procedure calls don't have USE clauses
+                    schema_name_param.unwrap_or_else(|| "default".to_string())
+                }
+                open_cypher_parser::ast::CypherStatement::CopyTo(_) => {
+                    // COPY TO uses request parameter or "default"
                     schema_name_param.unwrap_or_else(|| "default".to_string())
                 }
             }
@@ -777,6 +899,12 @@ async fn query_handler_inner(
                     return Err((
                         StatusCode::BAD_REQUEST,
                         "Standalone procedure calls should not reach this path".to_string(),
+                    ));
+                }
+                CypherStatement::CopyTo(_) => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        "COPY TO statements are handled separately".to_string(),
                     ));
                 }
             };

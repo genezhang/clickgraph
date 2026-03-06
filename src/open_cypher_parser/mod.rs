@@ -16,6 +16,7 @@ use nom::{IResult, Parser};
 pub mod ast;
 mod call_clause;
 mod common;
+pub(crate) mod copy_to;
 mod create_clause;
 mod delete_clause;
 pub(crate) mod errors;
@@ -41,6 +42,17 @@ pub fn parse_cypher_statement(
     input: &'_ str,
 ) -> IResult<&'_ str, CypherStatement<'_>, OpenCypherParsingError<'_>> {
     let (input, _) = multispace0.parse(input)?;
+
+    // Try COPY TO statement first (before procedure call or query parsing)
+    if input
+        .trim()
+        .get(..4)
+        .is_some_and(|s| s.eq_ignore_ascii_case("COPY"))
+    {
+        if let Ok((remaining, copy_stmt)) = copy_to::parse_copy_to(input) {
+            return Ok((remaining, CypherStatement::CopyTo(copy_stmt)));
+        }
+    }
 
     // Try standalone procedure call first.
     // Only use it if parsing consumed the entire input (modulo whitespace/semicolons).
@@ -1533,6 +1545,9 @@ mod tests {
             CypherStatement::ProcedureCall(_) => {
                 panic!("Expected Query, got ProcedureCall");
             }
+            CypherStatement::CopyTo(_) => {
+                panic!("Expected Query, got CopyTo");
+            }
         }
     }
 
@@ -1569,6 +1584,9 @@ mod tests {
             CypherStatement::ProcedureCall(_) => {
                 panic!("Expected Query, got ProcedureCall");
             }
+            CypherStatement::CopyTo(_) => {
+                panic!("Expected Query, got CopyTo");
+            }
         }
     }
 
@@ -1599,6 +1617,9 @@ mod tests {
             }
             CypherStatement::ProcedureCall(_) => {
                 panic!("Expected Query, got ProcedureCall");
+            }
+            CypherStatement::CopyTo(_) => {
+                panic!("Expected Query, got CopyTo");
             }
         }
     }
@@ -1632,6 +1653,9 @@ mod tests {
             CypherStatement::ProcedureCall(_) => {
                 panic!("Expected Query, got ProcedureCall");
             }
+            CypherStatement::CopyTo(_) => {
+                panic!("Expected Query, got CopyTo");
+            }
         }
     }
 
@@ -1657,6 +1681,9 @@ mod tests {
             }
             CypherStatement::ProcedureCall(_) => {
                 panic!("Expected Query, got ProcedureCall");
+            }
+            CypherStatement::CopyTo(_) => {
+                panic!("Expected Query, got CopyTo");
             }
         }
     }
@@ -1686,6 +1713,9 @@ mod tests {
             }
             CypherStatement::ProcedureCall(_) => {
                 panic!("Expected Query, got ProcedureCall");
+            }
+            CypherStatement::CopyTo(_) => {
+                panic!("Expected Query, got CopyTo");
             }
         }
     }

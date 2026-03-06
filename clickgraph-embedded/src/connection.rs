@@ -200,6 +200,11 @@ impl<'db> Connection<'db> {
                         cc.arguments.iter().map(|a| &a.value).collect(),
                     )
                 }
+                CypherStatement::CopyTo(_) => {
+                    return Err(EmbeddedError::Query(
+                        "COPY TO should be handled before reaching APOC export path".to_string(),
+                    ));
+                }
             };
 
             let ch_format = apoc_export::format_from_procedure_name(&proc_name)
@@ -243,9 +248,86 @@ impl<'db> Connection<'db> {
         .await
     }
 
+    /// Handle `COPY (<cypher>) TO '<destination>' [FORMAT <fmt>] [(options)]` in embedded mode.
+    async fn handle_copy_to(
+        &self,
+        inner_cypher: &str,
+        destination: &str,
+        format: Option<&str>,
+        options: &[(&str, clickgraph::open_cypher_parser::ast::Expression<'_>)],
+    ) -> Result<QueryResult, EmbeddedError> {
+        use clickgraph::clickhouse_query_generator::cypher_to_sql;
+        use clickgraph::procedures::apoc_export;
+        use clickgraph::server::query_context::{
+            set_current_schema, with_query_context, QueryContext,
+        };
+
+        let ch_format = if let Some(fmt) = format {
+            apoc_export::format_from_copy_format(fmt).map_err(EmbeddedError::Query)?
+        } else {
+            apoc_export::format_from_extension(destination).ok_or_else(|| {
+                EmbeddedError::Query(format!(
+                    "Cannot determine format from '{}'. Use FORMAT clause.",
+                    destination
+                ))
+            })?
+        };
+
+        let config = apoc_export::ExportConfig::from_copy_options(options);
+
+        let schema = Arc::clone(&self.schema);
+        let executor = Arc::clone(&self.executor);
+        let inner_cypher = inner_cypher.to_string();
+        let destination = destination.to_string();
+
+        with_query_context(QueryContext::new(None), async move {
+            set_current_schema(Arc::clone(&schema));
+
+            let inner_sql =
+                cypher_to_sql(&inner_cypher, &schema, 100).map_err(EmbeddedError::Query)?;
+
+            let export_sql =
+                apoc_export::build_export_sql(&inner_sql, &destination, ch_format, &config)
+                    .map_err(EmbeddedError::Query)?;
+
+            executor
+                .execute_text(&export_sql, "TabSeparated", None)
+                .await
+                .map_err(EmbeddedError::from)?;
+
+            let columns = vec![
+                "file".to_string(),
+                "format".to_string(),
+                "source".to_string(),
+            ];
+            let rows = vec![vec![
+                Value::String(destination),
+                Value::String(ch_format.to_string()),
+                Value::String(inner_cypher),
+            ]];
+            Ok(QueryResult::new(columns, rows))
+        })
+        .await
+    }
+
     async fn query_async(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
-        // Intercept CALL apoc.export.* — parse first to avoid false positives
+        // Intercept CALL apoc.export.* and COPY TO — parse first to avoid false positives
         if let Ok((_, stmt)) = clickgraph::open_cypher_parser::parse_cypher_statement(cypher) {
+            // COPY TO intercept
+            if let clickgraph::open_cypher_parser::ast::CypherStatement::CopyTo(ref copy_stmt) =
+                stmt
+            {
+                return self
+                    .handle_copy_to(
+                        copy_stmt.query,
+                        copy_stmt.destination,
+                        copy_stmt.format,
+                        &copy_stmt.options,
+                    )
+                    .await;
+            }
+
+            // APOC export intercept
             let proc_name = match &stmt {
                 clickgraph::open_cypher_parser::ast::CypherStatement::ProcedureCall(pc) => {
                     Some(pc.procedure_name.to_string())
@@ -254,6 +336,7 @@ impl<'db> Connection<'db> {
                     .call_clause
                     .as_ref()
                     .map(|cc| cc.procedure_name.to_string()),
+                clickgraph::open_cypher_parser::ast::CypherStatement::CopyTo(_) => None,
             };
             if let Some(name) = proc_name {
                 if clickgraph::procedures::apoc_export::is_export_procedure(&name) {

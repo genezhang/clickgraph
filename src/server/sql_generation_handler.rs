@@ -193,6 +193,18 @@ pub async fn sql_generation_handler(
                 }),
             ));
         }
+        open_cypher_parser::ast::CypherStatement::CopyTo(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(SqlGenerationError {
+                    cypher_query: payload.query.clone(),
+                    error: "COPY TO statements not supported in SQL generation endpoint"
+                        .to_string(),
+                    error_type: "UnsupportedQuery".to_string(),
+                    error_details: None,
+                }),
+            ));
+        }
     };
 
     let query_type = query_planner::get_query_type(first_query);

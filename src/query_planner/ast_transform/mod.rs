@@ -59,6 +59,10 @@ pub fn transform_id_functions<'a>(
             // Procedure calls don't have id() functions
             CypherStatement::ProcedureCall(pc)
         }
+        CypherStatement::CopyTo(ct) => {
+            log::debug!("  Skipping transformation for COPY TO statement");
+            CypherStatement::CopyTo(ct)
+        }
     };
 
     // Get collected label constraints and id values

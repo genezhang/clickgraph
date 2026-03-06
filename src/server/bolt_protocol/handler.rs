@@ -1427,7 +1427,7 @@ impl BoltHandler {
                         schema_name.as_deref().unwrap_or("default").to_string()
                     }
                 }
-                CypherStatement::ProcedureCall(_) => {
+                CypherStatement::ProcedureCall(_) | CypherStatement::CopyTo(_) => {
                     schema_name.as_deref().unwrap_or("default").to_string()
                 }
             },
@@ -1473,6 +1473,135 @@ impl BoltHandler {
         // ============================================================
         // PHASE 2: Parse and Transform (synchronous, single pass)
         // ============================================================
+
+        // ── COPY TO: intercept before general parse ──
+        // Extract all owned data in a sync helper so non-Send CopyToStatement
+        // is guaranteed dropped before any .await.
+        fn extract_copy_to_params(
+            query: &str,
+        ) -> Result<
+            Option<(
+                String,
+                String,
+                &'static str,
+                crate::procedures::apoc_export::ExportConfig,
+            )>,
+            BoltError,
+        > {
+            let query_upper = query.trim().to_uppercase();
+            if !query_upper.starts_with("COPY") {
+                return Ok(None);
+            }
+            let (_, stmt) = match open_cypher_parser::parse_cypher_statement(query) {
+                Ok(parsed) => parsed,
+                Err(_) => return Ok(None),
+            };
+            let copy_stmt = match stmt {
+                CypherStatement::CopyTo(c) => c,
+                _ => return Ok(None),
+            };
+            let inner_query = copy_stmt.query.to_string();
+            let destination = copy_stmt.destination.to_string();
+            let ch_format = if let Some(fmt) = copy_stmt.format {
+                crate::procedures::apoc_export::format_from_copy_format(fmt)
+                    .map_err(BoltError::query_error)?
+            } else {
+                crate::procedures::apoc_export::format_from_extension(&destination).ok_or_else(
+                    || {
+                        BoltError::query_error(format!(
+                            "Cannot determine format from '{}'. Use FORMAT clause.",
+                            destination
+                        ))
+                    },
+                )?
+            };
+            let config =
+                crate::procedures::apoc_export::ExportConfig::from_copy_options(&copy_stmt.options);
+            Ok(Some((inner_query, destination, ch_format, config)))
+        }
+
+        if let Some((inner_query, destination, ch_format, config)) = extract_copy_to_params(query)?
+        {
+            log::info!("Bolt COPY TO: destination={}", destination);
+
+            let graph_schema_obj = graph_catalog::get_graph_schema_by_name(&effective_schema)
+                .await
+                .map_err(BoltError::query_error)?;
+            crate::server::query_context::set_current_schema(Arc::new(graph_schema_obj.clone()));
+
+            // Translate inner Cypher → SQL
+            let inner_sql = {
+                let (_, inner_stmt) = open_cypher_parser::parse_cypher_statement(&inner_query)
+                    .map_err(|e| {
+                        BoltError::query_error(format!("Inner Cypher parse error: {}", e))
+                    })?;
+
+                let inner_mapper = crate::server::bolt_protocol::id_mapper::IdMapper::new();
+                let inner_arena = crate::query_planner::ast_transform::StringArena::new();
+                let (inner_cypher, _) = crate::query_planner::ast_transform::transform_id_functions(
+                    &inner_arena,
+                    inner_stmt,
+                    &inner_mapper,
+                    Some(&graph_schema_obj),
+                );
+
+                crate::query_planner::logical_plan::reset_all_counters();
+                let (logical_plan, plan_ctx) = query_planner::evaluate_read_statement(
+                    inner_cypher,
+                    &graph_schema_obj,
+                    None,
+                    None,
+                    None,
+                )
+                .map_err(|e| {
+                    BoltError::query_error(format!("Inner Cypher planning error: {}", e))
+                })?;
+
+                let render_plan = logical_plan
+                    .to_render_plan_with_ctx(&graph_schema_obj, Some(&plan_ctx), None)
+                    .map_err(|e| {
+                        BoltError::query_error(format!("Inner Cypher render error: {}", e))
+                    })?;
+
+                clickhouse_query_generator::generate_sql(render_plan, 1000)
+            };
+
+            let export_sql = crate::procedures::apoc_export::build_export_sql(
+                &inner_sql,
+                &destination,
+                ch_format,
+                &config,
+            )
+            .map_err(BoltError::query_error)?;
+
+            log::debug!("Bolt COPY TO SQL: {}", export_sql);
+
+            self.executor
+                .execute_text(&export_sql, "TabSeparated", role.as_deref())
+                .await
+                .map_err(|e| BoltError::query_error(format!("COPY TO execution failed: {}", e)))?;
+
+            // Cache a single result record for PULL
+            let result_record = vec![
+                BoltValue::Json(serde_json::json!(destination)),
+                BoltValue::Json(serde_json::json!(ch_format)),
+                BoltValue::Json(serde_json::json!(inner_query)),
+            ];
+            self.cached_results = Some(vec![result_record]);
+
+            // Return metadata
+            let mut metadata = HashMap::new();
+            metadata.insert(
+                "fields".to_string(),
+                Value::Array(vec![
+                    Value::String("file".to_string()),
+                    Value::String("format".to_string()),
+                    Value::String("source".to_string()),
+                ]),
+            );
+            metadata.insert("t_first".to_string(), Value::Number(0.into()));
+            return Ok(metadata);
+        }
 
         // Parse Cypher statement for transformation
         let parsed_stmt = match open_cypher_parser::parse_cypher_statement(query) {
@@ -1520,6 +1649,13 @@ impl BoltHandler {
                     CypherStatement::ProcedureCall(proc_call) => ExecutionPlan::SimpleProcedure {
                         proc_name: proc_call.procedure_name.to_string(),
                     },
+                    CypherStatement::CopyTo(_) => {
+                        // COPY TO is handled by the early intercept above;
+                        // this branch is unreachable for valid COPY TO queries.
+                        return Err(BoltError::query_error(
+                            "Unexpected COPY TO in execution plan phase".to_string(),
+                        ));
+                    }
                     CypherStatement::Query {
                         query: query_ast,
                         union_clauses,
@@ -1601,6 +1737,12 @@ impl BoltHandler {
                     // Procedures are handled above, this shouldn't happen
                     query_planner::types::QueryType::Read // dummy value
                 }
+                CypherStatement::CopyTo(_) => {
+                    // COPY TO is handled by the early intercept above
+                    return Err(BoltError::query_error(
+                        "Unexpected COPY TO in query type phase".to_string(),
+                    ));
+                }
             };
 
             // transformed_stmt is dropped here at end of scope!
@@ -1649,6 +1791,12 @@ impl BoltHandler {
                                         )
                                     })?;
                                     cc.arguments.iter().map(|a| &a.value).collect()
+                                }
+                                CypherStatement::CopyTo(_) => {
+                                    // COPY TO is handled by the early intercept above
+                                    return Err(BoltError::query_error(
+                                        "Unexpected COPY TO in export args extraction".to_string(),
+                                    ));
                                 }
                             };
                             crate::procedures::apoc_export::parse_export_call(&expressions)
