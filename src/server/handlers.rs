@@ -341,6 +341,115 @@ pub async fn query_handler(
     if let Some(proc_name) = proc_name_opt {
         log::info!("Executing procedure: {}", proc_name);
 
+        // ── Export procedures: apoc.export.{csv|json|parquet}.query() ──
+        // These need SQL execution (not just schema introspection), so they
+        // bypass ProcedureRegistry and run the inner Cypher → SQL pipeline.
+        if crate::procedures::apoc_export::is_export_procedure(&proc_name) {
+            log::info!("Detected export procedure: {}", proc_name);
+
+            let export_start = Instant::now();
+
+            // Determine the output format from the procedure name
+            let ch_format = crate::procedures::apoc_export::format_from_procedure_name(&proc_name)
+                .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+            // Re-parse to extract arguments (parser is fast, export is rare)
+            let export_args = {
+                let (_, stmt) =
+                    open_cypher_parser::parse_cypher_statement(&clean_query).map_err(|e| {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            format!("Failed to parse export call: {}", e),
+                        )
+                    })?;
+                // StandaloneProcedureCall has Vec<Expression> arguments;
+                // CallClause (in-query CALL) has Vec<CallArgument> with .value field.
+                let expressions: Vec<_> = match &stmt {
+                    CypherStatement::ProcedureCall(pc) => pc.arguments.iter().collect(),
+                    CypherStatement::Query { query, .. } => {
+                        let cc = query.call_clause.as_ref().ok_or_else(|| {
+                            (
+                                StatusCode::BAD_REQUEST,
+                                "No CALL clause found in export query".to_string(),
+                            )
+                        })?;
+                        cc.arguments.iter().map(|a| &a.value).collect()
+                    }
+                };
+                crate::procedures::apoc_export::parse_export_call(&expressions)
+                    .map_err(|e| (StatusCode::BAD_REQUEST, e))?
+            };
+
+            // Resolve schema
+            // Resolve schema
+            let schema_name_for_export = schema_name_param
+                .clone()
+                .unwrap_or_else(|| "default".to_string());
+            let graph_schema =
+                match graph_catalog::get_graph_schema_by_name(&schema_name_for_export).await {
+                    Ok(s) => s,
+                    Err(e) => return Err((StatusCode::BAD_REQUEST, e)),
+                };
+            crate::server::query_context::set_current_schema(Arc::new(graph_schema.clone()));
+
+            // Translate inner Cypher → SQL
+            let inner_sql = translate_cypher_to_sql(
+                &export_args.cypher_query,
+                &graph_schema,
+                &schema_name_for_export,
+                app_state.config.max_cte_depth,
+            )
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+            // Build INSERT INTO FUNCTION ... SELECT ...
+            let export_sql = crate::procedures::apoc_export::build_export_sql(
+                &inner_sql,
+                &export_args.destination,
+                ch_format,
+                &export_args.config,
+            )
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+            log::info!("Export SQL: {}", export_sql);
+
+            // If sql_only, return the SQL
+            if sql_only {
+                let response = SqlOnlyResponse {
+                    cypher_query: payload.query.clone(),
+                    generated_sql: export_sql,
+                    execution_mode: "sql_only".to_string(),
+                };
+                return Ok(Json(response).into_response());
+            }
+
+            // Execute the export SQL (INSERT produces no result rows)
+            let role = payload.role.as_deref();
+            match app_state
+                .executor
+                .execute_text(&export_sql, "TabSeparated", role)
+                .await
+            {
+                Ok(_) => {
+                    log::info!(
+                        "Export completed in {:.3} seconds",
+                        export_start.elapsed().as_secs_f64()
+                    );
+                    let response = serde_json::json!({
+                        "file": export_args.destination,
+                        "format": ch_format,
+                        "source": export_args.cypher_query,
+                    });
+                    return Ok(Json(response).into_response());
+                }
+                Err(e) => {
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Export execution failed: {}", e),
+                    ));
+                }
+            }
+        }
+
         let registry = crate::procedures::ProcedureRegistry::new();
         let schema_name = schema_name_param.unwrap_or_else(|| "default".to_string());
 
@@ -1390,6 +1499,55 @@ pub async fn get_schema_handler(
         )),
     }
 }
+
+/// Translate a Cypher query string into ClickHouse SQL.
+///
+/// Used by export procedures to compile the inner Cypher query.
+/// Runs the full pipeline: parse → plan → render → SQL generate.
+fn translate_cypher_to_sql(
+    cypher: &str,
+    graph_schema: &GraphSchema,
+    schema_name: &str,
+    max_cte_depth: u32,
+) -> Result<String, String> {
+    log::debug!(
+        "Translating inner Cypher query for schema '{}'",
+        schema_name
+    );
+    // Parse
+    let (_, parsed_stmt) = open_cypher_parser::parse_cypher_statement(cypher)
+        .map_err(|e| format!("Inner Cypher parse error: {}", e))?;
+
+    // id() transform (stateless for export — no IdMapper scope needed)
+    use crate::query_planner::ast_transform;
+    use crate::server::bolt_protocol::id_mapper::IdMapper;
+    let id_mapper = IdMapper::new();
+    let ast_arena = ast_transform::StringArena::new();
+    let (cypher_statement, _) = ast_transform::transform_id_functions(
+        &ast_arena,
+        parsed_stmt,
+        &id_mapper,
+        Some(graph_schema),
+    );
+
+    // Plan
+    crate::query_planner::logical_plan::reset_all_counters();
+    let (logical_plan, plan_ctx) =
+        query_planner::evaluate_read_statement(cypher_statement, graph_schema, None, None, None)
+            .map_err(|e| format!("Inner Cypher planning error: {}", e))?;
+
+    // Render
+    let render_plan = logical_plan
+        .to_render_plan_with_ctx(graph_schema, Some(&plan_ctx), None)
+        .map_err(|e| format!("Inner Cypher render error: {}", e))?;
+
+    // Generate SQL
+    Ok(clickhouse_query_generator::generate_sql(
+        render_plan,
+        max_cte_depth,
+    ))
+}
+
 /// Extract a schema name from a leading `USE <schema>` clause in a Cypher query.
 ///
 /// This lightweight text-based extraction mirrors the normal path's USE handling

@@ -1626,16 +1626,136 @@ impl BoltHandler {
 
             let results = match exec_plan {
                 ExecutionPlan::SimpleProcedure { proc_name } => {
-                    log::info!("Executing simple procedure via Bolt: {}", proc_name);
-                    crate::procedures::executor::execute_procedure_by_name(
-                        &proc_name,
-                        &effective_schema,
-                        &registry,
-                    )
-                    .await
-                    .map_err(|e| {
-                        BoltError::query_error(format!("Procedure execution failed: {}", e))
-                    })?
+                    // ── Export procedures: apoc.export.{csv|json|parquet}.query() ──
+                    if crate::procedures::apoc_export::is_export_procedure(&proc_name) {
+                        log::info!("Executing export procedure via Bolt: {}", proc_name);
+
+                        let ch_format =
+                            crate::procedures::apoc_export::format_from_procedure_name(&proc_name)
+                                .map_err(BoltError::query_error)?;
+
+                        // Re-parse to extract arguments
+                        let export_args = {
+                            let (_, stmt) = open_cypher_parser::parse_cypher_statement(query)
+                                .map_err(|e| {
+                                    BoltError::query_error(format!("Export parse error: {}", e))
+                                })?;
+                            let expressions: Vec<_> = match &stmt {
+                                CypherStatement::ProcedureCall(pc) => pc.arguments.iter().collect(),
+                                CypherStatement::Query { query: q, .. } => {
+                                    let cc = q.call_clause.as_ref().ok_or_else(|| {
+                                        BoltError::query_error(
+                                            "No CALL clause in export query".to_string(),
+                                        )
+                                    })?;
+                                    cc.arguments.iter().map(|a| &a.value).collect()
+                                }
+                            };
+                            crate::procedures::apoc_export::parse_export_call(&expressions)
+                                .map_err(BoltError::query_error)?
+                        };
+
+                        // Resolve schema
+                        let graph_schema =
+                            graph_catalog::get_graph_schema_by_name(&effective_schema)
+                                .await
+                                .map_err(BoltError::query_error)?;
+                        crate::server::query_context::set_current_schema(Arc::new(
+                            graph_schema.clone(),
+                        ));
+
+                        // Translate inner Cypher → SQL
+                        let inner_sql = {
+                            let (_, inner_stmt) = open_cypher_parser::parse_cypher_statement(
+                                &export_args.cypher_query,
+                            )
+                            .map_err(|e| {
+                                BoltError::query_error(format!("Inner Cypher parse error: {}", e))
+                            })?;
+
+                            use crate::server::bolt_protocol::id_mapper::IdMapper;
+                            let inner_mapper = IdMapper::new();
+                            let inner_arena =
+                                crate::query_planner::ast_transform::StringArena::new();
+                            let (inner_cypher, _) =
+                                crate::query_planner::ast_transform::transform_id_functions(
+                                    &inner_arena,
+                                    inner_stmt,
+                                    &inner_mapper,
+                                    Some(&graph_schema),
+                                );
+
+                            crate::query_planner::logical_plan::reset_all_counters();
+                            let (logical_plan, plan_ctx) = query_planner::evaluate_read_statement(
+                                inner_cypher,
+                                &graph_schema,
+                                None,
+                                None,
+                                None,
+                            )
+                            .map_err(|e| {
+                                BoltError::query_error(format!(
+                                    "Inner Cypher planning error: {}",
+                                    e
+                                ))
+                            })?;
+
+                            let render_plan = logical_plan
+                                .to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx), None)
+                                .map_err(|e| {
+                                    BoltError::query_error(format!(
+                                        "Inner Cypher render error: {}",
+                                        e
+                                    ))
+                                })?;
+
+                            let max_cte_depth = 1000;
+                            clickhouse_query_generator::generate_sql(render_plan, max_cte_depth)
+                        };
+
+                        // Build export SQL
+                        let export_sql = crate::procedures::apoc_export::build_export_sql(
+                            &inner_sql,
+                            &export_args.destination,
+                            ch_format,
+                            &export_args.config,
+                        )
+                        .map_err(BoltError::query_error)?;
+
+                        log::info!("Bolt export SQL: {}", export_sql);
+
+                        // Execute
+                        self.executor
+                            .execute_text(&export_sql, "TabSeparated", role.as_deref())
+                            .await
+                            .map_err(|e| {
+                                BoltError::query_error(format!("Export execution failed: {}", e))
+                            })?;
+
+                        // Return status as a single record
+                        vec![std::collections::HashMap::from([
+                            (
+                                "file".to_string(),
+                                serde_json::json!(export_args.destination),
+                            ),
+                            ("format".to_string(), serde_json::json!(ch_format)),
+                            (
+                                "source".to_string(),
+                                serde_json::json!(export_args.cypher_query),
+                            ),
+                        ])]
+                    } else {
+                        log::info!("Executing simple procedure via Bolt: {}", proc_name);
+                        crate::procedures::executor::execute_procedure_by_name(
+                            &proc_name,
+                            &effective_schema,
+                            &registry,
+                        )
+                        .await
+                        .map_err(|e| {
+                            BoltError::query_error(format!("Procedure execution failed: {}", e))
+                        })?
+                    }
                 }
                 ExecutionPlan::ProcedureWithReturn { proc_name } => {
                     log::info!("Executing procedure with RETURN via Bolt: {}", proc_name);

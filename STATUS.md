@@ -54,6 +54,7 @@ Supports both remote ClickHouse and embedded (in-process) mode via chdb.
 - **GraphRAG structured output**: `format: "Graph"` returns deduplicated nodes, edges, and stats
 - **ClickHouse cluster load balancing**: `CLICKHOUSE_CLUSTER` for auto-discovery and load balancing
 - **Embedded mode** (`--features embedded`): `QueryExecutor` trait + `ChdbExecutor` + `clickgraph-embedded` crate — run Cypher queries in-process over Parquet/Iceberg/Delta/S3 without a ClickHouse server. Kuzu-compatible Rust API (`Database`, `Connection`, `QueryResult`). `source:` URI field in YAML schema. S3/GCS/Azure credential support via `StorageCredentials`.
+- **APOC Export Procedures**: Neo4j-compatible `CALL apoc.export.{csv|json|parquet}.query(cypher, destination, config)` — translates inner Cypher to SQL, resolves destination URI (local file, S3, GCS, Azure, HTTP), wraps in `INSERT INTO FUNCTION`. Works in server mode (HTTP + Bolt) and embedded mode.
 
 ## Current Limitations
 

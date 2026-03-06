@@ -177,6 +177,30 @@ print(conn.export_to_sql("MATCH (u:User) RETURN u.name", "users.parquet"))
 
 Supported file extensions: `.parquet` / `.pq`, `.csv`, `.tsv`, `.json`, `.ndjson` / `.jsonl`
 
+**APOC Export Procedures (Neo4j-compatible):**
+
+Use Neo4j APOC-style `CALL` syntax for exports with flexible destinations:
+
+```python
+conn = db.connect()
+
+# Export to local file
+conn.query('CALL apoc.export.parquet.query("MATCH (u:User) RETURN u.name", "/tmp/users.parquet", {})')
+
+# Export to CSV
+conn.query('CALL apoc.export.csv.query("MATCH (u:User) RETURN u.name, u.email", "users.csv", {})')
+
+# Export to S3
+conn.query('CALL apoc.export.json.query("MATCH (u:User) RETURN u", "s3://bucket/users.json", {})')
+
+# Export with Parquet compression
+conn.query('CALL apoc.export.parquet.query("MATCH (u:User) RETURN u.name", "output.parquet", {compression: "zstd"})')
+```
+
+Supported destinations: local files, `s3://`, `gs://`, `azure://`, `http://`, `https://`
+
+The APOC export syntax also works in server mode (HTTP and Bolt), providing a unified export interface across all deployment modes.
+
 ---
 
 ## Schema Configuration
