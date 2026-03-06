@@ -326,7 +326,7 @@ graph_schema:
             )
             .expect("should generate export SQL");
         assert!(
-            sql.starts_with("INSERT INTO FUNCTION file('output.parquet', Parquet)"),
+            sql.starts_with("INSERT INTO FUNCTION file('output.parquet', 'Parquet')"),
             "should wrap in INSERT INTO FUNCTION file: {}",
             sql
         );

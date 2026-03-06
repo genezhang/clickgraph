@@ -410,3 +410,13 @@ class TestExport:
                 "data.out",
                 format="xlsx",
             )
+
+    def test_export_invalid_compression_codec(self, db):
+        """Invalid compression codec raises error."""
+        conn = db.connect()
+        with pytest.raises(RuntimeError, match="Unsupported Parquet compression"):
+            conn.export_to_sql(
+                "MATCH (u:User) RETURN u.name",
+                "output.parquet",
+                compression="lzma",
+            )

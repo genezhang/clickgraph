@@ -172,7 +172,7 @@ conn.export("MATCH (u:User) RETURN u.name", "output.dat", format="parquet")
 
 # Debug: see the generated SQL without executing
 print(conn.export_to_sql("MATCH (u:User) RETURN u.name", "users.parquet"))
-# → INSERT INTO FUNCTION file('users.parquet', Parquet) SELECT ...
+# → INSERT INTO FUNCTION file('users.parquet', 'Parquet') SELECT ...
 ```
 
 Supported file extensions: `.parquet` / `.pq`, `.csv`, `.tsv`, `.json`, `.ndjson` / `.jsonl`
@@ -342,7 +342,7 @@ conn.export("MATCH (u:User) RETURN u.name", "users.parquet", ExportOptions {
 
 // Debug: inspect the export SQL without executing
 let sql = conn.export_to_sql("MATCH (u:User) RETURN u.name", "users.parquet", ExportOptions::default())?;
-// → INSERT INTO FUNCTION file('users.parquet', Parquet) SELECT ...
+// → INSERT INTO FUNCTION file('users.parquet', 'Parquet') SELECT ...
 ```
 
 ### `QueryResult` and `Row`

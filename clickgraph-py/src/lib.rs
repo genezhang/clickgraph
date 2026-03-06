@@ -308,7 +308,7 @@ impl PyConnection {
     ///
     /// >>> sql = conn.export_to_sql("MATCH (u:User) RETURN u.name", "users.parquet")
     /// >>> print(sql)
-    /// INSERT INTO FUNCTION file('users.parquet', Parquet) SELECT ...
+    /// INSERT INTO FUNCTION file('users.parquet', 'Parquet') SELECT ...
     #[pyo3(signature = (cypher, output_path, *, format=None, compression=None))]
     fn export_to_sql(
         &self,
