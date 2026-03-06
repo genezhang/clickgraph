@@ -312,27 +312,31 @@ pub async fn query_handler(
                 Ok(s) => s,
                 Err(e) => return Err((StatusCode::BAD_REQUEST, e)),
             };
-        crate::server::query_context::set_current_schema(Arc::new(graph_schema.clone()));
 
-        // Translate inner Cypher → SQL
-        let inner_sql = translate_cypher_to_sql(
-            &inner_query,
-            &graph_schema,
-            &schema_name_for_export,
-            app_state.config.max_cte_depth,
-        )
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+        // Translate inside a task-local QueryContext so set_current_schema() works
+        let context = QueryContext::new(Some(schema_name_for_export.clone()));
+        let export_sql = with_query_context(context, async {
+            crate::server::query_context::set_current_schema(Arc::new(graph_schema.clone()));
 
-        // Build INSERT INTO FUNCTION ... SELECT ...
-        let export_sql = crate::procedures::apoc_export::build_export_sql(
-            &inner_sql,
-            &destination,
-            ch_format,
-            &config,
-        )
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+            let inner_sql = translate_cypher_to_sql(
+                &inner_query,
+                &graph_schema,
+                &schema_name_for_export,
+                app_state.config.max_cte_depth,
+            )
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
-        log::info!("COPY TO SQL: {}", export_sql);
+            crate::procedures::apoc_export::build_export_sql(
+                &inner_sql,
+                &destination,
+                ch_format,
+                &config,
+            )
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))
+        })
+        .await?;
+
+        log::debug!("COPY TO SQL: {}", export_sql);
 
         // If sql_only, return the SQL
         if sql_only {

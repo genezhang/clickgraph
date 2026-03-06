@@ -1574,7 +1574,7 @@ impl BoltHandler {
             )
             .map_err(BoltError::query_error)?;
 
-            log::info!("Bolt COPY TO SQL: {}", export_sql);
+            log::debug!("Bolt COPY TO SQL: {}", export_sql);
 
             self.executor
                 .execute_text(&export_sql, "TabSeparated", role.as_deref())
@@ -1650,8 +1650,10 @@ impl BoltHandler {
                         proc_name: proc_call.procedure_name.to_string(),
                     },
                     CypherStatement::CopyTo(_) => {
+                        // COPY TO is handled by the early intercept above;
+                        // this branch is unreachable for valid COPY TO queries.
                         return Err(BoltError::query_error(
-                            "COPY TO statements are not supported over Bolt protocol".to_string(),
+                            "Unexpected COPY TO in execution plan phase".to_string(),
                         ));
                     }
                     CypherStatement::Query {
@@ -1736,8 +1738,9 @@ impl BoltHandler {
                     query_planner::types::QueryType::Read // dummy value
                 }
                 CypherStatement::CopyTo(_) => {
+                    // COPY TO is handled by the early intercept above
                     return Err(BoltError::query_error(
-                        "COPY TO statements are not supported over Bolt protocol".to_string(),
+                        "Unexpected COPY TO in query type phase".to_string(),
                     ));
                 }
             };
@@ -1790,9 +1793,9 @@ impl BoltHandler {
                                     cc.arguments.iter().map(|a| &a.value).collect()
                                 }
                                 CypherStatement::CopyTo(_) => {
+                                    // COPY TO is handled by the early intercept above
                                     return Err(BoltError::query_error(
-                                        "COPY TO statements are not supported over Bolt protocol"
-                                            .to_string(),
+                                        "Unexpected COPY TO in export args extraction".to_string(),
                                     ));
                                 }
                             };

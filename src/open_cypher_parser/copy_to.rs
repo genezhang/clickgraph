@@ -116,8 +116,16 @@ fn parse_option_value<'a>(
     if let Ok((rest, digits)) = ws(nom::character::complete::digit1).parse(input)
         as IResult<&str, &str, OpenCypherParsingError>
     {
-        let n: i64 = digits.parse().unwrap_or(0);
-        return Ok((rest, Expression::Literal(Literal::Integer(n))));
+        match digits.parse::<i64>() {
+            Ok(n) => {
+                return Ok((rest, Expression::Literal(Literal::Integer(n))));
+            }
+            Err(_) => {
+                return Err(nom::Err::Error(OpenCypherParsingError {
+                    errors: vec![(digits, "Integer literal out of range for i64")],
+                }));
+            }
+        }
     }
     // Try unquoted identifier (e.g., format names)
     let (rest, ident) = ws(alphanumeric1).parse(input)?;
