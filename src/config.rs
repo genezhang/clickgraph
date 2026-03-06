@@ -67,6 +67,11 @@ pub struct ServerConfig {
     /// Neo4j compatibility mode - masquerade as Neo4j server for tool compatibility
     /// Useful for graph-notebook, Neodash, and other Neo4j ecosystem tools
     pub neo4j_compat_mode: bool,
+
+    /// Run in embedded mode using in-process chdb instead of a remote ClickHouse server.
+    /// When true, `CLICKHOUSE_URL`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` are not required.
+    /// Requires the `embedded` feature.
+    pub embedded: bool,
 }
 
 impl Default for ServerConfig {
@@ -81,6 +86,7 @@ impl Default for ServerConfig {
             validate_schema: false,
             daemon: false,
             neo4j_compat_mode: false,
+            embedded: false,
         }
     }
 }
@@ -98,6 +104,7 @@ impl ServerConfig {
             validate_schema: parse_env_var("CLICKGRAPH_VALIDATE_SCHEMA", "false")?,
             daemon: false, // Environment-based config always runs in foreground
             neo4j_compat_mode: parse_env_var("CLICKGRAPH_NEO4J_COMPAT_MODE", "false")?,
+            embedded: parse_env_var("CLICKGRAPH_EMBEDDED", "false")?,
         };
 
         config.validate()?;
@@ -116,6 +123,7 @@ impl ServerConfig {
             validate_schema: cli.validate_schema,
             neo4j_compat_mode: cli.neo4j_compat_mode,
             daemon: cli.daemon,
+            embedded: cli.embedded,
         };
 
         config.validate()?;
@@ -151,6 +159,7 @@ impl ServerConfig {
         self.validate_schema = other.validate_schema;
         self.neo4j_compat_mode = other.neo4j_compat_mode;
         self.daemon = other.daemon;
+        self.embedded = other.embedded;
     }
 }
 
@@ -166,6 +175,7 @@ pub struct CliConfig {
     pub validate_schema: bool,
     pub neo4j_compat_mode: bool,
     pub daemon: bool,
+    pub embedded: bool,
 }
 
 /// Parse an environment variable with a default value

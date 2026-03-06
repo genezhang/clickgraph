@@ -59,6 +59,7 @@ fn create_test_schema() -> GraphSchema {
         label_column: None,
         label_value: None,
         node_id_types: None,
+        source: None,
     };
 
     nodes.insert("User".to_string(), user_schema);
@@ -92,6 +93,7 @@ fn create_test_schema() -> GraphSchema {
         is_fk_edge: false,
         constraints: None,
         edge_id_types: None,
+        source: None,
     };
 
     relationships.insert("FOLLOWS::User::User".to_string(), follows_schema);

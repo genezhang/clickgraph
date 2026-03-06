@@ -31,6 +31,7 @@
 //! connection database parameters is not currently supported; all procedure
 //! calls are evaluated against the HTTP-selected (or default) schema.
 
+pub mod apoc_export;
 pub mod apoc_meta_schema;
 pub mod db_labels;
 pub mod db_property_keys;

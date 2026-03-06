@@ -45,6 +45,7 @@ fn create_test_schema() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            source: None,
         },
     );
 
@@ -79,6 +80,7 @@ fn create_test_schema() -> GraphSchema {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 

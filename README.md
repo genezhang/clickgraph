@@ -18,12 +18,12 @@
 
 ## What's New in v0.6.3-dev
 
+- **🆕 Embedded mode** - Query Parquet/Iceberg/Delta/S3 directly — no ClickHouse server needed. Use as a Rust library (`clickgraph-embedded`) or run the server with `--embedded`.
 - **LDBC SNB: 36/37 queries (97%)** - Up from 14/37, near-complete Social Network Benchmark coverage
 - **GraphRAG structured output** - `format: "Graph"` returns deduplicated nodes, edges, and stats
 - **ClickHouse cluster load balancing** - Set `CLICKHOUSE_CLUSTER` to auto-discover and balance across cluster nodes
 - **`apoc.meta.schema()` for MCP** - Schema discovery procedure for AI assistant integration
 - **LLM-powered schema design tool** - Interactive schema generation from natural language
-- **1,360 unit tests + 3,068 integration tests** - Comprehensive test coverage across all features
 
 See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 
@@ -34,6 +34,7 @@ See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 ### Core Capabilities
 - **Cypher-to-SQL Translation** - Industry-standard Cypher read syntax translated to optimized ClickHouse SQL
 - **Stateless Architecture** - Offloads all query execution to ClickHouse; no extra datastore required
+- **Embedded Mode** - In-process graph queries over Parquet/Iceberg/Delta/S3 via chdb; no ClickHouse server needed (`--features embedded`)
 - **Variable-Length Paths** - Recursive traversals with `*1..3` syntax using ClickHouse `WITH RECURSIVE` CTEs
 - **Path Functions** - `length(p)`, `nodes(p)`, `relationships(p)` for path analysis
 - **Parameterized Queries** - Neo4j-compatible `$param` syntax for SQL injection prevention

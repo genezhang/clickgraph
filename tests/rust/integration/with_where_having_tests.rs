@@ -43,6 +43,7 @@ fn create_test_schema() -> GraphSchema {
         label_column: None,
         label_value: None,
         node_id_types: None,
+        source: None,
     };
 
     nodes.insert("Node".to_string(), node_schema);

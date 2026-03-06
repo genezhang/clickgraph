@@ -59,6 +59,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         },
     );
 
@@ -97,6 +98,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         },
     );
 
@@ -145,6 +147,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -186,6 +189,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -227,6 +231,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -391,6 +396,7 @@ fn test_non_polymorphic_relationship() {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         },
     );
 
@@ -425,6 +431,7 @@ fn test_non_polymorphic_relationship() {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -486,6 +493,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         },
     );
 
@@ -510,6 +518,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         },
     );
 
@@ -551,6 +560,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 

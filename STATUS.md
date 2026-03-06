@@ -1,14 +1,16 @@
 # ClickGraph Status
 
-*Updated: March 3, 2026*
+*Updated: March 5, 2026*
 
 ## Current Version: v0.6.3-dev
 
 Read-only Cypher-to-ClickHouse SQL query engine with Neo4j Browser compatibility.
+Supports both remote ClickHouse and embedded (in-process) mode via chdb.
 
-**Unit Tests**: 1,360 passing (100%, zero regressions)
-**Integration Tests**: 3,068 passing, 108 failing (environment-dependent), 171 xfailed
-**LDBC SNB**: 36/37 queries passing at sf0.003 and sf1 (97%) -- bi-16 blocked by CALL subquery
+**Unit Tests**: 1,180 passing (100%)
+**Integration Tests**: 183 passing (100%)
+**Embedded Tests**: 31 passing (unit + e2e)
+**LDBC SNB**: 36/37 queries passing at sf0.003 and sf1 (97%) — bi-16 blocked by CALL subquery
 **Benchmark**: 14/14 queries (100%)
 **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)
 
@@ -51,6 +53,8 @@ Read-only Cypher-to-ClickHouse SQL query engine with Neo4j Browser compatibility
 - **LLM-powered schema discovery**: Interactive schema generation from natural language via Anthropic/OpenAI
 - **GraphRAG structured output**: `format: "Graph"` returns deduplicated nodes, edges, and stats
 - **ClickHouse cluster load balancing**: `CLICKHOUSE_CLUSTER` for auto-discovery and load balancing
+- **Embedded mode** (`--features embedded`): `QueryExecutor` trait + `ChdbExecutor` + `clickgraph-embedded` crate — run Cypher queries in-process over Parquet/Iceberg/Delta/S3 without a ClickHouse server. Kuzu-compatible Rust API (`Database`, `Connection`, `QueryResult`). `source:` URI field in YAML schema. S3/GCS/Azure credential support via `StorageCredentials`.
+- **APOC Export Procedures**: Neo4j-compatible `CALL apoc.export.{csv|json|parquet}.query(cypher, destination, config)` — translates inner Cypher to SQL, resolves destination URI (local file, S3, GCS, Azure, HTTP), wraps in `INSERT INTO FUNCTION`. Works in server mode (HTTP + Bolt) and embedded mode.
 
 ## Current Limitations
 

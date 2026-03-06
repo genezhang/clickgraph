@@ -56,6 +56,7 @@ pub fn create_standard_schema() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            source: None,
         },
     );
 
@@ -98,6 +99,7 @@ pub fn create_standard_schema() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            source: None,
         },
     );
 
@@ -142,6 +144,7 @@ pub fn create_standard_schema() -> GraphSchema {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -175,6 +178,7 @@ pub fn create_standard_schema() -> GraphSchema {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -208,6 +212,7 @@ pub fn create_standard_schema() -> GraphSchema {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -254,6 +259,7 @@ pub fn create_fk_edge_schema() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            source: None,
         },
     );
 
@@ -288,6 +294,7 @@ pub fn create_fk_edge_schema() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            source: None,
         },
     );
 
@@ -326,6 +333,7 @@ pub fn create_fk_edge_schema() -> GraphSchema {
             is_fk_edge: true,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -365,6 +373,7 @@ pub fn create_denormalized_schema() -> GraphSchema {
             denormalized_source_table: Some("test.flights".to_string()),
             label_column: None,
             label_value: None,
+            source: None,
         },
     );
 
@@ -409,6 +418,7 @@ pub fn create_denormalized_schema() -> GraphSchema {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -462,6 +472,7 @@ pub fn create_composite_id_schema() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            source: None,
         },
     );
 
@@ -496,6 +507,7 @@ pub fn create_composite_id_schema() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            source: None,
         },
     );
 
@@ -534,6 +546,7 @@ pub fn create_composite_id_schema() -> GraphSchema {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -587,6 +600,7 @@ pub fn create_composite_id_schema() -> GraphSchema {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -638,6 +652,7 @@ pub fn create_polymorphic_schema() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            source: None,
         },
     );
 
@@ -680,6 +695,7 @@ pub fn create_polymorphic_schema() -> GraphSchema {
             denormalized_source_table: None,
             label_column: None,
             label_value: None,
+            source: None,
         },
     );
 
@@ -732,6 +748,7 @@ pub fn create_polymorphic_schema() -> GraphSchema {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -766,6 +783,7 @@ pub fn create_polymorphic_schema() -> GraphSchema {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 
@@ -800,6 +818,7 @@ pub fn create_polymorphic_schema() -> GraphSchema {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         },
     );
 

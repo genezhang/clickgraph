@@ -54,6 +54,7 @@ pub fn get_statement_query_type(statement: &CypherStatement) -> QueryType {
     match statement {
         CypherStatement::Query { query, .. } => get_query_type(query),
         CypherStatement::ProcedureCall(_) => QueryType::Procedure,
+        CypherStatement::CopyTo(_) => QueryType::Read,
     }
 }
 

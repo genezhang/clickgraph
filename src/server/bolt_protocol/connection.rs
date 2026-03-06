@@ -4,13 +4,13 @@
 //! version negotiation, message parsing, and connection lifecycle management.
 
 use bytes::Bytes;
-use clickhouse::Client;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::{timeout, Duration};
 
+use crate::executor::QueryExecutor;
 use crate::packstream; // Our vendored packstream module
 
 use super::errors::{BoltError, BoltResult};
@@ -47,13 +47,13 @@ where
         stream: S,
         context: Arc<Mutex<BoltContext>>,
         config: Arc<BoltConfig>,
-        clickhouse_client: Client,
+        executor: Arc<dyn QueryExecutor>,
     ) -> Self {
         BoltConnection {
             stream,
             context: context.clone(),
             config: config.clone(),
-            handler: BoltHandler::new(context, config, clickhouse_client),
+            handler: BoltHandler::new(context, config, executor),
         }
     }
 
@@ -578,14 +578,37 @@ mod tests {
 
     #[tokio::test]
     async fn test_bolt_connection_creation() {
+        use crate::executor::{ExecutorError, QueryExecutor};
+        use async_trait::async_trait;
+        use serde_json::Value;
+
+        struct StubExecutor;
+        #[async_trait]
+        impl QueryExecutor for StubExecutor {
+            async fn execute_json(
+                &self,
+                _sql: &str,
+                _role: Option<&str>,
+            ) -> Result<Vec<Value>, ExecutorError> {
+                Ok(vec![])
+            }
+            async fn execute_text(
+                &self,
+                _sql: &str,
+                _fmt: &str,
+                _role: Option<&str>,
+            ) -> Result<String, ExecutorError> {
+                Ok(String::new())
+            }
+        }
+
         let stream = MockStream::new(vec![]);
         let context = Arc::new(Mutex::new(BoltContext::new()));
         let config = Arc::new(BoltConfig::default());
-        // Create a test ClickHouse client (won't be used in unit tests)
-        let clickhouse_client = Client::default().with_url("http://localhost:8123");
+        let executor: Arc<dyn QueryExecutor> = Arc::new(StubExecutor);
 
-        let _connection = BoltConnection::new(stream, context, config, clickhouse_client);
-        // Just test that we can create the connection
+        let _connection = BoltConnection::new(stream, context, config, executor);
+        // Verify the connection is created without panics
         assert!(true);
     }
 

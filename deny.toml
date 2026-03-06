@@ -5,7 +5,10 @@
 # Check for security vulnerabilities from the RustSec advisory database
 db-urls = ["https://github.com/rustsec/advisory-db"]
 # Deny crates with known vulnerabilities
-ignore = []
+# RUSTSEC-2025-0134: rustls-pemfile is unmaintained, but this is a transitive
+# dependency of reqwest v0.11 which we cannot upgrade without a larger refactor.
+# Not a security vulnerability — the crate still functions correctly.
+ignore = ["RUSTSEC-2025-0134"]
 
 [licenses]
 # Allow common permissive and copyleft-compatible licenses

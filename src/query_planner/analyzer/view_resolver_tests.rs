@@ -36,6 +36,7 @@ mod tests {
             label_column: None,
             label_value: None,
             node_id_types: None,
+            source: None,
         };
         nodes.insert("User".to_string(), node_schema);
 
@@ -68,6 +69,7 @@ mod tests {
             is_fk_edge: false,
             constraints: None,
             edge_id_types: None,
+            source: None,
         };
         relationships.insert("FOLLOWS::User::User".to_string(), rel_schema);
 

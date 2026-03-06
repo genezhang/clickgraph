@@ -4,7 +4,6 @@
 //! It handles the complete Bolt protocol state machine and integrates with
 //! Brahmand's query processing pipeline.
 
-use clickhouse::Client;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -16,6 +15,7 @@ use super::result_transformer::extract_return_metadata;
 use super::{BoltConfig, BoltContext, ConnectionState};
 
 use crate::clickhouse_query_generator;
+use crate::executor::QueryExecutor;
 use crate::open_cypher_parser;
 use crate::query_planner;
 
@@ -314,8 +314,8 @@ pub struct BoltHandler {
     authenticator: Authenticator,
     /// Current authenticated user
     authenticated_user: Option<AuthenticatedUser>,
-    /// ClickHouse client for query execution
-    clickhouse_client: Client,
+    /// SQL executor for query execution
+    executor: Arc<dyn QueryExecutor>,
     /// Cached query results for streaming
     cached_results: Option<Vec<Vec<BoltValue>>>,
 }
@@ -325,14 +325,14 @@ impl BoltHandler {
     pub fn new(
         context: Arc<Mutex<BoltContext>>,
         config: Arc<BoltConfig>,
-        clickhouse_client: Client,
+        executor: Arc<dyn QueryExecutor>,
     ) -> Self {
         BoltHandler {
             context,
             config: config.clone(),
             authenticator: Authenticator::new(config.enable_auth, config.default_user.clone()),
             authenticated_user: None,
-            clickhouse_client,
+            executor,
             cached_results: None,
         }
     }
@@ -1427,7 +1427,7 @@ impl BoltHandler {
                         schema_name.as_deref().unwrap_or("default").to_string()
                     }
                 }
-                CypherStatement::ProcedureCall(_) => {
+                CypherStatement::ProcedureCall(_) | CypherStatement::CopyTo(_) => {
                     schema_name.as_deref().unwrap_or("default").to_string()
                 }
             },
@@ -1473,6 +1473,135 @@ impl BoltHandler {
         // ============================================================
         // PHASE 2: Parse and Transform (synchronous, single pass)
         // ============================================================
+
+        // ── COPY TO: intercept before general parse ──
+        // Extract all owned data in a sync helper so non-Send CopyToStatement
+        // is guaranteed dropped before any .await.
+        fn extract_copy_to_params(
+            query: &str,
+        ) -> Result<
+            Option<(
+                String,
+                String,
+                &'static str,
+                crate::procedures::apoc_export::ExportConfig,
+            )>,
+            BoltError,
+        > {
+            let query_upper = query.trim().to_uppercase();
+            if !query_upper.starts_with("COPY") {
+                return Ok(None);
+            }
+            let (_, stmt) = match open_cypher_parser::parse_cypher_statement(query) {
+                Ok(parsed) => parsed,
+                Err(_) => return Ok(None),
+            };
+            let copy_stmt = match stmt {
+                CypherStatement::CopyTo(c) => c,
+                _ => return Ok(None),
+            };
+            let inner_query = copy_stmt.query.to_string();
+            let destination = copy_stmt.destination.to_string();
+            let ch_format = if let Some(fmt) = copy_stmt.format {
+                crate::procedures::apoc_export::format_from_copy_format(fmt)
+                    .map_err(BoltError::query_error)?
+            } else {
+                crate::procedures::apoc_export::format_from_extension(&destination).ok_or_else(
+                    || {
+                        BoltError::query_error(format!(
+                            "Cannot determine format from '{}'. Use FORMAT clause.",
+                            destination
+                        ))
+                    },
+                )?
+            };
+            let config =
+                crate::procedures::apoc_export::ExportConfig::from_copy_options(&copy_stmt.options);
+            Ok(Some((inner_query, destination, ch_format, config)))
+        }
+
+        if let Some((inner_query, destination, ch_format, config)) = extract_copy_to_params(query)?
+        {
+            log::info!("Bolt COPY TO: destination={}", destination);
+
+            let graph_schema_obj = graph_catalog::get_graph_schema_by_name(&effective_schema)
+                .await
+                .map_err(BoltError::query_error)?;
+            crate::server::query_context::set_current_schema(Arc::new(graph_schema_obj.clone()));
+
+            // Translate inner Cypher → SQL
+            let inner_sql = {
+                let (_, inner_stmt) = open_cypher_parser::parse_cypher_statement(&inner_query)
+                    .map_err(|e| {
+                        BoltError::query_error(format!("Inner Cypher parse error: {}", e))
+                    })?;
+
+                let inner_mapper = crate::server::bolt_protocol::id_mapper::IdMapper::new();
+                let inner_arena = crate::query_planner::ast_transform::StringArena::new();
+                let (inner_cypher, _) = crate::query_planner::ast_transform::transform_id_functions(
+                    &inner_arena,
+                    inner_stmt,
+                    &inner_mapper,
+                    Some(&graph_schema_obj),
+                );
+
+                crate::query_planner::logical_plan::reset_all_counters();
+                let (logical_plan, plan_ctx) = query_planner::evaluate_read_statement(
+                    inner_cypher,
+                    &graph_schema_obj,
+                    None,
+                    None,
+                    None,
+                )
+                .map_err(|e| {
+                    BoltError::query_error(format!("Inner Cypher planning error: {}", e))
+                })?;
+
+                let render_plan = logical_plan
+                    .to_render_plan_with_ctx(&graph_schema_obj, Some(&plan_ctx), None)
+                    .map_err(|e| {
+                        BoltError::query_error(format!("Inner Cypher render error: {}", e))
+                    })?;
+
+                clickhouse_query_generator::generate_sql(render_plan, 1000)
+            };
+
+            let export_sql = crate::procedures::apoc_export::build_export_sql(
+                &inner_sql,
+                &destination,
+                ch_format,
+                &config,
+            )
+            .map_err(BoltError::query_error)?;
+
+            log::debug!("Bolt COPY TO SQL: {}", export_sql);
+
+            self.executor
+                .execute_text(&export_sql, "TabSeparated", role.as_deref())
+                .await
+                .map_err(|e| BoltError::query_error(format!("COPY TO execution failed: {}", e)))?;
+
+            // Cache a single result record for PULL
+            let result_record = vec![
+                BoltValue::Json(serde_json::json!(destination)),
+                BoltValue::Json(serde_json::json!(ch_format)),
+                BoltValue::Json(serde_json::json!(inner_query)),
+            ];
+            self.cached_results = Some(vec![result_record]);
+
+            // Return metadata
+            let mut metadata = HashMap::new();
+            metadata.insert(
+                "fields".to_string(),
+                Value::Array(vec![
+                    Value::String("file".to_string()),
+                    Value::String("format".to_string()),
+                    Value::String("source".to_string()),
+                ]),
+            );
+            metadata.insert("t_first".to_string(), Value::Number(0.into()));
+            return Ok(metadata);
+        }
 
         // Parse Cypher statement for transformation
         let parsed_stmt = match open_cypher_parser::parse_cypher_statement(query) {
@@ -1520,6 +1649,13 @@ impl BoltHandler {
                     CypherStatement::ProcedureCall(proc_call) => ExecutionPlan::SimpleProcedure {
                         proc_name: proc_call.procedure_name.to_string(),
                     },
+                    CypherStatement::CopyTo(_) => {
+                        // COPY TO is handled by the early intercept above;
+                        // this branch is unreachable for valid COPY TO queries.
+                        return Err(BoltError::query_error(
+                            "Unexpected COPY TO in execution plan phase".to_string(),
+                        ));
+                    }
                     CypherStatement::Query {
                         query: query_ast,
                         union_clauses,
@@ -1601,6 +1737,12 @@ impl BoltHandler {
                     // Procedures are handled above, this shouldn't happen
                     query_planner::types::QueryType::Read // dummy value
                 }
+                CypherStatement::CopyTo(_) => {
+                    // COPY TO is handled by the early intercept above
+                    return Err(BoltError::query_error(
+                        "Unexpected COPY TO in query type phase".to_string(),
+                    ));
+                }
             };
 
             // transformed_stmt is dropped here at end of scope!
@@ -1626,16 +1768,142 @@ impl BoltHandler {
 
             let results = match exec_plan {
                 ExecutionPlan::SimpleProcedure { proc_name } => {
-                    log::info!("Executing simple procedure via Bolt: {}", proc_name);
-                    crate::procedures::executor::execute_procedure_by_name(
-                        &proc_name,
-                        &effective_schema,
-                        &registry,
-                    )
-                    .await
-                    .map_err(|e| {
-                        BoltError::query_error(format!("Procedure execution failed: {}", e))
-                    })?
+                    // ── Export procedures: apoc.export.{csv|json|parquet}.query() ──
+                    if crate::procedures::apoc_export::is_export_procedure(&proc_name) {
+                        log::info!("Executing export procedure via Bolt: {}", proc_name);
+
+                        let ch_format =
+                            crate::procedures::apoc_export::format_from_procedure_name(&proc_name)
+                                .map_err(BoltError::query_error)?;
+
+                        // Re-parse to extract arguments
+                        let export_args = {
+                            let (_, stmt) = open_cypher_parser::parse_cypher_statement(query)
+                                .map_err(|e| {
+                                    BoltError::query_error(format!("Export parse error: {}", e))
+                                })?;
+                            let expressions: Vec<_> = match &stmt {
+                                CypherStatement::ProcedureCall(pc) => pc.arguments.iter().collect(),
+                                CypherStatement::Query { query: q, .. } => {
+                                    let cc = q.call_clause.as_ref().ok_or_else(|| {
+                                        BoltError::query_error(
+                                            "No CALL clause in export query".to_string(),
+                                        )
+                                    })?;
+                                    cc.arguments.iter().map(|a| &a.value).collect()
+                                }
+                                CypherStatement::CopyTo(_) => {
+                                    // COPY TO is handled by the early intercept above
+                                    return Err(BoltError::query_error(
+                                        "Unexpected COPY TO in export args extraction".to_string(),
+                                    ));
+                                }
+                            };
+                            crate::procedures::apoc_export::parse_export_call(&expressions)
+                                .map_err(BoltError::query_error)?
+                        };
+
+                        // Resolve schema
+                        let graph_schema =
+                            graph_catalog::get_graph_schema_by_name(&effective_schema)
+                                .await
+                                .map_err(BoltError::query_error)?;
+                        crate::server::query_context::set_current_schema(Arc::new(
+                            graph_schema.clone(),
+                        ));
+
+                        // Translate inner Cypher → SQL
+                        let inner_sql = {
+                            let (_, inner_stmt) = open_cypher_parser::parse_cypher_statement(
+                                &export_args.cypher_query,
+                            )
+                            .map_err(|e| {
+                                BoltError::query_error(format!("Inner Cypher parse error: {}", e))
+                            })?;
+
+                            use crate::server::bolt_protocol::id_mapper::IdMapper;
+                            let inner_mapper = IdMapper::new();
+                            let inner_arena =
+                                crate::query_planner::ast_transform::StringArena::new();
+                            let (inner_cypher, _) =
+                                crate::query_planner::ast_transform::transform_id_functions(
+                                    &inner_arena,
+                                    inner_stmt,
+                                    &inner_mapper,
+                                    Some(&graph_schema),
+                                );
+
+                            crate::query_planner::logical_plan::reset_all_counters();
+                            let (logical_plan, plan_ctx) = query_planner::evaluate_read_statement(
+                                inner_cypher,
+                                &graph_schema,
+                                None,
+                                None,
+                                None,
+                            )
+                            .map_err(|e| {
+                                BoltError::query_error(format!(
+                                    "Inner Cypher planning error: {}",
+                                    e
+                                ))
+                            })?;
+
+                            let render_plan = logical_plan
+                                .to_render_plan_with_ctx(&graph_schema, Some(&plan_ctx), None)
+                                .map_err(|e| {
+                                    BoltError::query_error(format!(
+                                        "Inner Cypher render error: {}",
+                                        e
+                                    ))
+                                })?;
+
+                            let max_cte_depth = 1000;
+                            clickhouse_query_generator::generate_sql(render_plan, max_cte_depth)
+                        };
+
+                        // Build export SQL
+                        let export_sql = crate::procedures::apoc_export::build_export_sql(
+                            &inner_sql,
+                            &export_args.destination,
+                            ch_format,
+                            &export_args.config,
+                        )
+                        .map_err(BoltError::query_error)?;
+
+                        log::info!("Bolt export SQL: {}", export_sql);
+
+                        // Execute
+                        self.executor
+                            .execute_text(&export_sql, "TabSeparated", role.as_deref())
+                            .await
+                            .map_err(|e| {
+                                BoltError::query_error(format!("Export execution failed: {}", e))
+                            })?;
+
+                        // Return status as a single record
+                        vec![std::collections::HashMap::from([
+                            (
+                                "file".to_string(),
+                                serde_json::json!(export_args.destination),
+                            ),
+                            ("format".to_string(), serde_json::json!(ch_format)),
+                            (
+                                "source".to_string(),
+                                serde_json::json!(export_args.cypher_query),
+                            ),
+                        ])]
+                    } else {
+                        log::info!("Executing simple procedure via Bolt: {}", proc_name);
+                        crate::procedures::executor::execute_procedure_by_name(
+                            &proc_name,
+                            &effective_schema,
+                            &registry,
+                        )
+                        .await
+                        .map_err(|e| {
+                            BoltError::query_error(format!("Procedure execution failed: {}", e))
+                        })?
+                    }
                 }
                 ExecutionPlan::ProcedureWithReturn { proc_name } => {
                     log::info!("Executing procedure with RETURN via Bolt: {}", proc_name);
@@ -1898,71 +2166,31 @@ impl BoltHandler {
 
         log::info!("📊 Executing SQL: {}", final_sql);
 
-        // Apply role for ClickHouse RBAC (Phase 2)
-        if let Some(ref role_name) = role {
-            crate::server::clickhouse_client::set_role(&self.clickhouse_client, role_name)
-                .await
-                .map_err(|e| {
-                    BoltError::query_error(format!(
-                        "Failed to set ClickHouse role: {}. Ensure role is granted to user.",
-                        e
-                    ))
-                })?;
-        }
+        // Execute the query using the backend-agnostic executor
+        let rows_values = self
+            .executor
+            .execute_json(&final_sql, role.as_deref())
+            .await
+            .map_err(|e| BoltError::query_error(format!("Query execution failed: {}", e)))?;
 
-        // Execute the query and fetch results as JSON bytes
-        use tokio::io::AsyncBufReadExt;
-        let result_reader = self
-            .clickhouse_client
-            .query(&final_sql)
-            .fetch_bytes("JSONEachRow")
-            .map_err(|e| {
-                BoltError::query_error(format!("ClickHouse query execution failed: {}", e))
-            })?;
-
-        // Parse JSON results line by line
+        // Parse JSON results into field_names + row vectors
         let mut rows = Vec::new();
         let mut field_names = Vec::new();
 
-        let mut lines = result_reader.lines();
-
-        loop {
-            match lines.next_line().await {
-                Ok(Some(line)) => {
-                    if line.trim().is_empty() {
-                        continue;
+        for value in rows_values {
+            match value {
+                Value::Object(obj) => {
+                    if field_names.is_empty() {
+                        field_names = obj.keys().cloned().collect();
                     }
-
-                    match serde_json::from_str::<serde_json::Value>(&line) {
-                        Ok(Value::Object(obj)) => {
-                            // Extract field names from first row
-                            if field_names.is_empty() {
-                                field_names = obj.keys().cloned().collect();
-                            }
-
-                            // Extract field values in consistent order
-                            let mut row_fields = Vec::new();
-                            for field_name in &field_names {
-                                row_fields
-                                    .push(obj.get(field_name).cloned().unwrap_or(Value::Null));
-                            }
-                            rows.push(row_fields);
-                        }
-                        _ => {
-                            log::warn!("Unexpected JSON format in result row: {}", line);
-                        }
+                    let mut row_fields = Vec::new();
+                    for field_name in &field_names {
+                        row_fields.push(obj.get(field_name).cloned().unwrap_or(Value::Null));
                     }
+                    rows.push(row_fields);
                 }
-                Ok(None) => {
-                    // End of stream - normal completion
-                    break;
-                }
-                Err(e) => {
-                    // ClickHouse error during result streaming (e.g., unknown column)
-                    return Err(BoltError::query_error(format!(
-                        "ClickHouse error while reading results: {}",
-                        e
-                    )));
+                _ => {
+                    log::warn!("Unexpected JSON format in result row");
                 }
             }
         }
@@ -2064,13 +2292,37 @@ impl BoltHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::executor::{ExecutorError, QueryExecutor};
+    use async_trait::async_trait;
+    use serde_json::Value;
+
+    /// Minimal no-op executor for unit tests (never actually called).
+    struct StubExecutor;
+
+    #[async_trait]
+    impl QueryExecutor for StubExecutor {
+        async fn execute_json(
+            &self,
+            _sql: &str,
+            _role: Option<&str>,
+        ) -> Result<Vec<Value>, ExecutorError> {
+            Ok(vec![])
+        }
+        async fn execute_text(
+            &self,
+            _sql: &str,
+            _format: &str,
+            _role: Option<&str>,
+        ) -> Result<String, ExecutorError> {
+            Ok(String::new())
+        }
+    }
 
     fn create_test_handler() -> BoltHandler {
         let context = Arc::new(Mutex::new(BoltContext::new()));
         let config = Arc::new(BoltConfig::default());
-        // Create a test ClickHouse client (won't be used in unit tests)
-        let clickhouse_client = clickhouse::Client::default().with_url("http://localhost:8123");
-        BoltHandler::new(context, config, clickhouse_client)
+        let executor: Arc<dyn QueryExecutor> = Arc::new(StubExecutor);
+        BoltHandler::new(context, config, executor)
     }
 
     #[tokio::test]

@@ -9,7 +9,6 @@ use axum::{
 use clickhouse::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::AsyncBufReadExt;
 
 use crate::{
     clickhouse_query_generator,
@@ -266,6 +265,117 @@ pub async fn query_handler(
         }
     }
 
+    // ── COPY TO export statements ──
+    // Intercept COPY (<cypher>) TO '<dest>' before procedure or query dispatch.
+    // Extract all owned data in a sync block so no borrows persist across .await.
+    let copy_to_params = if clean_upper.starts_with("COPY") {
+        if let Ok((_, CypherStatement::CopyTo(copy_stmt))) =
+            open_cypher_parser::parse_cypher_statement(&clean_query)
+        {
+            let inner_query = copy_stmt.query.to_string();
+            let destination = copy_stmt.destination.to_string();
+            let ch_format = if let Some(fmt) = copy_stmt.format {
+                crate::procedures::apoc_export::format_from_copy_format(fmt)
+                    .map_err(|e| (StatusCode::BAD_REQUEST, e))?
+            } else {
+                crate::procedures::apoc_export::format_from_extension(&destination)
+                    .ok_or_else(|| {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            format!(
+                                "Cannot determine format from extension of '{}'. Use FORMAT clause.",
+                                destination
+                            ),
+                        )
+                    })?
+            };
+            let config =
+                crate::procedures::apoc_export::ExportConfig::from_copy_options(&copy_stmt.options);
+            Some((inner_query, destination, ch_format, config))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some((inner_query, destination, ch_format, config)) = copy_to_params {
+        log::info!("Detected COPY TO: destination={}", destination);
+        let export_start = Instant::now();
+
+        // Resolve schema
+        let schema_name_for_export = schema_name_param
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        let graph_schema =
+            match graph_catalog::get_graph_schema_by_name(&schema_name_for_export).await {
+                Ok(s) => s,
+                Err(e) => return Err((StatusCode::BAD_REQUEST, e)),
+            };
+
+        // Translate inside a task-local QueryContext so set_current_schema() works
+        let context = QueryContext::new(Some(schema_name_for_export.clone()));
+        let export_sql = with_query_context(context, async {
+            crate::server::query_context::set_current_schema(Arc::new(graph_schema.clone()));
+
+            let inner_sql = translate_cypher_to_sql(
+                &inner_query,
+                &graph_schema,
+                &schema_name_for_export,
+                app_state.config.max_cte_depth,
+            )
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+            crate::procedures::apoc_export::build_export_sql(
+                &inner_sql,
+                &destination,
+                ch_format,
+                &config,
+            )
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))
+        })
+        .await?;
+
+        log::debug!("COPY TO SQL: {}", export_sql);
+
+        // If sql_only, return the SQL
+        if sql_only {
+            let response = SqlOnlyResponse {
+                cypher_query: payload.query.clone(),
+                generated_sql: export_sql,
+                execution_mode: "sql_only".to_string(),
+            };
+            return Ok(Json(response).into_response());
+        }
+
+        // Execute
+        let role = payload.role.as_deref();
+        match app_state
+            .executor
+            .execute_text(&export_sql, "TabSeparated", role)
+            .await
+        {
+            Ok(_) => {
+                log::info!(
+                    "COPY TO completed in {:.3} seconds",
+                    export_start.elapsed().as_secs_f64()
+                );
+                let response = serde_json::json!({
+                    "file": destination,
+                    "format": ch_format,
+                    "source": inner_query,
+                });
+                return Ok(Json(response).into_response());
+            }
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("COPY TO execution failed: {}", e),
+                ));
+            }
+        }
+    }
+
     // Handle procedure calls early (before query context)
     // Parse to check if it's a procedure call or procedure-only query
     let (_is_procedure, is_union, proc_name_opt) =
@@ -293,6 +403,7 @@ pub async fn query_handler(
                         .call_clause
                         .as_ref()
                         .map(|cc| cc.procedure_name.to_string()),
+                    CypherStatement::CopyTo(_) => None,
                 }
             } else {
                 None
@@ -341,6 +452,121 @@ pub async fn query_handler(
 
     if let Some(proc_name) = proc_name_opt {
         log::info!("Executing procedure: {}", proc_name);
+
+        // ── Export procedures: apoc.export.{csv|json|parquet}.query() ──
+        // These need SQL execution (not just schema introspection), so they
+        // bypass ProcedureRegistry and run the inner Cypher → SQL pipeline.
+        if crate::procedures::apoc_export::is_export_procedure(&proc_name) {
+            log::info!("Detected export procedure: {}", proc_name);
+
+            let export_start = Instant::now();
+
+            // Determine the output format from the procedure name
+            let ch_format = crate::procedures::apoc_export::format_from_procedure_name(&proc_name)
+                .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+            // Re-parse to extract arguments (parser is fast, export is rare)
+            let export_args = {
+                let (_, stmt) =
+                    open_cypher_parser::parse_cypher_statement(&clean_query).map_err(|e| {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            format!("Failed to parse export call: {}", e),
+                        )
+                    })?;
+                // StandaloneProcedureCall has Vec<Expression> arguments;
+                // CallClause (in-query CALL) has Vec<CallArgument> with .value field.
+                let expressions: Vec<_> = match &stmt {
+                    CypherStatement::ProcedureCall(pc) => pc.arguments.iter().collect(),
+                    CypherStatement::Query { query, .. } => {
+                        let cc = query.call_clause.as_ref().ok_or_else(|| {
+                            (
+                                StatusCode::BAD_REQUEST,
+                                "No CALL clause found in export query".to_string(),
+                            )
+                        })?;
+                        cc.arguments.iter().map(|a| &a.value).collect()
+                    }
+                    CypherStatement::CopyTo(_) => {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            "COPY TO statements are handled separately".to_string(),
+                        ));
+                    }
+                };
+                crate::procedures::apoc_export::parse_export_call(&expressions)
+                    .map_err(|e| (StatusCode::BAD_REQUEST, e))?
+            };
+
+            // Resolve schema
+            // Resolve schema
+            let schema_name_for_export = schema_name_param
+                .clone()
+                .unwrap_or_else(|| "default".to_string());
+            let graph_schema =
+                match graph_catalog::get_graph_schema_by_name(&schema_name_for_export).await {
+                    Ok(s) => s,
+                    Err(e) => return Err((StatusCode::BAD_REQUEST, e)),
+                };
+            crate::server::query_context::set_current_schema(Arc::new(graph_schema.clone()));
+
+            // Translate inner Cypher → SQL
+            let inner_sql = translate_cypher_to_sql(
+                &export_args.cypher_query,
+                &graph_schema,
+                &schema_name_for_export,
+                app_state.config.max_cte_depth,
+            )
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+            // Build INSERT INTO FUNCTION ... SELECT ...
+            let export_sql = crate::procedures::apoc_export::build_export_sql(
+                &inner_sql,
+                &export_args.destination,
+                ch_format,
+                &export_args.config,
+            )
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+            log::info!("Export SQL: {}", export_sql);
+
+            // If sql_only, return the SQL
+            if sql_only {
+                let response = SqlOnlyResponse {
+                    cypher_query: payload.query.clone(),
+                    generated_sql: export_sql,
+                    execution_mode: "sql_only".to_string(),
+                };
+                return Ok(Json(response).into_response());
+            }
+
+            // Execute the export SQL (INSERT produces no result rows)
+            let role = payload.role.as_deref();
+            match app_state
+                .executor
+                .execute_text(&export_sql, "TabSeparated", role)
+                .await
+            {
+                Ok(_) => {
+                    log::info!(
+                        "Export completed in {:.3} seconds",
+                        export_start.elapsed().as_secs_f64()
+                    );
+                    let response = serde_json::json!({
+                        "file": export_args.destination,
+                        "format": ch_format,
+                        "source": export_args.cypher_query,
+                    });
+                    return Ok(Json(response).into_response());
+                }
+                Err(e) => {
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Export execution failed: {}", e),
+                    ));
+                }
+            }
+        }
 
         let registry = crate::procedures::ProcedureRegistry::new();
         let schema_name = schema_name_param.unwrap_or_else(|| "default".to_string());
@@ -402,6 +628,10 @@ pub async fn query_handler(
                 }
                 open_cypher_parser::ast::CypherStatement::ProcedureCall(_) => {
                     // Procedure calls don't have USE clauses
+                    schema_name_param.unwrap_or_else(|| "default".to_string())
+                }
+                open_cypher_parser::ast::CypherStatement::CopyTo(_) => {
+                    // COPY TO uses request parameter or "default"
                     schema_name_param.unwrap_or_else(|| "default".to_string())
                 }
             }
@@ -671,6 +901,12 @@ async fn query_handler_inner(
                         "Standalone procedure calls should not reach this path".to_string(),
                     ));
                 }
+                CypherStatement::CopyTo(_) => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        "COPY TO statements are handled separately".to_string(),
+                    ));
+                }
             };
             let logical_plan =
                 match query_planner::evaluate_call_query(query_ast.clone(), &graph_schema) {
@@ -916,12 +1152,14 @@ async fn query_handler_inner(
         )
         .await
     } else {
-        ddl_handler(
-            app_state.clickhouse_client.clone(),
-            ch_sql_queries,
-            maybe_schema_elem,
-        )
-        .await
+        let ch_client = app_state.clickhouse_client.clone().ok_or_else(|| {
+            (
+                StatusCode::NOT_IMPLEMENTED,
+                "DDL operations are not available in embedded mode (no ClickHouse connection)"
+                    .to_string(),
+            )
+        })?;
+        ddl_handler(ch_client, ch_sql_queries, maybe_schema_elem).await
     };
     metrics.execution_time = execution_start.elapsed().as_secs_f64();
 
@@ -1062,40 +1300,16 @@ async fn execute_json_rows(
 
     log::debug!("Executing SQL (graph format):\n{}", final_sql);
 
-    let client = app_state.connection_pool.get_client(role.as_deref()).await;
-    let mut lines = client
-        .query(&final_sql)
-        .fetch_bytes("JSONEachRow")
+    app_state
+        .executor
+        .execute_json(&final_sql, role.as_deref())
+        .await
         .map_err(|e| {
-            log::error!(
-                "ClickHouse query failed. SQL was:\n{}\nError: {}",
-                final_sql,
-                e
-            );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Clickhouse Error: {}", e),
+                format!("Executor error: {}", e),
             )
-        })?
-        .lines();
-
-    let mut rows = Vec::new();
-    while let Some(line) = lines.next_line().await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Clickhouse Error: {}", e),
-        )
-    })? {
-        let value: Value = serde_json::from_str(&line).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Invalid JSON from ClickHouse: {}", e),
-            )
-        })?;
-        rows.push(value);
-    }
-
-    Ok(rows)
+        })
 }
 
 async fn execute_cte_queries(
@@ -1110,45 +1324,22 @@ async fn execute_cte_queries(
     // Log full SQL for debugging (especially helpful when ClickHouse truncates errors)
     log::debug!("Executing SQL:\n{}", final_sql);
 
-    // Get role-based connection from pool
-    // Note: We use role-specific connection pools instead of SET ROLE for better performance
-    // and to avoid race conditions. The connection pool maintains separate pools per role.
-    let client = app_state.connection_pool.get_client(role.as_deref()).await;
-
     if output_format == OutputFormat::Pretty
         || output_format == OutputFormat::PrettyCompact
         || output_format == OutputFormat::Csv
         || output_format == OutputFormat::CSVWithNames
     {
-        let mut lines = client
-            .query(&final_sql)
-            .fetch_bytes(output_format)
+        let format_str: String = output_format.into();
+        let text = app_state
+            .executor
+            .execute_text(&final_sql, &format_str, role.as_deref())
+            .await
             .map_err(|e| {
-                // Log full SQL on error for debugging
-                log::error!(
-                    "ClickHouse query failed. SQL was:\n{}\nError: {}",
-                    final_sql,
-                    e
-                );
                 (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Clickhouse Error: {}", e),
+                    format!("Executor error: {}", e),
                 )
-            })?
-            .lines();
-
-        let mut rows: Vec<String> = vec![];
-        while let Some(line) = lines.next_line().await.map_err(|e| {
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Clickhouse Error: {}", e),
-            )
-        })? {
-            // let value: serde_json::Value = serde_json::de::from_str(&line).unwrap();
-            rows.push(line);
-        }
-
-        let text = rows.join("\n");
+            })?;
 
         let mut response = (StatusCode::OK, text).into_response();
         response
@@ -1156,46 +1347,16 @@ async fn execute_cte_queries(
             .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
         Ok(response)
     } else {
-        let mut lines = client
-            .query(&final_sql)
-            .fetch_bytes("JSONEachRow")
+        let rows = app_state
+            .executor
+            .execute_json(&final_sql, role.as_deref())
+            .await
             .map_err(|e| {
-                // Log full SQL on error for debugging
-                log::error!(
-                    "ClickHouse query failed. SQL was:\n{}\nError: {}",
-                    final_sql,
-                    e
-                );
                 (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Clickhouse Error: {}", e),
-                )
-            })?
-            .lines();
-
-        let mut rows: Vec<Value> = vec![];
-        while let Some(line) = lines.next_line().await.map_err(|e| {
-            // Log full SQL on error for debugging
-            log::error!(
-                "ClickHouse response parsing failed. SQL was:\n{}\nError: {}",
-                final_sql,
-                e
-            );
-            (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Clickhouse Error: {}", e),
-            )
-        })? {
-            let value: serde_json::Value = serde_json::de::from_str(&line).map_err(|e| {
-                log::error!("Failed to parse JSON from ClickHouse response: {}", e);
-                log::error!("Invalid JSON line: {}", line);
-                (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Invalid JSON from ClickHouse: {}", e),
+                    format!("Executor error: {}", e),
                 )
             })?;
-            rows.push(value);
-        }
 
         // Wrap results in an object with "results" key for consistency with Neo4j format
         let response_obj = serde_json::json!({
@@ -1416,7 +1577,7 @@ pub async fn load_schema_handler(
     match graph_catalog::load_schema_from_content(
         &payload.schema_name,
         &payload.config_content,
-        Some(app_state.clickhouse_client.clone()),
+        app_state.clickhouse_client.clone(),
         validate_schema,
     )
     .await
@@ -1466,6 +1627,55 @@ pub async fn get_schema_handler(
         )),
     }
 }
+
+/// Translate a Cypher query string into ClickHouse SQL.
+///
+/// Used by export procedures to compile the inner Cypher query.
+/// Runs the full pipeline: parse → plan → render → SQL generate.
+fn translate_cypher_to_sql(
+    cypher: &str,
+    graph_schema: &GraphSchema,
+    schema_name: &str,
+    max_cte_depth: u32,
+) -> Result<String, String> {
+    log::debug!(
+        "Translating inner Cypher query for schema '{}'",
+        schema_name
+    );
+    // Parse
+    let (_, parsed_stmt) = open_cypher_parser::parse_cypher_statement(cypher)
+        .map_err(|e| format!("Inner Cypher parse error: {}", e))?;
+
+    // id() transform (stateless for export — no IdMapper scope needed)
+    use crate::query_planner::ast_transform;
+    use crate::server::bolt_protocol::id_mapper::IdMapper;
+    let id_mapper = IdMapper::new();
+    let ast_arena = ast_transform::StringArena::new();
+    let (cypher_statement, _) = ast_transform::transform_id_functions(
+        &ast_arena,
+        parsed_stmt,
+        &id_mapper,
+        Some(graph_schema),
+    );
+
+    // Plan
+    crate::query_planner::logical_plan::reset_all_counters();
+    let (logical_plan, plan_ctx) =
+        query_planner::evaluate_read_statement(cypher_statement, graph_schema, None, None, None)
+            .map_err(|e| format!("Inner Cypher planning error: {}", e))?;
+
+    // Render
+    let render_plan = logical_plan
+        .to_render_plan_with_ctx(graph_schema, Some(&plan_ctx), None)
+        .map_err(|e| format!("Inner Cypher render error: {}", e))?;
+
+    // Generate SQL
+    Ok(clickhouse_query_generator::generate_sql(
+        render_plan,
+        max_cte_depth,
+    ))
+}
+
 /// Extract a schema name from a leading `USE <schema>` clause in a Cypher query.
 ///
 /// This lightweight text-based extraction mirrors the normal path's USE handling
@@ -1536,8 +1746,19 @@ pub async fn introspect_handler(
         ));
     }
 
-    let response =
-        SchemaDiscovery::introspect(&app_state.clickhouse_client, &payload.database).await;
+    let ch_client = match &app_state.clickhouse_client {
+        Some(c) => c,
+        None => {
+            return Err((
+                StatusCode::NOT_IMPLEMENTED,
+                Json(
+                    serde_json::json!({ "error": "Schema introspection is not available in embedded mode (no ClickHouse connection)" }),
+                ),
+            ));
+        }
+    };
+
+    let response = SchemaDiscovery::introspect(ch_client, &payload.database).await;
 
     match response {
         Ok(resp) => Ok(Json(serde_json::to_value(resp).unwrap())),
@@ -1575,8 +1796,19 @@ pub async fn discover_prompt_handler(
     }
 
     // Introspect the database
-    let introspect_result =
-        SchemaDiscovery::introspect(&app_state.clickhouse_client, &payload.database).await;
+    let ch_client = match &app_state.clickhouse_client {
+        Some(c) => c,
+        None => {
+            return Err((
+                StatusCode::NOT_IMPLEMENTED,
+                Json(
+                    serde_json::json!({ "error": "Schema discovery is not available in embedded mode (no ClickHouse connection)" }),
+                ),
+            ));
+        }
+    };
+
+    let introspect_result = SchemaDiscovery::introspect(ch_client, &payload.database).await;
 
     match introspect_result {
         Ok(resp) => {
