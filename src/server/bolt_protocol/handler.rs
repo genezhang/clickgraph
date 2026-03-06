@@ -1660,6 +1660,9 @@ impl BoltHandler {
                             graph_catalog::get_graph_schema_by_name(&effective_schema)
                                 .await
                                 .map_err(BoltError::query_error)?;
+                        crate::server::query_context::set_current_schema(Arc::new(
+                            graph_schema.clone(),
+                        ));
 
                         // Translate inner Cypher → SQL
                         let inner_sql = {
@@ -1723,7 +1726,7 @@ impl BoltHandler {
 
                         // Execute
                         self.executor
-                            .execute_text(&export_sql, "TabSeparated", None)
+                            .execute_text(&export_sql, "TabSeparated", role.as_deref())
                             .await
                             .map_err(|e| {
                                 BoltError::query_error(format!("Export execution failed: {}", e))

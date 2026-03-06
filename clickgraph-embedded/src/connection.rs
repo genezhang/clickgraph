@@ -244,10 +244,22 @@ impl<'db> Connection<'db> {
     }
 
     async fn query_async(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
-        // Intercept CALL apoc.export.* — these need export logic, not regular query
-        let trimmed_upper = cypher.trim().to_uppercase();
-        if trimmed_upper.starts_with("CALL") && trimmed_upper.contains("APOC.EXPORT.") {
-            return self.handle_export_call(cypher).await;
+        // Intercept CALL apoc.export.* — parse first to avoid false positives
+        if let Ok((_, stmt)) = clickgraph::open_cypher_parser::parse_cypher_statement(cypher) {
+            let proc_name = match &stmt {
+                clickgraph::open_cypher_parser::ast::CypherStatement::ProcedureCall(pc) => {
+                    Some(pc.procedure_name.to_string())
+                }
+                clickgraph::open_cypher_parser::ast::CypherStatement::Query { query, .. } => query
+                    .call_clause
+                    .as_ref()
+                    .map(|cc| cc.procedure_name.to_string()),
+            };
+            if let Some(name) = proc_name {
+                if clickgraph::procedures::apoc_export::is_export_procedure(&name) {
+                    return self.handle_export_call(cypher).await;
+                }
+            }
         }
 
         use clickgraph::clickhouse_query_generator::cypher_to_sql;

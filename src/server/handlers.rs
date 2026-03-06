@@ -381,6 +381,7 @@ pub async fn query_handler(
             };
 
             // Resolve schema
+            // Resolve schema
             let schema_name_for_export = schema_name_param
                 .clone()
                 .unwrap_or_else(|| "default".to_string());
@@ -429,12 +430,14 @@ pub async fn query_handler(
                 .await
             {
                 Ok(_) => {
-                    let elapsed = export_start.elapsed().as_secs_f64();
+                    log::info!(
+                        "Export completed in {:.3} seconds",
+                        export_start.elapsed().as_secs_f64()
+                    );
                     let response = serde_json::json!({
                         "file": export_args.destination,
                         "format": ch_format,
                         "source": export_args.cypher_query,
-                        "time_ms": (elapsed * 1000.0).round() as u64,
                     });
                     return Ok(Json(response).into_response());
                 }
@@ -1496,6 +1499,7 @@ pub async fn get_schema_handler(
         )),
     }
 }
+
 /// Translate a Cypher query string into ClickHouse SQL.
 ///
 /// Used by export procedures to compile the inner Cypher query.
@@ -1503,9 +1507,13 @@ pub async fn get_schema_handler(
 fn translate_cypher_to_sql(
     cypher: &str,
     graph_schema: &GraphSchema,
-    _schema_name: &str,
+    schema_name: &str,
     max_cte_depth: u32,
 ) -> Result<String, String> {
+    log::debug!(
+        "Translating inner Cypher query for schema '{}'",
+        schema_name
+    );
     // Parse
     let (_, parsed_stmt) = open_cypher_parser::parse_cypher_statement(cypher)
         .map_err(|e| format!("Inner Cypher parse error: {}", e))?;
