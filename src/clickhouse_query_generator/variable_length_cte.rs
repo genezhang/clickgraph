@@ -78,6 +78,16 @@ pub struct VariableLengthCteGenerator<'a> {
     pub intermediate_node_label: Option<String>, // Label value for intermediate hops (e.g., "Group")
     // Weighted shortest path: use a pre-computed edge weight CTE instead of direct edge table
     pub weight_cte: Option<WeightCteConfig>,
+    /// Whether the query uses `relationships(path)` — controls path_relationships array growth.
+    /// When false and path_variable is set, path_relationships is generated as `[]` (no growth),
+    /// saving ~24 bytes/element/hop in the recursive CTE. Default: true for backwards compat.
+    pub needs_path_relationships: bool,
+    /// Lightweight BFS mode for shortestPath queries that only need length(path).
+    /// Generates a global-visited-set BFS (node_id, hop) instead of per-path tracking.
+    pub use_bfs_mode: bool,
+    /// True when the original edge direction is Either (undirected).
+    /// BFS mode generates two UNION ALL branches for both traversal directions.
+    pub is_undirected: bool,
 }
 
 /// Configuration for weighted shortest path using a pre-computed edge weight CTE
@@ -294,6 +304,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
             intermediate_node_id_column: None,
             intermediate_node_label: None,
             weight_cte: None,
+            needs_path_relationships: true,
+            use_bfs_mode: false,
+            is_undirected: false,
         }
     }
 
@@ -367,6 +380,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
             intermediate_node_id_column: None,
             intermediate_node_label: None,
             weight_cte: None,
+            needs_path_relationships: true,
+            use_bfs_mode: false,
+            is_undirected: false,
         }
     }
 
@@ -439,6 +455,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
             intermediate_node_id_column: None,
             intermediate_node_label: None,
             weight_cte: None,
+            needs_path_relationships: true,
+            use_bfs_mode: false,
+            is_undirected: false,
         }
     }
 
@@ -781,7 +800,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// path variable (`MATCH p = ...`, `shortestPath(...)`) for `relationships(p)` or
     /// Bolt Path protocol.
     fn needs_path_data(&self) -> bool {
-        self.path_variable.is_some()
+        self.path_variable.is_some() && self.needs_path_relationships
     }
 
     /// Build the SQL expression for the end node ID.
@@ -817,14 +836,36 @@ impl<'a> VariableLengthCteGenerator<'a> {
         }
     }
 
-    /// Extract target node ID condition from end_node_filters for early termination.
+    /// Extract target node ID value from end_node_filters for early termination in recursive case.
     ///
-    /// Disabled: raw SQL string parsing is brittle — it depends on exact spacing,
-    /// aliasing, and predicate layout, and could silently change the result set for
-    /// complex filters. Re-enable when structured filter information (expression AST)
-    /// is available for safe pattern matching.
+    /// For shortestPath queries, once a path reaches the target node, extending it further
+    /// is wasteful — any extended path would be longer. Returns `Some("vp.end_id != <value>")`
+    /// when the end filter is a simple equality on the ID column.
+    ///
+    /// Only matches simple patterns like `end_node.id = <value>` to avoid false positives
+    /// from complex multi-predicate filters.
     fn extract_target_id_negation(&self) -> Option<String> {
-        None
+        let filter = self.end_node_filters.as_ref()?;
+
+        // Build the expected prefix: "end_node.id_column = "
+        let id_prefix = format!("{}.{} = ", self.end_node_alias, self.end_node_id_column);
+
+        // Only match simple single-equality filters (no AND/OR)
+        let trimmed = filter.trim();
+        if !trimmed.starts_with(&id_prefix) {
+            return None;
+        }
+        // Check that there's no additional predicate (AND/OR)
+        let value_part = trimmed[id_prefix.len()..].trim();
+        if value_part.contains(" AND ")
+            || value_part.contains(" OR ")
+            || value_part.contains(" and ")
+            || value_part.contains(" or ")
+        {
+            return None;
+        }
+
+        Some(format!("vp.end_id != {}", value_part))
     }
 
     /// Build edge tuple expression for the base case (first hop)
@@ -1004,8 +1045,274 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
     // Note: extract_simple_equality_filter was removed as dead code (never called)
 
+    /// Extract an ID value from a filter string like "start_node.PersonId = CAST(14, 'UInt64')"
+    /// or "start_node.PersonId = {person1Id}". Returns the RHS value expression.
+    pub fn extract_id_from_filter(
+        filter: &str,
+        node_alias: &str,
+        id_column: &str,
+    ) -> Option<String> {
+        // Try patterns: "alias.col = VALUE" or "alias.`col` = VALUE"
+        let patterns = [
+            format!("{}.{} = ", node_alias, id_column),
+            format!(
+                "{}.{} = ",
+                node_alias,
+                crate::clickhouse_query_generator::quote_identifier(id_column)
+            ),
+        ];
+        for pattern in &patterns {
+            if let Some(pos) = filter.find(pattern.as_str()) {
+                let value_start = pos + pattern.len();
+                // Extract value up to end or next AND
+                let rest = &filter[value_start..];
+                let value = if let Some(and_pos) = rest.find(" AND ") {
+                    rest[..and_pos].trim()
+                } else {
+                    rest.trim()
+                };
+                // Strip trailing parentheses that might be from wrapping
+                let value = value.trim_end_matches(')');
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// Generate lightweight BFS SQL for shortestPath queries that only need length(path).
+    ///
+    /// Instead of per-path tracking with growing path_nodes arrays (~500M rows for KNOWS graph),
+    /// this generates a global-visited-set BFS that tracks distinct reachable node_ids per hop
+    /// level (~180K rows). The result CTE is compatible with the existing VLP pipeline.
+    fn generate_bfs_shortest_path_sql(&self) -> String {
+        let max_hops = self.spec.max_hops.unwrap_or_else(get_default_max_hops);
+        let rel_table = self.format_table_name(&self.relationship_table);
+        let from_col = &self.relationship_from_column;
+        let to_col = &self.relationship_to_column;
+
+        // Extract start and target IDs from filters
+        let start_id = self
+            .start_node_filters
+            .as_ref()
+            .and_then(|f| {
+                Self::extract_id_from_filter(f, &self.start_node_alias, &self.start_node_id_column)
+            })
+            .unwrap_or_else(|| {
+                // Fallback: use generic start filter expression
+                format!("{}.{}", self.start_node_alias, self.start_node_id_column)
+            });
+
+        let target_id = self.end_node_filters.as_ref().and_then(|f| {
+            Self::extract_id_from_filter(f, &self.end_node_alias, &self.end_node_id_column)
+        });
+
+        // Build the BFS recursive CTE name (without _inner suffix)
+        let bfs_cte_name = format!("{}_bfs", self.cte_name);
+
+        // Forward direction branch: from_col → to_col
+        let forward_recursive = format!(
+            "    SELECT DISTINCT rel.{to_col} AS node_id, b.hop + 1 AS hop\n    \
+             FROM {bfs_cte} b\n    \
+             JOIN {rel_table} rel ON rel.{from_col} = b.node_id\n    \
+             WHERE b.hop < {max_hops}\n      \
+             AND rel.{to_col} NOT IN (SELECT node_id FROM {bfs_cte}){stop_at_target}",
+            to_col = to_col,
+            bfs_cte = bfs_cte_name,
+            rel_table = rel_table,
+            from_col = from_col,
+            max_hops = max_hops,
+            stop_at_target = target_id
+                .as_ref()
+                .map(|t| format!("\n      AND b.node_id != {}", t))
+                .unwrap_or_default(),
+        );
+
+        // Reverse direction branch (for undirected edges): to_col → from_col
+        let reverse_recursive = if self.is_undirected {
+            format!(
+                "\n    UNION ALL\n    \
+                 SELECT DISTINCT rel.{from_col} AS node_id, b.hop + 1 AS hop\n    \
+                 FROM {bfs_cte} b\n    \
+                 JOIN {rel_table} rel ON rel.{to_col} = b.node_id\n    \
+                 WHERE b.hop < {max_hops}\n      \
+                 AND rel.{from_col} NOT IN (SELECT node_id FROM {bfs_cte}){stop_at_target}",
+                from_col = from_col,
+                bfs_cte = bfs_cte_name,
+                rel_table = rel_table,
+                to_col = to_col,
+                max_hops = max_hops,
+                stop_at_target = target_id
+                    .as_ref()
+                    .map(|t| format!("\n      AND b.node_id != {}", t))
+                    .unwrap_or_default(),
+            )
+        } else {
+            String::new()
+        };
+
+        // Build BFS CTE
+        let bfs_cte_sql = format!(
+            "{bfs_cte} AS (\n    \
+             SELECT {start_id} AS node_id, toUInt16(0) AS hop\n    \
+             UNION ALL\n{forward}{reverse}\n)",
+            bfs_cte = bfs_cte_name,
+            start_id = start_id,
+            forward = forward_recursive,
+            reverse = reverse_recursive,
+        );
+
+        // Build result wrapper CTE that matches VLP output schema.
+        // This makes the BFS output compatible with existing rewrite_expr_for_vlp() logic:
+        // - start_id, end_id for JOIN conditions
+        // - hop_count for length(path) → t.hop_count rewriting
+        // - NULL hop_count when target not reached → ifNull() pattern works
+        let result_select = if let Some(ref target) = target_id {
+            format!(
+                "{name} AS (\n    SELECT\n        \
+                 {start_id} AS start_id,\n        \
+                 {target} AS end_id,\n        \
+                 CASE WHEN countIf(node_id = {target}) > 0\n            \
+                 THEN minIf(toUInt16(hop), node_id = {target})\n            \
+                 ELSE NULL END AS hop_count,\n        \
+                 CAST(0 AS UInt8) AS path_relationships,\n        \
+                 CAST([] AS Array(UInt64)) AS path_nodes\n    \
+                 FROM {bfs_cte}\n)",
+                name = self.cte_name,
+                start_id = start_id,
+                target = target,
+                bfs_cte = bfs_cte_name,
+            )
+        } else {
+            // No target filter — enumerate all reachable nodes with their min hop
+            format!(
+                "{name} AS (\n    SELECT\n        \
+                 {start_id} AS start_id,\n        \
+                 node_id AS end_id,\n        \
+                 min(toUInt16(hop)) AS hop_count,\n        \
+                 CAST(0 AS UInt8) AS path_relationships,\n        \
+                 CAST([] AS Array(UInt64)) AS path_nodes\n    \
+                 FROM {bfs_cte}\n    \
+                 WHERE node_id != {start_id}\n    \
+                 GROUP BY node_id\n)",
+                name = self.cte_name,
+                start_id = start_id,
+                bfs_cte = bfs_cte_name,
+            )
+        };
+
+        format!("{},\n{}", bfs_cte_sql, result_select)
+    }
+
+    /// Generate two-phase BFS + backward reconstruction SQL for weighted shortestPath.
+    ///
+    /// Phase 1 (BFS): Lightweight frontier expansion using the bidirectional weight CTE.
+    ///   Tracks only (node_id, hop) — no path arrays. ~67K rows max for LDBC KNOWS graph.
+    ///
+    /// Phase 2 (Reconstruction): Walk backward from target to source using BFS hop levels
+    ///   as constraints. Builds path_nodes and accumulates total_weight. ~6 rows for typical
+    ///   shortest paths.
+    ///
+    /// Result wrapper: Picks the cheapest reconstructed path (ORDER BY total_weight LIMIT 1).
+    fn generate_weighted_bfs_reconstruction_sql(&self) -> String {
+        let wc = self
+            .weight_cte
+            .as_ref()
+            .expect("weight_cte required for weighted BFS");
+        let max_hops = self.spec.max_hops.unwrap_or_else(get_default_max_hops);
+
+        let source = &wc.source_column;
+        let target_col = &wc.target_column;
+        let weight = &wc.weight_column;
+        let weight_cte = &wc.cte_name;
+
+        // Extract start and target IDs from filters
+        let start_id = self
+            .start_node_filters
+            .as_ref()
+            .and_then(|f| {
+                Self::extract_id_from_filter(f, &self.start_node_alias, &self.start_node_id_column)
+            })
+            .unwrap_or_else(|| format!("{}.{}", self.start_node_alias, self.start_node_id_column));
+
+        let target_id = self
+            .end_node_filters
+            .as_ref()
+            .and_then(|f| {
+                Self::extract_id_from_filter(f, &self.end_node_alias, &self.end_node_id_column)
+            })
+            .unwrap_or_else(|| format!("{}.{}", self.end_node_alias, self.end_node_id_column));
+
+        let bfs_cte = format!("{}_bfs", self.cte_name);
+        let recon_cte = format!("{}_recon", self.cte_name);
+
+        // CTE 1: BFS — lightweight frontier with global dedup
+        let bfs_sql = format!(
+            "{bfs_cte} AS (\n    \
+             SELECT CAST({start_id} AS UInt64) AS node_id, toUInt16(0) AS hop\n    \
+             UNION ALL\n    \
+             SELECT DISTINCT ew.{target_col} AS node_id, b.hop + 1 AS hop\n    \
+             FROM {bfs_cte} b\n    \
+             JOIN {weight_cte} ew ON ew.{source} = b.node_id\n    \
+             WHERE b.hop < {max_hops}\n      \
+             AND ew.{target_col} NOT IN (SELECT node_id FROM {bfs_cte})\n      \
+             AND b.node_id != CAST({target_id} AS UInt64)\n)"
+        );
+
+        // CTE 2: Backward reconstruction — walk from target to source
+        // IMPORTANT: Use FROM+WHERE to read BFS hop level instead of scalar subqueries.
+        // Scalar subqueries referencing recursive CTEs inside other CTEs cause ClickHouse
+        // to hang (CTE inlining re-evaluates the entire recursion chain).
+        let recon_sql = format!(
+            "{recon_cte} AS (\n    \
+             SELECT CAST({target_id} AS UInt64) AS node_id,\n           \
+             bfs_target.hop AS remaining,\n           \
+             CAST([{target_id}] AS Array(UInt64)) AS path_nodes,\n           \
+             toFloat64(0) AS total_weight\n    \
+             FROM {bfs_cte} AS bfs_target\n    \
+             WHERE bfs_target.node_id = CAST({target_id} AS UInt64)\n    \
+             UNION ALL\n    \
+             SELECT ew.{source} AS node_id, pr.remaining - 1 AS remaining,\n           \
+             arrayConcat([ew.{source}], pr.path_nodes) AS path_nodes,\n           \
+             pr.total_weight + ew.{weight} AS total_weight\n    \
+             FROM {recon_cte} pr\n    \
+             JOIN {weight_cte} ew ON ew.{target_col} = pr.node_id\n    \
+             JOIN {bfs_cte} b ON b.node_id = ew.{source} AND b.hop = pr.remaining - 1\n    \
+             WHERE pr.remaining > 0\n      \
+             AND ew.{source} NOT IN (SELECT node_id FROM {recon_cte})\n)"
+        );
+
+        // CTE 3: Result wrapper — select cheapest path
+        // hop_count derived from path_nodes length (avoids scalar subquery on BFS CTE)
+        let result_sql = format!(
+            "{name} AS (\n    \
+             SELECT {start_id} AS start_id, {target_id} AS end_id,\n           \
+             toUInt16(length(path_nodes) - 1) AS hop_count,\n           \
+             total_weight, path_nodes, CAST(0 AS UInt8) AS path_relationships\n    \
+             FROM {recon_cte} WHERE remaining = 0\n    \
+             ORDER BY total_weight ASC LIMIT 1\n)",
+            name = self.cte_name,
+        );
+
+        format!("{},\n{},\n{}", bfs_sql, recon_sql, result_sql)
+    }
+
     /// Generate the actual recursive SQL string
     fn generate_recursive_sql(&self) -> String {
+        // Lightweight BFS mode for shortestPath + length(path)-only queries
+        if self.use_bfs_mode {
+            return self.generate_bfs_shortest_path_sql();
+        }
+
+        // Two-phase BFS + reconstruction for weighted shortestPath with known target
+        if self.weight_cte.is_some()
+            && self.shortest_path_mode.is_some()
+            && self.end_node_filters.is_some()
+        {
+            return self.generate_weighted_bfs_reconstruction_sql();
+        }
+
         // For heterogeneous polymorphic paths, use special two-CTE structure
         if self.is_heterogeneous_polymorphic_path() {
             return self.generate_heterogeneous_polymorphic_sql();
@@ -1457,7 +1764,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 self.start_node_id_column // Same node for self-loop
             ),
             "0 as hop_count".to_string(), // Zero hops
-            "CAST([] AS Array(String)) as path_relationships".to_string(), // Empty array with explicit type
+            "CAST(0 AS UInt8) as path_relationships".to_string(), // Minimal placeholder when path data not needed
             // Add path_nodes for UNWIND nodes(p) support - for zero hop, just the start node
             format!(
                 "[{}.{}] as path_nodes",
@@ -1685,7 +1992,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             if self.needs_path_data() {
                 select_items.push(self.generate_relationship_type_for_hop(1));
             } else {
-                select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
+                select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
             }
             select_items.push(path_nodes_selection);
 
@@ -1856,8 +2163,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
             format!("\n    WHERE {}", where_conditions.join(" AND "))
         };
 
+        let path_rel_expr = if self.needs_path_data() {
+            "CAST([] AS Array(String)) AS path_relationships"
+        } else {
+            "CAST(0 AS UInt8) AS path_relationships"
+        };
         format!(
-            "    SELECT\n        ew.{source} AS start_id,\n        ew.{target} AS end_id,\n        1 AS hop_count,\n        ew.{weight} AS total_weight,\n        [ew.{source}, ew.{target}] AS path_nodes,\n        [] AS path_relationships\n    FROM {cte} ew{where_clause}",
+            "    SELECT\n        ew.{source} AS start_id,\n        ew.{target} AS end_id,\n        1 AS hop_count,\n        ew.{weight} AS total_weight,\n        [ew.{source}, ew.{target}] AS path_nodes,\n        {path_rel_expr} \n    FROM {cte} ew{where_clause}",
             source = wc.source_column,
             target = wc.target_column,
             weight = wc.weight_column,
@@ -1873,14 +2185,21 @@ impl<'a> VariableLengthCteGenerator<'a> {
         max_hops: u32,
         cte_name: &str,
     ) -> String {
+        let path_rel_col = if self.needs_path_data() {
+            "arrayConcat(vp.path_relationships, []) AS path_relationships"
+        } else {
+            "CAST(0 AS UInt8) AS path_relationships"
+        };
+
         format!(
-            "    SELECT\n        vp.start_id,\n        ew.{target} AS end_id,\n        vp.hop_count + 1 AS hop_count,\n        vp.total_weight + ew.{weight} AS total_weight,\n        arrayConcat(vp.path_nodes, [ew.{target}]) AS path_nodes,\n        vp.path_relationships AS path_relationships\n    FROM {cte_name} vp\n    JOIN {weight_cte} ew ON ew.{source} = vp.end_id\n    WHERE vp.hop_count < {max_hops}\n      AND NOT has(vp.path_nodes, ew.{target})",
+            "    SELECT\n        vp.start_id,\n        ew.{target} AS end_id,\n        vp.hop_count + 1 AS hop_count,\n        vp.total_weight + ew.{weight} AS total_weight,\n        arrayConcat(vp.path_nodes, [ew.{target}]) AS path_nodes,\n        {path_rel_col}\n    FROM {cte_name} vp\n    JOIN {weight_cte} ew ON ew.{source} = vp.end_id\n    WHERE vp.hop_count < {max_hops}\n      AND NOT has(vp.path_nodes, ew.{target})",
             target = wc.target_column,
             weight = wc.weight_column,
             source = wc.source_column,
             cte_name = cte_name,
             weight_cte = wc.cte_name,
             max_hops = max_hops,
+            path_rel_col = path_rel_col,
         )
     }
 
@@ -1996,7 +2315,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("vp.path_relationships as path_relationships".to_string());
+            select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
         }
         select_items.push(path_nodes_selection);
 
@@ -2081,11 +2400,6 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // For shortest path queries, do NOT add end_node_filters in recursive case
         // End filters are applied in the _to_target wrapper CTE after recursion completes
         // This allows the recursion to explore all paths until the target is found
-        //
-        // Note: Early termination via NOT EXISTS is not practical because:
-        // 1. It creates circular reference (checking CTE being built)
-        // 2. ClickHouse evaluates EXISTS after generating all rows in that iteration
-        // Better approach: Use reasonable max_hops or explicit hop constraints in query
         if self.shortest_path_mode.is_none() {
             if let Some(ref filters) = self.end_node_filters {
                 where_conditions.push(filters.clone());
@@ -2226,7 +2540,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("vp.path_relationships as path_relationships".to_string());
+            select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
         }
         // Track intermediate node IDs in path_nodes
         select_items.push(format!(
@@ -2329,7 +2643,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         if self.needs_path_data() {
             select_items.push(self.generate_relationship_type_for_hop(1));
         } else {
-            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
+            select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
         }
         select_items.push(format!(
             "[{}.{}, {}.{}] as path_nodes",
@@ -2453,7 +2767,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("vp.path_relationships as path_relationships".to_string());
+            select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
         }
         // APPEND the new node to path_nodes
         select_items.push(format!(
@@ -2539,7 +2853,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("vp.path_relationships as path_relationships".to_string());
+            select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
         }
         // PREPEND the new node to path_nodes
         select_items.push(format!(
@@ -2647,7 +2961,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         if self.needs_path_data() {
             select_items.push(self.generate_relationship_type_for_hop(1));
         } else {
-            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
+            select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
         }
         select_items.push(format!(
             "[{}.{}, {}.{}] as path_nodes",
@@ -2869,7 +3183,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("vp.path_relationships as path_relationships".to_string());
+            select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
         }
         select_items.push(format!(
             "arrayConcat(vp.path_nodes, [{}.{}]) as path_nodes",
@@ -3090,7 +3404,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         if self.needs_path_data() {
             select_items.push(self.generate_relationship_type_for_hop(1));
         } else {
-            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
+            select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
         }
         select_items.push(format!(
             "[{}, {}] as path_nodes",
@@ -3216,7 +3530,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("vp.path_relationships as path_relationships".to_string());
+            select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
         }
         // path_nodes always maintained for cycle detection
         select_items.push(format!(

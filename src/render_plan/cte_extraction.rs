@@ -306,6 +306,9 @@ pub fn generate_vlp_cte_via_manager(
     end_label: Option<String>,
     is_optional: Option<bool>,
     weight_cte: Option<crate::clickhouse_query_generator::WeightCteConfig>,
+    needs_path_relationships: bool,
+    use_bfs_mode: bool,
+    is_undirected: bool,
 ) -> Result<Cte, RenderBuildError> {
     use std::sync::Arc;
 
@@ -317,7 +320,7 @@ pub fn generate_vlp_cte_via_manager(
 
     // Build CteGenerationContext with all VLP-specific fields
     // Clone the schema to own it for the context
-    let context = CteGenerationContext::new()
+    let mut context = CteGenerationContext::new()
         .with_spec(spec)
         .with_schema_owned(schema.clone())
         .with_path_variable(path_variable.clone())
@@ -328,6 +331,9 @@ pub fn generate_vlp_cte_via_manager(
         .with_node_labels(start_label.clone(), end_label.clone())
         .with_is_optional(is_optional.unwrap_or(false))
         .with_weight_cte(weight_cte);
+    context.needs_path_relationships = needs_path_relationships;
+    context.use_bfs_mode = use_bfs_mode;
+    context.is_undirected = is_undirected;
 
     // Convert filters to CategorizedFilters format
     let filters = super::filter_pipeline::CategorizedFilters {
@@ -3645,6 +3651,80 @@ pub fn extract_ctes_with_context(
                         None
                     };
 
+                    // Check if query uses relationships(path) — if not, skip
+                    // path_relationships array growth to save memory
+                    let needs_path_rels = if let Some(ref pv) = graph_rel.path_variable {
+                        plan_uses_relationships_fn(plan, pv)
+                    } else {
+                        false
+                    };
+
+                    // Detect lightweight BFS mode for shortestPath + length(path)-only queries.
+                    // BFS tracks only distinct reachable node_ids per hop level instead of
+                    // per-path visited arrays, reducing memory from ~500M rows to ~180K rows.
+                    // Use root_plan (the full query tree) for checking path variable usage,
+                    // since the local `plan` is just the GraphRel subtree and doesn't contain
+                    // the outer Projection (e.g., RETURN p).
+                    let check_plan: &LogicalPlan = context.root_plan.as_deref().unwrap_or(plan);
+                    // BFS CTE only has (node_id, hop) — no node properties.
+                    // Check if the plan references any properties of start/end nodes.
+                    let start_conn = &graph_rel.left_connection;
+                    let end_conn = &graph_rel.right_connection;
+                    let plan_needs_endpoint_properties =
+                        plan_references_alias_properties(check_plan, start_conn)
+                            || plan_references_alias_properties(check_plan, end_conn);
+
+                    // BFS requires both endpoints to be ID-bound. The BFS CTE
+                    // only tracks (node_id, hop) — no filters can be applied inside
+                    // the recursive traversal except stop-at-target by ID.
+                    let start_id_col = match &pattern_ctx.left_node {
+                        crate::graph_catalog::pattern_schema::NodeAccessStrategy::OwnTable {
+                            id_column,
+                            ..
+                        } => id_column.first_column().to_string(),
+                        _ => String::new(),
+                    };
+                    let end_id_col = match &pattern_ctx.right_node {
+                        crate::graph_catalog::pattern_schema::NodeAccessStrategy::OwnTable {
+                            id_column,
+                            ..
+                        } => id_column.first_column().to_string(),
+                        _ => String::new(),
+                    };
+                    let start_has_id_filter = combined_start_filters.as_ref().is_some_and(|f| {
+                        crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGenerator::extract_id_from_filter(
+                            f, "start_node", &start_id_col,
+                        ).is_some()
+                    });
+                    let end_has_id_filter = combined_end_filters.as_ref().is_some_and(|f| {
+                        crate::clickhouse_query_generator::variable_length_cte::VariableLengthCteGenerator::extract_id_from_filter(
+                            f, "end_node", &end_id_col,
+                        ).is_some()
+                    });
+
+                    let needs_bfs_mode = graph_rel.shortest_path_mode.is_some()
+                        && weight_cte_config.is_none()
+                        && !plan_needs_endpoint_properties
+                        && start_has_id_filter
+                        && end_has_id_filter
+                        && graph_rel.path_variable.as_ref().map_or(true, |pv| {
+                            !plan_uses_nodes_fn(check_plan, pv)
+                                && !plan_uses_relationships_fn(check_plan, pv)
+                                && !plan_uses_bare_path_variable(check_plan, pv)
+                        });
+                    let is_undirected = graph_rel.direction
+                        == crate::query_planner::logical_expr::Direction::Either
+                        || graph_rel.was_undirected == Some(true);
+
+                    if needs_bfs_mode {
+                        log::info!(
+                            "BFS mode enabled for shortestPath VLP: {} -[*]-> {} (undirected={})",
+                            start_label,
+                            end_label,
+                            is_undirected
+                        );
+                    }
+
                     // Generate VLP CTE via unified CteManager API
                     let var_len_cte = generate_vlp_cte_via_manager(
                         &pattern_ctx,
@@ -3663,6 +3743,9 @@ pub fn extract_ctes_with_context(
                         Some(end_label.clone()),
                         graph_rel.is_optional,
                         weight_cte_config,
+                        needs_path_rels,
+                        needs_bfs_mode,
+                        is_undirected,
                     )?;
 
                     // TODO(multi-vlp): Per-VLP unique aliases (vt0, vt1) are used in
@@ -5023,6 +5106,357 @@ pub fn get_path_variable(plan: &LogicalPlan) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// Check if the plan uses `relationships(path_var)` anywhere in its expressions.
+/// Used to decide whether VLP CTEs need to track `path_relationships` arrays.
+pub fn plan_uses_relationships_fn(plan: &LogicalPlan, path_var: &str) -> bool {
+    use crate::query_planner::logical_expr::LogicalExpr;
+
+    fn expr_uses_relationships(expr: &LogicalExpr, path_var: &str) -> bool {
+        match expr {
+            LogicalExpr::ScalarFnCall(fc) => {
+                if fc.name == "relationships" {
+                    // Check if any argument references the path variable
+                    return fc.args.iter().any(|arg| match arg {
+                        LogicalExpr::TableAlias(v) => v.0 == path_var,
+                        LogicalExpr::PropertyAccessExp(pa) => pa.table_alias.0 == path_var,
+                        _ => expr_uses_relationships(arg, path_var),
+                    });
+                }
+                fc.args.iter().any(|a| expr_uses_relationships(a, path_var))
+            }
+            LogicalExpr::OperatorApplicationExp(op) => op
+                .operands
+                .iter()
+                .any(|o| expr_uses_relationships(o, path_var)),
+            LogicalExpr::Case(c) => {
+                c.expr
+                    .as_ref()
+                    .map_or(false, |o| expr_uses_relationships(o, path_var))
+                    || c.when_then.iter().any(|(w, t)| {
+                        expr_uses_relationships(w, path_var) || expr_uses_relationships(t, path_var)
+                    })
+                    || c.else_expr
+                        .as_ref()
+                        .map_or(false, |e| expr_uses_relationships(e, path_var))
+            }
+            _ => false,
+        }
+    }
+
+    fn plan_has_relationships(plan: &LogicalPlan, path_var: &str) -> bool {
+        match plan {
+            LogicalPlan::Projection(p) => {
+                p.items
+                    .iter()
+                    .any(|item| expr_uses_relationships(&item.expression, path_var))
+                    || plan_has_relationships(&p.input, path_var)
+            }
+            LogicalPlan::Filter(f) => {
+                expr_uses_relationships(&f.predicate, path_var)
+                    || plan_has_relationships(&f.input, path_var)
+            }
+            LogicalPlan::WithClause(wc) => {
+                wc.items
+                    .iter()
+                    .any(|item| expr_uses_relationships(&item.expression, path_var))
+                    || plan_has_relationships(&wc.input, path_var)
+            }
+            LogicalPlan::OrderBy(ob) => {
+                ob.items
+                    .iter()
+                    .any(|item| expr_uses_relationships(&item.expression, path_var))
+                    || plan_has_relationships(&ob.input, path_var)
+            }
+            LogicalPlan::GraphRel(gr) => {
+                gr.where_predicate
+                    .as_ref()
+                    .map_or(false, |p| expr_uses_relationships(p, path_var))
+                    || plan_has_relationships(&gr.left, path_var)
+                    || plan_has_relationships(&gr.center, path_var)
+                    || plan_has_relationships(&gr.right, path_var)
+            }
+            LogicalPlan::GraphNode(n) => plan_has_relationships(&n.input, path_var),
+            LogicalPlan::GroupBy(gb) => plan_has_relationships(&gb.input, path_var),
+            LogicalPlan::Limit(l) => plan_has_relationships(&l.input, path_var),
+            LogicalPlan::Skip(s) => plan_has_relationships(&s.input, path_var),
+            LogicalPlan::CartesianProduct(cp) => {
+                plan_has_relationships(&cp.left, path_var)
+                    || plan_has_relationships(&cp.right, path_var)
+            }
+            LogicalPlan::Union(u) => u.inputs.iter().any(|i| plan_has_relationships(i, path_var)),
+            LogicalPlan::GraphJoins(gj) => plan_has_relationships(&gj.input, path_var),
+            _ => false,
+        }
+    }
+
+    plan_has_relationships(plan, path_var)
+}
+
+/// Check if the plan uses `nodes(path_var)` — mirrors `plan_uses_relationships_fn`.
+pub fn plan_uses_nodes_fn(plan: &LogicalPlan, path_var: &str) -> bool {
+    use crate::query_planner::logical_expr::LogicalExpr;
+
+    fn expr_uses_nodes(expr: &LogicalExpr, path_var: &str) -> bool {
+        match expr {
+            LogicalExpr::ScalarFnCall(fc) => {
+                if fc.name == "nodes" {
+                    return fc.args.iter().any(|arg| match arg {
+                        LogicalExpr::TableAlias(v) => v.0 == path_var,
+                        LogicalExpr::PropertyAccessExp(pa) => pa.table_alias.0 == path_var,
+                        _ => expr_uses_nodes(arg, path_var),
+                    });
+                }
+                fc.args.iter().any(|a| expr_uses_nodes(a, path_var))
+            }
+            LogicalExpr::OperatorApplicationExp(op) => {
+                op.operands.iter().any(|o| expr_uses_nodes(o, path_var))
+            }
+            LogicalExpr::Case(c) => {
+                c.expr
+                    .as_ref()
+                    .map_or(false, |o| expr_uses_nodes(o, path_var))
+                    || c.when_then
+                        .iter()
+                        .any(|(w, t)| expr_uses_nodes(w, path_var) || expr_uses_nodes(t, path_var))
+                    || c.else_expr
+                        .as_ref()
+                        .map_or(false, |e| expr_uses_nodes(e, path_var))
+            }
+            _ => false,
+        }
+    }
+
+    fn plan_has_nodes(plan: &LogicalPlan, path_var: &str) -> bool {
+        match plan {
+            LogicalPlan::Projection(p) => {
+                p.items
+                    .iter()
+                    .any(|item| expr_uses_nodes(&item.expression, path_var))
+                    || plan_has_nodes(&p.input, path_var)
+            }
+            LogicalPlan::Filter(f) => {
+                expr_uses_nodes(&f.predicate, path_var) || plan_has_nodes(&f.input, path_var)
+            }
+            LogicalPlan::WithClause(wc) => {
+                wc.items
+                    .iter()
+                    .any(|item| expr_uses_nodes(&item.expression, path_var))
+                    || plan_has_nodes(&wc.input, path_var)
+            }
+            LogicalPlan::OrderBy(ob) => {
+                ob.items
+                    .iter()
+                    .any(|item| expr_uses_nodes(&item.expression, path_var))
+                    || plan_has_nodes(&ob.input, path_var)
+            }
+            LogicalPlan::GraphRel(gr) => {
+                gr.where_predicate
+                    .as_ref()
+                    .map_or(false, |p| expr_uses_nodes(p, path_var))
+                    || plan_has_nodes(&gr.left, path_var)
+                    || plan_has_nodes(&gr.center, path_var)
+                    || plan_has_nodes(&gr.right, path_var)
+            }
+            LogicalPlan::GraphNode(n) => plan_has_nodes(&n.input, path_var),
+            LogicalPlan::GroupBy(gb) => plan_has_nodes(&gb.input, path_var),
+            LogicalPlan::Limit(l) => plan_has_nodes(&l.input, path_var),
+            LogicalPlan::Skip(s) => plan_has_nodes(&s.input, path_var),
+            LogicalPlan::CartesianProduct(cp) => {
+                plan_has_nodes(&cp.left, path_var) || plan_has_nodes(&cp.right, path_var)
+            }
+            LogicalPlan::Union(u) => u.inputs.iter().any(|i| plan_has_nodes(i, path_var)),
+            LogicalPlan::GraphJoins(gj) => plan_has_nodes(&gj.input, path_var),
+            _ => false,
+        }
+    }
+
+    plan_has_nodes(plan, path_var)
+}
+
+/// Check if the path variable is used bare (as TableAlias/ColumnAlias) outside of
+/// `length()`, `nodes()`, `relationships()`, and `cost()` calls.
+/// If it appears bare, BFS mode can't be used because the full path object is needed.
+pub fn plan_uses_bare_path_variable(plan: &LogicalPlan, path_var: &str) -> bool {
+    use crate::query_planner::logical_expr::LogicalExpr;
+
+    /// Returns true if expr references path_var as a bare alias (not inside safe functions).
+    fn expr_uses_bare(expr: &LogicalExpr, path_var: &str) -> bool {
+        use crate::query_planner::logical_expr::Operator;
+
+        fn is_path_ref(e: &LogicalExpr, pv: &str) -> bool {
+            match e {
+                LogicalExpr::TableAlias(v) => v.0 == pv,
+                LogicalExpr::ColumnAlias(v) => v.0 == pv,
+                _ => false,
+            }
+        }
+
+        match expr {
+            // Bare path variable reference
+            LogicalExpr::TableAlias(v) if v.0 == path_var => true,
+            LogicalExpr::ColumnAlias(v) if v.0 == path_var => true,
+            // Functions that consume path variables — their args are safe
+            LogicalExpr::ScalarFnCall(fc) => {
+                let safe_fns = ["length", "nodes", "relationships", "cost"];
+                if safe_fns.contains(&fc.name.as_str()) {
+                    let references_pv = fc.args.iter().any(|a| is_path_ref(a, path_var));
+                    if references_pv {
+                        return false; // Safe function consuming path_var
+                    }
+                }
+                fc.args.iter().any(|a| expr_uses_bare(a, path_var))
+            }
+            LogicalExpr::OperatorApplicationExp(op) => {
+                // `path IS NULL` / `path IS NOT NULL` patterns are safe —
+                // used in CASE WHEN for length-only queries
+                if matches!(op.operator, Operator::IsNull | Operator::IsNotNull) {
+                    if op.operands.len() == 1 && is_path_ref(&op.operands[0], path_var) {
+                        return false;
+                    }
+                }
+                op.operands.iter().any(|o| expr_uses_bare(o, path_var))
+            }
+            LogicalExpr::Case(c) => {
+                c.expr
+                    .as_ref()
+                    .map_or(false, |o| expr_uses_bare(o, path_var))
+                    || c.when_then
+                        .iter()
+                        .any(|(w, t)| expr_uses_bare(w, path_var) || expr_uses_bare(t, path_var))
+                    || c.else_expr
+                        .as_ref()
+                        .map_or(false, |e| expr_uses_bare(e, path_var))
+            }
+            LogicalExpr::AggregateFnCall(afc) => {
+                afc.args.iter().any(|a| expr_uses_bare(a, path_var))
+            }
+            _ => false,
+        }
+    }
+
+    fn plan_has_bare(plan: &LogicalPlan, path_var: &str) -> bool {
+        match plan {
+            LogicalPlan::Projection(p) => {
+                p.items
+                    .iter()
+                    .any(|item| expr_uses_bare(&item.expression, path_var))
+                    || plan_has_bare(&p.input, path_var)
+            }
+            LogicalPlan::Filter(f) => {
+                expr_uses_bare(&f.predicate, path_var) || plan_has_bare(&f.input, path_var)
+            }
+            LogicalPlan::WithClause(wc) => {
+                wc.items
+                    .iter()
+                    .any(|item| expr_uses_bare(&item.expression, path_var))
+                    || plan_has_bare(&wc.input, path_var)
+            }
+            LogicalPlan::OrderBy(ob) => {
+                ob.items
+                    .iter()
+                    .any(|item| expr_uses_bare(&item.expression, path_var))
+                    || plan_has_bare(&ob.input, path_var)
+            }
+            LogicalPlan::GraphRel(gr) => {
+                gr.where_predicate
+                    .as_ref()
+                    .map_or(false, |p| expr_uses_bare(p, path_var))
+                    || plan_has_bare(&gr.left, path_var)
+                    || plan_has_bare(&gr.center, path_var)
+                    || plan_has_bare(&gr.right, path_var)
+            }
+            LogicalPlan::GraphNode(n) => plan_has_bare(&n.input, path_var),
+            LogicalPlan::GroupBy(gb) => plan_has_bare(&gb.input, path_var),
+            LogicalPlan::Limit(l) => plan_has_bare(&l.input, path_var),
+            LogicalPlan::Skip(s) => plan_has_bare(&s.input, path_var),
+            LogicalPlan::CartesianProduct(cp) => {
+                plan_has_bare(&cp.left, path_var) || plan_has_bare(&cp.right, path_var)
+            }
+            LogicalPlan::Union(u) => u.inputs.iter().any(|i| plan_has_bare(i, path_var)),
+            LogicalPlan::GraphJoins(gj) => plan_has_bare(&gj.input, path_var),
+            _ => false,
+        }
+    }
+
+    plan_has_bare(plan, path_var)
+}
+
+/// Check if the plan's **output** (Projection, OrderBy, WithClause items, GroupBy)
+/// references properties of a given alias (e.g., `a.name`, `a.age`).
+/// Filter/WHERE predicates are excluded — those become CTE filter parameters.
+/// Used to determine if BFS mode can be used (BFS CTEs don't carry node properties).
+pub fn plan_references_alias_properties(plan: &LogicalPlan, alias: &str) -> bool {
+    use crate::query_planner::logical_expr::LogicalExpr;
+
+    fn expr_refs_alias(expr: &LogicalExpr, alias: &str) -> bool {
+        match expr {
+            LogicalExpr::PropertyAccessExp(pa) => pa.table_alias.0 == alias,
+            LogicalExpr::ScalarFnCall(fc) => fc.args.iter().any(|a| expr_refs_alias(a, alias)),
+            LogicalExpr::AggregateFnCall(afc) => afc.args.iter().any(|a| expr_refs_alias(a, alias)),
+            LogicalExpr::OperatorApplicationExp(op) => {
+                op.operands.iter().any(|o| expr_refs_alias(o, alias))
+            }
+            LogicalExpr::Case(c) => {
+                c.expr.as_ref().map_or(false, |e| expr_refs_alias(e, alias))
+                    || c.when_then
+                        .iter()
+                        .any(|(w, t)| expr_refs_alias(w, alias) || expr_refs_alias(t, alias))
+                    || c.else_expr
+                        .as_ref()
+                        .map_or(false, |e| expr_refs_alias(e, alias))
+            }
+            _ => false,
+        }
+    }
+
+    fn plan_refs(plan: &LogicalPlan, alias: &str) -> bool {
+        match plan {
+            // Output-bearing nodes — check their items
+            LogicalPlan::Projection(p) => {
+                p.items
+                    .iter()
+                    .any(|item| expr_refs_alias(&item.expression, alias))
+                    || plan_refs(&p.input, alias)
+            }
+            LogicalPlan::WithClause(wc) => {
+                wc.items
+                    .iter()
+                    .any(|item| expr_refs_alias(&item.expression, alias))
+                    || plan_refs(&wc.input, alias)
+            }
+            LogicalPlan::OrderBy(ob) => {
+                ob.items
+                    .iter()
+                    .any(|item| expr_refs_alias(&item.expression, alias))
+                    || plan_refs(&ob.input, alias)
+            }
+            LogicalPlan::GroupBy(gb) => {
+                gb.expressions.iter().any(|e| expr_refs_alias(e, alias))
+                    || plan_refs(&gb.input, alias)
+            }
+            // Filter/WHERE — skip (properties in filters become CTE parameters)
+            LogicalPlan::Filter(f) => plan_refs(&f.input, alias),
+            // Structural nodes — recurse only
+            LogicalPlan::GraphRel(gr) => {
+                plan_refs(&gr.left, alias)
+                    || plan_refs(&gr.center, alias)
+                    || plan_refs(&gr.right, alias)
+            }
+            LogicalPlan::GraphNode(n) => plan_refs(&n.input, alias),
+            LogicalPlan::Limit(l) => plan_refs(&l.input, alias),
+            LogicalPlan::Skip(s) => plan_refs(&s.input, alias),
+            LogicalPlan::CartesianProduct(cp) => {
+                plan_refs(&cp.left, alias) || plan_refs(&cp.right, alias)
+            }
+            LogicalPlan::Union(u) => u.inputs.iter().any(|i| plan_refs(i, alias)),
+            LogicalPlan::GraphJoins(gj) => plan_refs(&gj.input, alias),
+            _ => false,
+        }
+    }
+
+    plan_refs(plan, alias)
 }
 
 /// Extract path variable from fixed multi-hop patterns (no variable_length)

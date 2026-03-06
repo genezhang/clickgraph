@@ -2981,6 +2981,12 @@ impl VariableLengthCteStrategy {
             generator.set_weight_cte(weight_config.clone());
         }
 
+        // Skip path_relationships growth when relationships(path) isn't used
+        generator.needs_path_relationships = context.needs_path_relationships;
+        // Lightweight BFS mode for shortestPath + length(path)-only queries
+        generator.use_bfs_mode = context.use_bfs_mode;
+        generator.is_undirected = context.is_undirected;
+
         // Generate the CTE using the comprehensive generator
         let cte = generator.generate_cte();
 
