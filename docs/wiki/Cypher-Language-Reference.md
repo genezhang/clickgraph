@@ -32,6 +32,7 @@ Complete syntax reference for Cypher queries supported by ClickGraph.
 - [System Procedures](#system-procedures) ⭐ **NEW**
   - [Schema Metadata](#schema-metadata-procedures)
   - [Graph Algorithms](#graph-algorithms)
+  - [Export Procedures (APOC-Compatible)](#export-procedures-apoc-compatible)
 - [Query Examples](#query-examples)
 
 ---
@@ -2231,7 +2232,52 @@ LIMIT 10
 
 ---
 
-## Query Examples
+### Export Procedures (APOC-Compatible)
+
+Export query results to files or cloud storage using Neo4j APOC-compatible syntax.
+
+**Syntax:**
+```cypher
+CALL apoc.export.{format}.query(cypher_query, destination, config)
+```
+
+**Formats:**
+| Procedure | ClickHouse Format |
+|-----------|------------------|
+| `apoc.export.csv.query` | CSVWithNames |
+| `apoc.export.json.query` | JSONEachRow |
+| `apoc.export.parquet.query` | Parquet |
+
+**Destination URIs:**
+| Scheme | Example |
+|--------|---------|
+| Local file | `"/tmp/users.parquet"` or `"./output.csv"` |
+| S3 | `"s3://bucket/path/file.parquet"` |
+| GCS | `"gs://bucket/path/file.json"` |
+| Azure | `"azure://container/path/file.csv"` |
+| HTTP | `"https://webhook.example.com/ingest"` |
+
+**Examples:**
+```cypher
+-- Export to local Parquet file
+CALL apoc.export.parquet.query("MATCH (u:User) RETURN u.name, u.email", "/tmp/users.parquet", {})
+
+-- Export to CSV
+CALL apoc.export.csv.query("MATCH (u:User)-[:FOLLOWS]->(f:User) RETURN u.name, f.name", "follows.csv", {})
+
+-- Export to S3 with compression
+CALL apoc.export.parquet.query("MATCH (u:User) RETURN u.name", "s3://my-bucket/users.parquet", {compression: "zstd"})
+
+-- Export to JSON
+CALL apoc.export.json.query("MATCH (u:User) WHERE u.country = 'US' RETURN u", "us_users.json", {})
+```
+
+**Config options:**
+- `compression`: Parquet codec — `"none"`, `"snappy"`, `"gzip"`, `"lz4"`, `"zstd"`, `"brotli"`
+
+> **Note**: Works in all modes — HTTP server, Bolt protocol, and embedded mode.
+
+---
 
 ### Simple Queries
 

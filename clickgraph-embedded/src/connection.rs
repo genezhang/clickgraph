@@ -161,7 +161,95 @@ impl<'db> Connection<'db> {
         .await
     }
 
+    /// Handle `CALL apoc.export.{csv|json|parquet}.query(...)` in embedded mode.
+    ///
+    /// Parses arguments, translates inner Cypher → SQL, builds export SQL, executes.
+    /// Returns a single-row result with export status.
+    async fn handle_export_call(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
+        use clickgraph::clickhouse_query_generator::cypher_to_sql;
+        use clickgraph::open_cypher_parser;
+        use clickgraph::open_cypher_parser::ast::CypherStatement;
+        use clickgraph::procedures::apoc_export;
+        use clickgraph::server::query_context::{
+            set_current_schema, with_query_context, QueryContext,
+        };
+
+        let schema = Arc::clone(&self.schema);
+        let executor = Arc::clone(&self.executor);
+        let cypher = cypher.to_string();
+
+        with_query_context(QueryContext::new(None), async move {
+            set_current_schema(Arc::clone(&schema));
+
+            // Parse the CALL statement
+            let (_, stmt) = open_cypher_parser::parse_cypher_statement(&cypher)
+                .map_err(|e| EmbeddedError::Query(format!("Parse error: {}", e)))?;
+
+            // Extract procedure name and arguments
+            let (proc_name, expressions): (String, Vec<_>) = match &stmt {
+                CypherStatement::ProcedureCall(pc) => {
+                    (pc.procedure_name.to_string(), pc.arguments.iter().collect())
+                }
+                CypherStatement::Query { query, .. } => {
+                    let cc = query
+                        .call_clause
+                        .as_ref()
+                        .ok_or_else(|| EmbeddedError::Query("No CALL clause found".to_string()))?;
+                    (
+                        cc.procedure_name.to_string(),
+                        cc.arguments.iter().map(|a| &a.value).collect(),
+                    )
+                }
+            };
+
+            let ch_format = apoc_export::format_from_procedure_name(&proc_name)
+                .map_err(EmbeddedError::Query)?;
+
+            let args =
+                apoc_export::parse_export_call(&expressions).map_err(EmbeddedError::Query)?;
+
+            // Translate inner Cypher → SQL
+            let inner_sql =
+                cypher_to_sql(&args.cypher_query, &schema, 100).map_err(EmbeddedError::Query)?;
+
+            // Build export SQL using the full destination resolver
+            let export_sql = apoc_export::build_export_sql(
+                &inner_sql,
+                &args.destination,
+                ch_format,
+                &args.config,
+            )
+            .map_err(EmbeddedError::Query)?;
+
+            // Execute
+            executor
+                .execute_text(&export_sql, "TabSeparated", None)
+                .await
+                .map_err(EmbeddedError::from)?;
+
+            // Return status as a single-row result
+            let columns = vec![
+                "file".to_string(),
+                "format".to_string(),
+                "source".to_string(),
+            ];
+            let rows = vec![vec![
+                Value::String(args.destination),
+                Value::String(ch_format.to_string()),
+                Value::String(args.cypher_query),
+            ]];
+            Ok(QueryResult::new(columns, rows))
+        })
+        .await
+    }
+
     async fn query_async(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
+        // Intercept CALL apoc.export.* — these need export logic, not regular query
+        let trimmed_upper = cypher.trim().to_uppercase();
+        if trimmed_upper.starts_with("CALL") && trimmed_upper.contains("APOC.EXPORT.") {
+            return self.handle_export_call(cypher).await;
+        }
+
         use clickgraph::clickhouse_query_generator::cypher_to_sql;
         use clickgraph::server::query_context::{
             set_current_schema, with_query_context, QueryContext,
@@ -385,5 +473,44 @@ graph_schema:
             result.is_err(),
             "unknown extension without format should error"
         );
+    }
+
+    #[test]
+    fn test_call_export_via_query() {
+        // Verify that CALL apoc.export.*.query() is intercepted and routed
+        // to the export handler (returns a status result, not SQL error)
+        let db = make_stub_db();
+        let conn = Connection::new(&db).unwrap();
+        let result = conn.query(
+            r#"CALL apoc.export.parquet.query("MATCH (u:User) RETURN u.name", "/tmp/users.parquet", {})"#,
+        );
+        // With stub executor, this should succeed (StubExecutor returns empty string)
+        assert!(
+            result.is_ok(),
+            "CALL export should be handled: {:?}",
+            result.err()
+        );
+        let qr = result.unwrap();
+        assert_eq!(qr.get_column_names(), &["file", "format", "source"]);
+    }
+
+    #[test]
+    fn test_call_export_csv_via_query() {
+        let db = make_stub_db();
+        let conn = Connection::new(&db).unwrap();
+        let result = conn.query(
+            r#"CALL apoc.export.csv.query("MATCH (u:User) RETURN u.name", "/tmp/users.csv", {})"#,
+        );
+        assert!(result.is_ok(), "CSV export should work: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_call_export_s3_destination() {
+        let db = make_stub_db();
+        let conn = Connection::new(&db).unwrap();
+        let result = conn.query(
+            r#"CALL apoc.export.json.query("MATCH (u:User) RETURN u.name", "s3://mybucket/users.json", {})"#,
+        );
+        assert!(result.is_ok(), "S3 export should work: {:?}", result.err());
     }
 }
