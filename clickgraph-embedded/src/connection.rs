@@ -392,6 +392,83 @@ impl<'db> Connection<'db> {
         Ok(QueryResult::new(columns, rows))
     }
 
+    async fn handle_fulltext_search_call(
+        &self,
+        cypher: &str,
+    ) -> Result<QueryResult, EmbeddedError> {
+        use clickgraph::open_cypher_parser;
+        use clickgraph::open_cypher_parser::ast::CypherStatement;
+        use clickgraph::procedures::fulltext_search;
+
+        let schema = Arc::clone(&self.schema);
+        let executor = Arc::clone(&self.executor);
+        let cypher = cypher.to_string();
+
+        let (_, stmt) = open_cypher_parser::parse_cypher_statement(&cypher)
+            .map_err(|e| EmbeddedError::Query(format!("Parse error: {}", e)))?;
+
+        let expressions: Vec<_> = match &stmt {
+            CypherStatement::ProcedureCall(pc) => pc.arguments.iter().collect(),
+            CypherStatement::Query { query, .. } => {
+                let cc = query
+                    .call_clause
+                    .as_ref()
+                    .ok_or_else(|| EmbeddedError::Query("No CALL clause found".to_string()))?;
+                cc.arguments.iter().map(|a| &a.value).collect()
+            }
+            CypherStatement::CopyTo(_) => {
+                return Err(EmbeddedError::Query(
+                    "Unexpected COPY TO in fulltext search context".to_string(),
+                ));
+            }
+        };
+
+        let search_args = fulltext_search::parse_fulltext_search_args(&expressions)
+            .map_err(EmbeddedError::Query)?;
+
+        let index_config =
+            fulltext_search::resolve_fulltext_index(&schema, &search_args.index_name)
+                .map_err(EmbeddedError::Query)?;
+
+        let search_sql = fulltext_search::build_fulltext_search_sql(&search_args, index_config);
+
+        let json_rows = executor
+            .execute_json(&search_sql, None)
+            .await
+            .map_err(EmbeddedError::from)?;
+
+        let columns: Vec<String> = if let Some(first_row) = json_rows.first() {
+            if let serde_json::Value::Object(map) = first_row {
+                map.keys().cloned().collect()
+            } else {
+                vec!["result".to_string()]
+            }
+        } else {
+            return Ok(QueryResult::new(
+                vec!["node".to_string(), "score".to_string()],
+                vec![],
+            ));
+        };
+
+        let rows: Vec<Vec<Value>> = json_rows
+            .into_iter()
+            .map(|row| {
+                if let serde_json::Value::Object(map) = row {
+                    columns
+                        .iter()
+                        .map(|col| {
+                            Value::from(map.get(col).cloned().unwrap_or(serde_json::Value::Null))
+                        })
+                        .collect()
+                } else {
+                    vec![Value::from(row)]
+                }
+            })
+            .collect();
+
+        Ok(QueryResult::new(columns, rows))
+    }
+
     async fn query_async(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
         // Intercept CALL apoc.export.* and COPY TO — parse first to avoid false positives
         if let Ok((_, stmt)) = clickgraph::open_cypher_parser::parse_cypher_statement(cypher) {
@@ -426,6 +503,9 @@ impl<'db> Connection<'db> {
                 }
                 if clickgraph::procedures::vector_search::is_vector_search_procedure(&name) {
                     return self.handle_vector_search_call(cypher).await;
+                }
+                if clickgraph::procedures::fulltext_search::is_fulltext_search_procedure(&name) {
+                    return self.handle_fulltext_search_call(cypher).await;
                 }
             }
         }

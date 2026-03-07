@@ -1979,6 +1979,92 @@ impl BoltHandler {
                                 })
                             })
                             .collect::<Result<Vec<_>, _>>()?
+                    } else if crate::procedures::fulltext_search::is_fulltext_search_procedure(
+                        &proc_name,
+                    ) {
+                        // ── Fulltext search: db.index.fulltext.queryNodes ──
+                        log::info!("Executing fulltext search via Bolt: {}", proc_name);
+
+                        let search_args = {
+                            let (_, stmt) = open_cypher_parser::parse_cypher_statement(query)
+                                .map_err(|e| {
+                                    BoltError::query_error(format!(
+                                        "Fulltext search parse error: {}",
+                                        e
+                                    ))
+                                })?;
+                            let expressions: Vec<_> = match &stmt {
+                                CypherStatement::ProcedureCall(pc) => pc.arguments.iter().collect(),
+                                CypherStatement::Query { query: q, .. } => {
+                                    let cc = q.call_clause.as_ref().ok_or_else(|| {
+                                        BoltError::query_error(
+                                            "No CALL clause in fulltext search query".to_string(),
+                                        )
+                                    })?;
+                                    cc.arguments.iter().map(|a| &a.value).collect()
+                                }
+                                CypherStatement::CopyTo(_) => {
+                                    return Err(BoltError::query_error(
+                                        "Unexpected COPY TO in fulltext search context".to_string(),
+                                    ));
+                                }
+                            };
+                            crate::procedures::fulltext_search::parse_fulltext_search_args(
+                                &expressions,
+                            )
+                            .map_err(BoltError::query_error)?
+                        };
+
+                        let graph_schema =
+                            graph_catalog::get_graph_schema_by_name(&effective_schema)
+                                .await
+                                .map_err(BoltError::query_error)?;
+
+                        let index_config =
+                            crate::procedures::fulltext_search::resolve_fulltext_index(
+                                &graph_schema,
+                                &search_args.index_name,
+                            )
+                            .map_err(BoltError::query_error)?;
+
+                        let search_sql =
+                            crate::procedures::fulltext_search::build_fulltext_search_sql(
+                                &search_args,
+                                index_config,
+                            );
+
+                        log::debug!(
+                            "Bolt fulltext search: index='{}', query='{}'",
+                            search_args.index_name,
+                            search_args.query_text.chars().take(50).collect::<String>()
+                        );
+
+                        let result_text = self
+                            .executor
+                            .execute_text(&search_sql, "JSONEachRow", role.as_deref())
+                            .await
+                            .map_err(|e| {
+                                BoltError::query_error(format!(
+                                    "Fulltext search execution failed: {}",
+                                    e
+                                ))
+                            })?;
+
+                        result_text
+                            .lines()
+                            .filter(|line| !line.trim().is_empty())
+                            .map(|line| {
+                                serde_json::from_str::<std::collections::HashMap<String, Value>>(
+                                    line,
+                                )
+                                .map_err(|e| {
+                                    BoltError::query_error(format!(
+                                        "Failed to parse JSONEachRow line: {}",
+                                        e
+                                    ))
+                                })
+                            })
+                            .collect::<Result<Vec<_>, _>>()?
                     } else {
                         log::info!("Executing simple procedure via Bolt: {}", proc_name);
                         crate::procedures::executor::execute_procedure_by_name(

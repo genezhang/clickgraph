@@ -564,6 +564,11 @@ pub struct GraphSchema {
     /// Maps index name -> config (label, property, similarity metric)
     #[serde(skip)]
     vector_indexes: BTreeMap<String, VectorIndexConfig>,
+
+    /// Full-text index configurations for text search
+    /// Maps index name -> config (label, properties, analyzer)
+    #[serde(skip)]
+    fulltext_indexes: BTreeMap<String, FulltextIndexConfig>,
 }
 
 /// Runtime vector index configuration (resolved from schema definition)
@@ -583,6 +588,23 @@ pub struct VectorIndexConfig {
     pub dimensions: Option<u32>,
     /// Similarity metric: "cosine" or "euclidean"
     pub similarity: String,
+}
+
+/// Runtime full-text index configuration (resolved from schema definition)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FulltextIndexConfig {
+    /// Index name
+    pub name: String,
+    /// Node label this index applies to
+    pub label: String,
+    /// Cypher property names to search across
+    pub properties: Vec<String>,
+    /// Resolved ClickHouse column names (from property_mappings)
+    pub columns: Vec<String>,
+    /// ClickHouse table (database.table)
+    pub table: String,
+    /// Search analyzer: "standard", "ngram", or "exact"
+    pub analyzer: String,
 }
 
 impl GraphSchema {
@@ -617,10 +639,26 @@ impl GraphSchema {
             denormalized_nodes,
             rel_type_index,
             vector_indexes: BTreeMap::new(),
+            fulltext_indexes: BTreeMap::new(),
         }
     }
 
-    /// Build with vector index configurations
+    /// Build with vector and fulltext index configurations
+    pub fn build_with_indexes(
+        version: u32,
+        database: String,
+        nodes: HashMap<String, NodeSchema>,
+        relationships: HashMap<String, RelationshipSchema>,
+        vector_indexes: BTreeMap<String, VectorIndexConfig>,
+        fulltext_indexes: BTreeMap<String, FulltextIndexConfig>,
+    ) -> GraphSchema {
+        let mut schema = Self::build(version, database, nodes, relationships);
+        schema.vector_indexes = vector_indexes;
+        schema.fulltext_indexes = fulltext_indexes;
+        schema
+    }
+
+    /// Build with vector index configurations only (backward compat)
     pub fn build_with_vector_indexes(
         version: u32,
         database: String,
@@ -1251,6 +1289,16 @@ impl GraphSchema {
     /// Look up a vector index by name
     pub fn get_vector_index(&self, name: &str) -> Option<&VectorIndexConfig> {
         self.vector_indexes.get(name)
+    }
+
+    /// Get all fulltext index configurations
+    pub fn fulltext_indexes(&self) -> &BTreeMap<String, FulltextIndexConfig> {
+        &self.fulltext_indexes
+    }
+
+    /// Look up a fulltext index by name
+    pub fn get_fulltext_index(&self, name: &str) -> Option<&FulltextIndexConfig> {
+        self.fulltext_indexes.get(name)
     }
 
     /// Expand a polymorphic `$any` node type to all concrete node labels.

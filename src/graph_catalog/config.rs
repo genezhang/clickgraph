@@ -2,7 +2,8 @@ use super::errors::GraphSchemaError;
 use super::expression_parser::{parse_property_value, PropertyValue};
 use super::filter_parser::SchemaFilter;
 use super::graph_schema::{
-    GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema, VectorIndexConfig,
+    FulltextIndexConfig, GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema,
+    VectorIndexConfig,
 };
 use super::schema_types::SchemaType;
 use super::schema_validator::SchemaValidator;
@@ -370,6 +371,11 @@ pub struct GraphSchemaDefinition {
     /// Maps Neo4j-style vector indexes to ClickHouse distance functions
     #[serde(default)]
     pub vector_indexes: Vec<VectorIndexDefinition>,
+
+    /// Full-text index definitions for text search
+    /// Maps Neo4j-style fulltext indexes to ClickHouse text search functions
+    #[serde(default)]
+    pub fulltext_indexes: Vec<FulltextIndexDefinition>,
 }
 
 /// Vector index definition in schema config
@@ -405,6 +411,37 @@ pub struct VectorIndexDefinition {
 
 fn default_similarity() -> String {
     "cosine".to_string()
+}
+
+/// Full-text index definition in schema config
+///
+/// Maps a named full-text index to a node label and one or more text properties.
+/// Used by `db.index.fulltext.queryNodes()` to generate ClickHouse SQL with
+/// text search functions (ngramDistance, multiSearchAny, hasToken).
+///
+/// Example YAML:
+/// ```yaml
+/// fulltext_indexes:
+///   - name: "article-search"
+///     label: "Article"
+///     properties: ["title", "content"]
+///     analyzer: "standard"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FulltextIndexDefinition {
+    /// Index name (referenced in CALL db.index.fulltext.queryNodes)
+    pub name: String,
+    /// Node label this index applies to
+    pub label: String,
+    /// Cypher property names to search across (resolved via property_mappings)
+    pub properties: Vec<String>,
+    /// Search analyzer: "standard" (default), "ngram", or "exact"
+    #[serde(default = "default_analyzer")]
+    pub analyzer: String,
+}
+
+fn default_analyzer() -> String {
+    "standard".to_string()
 }
 
 /// Node definition in schema config
@@ -2037,12 +2074,17 @@ impl GraphSchemaConfig {
         // Resolve vector index definitions against node schemas
         let vector_indexes = resolve_vector_indexes(&self.graph_schema.vector_indexes, &nodes)?;
 
-        Ok(GraphSchema::build_with_vector_indexes(
+        // Resolve fulltext index definitions against node schemas
+        let fulltext_indexes =
+            resolve_fulltext_indexes(&self.graph_schema.fulltext_indexes, &nodes)?;
+
+        Ok(GraphSchema::build_with_indexes(
             1,
             "default".to_string(),
             nodes,
             relationships,
             vector_indexes,
+            fulltext_indexes,
         ))
     }
 
@@ -2240,12 +2282,17 @@ impl GraphSchemaConfig {
         // Resolve vector index definitions against node schemas
         let vector_indexes = resolve_vector_indexes(&self.graph_schema.vector_indexes, &nodes)?;
 
-        Ok(GraphSchema::build_with_vector_indexes(
+        // Resolve fulltext index definitions against node schemas
+        let fulltext_indexes =
+            resolve_fulltext_indexes(&self.graph_schema.fulltext_indexes, &nodes)?;
+
+        Ok(GraphSchema::build_with_indexes(
             1,
             "default".to_string(),
             nodes,
             relationships,
             vector_indexes,
+            fulltext_indexes,
         ))
     }
 }
@@ -2320,6 +2367,95 @@ fn resolve_vector_indexes(
                 table: qualified_table,
                 dimensions: def.dimensions,
                 similarity,
+            },
+        );
+    }
+
+    Ok(indexes)
+}
+
+/// Resolve full-text index definitions against built node schemas.
+///
+/// Validates that each index references an existing node label and properties,
+/// and resolves Cypher property names to actual ClickHouse column names
+/// via property_mappings.
+fn resolve_fulltext_indexes(
+    definitions: &[FulltextIndexDefinition],
+    nodes: &HashMap<String, NodeSchema>,
+) -> Result<BTreeMap<String, FulltextIndexConfig>, GraphSchemaError> {
+    let mut indexes = BTreeMap::new();
+
+    for def in definitions {
+        // Check for duplicate index names
+        if indexes.contains_key(&def.name) {
+            return Err(GraphSchemaError::InvalidConfig {
+                message: format!(
+                    "Duplicate fulltext index name '{}'. Each fulltext index must have a unique name.",
+                    def.name
+                ),
+            });
+        }
+
+        if def.properties.is_empty() {
+            return Err(GraphSchemaError::InvalidConfig {
+                message: format!(
+                    "Fulltext index '{}': must specify at least one property",
+                    def.name
+                ),
+            });
+        }
+
+        // Validate referenced node label exists
+        let node_schema = nodes
+            .get(&def.label)
+            .ok_or_else(|| GraphSchemaError::InvalidConfig {
+                message: format!(
+                    "Fulltext index '{}' references unknown node label '{}'",
+                    def.name, def.label
+                ),
+            })?;
+
+        // Resolve each Cypher property → ClickHouse column
+        let mut columns = Vec::new();
+        for prop in &def.properties {
+            let column = node_schema
+                .property_mappings
+                .get(prop)
+                .map(|pv| match pv {
+                    PropertyValue::Column(col) => col.clone(),
+                    PropertyValue::Expression(expr) => expr.clone(),
+                })
+                .ok_or_else(|| GraphSchemaError::InvalidConfig {
+                    message: format!(
+                        "Fulltext index '{}': property '{}' not found in node '{}' property_mappings",
+                        def.name, prop, def.label
+                    ),
+                })?;
+            columns.push(column);
+        }
+
+        // Validate analyzer
+        let analyzer = def.analyzer.to_lowercase();
+        if analyzer != "standard" && analyzer != "ngram" && analyzer != "exact" {
+            return Err(GraphSchemaError::InvalidConfig {
+                message: format!(
+                    "Fulltext index '{}': unsupported analyzer '{}' (use 'standard', 'ngram', or 'exact')",
+                    def.name, def.analyzer
+                ),
+            });
+        }
+
+        let qualified_table = format!("{}.{}", node_schema.database, node_schema.table_name);
+
+        indexes.insert(
+            def.name.clone(),
+            FulltextIndexConfig {
+                name: def.name.clone(),
+                label: def.label.clone(),
+                properties: def.properties.clone(),
+                columns,
+                table: qualified_table,
+                analyzer,
             },
         );
     }
@@ -2517,6 +2653,7 @@ graph_schema:
                     source: None,
                 })],
                 vector_indexes: Vec::new(),
+                fulltext_indexes: Vec::new(),
             },
         };
 
@@ -2577,6 +2714,7 @@ graph_schema:
                     source: None,
                 })],
                 vector_indexes: Vec::new(),
+                fulltext_indexes: Vec::new(),
             },
         };
 
@@ -2642,6 +2780,7 @@ graph_schema:
                     constraints: None,
                 })],
                 vector_indexes: Vec::new(),
+                fulltext_indexes: Vec::new(),
             },
         };
 
@@ -2697,6 +2836,7 @@ graph_schema:
                     constraints: None,
                 })],
                 vector_indexes: Vec::new(),
+                fulltext_indexes: Vec::new(),
             },
         };
 
@@ -2783,6 +2923,7 @@ graph_schema:
                     constraints: None,
                 })],
                 vector_indexes: Vec::new(),
+                fulltext_indexes: Vec::new(),
             },
         };
 
@@ -2844,6 +2985,7 @@ graph_schema:
                     constraints: None,
                 })],
                 vector_indexes: Vec::new(),
+                fulltext_indexes: Vec::new(),
             },
         };
 
@@ -2910,6 +3052,7 @@ graph_schema:
                     constraints: None,
                 })],
                 vector_indexes: Vec::new(),
+                fulltext_indexes: Vec::new(),
             },
         };
 
@@ -3440,6 +3583,160 @@ graph_schema:
         assert!(
             format!("{}", err).contains("Duplicate vector index name"),
             "Error was: {}",
+            err
+        );
+    }
+
+    // ── resolve_fulltext_indexes tests ──
+
+    fn make_test_nodes_for_fulltext() -> HashMap<String, NodeSchema> {
+        let mut nodes = HashMap::new();
+        let mut property_mappings = HashMap::new();
+        property_mappings.insert(
+            "title".to_string(),
+            PropertyValue::Column("article_title".to_string()),
+        );
+        property_mappings.insert(
+            "content".to_string(),
+            PropertyValue::Column("article_body".to_string()),
+        );
+        property_mappings.insert(
+            "name".to_string(),
+            PropertyValue::Column("full_name".to_string()),
+        );
+        nodes.insert(
+            "Article".to_string(),
+            NodeSchema {
+                database: "test_db".to_string(),
+                table_name: "articles".to_string(),
+                node_id: NodeIdSchema::single("id".to_string(), SchemaType::Integer),
+                property_mappings,
+                column_names: vec![],
+                primary_keys: "id".to_string(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
+                denormalized_source_table: None,
+                label_column: None,
+                label_value: None,
+                node_id_types: None,
+                source: None,
+            },
+        );
+        nodes
+    }
+
+    #[test]
+    fn test_resolve_fulltext_indexes_valid() {
+        let nodes = make_test_nodes_for_fulltext();
+        let defs = vec![FulltextIndexDefinition {
+            name: "article-search".to_string(),
+            label: "Article".to_string(),
+            properties: vec!["title".to_string(), "content".to_string()],
+            analyzer: "standard".to_string(),
+        }];
+        let result = resolve_fulltext_indexes(&defs, &nodes).unwrap();
+        assert_eq!(result.len(), 1);
+        let idx = result.get("article-search").unwrap();
+        assert_eq!(idx.columns, vec!["article_title", "article_body"]);
+        assert_eq!(idx.table, "test_db.articles");
+        assert_eq!(idx.analyzer, "standard");
+        assert_eq!(idx.properties, vec!["title", "content"]);
+    }
+
+    #[test]
+    fn test_resolve_fulltext_indexes_unknown_label() {
+        let nodes = make_test_nodes_for_fulltext();
+        let defs = vec![FulltextIndexDefinition {
+            name: "bad".to_string(),
+            label: "NonExistent".to_string(),
+            properties: vec!["title".to_string()],
+            analyzer: "standard".to_string(),
+        }];
+        let err = resolve_fulltext_indexes(&defs, &nodes).unwrap_err();
+        assert!(
+            format!("{}", err).contains("unknown node label"),
+            "Error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_resolve_fulltext_indexes_unknown_property() {
+        let nodes = make_test_nodes_for_fulltext();
+        let defs = vec![FulltextIndexDefinition {
+            name: "bad".to_string(),
+            label: "Article".to_string(),
+            properties: vec!["title".to_string(), "nonexistent".to_string()],
+            analyzer: "standard".to_string(),
+        }];
+        let err = resolve_fulltext_indexes(&defs, &nodes).unwrap_err();
+        assert!(
+            format!("{}", err).contains("not found in node"),
+            "Error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_resolve_fulltext_indexes_invalid_analyzer() {
+        let nodes = make_test_nodes_for_fulltext();
+        let defs = vec![FulltextIndexDefinition {
+            name: "bad".to_string(),
+            label: "Article".to_string(),
+            properties: vec!["title".to_string()],
+            analyzer: "lucene".to_string(),
+        }];
+        let err = resolve_fulltext_indexes(&defs, &nodes).unwrap_err();
+        assert!(
+            format!("{}", err).contains("unsupported analyzer"),
+            "Error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_resolve_fulltext_indexes_duplicate_name() {
+        let nodes = make_test_nodes_for_fulltext();
+        let defs = vec![
+            FulltextIndexDefinition {
+                name: "same-name".to_string(),
+                label: "Article".to_string(),
+                properties: vec!["title".to_string()],
+                analyzer: "standard".to_string(),
+            },
+            FulltextIndexDefinition {
+                name: "same-name".to_string(),
+                label: "Article".to_string(),
+                properties: vec!["content".to_string()],
+                analyzer: "ngram".to_string(),
+            },
+        ];
+        let err = resolve_fulltext_indexes(&defs, &nodes).unwrap_err();
+        assert!(
+            format!("{}", err).contains("Duplicate fulltext index name"),
+            "Error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_resolve_fulltext_indexes_empty_properties() {
+        let nodes = make_test_nodes_for_fulltext();
+        let defs = vec![FulltextIndexDefinition {
+            name: "bad".to_string(),
+            label: "Article".to_string(),
+            properties: vec![],
+            analyzer: "standard".to_string(),
+        }];
+        let err = resolve_fulltext_indexes(&defs, &nodes).unwrap_err();
+        assert!(
+            format!("{}", err).contains("at least one property"),
+            "Error: {}",
             err
         );
     }

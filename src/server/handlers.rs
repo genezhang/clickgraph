@@ -689,6 +689,121 @@ pub async fn query_handler(
             }
         }
 
+        // ── Fulltext search procedures: db.index.fulltext.queryNodes ──
+        // Same intercept pattern as vector search.
+        if crate::procedures::fulltext_search::is_fulltext_search_procedure(&proc_name) {
+            log::info!("Detected fulltext search procedure");
+
+            let search_start = Instant::now();
+
+            let search_args;
+            let use_schema_name;
+            {
+                let (_, stmt) =
+                    open_cypher_parser::parse_cypher_statement(&clean_query).map_err(|e| {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            format!("Failed to parse fulltext search call: {}", e),
+                        )
+                    })?;
+                let expressions: Vec<_> = match &stmt {
+                    CypherStatement::ProcedureCall(pc) => {
+                        use_schema_name = None;
+                        pc.arguments.iter().collect()
+                    }
+                    CypherStatement::Query { query, .. } => {
+                        use_schema_name = query
+                            .use_clause
+                            .as_ref()
+                            .map(|uc| uc.database_name.to_string());
+                        let cc = query.call_clause.as_ref().ok_or_else(|| {
+                            (
+                                StatusCode::BAD_REQUEST,
+                                "No CALL clause found in fulltext search query".to_string(),
+                            )
+                        })?;
+                        cc.arguments.iter().map(|a| &a.value).collect()
+                    }
+                    CypherStatement::CopyTo(_) => {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            "Unexpected COPY TO in fulltext search context".to_string(),
+                        ));
+                    }
+                };
+                search_args =
+                    crate::procedures::fulltext_search::parse_fulltext_search_args(&expressions)
+                        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+            }
+
+            // Resolve schema: USE clause > schema_name param > "default"
+            let schema_name_for_search = use_schema_name
+                .or_else(|| schema_name_param.clone())
+                .unwrap_or_else(|| "default".to_string());
+            let graph_schema = graph_catalog::get_graph_schema_by_name(&schema_name_for_search)
+                .await
+                .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+            let index_config = crate::procedures::fulltext_search::resolve_fulltext_index(
+                &graph_schema,
+                &search_args.index_name,
+            )
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+            let search_sql = crate::procedures::fulltext_search::build_fulltext_search_sql(
+                &search_args,
+                index_config,
+            );
+
+            log::debug!(
+                "Fulltext search: index='{}', query='{}', sql_length={}",
+                search_args.index_name,
+                search_args.query_text.chars().take(50).collect::<String>(),
+                search_sql.len()
+            );
+
+            if sql_only {
+                let response = SqlOnlyResponse {
+                    cypher_query: payload.query.clone(),
+                    generated_sql: search_sql,
+                    execution_mode: "sql_only".to_string(),
+                };
+                return Ok(Json(response).into_response());
+            }
+
+            let role = payload.role.as_deref();
+            match app_state
+                .executor
+                .execute_text(&search_sql, "JSONEachRow", role)
+                .await
+            {
+                Ok(result_text) => {
+                    log::info!(
+                        "Fulltext search completed in {:.3} seconds",
+                        search_start.elapsed().as_secs_f64()
+                    );
+                    let rows: Vec<serde_json::Value> = result_text
+                        .lines()
+                        .filter(|line| !line.is_empty())
+                        .map(serde_json::from_str::<serde_json::Value>)
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|e| {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("Failed to parse ClickHouse JSONEachRow response: {}", e),
+                            )
+                        })?;
+                    return Ok(Json(serde_json::json!(rows)).into_response());
+                }
+                Err(e) => {
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Fulltext search execution failed: {}", e),
+                    ));
+                }
+            }
+        }
+
         let registry = crate::procedures::ProcedureRegistry::new();
         let schema_name = schema_name_param.unwrap_or_else(|| "default".to_string());
 
