@@ -347,7 +347,8 @@ impl<'db> Connection<'db> {
         let index_config = vector_search::resolve_vector_index(&schema, &search_args.index_name)
             .map_err(EmbeddedError::Query)?;
 
-        let search_sql = vector_search::build_vector_search_sql(&search_args, index_config);
+        let search_sql = vector_search::build_vector_search_sql(&search_args, index_config)
+            .map_err(EmbeddedError::Query)?;
 
         // Execute and parse results
         let json_rows = executor
@@ -355,19 +356,21 @@ impl<'db> Connection<'db> {
             .await
             .map_err(EmbeddedError::from)?;
 
-        if json_rows.is_empty() {
+        // Derive columns from the first row, or use defaults for empty results.
+        // The SQL is `SELECT *, <score_expr> AS score` so columns come from the table
+        // schema plus `score`. We derive from the first row to stay schema-agnostic.
+        let columns: Vec<String> = if let Some(first_row) = json_rows.first() {
+            if let serde_json::Value::Object(map) = first_row {
+                map.keys().cloned().collect()
+            } else {
+                vec!["result".to_string()]
+            }
+        } else {
+            // Empty results — return minimal columns consistent with YIELD node, score
             return Ok(QueryResult::new(
                 vec!["node".to_string(), "score".to_string()],
                 vec![],
             ));
-        }
-
-        // Convert serde_json rows to QueryResult columns and Value rows
-        let first_row = &json_rows[0];
-        let columns: Vec<String> = if let serde_json::Value::Object(map) = first_row {
-            map.keys().cloned().collect()
-        } else {
-            vec!["result".to_string()]
         };
 
         let rows: Vec<Vec<Value>> = json_rows

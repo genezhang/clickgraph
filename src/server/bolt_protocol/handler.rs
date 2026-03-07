@@ -1943,9 +1943,14 @@ impl BoltHandler {
                         let search_sql = crate::procedures::vector_search::build_vector_search_sql(
                             &search_args,
                             index_config,
-                        );
+                        )
+                        .map_err(BoltError::query_error)?;
 
-                        log::debug!("Bolt vector search SQL: {}", search_sql);
+                        log::debug!(
+                            "Bolt vector search: index='{}', top_k={}",
+                            search_args.index_name,
+                            search_args.top_k
+                        );
 
                         let result_text = self
                             .executor
@@ -1958,12 +1963,22 @@ impl BoltHandler {
                                 ))
                             })?;
 
-                        // Parse JSONEachRow into Vec<HashMap>
+                        // Parse JSONEachRow into Vec<HashMap>, failing on malformed rows
                         result_text
                             .lines()
-                            .filter(|line| !line.is_empty())
-                            .filter_map(|line| serde_json::from_str(line).ok())
-                            .collect()
+                            .filter(|line| !line.trim().is_empty())
+                            .map(|line| {
+                                serde_json::from_str::<std::collections::HashMap<String, Value>>(
+                                    line,
+                                )
+                                .map_err(|e| {
+                                    BoltError::query_error(format!(
+                                        "Failed to parse JSONEachRow line: {}",
+                                        e
+                                    ))
+                                })
+                            })
+                            .collect::<Result<Vec<_>, _>>()?
                     } else {
                         log::info!("Executing simple procedure via Bolt: {}", proc_name);
                         crate::procedures::executor::execute_procedure_by_name(

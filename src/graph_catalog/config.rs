@@ -2262,6 +2262,16 @@ fn resolve_vector_indexes(
     let mut indexes = BTreeMap::new();
 
     for def in definitions {
+        // Check for duplicate index names
+        if indexes.contains_key(&def.name) {
+            return Err(GraphSchemaError::InvalidConfig {
+                message: format!(
+                    "Duplicate vector index name '{}'. Each vector index must have a unique name.",
+                    def.name
+                ),
+            });
+        }
+
         // Validate referenced node label exists
         let node_schema = nodes
             .get(&def.label)
@@ -3289,6 +3299,148 @@ graph_schema:
         assert_eq!(
             node_schema.node_id.sql_equality("a", "b"),
             "(a.tenant_id, a.account_id) = (b.tenant_id, b.account_id)"
+        );
+    }
+
+    // ── resolve_vector_indexes tests ──
+
+    fn make_test_nodes_for_vector() -> HashMap<String, NodeSchema> {
+        let mut nodes = HashMap::new();
+        let mut property_mappings = HashMap::new();
+        property_mappings.insert(
+            "embedding".to_string(),
+            PropertyValue::Column("embedding_vec".to_string()),
+        );
+        property_mappings.insert(
+            "name".to_string(),
+            PropertyValue::Column("full_name".to_string()),
+        );
+        nodes.insert(
+            "Article".to_string(),
+            NodeSchema {
+                database: "test_db".to_string(),
+                table_name: "articles".to_string(),
+                node_id: NodeIdSchema::single(
+                    "id".to_string(),
+                    crate::graph_catalog::schema_types::SchemaType::Integer,
+                ),
+                property_mappings,
+                column_names: vec![],
+                primary_keys: "id".to_string(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                is_denormalized: false,
+                from_properties: None,
+                to_properties: None,
+                denormalized_source_table: None,
+                label_column: None,
+                label_value: None,
+                node_id_types: None,
+                source: None,
+            },
+        );
+        nodes
+    }
+
+    #[test]
+    fn test_resolve_vector_indexes_valid() {
+        let nodes = make_test_nodes_for_vector();
+        let defs = vec![VectorIndexDefinition {
+            name: "article-embeddings".to_string(),
+            label: "Article".to_string(),
+            property: "embedding".to_string(),
+            dimensions: Some(768),
+            similarity: "cosine".to_string(),
+        }];
+        let result = resolve_vector_indexes(&defs, &nodes).unwrap();
+        assert_eq!(result.len(), 1);
+        let idx = result.get("article-embeddings").unwrap();
+        assert_eq!(idx.column, "embedding_vec");
+        assert_eq!(idx.table, "test_db.articles");
+        assert_eq!(idx.similarity, "cosine");
+        assert_eq!(idx.dimensions, Some(768));
+    }
+
+    #[test]
+    fn test_resolve_vector_indexes_unknown_label() {
+        let nodes = make_test_nodes_for_vector();
+        let defs = vec![VectorIndexDefinition {
+            name: "bad-index".to_string(),
+            label: "NonExistent".to_string(),
+            property: "embedding".to_string(),
+            dimensions: None,
+            similarity: "cosine".to_string(),
+        }];
+        let err = resolve_vector_indexes(&defs, &nodes).unwrap_err();
+        assert!(
+            format!("{}", err).contains("unknown node label"),
+            "Error was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_resolve_vector_indexes_unknown_property() {
+        let nodes = make_test_nodes_for_vector();
+        let defs = vec![VectorIndexDefinition {
+            name: "bad-index".to_string(),
+            label: "Article".to_string(),
+            property: "nonexistent_prop".to_string(),
+            dimensions: None,
+            similarity: "cosine".to_string(),
+        }];
+        let err = resolve_vector_indexes(&defs, &nodes).unwrap_err();
+        assert!(
+            format!("{}", err).contains("not found in node"),
+            "Error was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_resolve_vector_indexes_invalid_similarity() {
+        let nodes = make_test_nodes_for_vector();
+        let defs = vec![VectorIndexDefinition {
+            name: "bad-index".to_string(),
+            label: "Article".to_string(),
+            property: "embedding".to_string(),
+            dimensions: None,
+            similarity: "manhattan".to_string(),
+        }];
+        let err = resolve_vector_indexes(&defs, &nodes).unwrap_err();
+        assert!(
+            format!("{}", err).contains("unsupported similarity"),
+            "Error was: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_resolve_vector_indexes_duplicate_name() {
+        let nodes = make_test_nodes_for_vector();
+        let defs = vec![
+            VectorIndexDefinition {
+                name: "same-name".to_string(),
+                label: "Article".to_string(),
+                property: "embedding".to_string(),
+                dimensions: None,
+                similarity: "cosine".to_string(),
+            },
+            VectorIndexDefinition {
+                name: "same-name".to_string(),
+                label: "Article".to_string(),
+                property: "name".to_string(),
+                dimensions: None,
+                similarity: "cosine".to_string(),
+            },
+        ];
+        let err = resolve_vector_indexes(&defs, &nodes).unwrap_err();
+        assert!(
+            format!("{}", err).contains("Duplicate vector index name"),
+            "Error was: {}",
+            err
         );
     }
 }

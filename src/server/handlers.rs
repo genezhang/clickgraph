@@ -568,15 +568,17 @@ pub async fn query_handler(
             }
         }
 
-        // ── Vector search procedures: db.index.vector.queryNodes/queryRelationships ──
+        // ── Vector search procedures: db.index.vector.queryNodes ──
         // These bypass ProcedureRegistry because they need ClickHouse execution.
         if crate::procedures::vector_search::is_vector_search_procedure(&proc_name) {
-            log::info!("Detected vector search procedure: {}", proc_name);
+            log::info!("Detected vector search procedure");
 
             let search_start = Instant::now();
 
-            // Re-parse to extract arguments
-            let search_args = {
+            // Re-parse to extract arguments and USE clause
+            let search_args;
+            let use_schema_name;
+            {
                 let (_, stmt) =
                     open_cypher_parser::parse_cypher_statement(&clean_query).map_err(|e| {
                         (
@@ -585,8 +587,15 @@ pub async fn query_handler(
                         )
                     })?;
                 let expressions: Vec<_> = match &stmt {
-                    CypherStatement::ProcedureCall(pc) => pc.arguments.iter().collect(),
+                    CypherStatement::ProcedureCall(pc) => {
+                        use_schema_name = None;
+                        pc.arguments.iter().collect()
+                    }
                     CypherStatement::Query { query, .. } => {
+                        use_schema_name = query
+                            .use_clause
+                            .as_ref()
+                            .map(|uc| uc.database_name.to_string());
                         let cc = query.call_clause.as_ref().ok_or_else(|| {
                             (
                                 StatusCode::BAD_REQUEST,
@@ -602,19 +611,18 @@ pub async fn query_handler(
                         ));
                     }
                 };
-                crate::procedures::vector_search::parse_vector_search_args(&expressions)
-                    .map_err(|e| (StatusCode::BAD_REQUEST, e))?
-            };
+                search_args =
+                    crate::procedures::vector_search::parse_vector_search_args(&expressions)
+                        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+            }
 
-            // Resolve schema and vector index
-            let schema_name_for_search = schema_name_param
-                .clone()
+            // Resolve schema: USE clause > schema_name param > "default"
+            let schema_name_for_search = use_schema_name
+                .or_else(|| schema_name_param.clone())
                 .unwrap_or_else(|| "default".to_string());
-            let graph_schema =
-                match graph_catalog::get_graph_schema_by_name(&schema_name_for_search).await {
-                    Ok(s) => s,
-                    Err(e) => return Err((StatusCode::BAD_REQUEST, e)),
-                };
+            let graph_schema = graph_catalog::get_graph_schema_by_name(&schema_name_for_search)
+                .await
+                .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
             let index_config = crate::procedures::vector_search::resolve_vector_index(
                 &graph_schema,
@@ -626,9 +634,15 @@ pub async fn query_handler(
             let search_sql = crate::procedures::vector_search::build_vector_search_sql(
                 &search_args,
                 index_config,
-            );
+            )
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
-            log::debug!("Vector search SQL: {}", search_sql);
+            log::debug!(
+                "Vector search: index='{}', top_k={}, sql_length={}",
+                search_args.index_name,
+                search_args.top_k,
+                search_sql.len()
+            );
 
             // If sql_only, return the SQL
             if sql_only {
@@ -652,12 +666,18 @@ pub async fn query_handler(
                         "Vector search completed in {:.3} seconds",
                         search_start.elapsed().as_secs_f64()
                     );
-                    // Parse JSONEachRow response into array
+                    // Parse JSONEachRow response, failing if any row is malformed
                     let rows: Vec<serde_json::Value> = result_text
                         .lines()
                         .filter(|line| !line.is_empty())
-                        .filter_map(|line| serde_json::from_str(line).ok())
-                        .collect();
+                        .map(serde_json::from_str::<serde_json::Value>)
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|e| {
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                format!("Failed to parse ClickHouse JSONEachRow response: {}", e),
+                            )
+                        })?;
                     return Ok(Json(serde_json::json!(rows)).into_response());
                 }
                 Err(e) => {

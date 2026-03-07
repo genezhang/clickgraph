@@ -1,7 +1,7 @@
 //! Vector similarity search procedures for Neo4j GraphRAG compatibility.
 //!
-//! Implements `db.index.vector.queryNodes()` and `db.index.vector.queryRelationships()`
-//! by translating to ClickHouse distance functions (cosineDistance, L2Distance).
+//! Implements `db.index.vector.queryNodes()` by translating to ClickHouse
+//! distance functions (cosineDistance, L2Distance).
 //!
 //! These procedures bypass ProcedureRegistry (like APOC export) because they
 //! need async ClickHouse execution rather than sync schema introspection.
@@ -24,8 +24,7 @@ use crate::open_cypher_parser::ast::Expression;
 
 /// Check if a procedure name is a vector search procedure
 pub fn is_vector_search_procedure(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower == "db.index.vector.querynodes" || lower == "db.index.vector.queryrelationships"
+    name.eq_ignore_ascii_case("db.index.vector.querynodes")
 }
 
 /// Parsed arguments from a vector search procedure call
@@ -45,7 +44,7 @@ pub struct VectorSearchArgs {
 pub fn parse_vector_search_args(args: &[&Expression<'_>]) -> Result<VectorSearchArgs, String> {
     if args.len() < 3 {
         return Err(format!(
-            "db.index.vector.queryNodes requires 3 arguments (indexName, numberOfNearestNeighbours, queryVector), got {}",
+            "Vector search procedures require 3 arguments (indexName, numberOfNearestNeighbours, queryVector), got {}",
             args.len()
         ));
     }
@@ -72,11 +71,25 @@ pub fn parse_vector_search_args(args: &[&Expression<'_>]) -> Result<VectorSearch
     })
 }
 
-/// Build ClickHouse SQL for vector similarity search
+/// Build ClickHouse SQL for vector similarity search.
+///
+/// Validates vector dimensions against the index config before generating SQL.
 pub fn build_vector_search_sql(
     args: &VectorSearchArgs,
     index_config: &VectorIndexConfig,
-) -> String {
+) -> Result<String, String> {
+    // Validate dimensions if configured
+    if let Some(expected_dims) = index_config.dimensions {
+        if args.query_vector.len() != expected_dims as usize {
+            return Err(format!(
+                "Vector dimension mismatch for index '{}': expected {} dimensions, got {}",
+                index_config.name,
+                expected_dims,
+                args.query_vector.len()
+            ));
+        }
+    }
+
     let distance_expr = build_distance_expression(
         &index_config.column,
         &args.query_vector,
@@ -89,10 +102,10 @@ pub fn build_vector_search_sql(
         &index_config.similarity,
     );
 
-    format!(
+    Ok(format!(
         "SELECT *, {} AS score FROM {} ORDER BY {} ASC LIMIT {}",
         score_expr, index_config.table, distance_expr, args.top_k,
-    )
+    ))
 }
 
 /// Look up vector index config by name from GraphSchema
@@ -189,65 +202,62 @@ fn extract_float_list(expr: &Expression<'_>) -> Result<Vec<f64>, String> {
         Expression::List(items) => {
             let mut result = Vec::with_capacity(items.len());
             for item in items {
-                match item {
-                    Expression::Literal(lit) => match lit {
-                        crate::open_cypher_parser::ast::Literal::Float(f) => result.push(*f),
-                        crate::open_cypher_parser::ast::Literal::Integer(n) => {
-                            result.push(*n as f64)
-                        }
-                        other => {
-                            return Err(format!(
-                                "Expected numeric literal in queryVector, got {:?}",
-                                other
-                            ))
-                        }
-                    },
-                    // Handle unary minus: OperatorApplication { operator: Subtraction, operands: [Literal] }
-                    Expression::OperatorApplicationExp(op_app) => {
-                        if op_app.operator == crate::open_cypher_parser::ast::Operator::Subtraction
-                            && op_app.operands.len() == 1
-                        {
-                            match &op_app.operands[0] {
-                                Expression::Literal(lit) => match lit {
-                                    crate::open_cypher_parser::ast::Literal::Float(f) => {
-                                        result.push(-f)
-                                    }
-                                    crate::open_cypher_parser::ast::Literal::Integer(n) => {
-                                        result.push(-(*n as f64))
-                                    }
-                                    other => {
-                                        return Err(format!(
-                                            "Expected numeric literal in queryVector, got -{:?}",
-                                            other
-                                        ))
-                                    }
-                                },
-                                other => {
-                                    return Err(format!(
-                                        "Expected numeric literal in queryVector, got -{:?}",
-                                        other
-                                    ))
-                                }
-                            }
-                        } else {
-                            return Err(format!(
-                                "Unsupported expression in queryVector: {:?}",
-                                op_app
-                            ));
-                        }
-                    }
-                    other => {
-                        return Err(format!(
-                            "Expected numeric literal in queryVector, got {:?}",
-                            other
-                        ))
-                    }
+                let value = extract_single_float(item)?;
+                if !value.is_finite() {
+                    return Err(format!(
+                        "Non-finite value ({}) in queryVector is not supported",
+                        value
+                    ));
                 }
+                result.push(value);
             }
             Ok(result)
         }
         other => Err(format!(
             "Expected list literal for queryVector (e.g., [0.1, 0.2, ...]), got {:?}",
+            other
+        )),
+    }
+}
+
+/// Extract a single float value from a vector element expression.
+fn extract_single_float(item: &Expression<'_>) -> Result<f64, String> {
+    match item {
+        Expression::Literal(lit) => match lit {
+            crate::open_cypher_parser::ast::Literal::Float(f) => Ok(*f),
+            crate::open_cypher_parser::ast::Literal::Integer(n) => Ok(*n as f64),
+            other => Err(format!(
+                "Expected numeric literal in queryVector, got {:?}",
+                other
+            )),
+        },
+        Expression::OperatorApplicationExp(op_app) => {
+            if op_app.operator == crate::open_cypher_parser::ast::Operator::Subtraction
+                && op_app.operands.len() == 1
+            {
+                match &op_app.operands[0] {
+                    Expression::Literal(lit) => match lit {
+                        crate::open_cypher_parser::ast::Literal::Float(f) => Ok(-f),
+                        crate::open_cypher_parser::ast::Literal::Integer(n) => Ok(-(*n as f64)),
+                        other => Err(format!(
+                            "Expected numeric literal in queryVector, got -{:?}",
+                            other
+                        )),
+                    },
+                    other => Err(format!(
+                        "Expected numeric literal in queryVector, got -{:?}",
+                        other
+                    )),
+                }
+            } else {
+                Err(format!(
+                    "Unsupported expression in queryVector: {:?}",
+                    op_app
+                ))
+            }
+        }
+        other => Err(format!(
+            "Expected numeric literal in queryVector, got {:?}",
             other
         )),
     }
@@ -273,9 +283,6 @@ mod tests {
     #[test]
     fn test_is_vector_search_procedure() {
         assert!(is_vector_search_procedure("db.index.vector.queryNodes"));
-        assert!(is_vector_search_procedure(
-            "db.index.vector.queryRelationships"
-        ));
         // Case insensitive
         assert!(is_vector_search_procedure("db.index.vector.QUERYNODES"));
         assert!(is_vector_search_procedure("DB.INDEX.VECTOR.QUERYNODES"));
@@ -284,6 +291,10 @@ mod tests {
         assert!(!is_vector_search_procedure("apoc.export.csv.query"));
         assert!(!is_vector_search_procedure(
             "db.index.vector.createNodeIndex"
+        ));
+        // queryRelationships not supported yet
+        assert!(!is_vector_search_procedure(
+            "db.index.vector.queryRelationships"
         ));
     }
 
@@ -295,7 +306,7 @@ mod tests {
             query_vector: vec![0.1, 0.2, 0.3],
         };
         let index = make_test_index();
-        let sql = build_vector_search_sql(&args, &index);
+        let sql = build_vector_search_sql(&args, &index).unwrap();
         assert_eq!(
             sql,
             "SELECT *, 1 - cosineDistance(embedding_vec, [0.1, 0.2, 0.3]) AS score \
@@ -314,7 +325,8 @@ mod tests {
         };
         let mut index = make_test_index();
         index.similarity = "euclidean".to_string();
-        let sql = build_vector_search_sql(&args, &index);
+        index.dimensions = Some(2);
+        let sql = build_vector_search_sql(&args, &index).unwrap();
         assert_eq!(
             sql,
             "SELECT *, 1 / (1 + L2Distance(embedding_vec, [1, 2])) AS score \
@@ -398,7 +410,7 @@ mod tests {
         ];
         let arg_refs: Vec<&Expression> = args.iter().collect();
         let err = parse_vector_search_args(&arg_refs).unwrap_err();
-        assert!(err.contains("requires 3 arguments"));
+        assert!(err.contains("require 3 arguments"));
     }
 
     #[test]
@@ -430,5 +442,55 @@ mod tests {
         assert_eq!(format_vector_literal(&[0.1, 0.2, 0.3]), "[0.1, 0.2, 0.3]");
         assert_eq!(format_vector_literal(&[1.0, 2.0]), "[1, 2]");
         assert_eq!(format_vector_literal(&[-0.5, 0.0, 0.5]), "[-0.5, 0, 0.5]");
+    }
+
+    #[test]
+    fn test_parse_vector_search_args_rejects_nan() {
+        let args: Vec<Expression> = vec![
+            Expression::Literal(Literal::String("idx")),
+            Expression::Literal(Literal::Integer(5)),
+            Expression::List(vec![Expression::Literal(Literal::Float(f64::NAN))]),
+        ];
+        let arg_refs: Vec<&Expression> = args.iter().collect();
+        let err = parse_vector_search_args(&arg_refs).unwrap_err();
+        assert!(err.contains("Non-finite"));
+    }
+
+    #[test]
+    fn test_parse_vector_search_args_rejects_infinity() {
+        let args: Vec<Expression> = vec![
+            Expression::Literal(Literal::String("idx")),
+            Expression::Literal(Literal::Integer(5)),
+            Expression::List(vec![Expression::Literal(Literal::Float(f64::INFINITY))]),
+        ];
+        let arg_refs: Vec<&Expression> = args.iter().collect();
+        let err = parse_vector_search_args(&arg_refs).unwrap_err();
+        assert!(err.contains("Non-finite"));
+    }
+
+    #[test]
+    fn test_build_vector_search_sql_dimension_mismatch() {
+        let args = VectorSearchArgs {
+            index_name: "article-embeddings".to_string(),
+            top_k: 5,
+            query_vector: vec![0.1, 0.2], // 2 dims, index expects 3
+        };
+        let index = make_test_index(); // dimensions: Some(3)
+        let err = build_vector_search_sql(&args, &index).unwrap_err();
+        assert!(err.contains("dimension mismatch"));
+        assert!(err.contains("expected 3"));
+        assert!(err.contains("got 2"));
+    }
+
+    #[test]
+    fn test_build_vector_search_sql_no_dimension_check_when_none() {
+        let args = VectorSearchArgs {
+            index_name: "article-embeddings".to_string(),
+            top_k: 5,
+            query_vector: vec![0.1, 0.2],
+        };
+        let mut index = make_test_index();
+        index.dimensions = None; // No dimension constraint
+        assert!(build_vector_search_sql(&args, &index).is_ok());
     }
 }
