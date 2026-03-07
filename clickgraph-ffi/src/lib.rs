@@ -252,6 +252,20 @@ impl Database {
         }))
     }
 
+    /// Open a database in SQL-only mode (no chdb backend).
+    ///
+    /// Loads the schema from a YAML file. Supports `query_to_sql()` and
+    /// `export_to_sql()` for Cypher → SQL translation. Calling `query()` or
+    /// `export()` will return an error.
+    #[uniffi::constructor]
+    pub fn open_sql_only(schema_path: String) -> Result<Arc<Self>, ClickGraphError> {
+        let db = RustDatabase::sql_only(&schema_path)
+            .map_err(|e| ClickGraphError::DatabaseError { msg: e.to_string() })?;
+        Ok(Arc::new(Database {
+            inner: Arc::new(db),
+        }))
+    }
+
     /// Create a connection to this database.
     pub fn connect(&self) -> Result<Arc<Connection>, ClickGraphError> {
         Ok(Arc::new(Connection {

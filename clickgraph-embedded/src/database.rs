@@ -6,9 +6,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use clickgraph::executor::chdb_embedded::ChdbExecutor;
 pub use clickgraph::executor::chdb_embedded::StorageCredentials;
-use clickgraph::executor::QueryExecutor;
+use clickgraph::executor::{ExecutorError, QueryExecutor};
 use clickgraph::graph_catalog::config::GraphSchemaConfig;
 use clickgraph::graph_catalog::graph_schema::GraphSchema;
 
@@ -152,6 +153,61 @@ impl Database {
             schema,
             runtime: build_runtime()?,
         })
+    }
+
+    /// Open a database in SQL-only mode — schema loaded, no chdb session.
+    ///
+    /// This mode supports `query_to_sql()` and `export_to_sql()` for
+    /// Cypher → SQL translation without requiring the chdb native library.
+    /// Calling `query()` or `export()` will return an error.
+    ///
+    /// Useful for testing, debugging, and build-time SQL validation.
+    pub fn sql_only(schema_path: impl AsRef<Path>) -> Result<Self, EmbeddedError> {
+        let schema_path = schema_path.as_ref();
+
+        let yaml_content = std::fs::read_to_string(schema_path).map_err(|e| {
+            EmbeddedError::Io(format!(
+                "Cannot read schema '{}': {}",
+                schema_path.display(),
+                e
+            ))
+        })?;
+
+        let schema_config: GraphSchemaConfig = serde_yaml::from_str(&yaml_content)
+            .map_err(|e| EmbeddedError::Schema(format!("YAML parse error: {}", e)))?;
+
+        let graph_schema = schema_config
+            .to_graph_schema()
+            .map_err(|e| EmbeddedError::Schema(format!("Schema build error: {}", e)))?;
+
+        Self::from_executor(Arc::new(graph_schema), Arc::new(NullExecutor))
+    }
+}
+
+/// A no-op executor for SQL-only mode. Returns an error if execution is attempted.
+struct NullExecutor;
+
+#[async_trait]
+impl QueryExecutor for NullExecutor {
+    async fn execute_json(
+        &self,
+        _sql: &str,
+        _role: Option<&str>,
+    ) -> Result<Vec<serde_json::Value>, ExecutorError> {
+        Err(ExecutorError::QueryFailed(
+            "Cannot execute queries in sql_only mode — no backend is configured".to_string(),
+        ))
+    }
+
+    async fn execute_text(
+        &self,
+        _sql: &str,
+        _format: &str,
+        _role: Option<&str>,
+    ) -> Result<String, ExecutorError> {
+        Err(ExecutorError::QueryFailed(
+            "Cannot execute queries in sql_only mode — no backend is configured".to_string(),
+        ))
     }
 }
 
