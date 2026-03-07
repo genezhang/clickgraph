@@ -1,0 +1,17 @@
+[package]
+name = "clickgraph-ffi"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "UniFFI C-ABI bindings for clickgraph-embedded (Go, Kotlin, Swift, …)"
+repository = "https://github.com/genezhang/clickgraph"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+name = "clickgraph_ffi"
+
+[dependencies]
+clickgraph-embedded = { path = "../clickgraph-embedded" }
+uniffi = "0.29"
+thiserror = "2.0"

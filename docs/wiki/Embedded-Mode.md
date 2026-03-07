@@ -15,12 +15,13 @@ This is similar to how [DuckDB](https://duckdb.org/) and [Kuzu](https://kuzudb.c
 | Query S3 / Iceberg / Delta Lake without a server | **Embedded mode** |
 | Embed graph queries in a Rust application | **Embedded mode (Rust library)** |
 | Embed graph queries in a Python application | **Embedded mode (Python library)** |
+| Embed graph queries in a Go application | **Embedded mode (Go library)** |
 | Edge / serverless deployment | **Embedded mode** |
 | Development & prototyping without a database | **Embedded mode** |
 
 ---
 
-## Three Ways to Use Embedded Mode
+## Four Ways to Use Embedded Mode
 
 ### Option A — Standalone Server (HTTP + Bolt)
 
@@ -150,6 +151,80 @@ result = conn.run("MATCH (u:User) RETURN u.name")  # same as conn.query()
 for row in result:
     print(row["u.name"])           # dict access, same as Neo4j Record
 ```
+
+### Option D — Go Library
+
+Embed ClickGraph in a Go application. Bindings are auto-generated via [Mozilla UniFFI](https://github.com/mozilla/uniffi-rs):
+
+```go
+package main
+
+import (
+    "fmt"
+    "log"
+
+    clickgraph "github.com/genezhang/clickgraph-go"
+)
+
+func main() {
+    db, err := clickgraph.Open("schema.yaml")
+    if err != nil { log.Fatal(err) }
+    defer db.Close()
+
+    conn, err := db.Connect()
+    if err != nil { log.Fatal(err) }
+    defer conn.Close()
+
+    result, err := conn.Query("MATCH (u:User)-[:FOLLOWS]->(f:User) RETURN u.name, f.name LIMIT 10")
+    if err != nil { log.Fatal(err) }
+    defer result.Close()
+
+    for result.HasNext() {
+        row := result.Next()
+        fmt.Printf("%v → %v\n", row.Get("u.name"), row.Get("f.name"))
+    }
+}
+```
+
+**With S3 credentials:**
+
+```go
+db, _ := clickgraph.OpenWithConfig("schema.yaml", clickgraph.Config{
+    S3AccessKeyID:     "AKIA...",
+    S3SecretAccessKey: "...",
+    S3Region:          "us-east-1",
+})
+```
+
+**SQL debugging:**
+
+```go
+sql, _ := conn.QueryToSQL("MATCH (u:User) RETURN u.name")
+fmt.Println(sql)
+// → SELECT <table>.<column> AS `u.name` FROM <database>.<table>
+```
+
+**Export results to files:**
+
+```go
+conn.Export("MATCH (u:User) RETURN u.name, u.email", "users.parquet", nil)
+conn.Export("MATCH (u:User) RETURN u.name", "users.csv", nil)
+conn.Export("MATCH (u:User) RETURN u.name", "data.parquet", &clickgraph.ExportOptions{
+    Compression: "zstd",
+})
+```
+
+**Building** requires the `clickgraph-ffi` Rust shared library:
+
+```bash
+cargo build -p clickgraph-ffi --release
+export CGO_LDFLAGS="-L/path/to/clickgraph/target/release -lclickgraph_ffi"
+export LD_LIBRARY_PATH="/path/to/clickgraph/target/release"
+cd clickgraph-go && go build ./...
+```
+
+👉 **Full Go API documentation** → [`clickgraph-go/README.md`](../../clickgraph-go/README.md)
+👉 **All language bindings** → [Language Bindings](Language-Bindings.md)
 
 **Export results to files:**
 
@@ -537,6 +612,8 @@ let db = Database::new("schema.yaml", SystemConfig {
 | **Export to file** | ❌ | ✅ Parquet, CSV, TSV, JSON, NDJSON |
 | HTTP + Bolt endpoints | ✅ | ✅ (`--embedded` flag) |
 | Rust library API | ❌ | ✅ (`clickgraph-embedded`) |
+| Python library API | ❌ | ✅ (`clickgraph-py`) |
+| Go library API | ❌ | ✅ (`clickgraph-go`) |
 | Performance at scale | ✅ Full ClickHouse cluster | ✅ Single-node chdb |
 | Schema admin endpoints | ✅ | ⚠️ Unavailable (no ClickHouse) |
 | Cargo feature flag | (default) | `--features embedded` |
@@ -554,6 +631,7 @@ let db = Database::new("schema.yaml", SystemConfig {
 
 ## Related Pages
 
+- **[Language Bindings](Language-Bindings.md)** — Comparison of Rust, Python, and Go APIs
 - **[Schema Basics](Schema-Basics.md)** — YAML schema configuration
 - **[API Reference HTTP](API-Reference-HTTP.md)** — HTTP endpoint documentation
 - **[Quick Start Guide](Quick-Start-Guide.md)** — Standard ClickHouse setup

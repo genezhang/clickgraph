@@ -1,15 +1,16 @@
 # ClickGraph Status
 
-*Updated: March 5, 2026*
+*Updated: March 7, 2026*
 
 ## Current Version: v0.6.3-dev
 
 Read-only Cypher-to-ClickHouse SQL query engine with Neo4j Browser compatibility.
 Supports both remote ClickHouse and embedded (in-process) mode via chdb.
 
-**Unit Tests**: 1,269 passing (100%)
+**Unit Tests**: 1,277 passing (100%)
 **Integration Tests**: 183 passing (100%)
 **Embedded Tests**: 31 passing (unit + e2e)
+**Go Binding Tests**: 14 passing (100%)
 **LDBC SNB**: 36/37 queries passing at sf0.003 and sf1 (97%) — bi-16 blocked by CALL subquery
 **Benchmark**: 14/14 queries (100%)
 **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)
@@ -58,6 +59,8 @@ Supports both remote ClickHouse and embedded (in-process) mode via chdb.
 - **COPY TO Export Syntax**: Kuzu/DuckDB-compatible `COPY (MATCH ...) TO 'path' WITH (format='csv')` — alternative to APOC procedures for exporting query results. Supports CSV, JSON, Parquet, NDJSON. Works in server mode and embedded mode.
 - **Vector Search Procedure**: Neo4j-compatible `CALL db.index.vector.queryNodes('index-name', k, [embedding...]) YIELD node, score` — translates to ClickHouse's `cosineDistance()` / `L2Distance()`. Configured via `vector_indexes` section in schema YAML. Supports dimension validation and USE clause schema selection.
 - **Full-text Search Procedure**: Neo4j-compatible `CALL db.index.fulltext.queryNodes('index-name', 'search query') YIELD node, score` — translates to ClickHouse's `ngramDistance()`, `multiSearchAnyCaseInsensitive()`, and `hasToken()`. Supports three analyzers: standard (fuzzy + pre-filter), ngram (pure fuzzy), exact (token match). Multi-property search across multiple columns. Configured via `fulltext_indexes` section in schema YAML.
+- **Python bindings** (`clickgraph-py`): PyO3/maturin-based Python package. `Database`, `Connection`, `QueryResult` classes with dict-style and Kuzu-compatible tuple-style iteration.
+- **Go bindings** (`clickgraph-go`): UniFFI-generated Go package via `clickgraph-ffi` C ABI. `Open()`, `Connect()`, `Query()`, `QueryToSQL()`, `Export()`. Native Go types, cursor and bulk APIs.
 
 ## Current Limitations
 
