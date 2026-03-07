@@ -1,12 +1,14 @@
 use super::errors::GraphSchemaError;
 use super::expression_parser::{parse_property_value, PropertyValue};
 use super::filter_parser::SchemaFilter;
-use super::graph_schema::{GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema};
+use super::graph_schema::{
+    GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema, VectorIndexConfig,
+};
 use super::schema_types::SchemaType;
 use super::schema_validator::SchemaValidator;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use thiserror::Error;
 
 /// Error type for identifier operations
@@ -363,6 +365,46 @@ pub struct GraphSchemaDefinition {
     /// Supports standard and polymorphic edges with composite IDs
     #[serde(default)]
     pub edges: Vec<EdgeDefinition>,
+
+    /// Vector index definitions for similarity search
+    /// Maps Neo4j-style vector indexes to ClickHouse distance functions
+    #[serde(default)]
+    pub vector_indexes: Vec<VectorIndexDefinition>,
+}
+
+/// Vector index definition in schema config
+///
+/// Maps a named vector index to a node label, property, and distance metric.
+/// Used by `db.index.vector.queryNodes()` to generate ClickHouse SQL with
+/// the appropriate distance function and ORDER BY.
+///
+/// Example YAML:
+/// ```yaml
+/// vector_indexes:
+///   - name: "article-embeddings"
+///     label: "Article"
+///     property: "embedding"
+///     dimensions: 768
+///     similarity: "cosine"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VectorIndexDefinition {
+    /// Index name (referenced in CALL db.index.vector.queryNodes)
+    pub name: String,
+    /// Node label this index applies to
+    pub label: String,
+    /// Cypher property name containing the vector (resolved via property_mappings)
+    pub property: String,
+    /// Vector dimensions (for validation)
+    #[serde(default)]
+    pub dimensions: Option<u32>,
+    /// Similarity metric: "cosine" (default) or "euclidean"
+    #[serde(default = "default_similarity")]
+    pub similarity: String,
+}
+
+fn default_similarity() -> String {
+    "cosine".to_string()
 }
 
 /// Node definition in schema config
@@ -1992,11 +2034,15 @@ impl GraphSchemaConfig {
             .filter(|(k, _)| !k.contains("::"))
             .collect();
 
-        Ok(GraphSchema::build(
+        // Resolve vector index definitions against node schemas
+        let vector_indexes = resolve_vector_indexes(&self.graph_schema.vector_indexes, &nodes)?;
+
+        Ok(GraphSchema::build_with_vector_indexes(
             1,
             "default".to_string(),
             nodes,
             relationships,
+            vector_indexes,
         ))
     }
 
@@ -2191,13 +2237,84 @@ impl GraphSchemaConfig {
             .filter(|(k, _)| !k.contains("::"))
             .collect();
 
-        Ok(GraphSchema::build(
+        // Resolve vector index definitions against node schemas
+        let vector_indexes = resolve_vector_indexes(&self.graph_schema.vector_indexes, &nodes)?;
+
+        Ok(GraphSchema::build_with_vector_indexes(
             1,
             "default".to_string(),
             nodes,
             relationships,
+            vector_indexes,
         ))
     }
+}
+
+/// Resolve vector index definitions against built node schemas.
+///
+/// Validates that each index references an existing node label and property,
+/// and resolves the Cypher property name to the actual ClickHouse column name
+/// via property_mappings.
+fn resolve_vector_indexes(
+    definitions: &[VectorIndexDefinition],
+    nodes: &HashMap<String, NodeSchema>,
+) -> Result<BTreeMap<String, VectorIndexConfig>, GraphSchemaError> {
+    let mut indexes = BTreeMap::new();
+
+    for def in definitions {
+        // Validate referenced node label exists
+        let node_schema = nodes
+            .get(&def.label)
+            .ok_or_else(|| GraphSchemaError::InvalidConfig {
+                message: format!(
+                    "Vector index '{}' references unknown node label '{}'",
+                    def.name, def.label
+                ),
+            })?;
+
+        // Resolve Cypher property → ClickHouse column via property_mappings
+        let column = node_schema
+            .property_mappings
+            .get(&def.property)
+            .map(|pv| match pv {
+                PropertyValue::Column(col) => col.clone(),
+                PropertyValue::Expression(expr) => expr.clone(),
+            })
+            .ok_or_else(|| GraphSchemaError::InvalidConfig {
+                message: format!(
+                    "Vector index '{}': property '{}' not found in node '{}' property_mappings",
+                    def.name, def.property, def.label
+                ),
+            })?;
+
+        // Validate similarity metric
+        let similarity = def.similarity.to_lowercase();
+        if similarity != "cosine" && similarity != "euclidean" {
+            return Err(GraphSchemaError::InvalidConfig {
+                message: format!(
+                    "Vector index '{}': unsupported similarity metric '{}' (use 'cosine' or 'euclidean')",
+                    def.name, def.similarity
+                ),
+            });
+        }
+
+        let qualified_table = format!("{}.{}", node_schema.database, node_schema.table_name);
+
+        indexes.insert(
+            def.name.clone(),
+            VectorIndexConfig {
+                name: def.name.clone(),
+                label: def.label.clone(),
+                property: def.property.clone(),
+                column,
+                table: qualified_table,
+                dimensions: def.dimensions,
+                similarity,
+            },
+        );
+    }
+
+    Ok(indexes)
 }
 
 #[cfg(test)]
@@ -2389,6 +2506,7 @@ graph_schema:
                     id_types: None,
                     source: None,
                 })],
+                vector_indexes: Vec::new(),
             },
         };
 
@@ -2448,6 +2566,7 @@ graph_schema:
                     id_types: None,
                     source: None,
                 })],
+                vector_indexes: Vec::new(),
             },
         };
 
@@ -2512,6 +2631,7 @@ graph_schema:
                     filter: None,
                     constraints: None,
                 })],
+                vector_indexes: Vec::new(),
             },
         };
 
@@ -2566,6 +2686,7 @@ graph_schema:
                     filter: None,
                     constraints: None,
                 })],
+                vector_indexes: Vec::new(),
             },
         };
 
@@ -2651,6 +2772,7 @@ graph_schema:
                     filter: None,
                     constraints: None,
                 })],
+                vector_indexes: Vec::new(),
             },
         };
 
@@ -2711,6 +2833,7 @@ graph_schema:
                     filter: None,
                     constraints: None,
                 })],
+                vector_indexes: Vec::new(),
             },
         };
 
@@ -2776,6 +2899,7 @@ graph_schema:
                     filter: None,
                     constraints: None,
                 })],
+                vector_indexes: Vec::new(),
             },
         };
 

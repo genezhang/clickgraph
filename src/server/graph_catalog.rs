@@ -349,6 +349,7 @@ pub async fn initialize_global_schema(
                         nodes: Vec::new(),
                         relationships: Vec::new(),
                         edges: Vec::new(),
+                        vector_indexes: Vec::new(),
                     },
                 };
                 view_configs.insert("default".to_string(), empty_config);
@@ -390,6 +391,7 @@ pub async fn initialize_global_schema(
                                 nodes: Vec::new(),
                                 relationships: Vec::new(),
                                 edges: Vec::new(),
+                        vector_indexes: Vec::new(),
                             },
                         };
                         view_configs.insert("default".to_string(), empty_config);
@@ -439,6 +441,7 @@ pub async fn initialize_global_schema(
                 nodes: Vec::new(),
                 relationships: Vec::new(),
                 edges: Vec::new(),
+                vector_indexes: Vec::new(),
             },
         };
         view_configs.insert("default".to_string(), empty_config);

@@ -568,6 +568,107 @@ pub async fn query_handler(
             }
         }
 
+        // ── Vector search procedures: db.index.vector.queryNodes/queryRelationships ──
+        // These bypass ProcedureRegistry because they need ClickHouse execution.
+        if crate::procedures::vector_search::is_vector_search_procedure(&proc_name) {
+            log::info!("Detected vector search procedure: {}", proc_name);
+
+            let search_start = Instant::now();
+
+            // Re-parse to extract arguments
+            let search_args = {
+                let (_, stmt) =
+                    open_cypher_parser::parse_cypher_statement(&clean_query).map_err(|e| {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            format!("Failed to parse vector search call: {}", e),
+                        )
+                    })?;
+                let expressions: Vec<_> = match &stmt {
+                    CypherStatement::ProcedureCall(pc) => pc.arguments.iter().collect(),
+                    CypherStatement::Query { query, .. } => {
+                        let cc = query.call_clause.as_ref().ok_or_else(|| {
+                            (
+                                StatusCode::BAD_REQUEST,
+                                "No CALL clause found in vector search query".to_string(),
+                            )
+                        })?;
+                        cc.arguments.iter().map(|a| &a.value).collect()
+                    }
+                    CypherStatement::CopyTo(_) => {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            "Unexpected COPY TO in vector search context".to_string(),
+                        ));
+                    }
+                };
+                crate::procedures::vector_search::parse_vector_search_args(&expressions)
+                    .map_err(|e| (StatusCode::BAD_REQUEST, e))?
+            };
+
+            // Resolve schema and vector index
+            let schema_name_for_search = schema_name_param
+                .clone()
+                .unwrap_or_else(|| "default".to_string());
+            let graph_schema =
+                match graph_catalog::get_graph_schema_by_name(&schema_name_for_search).await {
+                    Ok(s) => s,
+                    Err(e) => return Err((StatusCode::BAD_REQUEST, e)),
+                };
+
+            let index_config = crate::procedures::vector_search::resolve_vector_index(
+                &graph_schema,
+                &search_args.index_name,
+            )
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+            // Generate SQL
+            let search_sql = crate::procedures::vector_search::build_vector_search_sql(
+                &search_args,
+                index_config,
+            );
+
+            log::debug!("Vector search SQL: {}", search_sql);
+
+            // If sql_only, return the SQL
+            if sql_only {
+                let response = SqlOnlyResponse {
+                    cypher_query: payload.query.clone(),
+                    generated_sql: search_sql,
+                    execution_mode: "sql_only".to_string(),
+                };
+                return Ok(Json(response).into_response());
+            }
+
+            // Execute and return results as JSON
+            let role = payload.role.as_deref();
+            match app_state
+                .executor
+                .execute_text(&search_sql, "JSONEachRow", role)
+                .await
+            {
+                Ok(result_text) => {
+                    log::info!(
+                        "Vector search completed in {:.3} seconds",
+                        search_start.elapsed().as_secs_f64()
+                    );
+                    // Parse JSONEachRow response into array
+                    let rows: Vec<serde_json::Value> = result_text
+                        .lines()
+                        .filter(|line| !line.is_empty())
+                        .filter_map(|line| serde_json::from_str(line).ok())
+                        .collect();
+                    return Ok(Json(serde_json::json!(rows)).into_response());
+                }
+                Err(e) => {
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Vector search execution failed: {}", e),
+                    ));
+                }
+            }
+        }
+
         let registry = crate::procedures::ProcedureRegistry::new();
         let schema_name = schema_name_param.unwrap_or_else(|| "default".to_string());
 
