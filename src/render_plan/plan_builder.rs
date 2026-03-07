@@ -837,6 +837,8 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 // Extract CTEs FIRST - this registers CTE names in task-local QueryContext
                 let mut context = super::cte_generation::CteGenerationContext::new();
+                // Store root plan for BFS mode detection (shortestPath length-only optimization)
+                context.root_plan = Some(std::sync::Arc::new(self.clone()));
                 let ctes = CteItems(extract_ctes_with_context(
                     &gj.input,
                     "",
@@ -1130,6 +1132,8 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Regular VLP or non-VLP GraphRel
                     // Extract CTEs first for variable-length paths
                     let mut context = super::cte_generation::CteGenerationContext::new();
+                    // Store root plan for BFS mode detection (shortestPath length-only optimization)
+                    context.root_plan = Some(std::sync::Arc::new(self.clone()));
                     let ctes = CteItems(extract_ctes_with_context(
                         self,
                         &gr.right_connection,
@@ -3613,6 +3617,7 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 // Extract CTEs WITH plan_ctx so VLP generator gets property requirements
                 let mut context = super::cte_generation::CteGenerationContext::new();
+                context.root_plan = Some(std::sync::Arc::new(self.clone()));
                 let ctes = CteItems(extract_ctes_with_context(
                     &filter.input,
                     "",
@@ -3635,6 +3640,7 @@ impl RenderPlanBuilder for LogicalPlan {
         if let LogicalPlan::GraphRel(graph_rel) = self {
             // Extract CTEs WITH plan_ctx so VLP generator gets property requirements
             let mut context = super::cte_generation::CteGenerationContext::new();
+            context.root_plan = Some(std::sync::Arc::new(self.clone()));
             let ctes = CteItems(extract_ctes_with_context(
                 self,
                 "",

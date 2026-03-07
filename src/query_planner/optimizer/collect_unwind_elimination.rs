@@ -285,12 +285,84 @@ impl CollectUnwindElimination {
                 ))
             }
 
-            // Base cases - no children to recurse into
+            // Recurse into GraphRel to reach Unwind nodes buried inside
+            LogicalPlan::GraphRel(gr) => {
+                let (optimized_left, mut alias_map) = Self::optimize_node(gr.left.clone())?;
+                let (optimized_center, center_map) = Self::optimize_node(gr.center.clone())?;
+                let (optimized_right, right_map) = Self::optimize_node(gr.right.clone())?;
+                alias_map.extend(center_map);
+                alias_map.extend(right_map);
+                let new_where = gr.where_predicate.as_ref().map(|pred| {
+                    if alias_map.is_empty() {
+                        pred.clone()
+                    } else {
+                        rewrite_aliases_in_expr(pred, &alias_map)
+                    }
+                });
+                Ok((
+                    Arc::new(LogicalPlan::GraphRel(
+                        crate::query_planner::logical_plan::GraphRel {
+                            left: optimized_left,
+                            center: optimized_center,
+                            right: optimized_right,
+                            where_predicate: new_where,
+                            ..gr.clone()
+                        },
+                    )),
+                    alias_map,
+                ))
+            }
+
+            LogicalPlan::GraphNode(gn) => {
+                let (optimized_input, alias_map) = Self::optimize_node(gn.input.clone())?;
+                Ok((
+                    Arc::new(LogicalPlan::GraphNode(
+                        crate::query_planner::logical_plan::GraphNode {
+                            input: optimized_input,
+                            ..gn.clone()
+                        },
+                    )),
+                    alias_map,
+                ))
+            }
+
+            LogicalPlan::CartesianProduct(cp) => {
+                let (optimized_left, mut alias_map) = Self::optimize_node(cp.left.clone())?;
+                let (optimized_right, right_map) = Self::optimize_node(cp.right.clone())?;
+                alias_map.extend(right_map);
+                Ok((
+                    Arc::new(LogicalPlan::CartesianProduct(
+                        crate::query_planner::logical_plan::CartesianProduct {
+                            left: optimized_left,
+                            right: optimized_right,
+                            ..cp.clone()
+                        },
+                    )),
+                    alias_map,
+                ))
+            }
+
+            LogicalPlan::Union(u) => {
+                let mut alias_map = HashMap::new();
+                let mut new_inputs = Vec::new();
+                for input in &u.inputs {
+                    let (optimized, input_map) = Self::optimize_node(input.clone())?;
+                    alias_map.extend(input_map);
+                    new_inputs.push(optimized);
+                }
+                Ok((
+                    Arc::new(LogicalPlan::Union(
+                        crate::query_planner::logical_plan::Union {
+                            inputs: new_inputs,
+                            ..u.clone()
+                        },
+                    )),
+                    alias_map,
+                ))
+            }
+
+            // Leaf base cases - no children to recurse into
             LogicalPlan::ViewScan(_)
-            | LogicalPlan::GraphNode(_)
-            | LogicalPlan::GraphRel(_)
-            | LogicalPlan::CartesianProduct(_)
-            | LogicalPlan::Union(_)
             | LogicalPlan::Cte(_)
             | LogicalPlan::PageRank(_)
             | LogicalPlan::Empty => Ok((plan, HashMap::new())),
@@ -388,8 +460,13 @@ impl CollectUnwindElimination {
                                             );
 
                                             // Build alias mapping: UNWIND alias -> source variable
+                                            // Also map collection_name -> source so that downstream
+                                            // references like `IN zombies` resolve correctly after
+                                            // the collect+UNWIND elimination.
                                             let mut alias_map = HashMap::new();
                                             alias_map.insert(unwound.clone(), source.clone());
+                                            alias_map
+                                                .insert(collection_name.clone(), source.clone());
 
                                             // Recursively optimize the WITH input
                                             let (optimized_input, input_alias_map) =
@@ -495,8 +572,12 @@ impl CollectUnwindElimination {
                                                 }));
 
                                             // Map: UNWIND alias -> source variable
+                                            // Also map collection_name -> source so that downstream
+                                            // references like `IN zombies` resolve correctly.
                                             let mut alias_map = HashMap::new();
                                             alias_map.insert(unwound.clone(), source.clone());
+                                            alias_map
+                                                .insert(collection_name.clone(), source.clone());
                                             alias_map.extend(input_alias_map);
 
                                             return Ok((new_with, alias_map));

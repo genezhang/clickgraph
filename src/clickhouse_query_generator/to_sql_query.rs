@@ -136,6 +136,43 @@ fn is_known_scalar(expr: &RenderExpr) -> bool {
     )
 }
 
+/// Rewrite `x IN cte.p{N}_col` / `x NOT IN cte.p{N}_col` to a subquery form:
+/// `x IN (SELECT col FROM cte_name)`. Returns `Some(sql)` if rewritten.
+///
+/// After CollectUnwindElimination, `x IN collected_list` becomes
+/// `x IN cte.p{N}_{alias}_{property}`. CTE entity columns are scalar, not arrays,
+/// so we must expand to a subquery. Only matches CTE-format columns (is_cte_column)
+/// to avoid converting legitimate array column references.
+fn try_rewrite_in_cte_subquery(
+    operator: &Operator,
+    lhs_sql: &str,
+    rhs_expr: &RenderExpr,
+) -> Option<String> {
+    if !matches!(operator, Operator::In | Operator::NotIn) {
+        return None;
+    }
+    if let RenderExpr::PropertyAccessExp(ref prop) = rhs_expr {
+        let col_name = prop.column.to_sql_column_only();
+        if crate::utils::cte_column_naming::is_cte_column(&col_name) {
+            let table_alias = &prop.table_alias.0;
+            if let Some(cte_name) =
+                crate::server::query_context::get_cte_name_for_alias(table_alias)
+            {
+                let op_word = if *operator == Operator::In {
+                    "IN"
+                } else {
+                    "NOT IN"
+                };
+                return Some(format!(
+                    "{} {} (SELECT {} FROM {})",
+                    lhs_sql, op_word, col_name, cte_name
+                ));
+            }
+        }
+    }
+    None
+}
+
 /// Build the relationship columns mapping from a RenderPlan (for collecting data)
 /// Returns the mapping of alias → (from_id_column, to_id_column)
 fn build_relationship_columns_from_plan(plan: &RenderPlan) -> HashMap<String, (String, String)> {
@@ -232,6 +269,53 @@ fn build_cte_property_mappings(plan: &RenderPlan) -> HashMap<String, HashMap<Str
     }
 
     map
+}
+
+/// Build CTE alias → CTE name mapping for a specific RenderPlan scope.
+/// Scans FROM/JOINs for references to known CTEs. Used per-scope (per CTE body
+/// or main plan) to correctly resolve `IN alias.column` → `IN (SELECT col FROM cte)`.
+fn build_cte_alias_mapping_for_scope(
+    scope: &RenderPlan,
+    cte_names: &HashSet<String>,
+) -> HashMap<String, String> {
+    let mut mapping = HashMap::new();
+
+    // Map CTE names to themselves (for direct references like `with_x.col`)
+    for name in cte_names {
+        mapping.insert(name.clone(), name.clone());
+    }
+
+    // Check FROM clause
+    if let Some(ref from_table) = scope.from.0 {
+        if cte_names.contains(&from_table.name) {
+            let alias = from_table.alias.as_ref().unwrap_or(&from_table.name);
+            mapping.insert(alias.clone(), from_table.name.clone());
+        }
+    }
+    // Check JOINs
+    for join in &scope.joins.0 {
+        if cte_names.contains(&join.table_name) {
+            mapping.insert(join.table_alias.clone(), join.table_name.clone());
+        }
+    }
+    // Check UNION branch FROM/JOINs
+    if let Some(ref union) = scope.union.0 {
+        for branch in &union.input {
+            if let Some(ref from_table) = branch.from.0 {
+                if cte_names.contains(&from_table.name) {
+                    let alias = from_table.alias.as_ref().unwrap_or(&from_table.name);
+                    mapping.insert(alias.clone(), from_table.name.clone());
+                }
+            }
+            for join in &branch.joins.0 {
+                if cte_names.contains(&join.table_name) {
+                    mapping.insert(join.table_alias.clone(), join.table_name.clone());
+                }
+            }
+        }
+    }
+
+    mapping
 }
 
 /// Build multi-type VLP aliases tracking from RenderPlan
@@ -1009,7 +1093,6 @@ pub(crate) fn rewrite_expr_for_vlp(
                     | "rel_properties"
                     | "hop_count"
                     | "path_nodes"
-                    | "path_edges"
                     | "start_id"
                     | "end_id"
                     | "end_type"
@@ -1055,14 +1138,13 @@ pub(crate) fn rewrite_expr_for_vlp(
                 .collect(),
         }),
 
-        // Handle bare path variable: p → tuple(t.path_nodes, t.path_edges, t.path_relationships, t.hop_count)
+        // Handle bare path variable: p → tuple(t.path_nodes, t.path_relationships, t.hop_count)
         // When RETURN p is used for a path variable, expand it to a tuple of path components
         RenderExpr::TableAlias(alias) if path_variable.as_ref() == Some(&alias.0) => {
             log::info!(
-                "🔧 VLP path variable expansion: {} → tuple({}.path_nodes, {}.path_edges, ...)",
+                "🔧 VLP path variable expansion: {} → tuple({}.path_nodes, ...)",
                 alias.0,
                 VLP_CTE_FROM_ALIAS,
-                VLP_CTE_FROM_ALIAS
             );
             // Expand to tuple of path components using VLP_CTE_FROM_ALIAS constant
             RenderExpr::ScalarFnCall(ScalarFnCall {
@@ -1070,10 +1152,6 @@ pub(crate) fn rewrite_expr_for_vlp(
                 args: vec![
                     RenderExpr::Column(Column(PropertyValue::Column(format!(
                         "{}.path_nodes",
-                        VLP_CTE_FROM_ALIAS
-                    )))),
-                    RenderExpr::Column(Column(PropertyValue::Column(format!(
-                        "{}.path_edges",
                         VLP_CTE_FROM_ALIAS
                     )))),
                     RenderExpr::Column(Column(PropertyValue::Column(format!(
@@ -1092,8 +1170,9 @@ pub(crate) fn rewrite_expr_for_vlp(
             if path_variable.as_ref() == Some(alias_str) =>
         {
             log::info!(
-                "🔧 VLP path variable expansion (ColumnAlias): {} → tuple({}.path_nodes, {}.path_edges, ...)",
-                alias_str, VLP_CTE_FROM_ALIAS, VLP_CTE_FROM_ALIAS
+                "🔧 VLP path variable expansion (ColumnAlias): {} → tuple({}.path_nodes, ...)",
+                alias_str,
+                VLP_CTE_FROM_ALIAS,
             );
             // Expand to tuple of path components using VLP_CTE_FROM_ALIAS constant
             RenderExpr::ScalarFnCall(ScalarFnCall {
@@ -1101,10 +1180,6 @@ pub(crate) fn rewrite_expr_for_vlp(
                 args: vec![
                     RenderExpr::Column(Column(PropertyValue::Column(format!(
                         "{}.path_nodes",
-                        VLP_CTE_FROM_ALIAS
-                    )))),
-                    RenderExpr::Column(Column(PropertyValue::Column(format!(
-                        "{}.path_edges",
                         VLP_CTE_FROM_ALIAS
                     )))),
                     RenderExpr::Column(Column(PropertyValue::Column(format!(
@@ -2366,8 +2441,21 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
     let cte_mappings = build_cte_property_mappings(&plan);
     let multi_type_aliases = build_multi_type_vlp_aliases(&plan);
 
+    // Collect all CTE names for scope-specific alias resolution in Cte::to_sql()
+    let all_cte_names: HashSet<String> = plan.ctes.0.iter().map(|c| c.cte_name.clone()).collect();
+
+    // Build main plan's CTE alias mapping
+    let main_plan_alias_mapping = build_cte_alias_mapping_for_scope(&plan, &all_cte_names);
+
     // TASK-LOCAL: Set ALL contexts for this async task's rendering context
-    set_all_render_contexts(relationship_columns, cte_mappings, multi_type_aliases);
+    set_all_render_contexts(
+        relationship_columns,
+        cte_mappings,
+        multi_type_aliases,
+        main_plan_alias_mapping,
+    );
+    // Store all CTE names for per-scope mapping in Cte::to_sql()
+    crate::server::query_context::set_all_cte_names(all_cte_names);
 
     // Set the variable registry from the outer render plan for property resolution
     if let Some(ref registry) = plan.variable_registry {
@@ -3020,6 +3108,12 @@ impl ToSql for Cte {
         // Handle both structured and raw SQL content
         let result = match &self.content {
             CteContent::Structured(plan) => {
+                // Set scope-specific CTE alias mapping so `IN alias.col` resolves correctly
+                let cte_names = crate::server::query_context::get_all_cte_names();
+                let scope_mapping = build_cte_alias_mapping_for_scope(plan, &cte_names);
+                let saved_aliases =
+                    crate::server::query_context::set_cte_alias_scope(scope_mapping);
+
                 // For structured content, render only the query body (not nested CTEs)
                 // CTEs should already be hoisted to the top level
                 let mut cte_body = String::new();
@@ -3211,6 +3305,9 @@ impl ToSql for Cte {
                         cte_body.push_str(&format!("LIMIT {skip_str}{limit_val}\n"));
                     }
                 }
+
+                // Restore previous CTE alias scope
+                crate::server::query_context::set_cte_alias_scope(saved_aliases);
 
                 format!("{} AS ({})", self.cte_name, cte_body)
             }
@@ -3417,17 +3514,14 @@ impl RenderExpr {
                 if raw_value.contains('.') {
                     raw_value.to_string() // Already has table prefix
                 } else {
-                    // 🔧 CRITICAL FIX (Jan 23, 2026): Detect VLP CTE columns by prefix or name
+                    // Detect VLP CTE columns by prefix or name.
                     // VLP CTE columns are named: start_id, end_id, start_city, end_name, etc.
-                    // Plus internal path metadata: hop_count, path_edges, path_relationships, path_nodes
+                    // Plus internal path metadata: hop_count, path_relationships, path_nodes
                     // These should NOT be qualified with a table alias because they come from
                     // the VLP CTE and the rendering pipeline handles FROM alias separately
                     if raw_value.starts_with("start_")
                         || raw_value.starts_with("end_")
-                        || matches!(
-                            raw_value,
-                            "hop_count" | "path_edges" | "path_relationships" | "path_nodes"
-                        )
+                        || matches!(raw_value, "hop_count" | "path_relationships" | "path_nodes")
                     {
                         log::info!(
                             "🔧 Detected VLP CTE column '{}', returning unqualified",
@@ -3976,6 +4070,15 @@ impl RenderExpr {
                     return format!("match({}, {})", &rendered[0], &rendered[1]);
                 }
 
+                // IN/NOT IN with CTE entity column → subquery for set membership.
+                if rendered.len() == 2 {
+                    if let Some(sql) =
+                        try_rewrite_in_cte_subquery(&op.operator, &rendered[0], &op.operands[1])
+                    {
+                        return sql;
+                    }
+                }
+
                 // Special handling for IN/NOT IN with array columns
                 // Cypher: x IN array_property → ClickHouse: has(array, x)
                 if op.operator == Operator::In
@@ -4368,6 +4471,15 @@ impl RenderExpr {
                     return format!("match({}, {})", &rendered[0], &rendered[1]);
                 }
 
+                // IN/NOT IN with CTE entity column → subquery for set membership.
+                if rendered.len() == 2 {
+                    if let Some(sql) =
+                        try_rewrite_in_cte_subquery(&op.operator, &rendered[0], &op.operands[1])
+                    {
+                        return sql;
+                    }
+                }
+
                 // Special handling for IN/NOT IN with array columns
                 if op.operator == Operator::In
                     && rendered.len() == 2
@@ -4578,6 +4690,15 @@ impl ToSql for OperatorApplication {
         // Special handling for RegexMatch - ClickHouse uses match() function
         if self.operator == Operator::RegexMatch && rendered.len() == 2 {
             return format!("match({}, {})", &rendered[0], &rendered[1]);
+        }
+
+        // IN/NOT IN with CTE entity column → subquery for set membership.
+        if rendered.len() == 2 {
+            if let Some(sql) =
+                try_rewrite_in_cte_subquery(&self.operator, &rendered[0], &self.operands[1])
+            {
+                return sql;
+            }
         }
 
         // Special handling for IN/NOT IN with array columns
