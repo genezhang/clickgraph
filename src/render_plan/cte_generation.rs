@@ -59,6 +59,19 @@ pub struct CteGenerationContext {
 
     /// Weighted shortest path: pre-computed edge weight CTE configuration
     pub weight_cte: Option<WeightCteConfig>,
+    /// Whether the query uses `relationships(path)`. When false, VLP CTE skips
+    /// growing path_relationships arrays, saving significant memory.
+    pub needs_path_relationships: bool,
+    /// Lightweight BFS mode for shortestPath queries that only need length(path).
+    /// Generates a global-visited-set BFS instead of per-path tracking.
+    pub use_bfs_mode: bool,
+    /// True when the original edge direction is Either (undirected).
+    /// BFS mode generates two UNION ALL branches for both traversal directions.
+    pub is_undirected: bool,
+    /// Root plan reference for checking path variable usage across the entire query.
+    /// Set at the top-level to_render_plan call so VLP extraction can check if path
+    /// variables are used bare (preventing BFS optimization).
+    pub root_plan: Option<std::sync::Arc<LogicalPlan>>,
 }
 
 impl CteGenerationContext {
@@ -85,6 +98,10 @@ impl CteGenerationContext {
             is_optional: false,
             pattern_combinations: None,
             weight_cte: None,
+            needs_path_relationships: true,
+            use_bfs_mode: false,
+            is_undirected: false,
+            root_plan: None,
         }
     }
 

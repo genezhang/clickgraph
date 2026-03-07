@@ -542,7 +542,7 @@ impl JoinBuilder for LogicalPlan {
         // extract_predicates_for_alias_logical() - extracts predicates for specific alias
         // combine_render_exprs_with_and() - combines filters with AND
 
-        let joins = match &self {
+        let mut joins = match &self {
             LogicalPlan::Limit(limit) => {
                 <LogicalPlan as JoinBuilder>::extract_joins(&limit.input, schema)?
             }
@@ -3368,6 +3368,20 @@ impl JoinBuilder for LogicalPlan {
             }
             _ => vec![],
         };
+
+        // Deduplicate joins by (table_alias, table_name) — nested pattern handling
+        // + standard path can produce overlapping joins for shared nodes/edges in
+        // multi-hop chains (e.g., both phases emit a join for the same relationship
+        // table with the same alias but potentially different ON conditions).
+        // We keep the first occurrence and drop later duplicates for the same
+        // (alias, table) pair. The first occurrence has correct join conditions
+        // from the phase that resolved the edge's connectivity first.
+        {
+            let mut seen: std::collections::HashSet<(String, String)> =
+                std::collections::HashSet::new();
+            joins.retain(|j| seen.insert((j.table_alias.clone(), j.table_name.clone())));
+        }
+
         Ok(joins)
     }
 }

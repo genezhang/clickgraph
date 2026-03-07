@@ -13,12 +13,11 @@ mod edge_uniqueness_tests {
 
     #[test]
     fn test_default_edge_id_tuple() {
-        // Test that when edge_id is None, we use tuple(from_id, to_id)
-        // Edge uniqueness (path_edges) is always enforced regardless of path_variable
+        // Test that cycle detection uses path_nodes (node-uniqueness)
         let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 2);
         let generator = VariableLengthCteGenerator::new(
-            &schema, // Add schema as first parameter
+            &schema,
             spec,
             "users",
             "user_id",
@@ -33,9 +32,9 @@ mod edge_uniqueness_tests {
             None,
             None,
             None,
-            None, // No path_variable — edge uniqueness still enforced
             None,
-            None, // No edge_id - should default to tuple(from_id, to_id)
+            None,
+            None,
         );
 
         let cte = generator.generate_cte();
@@ -47,31 +46,24 @@ mod edge_uniqueness_tests {
             ),
         };
 
-        // Check for path_edges (for edge uniqueness)
-        assert!(
-            sql.contains("path_edges"),
-            "SQL should use path_edges for edge uniqueness. SQL:\n{}",
-            sql
-        );
-        // path_nodes is now included for UNWIND nodes(p) support
+        // path_nodes is maintained for cycle detection and UNWIND nodes(p) support
         assert!(
             sql.contains("path_nodes"),
-            "SQL should contain path_nodes for UNWIND nodes(p) support. SQL:\n{}",
+            "SQL should contain path_nodes for cycle detection. SQL:\n{}",
             sql
         );
 
-        // Check for tuple construction with from_id/to_id
+        // Cycle detection uses path_nodes (node-uniqueness), not path_edges
         assert!(
-            sql.contains("tuple(rel.follower_id, rel.followed_id)")
-                || sql.contains("tuple(r.follower_id, r.followed_id)"),
-            "SQL should use tuple(from_id, to_id) as default edge ID. SQL:\n{}",
+            sql.contains("NOT has(vp.path_nodes,"),
+            "SQL should check node uniqueness via path_nodes. SQL:\n{}",
             sql
         );
 
-        // Check for edge uniqueness check
+        // path_edges should NOT be present (removed for memory optimization)
         assert!(
-            sql.contains("NOT has(vp.path_edges,") || sql.contains("NOT has(path_edges,"),
-            "SQL should check edge uniqueness in path_edges. SQL:\n{}",
+            !sql.contains("path_edges"),
+            "SQL should NOT contain path_edges (removed for memory optimization). SQL:\n{}",
             sql
         );
 
@@ -80,8 +72,7 @@ mod edge_uniqueness_tests {
 
     #[test]
     fn test_composite_edge_id() {
-        // Test composite edge ID (like OnTime schema)
-        // Edge uniqueness (path_edges) is always enforced regardless of path_variable
+        // Test composite edge ID — cycle detection still uses path_nodes
         let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 2);
         let edge_id = Some(Identifier::Composite(vec![
@@ -92,7 +83,7 @@ mod edge_uniqueness_tests {
         ]));
 
         let generator = VariableLengthCteGenerator::new(
-            &schema, // Add schema parameter
+            &schema,
             spec,
             "airports",
             "airport_code",
@@ -107,7 +98,7 @@ mod edge_uniqueness_tests {
             None,
             None,
             None,
-            None, // No path_variable — edge uniqueness still enforced
+            None,
             None,
             edge_id,
         );
@@ -121,25 +112,17 @@ mod edge_uniqueness_tests {
             ),
         };
 
-        // Check for path_edges
+        // Cycle detection uses path_nodes (node-uniqueness)
         assert!(
-            sql.contains("path_edges"),
-            "SQL should use path_edges. SQL:\n{}",
+            sql.contains("NOT has(vp.path_nodes,"),
+            "SQL should check node uniqueness via path_nodes. SQL:\n{}",
             sql
         );
 
-        // Check for composite tuple construction
+        // path_edges should NOT be present
         assert!(
-            sql.contains("tuple(rel.FlightDate, rel.FlightNum, rel.Origin, rel.Dest)")
-                || sql.contains("tuple(r.FlightDate, r.FlightNum, r.Origin, r.Dest)"),
-            "SQL should use composite tuple for edge ID. SQL:\n{}",
-            sql
-        );
-
-        // Check for edge uniqueness check
-        assert!(
-            sql.contains("NOT has(vp.path_edges,"),
-            "SQL should check edge uniqueness. SQL:\n{}",
+            !sql.contains("path_edges"),
+            "SQL should NOT contain path_edges (removed for memory optimization). SQL:\n{}",
             sql
         );
 
@@ -148,14 +131,13 @@ mod edge_uniqueness_tests {
 
     #[test]
     fn test_simple_edge_id() {
-        // Test single column edge ID
-        // Edge uniqueness (path_edges) is always enforced regardless of path_variable
+        // Test single column edge ID — cycle detection still uses path_nodes
         let schema = create_test_schema();
         let spec = VariableLengthSpec::range(1, 2);
         let edge_id = Some(Identifier::Single("transaction_id".to_string()));
 
         let generator = VariableLengthCteGenerator::new(
-            &schema, // Add schema parameter
+            &schema,
             spec,
             "accounts",
             "account_id",
@@ -170,7 +152,7 @@ mod edge_uniqueness_tests {
             None,
             None,
             None,
-            None, // No path_variable — edge uniqueness still enforced
+            None,
             None,
             edge_id,
         );
@@ -184,27 +166,194 @@ mod edge_uniqueness_tests {
             ),
         };
 
-        // Check for path_edges
+        // Cycle detection uses path_nodes (node-uniqueness)
         assert!(
-            sql.contains("path_edges"),
-            "SQL should use path_edges. SQL:\n{}",
+            sql.contains("NOT has(vp.path_nodes,"),
+            "SQL should check node uniqueness via path_nodes. SQL:\n{}",
             sql
         );
 
-        // Check for simple column reference (no tuple for single column)
+        // path_edges should NOT be present
         assert!(
-            sql.contains("rel.transaction_id") || sql.contains("r.transaction_id"),
-            "SQL should reference transaction_id column. SQL:\n{}",
-            sql
-        );
-
-        // Check for edge uniqueness check
-        assert!(
-            sql.contains("NOT has(vp.path_edges,"),
-            "SQL should check edge uniqueness. SQL:\n{}",
+            !sql.contains("path_edges"),
+            "SQL should NOT contain path_edges (removed for memory optimization). SQL:\n{}",
             sql
         );
 
         println!("\n✅ Simple Edge ID Test SQL:\n{}", sql);
+    }
+
+    #[test]
+    fn test_bfs_mode_generates_lightweight_cte() {
+        // When use_bfs_mode=true, the generator should produce a BFS CTE
+        // with (node_id, hop) columns instead of per-path tracking arrays.
+        let schema = create_test_schema();
+        let spec = VariableLengthSpec::range(1, 5);
+        let mut generator = VariableLengthCteGenerator::new(
+            &schema,
+            spec,
+            "Person",
+            "id",
+            "Person_knows_Person",
+            "Person1Id",
+            "Person2Id",
+            "Person",
+            "id",
+            "person1",
+            "person2",
+            vec![],
+            Some(
+                crate::clickhouse_query_generator::variable_length_cte::ShortestPathMode::Shortest,
+            ),
+            Some("start_node.id = 123".to_string()),
+            Some("end_node.id = 456".to_string()),
+            Some("p".to_string()),
+            None,
+            None,
+        );
+        generator.use_bfs_mode = true;
+        generator.is_undirected = false;
+
+        let cte = generator.generate_cte();
+        let sql = match &cte.content {
+            crate::render_plan::CteContent::RawSql(s) => s,
+            other => panic!("Expected RawSql for BFS mode, got: {:?}", other),
+        };
+
+        // BFS CTE should have node_id and hop columns
+        assert!(
+            sql.contains("node_id") && sql.contains("hop"),
+            "BFS CTE should contain node_id and hop columns. SQL:\n{}",
+            sql
+        );
+        // BFS CTE should NOT contain path_nodes or path_relationships arrays
+        assert!(
+            !sql.contains("arrayConcat"),
+            "BFS CTE should not grow path arrays. SQL:\n{}",
+            sql
+        );
+        // Should have a _bfs recursive CTE and a result wrapper
+        assert!(
+            sql.contains("_bfs"),
+            "BFS mode should generate a _bfs recursive CTE. SQL:\n{}",
+            sql
+        );
+        // Result wrapper should have hop_count for length(path) rewriting
+        assert!(
+            sql.contains("hop_count"),
+            "BFS result wrapper should have hop_count. SQL:\n{}",
+            sql
+        );
+
+        println!("\n✅ BFS Mode Test SQL:\n{}", sql);
+    }
+
+    #[test]
+    fn test_bfs_mode_not_activated_without_flag() {
+        // Without use_bfs_mode=true, even with shortestPath, the standard
+        // per-path recursive CTE should be generated (with path_nodes).
+        let schema = create_test_schema();
+        let spec = VariableLengthSpec::range(1, 5);
+        let generator = VariableLengthCteGenerator::new(
+            &schema,
+            spec,
+            "Person",
+            "id",
+            "Person_knows_Person",
+            "Person1Id",
+            "Person2Id",
+            "Person",
+            "id",
+            "person1",
+            "person2",
+            vec![],
+            Some(
+                crate::clickhouse_query_generator::variable_length_cte::ShortestPathMode::Shortest,
+            ),
+            Some("start_node.id = 123".to_string()),
+            Some("end_node.id = 456".to_string()),
+            Some("p".to_string()),
+            None,
+            None,
+        );
+        // use_bfs_mode defaults to false
+
+        let cte = generator.generate_cte();
+        let sql = match &cte.content {
+            crate::render_plan::CteContent::RawSql(s) => s,
+            other => panic!("Expected RawSql, got: {:?}", other),
+        };
+
+        // Standard mode should have path_nodes for per-path tracking
+        assert!(
+            sql.contains("path_nodes"),
+            "Standard mode should contain path_nodes. SQL:\n{}",
+            sql
+        );
+        // Should NOT have a _bfs CTE
+        assert!(
+            !sql.contains("_bfs"),
+            "Standard mode should not generate _bfs CTE. SQL:\n{}",
+            sql
+        );
+
+        println!("\n✅ BFS Guard Test SQL:\n{}", sql);
+    }
+
+    #[test]
+    fn test_bfs_mode_undirected_generates_two_branches() {
+        // Undirected BFS should produce UNION ALL of forward + reverse traversal
+        let schema = create_test_schema();
+        let spec = VariableLengthSpec::range(1, 5);
+        let mut generator = VariableLengthCteGenerator::new(
+            &schema,
+            spec,
+            "Person",
+            "id",
+            "Person_knows_Person",
+            "Person1Id",
+            "Person2Id",
+            "Person",
+            "id",
+            "person1",
+            "person2",
+            vec![],
+            Some(
+                crate::clickhouse_query_generator::variable_length_cte::ShortestPathMode::Shortest,
+            ),
+            Some("start_node.id = 123".to_string()),
+            Some("end_node.id = 456".to_string()),
+            Some("p".to_string()),
+            None,
+            None,
+        );
+        generator.use_bfs_mode = true;
+        generator.is_undirected = true;
+
+        let cte = generator.generate_cte();
+        let sql = match &cte.content {
+            crate::render_plan::CteContent::RawSql(s) => s,
+            other => panic!("Expected RawSql for undirected BFS, got: {:?}", other),
+        };
+
+        // Count UNION ALL occurrences — undirected BFS should have at least 2
+        // (one for base UNION ALL recursive, one for forward UNION ALL reverse)
+        let union_count = sql.matches("UNION ALL").count();
+        assert!(
+            union_count >= 2,
+            "Undirected BFS should have >=2 UNION ALL (got {}). SQL:\n{}",
+            union_count,
+            sql
+        );
+
+        // Both Person1Id and Person2Id should appear as join columns
+        // (forward: Person1Id→Person2Id, reverse: Person2Id→Person1Id)
+        assert!(
+            sql.contains("Person1Id") && sql.contains("Person2Id"),
+            "Undirected BFS should reference both direction columns. SQL:\n{}",
+            sql
+        );
+
+        println!("\n✅ Undirected BFS Test SQL:\n{}", sql);
     }
 }
