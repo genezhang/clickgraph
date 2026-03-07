@@ -426,6 +426,20 @@ pub fn intermediate_analyzing(
         plan.has_union_anywhere()
     );
 
+    // Collect+UNWIND Elimination - remove no-op patterns like WITH collect(x) as xs + UNWIND xs as x
+    // Must run BEFORE VariableResolver so that freshly created TableAlias nodes get resolved
+    log::info!("🔍 Running Collect+UNWIND Elimination...");
+    let collect_unwind_elimination = CollectUnwindElimination;
+    let plan = match collect_unwind_elimination.optimize(plan.clone(), plan_ctx) {
+        Ok(transformed) => transformed.get_plan(),
+        Err(e) => {
+            return Err(errors::AnalyzerError::OptimizerError {
+                message: e.to_string(),
+            });
+        }
+    };
+    log::info!("✓ Collect+UNWIND Elimination completed");
+
     // NOTE: BidirectionalUnion has been moved to initial_analyzing() to run BEFORE GraphJoinInference
     // This ensures undirected patterns are expanded to UNION ALL before GraphRel is converted to GraphJoins
 
@@ -465,20 +479,6 @@ pub fn intermediate_analyzing(
     // This enables user.name → user.5 (tuple index) after UNWIND of collect(node)
     // Must run AFTER all analysis passes that might recreate Unwind nodes
     let plan = unwind_tuple_enricher::enrich_unwind_with_tuple_info(plan);
-
-    // Collect+UNWIND Elimination - remove no-op patterns like WITH collect(x) as xs + UNWIND xs as x
-    // This must run BEFORE PropertyRequirementsAnalyzer to eliminate patterns that would complicate analysis
-    log::info!("🔍 Running Collect+UNWIND Elimination...");
-    let collect_unwind_elimination = CollectUnwindElimination;
-    let plan = match collect_unwind_elimination.optimize(plan.clone(), plan_ctx) {
-        Ok(transformed) => transformed.get_plan(),
-        Err(e) => {
-            return Err(errors::AnalyzerError::OptimizerError {
-                message: e.to_string(),
-            });
-        }
-    };
-    log::info!("✓ Collect+UNWIND Elimination completed");
 
     // Trivial WITH Elimination - remove pass-through WITH clauses that add no value
     // Run after collect+UNWIND elimination to clean up any resulting trivial WITHs
