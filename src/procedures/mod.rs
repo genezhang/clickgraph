@@ -43,6 +43,7 @@ pub mod dbms_stubs;
 pub mod executor;
 pub mod return_evaluator;
 pub mod show_databases;
+pub mod vector_search;
 
 // Re-export key functions for easier access
 pub use executor::{
