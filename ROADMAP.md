@@ -153,8 +153,8 @@ This document outlines delivered features, current status, and planned enhanceme
 | ~~5️⃣~~ | ~~**ClickHouse function pass-through**~~ | ✅ **Complete** | `ch.` scalar + `chagg.` aggregate prefixes, lambda support |
 | ~~6️⃣~~ | ~~**Neo4j Functions (55+)**~~ | ✅ **Complete** | Full function parity achieved |
 | ~~7️⃣~~ | ~~**Query-time timezone support**~~ | ✅ **Complete** | Via ClickHouse function support |
-| 8️⃣ | **Cluster load balancing** (`CLICKHOUSE_CLUSTER`) | 📋 Planned | Round-robin across cluster replicas via `system.clusters` |
-| 9️⃣ | **GraphRAG Phase 2** (context ranking, citation) | 📋 Planned | Build on Graph format |
+| ~~8️⃣~~ | ~~**Cluster load balancing** (`CLICKHOUSE_CLUSTER`)~~ | ✅ **Complete** | Round-robin across cluster replicas via `system.clusters` |
+| ~~9️⃣~~ | ~~**GraphRAG Phase 2** (context ranking, citation)~~ | ✅ **Complete** | Fulltext search + vector search procedures |
 | 🔟 | **Billion-scale benchmarks** (SF100+) | 💰 Seeking sponsorship | Requires dedicated infrastructure |
 
 ---

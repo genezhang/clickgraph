@@ -41,6 +41,7 @@ pub mod db_schema_rel_type_properties;
 pub mod dbms_components;
 pub mod dbms_stubs;
 pub mod executor;
+pub mod fulltext_search;
 pub mod return_evaluator;
 pub mod show_databases;
 pub mod vector_search;
