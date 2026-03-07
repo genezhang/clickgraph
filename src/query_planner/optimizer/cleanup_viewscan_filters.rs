@@ -296,28 +296,12 @@ impl CleanupViewScanFilters {
             | LogicalPlan::Unwind(_) => Transformed::No(logical_plan),
 
             LogicalPlan::WithClause(with_clause) => {
-                let child_tf = self.optimize_with_context(
-                    with_clause.input.clone(),
-                    plan_ctx,
-                    inside_graph_rel,
-                )?;
+                let child_tf =
+                    self.optimize_with_context(with_clause.input.clone(), plan_ctx, false)?;
                 match child_tf {
-                    Transformed::Yes(new_input) => {
-                        let new_with = crate::query_planner::logical_plan::WithClause {
-                            cte_name: None,
-                            input: new_input,
-                            items: with_clause.items.clone(),
-                            distinct: with_clause.distinct,
-                            order_by: with_clause.order_by.clone(),
-                            skip: with_clause.skip,
-                            limit: with_clause.limit,
-                            where_clause: with_clause.where_clause.clone(),
-                            exported_aliases: with_clause.exported_aliases.clone(),
-                            cte_references: with_clause.cte_references.clone(),
-                            pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
-                        };
-                        Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
-                    }
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(
+                        LogicalPlan::WithClause(with_clause.with_new_input(new_input)),
+                    )),
                     Transformed::No(_) => Transformed::No(logical_plan),
                 }
             }
@@ -335,5 +319,84 @@ impl OptimizerPass for CleanupViewScanFilters {
     ) -> OptimizerResult<Transformed<Arc<LogicalPlan>>> {
         // Start with inside_graph_rel = false; it will be set to true when we enter a GraphRel
         self.optimize_with_context(logical_plan, plan_ctx, false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::query_planner::logical_expr::{ColumnAlias, LogicalExpr, TableAlias};
+    use crate::query_planner::logical_plan::{ProjectionItem, WithClause};
+
+    #[test]
+    fn test_with_clause_preserves_cte_name_on_transform() {
+        // Regression: with_new_input() must preserve cte_name.
+        // Previously, manual struct reconstruction set cte_name: None.
+        let inner = Arc::new(LogicalPlan::Empty);
+        let wc = WithClause {
+            cte_name: Some("my_cte".to_string()),
+            input: inner.clone(),
+            items: vec![ProjectionItem {
+                expression: LogicalExpr::TableAlias(TableAlias("p".to_string())),
+                col_alias: Some(ColumnAlias("p".to_string())),
+            }],
+            distinct: false,
+            order_by: None,
+            skip: None,
+            limit: None,
+            where_clause: None,
+            exported_aliases: vec!["p".to_string()],
+            cte_references: Default::default(),
+            pattern_comprehensions: vec![],
+        };
+
+        // Simulate what optimizer passes do: replace input via with_new_input()
+        let new_input = Arc::new(LogicalPlan::Empty);
+        let rebuilt = wc.with_new_input(new_input);
+
+        assert_eq!(
+            rebuilt.cte_name,
+            Some("my_cte".to_string()),
+            "cte_name must be preserved through with_new_input()"
+        );
+        assert_eq!(rebuilt.items, wc.items);
+        assert_eq!(rebuilt.exported_aliases, wc.exported_aliases);
+    }
+
+    #[test]
+    fn test_optimizer_preserves_cte_name_through_noop() {
+        // When optimizer finds no ViewScans to clean, WithClause passes through unchanged.
+        let inner = Arc::new(LogicalPlan::Empty);
+        let wc = Arc::new(LogicalPlan::WithClause(WithClause {
+            cte_name: Some("preserved_cte".to_string()),
+            input: inner,
+            items: vec![ProjectionItem {
+                expression: LogicalExpr::TableAlias(TableAlias("x".to_string())),
+                col_alias: Some(ColumnAlias("x".to_string())),
+            }],
+            distinct: false,
+            order_by: None,
+            skip: None,
+            limit: None,
+            where_clause: None,
+            exported_aliases: vec!["x".to_string()],
+            cte_references: Default::default(),
+            pattern_comprehensions: vec![],
+        }));
+
+        let optimizer = CleanupViewScanFilters;
+        let mut plan_ctx = PlanCtx::new_empty();
+        let result = optimizer.optimize(wc, &mut plan_ctx).unwrap();
+
+        // No transformation expected (no ViewScans), so plan passes through
+        if let LogicalPlan::WithClause(out_wc) = result.get_plan().as_ref() {
+            assert_eq!(
+                out_wc.cte_name,
+                Some("preserved_cte".to_string()),
+                "cte_name must survive optimizer pass"
+            );
+        } else {
+            panic!("Expected WithClause in output");
+        }
     }
 }

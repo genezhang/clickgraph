@@ -669,6 +669,24 @@ impl WithClause {
         self
     }
 
+    /// Replace input while preserving all other fields (including cte_name).
+    /// Use this instead of manual struct reconstruction to avoid zeroing cte_name.
+    pub fn with_new_input(&self, input: Arc<LogicalPlan>) -> Self {
+        Self {
+            cte_name: self.cte_name.clone(),
+            input,
+            items: self.items.clone(),
+            distinct: self.distinct,
+            order_by: self.order_by.clone(),
+            skip: self.skip,
+            limit: self.limit,
+            where_clause: self.where_clause.clone(),
+            exported_aliases: self.exported_aliases.clone(),
+            cte_references: self.cte_references.clone(),
+            pattern_comprehensions: self.pattern_comprehensions.clone(),
+        }
+    }
+
     /// Extract exported alias names from projection items
     fn extract_exported_aliases(items: &[ProjectionItem]) -> Vec<String> {
         items
@@ -2011,5 +2029,49 @@ mod tests {
             }
             _ => panic!("Expected Projection at top"),
         }
+    }
+
+    #[test]
+    fn test_with_new_input_preserves_all_fields() {
+        use crate::query_planner::logical_expr::ColumnAlias;
+
+        let original_input = Arc::new(LogicalPlan::Empty);
+        let wc = WithClause {
+            cte_name: Some("my_cte".to_string()),
+            input: original_input,
+            items: vec![ProjectionItem {
+                expression: LogicalExpr::TableAlias(TableAlias("a".to_string())),
+                col_alias: Some(ColumnAlias("a".to_string())),
+            }],
+            distinct: true,
+            order_by: Some(vec![]),
+            skip: Some(5),
+            limit: Some(10),
+            where_clause: Some(LogicalExpr::Literal(Literal::Boolean(true))),
+            exported_aliases: vec!["a".to_string()],
+            cte_references: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("x".to_string(), "cte_x".to_string());
+                m
+            },
+            pattern_comprehensions: vec![],
+        };
+
+        let new_input = Arc::new(LogicalPlan::Empty);
+        let rebuilt = wc.with_new_input(new_input.clone());
+
+        // Input should be replaced
+        assert!(Arc::ptr_eq(&rebuilt.input, &new_input));
+        // All other fields must be preserved
+        assert_eq!(rebuilt.cte_name, Some("my_cte".to_string()));
+        assert_eq!(rebuilt.items, wc.items);
+        assert_eq!(rebuilt.distinct, true);
+        assert_eq!(rebuilt.order_by, Some(vec![]));
+        assert_eq!(rebuilt.skip, Some(5));
+        assert_eq!(rebuilt.limit, Some(10));
+        assert!(rebuilt.where_clause.is_some());
+        assert_eq!(rebuilt.exported_aliases, vec!["a".to_string()]);
+        assert_eq!(rebuilt.cte_references.get("x"), Some(&"cte_x".to_string()));
+        assert!(rebuilt.pattern_comprehensions.is_empty());
     }
 }

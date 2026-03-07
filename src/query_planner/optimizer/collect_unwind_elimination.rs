@@ -179,19 +179,9 @@ impl CollectUnwindElimination {
             LogicalPlan::WithClause(with) => {
                 let (optimized_input, alias_map) = Self::optimize_node(with.input.clone())?;
                 Ok((
-                    Arc::new(LogicalPlan::WithClause(WithClause {
-                        cte_name: None,
-                        input: optimized_input,
-                        items: with.items.clone(),
-                        distinct: with.distinct,
-                        order_by: with.order_by.clone(),
-                        skip: with.skip,
-                        limit: with.limit,
-                        where_clause: with.where_clause.clone(),
-                        exported_aliases: with.exported_aliases.clone(),
-                        cte_references: with.cte_references.clone(),
-                        pattern_comprehensions: with.pattern_comprehensions.clone(),
-                    })),
+                    Arc::new(LogicalPlan::WithClause(
+                        with.with_new_input(optimized_input),
+                    )),
                     alias_map,
                 ))
             }
@@ -487,20 +477,18 @@ impl CollectUnwindElimination {
                                                     ),
                                                     col_alias: None,
                                                 };
+                                                let mut new_wc =
+                                                    with.with_new_input(optimized_input);
+                                                new_wc.items = vec![passthrough_item];
+                                                new_wc.distinct = true;
+                                                new_wc.order_by = None;
+                                                new_wc.skip = None;
+                                                new_wc.limit = None;
+                                                new_wc.where_clause = None;
+                                                new_wc.exported_aliases = vec![source.clone()];
+                                                new_wc.pattern_comprehensions = vec![];
                                                 let distinct_with =
-                                                    Arc::new(LogicalPlan::WithClause(WithClause {
-                                                        cte_name: None,
-                                                        input: optimized_input,
-                                                        items: vec![passthrough_item],
-                                                        distinct: true,
-                                                        order_by: None,
-                                                        skip: None,
-                                                        limit: None,
-                                                        where_clause: None,
-                                                        exported_aliases: vec![source.clone()],
-                                                        cte_references: with.cte_references.clone(),
-                                                        pattern_comprehensions: vec![],
-                                                    }));
+                                                    Arc::new(LogicalPlan::WithClause(new_wc));
                                                 return Ok((distinct_with, alias_map));
                                             }
 
@@ -554,22 +542,12 @@ impl CollectUnwindElimination {
                                                 Self::optimize_node(with.input.clone())?;
 
                                             // Create modified WITH clause without the collect
+                                            let mut new_wc = with.with_new_input(optimized_input);
+                                            new_wc.items = new_items;
+                                            new_wc.distinct = with.distinct || has_distinct;
+                                            new_wc.exported_aliases = new_exported_aliases;
                                             let new_with =
-                                                Arc::new(LogicalPlan::WithClause(WithClause {
-                                                    cte_name: None,
-                                                    input: optimized_input,
-                                                    items: new_items,
-                                                    distinct: with.distinct || has_distinct,
-                                                    order_by: with.order_by.clone(),
-                                                    skip: with.skip,
-                                                    limit: with.limit,
-                                                    where_clause: with.where_clause.clone(),
-                                                    exported_aliases: new_exported_aliases,
-                                                    cte_references: with.cte_references.clone(),
-                                                    pattern_comprehensions: with
-                                                        .pattern_comprehensions
-                                                        .clone(),
-                                                }));
+                                                Arc::new(LogicalPlan::WithClause(new_wc));
 
                                             // Map: UNWIND alias -> source variable
                                             // Also map collection_name -> source so that downstream
@@ -851,5 +829,57 @@ mod tests {
                 std::mem::discriminant(&*plan)
             );
         }
+    }
+
+    #[test]
+    fn test_cte_name_preserved_after_optimization() {
+        // Regression: with_new_input() must preserve cte_name through optimization.
+        // Previously, manual struct reconstruction zeroed cte_name: None.
+        let base = Arc::new(LogicalPlan::Empty);
+
+        let with_plan = Arc::new(LogicalPlan::WithClause(WithClause {
+            cte_name: Some("test_cte".to_string()),
+            input: base,
+            items: vec![ProjectionItem {
+                expression: LogicalExpr::AggregateFnCall(AggregateFnCall {
+                    name: "collect".to_string(),
+                    args: vec![LogicalExpr::TableAlias(TableAlias("f".to_string()))],
+                }),
+                col_alias: Some(ColumnAlias("friends".to_string())),
+            }],
+            distinct: false,
+            order_by: None,
+            skip: None,
+            limit: None,
+            where_clause: None,
+            exported_aliases: vec!["friends".to_string()],
+            cte_references: Default::default(),
+            pattern_comprehensions: vec![],
+        }));
+
+        let unwind_plan = Arc::new(LogicalPlan::Unwind(Unwind {
+            input: with_plan,
+            expression: LogicalExpr::TableAlias(TableAlias("friends".to_string())),
+            alias: "friend".to_string(),
+            label: None,
+            tuple_properties: None,
+        }));
+
+        let optimizer = CollectUnwindElimination;
+        let mut plan_ctx = PlanCtx::new_empty();
+        let result = optimizer.optimize(unwind_plan, &mut plan_ctx).unwrap();
+
+        // Should be optimized to Empty (the base), since collect+unwind cancels out.
+        // But if not fully eliminated (e.g., if it keeps a passthrough WITH),
+        // the cte_name must be preserved.
+        let plan = result.get_plan();
+        if let LogicalPlan::WithClause(with) = &*plan {
+            assert_eq!(
+                with.cte_name,
+                Some("test_cte".to_string()),
+                "cte_name must be preserved through optimization"
+            );
+        }
+        // If optimized to Empty, that's fine too — no WithClause to check.
     }
 }
