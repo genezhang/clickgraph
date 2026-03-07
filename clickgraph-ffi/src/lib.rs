@@ -4,7 +4,8 @@
 //! This crate is a thin wrapper around `clickgraph-embedded` that satisfies
 //! UniFFI's ownership model (Arc-based, no lifetimes).
 
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use clickgraph_embedded::database::{
     Database as RustDatabase, StorageCredentials, SystemConfig as RustSystemConfig,
@@ -34,7 +35,20 @@ pub enum ClickGraphError {
 
 impl From<clickgraph_embedded::error::EmbeddedError> for ClickGraphError {
     fn from(e: clickgraph_embedded::error::EmbeddedError) -> Self {
-        ClickGraphError::QueryError { msg: e.to_string() }
+        match e {
+            clickgraph_embedded::error::EmbeddedError::Schema(msg) => {
+                ClickGraphError::DatabaseError { msg }
+            }
+            clickgraph_embedded::error::EmbeddedError::Io(msg) => {
+                ClickGraphError::DatabaseError { msg }
+            }
+            clickgraph_embedded::error::EmbeddedError::Executor(msg) => {
+                ClickGraphError::DatabaseError { msg }
+            }
+            clickgraph_embedded::error::EmbeddedError::Query(msg) => {
+                ClickGraphError::QueryError { msg }
+            }
+        }
     }
 }
 
@@ -101,7 +115,7 @@ pub struct Row {
 pub struct QueryResult {
     columns: Vec<String>,
     rows: Vec<Vec<RustValue>>,
-    position: Mutex<usize>,
+    position: AtomicUsize,
 }
 
 #[uniffi::export]
@@ -129,18 +143,18 @@ impl QueryResult {
 
     /// Return true if the cursor has more rows.
     pub fn has_next(&self) -> bool {
-        let pos = self.position.lock().unwrap();
-        *pos < self.rows.len()
+        self.position.load(Ordering::Relaxed) < self.rows.len()
     }
 
     /// Return the next row (cursor-style). Returns None when exhausted.
     pub fn get_next(&self) -> Option<Row> {
-        let mut pos = self.position.lock().unwrap();
-        if *pos >= self.rows.len() {
+        let pos = self.position.fetch_add(1, Ordering::Relaxed);
+        if pos >= self.rows.len() {
+            // Restore position so repeated calls stay at the end
+            self.position.store(self.rows.len(), Ordering::Relaxed);
             return None;
         }
-        let row = &self.rows[*pos];
-        *pos += 1;
+        let row = &self.rows[pos];
         Some(Row {
             columns: self.columns.clone(),
             values: row.iter().cloned().map(Value::from).collect(),
@@ -149,8 +163,7 @@ impl QueryResult {
 
     /// Reset the cursor to the beginning.
     pub fn reset(&self) {
-        let mut pos = self.position.lock().unwrap();
-        *pos = 0;
+        self.position.store(0, Ordering::Relaxed);
     }
 }
 
@@ -269,7 +282,7 @@ impl Connection {
         Ok(Arc::new(QueryResult {
             columns,
             rows,
-            position: Mutex::new(0),
+            position: AtomicUsize::new(0),
         }))
     }
 

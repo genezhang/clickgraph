@@ -176,3 +176,49 @@ func TestOpenInvalidPath(t *testing.T) {
 		t.Fatal("expected error for nonexistent schema")
 	}
 }
+
+func TestDatabaseConnectAfterClose(t *testing.T) {
+	db := &Database{inner: nil} // simulate a closed database
+	_, err := db.Connect()
+	if err == nil {
+		t.Fatal("expected error for closed database")
+	}
+	if err.Error() != "clickgraph: connect: clickgraph: resource is closed" {
+		t.Errorf("unexpected error message: %s", err.Error())
+	}
+}
+
+func TestConnectionQueryAfterClose(t *testing.T) {
+	c := &Connection{inner: nil} // simulate a closed connection
+	_, err := c.Query("MATCH (n) RETURN n")
+	if err == nil {
+		t.Fatal("expected error for closed connection")
+	}
+	if err.Error() != "clickgraph: query: clickgraph: resource is closed" {
+		t.Errorf("unexpected error message: %s", err.Error())
+	}
+}
+
+func TestConnectionQueryToSQLAfterClose(t *testing.T) {
+	c := &Connection{inner: nil}
+	_, err := c.QueryToSQL("MATCH (n) RETURN n")
+	if err == nil {
+		t.Fatal("expected error for closed connection")
+	}
+}
+
+func TestConnectionExportAfterClose(t *testing.T) {
+	c := &Connection{inner: nil}
+	err := c.Export("MATCH (n) RETURN n", "out.csv", nil)
+	if err == nil {
+		t.Fatal("expected error for closed connection")
+	}
+}
+
+func TestConnectionExportToSQLAfterClose(t *testing.T) {
+	c := &Connection{inner: nil}
+	_, err := c.ExportToSQL("MATCH (n) RETURN n", "out.csv", nil)
+	if err == nil {
+		t.Fatal("expected error for closed connection")
+	}
+}

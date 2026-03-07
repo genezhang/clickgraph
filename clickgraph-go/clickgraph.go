@@ -29,6 +29,9 @@ import (
 	ffi "github.com/genezhang/clickgraph-go/clickgraph_ffi"
 )
 
+// errClosed is returned when calling methods on a closed Database or Connection.
+var errClosed = fmt.Errorf("clickgraph: resource is closed")
+
 // Database is an embedded ClickGraph database loaded from a YAML schema.
 // Create with [Open] or [OpenWithConfig]. Must be closed with [Database.Close].
 type Database struct {
@@ -104,6 +107,9 @@ func (db *Database) Close() {
 
 // Connect creates a new connection to the database.
 func (db *Database) Connect() (*Connection, error) {
+	if db.inner == nil {
+		return nil, fmt.Errorf("clickgraph: connect: %w", errClosed)
+	}
 	conn, err := db.inner.Connect()
 	if err != nil {
 		return nil, fmt.Errorf("clickgraph: connect: %w", err)
@@ -127,6 +133,9 @@ func (c *Connection) Close() {
 
 // Query executes a Cypher query and returns a [Result].
 func (c *Connection) Query(cypher string) (*Result, error) {
+	if c.inner == nil {
+		return nil, fmt.Errorf("clickgraph: query: %w", errClosed)
+	}
 	qr, err := c.inner.Query(cypher)
 	if err != nil {
 		return nil, fmt.Errorf("clickgraph: query: %w", err)
@@ -136,6 +145,9 @@ func (c *Connection) Query(cypher string) (*Result, error) {
 
 // QueryToSQL translates a Cypher query to ClickHouse SQL without executing it.
 func (c *Connection) QueryToSQL(cypher string) (string, error) {
+	if c.inner == nil {
+		return "", fmt.Errorf("clickgraph: query_to_sql: %w", errClosed)
+	}
 	sql, err := c.inner.QueryToSql(cypher)
 	if err != nil {
 		return "", fmt.Errorf("clickgraph: query_to_sql: %w", err)
@@ -155,6 +167,9 @@ type ExportOptions struct {
 // Export writes Cypher query results directly to a file.
 // Format is auto-detected from the extension if not specified.
 func (c *Connection) Export(cypher, outputPath string, opts *ExportOptions) error {
+	if c.inner == nil {
+		return fmt.Errorf("clickgraph: export: %w", errClosed)
+	}
 	ffiOpts := ffi.ExportOptions{}
 	if opts != nil {
 		ffiOpts.Format = strPtr(opts.Format)
@@ -168,6 +183,9 @@ func (c *Connection) Export(cypher, outputPath string, opts *ExportOptions) erro
 
 // ExportToSQL generates the export SQL without executing it (for debugging).
 func (c *Connection) ExportToSQL(cypher, outputPath string, opts *ExportOptions) (string, error) {
+	if c.inner == nil {
+		return "", fmt.Errorf("clickgraph: export_to_sql: %w", errClosed)
+	}
 	ffiOpts := ffi.ExportOptions{}
 	if opts != nil {
 		ffiOpts.Format = strPtr(opts.Format)
