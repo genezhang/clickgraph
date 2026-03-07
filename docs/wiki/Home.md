@@ -70,6 +70,7 @@ curl -X POST http://localhost:8080/query \
 ### Getting Started
 - **[Quick Start Guide](Quick-Start-Guide.md)** - 5-minute Docker setup
 - **[Embedded Mode](Embedded-Mode.md)** - 🆕 In-process graph queries over Parquet/Iceberg/Delta (no ClickHouse needed)
+- **[Language Bindings](Language-Bindings.md)** - 🆕 Rust, Python, and Go library APIs
 - **[Installation Guide](Installation-Guide.md)** - Detailed installation options
 - **[Your First Graph](Your-First-Graph.md)** - Build a simple social network graph
 
