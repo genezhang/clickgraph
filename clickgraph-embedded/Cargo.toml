@@ -17,3 +17,5 @@ log = "0.4"
 async-trait = "0.1"
 
 [dev-dependencies]
+tempfile = "3"
+libc = "0.2"
