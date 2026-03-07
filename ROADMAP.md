@@ -153,9 +153,10 @@ This document outlines delivered features, current status, and planned enhanceme
 | ~~5️⃣~~ | ~~**ClickHouse function pass-through**~~ | ✅ **Complete** | `ch.` scalar + `chagg.` aggregate prefixes, lambda support |
 | ~~6️⃣~~ | ~~**Neo4j Functions (55+)**~~ | ✅ **Complete** | Full function parity achieved |
 | ~~7️⃣~~ | ~~**Query-time timezone support**~~ | ✅ **Complete** | Via ClickHouse function support |
-| 8️⃣ | **Cluster load balancing** (`CLICKHOUSE_CLUSTER`) | 📋 Planned | Round-robin across cluster replicas via `system.clusters` |
-| 9️⃣ | **GraphRAG Phase 2** (context ranking, citation) | 📋 Planned | Build on Graph format |
-| 🔟 | **Billion-scale benchmarks** (SF100+) | 💰 Seeking sponsorship | Requires dedicated infrastructure |
+| ~~8️⃣~~ | ~~**Cluster load balancing** (`CLICKHOUSE_CLUSTER`)~~ | ✅ **Complete** | Round-robin across cluster replicas via `system.clusters` |
+| 9️⃣ | **GraphRAG Phase 2** (search procedures) | 🔶 **In Progress** | Vector search ✅, fulltext search ✅, context ranking/citation remaining |
+| 🔟 | **Go bindings** (`clickgraph-go` via UniFFI) | ✅ **Complete** | Auto-generated via UniFFI + uniffi-bindgen-go, idiomatic Go API |
+| 1️⃣1️⃣ | **Billion-scale benchmarks** (SF100+) | 💰 Seeking sponsorship | Requires dedicated infrastructure |
 
 ---
 
@@ -203,6 +204,7 @@ This document outlines delivered features, current status, and planned enhanceme
 | Lambda expression support for CH functions | Phase 4 | Dec 2025 |
 | Neo4j functions (55+, full parity) | Phase 4 | Nov 2025 |
 | Query-time timezone support | Phase 4 | Nov 2025 |
+| Go bindings (UniFFI) | Phase 4 | Mar 2026 |
 
 ### Planned Features
 

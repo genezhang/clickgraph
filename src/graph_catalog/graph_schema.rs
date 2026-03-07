@@ -559,6 +559,52 @@ pub struct GraphSchema {
     /// Example: "HAS_TAG" -> ["HAS_TAG::Post::Tag", "HAS_TAG::Comment::Tag", "HAS_TAG::Message::Tag"]
     #[serde(skip)]
     rel_type_index: BTreeMap<String, Vec<String>>,
+
+    /// Vector index configurations for similarity search
+    /// Maps index name -> config (label, property, similarity metric)
+    #[serde(skip)]
+    vector_indexes: BTreeMap<String, VectorIndexConfig>,
+
+    /// Full-text index configurations for text search
+    /// Maps index name -> config (label, properties, analyzer)
+    #[serde(skip)]
+    fulltext_indexes: BTreeMap<String, FulltextIndexConfig>,
+}
+
+/// Runtime vector index configuration (resolved from schema definition)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct VectorIndexConfig {
+    /// Index name
+    pub name: String,
+    /// Node label this index applies to
+    pub label: String,
+    /// Cypher property name containing the vector
+    pub property: String,
+    /// Resolved ClickHouse column name (from property_mappings)
+    pub column: String,
+    /// ClickHouse table (database.table)
+    pub table: String,
+    /// Vector dimensions (for validation, None = skip validation)
+    pub dimensions: Option<u32>,
+    /// Similarity metric: "cosine" or "euclidean"
+    pub similarity: String,
+}
+
+/// Runtime full-text index configuration (resolved from schema definition)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FulltextIndexConfig {
+    /// Index name
+    pub name: String,
+    /// Node label this index applies to
+    pub label: String,
+    /// Cypher property names to search across
+    pub properties: Vec<String>,
+    /// Resolved ClickHouse column names (from property_mappings)
+    pub columns: Vec<String>,
+    /// ClickHouse table (database.table)
+    pub table: String,
+    /// Search analyzer: "standard", "ngram", or "exact"
+    pub analyzer: String,
 }
 
 impl GraphSchema {
@@ -592,7 +638,37 @@ impl GraphSchema {
             relationships,
             denormalized_nodes,
             rel_type_index,
+            vector_indexes: BTreeMap::new(),
+            fulltext_indexes: BTreeMap::new(),
         }
+    }
+
+    /// Build with vector and fulltext index configurations
+    pub fn build_with_indexes(
+        version: u32,
+        database: String,
+        nodes: HashMap<String, NodeSchema>,
+        relationships: HashMap<String, RelationshipSchema>,
+        vector_indexes: BTreeMap<String, VectorIndexConfig>,
+        fulltext_indexes: BTreeMap<String, FulltextIndexConfig>,
+    ) -> GraphSchema {
+        let mut schema = Self::build(version, database, nodes, relationships);
+        schema.vector_indexes = vector_indexes;
+        schema.fulltext_indexes = fulltext_indexes;
+        schema
+    }
+
+    /// Build with vector index configurations only (backward compat)
+    pub fn build_with_vector_indexes(
+        version: u32,
+        database: String,
+        nodes: HashMap<String, NodeSchema>,
+        relationships: HashMap<String, RelationshipSchema>,
+        vector_indexes: BTreeMap<String, VectorIndexConfig>,
+    ) -> GraphSchema {
+        let mut schema = Self::build(version, database, nodes, relationships);
+        schema.vector_indexes = vector_indexes;
+        schema
     }
 
     /// Build secondary index: relationship type -> list of composite keys
@@ -1203,6 +1279,26 @@ impl GraphSchema {
 
     pub fn all_node_schemas(&self) -> &BTreeMap<String, NodeSchema> {
         &self.nodes
+    }
+
+    /// Get all vector index configurations
+    pub fn vector_indexes(&self) -> &BTreeMap<String, VectorIndexConfig> {
+        &self.vector_indexes
+    }
+
+    /// Look up a vector index by name
+    pub fn get_vector_index(&self, name: &str) -> Option<&VectorIndexConfig> {
+        self.vector_indexes.get(name)
+    }
+
+    /// Get all fulltext index configurations
+    pub fn fulltext_indexes(&self) -> &BTreeMap<String, FulltextIndexConfig> {
+        &self.fulltext_indexes
+    }
+
+    /// Look up a fulltext index by name
+    pub fn get_fulltext_index(&self, name: &str) -> Option<&FulltextIndexConfig> {
+        self.fulltext_indexes.get(name)
     }
 
     /// Expand a polymorphic `$any` node type to all concrete node labels.
