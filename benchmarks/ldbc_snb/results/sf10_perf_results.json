@@ -1,0 +1,326 @@
+[
+  {
+    "qid": "short-1",
+    "status": "ok",
+    "sql_gen_ms": 2.6,
+    "exec_ms": 10.0,
+    "row_count": 1,
+    "sql_length": 459,
+    "error": null
+  },
+  {
+    "qid": "short-2",
+    "status": "ok",
+    "sql_gen_ms": 1.4,
+    "exec_ms": 1596.0,
+    "row_count": 2,
+    "sql_length": 3220,
+    "error": null
+  },
+  {
+    "qid": "short-3",
+    "status": "ok",
+    "sql_gen_ms": 1.7,
+    "exec_ms": 38.0,
+    "row_count": 846,
+    "sql_length": 1162,
+    "error": null
+  },
+  {
+    "qid": "short-4",
+    "status": "ok",
+    "sql_gen_ms": 1.8,
+    "exec_ms": 9.0,
+    "row_count": 1,
+    "sql_length": 159,
+    "error": null
+  },
+  {
+    "qid": "short-5",
+    "status": "ok",
+    "sql_gen_ms": 1.2,
+    "exec_ms": 18.0,
+    "row_count": 1,
+    "sql_length": 266,
+    "error": null
+  },
+  {
+    "qid": "short-6",
+    "status": "ok",
+    "sql_gen_ms": 1.5,
+    "exec_ms": 783.0,
+    "row_count": 0,
+    "sql_length": 1383,
+    "error": null
+  },
+  {
+    "qid": "short-7",
+    "status": "ok",
+    "sql_gen_ms": 1.9,
+    "exec_ms": 317.0,
+    "row_count": 2,
+    "sql_length": 813,
+    "error": null
+  },
+  {
+    "qid": "complex-1",
+    "status": "ok",
+    "sql_gen_ms": 1.7,
+    "exec_ms": 758.0,
+    "row_count": 20,
+    "sql_length": 10333,
+    "error": null
+  },
+  {
+    "qid": "complex-2",
+    "status": "ok",
+    "sql_gen_ms": 1.6,
+    "exec_ms": 863.0,
+    "row_count": 20,
+    "sql_length": 1967,
+    "error": null
+  },
+  {
+    "qid": "complex-3",
+    "status": "ok",
+    "sql_gen_ms": 1.8,
+    "exec_ms": 1155.0,
+    "row_count": 20,
+    "sql_length": 7581,
+    "error": null
+  },
+  {
+    "qid": "complex-4",
+    "status": "ok",
+    "sql_gen_ms": 2.0,
+    "exec_ms": 537.0,
+    "row_count": 10,
+    "sql_length": 2151,
+    "error": null
+  },
+  {
+    "qid": "complex-5",
+    "status": "ok",
+    "sql_gen_ms": 1.6,
+    "exec_ms": 609.0,
+    "row_count": 20,
+    "sql_length": 6641,
+    "error": null
+  },
+  {
+    "qid": "complex-6",
+    "status": "timeout",
+    "sql_gen_ms": 1.6,
+    "exec_ms": 300000,
+    "row_count": null,
+    "sql_length": 2777,
+    "error": "Execution timeout (300s)"
+  },
+  {
+    "qid": "complex-7",
+    "status": "ok",
+    "sql_gen_ms": 2.8,
+    "exec_ms": 1143.0,
+    "row_count": 20,
+    "sql_length": 3420,
+    "error": null
+  },
+  {
+    "qid": "complex-8",
+    "status": "ok",
+    "sql_gen_ms": 2.1,
+    "exec_ms": 1293.0,
+    "row_count": 20,
+    "sql_length": 711,
+    "error": null
+  },
+  {
+    "qid": "complex-9",
+    "status": "ok",
+    "sql_gen_ms": 1.9,
+    "exec_ms": 728.0,
+    "row_count": 20,
+    "sql_length": 3650,
+    "error": null
+  },
+  {
+    "qid": "complex-10",
+    "status": "ok",
+    "sql_gen_ms": 1.7,
+    "exec_ms": 322.0,
+    "row_count": 10,
+    "sql_length": 5635,
+    "error": null
+  },
+  {
+    "qid": "complex-11",
+    "status": "ok",
+    "sql_gen_ms": 1.6,
+    "exec_ms": 92.0,
+    "row_count": 10,
+    "sql_length": 3839,
+    "error": null
+  },
+  {
+    "qid": "complex-12",
+    "status": "ok",
+    "sql_gen_ms": 1.7,
+    "exec_ms": 1287.0,
+    "row_count": 20,
+    "sql_length": 4038,
+    "error": null
+  },
+  {
+    "qid": "complex-13",
+    "status": "ok",
+    "sql_gen_ms": 1.8,
+    "exec_ms": 198.0,
+    "row_count": 1,
+    "sql_length": 1187,
+    "error": null
+  },
+  {
+    "qid": "complex-14",
+    "status": "ok",
+    "sql_gen_ms": 1.9,
+    "exec_ms": 225252.0,
+    "row_count": 1,
+    "sql_length": 2558,
+    "error": null
+  },
+  {
+    "qid": "bi-1",
+    "status": "ok",
+    "sql_gen_ms": 1.8,
+    "exec_ms": 297.0,
+    "row_count": 21,
+    "sql_length": 4056,
+    "error": null
+  },
+  {
+    "qid": "bi-2",
+    "status": "ok",
+    "sql_gen_ms": 1.6,
+    "exec_ms": 2442.0,
+    "row_count": 24,
+    "sql_length": 1371,
+    "error": null
+  },
+  {
+    "qid": "bi-3",
+    "status": "ok",
+    "sql_gen_ms": 1.5,
+    "exec_ms": 270006.0,
+    "row_count": 20,
+    "sql_length": 1874,
+    "error": null
+  },
+  {
+    "qid": "bi-4",
+    "status": "ok",
+    "sql_gen_ms": 2.4,
+    "exec_ms": 1100.0,
+    "row_count": 1,
+    "sql_length": 1091,
+    "error": null
+  },
+  {
+    "qid": "bi-5",
+    "status": "ok",
+    "sql_gen_ms": 3.0,
+    "exec_ms": 5098.0,
+    "row_count": 100,
+    "sql_length": 2272,
+    "error": null
+  },
+  {
+    "qid": "bi-6",
+    "status": "ok",
+    "sql_gen_ms": 2.2,
+    "exec_ms": 15148.0,
+    "row_count": 100,
+    "sql_length": 684,
+    "error": null
+  },
+  {
+    "qid": "bi-7",
+    "status": "ok",
+    "sql_gen_ms": 2.6,
+    "exec_ms": 1924.0,
+    "row_count": 100,
+    "sql_length": 766,
+    "error": null
+  },
+  {
+    "qid": "bi-8",
+    "status": "ok",
+    "sql_gen_ms": 2.4,
+    "exec_ms": 4075.0,
+    "row_count": 100,
+    "sql_length": 5240,
+    "error": null
+  },
+  {
+    "qid": "bi-9",
+    "status": "ok",
+    "sql_gen_ms": 1.7,
+    "exec_ms": 914.0,
+    "row_count": 100,
+    "sql_length": 1514,
+    "error": null
+  },
+  {
+    "qid": "bi-11",
+    "status": "ok",
+    "sql_gen_ms": 1.9,
+    "exec_ms": 236.0,
+    "row_count": 1,
+    "sql_length": 2495,
+    "error": null
+  },
+  {
+    "qid": "bi-12",
+    "status": "ok",
+    "sql_gen_ms": 1.7,
+    "exec_ms": -979.0,
+    "row_count": 622,
+    "sql_length": 1553,
+    "error": null
+  },
+  {
+    "qid": "bi-13",
+    "status": "ok",
+    "sql_gen_ms": 1.7,
+    "exec_ms": 3610.0,
+    "row_count": 100,
+    "sql_length": 4076,
+    "error": null
+  },
+  {
+    "qid": "bi-14",
+    "status": "ok",
+    "sql_gen_ms": 1.9,
+    "exec_ms": 7636.0,
+    "row_count": 100,
+    "sql_length": 4428,
+    "error": null
+  },
+  {
+    "qid": "bi-17",
+    "status": "ok",
+    "sql_gen_ms": 1.8,
+    "exec_ms": 5733.0,
+    "row_count": 0,
+    "sql_length": 3002,
+    "error": null
+  },
+  {
+    "qid": "bi-18",
+    "status": "ok",
+    "sql_gen_ms": 2.1,
+    "exec_ms": 658.0,
+    "row_count": 20,
+    "sql_length": 1091,
+    "error": null
+  }
+]
