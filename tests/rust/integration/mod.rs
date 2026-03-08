@@ -10,4 +10,5 @@ mod cte_column_aliasing_tests;
 mod ldbc_regression_tests;
 mod parameter_function_test;
 mod path_variable_tests;
+mod skip_offset_tests;
 mod with_where_having_tests;
