@@ -8,12 +8,23 @@
 //! Unlike the stub-based tests in `integration.rs`, these exercise the full
 //! pipeline including chdb query execution.
 //!
+//! **Gating**: These tests are skipped by default. Set `CLICKGRAPH_CHDB_TESTS=1`
+//! to run them. This keeps `cargo test` fast and avoids requiring a chdb binary
+//! for routine development.
+//!
 //! **Note**: chdb supports only one session per process, so all tests share
 //! a single `Database` via `LazyLock`.
 
 use std::sync::LazyLock;
 
 use clickgraph_embedded::{Connection, Database, SystemConfig};
+
+/// Return true if chdb e2e tests are enabled via the environment.
+fn chdb_tests_enabled() -> bool {
+    std::env::var("CLICKGRAPH_CHDB_TESTS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
 
 // ---------------------------------------------------------------------------
 // Shared fixture — one chdb session for all tests
@@ -24,20 +35,12 @@ struct SharedFixture {
     db: Database,
 }
 
-// Force a clean exit to avoid SIGABRT from chdb's C++ static destructors.
-extern "C" fn force_clean_exit() {
-    unsafe { libc::_exit(0) };
-}
-
 /// Single shared fixture. chdb can only have one session per process, so
 /// we initialise it once and share across all tests.
+///
 /// The fixture is intentionally leaked (never dropped) to avoid a chdb
 /// SIGABRT during session cleanup at process exit.
 static FIXTURE: LazyLock<&'static SharedFixture> = LazyLock::new(|| {
-    // Register atexit handler AFTER chdb's static init, so it runs FIRST
-    // (LIFO order) and calls _exit(0) before chdb's destructors.
-    unsafe { libc::atexit(force_clean_exit) };
-
     let dir = tempfile::tempdir().expect("create temp dir");
 
     let users_csv = dir.path().join("users.csv");
@@ -103,8 +106,12 @@ graph_schema:
     Box::leak(Box::new(SharedFixture { _dir: dir, db }))
 });
 
-fn conn() -> Connection<'static> {
-    Connection::new(&FIXTURE.db).unwrap()
+fn conn() -> Option<Connection<'static>> {
+    if !chdb_tests_enabled() {
+        eprintln!("  [skipped] set CLICKGRAPH_CHDB_TESTS=1 to run chdb e2e tests");
+        return None;
+    }
+    Some(Connection::new(&FIXTURE.db).unwrap())
 }
 
 // ---------------------------------------------------------------------------
@@ -113,7 +120,7 @@ fn conn() -> Connection<'static> {
 
 #[test]
 fn chdb_basic_node_scan() {
-    let conn = conn();
+    let Some(conn) = conn() else { return };
 
     let result = conn
         .query("MATCH (u:User) RETURN u.name ORDER BY u.name")
@@ -128,7 +135,7 @@ fn chdb_basic_node_scan() {
 
 #[test]
 fn chdb_where_filter_greater_than() {
-    let conn = conn();
+    let Some(conn) = conn() else { return };
 
     let result = conn
         .query("MATCH (u:User) WHERE u.age > 30 RETURN u.name ORDER BY u.name")
@@ -142,7 +149,7 @@ fn chdb_where_filter_greater_than() {
 
 #[test]
 fn chdb_where_filter_equals() {
-    let conn = conn();
+    let Some(conn) = conn() else { return };
 
     let result = conn
         .query("MATCH (u:User) WHERE u.country = 'US' RETURN u.name ORDER BY u.name")
@@ -160,7 +167,7 @@ fn chdb_where_filter_equals() {
 
 #[test]
 fn chdb_count_aggregation() {
-    let conn = conn();
+    let Some(conn) = conn() else { return };
 
     let result = conn.query("MATCH (u:User) RETURN count(u) AS cnt").unwrap();
 
@@ -171,7 +178,7 @@ fn chdb_count_aggregation() {
 
 #[test]
 fn chdb_count_by_country() {
-    let conn = conn();
+    let Some(conn) = conn() else { return };
 
     let result = conn
         .query(
@@ -192,7 +199,7 @@ fn chdb_count_by_country() {
 
 #[test]
 fn chdb_order_by_limit() {
-    let conn = conn();
+    let Some(conn) = conn() else { return };
 
     let result = conn
         .query("MATCH (u:User) RETURN u.name ORDER BY u.age DESC LIMIT 3")
@@ -212,7 +219,7 @@ fn chdb_order_by_limit() {
 
 #[test]
 fn chdb_distinct_values() {
-    let conn = conn();
+    let Some(conn) = conn() else { return };
 
     let result = conn
         .query("MATCH (u:User) RETURN DISTINCT u.country ORDER BY u.country")
@@ -230,7 +237,7 @@ fn chdb_distinct_values() {
 
 #[test]
 fn chdb_relationship_traversal() {
-    let conn = conn();
+    let Some(conn) = conn() else { return };
 
     // Alice (user_id=1) follows Bob (2) and Charlie (3)
     let result = conn
@@ -249,7 +256,7 @@ fn chdb_relationship_traversal() {
 
 #[test]
 fn chdb_follower_count() {
-    let conn = conn();
+    let Some(conn) = conn() else { return };
 
     // Followers of Alice (user_id=1): Charlie(3), Diana(4), Eve(5) → 3
     let result = conn
@@ -272,7 +279,7 @@ fn chdb_follower_count() {
 
 #[test]
 fn chdb_multiple_properties() {
-    let conn = conn();
+    let Some(conn) = conn() else { return };
 
     let result = conn
         .query("MATCH (u:User) WHERE u.user_id = 1 RETURN u.name, u.age, u.country")
@@ -291,7 +298,7 @@ fn chdb_multiple_properties() {
 
 #[test]
 fn chdb_export_to_sql_parquet() {
-    let conn = conn();
+    let Some(conn) = conn() else { return };
 
     let sql = conn
         .export_to_sql(

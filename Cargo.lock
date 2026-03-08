@@ -516,7 +516,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "clickgraph",
- "libc",
  "log",
  "serde_json",
  "serde_yaml",

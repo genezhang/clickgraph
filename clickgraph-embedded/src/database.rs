@@ -73,25 +73,7 @@ impl Database {
     /// * `schema_path` — path to the YAML schema file
     /// * `config` — session configuration (session dir, data dir, threads)
     pub fn new(schema_path: impl AsRef<Path>, config: SystemConfig) -> Result<Self, EmbeddedError> {
-        let schema_path = schema_path.as_ref();
-
-        // Load YAML schema
-        let yaml_content = std::fs::read_to_string(schema_path).map_err(|e| {
-            EmbeddedError::Io(format!(
-                "Cannot read schema '{}': {}",
-                schema_path.display(),
-                e
-            ))
-        })?;
-
-        let schema_config: GraphSchemaConfig = serde_yaml::from_str(&yaml_content)
-            .map_err(|e| EmbeddedError::Schema(format!("YAML parse error: {}", e)))?;
-
-        // Build GraphSchema without ClickHouse auto-discovery (sync/no-client mode)
-        let graph_schema = schema_config
-            .to_graph_schema()
-            .map_err(|e| EmbeddedError::Schema(format!("Schema build error: {}", e)))?;
-
+        let graph_schema = load_graph_schema(schema_path.as_ref())?;
         Self::from_schema(Arc::new(graph_schema), config)
     }
 
@@ -163,23 +145,7 @@ impl Database {
     ///
     /// Useful for testing, debugging, and build-time SQL validation.
     pub fn sql_only(schema_path: impl AsRef<Path>) -> Result<Self, EmbeddedError> {
-        let schema_path = schema_path.as_ref();
-
-        let yaml_content = std::fs::read_to_string(schema_path).map_err(|e| {
-            EmbeddedError::Io(format!(
-                "Cannot read schema '{}': {}",
-                schema_path.display(),
-                e
-            ))
-        })?;
-
-        let schema_config: GraphSchemaConfig = serde_yaml::from_str(&yaml_content)
-            .map_err(|e| EmbeddedError::Schema(format!("YAML parse error: {}", e)))?;
-
-        let graph_schema = schema_config
-            .to_graph_schema()
-            .map_err(|e| EmbeddedError::Schema(format!("Schema build error: {}", e)))?;
-
+        let graph_schema = load_graph_schema(schema_path.as_ref())?;
         Self::from_executor(Arc::new(graph_schema), Arc::new(NullExecutor))
     }
 }
@@ -209,6 +175,24 @@ impl QueryExecutor for NullExecutor {
             "Cannot execute queries in sql_only mode — no backend is configured".to_string(),
         ))
     }
+}
+
+/// Load and parse a YAML schema file into a `GraphSchema`.
+fn load_graph_schema(schema_path: &Path) -> Result<GraphSchema, EmbeddedError> {
+    let yaml_content = std::fs::read_to_string(schema_path).map_err(|e| {
+        EmbeddedError::Io(format!(
+            "Cannot read schema '{}': {}",
+            schema_path.display(),
+            e
+        ))
+    })?;
+
+    let schema_config: GraphSchemaConfig = serde_yaml::from_str(&yaml_content)
+        .map_err(|e| EmbeddedError::Schema(format!("YAML parse error: {}", e)))?;
+
+    schema_config
+        .to_graph_schema()
+        .map_err(|e| EmbeddedError::Schema(format!("Schema build error: {}", e)))
 }
 
 /// Build a single-threaded Tokio runtime for blocking `Connection` calls.

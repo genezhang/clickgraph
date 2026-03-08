@@ -6,13 +6,26 @@ package clickgraph
 // references them via table_function:file(…, CSVWithNames), open a real
 // chdb-backed Database via Open(), execute Cypher queries through the
 // full Go → cgo/UniFFI → Rust → chdb pipeline, and verify actual results.
+//
+// Gating: These tests are skipped by default. Set CLICKGRAPH_CHDB_TESTS=1
+// to run them.
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// skipUnlessChdb skips the test unless CLICKGRAPH_CHDB_TESTS=1 is set.
+func skipUnlessChdb(t *testing.T) {
+	t.Helper()
+	v := os.Getenv("CLICKGRAPH_CHDB_TESTS")
+	if v != "1" && !strings.EqualFold(v, "true") {
+		t.Skip("skipping chdb e2e test — set CLICKGRAPH_CHDB_TESTS=1 to run")
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Fixture: creates CSV data files and schema YAML in a temp directory.
@@ -113,6 +126,7 @@ func must(t *testing.T, err error) {
 // ---------------------------------------------------------------------------
 
 func TestChdb_BasicNodeScan(t *testing.T) {
+	skipUnlessChdb(t)
 	f := newChdbFixture(t)
 	conn := f.chdbConn(t)
 
@@ -135,6 +149,7 @@ func TestChdb_BasicNodeScan(t *testing.T) {
 }
 
 func TestChdb_WhereFilterGreaterThan(t *testing.T) {
+	skipUnlessChdb(t)
 	f := newChdbFixture(t)
 	conn := f.chdbConn(t)
 
@@ -156,6 +171,7 @@ func TestChdb_WhereFilterGreaterThan(t *testing.T) {
 }
 
 func TestChdb_WhereFilterEquals(t *testing.T) {
+	skipUnlessChdb(t)
 	f := newChdbFixture(t)
 	conn := f.chdbConn(t)
 
@@ -181,6 +197,7 @@ func TestChdb_WhereFilterEquals(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestChdb_CountAggregation(t *testing.T) {
+	skipUnlessChdb(t)
 	f := newChdbFixture(t)
 	conn := f.chdbConn(t)
 
@@ -199,6 +216,7 @@ func TestChdb_CountAggregation(t *testing.T) {
 }
 
 func TestChdb_CountByCountry(t *testing.T) {
+	skipUnlessChdb(t)
 	f := newChdbFixture(t)
 	conn := f.chdbConn(t)
 
@@ -226,6 +244,7 @@ func TestChdb_CountByCountry(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestChdb_OrderByLimit(t *testing.T) {
+	skipUnlessChdb(t)
 	f := newChdbFixture(t)
 	conn := f.chdbConn(t)
 
@@ -252,6 +271,7 @@ func TestChdb_OrderByLimit(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestChdb_DistinctValues(t *testing.T) {
+	skipUnlessChdb(t)
 	f := newChdbFixture(t)
 	conn := f.chdbConn(t)
 
@@ -277,6 +297,7 @@ func TestChdb_DistinctValues(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestChdb_RelationshipTraversal(t *testing.T) {
+	skipUnlessChdb(t)
 	f := newChdbFixture(t)
 	conn := f.chdbConn(t)
 
@@ -302,6 +323,7 @@ func TestChdb_RelationshipTraversal(t *testing.T) {
 }
 
 func TestChdb_FollowerCount(t *testing.T) {
+	skipUnlessChdb(t)
 	f := newChdbFixture(t)
 	conn := f.chdbConn(t)
 
@@ -330,6 +352,7 @@ func TestChdb_FollowerCount(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestChdb_MultipleProperties(t *testing.T) {
+	skipUnlessChdb(t)
 	f := newChdbFixture(t)
 	conn := f.chdbConn(t)
 
@@ -358,6 +381,7 @@ func TestChdb_MultipleProperties(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestChdb_ExportToParquet(t *testing.T) {
+	skipUnlessChdb(t)
 	f := newChdbFixture(t)
 	conn := f.chdbConn(t)
 
@@ -375,6 +399,7 @@ func TestChdb_ExportToParquet(t *testing.T) {
 }
 
 func TestChdb_ExportToCSV(t *testing.T) {
+	skipUnlessChdb(t)
 	f := newChdbFixture(t)
 	conn := f.chdbConn(t)
 
@@ -391,21 +416,8 @@ func TestChdb_ExportToCSV(t *testing.T) {
 	}
 	// CSV should contain the names
 	for _, name := range []string{"Alice", "Bob", "Charlie"} {
-		if !contains(content, name) {
+		if !strings.Contains(content, name) {
 			t.Errorf("CSV missing %q: %s", name, content)
 		}
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
-}
-
-func containsHelper(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
