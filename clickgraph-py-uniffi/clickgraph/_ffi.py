@@ -1018,7 +1018,7 @@ _UniffiLib.ffi_clickgraph_ffi_uniffi_contract_version.argtypes = (
 _UniffiLib.ffi_clickgraph_ffi_uniffi_contract_version.restype = ctypes.c_uint32
 
 _uniffi_check_contract_api_version(_UniffiLib)
-# _uniffi_check_api_checksums(_UniffiLib)
+_uniffi_check_api_checksums(_UniffiLib)
 
 # Public interface members begin here.
 
