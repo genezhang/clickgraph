@@ -1,0 +1,74 @@
+# Cross-Schema Test: Standard (separate node + edge tables)
+# Domain: User, Post, Tag, City with FOLLOWS, AUTHORED, HAS_TAG, LIVES_IN
+
+name: cs_standard
+version: "1.0"
+
+graph_schema:
+  nodes:
+    - label: User
+      database: cs_test
+      table: users
+      node_id: user_id
+      property_mappings:
+        name: full_name
+        age: age
+        city: city_name
+
+    - label: Post
+      database: cs_test
+      table: posts
+      node_id: post_id
+      property_mappings:
+        content: content
+        date: created_at
+
+    - label: Tag
+      database: cs_test
+      table: tags
+      node_id: tag_id
+      property_mappings:
+        name: tag_name
+
+    - label: City
+      database: cs_test
+      table: cities
+      node_id: city_id
+      property_mappings:
+        name: city_name
+        country: country
+
+  edges:
+    - type: FOLLOWS
+      database: cs_test
+      table: follows
+      from_id: follower_id
+      to_id: followed_id
+      from_node: User
+      to_node: User
+      property_mappings:
+        since: since_date
+
+    - type: AUTHORED
+      database: cs_test
+      table: authored
+      from_id: user_id
+      to_id: post_id
+      from_node: User
+      to_node: Post
+
+    - type: HAS_TAG
+      database: cs_test
+      table: post_tags
+      from_id: post_id
+      to_id: tag_id
+      from_node: Post
+      to_node: Tag
+
+    - type: LIVES_IN
+      database: cs_test
+      table: lives_in
+      from_id: user_id
+      to_id: city_id
+      from_node: User
+      to_node: City
