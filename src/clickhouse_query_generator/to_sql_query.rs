@@ -2099,7 +2099,8 @@ fn render_union_branch_sql(branch: &RenderPlan) -> String {
             bsql.push_str(&format!("LIMIT {limit}\n"));
         }
     } else if let Some(skip) = branch.skip.0 {
-        bsql.push_str(&format!("OFFSET {skip}\n"));
+        // ClickHouse requires LIMIT when using offset; emulate SKIP-only with large upper bound
+        bsql.push_str(&format!("LIMIT {skip}, 18446744073709551615\n"));
     }
 
     bsql
@@ -2703,7 +2704,8 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
                     sql.push_str(&format!("LIMIT {m}"));
                 }
             } else if let Some(n) = plan.skip.0 {
-                sql.push_str(&format!("OFFSET {n}"));
+                // ClickHouse requires LIMIT when using offset; emulate SKIP-only with large upper bound
+                sql.push_str(&format!("LIMIT {n}, 18446744073709551615"));
             }
         } else {
             // No ordering/limiting - bare UNION is fine
@@ -2798,7 +2800,8 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
             sql.push_str(&format!("LIMIT {m}"));
         }
     } else if let Some(n) = plan.skip.0 {
-        sql.push_str(&format!("OFFSET {n}"));
+        // ClickHouse requires LIMIT when using offset; emulate SKIP-only with large upper bound
+        sql.push_str(&format!("LIMIT {n}, 18446744073709551615"));
     }
 
     // Note: max_recursive_cte_evaluation_depth is set as a client-level option

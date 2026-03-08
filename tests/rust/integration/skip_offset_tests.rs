@@ -112,14 +112,17 @@ fn cypher_to_sql(cypher: &str) -> String {
 
 // --- SKIP only (the bug) ---
 
+/// ClickHouse doesn't support bare OFFSET; SKIP-only emits LIMIT skip, u64::MAX
+const LARGE_LIMIT: &str = "18446744073709551615";
+
 #[test]
 fn test_skip_only_emits_offset() {
     let sql = cypher_to_sql("MATCH (u:User) RETURN u.name SKIP 5");
     println!("SQL:\n{sql}");
     let lower = sql.to_lowercase();
     assert!(
-        lower.contains("offset 5"),
-        "SKIP 5 without LIMIT should emit OFFSET 5. SQL:\n{sql}"
+        lower.contains(&format!("limit 5, {LARGE_LIMIT}").to_lowercase()),
+        "SKIP 5 without LIMIT should emit LIMIT 5, <large>. SQL:\n{sql}"
     );
 }
 
@@ -129,8 +132,8 @@ fn test_skip_only_with_order_by() {
     println!("SQL:\n{sql}");
     let lower = sql.to_lowercase();
     assert!(
-        lower.contains("offset 10"),
-        "SKIP 10 with ORDER BY should emit OFFSET 10. SQL:\n{sql}"
+        lower.contains(&format!("limit 10, {LARGE_LIMIT}").to_lowercase()),
+        "SKIP 10 with ORDER BY should emit LIMIT 10, <large>. SQL:\n{sql}"
     );
     assert!(
         lower.contains("order by"),
@@ -204,8 +207,8 @@ fn test_skip_only_with_relationship() {
     println!("SQL:\n{sql}");
     let lower = sql.to_lowercase();
     assert!(
-        lower.contains("offset 3"),
-        "Relationship query with SKIP-only should emit OFFSET 3. SQL:\n{sql}"
+        lower.contains(&format!("limit 3, {LARGE_LIMIT}").to_lowercase()),
+        "Relationship query with SKIP-only should emit LIMIT 3, <large>. SQL:\n{sql}"
     );
 }
 
@@ -221,5 +224,40 @@ fn test_skip_with_where_clause() {
     assert!(
         lower.contains("limit 2, 5") || lower.contains("limit 2,5"),
         "WHERE + SKIP + LIMIT should emit LIMIT 2, 5. SQL:\n{sql}"
+    );
+}
+
+// --- SKIP with UNION path (undirected relationship) ---
+
+#[test]
+fn test_skip_with_undirected_relationship_union() {
+    // Undirected relationship produces UNION ALL (forward + reverse directions)
+    let sql = cypher_to_sql("MATCH (u:User)-[:FOLLOWS]-(f:User) RETURN u.name, f.name SKIP 4");
+    println!("SQL:\n{sql}");
+    let lower = sql.to_lowercase();
+    assert!(
+        lower.contains("union all"),
+        "Undirected relationship should produce UNION ALL. SQL:\n{sql}"
+    );
+    // SKIP should be present in the generated SQL
+    assert!(
+        lower.contains("limit 4,") || lower.contains("limit 4, "),
+        "UNION query with SKIP should emit LIMIT 4, <large>. SQL:\n{sql}"
+    );
+}
+
+#[test]
+fn test_skip_limit_with_undirected_relationship_union() {
+    let sql =
+        cypher_to_sql("MATCH (u:User)-[:FOLLOWS]-(f:User) RETURN u.name, f.name SKIP 2 LIMIT 10");
+    println!("SQL:\n{sql}");
+    let lower = sql.to_lowercase();
+    assert!(
+        lower.contains("union all"),
+        "Undirected relationship should produce UNION ALL. SQL:\n{sql}"
+    );
+    assert!(
+        lower.contains("limit 2, 10") || lower.contains("limit 2,10"),
+        "UNION query with SKIP+LIMIT should emit LIMIT 2, 10. SQL:\n{sql}"
     );
 }
