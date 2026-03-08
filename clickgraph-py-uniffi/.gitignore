@@ -1,0 +1,11 @@
+# Shared libraries (dev symlinks to build output)
+*.so
+*.dylib
+*.dll
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
