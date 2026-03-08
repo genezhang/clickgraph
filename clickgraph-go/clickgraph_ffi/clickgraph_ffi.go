@@ -478,6 +478,15 @@ func uniffiCheckChecksums() {
 	}
 	{
 		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_constructor_database_open_sql_only()
+		})
+		if checksum != 21564 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_constructor_database_open_sql_only: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
 			return C.uniffi_clickgraph_ffi_checksum_constructor_database_open_with_config()
 		})
 		if checksum != 8053 {
@@ -875,6 +884,23 @@ type Database struct {
 func DatabaseOpen(schemaPath string) (*Database, error) {
 	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
 		return C.uniffi_clickgraph_ffi_fn_constructor_database_open(FfiConverterStringINSTANCE.Lower(schemaPath), _uniffiStatus)
+	})
+	if _uniffiErr != nil {
+		var _uniffiDefaultValue *Database
+		return _uniffiDefaultValue, _uniffiErr
+	} else {
+		return FfiConverterDatabaseINSTANCE.Lift(_uniffiRV), nil
+	}
+}
+
+// Open a database in SQL-only mode (no chdb backend).
+//
+// Loads the schema from a YAML file. Supports `query_to_sql()` and
+// `export_to_sql()` for Cypher → SQL translation. Calling `query()` or
+// `export()` will return an error.
+func DatabaseOpenSqlOnly(schemaPath string) (*Database, error) {
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
+		return C.uniffi_clickgraph_ffi_fn_constructor_database_open_sql_only(FfiConverterStringINSTANCE.Lower(schemaPath), _uniffiStatus)
 	})
 	if _uniffiErr != nil {
 		var _uniffiDefaultValue *Database

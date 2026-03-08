@@ -47,6 +47,17 @@ func Open(schemaPath string) (*Database, error) {
 	return &Database{inner: db}, nil
 }
 
+// OpenSQLOnly creates a Database in SQL-only mode (no chdb backend).
+// Supports QueryToSQL() and ExportToSQL() for Cypher→SQL translation.
+// Calling Query() or Export() will return an error.
+func OpenSQLOnly(schemaPath string) (*Database, error) {
+	db, err := ffi.DatabaseOpenSqlOnly(schemaPath)
+	if err != nil {
+		return nil, fmt.Errorf("clickgraph: open_sql_only %q: %w", schemaPath, err)
+	}
+	return &Database{inner: db}, nil
+}
+
 // Config holds optional settings for the embedded database session.
 type Config struct {
 	// Directory for chdb session data (temp dir if empty).

@@ -95,7 +95,7 @@ mod tests {
 
     #[test]
     fn test_float_conversion() {
-        let v = Value::from(json!(3.14));
+        let v = Value::from(json!(1.5));
         assert!(matches!(v, Value::Float64(_)));
         assert!(v.as_f64().is_some());
         assert_eq!(v.as_i64(), None);
