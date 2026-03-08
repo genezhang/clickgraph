@@ -65,6 +65,23 @@ impl VlpTransitivityCheck {
             ));
         }
 
+        // Polymorphic edges with $any from/to and no label_values are
+        // type-agnostic — they can connect any node types, so transitivity
+        // depends on the query's actual node types, not the schema.
+        // Treat them as transitive to allow VLP recursive CTEs.
+        for rel_schema in &rel_schemas {
+            let from_is_any =
+                rel_schema.from_node == "$any" && rel_schema.from_label_values.is_none();
+            let to_is_any = rel_schema.to_node == "$any" && rel_schema.to_label_values.is_none();
+            if from_is_any && to_is_any {
+                log::info!(
+                    "✓ VLP transitivity: '{}' is transitive (polymorphic $any → $any)",
+                    rel_type
+                );
+                return Ok(true);
+            }
+        }
+
         // Check if ANY variant of this relationship type allows transitivity
         // A relationship is transitive if:
         // 1. from_node == to_node (self-loop like Person-KNOWS->Person), OR
