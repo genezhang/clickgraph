@@ -516,9 +516,11 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "clickgraph",
+ "libc",
  "log",
  "serde_json",
  "serde_yaml",
+ "tempfile",
  "thiserror 2.0.17",
  "tokio",
 ]

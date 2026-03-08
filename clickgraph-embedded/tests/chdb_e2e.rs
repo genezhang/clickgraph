@@ -162,9 +162,7 @@ fn chdb_where_filter_equals() {
 fn chdb_count_aggregation() {
     let conn = conn();
 
-    let result = conn
-        .query("MATCH (u:User) RETURN count(u) AS cnt")
-        .unwrap();
+    let result = conn.query("MATCH (u:User) RETURN count(u) AS cnt").unwrap();
 
     assert_eq!(result.num_rows(), 1);
     let row = result.into_iter().next().unwrap();
@@ -221,13 +219,7 @@ fn chdb_distinct_values() {
         .unwrap();
 
     let countries: Vec<String> = result
-        .map(|row| {
-            row.get("u.country")
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .to_string()
-        })
+        .map(|row| row.get("u.country").unwrap().as_str().unwrap().to_string())
         .collect();
     assert_eq!(countries, vec!["CA", "DE", "UK", "US"]);
 }
