@@ -62,17 +62,17 @@ When `clickgraph-ffi/src/lib.rs` changes:
 ```bash
 pip install uniffi-bindgen==0.29.5
 uniffi-bindgen generate --library target/debug/libclickgraph_ffi.so \
-  --language python -o clickgraph-py-uniffi/clickgraph/
-mv clickgraph-py-uniffi/clickgraph/clickgraph_ffi.py \
-   clickgraph-py-uniffi/clickgraph/_ffi.py
+  --language python -o clickgraph-py/clickgraph/
+mv clickgraph-py/clickgraph/clickgraph_ffi.py \
+   clickgraph-py/clickgraph/_ffi.py
 ```
 
-## Comparison with PyO3 Version
+## Architecture
 
-| Aspect | PyO3 (`clickgraph-py`) | UniFFI (`clickgraph-py-uniffi`) |
-|--------|------------------------|----------------------------------|
-| Rust to maintain | 468 lines (Python-specific) | 0 (reuses `clickgraph-ffi`) |
-| Python wrapper | 39 lines | 379 lines |
-| Shares FFI with Go | ❌ | ✅ |
-| Build tool | maturin | cargo build + symlink/bundle |
-| Adding new method | Edit Rust + Python | Edit `clickgraph-ffi` → regenerate |
+| Aspect | Detail |
+|--------|--------|
+| Rust to maintain | 0 Python-specific lines (reuses `clickgraph-ffi`) |
+| Python wrapper | ~379 lines |
+| Shares FFI with Go | ✅ |
+| Build tool | cargo build + symlink/bundle |
+| Adding new method | Edit `clickgraph-ffi` → regenerate |

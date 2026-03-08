@@ -103,14 +103,18 @@ let db = Database::new("schema.yaml", SystemConfig {
 
 ## Python
 
-PyO3-based bindings with dict-style row access. Compatible with Kuzu and Neo4j calling conventions.
+UniFFI-based bindings with dict-style row access. Compatible with Kuzu and Neo4j calling conventions. Shares the same `clickgraph-ffi` crate as Go bindings.
 
 ### Install
 
 ```bash
+# Build the shared library first
+cargo build -p clickgraph-ffi
+
+# Set up the Python package (dev mode)
 cd clickgraph-py
-pip install maturin
-maturin develop
+ln -sf $(realpath ../target/debug/libclickgraph_ffi.so) clickgraph/libclickgraph_ffi.so
+PYTHONPATH=. python3 -c "import clickgraph; print('OK')"
 ```
 
 ### Quick Start
@@ -319,9 +323,9 @@ db, _ := clickgraph.OpenWithConfig("schema.yaml", clickgraph.Config{
 ### Binding Layer Details
 
 **Python** (`clickgraph-py/`):
-- Uses [PyO3](https://pyo3.rs/) for direct Rust↔Python FFI
-- Built with [maturin](https://www.maturin.rs/) for packaging
-- ~400 lines of `#[pyclass]` / `#[pymethods]` annotations
+- Uses [UniFFI](https://github.com/mozilla/uniffi-rs) via `clickgraph-ffi` shared library (same as Go)
+- Pure Python wrapper (~380 lines) over auto-generated ctypes bridge
+- No Rust toolchain needed at runtime — just the pre-built `.so`
 
 **Go** (`clickgraph-go/` + `clickgraph-ffi/`):
 - `clickgraph-ffi`: Thin Rust wrapper with `#[uniffi::export]` annotations → compiled as `cdylib`

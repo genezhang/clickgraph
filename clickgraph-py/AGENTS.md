@@ -1,4 +1,4 @@
-# clickgraph-py-uniffi — Agent Guide
+# clickgraph-py — Agent Guide
 
 > **Purpose**: Python bindings for ClickGraph's embedded mode using UniFFI.
 > Provides a Pythonic API over the auto-generated UniFFI ctypes bridge,
@@ -78,7 +78,7 @@ db = clickgraph.Database("schema.yaml",
 ```bash
 pip install uniffi-bindgen==0.29.5  # must match Cargo.toml uniffi version
 uniffi-bindgen generate --library target/debug/libclickgraph_ffi.so \
-  --language python -o clickgraph-py-uniffi/clickgraph/
+  --language python -o clickgraph-py/clickgraph/
 ```
 
 ### Value Conversion
