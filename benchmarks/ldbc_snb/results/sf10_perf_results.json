@@ -282,7 +282,7 @@
     "qid": "bi-12",
     "status": "ok",
     "sql_gen_ms": 1.7,
-    "exec_ms": -979.0,
+    "exec_ms": null,
     "row_count": 622,
     "sql_length": 1553,
     "error": null

@@ -296,8 +296,11 @@ impl CleanupViewScanFilters {
             | LogicalPlan::Unwind(_) => Transformed::No(logical_plan),
 
             LogicalPlan::WithClause(with_clause) => {
-                let child_tf =
-                    self.optimize_with_context(with_clause.input.clone(), plan_ctx, false)?;
+                let child_tf = self.optimize_with_context(
+                    with_clause.input.clone(),
+                    plan_ctx,
+                    inside_graph_rel,
+                )?;
                 match child_tf {
                     Transformed::Yes(new_input) => Transformed::Yes(Arc::new(
                         LogicalPlan::WithClause(with_clause.with_new_input(new_input)),
