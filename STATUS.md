@@ -59,7 +59,7 @@ Supports both remote ClickHouse and embedded (in-process) mode via chdb.
 - **COPY TO Export Syntax**: Kuzu/DuckDB-compatible `COPY (MATCH ...) TO 'path' WITH (format='csv')` — alternative to APOC procedures for exporting query results. Supports CSV, JSON, Parquet, NDJSON. Works in server mode and embedded mode.
 - **Vector Search Procedure**: Neo4j-compatible `CALL db.index.vector.queryNodes('index-name', k, [embedding...]) YIELD node, score` — translates to ClickHouse's `cosineDistance()` / `L2Distance()`. Configured via `vector_indexes` section in schema YAML. Supports dimension validation and USE clause schema selection.
 - **Full-text Search Procedure**: Neo4j-compatible `CALL db.index.fulltext.queryNodes('index-name', 'search query') YIELD node, score` — translates to ClickHouse's `ngramDistance()`, `multiSearchAnyCaseInsensitive()`, and `hasToken()`. Supports three analyzers: standard (fuzzy + pre-filter), ngram (pure fuzzy), exact (token match). Multi-property search across multiple columns. Configured via `fulltext_indexes` section in schema YAML.
-- **Python bindings** (`clickgraph-py`): PyO3/maturin-based Python package. `Database`, `Connection`, `QueryResult` classes with dict-style and Kuzu-compatible tuple-style iteration.
+- **Python bindings** (`clickgraph-py`): UniFFI-based Python package via `clickgraph-ffi` shared library. `Database`, `Connection`, `QueryResult` classes with dict-style and Kuzu-compatible tuple-style iteration. 72 Parquet-based chdb e2e tests + 40 sql_only tests.
 - **Go bindings** (`clickgraph-go`): UniFFI-generated Go package via `clickgraph-ffi` C ABI. `Open()`, `Connect()`, `Query()`, `QueryToSQL()`, `Export()`. Native Go types, cursor and bulk APIs.
 
 ## Current Limitations

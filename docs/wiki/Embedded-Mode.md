@@ -74,9 +74,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Use ClickGraph from Python — ideal for data science and analytics:
 
 ```bash
+# Build the shared library
+cargo build -p clickgraph-ffi
+
+# Set up the Python package
 cd clickgraph-py
-pip install maturin
-maturin develop    # builds and installs the 'clickgraph' package
+ln -sf $(realpath ../target/debug/libclickgraph_ffi.so) clickgraph/libclickgraph_ffi.so
 ```
 
 ```python

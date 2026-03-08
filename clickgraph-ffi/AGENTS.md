@@ -12,7 +12,7 @@ clickgraph-embedded (Rust API)
   └── clickgraph-ffi (UniFFI bridge — this crate)
         ├── libclickgraph_ffi.so  (shared library)
         ├── → clickgraph-go/      (Go via cgo + UniFFI)
-        └── → clickgraph-py-uniffi/ (Python via ctypes + UniFFI)
+        └── → clickgraph-py/ (Python via ctypes + UniFFI)
 ```
 
 ## File Overview

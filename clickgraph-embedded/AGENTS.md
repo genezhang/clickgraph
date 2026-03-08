@@ -16,7 +16,7 @@ Database (schema loading + chdb session)
 
 This crate is the **foundation** consumed by all language bindings:
 - `clickgraph-ffi` wraps it via UniFFI for Go and Python
-- `clickgraph-py` wraps it via PyO3 for Python (alternative)
+- `clickgraph-py` wraps it via UniFFI for Python (pure Python wrapper over `clickgraph-ffi`)
 
 ## File Overview
 
