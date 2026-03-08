@@ -605,20 +605,9 @@ impl TypeInference {
                     self.infer_labels_recursive(wc.input.clone(), plan_ctx, graph_schema)?;
 
                 if input_transformed.is_yes() {
-                    let new_wc = crate::query_planner::logical_plan::WithClause {
-                        cte_name: None,
-                        input: input_transformed.get_plan().clone(),
-                        items: wc.items.clone(),
-                        distinct: wc.distinct,
-                        order_by: wc.order_by.clone(),
-                        skip: wc.skip,
-                        limit: wc.limit,
-                        exported_aliases: wc.exported_aliases.clone(),
-                        where_clause: wc.where_clause.clone(),
-                        cte_references: wc.cte_references.clone(),
-                        pattern_comprehensions: wc.pattern_comprehensions.clone(),
-                    };
-                    Ok(Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_wc))))
+                    Ok(Transformed::Yes(Arc::new(LogicalPlan::WithClause(
+                        wc.with_new_input(input_transformed.get_plan().clone()),
+                    ))))
                 } else {
                     Ok(Transformed::No(plan))
                 }
@@ -3308,22 +3297,9 @@ impl TypeInference {
                     graph_schema,
                 )?;
                 match child_tf {
-                    Transformed::Yes(new_input) => {
-                        let new_with = crate::query_planner::logical_plan::WithClause {
-                            cte_name: None,
-                            input: new_input,
-                            items: with_clause.items.clone(),
-                            distinct: with_clause.distinct,
-                            order_by: with_clause.order_by.clone(),
-                            skip: with_clause.skip,
-                            limit: with_clause.limit,
-                            where_clause: with_clause.where_clause.clone(),
-                            exported_aliases: with_clause.exported_aliases.clone(),
-                            cte_references: with_clause.cte_references.clone(),
-                            pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
-                        };
-                        Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
-                    }
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(
+                        LogicalPlan::WithClause(with_clause.with_new_input(new_input)),
+                    )),
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
@@ -3604,22 +3580,9 @@ impl TypeInference {
                     graph_schema,
                 )?;
                 match child_tf {
-                    Transformed::Yes(new_input) => {
-                        let new_with = crate::query_planner::logical_plan::WithClause {
-                            cte_name: None,
-                            input: new_input,
-                            items: with_clause.items.clone(),
-                            distinct: with_clause.distinct,
-                            order_by: with_clause.order_by.clone(),
-                            skip: with_clause.skip,
-                            limit: with_clause.limit,
-                            where_clause: with_clause.where_clause.clone(),
-                            exported_aliases: with_clause.exported_aliases.clone(),
-                            cte_references: with_clause.cte_references.clone(),
-                            pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
-                        };
-                        Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
-                    }
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(
+                        LogicalPlan::WithClause(with_clause.with_new_input(new_input)),
+                    )),
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }

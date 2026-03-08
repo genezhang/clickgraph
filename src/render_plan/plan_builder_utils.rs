@@ -10645,20 +10645,25 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     "🔧 Detected weight CTE '{}' for weighted shortest path",
                     cte_name
                 );
-                // Create a bidirectional weight CTE that includes both edge directions.
-                // The adapted query uses directed edges for clean SQL, but the VLP
-                // needs both directions for traversal.
+                // Create a bidirectional weight CTE using recursive materialization.
+                // Base case: forward edges from weight CTE (evaluated once).
+                // Recursive step: swaps source/target to produce reverse edges,
+                // then __depth=1 causes WHERE __depth=0 to fail → recursion stops.
+                // Result: forward + reverse edges materialized, weight CTE's
+                // expensive multi-table join evaluated exactly once.
                 let bidi_cte_name = format!("bidi_{}", cte_name);
                 let bidi_sql = format!(
-                    "SELECT source, target, weight FROM {cte} \
+                    "SELECT source, target, weight, toUInt8(0) AS __depth FROM {cte} \
                      UNION ALL \
-                     SELECT target AS source, source AS target, weight FROM {cte}",
-                    cte = cte_name
+                     SELECT target AS source, source AS target, weight, __depth + 1 \
+                     FROM {bidi} WHERE __depth = 0",
+                    cte = cte_name,
+                    bidi = bidi_cte_name,
                 );
                 let bidi_cte = super::Cte {
                     cte_name: bidi_cte_name.clone(),
                     content: super::CteContent::RawSql(bidi_sql),
-                    is_recursive: false,
+                    is_recursive: true,
                     vlp_start_alias: None,
                     vlp_end_alias: None,
                     vlp_start_table: None,
@@ -13060,19 +13065,9 @@ pub(crate) fn collapse_passthrough_with(
                 // Not the target - recurse into input
                 let new_input =
                     collapse_passthrough_with(&wc.input, target_alias, target_cte_name)?;
-                Ok(LogicalPlan::WithClause(WithClause {
-                    cte_name: None,
-                    input: Arc::new(new_input),
-                    items: wc.items.clone(),
-                    order_by: wc.order_by.clone(),
-                    skip: wc.skip,
-                    limit: wc.limit,
-                    where_clause: wc.where_clause.clone(),
-                    distinct: wc.distinct,
-                    exported_aliases: wc.exported_aliases.clone(),
-                    cte_references: wc.cte_references.clone(),
-                    pattern_comprehensions: wc.pattern_comprehensions.clone(),
-                }))
+                Ok(LogicalPlan::WithClause(
+                    wc.with_new_input(Arc::new(new_input)),
+                ))
             }
         }
         LogicalPlan::Projection(proj) => {
@@ -14030,19 +14025,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                 log::debug!("🔧 DEBUG replace_v2: Creating new outer WithClause with wc.cte_references = {:?}", wc.cte_references);
 
                 Ok(LogicalPlan::WithClause(
-                    crate::query_planner::logical_plan::WithClause {
-                        cte_name: None,
-                        input: Arc::new(new_input),
-                        items: wc.items.clone(),
-                        distinct: wc.distinct,
-                        order_by: wc.order_by.clone(),
-                        skip: wc.skip,
-                        limit: wc.limit,
-                        where_clause: wc.where_clause.clone(),
-                        exported_aliases: wc.exported_aliases.clone(),
-                        cte_references: wc.cte_references.clone(),
-                        pattern_comprehensions: wc.pattern_comprehensions.clone(),
-                    },
+                    wc.with_new_input(Arc::new(new_input)),
                 ))
             } else {
                 // This is NOT the WithClause we're looking for, but we need to recurse
@@ -14076,19 +14059,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                 // }
 
                 Ok(LogicalPlan::WithClause(
-                    crate::query_planner::logical_plan::WithClause {
-                        cte_name: None,
-                        input: Arc::new(new_input),
-                        items: wc.items.clone(),
-                        distinct: wc.distinct,
-                        order_by: wc.order_by.clone(),
-                        skip: wc.skip,
-                        limit: wc.limit,
-                        where_clause: wc.where_clause.clone(),
-                        exported_aliases: wc.exported_aliases.clone(),
-                        cte_references: wc.cte_references.clone(),
-                        pattern_comprehensions: wc.pattern_comprehensions.clone(),
-                    },
+                    wc.with_new_input(Arc::new(new_input)),
                 ))
             }
         }

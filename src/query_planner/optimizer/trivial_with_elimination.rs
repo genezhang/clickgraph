@@ -92,35 +92,15 @@ impl TrivialWithElimination {
                             "🔥 TrivialWithElimination: Removing nested trivial WITH clause"
                         );
                         // Skip the inner WITH
-                        return Ok(Arc::new(LogicalPlan::WithClause(WithClause {
-                            cte_name: None,
-                            input: inner_with.input.clone(),
-                            items: with.items.clone(),
-                            distinct: with.distinct,
-                            order_by: with.order_by.clone(),
-                            skip: with.skip,
-                            limit: with.limit,
-                            where_clause: with.where_clause.clone(),
-                            exported_aliases: with.exported_aliases.clone(),
-                            cte_references: with.cte_references.clone(),
-                            pattern_comprehensions: with.pattern_comprehensions.clone(),
-                        })));
+                        return Ok(Arc::new(LogicalPlan::WithClause(
+                            with.with_new_input(inner_with.input.clone()),
+                        )));
                     }
                 }
 
-                Ok(Arc::new(LogicalPlan::WithClause(WithClause {
-                    cte_name: None,
-                    input: optimized_input,
-                    items: with.items.clone(),
-                    distinct: with.distinct,
-                    order_by: with.order_by.clone(),
-                    skip: with.skip,
-                    limit: with.limit,
-                    where_clause: with.where_clause.clone(),
-                    exported_aliases: with.exported_aliases.clone(),
-                    cte_references: with.cte_references.clone(),
-                    pattern_comprehensions: with.pattern_comprehensions.clone(),
-                })))
+                Ok(Arc::new(LogicalPlan::WithClause(
+                    with.with_new_input(optimized_input),
+                )))
             }
 
             LogicalPlan::Filter(filter) => {

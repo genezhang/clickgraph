@@ -223,6 +223,16 @@ async fn ldbc_complex_6() {
     .await;
     assert!(!sql.is_empty());
     assert!(sql.contains("SELECT"));
+    // Regression: Tag name filter must survive WITH barrier (cte_name preservation)
+    assert!(
+        sql.contains("tagName") || sql.contains("tag_name") || sql.contains("Tag"),
+        "Tag name reference missing from SQL: {sql}"
+    );
+    // Regression: friend→post join must be present
+    assert!(
+        sql.contains("HAS_CREATOR") || sql.contains("has_creator") || sql.contains("hasCreator"),
+        "HAS_CREATOR join missing from SQL: {sql}"
+    );
 }
 
 #[tokio::test]
