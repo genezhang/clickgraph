@@ -57,16 +57,16 @@ __version__ = "0.1.0"
 _EXPORT_FORMAT_ALIASES = {
     "parquet": "parquet",
     "pq": "parquet",
-    "csv": "csv_with_names",
-    "csvwithnames": "csv_with_names",
-    "csvnoheader": "csv",
-    "tsv": "tsv_with_names",
-    "tabseparated": "tsv_with_names",
-    "tsvwithnames": "tsv_with_names",
+    "csv": "csv",
+    "csvwithnames": "csv",
+    "csvnoheader": "csvnoheader",
+    "tsv": "tsv",
+    "tabseparated": "tsv",
+    "tsvwithnames": "tsv",
     "json": "json",
-    "jsoneachrow": "json_each_row",
-    "ndjson": "json_each_row",
-    "jsonl": "json_each_row",
+    "jsoneachrow": "ndjson",
+    "ndjson": "ndjson",
+    "jsonl": "ndjson",
 }
 
 
