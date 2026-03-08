@@ -120,22 +120,9 @@ impl OptimizerPass for ProjectionPushDown {
             LogicalPlan::WithClause(with_clause) => {
                 let child_tf = self.optimize(with_clause.input.clone(), plan_ctx)?;
                 match child_tf {
-                    Transformed::Yes(new_input) => {
-                        let new_with = crate::query_planner::logical_plan::WithClause {
-                            cte_name: None,
-                            input: new_input,
-                            items: with_clause.items.clone(),
-                            distinct: with_clause.distinct,
-                            order_by: with_clause.order_by.clone(),
-                            skip: with_clause.skip,
-                            limit: with_clause.limit,
-                            where_clause: with_clause.where_clause.clone(),
-                            exported_aliases: with_clause.exported_aliases.clone(),
-                            cte_references: with_clause.cte_references.clone(),
-                            pattern_comprehensions: with_clause.pattern_comprehensions.clone(),
-                        };
-                        Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
-                    }
+                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(
+                        LogicalPlan::WithClause(with_clause.with_new_input(new_input)),
+                    )),
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }

@@ -256,18 +256,7 @@ impl AliasResolverContext {
             }
             LogicalPlan::WithClause(wc) => {
                 let transformed_input = Arc::new(self.transform_plan((*wc.input).clone()));
-                LogicalPlan::WithClause(crate::query_planner::logical_plan::WithClause {
-                    cte_name: None,
-                    input: transformed_input,
-                    items: wc.items.clone(),
-                    distinct: wc.distinct,
-                    order_by: wc.order_by.clone(),
-                    skip: wc.skip,
-                    limit: wc.limit,
-                    where_clause: wc.where_clause.clone(),
-                    exported_aliases: wc.exported_aliases.clone(),
-                    cte_references: wc.cte_references.clone(),
-                })
+                LogicalPlan::WithClause(wc.with_new_input(transformed_input))
             }
         }
     }
