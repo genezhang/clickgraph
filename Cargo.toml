@@ -3,7 +3,6 @@ members = [
     "clickgraph-client",
     "clickgraph-embedded",
     "clickgraph-ffi",
-    "clickgraph-py",
 ]
 
 [package]
