@@ -593,3 +593,64 @@ schemas:
             orig_bytes: orig_bytes
             resp_bytes: resp_bytes
             conn_state: conn_state
+
+  # ==========================================================================
+  # social_demo: mirrors demos/neo4j-browser/social_demo.yaml structure
+  # backed by test_integration tables for integration testing
+  # ==========================================================================
+
+  - name: social_demo
+    graph_schema:
+      nodes:
+        - label: User
+          database: test_integration
+          table: users_test
+          node_id: user_id
+          property_mappings:
+            user_id: user_id
+            name: full_name
+            email: email_address
+            created_at: registration_date
+
+        - label: Post
+          database: test_integration
+          table: posts_test
+          node_id: post_id
+          property_mappings:
+            post_id: post_id
+            content: post_content
+            created_at: post_date
+
+      edges:
+        - type: FOLLOWS
+          database: test_integration
+          table: user_follows_test
+          from_id: follower_id
+          to_id: followed_id
+          edge_id: follow_id
+          from_node: User
+          to_node: User
+          property_mappings:
+            created_at: follow_date
+
+        - type: AUTHORED
+          database: test_integration
+          table: posts_test
+          from_id: author_id
+          to_id: post_id
+          from_node: User
+          to_node: Post
+          is_denormalized: true
+          property_mappings:
+            created_at: post_date
+
+        - type: LIKED
+          database: test_integration
+          table: post_likes_test
+          from_id: user_id
+          to_id: post_id
+          edge_id: like_id
+          from_node: User
+          to_node: Post
+          property_mappings:
+            created_at: like_date
