@@ -423,6 +423,11 @@ void uniffi_clickgraph_ffi_fn_free_database(void* ptr, RustCallStatus *out_statu
 void* uniffi_clickgraph_ffi_fn_constructor_database_open(RustBuffer schema_path, RustCallStatus *out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_CONSTRUCTOR_DATABASE_OPEN_SQL_ONLY
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_CONSTRUCTOR_DATABASE_OPEN_SQL_ONLY
+void* uniffi_clickgraph_ffi_fn_constructor_database_open_sql_only(RustBuffer schema_path, RustCallStatus *out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_CONSTRUCTOR_DATABASE_OPEN_WITH_CONFIG
 #define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_CONSTRUCTOR_DATABASE_OPEN_WITH_CONFIG
 void* uniffi_clickgraph_ffi_fn_constructor_database_open_with_config(RustBuffer schema_path, RustBuffer config, RustCallStatus *out_status
@@ -822,6 +827,12 @@ uint16_t uniffi_clickgraph_ffi_checksum_method_queryresult_reset(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_CONSTRUCTOR_DATABASE_OPEN
 #define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_CONSTRUCTOR_DATABASE_OPEN
 uint16_t uniffi_clickgraph_ffi_checksum_constructor_database_open(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_CONSTRUCTOR_DATABASE_OPEN_SQL_ONLY
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_CONSTRUCTOR_DATABASE_OPEN_SQL_ONLY
+uint16_t uniffi_clickgraph_ffi_checksum_constructor_database_open_sql_only(void
     
 );
 #endif
