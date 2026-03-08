@@ -961,9 +961,12 @@ impl GraphSchema {
                 let mut matched_key = None;
                 for key in composite_keys {
                     if let Some(schema) = self.relationships.get(key) {
-                        let from_ok =
-                            from_node.is_none() || from_node == Some(schema.from_node.as_str());
-                        let to_ok = to_node.is_none() || to_node == Some(schema.to_node.as_str());
+                        let from_ok = from_node.is_none()
+                            || from_node == Some(schema.from_node.as_str())
+                            || schema.from_node == "$any";
+                        let to_ok = to_node.is_none()
+                            || to_node == Some(schema.to_node.as_str())
+                            || schema.to_node == "$any";
                         if from_ok && to_ok {
                             matched_key = Some(key);
                             break;
@@ -1072,8 +1075,10 @@ impl GraphSchema {
         let mut compatible: Vec<String> = Vec::new();
         for composite_key in &composite_keys {
             if let Some(schema) = self.relationships.get(composite_key) {
-                let from_ok = from_label.is_none_or(|f| schema.from_node == f);
-                let to_ok = to_label.is_none_or(|t| schema.to_node == t);
+                let from_ok =
+                    from_label.is_none_or(|f| schema.from_node == f || schema.from_node == "$any");
+                let to_ok =
+                    to_label.is_none_or(|t| schema.to_node == t || schema.to_node == "$any");
                 if from_ok && to_ok {
                     compatible.push(composite_key.clone());
                 }

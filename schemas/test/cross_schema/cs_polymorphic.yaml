@@ -1,0 +1,59 @@
+# Cross-Schema Test: Polymorphic (single edge table with type_column)
+# All edges stored in a single `interactions` table, discriminated by type_column.
+# Nodes remain standard with their own tables.
+
+name: cs_polymorphic
+version: "1.0"
+
+graph_schema:
+  nodes:
+    - label: User
+      database: cs_test
+      table: users
+      node_id: user_id
+      property_mappings:
+        name: full_name
+        age: age
+        city: city_name
+
+    - label: Post
+      database: cs_test
+      table: posts
+      node_id: post_id
+      property_mappings:
+        content: content
+        date: created_at
+
+    - label: Tag
+      database: cs_test
+      table: tags
+      node_id: tag_id
+      property_mappings:
+        name: tag_name
+
+    - label: City
+      database: cs_test
+      table: cities
+      node_id: city_id
+      property_mappings:
+        name: city_name
+        country: country
+
+  edges:
+    - polymorphic: true
+      database: cs_test
+      table: interactions
+      from_id: from_id
+      to_id: to_id
+      type_column: interaction_type
+      from_label_column: from_type
+      to_label_column: to_type
+      type_values:
+        - FOLLOWS
+        - AUTHORED
+        - HAS_TAG
+        - LIVES_IN
+      edge_id: [from_id, to_id, interaction_type]
+      property_mappings:
+        weight: interaction_weight
+        created_at: timestamp
