@@ -14,7 +14,7 @@ from pathlib import Path
 # Add tests directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from conftest import execute_cypher, assert_query_success
+from conftest import execute_cypher
 
 
 def query_api(query: str, schema_name: str = "test_fixtures") -> dict:
