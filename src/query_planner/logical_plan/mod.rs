@@ -2113,7 +2113,7 @@ mod tests {
         // All other fields must be preserved
         assert_eq!(rebuilt.cte_name, Some("my_cte".to_string()));
         assert_eq!(rebuilt.items, wc.items);
-        assert_eq!(rebuilt.distinct, true);
+        assert!(rebuilt.distinct);
         assert_eq!(rebuilt.order_by, Some(vec![]));
         assert_eq!(rebuilt.skip, Some(5));
         assert_eq!(rebuilt.limit, Some(10));

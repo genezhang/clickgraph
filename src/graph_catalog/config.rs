@@ -3114,12 +3114,12 @@ mod zeek_tests {
             "GraphSchema relationships: {}",
             schema.get_relationships_schemas().len()
         );
-        for (name, _rel) in schema.get_relationships_schemas() {
+        for name in schema.get_relationships_schemas().keys() {
             println!("  - Relationship: {}", name);
         }
 
         assert!(
-            schema.get_relationships_schemas().len() > 0,
+            !schema.get_relationships_schemas().is_empty(),
             "Should have relationships!"
         );
     }

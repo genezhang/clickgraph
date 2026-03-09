@@ -269,7 +269,7 @@ pub fn collect_aliases_from_plan(plan: &LogicalPlan) -> std::collections::HashSe
             LogicalPlan::WithClause(wc) => {
                 collect_recursive(&wc.input, aliases);
             }
-            LogicalPlan::ViewScan(vs) => {
+            LogicalPlan::ViewScan(_vs) => {
                 // ViewScan is a leaf — no aliases to collect from it directly
             }
             _ => {}

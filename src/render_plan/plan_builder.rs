@@ -3328,7 +3328,7 @@ impl RenderPlanBuilder for LogicalPlan {
             let skip = SkipItem(super::plan_builder_utils::extract_skip(self));
             let limit = LimitItem(super::plan_builder_utils::extract_limit(self));
             // Use extract_union_with_ctx to pass plan_ctx through to Union branches
-            let mut union = UnionItems(self.extract_union_with_ctx(schema, plan_ctx)?);
+            let union = UnionItems(self.extract_union_with_ctx(schema, plan_ctx)?);
 
             // Extract CTEs from the inner plan
             let cte_input = match self {

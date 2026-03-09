@@ -59,8 +59,8 @@ use crate::render_plan::cte_extraction::{
 };
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::render_expr::{
-    AggregateFnCall, Column, ColumnAlias, InSubquery, Literal, Operator, OperatorApplication,
-    PropertyAccess, RenderCase, RenderExpr, ScalarFnCall, TableAlias,
+    AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess,
+    RenderExpr, ScalarFnCall, TableAlias,
 };
 use crate::render_plan::view_table_ref::{from_table_to_view_ref, view_ref_to_from_table};
 use crate::render_plan::JoinType;
@@ -1023,7 +1023,7 @@ fn rewrite_render_expr_for_cte_simple(
             if cte_references.contains_key(&pa.table_alias.0) {
                 // Rewrite column to use CTE naming: alias_column
                 // Keep the same table alias (e.g., "o" stays "o")
-                let cte_column = cte_column_name(&pa.table_alias.0, &pa.column.raw());
+                let cte_column = cte_column_name(&pa.table_alias.0, pa.column.raw());
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: pa.table_alias.clone(), // Keep same table alias
                     column: PropertyValue::Column(cte_column),
@@ -1052,7 +1052,7 @@ fn rewrite_render_expr_for_cte_operand(
             // Check if this alias is from a CTE
             if cte_references.contains_key(&pa.table_alias.0) {
                 // Rewrite to use CTE alias and column naming
-                let cte_column = cte_column_name(&pa.table_alias.0, &pa.column.raw());
+                let cte_column = cte_column_name(&pa.table_alias.0, pa.column.raw());
                 log::info!(
                     "🔧 Rewriting property access: {}.{} -> {}.{}",
                     pa.table_alias.0,
@@ -1104,7 +1104,7 @@ fn rewrite_render_expr_for_cte_with_context(
             // Check if this alias is from a CTE
             if ctx.cte_references.contains_key(&pa.table_alias.0) {
                 // Rewrite to use CTE alias and column naming
-                let cte_column = cte_column_name(&pa.table_alias.0, &pa.column.raw());
+                let cte_column = cte_column_name(&pa.table_alias.0, pa.column.raw());
                 log::debug!(
                     "🔧 Rewriting property access: {}.{} -> {}.{}",
                     pa.table_alias.0,
@@ -3251,7 +3251,7 @@ fn strip_table_alias_from_resolved(expr: &RenderExpr) -> RenderExpr {
                 .map(strip_table_alias_from_resolved)
                 .collect();
             RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: oa.operator.clone(),
+                operator: oa.operator,
                 operands: new_ops,
             })
         }
@@ -5253,7 +5253,7 @@ pub(crate) fn expand_table_alias_to_select_items(
                                     // only include required ones; otherwise include all
                                     *cypher_prop == "id"
                                         || required_props
-                                            .map_or(true, |r| r.contains(cypher_prop.as_str()))
+                                            .is_none_or(|r| r.contains(cypher_prop.as_str()))
                                 })
                                 .map(|(cypher_prop, db_col)| {
                                     // VLP CTE column: prefix + db_column (e.g., start_content)
@@ -6280,7 +6280,7 @@ pub(crate) fn update_graph_joins_cte_refs(
                 .iter()
                 .map(|input| {
                     update_graph_joins_cte_refs(input, cte_references, cte_property_mappings)
-                        .map(|p| Arc::new(p))
+                        .map(Arc::new)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(LogicalPlan::Union(Union {
@@ -6874,8 +6874,8 @@ fn try_flatten_head_collect_map_literal(
                         Some(
                             cte_info
                                 .property_mapping
-                                .iter()
-                                .map(|(prop, _cte_col)| (prop.clone(), prop.clone()))
+                                .keys()
+                                .map(|prop| (prop.clone(), prop.clone()))
                                 .collect(),
                         )
                     } else {
@@ -8155,7 +8155,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                     }) || c
                                         .else_expr
                                         .as_ref()
-                                        .map_or(false, |e| contains_aggregate(e))
+                                        .is_some_and(|e| contains_aggregate(e))
                                 }
                                 LogicalExpr::List(items) => items.iter().any(contains_aggregate),
                                 LogicalExpr::ArraySubscript { array, index } => {
@@ -10183,7 +10183,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                             && j.table_alias != old_from_alias
                                             && j.table_alias != pattern_alias
                                             // Node tables: "ldbc.Person" (contains '.' but not '_' after the db prefix)
-                                            && j.table_name.split('.').last().map_or(false, |n| !n.contains('_'))
+                                            && j.table_name.split('.').last().is_some_and(|n| !n.contains('_'))
                                             && j.joining_on.iter().any(|op| {
                                                 op.operands.iter().any(|operand| {
                                                     if let RenderExpr::PropertyAccessExp(pa) = operand {
@@ -11742,7 +11742,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                             let composite_cols =
                                                 get_current_schema().and_then(|schema| {
                                                     // Determine the node label from vlp_alias
-                                                    let label = if is_start {
+                                                    let _label = if is_start {
                                                         vlp_cte.vlp_cypher_start_alias.as_deref()
                                                     } else {
                                                         vlp_cte.vlp_cypher_end_alias.as_deref()
@@ -12080,7 +12080,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
     // moved all branches into union.input (for aggregation/GROUP BY).
     if render_plan.from.0.is_none() && !cte_references.is_empty() {
         if let Some(ref mut union_data) = render_plan.union.0 {
-            for (alias, cte_name) in &cte_references {
+            for cte_name in cte_references.values() {
                 let cte_alias = if let Some(stripped) = cte_name.strip_prefix("with_") {
                     if let Some(cte_pos) = stripped.rfind("_cte") {
                         stripped[..cte_pos].to_string()
@@ -13216,9 +13216,7 @@ pub(crate) fn collapse_passthrough_with(
             let new_inputs = u
                 .inputs
                 .iter()
-                .map(|i| {
-                    collapse_passthrough_with(i, target_alias, target_cte_name).map(|p| Arc::new(p))
-                })
+                .map(|i| collapse_passthrough_with(i, target_alias, target_cte_name).map(Arc::new))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(LogicalPlan::Union(Union {
                 inputs: new_inputs,
@@ -13317,14 +13315,10 @@ pub(crate) fn prune_joins_covered_by_cte(
 
             // Register all join aliases and anchor
             if let Some(ref anchor) = gj.anchor_table {
-                adjacency
-                    .entry(anchor.clone())
-                    .or_insert_with(std::collections::HashSet::new);
+                adjacency.entry(anchor.clone()).or_default();
             }
             for join in &gj.joins {
-                adjacency
-                    .entry(join.table_alias.clone())
-                    .or_insert_with(std::collections::HashSet::new);
+                adjacency.entry(join.table_alias.clone()).or_default();
             }
 
             // Add edges from join conditions
@@ -13338,11 +13332,11 @@ pub(crate) fn prune_joins_covered_by_cte(
                     if alias != &join.table_alias {
                         adjacency
                             .entry(join.table_alias.clone())
-                            .or_insert_with(std::collections::HashSet::new)
+                            .or_default()
                             .insert(alias.clone());
                         adjacency
                             .entry(alias.clone())
-                            .or_insert_with(std::collections::HashSet::new)
+                            .or_default()
                             .insert(join.table_alias.clone());
                     }
                 }
@@ -14861,7 +14855,7 @@ fn generate_pattern_comprehension_correlated_subquery(
         let rel_alias = format!("__r{}", hop_idx);
 
         // Determine from/to labels based on direction
-        let (mut from_label_owned, to_label_owned): (Option<String>, Option<String>) =
+        let (from_label_owned, to_label_owned): (Option<String>, Option<String>) =
             match hop.direction {
                 crate::query_planner::logical_expr::Direction::Incoming => {
                     // Incoming: (end)<-[:REL]-(start) → in schema terms from=start, to=end
@@ -15586,7 +15580,7 @@ fn generate_list_comp_array_count(
     //
     // The IN subquery is fully non-correlated: both the inner filter and the
     // outer IN reference only CTE names and literal columns.
-    let select_cols = vec![list_element_col.clone()];
+    let select_cols = [list_element_col.clone()];
 
     if !corr_outer_cols.is_empty() {
         // Derive the FROM alias from the CTE name for validation.
@@ -15971,7 +15965,7 @@ fn find_edge_id_column_with_direction(
     _hop: &crate::query_planner::logical_plan::ConnectedPatternInfo,
     direction: &crate::query_planner::logical_expr::Direction,
 ) -> String {
-    for (_, rel_schema) in schema.get_relationships_schemas() {
+    for rel_schema in schema.get_relationships_schemas().values() {
         let table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
         if table == db_table {
             let effective_is_from = match direction {
@@ -16584,9 +16578,7 @@ fn add_correlated_columns_to_select(
                     if let Some((parsed_alias, property)) =
                         crate::utils::cte_column_naming::parse_cte_column(&alias.0)
                     {
-                        if parsed_alias == cv.var_name
-                            && id_col_names.iter().any(|c| *c == property)
-                        {
+                        if parsed_alias == cv.var_name && id_col_names.contains(&property) {
                             return true;
                         }
                     }
@@ -17002,7 +16994,7 @@ fn find_pc_cte_join_column(
     if let FromTableItem(Some(ref from)) = with_cte_render.from {
         if let Some(ref from_alias) = from.alias {
             if let LogicalPlan::ViewScan(ref scan) = from.source.as_ref() {
-                for (_prop, col_value) in &scan.property_mapping {
+                for col_value in scan.property_mapping.values() {
                     if let crate::graph_catalog::expression_parser::PropertyValue::Column(
                         ref col_name,
                     ) = col_value
@@ -17122,7 +17114,7 @@ fn generate_and_replace_arraycount_pc_subqueries(
     if let FromTableItem(Some(ref from)) = plan.from {
         if let Some(ref from_alias) = from.alias {
             if let LogicalPlan::ViewScan(ref scan) = from.source.as_ref() {
-                for (_prop, col_value) in &scan.property_mapping {
+                for col_value in scan.property_mapping.values() {
                     if let crate::graph_catalog::expression_parser::PropertyValue::Column(
                         ref col_name,
                     ) = col_value

@@ -386,7 +386,7 @@ mod tests {
                 assert_eq!(remove_item.key, "temp");
 
                 let delete_clause = ast.delete_clause.unwrap();
-                assert_eq!(delete_clause.is_detach, false);
+                assert!(!delete_clause.is_detach);
                 assert_eq!(delete_clause.delete_items.len(), 1);
                 assert_eq!(delete_clause.delete_items[0], Expression::Variable("a"));
 

@@ -1572,7 +1572,7 @@ impl LogicalPlan {
                     if node_schema.is_denormalized {
                         let mut denorm_props = Vec::new();
                         if let Some(from_props) = &node_schema.from_properties {
-                            for (prop_name, _col) in from_props {
+                            for prop_name in from_props.keys() {
                                 if !properties.iter().any(|(p, _)| p == prop_name)
                                     && !denorm_props
                                         .iter()
@@ -1583,7 +1583,7 @@ impl LogicalPlan {
                             }
                         }
                         if let Some(to_props) = &node_schema.to_properties {
-                            for (prop_name, _col) in to_props {
+                            for prop_name in to_props.keys() {
                                 if !properties.iter().any(|(p, _)| p == prop_name)
                                     && !denorm_props
                                         .iter()

@@ -151,6 +151,6 @@ impl AsyncWrite for WebSocketBoltAdapter {
 mod tests {
     #[test]
     fn test_adapter_creation() {
-        assert!(true);
+        // Placeholder test — verifies module compiles
     }
 }

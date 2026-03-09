@@ -66,7 +66,7 @@ pub fn generate_scan(
             "🏷️ No label for alias '{}' - returning Empty for TypeInference Phase 2",
             alias
         );
-        return Ok(Arc::new(LogicalPlan::Empty));
+        Ok(Arc::new(LogicalPlan::Empty))
     }
 }
 

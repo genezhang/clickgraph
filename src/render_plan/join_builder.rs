@@ -1078,7 +1078,7 @@ impl JoinBuilder for LogicalPlan {
                     if existing_aliases.contains(&input_join.table_alias) {
                         // Check if the skipped join's conditions reference CTE aliases
                         for cond in &input_join.joining_on {
-                            for (cte_alias, _cte_name) in &graph_joins.cte_references {
+                            for cte_alias in graph_joins.cte_references.keys() {
                                 if condition_references_alias(cond, cte_alias) {
                                     skipped_cte_conditions
                                         .entry(cte_alias.clone())
@@ -1108,7 +1108,7 @@ impl JoinBuilder for LogicalPlan {
                             );
                             // Also capture conditions from this skipped join
                             for cond in &input_join.joining_on {
-                                for (cte_alias, _cte_name) in &graph_joins.cte_references {
+                                for cte_alias in graph_joins.cte_references.keys() {
                                     if condition_references_alias(cond, cte_alias) {
                                         skipped_cte_conditions
                                             .entry(cte_alias.clone())
@@ -1573,7 +1573,7 @@ impl JoinBuilder for LogicalPlan {
                         let rel_join_conditions = build_identifier_join_conditions(
                             &inner_rel.alias,
                             &inner_rel_cols.to_id,
-                            &shared_node_alias,
+                            shared_node_alias,
                             &shared_node_identifier,
                         );
 
@@ -1632,7 +1632,7 @@ impl JoinBuilder for LogicalPlan {
                                         .map(|ns| ns.node_id.id.clone())
                                         .unwrap_or_else(|| Identifier::Single(immediate_id_col));
                                     let immediate_conditions = build_identifier_join_conditions(
-                                        &non_shared_alias,
+                                        non_shared_alias,
                                         &immediate_node_id,
                                         &inner_rel.alias,
                                         &inner_rel_cols.from_id,
@@ -1677,7 +1677,7 @@ impl JoinBuilder for LogicalPlan {
                                         .map(|ns| ns.node_id.id.clone())
                                         .unwrap_or_else(|| Identifier::Single("id".to_string()));
                                     let non_shared_conditions = build_identifier_join_conditions(
-                                        &non_shared_alias,
+                                        non_shared_alias,
                                         &non_shared_node_id,
                                         &inner_rel.alias,
                                         &inner_rel_cols.from_id,
@@ -1719,7 +1719,7 @@ impl JoinBuilder for LogicalPlan {
                                 .map(|ns| ns.node_id.id.clone())
                                 .unwrap_or_else(|| Identifier::Single(non_shared_id_col));
                             let non_shared_conditions = build_identifier_join_conditions(
-                                &non_shared_alias,
+                                non_shared_alias,
                                 &non_shared_node_id,
                                 &inner_rel.alias,
                                 &inner_rel_cols.from_id,
@@ -1773,7 +1773,7 @@ impl JoinBuilder for LogicalPlan {
                         let rel_join_conditions = build_identifier_join_conditions(
                             &inner_rel.alias,
                             &inner_rel_cols.from_id,
-                            &shared_node_alias,
+                            shared_node_alias,
                             &shared_node_identifier,
                         );
 
@@ -1831,7 +1831,7 @@ impl JoinBuilder for LogicalPlan {
                                         .map(|ns| ns.node_id.id.clone())
                                         .unwrap_or_else(|| Identifier::Single(immediate_id_col));
                                     let immediate_conditions = build_identifier_join_conditions(
-                                        &non_shared_alias,
+                                        non_shared_alias,
                                         &immediate_node_id,
                                         &inner_rel.alias,
                                         &inner_rel_cols.to_id,
@@ -1875,7 +1875,7 @@ impl JoinBuilder for LogicalPlan {
                                         .map(|ns| ns.node_id.id.clone())
                                         .unwrap_or_else(|| Identifier::Single("id".to_string()));
                                     let non_shared_conditions = build_identifier_join_conditions(
-                                        &non_shared_alias,
+                                        non_shared_alias,
                                         &non_shared_node_id,
                                         &inner_rel.alias,
                                         &inner_rel_cols.to_id,
@@ -1919,7 +1919,7 @@ impl JoinBuilder for LogicalPlan {
                                 .map(|ns| ns.node_id.id.clone())
                                 .unwrap_or_else(|| Identifier::Single(non_shared_id_col));
                             let non_shared_conditions = build_identifier_join_conditions(
-                                &non_shared_alias,
+                                non_shared_alias,
                                 &non_shared_node_id,
                                 &inner_rel.alias,
                                 &inner_rel_cols.to_id,

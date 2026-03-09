@@ -441,7 +441,7 @@ pub fn select_anchor(joins: &[Join], plan_ctx: Option<&PlanCtx>) -> Option<Strin
                 .copied()
                 .filter(|alias| {
                     ctx.get_table_ctx(alias)
-                        .map_or(false, |tc| tc.has_selective_filters())
+                        .is_ok_and(|tc| tc.has_selective_filters())
                 })
                 .collect();
             if !filtered.is_empty() {

@@ -20,7 +20,6 @@
 //! ```
 
 use crate::graph_catalog::graph_schema::GraphSchema;
-use crate::graph_catalog::schema_types::SchemaType;
 use crate::open_cypher_parser::ast;
 use crate::query_planner::logical_plan::errors::LogicalPlanError;
 use crate::query_planner::logical_plan::plan_builder::LogicalPlanResult;
@@ -503,6 +502,7 @@ mod tests {
     use crate::graph_catalog::graph_schema::{
         GraphSchema, NodeIdSchema, NodeSchema, RelationshipSchema,
     };
+    use crate::graph_catalog::schema_types::SchemaType;
     use std::collections::HashMap;
     use std::sync::Arc;
 

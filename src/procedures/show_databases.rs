@@ -1,7 +1,7 @@
 //! SHOW DATABASES procedure
 //! Returns a list of available databases (schemas) in a format compatible with Neo4j Browser
 
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::HashMap;
 
 /// Execute SHOW DATABASES command

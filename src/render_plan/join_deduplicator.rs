@@ -76,7 +76,7 @@ fn rewrite_operator_application(
     new_alias: &str,
 ) -> OperatorApplication {
     OperatorApplication {
-        operator: op.operator.clone(),
+        operator: op.operator,
         operands: op
             .operands
             .iter()
@@ -227,7 +227,6 @@ fn rewrite_render_expr(expr: &RenderExpr, old_alias: &str, new_alias: &str) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render_plan::render_expr::{Column, Operator};
     use crate::render_plan::{Join, JoinType};
 
     #[test]

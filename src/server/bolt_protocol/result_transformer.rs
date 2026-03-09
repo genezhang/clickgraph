@@ -36,7 +36,6 @@ use crate::{
     graph_catalog::{
         element_id::{generate_node_element_id, generate_relationship_element_id},
         graph_schema::GraphSchema,
-        schema_types::SchemaType,
     },
     query_planner::{
         logical_expr::{Direction, LogicalExpr},
@@ -137,7 +136,7 @@ pub enum ReturnItemType {
 ///     ReturnItemMetadata { field_name: "n.name", item_type: Scalar }
 /// ]
 /// ```
-
+///
 /// Parse composite relationship key "FOLLOWS::User::User" into ("FOLLOWS", Some("User"), Some("User"))
 /// Simple keys like "FOLLOWS" return ("FOLLOWS", None, None)
 fn parse_composite_rel_key(key: &str) -> (String, Option<String>, Option<String>) {
@@ -2244,7 +2243,7 @@ fn find_relationship_in_row_with_type(
                 rel_types,
                 from_label,
                 to_label,
-                direction,
+                direction: _,
             } = &meta.item_type
             {
                 return transform_to_relationship(
@@ -2304,7 +2303,7 @@ fn find_relationship_in_row_with_type(
             (k.starts_with("from_id_") || k.starts_with("to_id_"))
                 && k.rsplit('_')
                     .next()
-                    .map_or(false, |s| s.parse::<usize>().is_ok())
+                    .is_some_and(|s| s.parse::<usize>().is_ok())
         })
         .cloned()
         .collect();
@@ -2481,6 +2480,7 @@ fn try_transform_multi_label_row(
 mod tests {
     use super::*;
     use crate::graph_catalog::config::Identifier;
+    use crate::graph_catalog::schema_types::SchemaType;
 
     #[test]
     fn test_value_to_string_integer() {

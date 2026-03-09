@@ -308,9 +308,9 @@ impl<'a> VariableScope<'a> {
 // --- Scope-aware RenderPlan rewriting ---
 
 use super::render_expr::{
-    Column, ColumnAlias, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+    ColumnAlias, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
 };
-use super::{FilterItems, GroupByExpressions, OrderByItems, RenderPlan, SelectItem, UnionItems};
+use super::{FilterItems, GroupByExpressions, RenderPlan, SelectItem, UnionItems};
 use crate::graph_catalog::expression_parser::PropertyValue;
 
 /// Extract map keys from a RenderExpr that produces a map-typed value.
@@ -579,7 +579,7 @@ fn rewrite_bare_variables(expr: &RenderExpr, scope: &VariableScope) -> RenderExp
                 .map(|op| rewrite_bare_variables(op, scope))
                 .collect();
             RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: oa.operator.clone(),
+                operator: oa.operator,
                 operands: rewritten_operands,
             })
         }
@@ -796,7 +796,7 @@ pub fn rewrite_render_expr(expr: &RenderExpr, scope: &VariableScope) -> RenderEx
                 .map(|op| rewrite_render_expr(op, scope))
                 .collect();
             RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: oa.operator.clone(),
+                operator: oa.operator,
                 operands: rewritten_operands,
             })
         }
@@ -1049,7 +1049,7 @@ fn fix_orphan_table_aliases_impl(
         let mut missing_ctes: Vec<(String, String)> = Vec::new(); // (cte_name, from_alias)
         let mut seen_cte_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
-        for (_alias, cte_info) in scope.cte_variables() {
+        for cte_info in scope.cte_variables().values() {
             if cte_name_to_from_alias.contains_key(&cte_info.cte_name) {
                 continue;
             }
@@ -1132,7 +1132,7 @@ fn fix_orphan_table_aliases_impl(
     }
 
     // GROUP BY
-    let new_gb: Vec<RenderExpr> = plan.group_by.0.iter().map(|e| rewrite(e)).collect();
+    let new_gb: Vec<RenderExpr> = plan.group_by.0.iter().map(&rewrite).collect();
     plan.group_by = GroupByExpressions(new_gb);
 
     // ORDER BY
@@ -1148,7 +1148,7 @@ fn fix_orphan_table_aliases_impl(
     // JOIN conditions
     for join in &mut plan.joins.0 {
         for cond in &mut join.joining_on {
-            cond.operands = cond.operands.iter().map(|op| rewrite(op)).collect();
+            cond.operands = cond.operands.iter().map(&rewrite).collect();
         }
         if let Some(ref pf) = join.pre_filter {
             join.pre_filter = Some(rewrite(pf));
@@ -1207,7 +1207,7 @@ pub fn rewrite_cte_property_columns(plan: &mut RenderPlan, scope: &VariableScope
         String,
         &std::collections::HashMap<String, String>,
     > = std::collections::HashMap::new();
-    for (_alias, cte_info) in scope.cte_variables() {
+    for cte_info in scope.cte_variables().values() {
         if !cte_info.property_mapping.is_empty() {
             cte_name_to_prop_map
                 .entry(cte_info.cte_name.clone())
@@ -1259,7 +1259,7 @@ pub fn rewrite_cte_property_columns(plan: &mut RenderPlan, scope: &VariableScope
         plan.filters = FilterItems(Some(rewrite(filter)));
     }
     // GROUP BY
-    let new_gb: Vec<RenderExpr> = plan.group_by.0.iter().map(|e| rewrite(e)).collect();
+    let new_gb: Vec<RenderExpr> = plan.group_by.0.iter().map(&rewrite).collect();
     plan.group_by = GroupByExpressions(new_gb);
     // ORDER BY
     for item in &mut plan.order_by.0 {
@@ -1272,7 +1272,7 @@ pub fn rewrite_cte_property_columns(plan: &mut RenderPlan, scope: &VariableScope
     // JOIN conditions
     for join in &mut plan.joins.0 {
         for cond in &mut join.joining_on {
-            cond.operands = cond.operands.iter().map(|op| rewrite(op)).collect();
+            cond.operands = cond.operands.iter().map(&rewrite).collect();
         }
         if let Some(ref pf) = join.pre_filter {
             join.pre_filter = Some(rewrite(pf));
@@ -1329,7 +1329,7 @@ fn rewrite_expr_cte_columns(
                 .map(|op| rewrite_expr_cte_columns(op, alias_prop_map))
                 .collect();
             RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: oa.operator.clone(),
+                operator: oa.operator,
                 operands: new_operands,
             })
         }
@@ -1407,7 +1407,7 @@ fn rewrite_expr_table_aliases(
                 .map(|op| rewrite_expr_table_aliases(op, replacements))
                 .collect();
             RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: oa.operator.clone(),
+                operator: oa.operator,
                 operands: new_operands,
             })
         }

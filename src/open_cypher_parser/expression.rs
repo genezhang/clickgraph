@@ -177,7 +177,7 @@ fn parse_postfix_expression(input: &'_ str) -> IResult<&'_ str, Expression<'_>> 
             let is_complete_token = new_input
                 .chars()
                 .next()
-                .map_or(true, |c| !c.is_alphanumeric() && c != '_');
+                .is_none_or(|c| !c.is_alphanumeric() && c != '_');
             if is_complete_token {
                 expr = Expression::FunctionCallExp(crate::open_cypher_parser::ast::FunctionCall {
                     name: accessor.to_string(),
@@ -1171,27 +1171,24 @@ pub fn parse_property_access(input: &'_ str) -> IResult<&'_ str, Expression<'_>>
     let mut segments: Vec<&str> = vec![first_key];
     let mut compound_input = input;
 
-    loop {
-        match preceded(char('.'), parse_property_name).parse(compound_input) {
-            Ok((new_input, next_key)) => {
-                if temporal_accessors.contains(&next_key) {
-                    // Temporal accessor ends the chain — build expression from segments so far
-                    let inner_expr =
-                        build_property_access_from_segments(base_expr, &segments, original_input)?;
-                    return Ok((
-                        new_input,
-                        Expression::FunctionCallExp(crate::open_cypher_parser::ast::FunctionCall {
-                            name: next_key.to_string(),
-                            args: vec![inner_expr],
-                        }),
-                    ));
-                }
-                // Not temporal — add segment and continue
-                segments.push(next_key);
-                compound_input = new_input;
-            }
-            Err(_) => break,
+    while let Ok((new_input, next_key)) =
+        preceded(char('.'), parse_property_name).parse(compound_input)
+    {
+        if temporal_accessors.contains(&next_key) {
+            // Temporal accessor ends the chain — build expression from segments so far
+            let inner_expr =
+                build_property_access_from_segments(base_expr, &segments, original_input)?;
+            return Ok((
+                new_input,
+                Expression::FunctionCallExp(crate::open_cypher_parser::ast::FunctionCall {
+                    name: next_key.to_string(),
+                    args: vec![inner_expr],
+                }),
+            ));
         }
+        // Not temporal — add segment and continue
+        segments.push(next_key);
+        compound_input = new_input;
     }
 
     let expr = build_property_access_from_segments(base_expr, &segments, original_input)?;
@@ -1223,7 +1220,7 @@ fn build_property_access_from_segments<'a>(
         &original_input[first_start..last_end]
     };
     match parse_literal_or_variable_expression(key) {
-        Ok((remainder, Expression::Variable(key))) if remainder.is_empty() => {
+        Ok(("", Expression::Variable(key))) => {
             Ok(Expression::PropertyAccessExp(PropertyAccess { base, key }))
         }
         _ => Err(nom::Err::Error(Error::new(

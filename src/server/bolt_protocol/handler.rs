@@ -852,7 +852,7 @@ impl BoltHandler {
         }
 
         // Intercept session commands before Cypher parsing
-        if let Some(response) = self.handle_session_command(&query).await? {
+        if let Some(response) = self.handle_session_command(query).await? {
             return Ok(response);
         }
 
