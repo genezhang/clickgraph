@@ -13,7 +13,6 @@ from conftest import execute_cypher
 SCHEMA_NAME = "social_integration"
 
 
-@pytest.mark.xfail(reason="collect+unwind CTE does not propagate all needed columns to outer query")
 def test_collect_unwind_single_property():
     """Test basic collect + UNWIND with single property access"""
     response = execute_cypher(

@@ -564,10 +564,10 @@ class TestMultiTypeAcrossSchemas:
 # Test 6: Edge Cases and Error Handling
 # ============================================================================
 
-@pytest.mark.xfail(reason="VLP edge cases: execution errors with no-match/zero-length paths")
 class TestVLPEdgeCases:
     """Tests for edge cases in VLP across schema variations."""
     
+    @pytest.mark.xfail(reason="VLP edge cases: execution errors with no-match/zero-length paths")
     def test_vlp_no_matching_paths(self, schema_variation_data):
         """
         Test VLP when no paths match - should return empty, not error.
@@ -623,6 +623,7 @@ class TestVLPEdgeCases:
         
         print("✅ Polymorphic exact-hop VLP generates correct SQL")
     
+    @pytest.mark.xfail(reason="VLP edge cases: execution errors with no-match/zero-length paths")
     def test_zero_length_path_unbounded(self, schema_variation_data):
         """
         Test [*0..] pattern - zero or more hops should include starting node.
@@ -658,6 +659,7 @@ class TestVLPEdgeCases:
         
         print("✅ Zero-length path [*0..] correctly includes starting node")
     
+    @pytest.mark.xfail(reason="VLP edge cases: execution errors with no-match/zero-length paths")
     def test_zero_length_path_bounded(self, schema_variation_data):
         """
         Test [*0..2] pattern - zero to 2 hops should include starting node.
@@ -697,6 +699,7 @@ class TestVLPEdgeCases:
         
         print("✅ Zero-length path [*0..2] correctly includes starting node and traversal results")
     
+    @pytest.mark.xfail(reason="VLP edge cases: execution errors with no-match/zero-length paths")
     def test_zero_length_with_polymorphic(self, schema_variation_data):
         """
         Test [*0..1] on polymorphic edges - verify starting node included.

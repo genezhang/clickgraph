@@ -1385,7 +1385,6 @@ class TestFollowsAndLikedCombined:
         assert result["success"], f"Query failed: {query}"
 
 
-@pytest.mark.xfail(reason="VLP path variable and property propagation issues in CTE generation")
 class TestAdvancedVLPPatterns:
     """
     Advanced variable-length path patterns.
@@ -1449,6 +1448,7 @@ class TestAdvancedVLPPatterns:
         result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
     
+    @pytest.mark.xfail(reason="VLP path variable and property propagation issues in CTE generation")
     @pytest.mark.parametrize("seed", range(10))
     def test_vlp_with_path(self, seed):
         """VLP with path variable."""

@@ -31,7 +31,6 @@ def query_api(query: str, schema_name: str = "social_integration", port: int = 8
 class TestVLPWithStandardSchema:
     """VLP + WITH on standard node/edge tables (separate users and follows tables)."""
 
-    @pytest.mark.xfail(reason="Code bug: VLP path functions in WITH clause not resolved")
     def test_length_path_in_with(self):
         """Standard schema: length(path) in WITH clause."""
         query = """
@@ -47,7 +46,6 @@ class TestVLPWithStandardSchema:
         for row in result["data"]:
             assert row["path_len"] == 2
 
-    @pytest.mark.xfail(reason="Code bug: VLP path functions in WITH clause not resolved")
     def test_nodes_path_in_with(self):
         """Standard schema: nodes(path) in WITH clause."""
         query = """

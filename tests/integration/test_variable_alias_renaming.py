@@ -72,7 +72,6 @@ class TestVariableAliasRenaming:
         assert "results" in response
         print(f"✓ Mixed rename and pass-through works: {response['results'][0]}")
 
-    @pytest.mark.xfail(reason="Code bug: renamed variable not resolved in subsequent MATCH")
     def test_renamed_node_in_subsequent_match(self):
         """Test: WITH u AS person ... MATCH (person)-[:FOLLOWS]->(f)"""
         response = query_clickgraph(

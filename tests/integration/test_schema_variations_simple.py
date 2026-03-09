@@ -70,7 +70,6 @@ class TestLabelInferenceBaseline:
         assert response.status_code == 200
         # Should scan both User and Post
     
-    @pytest.mark.xfail(reason="Code bug: undirected unlabeled pattern inference fails")
     def test_undirected_infers_types(self):
         """Undirected pattern with one label."""
         query = "MATCH (u:User)--(n) RETURN count(DISTINCT n)"

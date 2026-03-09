@@ -63,7 +63,6 @@ class TestVLPWithCollect:
 class TestVLPWithClause:
     """Test VLP queries combined with WITH clause."""
 
-    @pytest.mark.xfail(reason="Code bug: VLP crossfunctional query generates invalid SQL")
     def test_vlp_with_filtering(self, simple_graph):
         """VLP + WITH: Filter paths before final RETURN."""
         query = """

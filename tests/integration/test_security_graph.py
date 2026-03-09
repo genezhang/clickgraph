@@ -704,7 +704,6 @@ class TestRandomQueries:
         # collect() may have issues with certain schemas
         assert response.status_code in [200, 400, 500]
     
-    @pytest.mark.xfail(reason="Code bug: UNWIND crashes server (ConnectionError)")
     def test_unwind_list(self):
         """UNWIND a list - may not be supported."""
         response = execute_cypher(

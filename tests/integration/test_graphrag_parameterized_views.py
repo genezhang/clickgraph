@@ -434,7 +434,6 @@ class TestGraphRAGWithParameterizedViews:
 class TestGraphRAGParameterizedPerformance:
     """Test performance characteristics of parameterized GraphRAG queries."""
     
-    @pytest.mark.xfail(reason="Code bug: VLP with parameterized views generates invalid SQL")
     def test_parameterized_view_overhead_minimal(self, graphrag_parameterized_schema):
         """Parameterized views should add minimal overhead to VLP queries."""
         import time
