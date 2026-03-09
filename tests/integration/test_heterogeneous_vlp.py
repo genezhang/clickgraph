@@ -40,7 +40,6 @@ class TestHeterogeneousMultiTypeVLP:
         )
         return response
 
-    @pytest.mark.xfail(reason="Heterogeneous multi-type VLP not fully supported - type inference only uses first target type")
     def test_heterogeneous_vlp_return_neighbor(self):
         """Test heterogeneous multi-type VLP returning neighbor nodes.
         

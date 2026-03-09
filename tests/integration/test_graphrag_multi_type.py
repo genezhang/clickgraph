@@ -255,7 +255,6 @@ class TestMultiTypePerformance:
         
         assert total > 0, "Should find paths across all users"
     
-    @pytest.mark.xfail(reason="Code bug: multi-type VLP generates invalid SQL or crashes server")
     def test_multi_type_with_limit(self):
         """Test multi-type with LIMIT (optimization check)."""
         response = execute_cypher(
@@ -273,7 +272,6 @@ class TestMultiTypePerformance:
         assert len(response["results"]) <= 10
 
 
-@pytest.mark.xfail(reason="Multi-type VLP property extraction generates 500 error")
 class TestMultiTypePropertyExtraction:
     """
     Test property extraction from JSON for multi-type VLP endpoints.
@@ -284,6 +282,7 @@ class TestMultiTypePropertyExtraction:
     Feature implemented: Jan 6, 2026
     """
     
+    @pytest.mark.xfail(reason="Multi-type VLP property extraction generates 500 error")
     def test_basic_property_access(self):
         """Test basic property access on multi-type VLP endpoint."""
         response = execute_cypher(
@@ -311,6 +310,7 @@ class TestMultiTypePropertyExtraction:
             if result["x.name"]:
                 assert isinstance(result["x.name"], str), "Name should be string"
     
+    @pytest.mark.xfail(reason="Multi-type VLP property extraction generates 500 error")
     def test_label_function_with_property(self):
         """Test label() function alongside property access."""
         response = execute_cypher(
@@ -383,6 +383,7 @@ class TestMultiTypePropertyExtraction:
             assert "x.nonexistent_property" in result
             assert result["x.nonexistent_property"] == "" or result["x.nonexistent_property"] is None
     
+    @pytest.mark.xfail(reason="Multi-type VLP property extraction generates 500 error")
     def test_property_with_filter(self):
         """Test property access with WHERE clause on properties."""
         response = execute_cypher(
@@ -402,6 +403,7 @@ class TestMultiTypePropertyExtraction:
         for result in results:
             assert result["x.city"] == "NYC"
     
+    @pytest.mark.xfail(reason="Multi-type VLP property extraction generates 500 error")
     def test_property_with_order_by(self):
         """Test ORDER BY on extracted JSON properties."""
         response = execute_cypher(

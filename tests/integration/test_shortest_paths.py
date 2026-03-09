@@ -83,7 +83,6 @@ class TestShortestPath:
         # No path from Eve to Alice (directed graph)
         assert_row_count(response, 0)
     
-    @pytest.mark.xfail(reason="Self-referencing shortest path pattern uses hardcoded column names - KNOWN_ISSUES")
     def test_shortest_path_self(self, simple_graph):
         """Test shortestPath from node to itself."""
         response = execute_cypher(
@@ -342,7 +341,6 @@ class TestShortestPathDepth:
 class TestShortestPathEdgeCases:
     """Test edge cases for shortest path queries."""
     
-    @pytest.mark.xfail(reason="Self-referencing shortest path pattern uses hardcoded column names - KNOWN_ISSUES")
     def test_shortest_path_same_node(self, simple_graph):
         """Test shortest path from node to itself."""
         response = execute_cypher(

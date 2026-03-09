@@ -37,7 +37,6 @@ class TestCountRelationships:
         total = get_single_value(response, "total", convert_to_int=True)
         assert total > 0, f"Expected some relationships, got {total}"
 
-    @pytest.mark.xfail(reason="UNION ALL type mismatch: Date vs String columns across relationship types")
     def test_count_with_untyped_relationship(self, simple_graph):
         """
         Test COUNT(r) without type - should expand to all relationship types.
@@ -56,7 +55,6 @@ class TestCountRelationships:
         # Should count across all relationship types (TEST_FOLLOWS + TEST_PURCHASED + TEST_FRIENDS_WITH)
         assert total > 0
 
-    @pytest.mark.xfail(reason="UNION ALL type mismatch: Date vs String columns across relationship types")
     def test_count_star_with_anonymous_relationship(self, simple_graph):
         """
         Test count(*) with anonymous relationship pattern.

@@ -54,9 +54,9 @@ class TestMultiHopSqlGeneration:
     
     @pytest.mark.parametrize("direction,expected_unions", [
         ("directed", 1),      # (a)-[r1]->(b)-[r2]->(c)
-        ("undirected", 4),    # (a)-[r1]-(b)-[r2]-(c) = 2^2 branches
+        pytest.param("undirected", 4, marks=pytest.mark.xfail(
+            reason="Undirected 2-hop collapses UNION branches to 1 instead of 4")),
     ])
-    @pytest.mark.xfail(reason="Denormalized undirected multi-hop doesn't generate UNION ALL")
     def test_2hop_union_branch_count_denormalized(self, direction, expected_unions):
         """Verify correct number of UNION branches for denormalized schema."""
         if direction == "directed":
