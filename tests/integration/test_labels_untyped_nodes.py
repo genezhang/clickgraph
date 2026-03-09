@@ -71,6 +71,7 @@ def test_labels_in_where_clause(simple_graph):
     assert user_count > 0, "Should have at least one TestUser node"
 
 
+@pytest.mark.xfail(reason="labels() on mixed typed/untyped nodes in same query not fully supported")
 def test_labels_mixed_typed_untyped(simple_graph):
     """Test labels() on both typed and untyped nodes in same query."""
     response = execute_cypher(

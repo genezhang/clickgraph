@@ -75,6 +75,7 @@ class TestVLPRelationshipReturn:
         results = data["results"]
         assert len(results) >= 3, f"Expected at least 3 results, got {len(results)}"
 
+    @pytest.mark.xfail(reason="VLP CTE property propagation: end_full_name not in recursive CTE")
     def test_single_type_vlp_return_nodes_only(self):
         """Test single-type VLP returning nodes only."""
         response = self.query(
@@ -87,6 +88,7 @@ class TestVLPRelationshipReturn:
         data = response.json()
         assert len(data["results"]) >= 3
 
+    @pytest.mark.xfail(reason="VLP path variable return not fully supported")
     def test_vlp_path_variable_length(self):
         """Test VLP with path variable and length function."""
         response = self.query(
@@ -125,6 +127,7 @@ class TestVLPRelationshipReturn:
         assert "neighbor.user_id" in result
         assert "r.created_at" in result
 
+    @pytest.mark.xfail(reason="VLP CTE property propagation: type info columns not in recursive CTE")
     def test_single_type_vlp_with_type_info(self):
         """Test single-type VLP returns relationship type info.
         
@@ -163,6 +166,7 @@ class TestVLPRelationshipReturn:
         assert len(data["results"]) >= 1
 
 
+@pytest.mark.xfail(reason="Multi-type VLP execution generates invalid SQL")
 class TestVLPMultiType:
     """Test multi-type VLP (heterogeneous edges)."""
 

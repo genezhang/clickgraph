@@ -48,6 +48,11 @@ pub type CteSchemas = HashMap<String, CteSchemaMetadata>;
 
 use std::collections::HashMap;
 
+/// Maximum recursion depth for plan/expression tree traversal functions.
+/// Prevents stack overflow and OOM from pathologically deep or cyclic plan trees.
+/// Normal queries rarely exceed depth 50; 200 is generous while protecting against DoS.
+pub const MAX_TRAVERSAL_DEPTH: usize = 200;
+
 // Re-export denormalized alias accessors from unified query context
 // See server/query_context.rs for the task_local! implementation with .scope() support
 pub use crate::server::query_context::{

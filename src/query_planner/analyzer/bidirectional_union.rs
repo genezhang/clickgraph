@@ -546,19 +546,30 @@ fn is_redundant_undirected_union(plan: &LogicalPlan) -> bool {
 
 /// Check if a plan tree contains an alias as a node or connection.
 fn has_alias_in_plan(plan: &LogicalPlan, alias: &str) -> bool {
+    has_alias_in_plan_impl(plan, alias, 0)
+}
+
+fn has_alias_in_plan_impl(plan: &LogicalPlan, alias: &str, depth: usize) -> bool {
+    if depth > crate::render_plan::MAX_TRAVERSAL_DEPTH {
+        log::warn!("has_alias_in_plan: depth limit {} exceeded", depth);
+        return false;
+    }
     match plan {
-        LogicalPlan::GraphNode(gn) => gn.alias == alias || has_alias_in_plan(&gn.input, alias),
+        LogicalPlan::GraphNode(gn) => {
+            gn.alias == alias || has_alias_in_plan_impl(&gn.input, alias, depth + 1)
+        }
         LogicalPlan::GraphRel(gr) => {
             gr.left_connection == alias
                 || gr.right_connection == alias
-                || has_alias_in_plan(&gr.left, alias)
-                || has_alias_in_plan(&gr.right, alias)
+                || has_alias_in_plan_impl(&gr.left, alias, depth + 1)
+                || has_alias_in_plan_impl(&gr.right, alias, depth + 1)
         }
         LogicalPlan::CartesianProduct(cp) => {
-            has_alias_in_plan(&cp.left, alias) || has_alias_in_plan(&cp.right, alias)
+            has_alias_in_plan_impl(&cp.left, alias, depth + 1)
+                || has_alias_in_plan_impl(&cp.right, alias, depth + 1)
         }
-        LogicalPlan::Filter(f) => has_alias_in_plan(&f.input, alias),
-        LogicalPlan::Projection(p) => has_alias_in_plan(&p.input, alias),
+        LogicalPlan::Filter(f) => has_alias_in_plan_impl(&f.input, alias, depth + 1),
+        LogicalPlan::Projection(p) => has_alias_in_plan_impl(&p.input, alias, depth + 1),
         _ => false,
     }
 }

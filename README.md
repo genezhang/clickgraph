@@ -4,7 +4,7 @@
 
 # ClickGraph
 
-#### ClickGraph - A high-performance, stateless, read-only graph query service for ClickHouse, written in Rust, with Neo4j ecosystem compatibility - Cypher and Bolt Protocol 5.8 support.
+#### ClickGraph - A high-performance, stateless, read-only graph query service for ClickHouse, written in Rust, with Neo4j ecosystem compatibility - Cypher and Bolt Protocol 5.8 support. Now supports embedded mode and exporting query results to external destinations.
 
 > **Note: ClickGraph dev release is at beta quality for view-based graph analytics applications. Kindly raise an issue if you encounter any problem.**
 
@@ -15,10 +15,14 @@
 - View-based graph analytics offer the benefits of zero-ETL without the hassle of data migration and duplicate cost, yet better performance and scalability than most of the native graph analytics options.
 - Neo4j Bolt protocol support gives access to the tools available based on the Bolt protocol.
 ---
+## What's New Under Development
+
+- **🆕 Embedded mode** - Query Parquet/Iceberg/Delta/S3 directly — no ClickHouse server needed. Use as a Rust library (`clickgraph-embedded`) or run the server with `--embedded`.
+- **Golang and Python bindings** - for embedded ClickGraph in addition to Rust native interface.
+- **Export query result to external destinations** - export query results to common destinations, such as files and S3.
 
 ## What's New in v0.6.3-dev
 
-- **🆕 Embedded mode** - Query Parquet/Iceberg/Delta/S3 directly — no ClickHouse server needed. Use as a Rust library (`clickgraph-embedded`) or run the server with `--embedded`.
 - **LDBC SNB: 36/37 queries (97%)** - Up from 14/37, near-complete Social Network Benchmark coverage
 - **GraphRAG structured output** - `format: "Graph"` returns deduplicated nodes, edges, and stats
 - **ClickHouse cluster load balancing** - Set `CLICKHOUSE_CLUSTER` to auto-discover and balance across cluster nodes

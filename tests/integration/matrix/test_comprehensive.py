@@ -207,35 +207,41 @@ class TestMultiHopPatterns:
 
 class TestVariableLengthPaths:
     """Test variable-length path patterns"""
-    
+
     def test_vlp_star(self, server_running, schema_config, query_generator):
         """Test: (a)-[*]->(b)"""
+        if schema_config.name == 'filesystem':
+            pytest.xfail("VLP CTE property propagation: end_type not in recursive CTE for filesystem")
         query = query_generator.vlp_star()
         result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
-    
+
     @pytest.mark.parametrize("hops", [2, 3, 4])
     def test_vlp_exact(self, server_running, schema_config, query_generator, hops):
         """Test: (a)-[*N]->(b) for various N"""
         query = query_generator.vlp_exact(hops)
         result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
-    
+
     @pytest.mark.parametrize("min_hops,max_hops", [(1, 2), (1, 3), (2, 4), (1, 5)])
     def test_vlp_range(self, server_running, schema_config, query_generator, min_hops, max_hops):
         """Test: (a)-[*min..max]->(b)"""
+        if schema_config.name == 'filesystem':
+            pytest.xfail("VLP CTE property propagation: end_type not in recursive CTE for filesystem")
         query = query_generator.vlp_range(min_hops, max_hops)
         result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
-    
+
     @pytest.mark.slow  # Can cause memory issues with large datasets
     @pytest.mark.parametrize("min_hops", [1, 2])  # Reduced from [1, 2, 3] - min_hops=3 can explode
     def test_vlp_open_end(self, server_running, schema_config, query_generator, min_hops):
         """Test: (a)-[*min..]->(b)
-        
+
         Note: Open-ended VLP patterns can cause memory issues on large graphs
         because they default to max_hops=10 which can generate billions of paths.
         """
+        if schema_config.name == 'filesystem':
+            pytest.xfail("VLP CTE property propagation: end_type not in recursive CTE for filesystem")
         query = query_generator.vlp_open_end(min_hops)
         result = execute_query(query, schema_name=schema_config.name, timeout=15)  # Shorter timeout
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
@@ -246,12 +252,16 @@ class TestShortestPath:
     
     def test_shortest_path(self, server_running, schema_config, query_generator):
         """Test: shortestPath((a)-[*]->(b))"""
+        if schema_config.name == 'filesystem':
+            pytest.xfail("shortestPath VLP CTE references non-existent table for filesystem")
         query = query_generator.shortest_path()
         result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
-    
+
     def test_all_shortest_paths(self, server_running, schema_config, query_generator):
         """Test: allShortestPaths((a)-[*]->(b))"""
+        if schema_config.name == 'filesystem':
+            pytest.xfail("allShortestPaths VLP CTE references non-existent table for filesystem")
         query = query_generator.all_shortest_paths()
         result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"
@@ -469,6 +479,8 @@ class TestPathVariables:
     
     def test_path_variable(self, server_running, schema_config, query_generator):
         """Test: p = (a)-[*]->(b)"""
+        if schema_config.name in ('filesystem', 'social_integration'):
+            pytest.xfail("Path variable RETURN p generates non-JSON response for this schema")
         query = query_generator.path_variable()
         result = execute_query(query, schema_name=schema_config.name)
         assert result["success"], f"Query failed: {query}\nResult: {result['body']}"

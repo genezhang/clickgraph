@@ -47,6 +47,18 @@ struct Cli {
     #[arg(long)]
     embedded: bool,
 
+    /// Per-query timeout in seconds (0 = no timeout)
+    #[arg(long, default_value_t = 300)]
+    query_timeout_secs: u64,
+
+    /// Maximum HTTP request body size in bytes
+    #[arg(long, default_value_t = 1_048_576)]
+    max_request_body_bytes: usize,
+
+    /// Maximum concurrent queries (0 = unlimited)
+    #[arg(long, default_value_t = 64)]
+    max_concurrent_queries: usize,
+
     /// Log level (overridden by RUST_LOG env var)
     #[arg(long, default_value = "info")]
     log_level: String,
@@ -65,6 +77,9 @@ impl From<Cli> for config::CliConfig {
             daemon: cli.daemon,
             neo4j_compat_mode: cli.neo4j_compat_mode,
             embedded: cli.embedded,
+            query_timeout_secs: cli.query_timeout_secs,
+            max_request_body_bytes: cli.max_request_body_bytes,
+            max_concurrent_queries: cli.max_concurrent_queries,
         }
     }
 }
