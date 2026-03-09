@@ -86,9 +86,31 @@ use crate::{
             trivial_with_elimination::TrivialWithElimination,
         },
     },
+    render_plan::MAX_PLAN_NODES,
 };
 
 use super::plan_ctx::PlanCtx;
+
+/// Check that a plan tree hasn't exploded beyond the allowed node count.
+/// Returns an error if the plan exceeds MAX_PLAN_NODES, preventing OOM.
+fn check_plan_size(plan: &LogicalPlan, pass_name: &str) -> AnalyzerResult<()> {
+    let node_count = plan.count_plan_nodes(MAX_PLAN_NODES + 1);
+    if node_count > MAX_PLAN_NODES {
+        log::error!(
+            "Plan explosion detected after {}: {} nodes exceeds limit of {}",
+            pass_name,
+            node_count,
+            MAX_PLAN_NODES
+        );
+        return Err(errors::AnalyzerError::InvalidPlan(format!(
+            "Query plan too large after {} ({} nodes, limit {}). \
+             Common causes: untyped patterns generating many UNION branches, \
+             UNION distribution through deep plan trees, or undirected edges multiplying branches.",
+            pass_name, node_count, MAX_PLAN_NODES
+        )));
+    }
+    Ok(())
+}
 
 mod analyzer_pass;
 mod bidirectional_union;
@@ -195,6 +217,8 @@ pub fn initial_analyzing(
     };
     */
 
+    check_plan_size(&plan, "TypeInference")?;
+
     // Step 2.5: VLP Transitivity Check - validate variable-length path patterns
     // This runs after TypeInference to ensure we have relationship types resolved
     // Checks if VLP patterns are semantically valid (relationship must be transitive)
@@ -248,6 +272,8 @@ pub fn initial_analyzing(
         }
     };
 
+    check_plan_size(&plan, "BidirectionalUnion")?;
+
     // Step 3.6: UnionDistribution - Hoist Union from inside GraphRel/CartesianProduct chains
     // After BidirectionalUnion creates Union for undirected edges, it may be buried inside
     // GraphRel/CartesianProduct (from post-WITH MATCH patterns). This pass hoists Union above
@@ -268,6 +294,8 @@ pub fn initial_analyzing(
             plan
         }
     };
+
+    check_plan_size(&plan, "UnionDistribution")?;
 
     log::debug!(
         "🔀 UNION_TRACE after UnionDistribution: has_union={}",
@@ -543,4 +571,72 @@ pub fn final_analyzing(
     let plan = unwind_property_rewriter::rewrite_unwind_properties(plan);
 
     Ok(plan)
+}
+
+#[cfg(test)]
+mod plan_size_tests {
+    use super::*;
+    use crate::query_planner::logical_expr::{Literal, LogicalExpr};
+    use crate::query_planner::logical_plan::{Filter, Union};
+
+    /// Build a plan tree with `n` Union branches, each containing a Filter chain of depth `d`.
+    fn make_wide_plan(branches: usize, depth: usize) -> Arc<LogicalPlan> {
+        let mut inputs = Vec::new();
+        for _ in 0..branches {
+            let mut plan: Arc<LogicalPlan> = Arc::new(LogicalPlan::Empty);
+            for _ in 0..depth {
+                plan = Arc::new(LogicalPlan::Filter(Filter {
+                    input: plan,
+                    predicate: LogicalExpr::Literal(Literal::Boolean(true)),
+                }));
+            }
+            inputs.push(plan);
+        }
+        Arc::new(LogicalPlan::Union(Union {
+            inputs,
+            union_type: crate::query_planner::logical_plan::UnionType::All,
+        }))
+    }
+
+    #[test]
+    fn test_count_plan_nodes_small() {
+        let plan = make_wide_plan(3, 2);
+        // 1 Union + 3 branches * (2 Filters + 1 Empty) = 1 + 9 = 10
+        assert_eq!(plan.count_plan_nodes(100), 10);
+    }
+
+    #[test]
+    fn test_count_plan_nodes_cap() {
+        let plan = make_wide_plan(100, 10);
+        // 100 branches * 11 nodes each + 1 Union = 1101, but cap at 50
+        let count = plan.count_plan_nodes(50);
+        assert!(count >= 50);
+    }
+
+    #[test]
+    fn test_check_plan_size_ok() {
+        let plan = make_wide_plan(3, 2);
+        assert!(check_plan_size(&plan, "test").is_ok());
+    }
+
+    #[test]
+    fn test_check_plan_size_rejects_oversized() {
+        // Build a plan with more than MAX_PLAN_NODES nodes
+        // MAX_PLAN_NODES = 10,000, so 200 branches * 60 depth = 200*(60+1)+1 = 12,201
+        let plan = make_wide_plan(200, 60);
+        let result = check_plan_size(&plan, "test_pass");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("too large"),
+            "Error should mention 'too large': {}",
+            msg
+        );
+        assert!(
+            msg.contains("test_pass"),
+            "Error should mention pass name: {}",
+            msg
+        );
+    }
 }
