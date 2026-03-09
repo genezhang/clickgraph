@@ -17,15 +17,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 from conftest import execute_cypher, assert_query_success, get_single_value, assert_row_count
 
 
-def execute_query(query, schema_name="test_fixtures"):
-    """Execute a Cypher query against ClickGraph."""
-    return execute_cypher(query, schema_name=schema_name)
-
-
 class TestCountRelationships:
     """Test COUNT() aggregation with relationships."""
 
-    def test_count_with_explicit_type(self):
+    def test_count_with_explicit_type(self, simple_graph):
         """
         Test COUNT(r) with explicit relationship type - should work.
         """
@@ -34,27 +29,27 @@ class TestCountRelationships:
             MATCH ()-[r:TEST_FOLLOWS]->()
             RETURN count(r) AS total
             """,
-            schema_name="test_fixtures"
+            schema_name=simple_graph["schema_name"]
         )
-        
+
         assert_query_success(response)
         assert_row_count(response, 1)
         total = get_single_value(response, "total", convert_to_int=True)
         assert total > 0, f"Expected some relationships, got {total}"
 
     @pytest.mark.xfail(reason="UNION ALL type mismatch: Date vs String columns across relationship types")
-    def test_count_with_untyped_relationship(self):
+    def test_count_with_untyped_relationship(self, simple_graph):
         """
         Test COUNT(r) without type - should expand to all relationship types.
-        
+
         Untyped relationships are valid in Cypher and ClickGraph handles them
         by generating a UNION ALL across all relationship types in the schema.
         """
         response = execute_cypher(
             "MATCH ()-[r]->() RETURN count(r) AS total",
-            schema_name="test_fixtures"
+            schema_name=simple_graph["schema_name"]
         )
-        
+
         assert_query_success(response)
         assert_row_count(response, 1)
         total = get_single_value(response, "total", convert_to_int=True)
@@ -62,40 +57,40 @@ class TestCountRelationships:
         assert total > 0
 
     @pytest.mark.xfail(reason="UNION ALL type mismatch: Date vs String columns across relationship types")
-    def test_count_star_with_anonymous_relationship(self):
+    def test_count_star_with_anonymous_relationship(self, simple_graph):
         """
         Test count(*) with anonymous relationship pattern.
-        
+
         Anonymous untyped relationships expand to all types via UNION ALL.
         """
         response = execute_cypher(
             "MATCH ()-[]->() RETURN count(*) AS total",
-            schema_name="test_fixtures"
+            schema_name=simple_graph["schema_name"]
         )
-        
+
         assert_query_success(response)
         assert_row_count(response, 1)
         total = get_single_value(response, "total", convert_to_int=True)
         assert total > 0
 
-    def test_count_relationship_with_node_constraints(self):
+    def test_count_relationship_with_node_constraints(self, simple_graph):
         """
         Test relationship counting with node type constraints.
-        
+
         When node types are specified, ClickGraph infers the valid
         relationship types connecting them via UNION ALL.
         """
         response = execute_cypher(
             "MATCH (u:TestUser)-[r]->(other:TestUser) RETURN count(r) AS total",
-            schema_name="test_fixtures"
+            schema_name=simple_graph["schema_name"]
         )
-        
+
         assert_query_success(response)
         assert_row_count(response, 1)
         total = get_single_value(response, "total", convert_to_int=True)
         assert total > 0
 
-    def test_count_star_with_typed_relationship(self):
+    def test_count_star_with_typed_relationship(self, simple_graph):
         """
         Test count(*) with explicit relationship type - should work.
         """
@@ -104,9 +99,9 @@ class TestCountRelationships:
             MATCH ()-[:TEST_FOLLOWS]->()
             RETURN count(*) AS total
             """,
-            schema_name="test_fixtures"
+            schema_name=simple_graph["schema_name"]
         )
-        
+
         assert_query_success(response)
         assert_row_count(response, 1)
         total = get_single_value(response, "total", convert_to_int=True)
