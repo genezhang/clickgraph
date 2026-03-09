@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{get, post},
     Router,
 };
@@ -11,12 +13,14 @@ use handlers::{
     list_schemas_handler, load_schema_handler, query_handler,
 };
 use sql_generation_handler::sql_generation_handler;
+use tower_http::catch_panic::CatchPanicLayer;
+use tower_http::timeout::TimeoutLayer;
 
 use dotenvy::dotenv;
 use tokio::net::TcpListener;
 #[cfg(windows)]
 use tokio::signal;
-use tokio::sync::{OnceCell, RwLock};
+use tokio::sync::{OnceCell, RwLock, Semaphore};
 
 use crate::config::ServerConfig;
 use crate::executor::{remote::RemoteClickHouseExecutor, QueryExecutor};
@@ -42,6 +46,9 @@ pub struct AppState {
     /// `None` in embedded mode — admin endpoints return 501.
     pub clickhouse_client: Option<Client>,
     pub config: ServerConfig,
+    /// Semaphore limiting concurrent query processing.
+    /// `None` when max_concurrent_queries = 0 (unlimited).
+    pub query_semaphore: Option<Arc<Semaphore>>,
 }
 
 // ==================================================================================
@@ -139,6 +146,7 @@ pub async fn run_with_config(config: ServerConfig) {
         let app_state = AppState {
             executor,
             clickhouse_client: None,
+            query_semaphore: make_query_semaphore(&config),
             config: config.clone(),
         };
 
@@ -180,12 +188,14 @@ pub async fn run_with_config(config: ServerConfig) {
         }
     };
 
+    let query_semaphore = make_query_semaphore(&config);
     let app_state = if client_opt.is_some() {
         let executor: Arc<dyn QueryExecutor> =
             Arc::new(RemoteClickHouseExecutor::new(connection_pool.clone()));
         AppState {
             executor,
             clickhouse_client: client_opt.clone(),
+            query_semaphore: query_semaphore.clone(),
             config: config.clone(),
         }
     } else {
@@ -201,6 +211,7 @@ pub async fn run_with_config(config: ServerConfig) {
         AppState {
             executor,
             clickhouse_client: None,
+            query_semaphore,
             config: config.clone(),
         }
     };
@@ -238,12 +249,21 @@ pub async fn run_with_config(config: ServerConfig) {
     run_server(app_state, config).await;
 }
 
+/// Create query concurrency semaphore from config.
+fn make_query_semaphore(config: &ServerConfig) -> Option<Arc<Semaphore>> {
+    if config.max_concurrent_queries > 0 {
+        Some(Arc::new(Semaphore::new(config.max_concurrent_queries)))
+    } else {
+        None
+    }
+}
+
 /// Bind and serve HTTP (and optionally Bolt) using the given `app_state`.
 async fn run_server(app_state: AppState, config: ServerConfig) {
     let http_bind_address = format!("{}:{}", config.http_host, config.http_port);
     log::info!("Starting HTTP server on {}", http_bind_address);
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/health", get(health_check))
         .route("/query", post(query_handler))
         .route("/query/sql", post(sql_generation_handler))
@@ -253,7 +273,27 @@ async fn run_server(app_state: AppState, config: ServerConfig) {
         .route("/schemas/introspect", post(introspect_handler))
         .route("/schemas/discover-prompt", post(discover_prompt_handler))
         .route("/schemas/draft", post(draft_handler))
-        .with_state(Arc::new(app_state.clone()));
+        .with_state(Arc::new(app_state.clone()))
+        // Body size limit (default 1 MB, configurable via CLICKGRAPH_MAX_REQUEST_BODY_BYTES)
+        .layer(DefaultBodyLimit::max(config.max_request_body_bytes))
+        // Catch panics in handlers — return 500 instead of dropping the connection
+        .layer(CatchPanicLayer::new());
+
+    // Per-request timeout (covers parsing + planning + execution)
+    if config.query_timeout_secs > 0 {
+        app = app.layer(TimeoutLayer::new(Duration::from_secs(
+            config.query_timeout_secs,
+        )));
+        log::info!("HTTP request timeout: {}s", config.query_timeout_secs);
+    }
+
+    log::info!(
+        "Max request body size: {} bytes",
+        config.max_request_body_bytes
+    );
+    if config.max_concurrent_queries > 0 {
+        log::info!("Max concurrent queries: {}", config.max_concurrent_queries);
+    }
 
     let http_listener = match TcpListener::bind(&http_bind_address).await {
         Ok(listener) => {

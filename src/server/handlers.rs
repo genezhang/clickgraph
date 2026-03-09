@@ -179,6 +179,29 @@ pub async fn query_handler(
     State(app_state): State<Arc<AppState>>,
     Json(payload): Json<QueryRequest>,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
+    // Acquire concurrency permit if semaphore is configured
+    let _permit = if let Some(sem) = app_state.query_semaphore.clone() {
+        match sem.try_acquire_owned() {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                log::warn!(
+                    "Query rejected: max concurrent queries ({}) reached",
+                    app_state.config.max_concurrent_queries
+                );
+                return Ok((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({
+                        "error": "Server is at maximum query capacity. Please retry later.",
+                        "max_concurrent_queries": app_state.config.max_concurrent_queries
+                    })),
+                )
+                    .into_response());
+            }
+        }
+    } else {
+        None
+    };
+
     let start_time = Instant::now();
     let metrics = QueryPerformanceMetrics::new();
 

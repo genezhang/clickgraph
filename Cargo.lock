@@ -494,6 +494,8 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tokio-tungstenite",
+ "tower",
+ "tower-http",
  "uuid",
  "validator",
 ]
@@ -2893,11 +2895,14 @@ dependencies = [
  "futures-util",
  "http 1.4.0",
  "http-body 1.0.1",
+ "http-body-util",
  "iri-string",
  "pin-project-lite",
+ "tokio",
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
