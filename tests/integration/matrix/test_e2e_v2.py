@@ -193,13 +193,18 @@ class TestVariableLengthPaths:
     Variable-length path patterns.
     5 patterns x 3 schemas x 4 variations = ~60 tests
     """
-    
+
+    @staticmethod
+    def _check_known_xfails(pattern, schema_name):
+        """Mark known failing pattern+schema combinations as xfail."""
+        if pattern == "vlp_with_path_variable" and schema_name == "social_integration":
+            pytest.xfail("Path variable RETURN p generates non-JSON response")
+
     @pytest.mark.parametrize("schema_name", list(SCHEMAS.keys()))
     @pytest.mark.parametrize("pattern", VLP_PATTERNS)
     def test_vlp_pattern(self, schema_name, pattern):
         """Test VLP patterns across all schemas."""
-        if pattern == "vlp_with_path_variable" and schema_name == "social_integration":
-            pytest.xfail("Path variable RETURN p generates non-JSON response")
+        self._check_known_xfails(pattern, schema_name)
         config = SCHEMAS[schema_name]
         gen = QueryGenerator(schema_name, config)
         query = getattr(gen, pattern)()
@@ -210,8 +215,7 @@ class TestVariableLengthPaths:
     @pytest.mark.parametrize("pattern", VLP_PATTERNS)
     def test_vlp_variation_1(self, schema_name, pattern):
         """VLP patterns - variation 1."""
-        if pattern == "vlp_with_path_variable" and schema_name == "social_integration":
-            pytest.xfail("Path variable RETURN p generates non-JSON response")
+        self._check_known_xfails(pattern, schema_name)
         random.seed(500)
         config = SCHEMAS[schema_name]
         gen = QueryGenerator(schema_name, config)
@@ -223,8 +227,7 @@ class TestVariableLengthPaths:
     @pytest.mark.parametrize("pattern", VLP_PATTERNS)
     def test_vlp_variation_2(self, schema_name, pattern):
         """VLP patterns - variation 2."""
-        if pattern == "vlp_with_path_variable" and schema_name == "social_integration":
-            pytest.xfail("Path variable RETURN p generates non-JSON response")
+        self._check_known_xfails(pattern, schema_name)
         random.seed(600)
         config = SCHEMAS[schema_name]
         gen = QueryGenerator(schema_name, config)
@@ -236,8 +239,7 @@ class TestVariableLengthPaths:
     @pytest.mark.parametrize("pattern", VLP_PATTERNS)
     def test_vlp_variation_3(self, schema_name, pattern):
         """VLP patterns - variation 3."""
-        if pattern == "vlp_with_path_variable" and schema_name == "social_integration":
-            pytest.xfail("Path variable RETURN p generates non-JSON response")
+        self._check_known_xfails(pattern, schema_name)
         random.seed(700)
         config = SCHEMAS[schema_name]
         gen = QueryGenerator(schema_name, config)

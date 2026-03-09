@@ -48,7 +48,4 @@ pub enum RenderBuildError {
 
     #[error("Union has no branches to render")]
     EmptyUnionBranches,
-
-    #[error("Recursion depth exceeded ({0}): query plan is too deeply nested")]
-    RecursionDepthExceeded(usize),
 }

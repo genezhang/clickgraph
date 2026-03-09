@@ -158,9 +158,9 @@ class TestStandardSchema:
         )
         assert_sql_generated(result, "follow_date", "full_name")
 
-    @pytest.mark.xfail(reason="GraphRAG endpoint not available in test environment")
+    @pytest.mark.skip(reason="GraphRAG endpoint not available in test environment")
     def test_graphrag_expansion(self):
-        pytest.skip("GraphRAG endpoint not available")
+        pass
 
 
 # ============================================================================
@@ -217,9 +217,9 @@ class TestFKEdgeSchema:
         )
         assert_sql_generated(result)
 
-    @pytest.mark.xfail(reason="GraphRAG endpoint not available in test environment")
+    @pytest.mark.skip(reason="GraphRAG endpoint not available in test environment")
     def test_graphrag_expansion(self):
-        pytest.skip("GraphRAG endpoint not available")
+        pass
 
 
 # ============================================================================
@@ -276,9 +276,9 @@ class TestDenormalizedSchema:
         )
         assert_sql_generated(result, "carrier", "flight_number")
 
-    @pytest.mark.xfail(reason="GraphRAG endpoint not available in test environment")
+    @pytest.mark.skip(reason="GraphRAG endpoint not available in test environment")
     def test_graphrag_expansion(self):
-        pytest.skip("GraphRAG endpoint not available")
+        pass
 
 
 # ============================================================================
@@ -351,9 +351,9 @@ class TestPolymorphicSchema:
         )
         assert_sql_generated(result, "interactions")
 
-    @pytest.mark.xfail(reason="GraphRAG endpoint not available in test environment")
+    @pytest.mark.skip(reason="GraphRAG endpoint not available in test environment")
     def test_graphrag_expansion(self):
-        pytest.skip("GraphRAG endpoint not available")
+        pass
 
 
 # ============================================================================
@@ -408,9 +408,9 @@ class TestCompositeIDSchema:
         )
         assert_sql_generated(result, "amount", "transfer_date")
 
-    @pytest.mark.xfail(reason="GraphRAG endpoint not available in test environment")
+    @pytest.mark.skip(reason="GraphRAG endpoint not available in test environment")
     def test_graphrag_expansion(self):
-        pytest.skip("GraphRAG endpoint not available")
+        pass
 
 
 # ============================================================================
