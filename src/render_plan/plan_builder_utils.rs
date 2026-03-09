@@ -3574,30 +3574,42 @@ pub fn count_with_cte_refs(plan: &LogicalPlan) -> Vec<(usize, Vec<String>)> {
 
 /// Check if there's a WithClause anywhere in the logical plan tree
 pub fn has_with_clause_in_tree(plan: &LogicalPlan) -> bool {
+    has_with_clause_in_tree_impl(plan, 0)
+}
+
+fn has_with_clause_in_tree_impl(plan: &LogicalPlan, depth: usize) -> bool {
+    if depth > crate::render_plan::MAX_TRAVERSAL_DEPTH {
+        log::warn!("has_with_clause_in_tree: depth limit {} exceeded", depth);
+        return false;
+    }
     match plan {
         LogicalPlan::WithClause(_) => true,
         LogicalPlan::ViewScan(vs) => vs
             .input
             .as_ref()
-            .is_some_and(|p| has_with_clause_in_tree(p)),
-        LogicalPlan::GraphNode(gn) => has_with_clause_in_tree(&gn.input),
+            .is_some_and(|p| has_with_clause_in_tree_impl(p, depth + 1)),
+        LogicalPlan::GraphNode(gn) => has_with_clause_in_tree_impl(&gn.input, depth + 1),
         LogicalPlan::GraphRel(gr) => {
-            has_with_clause_in_tree(&gr.left)
-                || has_with_clause_in_tree(&gr.center)
-                || has_with_clause_in_tree(&gr.right)
+            has_with_clause_in_tree_impl(&gr.left, depth + 1)
+                || has_with_clause_in_tree_impl(&gr.center, depth + 1)
+                || has_with_clause_in_tree_impl(&gr.right, depth + 1)
         }
-        LogicalPlan::Filter(f) => has_with_clause_in_tree(&f.input),
-        LogicalPlan::Projection(p) => has_with_clause_in_tree(&p.input),
-        LogicalPlan::GroupBy(g) => has_with_clause_in_tree(&g.input),
-        LogicalPlan::OrderBy(o) => has_with_clause_in_tree(&o.input),
-        LogicalPlan::Skip(s) => has_with_clause_in_tree(&s.input),
-        LogicalPlan::Limit(l) => has_with_clause_in_tree(&l.input),
-        LogicalPlan::Cte(c) => has_with_clause_in_tree(&c.input),
-        LogicalPlan::GraphJoins(gj) => has_with_clause_in_tree(&gj.input),
-        LogicalPlan::Union(u) => u.inputs.iter().any(|p| has_with_clause_in_tree(p)),
-        LogicalPlan::Unwind(u) => has_with_clause_in_tree(&u.input),
+        LogicalPlan::Filter(f) => has_with_clause_in_tree_impl(&f.input, depth + 1),
+        LogicalPlan::Projection(p) => has_with_clause_in_tree_impl(&p.input, depth + 1),
+        LogicalPlan::GroupBy(g) => has_with_clause_in_tree_impl(&g.input, depth + 1),
+        LogicalPlan::OrderBy(o) => has_with_clause_in_tree_impl(&o.input, depth + 1),
+        LogicalPlan::Skip(s) => has_with_clause_in_tree_impl(&s.input, depth + 1),
+        LogicalPlan::Limit(l) => has_with_clause_in_tree_impl(&l.input, depth + 1),
+        LogicalPlan::Cte(c) => has_with_clause_in_tree_impl(&c.input, depth + 1),
+        LogicalPlan::GraphJoins(gj) => has_with_clause_in_tree_impl(&gj.input, depth + 1),
+        LogicalPlan::Union(u) => u
+            .inputs
+            .iter()
+            .any(|p| has_with_clause_in_tree_impl(p, depth + 1)),
+        LogicalPlan::Unwind(u) => has_with_clause_in_tree_impl(&u.input, depth + 1),
         LogicalPlan::CartesianProduct(cp) => {
-            has_with_clause_in_tree(&cp.left) || has_with_clause_in_tree(&cp.right)
+            has_with_clause_in_tree_impl(&cp.left, depth + 1)
+                || has_with_clause_in_tree_impl(&cp.right, depth + 1)
         }
         _ => false,
     }
@@ -4124,28 +4136,42 @@ pub fn find_group_by_subplan(plan: &LogicalPlan) -> Option<(&LogicalPlan, String
 
 /// Check if plan contains a WithClause node
 pub fn plan_contains_with_clause(plan: &LogicalPlan) -> bool {
+    plan_contains_with_clause_impl(plan, 0)
+}
+
+fn plan_contains_with_clause_impl(plan: &LogicalPlan, depth: usize) -> bool {
+    if depth > crate::render_plan::MAX_TRAVERSAL_DEPTH {
+        log::warn!("plan_contains_with_clause: depth limit {} exceeded", depth);
+        return false;
+    }
     match plan {
-        // NEW: Handle WithClause type
         LogicalPlan::WithClause(_) => true,
-        LogicalPlan::Projection(proj) => plan_contains_with_clause(&proj.input),
-        LogicalPlan::Filter(filter) => plan_contains_with_clause(&filter.input),
-        LogicalPlan::GroupBy(group_by) => plan_contains_with_clause(&group_by.input),
-        LogicalPlan::GraphJoins(graph_joins) => plan_contains_with_clause(&graph_joins.input),
-        LogicalPlan::Limit(limit) => plan_contains_with_clause(&limit.input),
-        LogicalPlan::OrderBy(order_by) => plan_contains_with_clause(&order_by.input),
-        LogicalPlan::Skip(skip) => plan_contains_with_clause(&skip.input),
+        LogicalPlan::Projection(proj) => plan_contains_with_clause_impl(&proj.input, depth + 1),
+        LogicalPlan::Filter(filter) => plan_contains_with_clause_impl(&filter.input, depth + 1),
+        LogicalPlan::GroupBy(group_by) => {
+            plan_contains_with_clause_impl(&group_by.input, depth + 1)
+        }
+        LogicalPlan::GraphJoins(graph_joins) => {
+            plan_contains_with_clause_impl(&graph_joins.input, depth + 1)
+        }
+        LogicalPlan::Limit(limit) => plan_contains_with_clause_impl(&limit.input, depth + 1),
+        LogicalPlan::OrderBy(order_by) => {
+            plan_contains_with_clause_impl(&order_by.input, depth + 1)
+        }
+        LogicalPlan::Skip(skip) => plan_contains_with_clause_impl(&skip.input, depth + 1),
         LogicalPlan::GraphRel(graph_rel) => {
-            plan_contains_with_clause(&graph_rel.left)
-                || plan_contains_with_clause(&graph_rel.right)
+            plan_contains_with_clause_impl(&graph_rel.left, depth + 1)
+                || plan_contains_with_clause_impl(&graph_rel.right, depth + 1)
         }
         LogicalPlan::Union(union) => union
             .inputs
             .iter()
-            .any(|input| plan_contains_with_clause(input)),
-        LogicalPlan::GraphNode(node) => plan_contains_with_clause(&node.input),
-        LogicalPlan::Unwind(unwind) => plan_contains_with_clause(&unwind.input),
+            .any(|input| plan_contains_with_clause_impl(input, depth + 1)),
+        LogicalPlan::GraphNode(node) => plan_contains_with_clause_impl(&node.input, depth + 1),
+        LogicalPlan::Unwind(unwind) => plan_contains_with_clause_impl(&unwind.input, depth + 1),
         LogicalPlan::CartesianProduct(cp) => {
-            plan_contains_with_clause(&cp.left) || plan_contains_with_clause(&cp.right)
+            plan_contains_with_clause_impl(&cp.left, depth + 1)
+                || plan_contains_with_clause_impl(&cp.right, depth + 1)
         }
         _ => false,
     }
@@ -7132,25 +7158,30 @@ pub(crate) fn build_chained_with_match_cte_plan(
     // Count plan tree depth to diagnose excessive iterations.
     // Deep nesting can come from any combination of plan nodes (Projection, Filter, WITH, etc.)
     fn count_plan_depth(plan: &LogicalPlan) -> usize {
+        count_plan_depth_impl(plan, 0)
+    }
+
+    fn count_plan_depth_impl(plan: &LogicalPlan, current: usize) -> usize {
+        if current > crate::render_plan::MAX_TRAVERSAL_DEPTH {
+            return current;
+        }
         match plan {
-            LogicalPlan::WithClause(wc) => 1 + count_plan_depth(&wc.input),
-            LogicalPlan::Projection(p) => 1 + count_plan_depth(&p.input),
-            LogicalPlan::Filter(f) => 1 + count_plan_depth(&f.input),
-            LogicalPlan::GroupBy(gb) => 1 + count_plan_depth(&gb.input),
-            LogicalPlan::OrderBy(ob) => 1 + count_plan_depth(&ob.input),
-            LogicalPlan::Limit(lim) => 1 + count_plan_depth(&lim.input),
-            LogicalPlan::Skip(skip) => 1 + count_plan_depth(&skip.input),
-            LogicalPlan::GraphJoins(gj) => 1 + count_plan_depth(&gj.input),
-            LogicalPlan::Unwind(u) => 1 + count_plan_depth(&u.input),
-            LogicalPlan::Union(u) => {
-                1 + u
-                    .inputs
-                    .iter()
-                    .map(|i| count_plan_depth(i))
-                    .max()
-                    .unwrap_or(0)
-            }
-            _ => 1, // Leaf nodes
+            LogicalPlan::WithClause(wc) => count_plan_depth_impl(&wc.input, current + 1),
+            LogicalPlan::Projection(p) => count_plan_depth_impl(&p.input, current + 1),
+            LogicalPlan::Filter(f) => count_plan_depth_impl(&f.input, current + 1),
+            LogicalPlan::GroupBy(gb) => count_plan_depth_impl(&gb.input, current + 1),
+            LogicalPlan::OrderBy(ob) => count_plan_depth_impl(&ob.input, current + 1),
+            LogicalPlan::Limit(lim) => count_plan_depth_impl(&lim.input, current + 1),
+            LogicalPlan::Skip(skip) => count_plan_depth_impl(&skip.input, current + 1),
+            LogicalPlan::GraphJoins(gj) => count_plan_depth_impl(&gj.input, current + 1),
+            LogicalPlan::Unwind(u) => count_plan_depth_impl(&u.input, current + 1),
+            LogicalPlan::Union(u) => u
+                .inputs
+                .iter()
+                .map(|i| count_plan_depth_impl(i, current + 1))
+                .max()
+                .unwrap_or(current + 1),
+            _ => current + 1, // Leaf nodes
         }
     }
 
@@ -12814,7 +12845,18 @@ pub(crate) fn find_all_with_clauses_grouped(
         }
     }
 
-    fn find_all_with_clauses_impl(plan: &LogicalPlan, results: &mut Vec<(LogicalPlan, String)>) {
+    fn find_all_with_clauses_impl(
+        plan: &LogicalPlan,
+        results: &mut Vec<(LogicalPlan, String)>,
+        depth: usize,
+    ) {
+        if depth > crate::render_plan::MAX_TRAVERSAL_DEPTH {
+            log::warn!(
+                "find_all_with_clauses_impl: depth limit {} exceeded, stopping traversal",
+                depth
+            );
+            return;
+        }
         log::debug!(
             "🔍 find_all_with_clauses_impl: Checking plan type: {:?}",
             std::mem::discriminant(plan)
@@ -12830,7 +12872,7 @@ pub(crate) fn find_all_with_clauses_grouped(
                 results.push((plan.clone(), alias));
                 // Recurse into input to find nested WITH clauses
                 // They will be processed innermost-first due to sorting by underscore count
-                find_all_with_clauses_impl(&wc.input, results);
+                find_all_with_clauses_impl(&wc.input, results, depth + 1);
             }
             LogicalPlan::GraphRel(graph_rel) => {
                 log::debug!(
@@ -12854,7 +12896,7 @@ pub(crate) fn find_all_with_clauses_grouped(
                     log::debug!("🔍 find_all_with_clauses_impl: Found WithClause in GraphRel.right, key='{}' (connection='{}')",
                                alias, graph_rel.right_connection);
                     results.push((graph_rel.right.as_ref().clone(), alias));
-                    find_all_with_clauses_impl(&wc.input, results);
+                    find_all_with_clauses_impl(&wc.input, results, depth + 1);
                     handled_right = true;
                 }
                 // Check for WithClause in left
@@ -12868,7 +12910,7 @@ pub(crate) fn find_all_with_clauses_grouped(
                     log::debug!("🔍 find_all_with_clauses_impl: Found WithClause in GraphRel.left, key='{}' (connection='{}')",
                                alias, graph_rel.left_connection);
                     results.push((graph_rel.left.as_ref().clone(), alias));
-                    find_all_with_clauses_impl(&wc.input, results);
+                    find_all_with_clauses_impl(&wc.input, results, depth + 1);
                     handled_left = true;
                 }
                 // Also check GraphJoins wrapped inside GraphRel
@@ -12884,7 +12926,7 @@ pub(crate) fn find_all_with_clauses_grouped(
                             log::debug!("🔍 find_all_with_clauses_impl: Found WithClause in GraphJoins inside GraphRel.right, key='{}' (connection='{}')",
                                        alias, graph_rel.right_connection);
                             results.push((gj.input.as_ref().clone(), alias));
-                            find_all_with_clauses_impl(&wc.input, results);
+                            find_all_with_clauses_impl(&wc.input, results, depth + 1);
                             handled_right = true;
                         }
                     }
@@ -12901,7 +12943,7 @@ pub(crate) fn find_all_with_clauses_grouped(
                             log::debug!("🔍 find_all_with_clauses_impl: Found WithClause in GraphJoins inside GraphRel.left, key='{}' (connection='{}')",
                                        alias, graph_rel.left_connection);
                             results.push((gj.input.as_ref().clone(), alias));
-                            find_all_with_clauses_impl(&wc.input, results);
+                            find_all_with_clauses_impl(&wc.input, results, depth + 1);
                             handled_left = true;
                         }
                     }
@@ -12909,24 +12951,32 @@ pub(crate) fn find_all_with_clauses_grouped(
 
                 // Continue traversal on branches not already handled
                 if !handled_left {
-                    find_all_with_clauses_impl(&graph_rel.left, results);
+                    find_all_with_clauses_impl(&graph_rel.left, results, depth + 1);
                 }
-                find_all_with_clauses_impl(&graph_rel.center, results);
+                find_all_with_clauses_impl(&graph_rel.center, results, depth + 1);
                 if !handled_right {
-                    find_all_with_clauses_impl(&graph_rel.right, results);
+                    find_all_with_clauses_impl(&graph_rel.right, results, depth + 1);
                 }
             }
             LogicalPlan::Projection(proj) => {
-                find_all_with_clauses_impl(&proj.input, results);
+                find_all_with_clauses_impl(&proj.input, results, depth + 1);
             }
-            LogicalPlan::Filter(filter) => find_all_with_clauses_impl(&filter.input, results),
-            LogicalPlan::GroupBy(group_by) => find_all_with_clauses_impl(&group_by.input, results),
+            LogicalPlan::Filter(filter) => {
+                find_all_with_clauses_impl(&filter.input, results, depth + 1)
+            }
+            LogicalPlan::GroupBy(group_by) => {
+                find_all_with_clauses_impl(&group_by.input, results, depth + 1)
+            }
             LogicalPlan::GraphJoins(graph_joins) => {
-                find_all_with_clauses_impl(&graph_joins.input, results)
+                find_all_with_clauses_impl(&graph_joins.input, results, depth + 1)
             }
-            LogicalPlan::Limit(limit) => find_all_with_clauses_impl(&limit.input, results),
-            LogicalPlan::OrderBy(order_by) => find_all_with_clauses_impl(&order_by.input, results),
-            LogicalPlan::Skip(skip) => find_all_with_clauses_impl(&skip.input, results),
+            LogicalPlan::Limit(limit) => {
+                find_all_with_clauses_impl(&limit.input, results, depth + 1)
+            }
+            LogicalPlan::OrderBy(order_by) => {
+                find_all_with_clauses_impl(&order_by.input, results, depth + 1)
+            }
+            LogicalPlan::Skip(skip) => find_all_with_clauses_impl(&skip.input, results, depth + 1),
             LogicalPlan::Union(union) => {
                 // For Union (bidirectional patterns), check if WITH clauses exist inside.
                 // If so, the entire Union should be treated as a single WITH-bearing structure,
@@ -12962,20 +13012,20 @@ pub(crate) fn find_all_with_clauses_grouped(
                         // The Union structure will be preserved when we render the parent GraphRel
                         log::debug!("🔍 find_all_with_clauses_impl: Union has matching WITH key '{}' in all branches, collecting from first only", key);
                         if let Some(first_input) = union.inputs.first() {
-                            find_all_with_clauses_impl(first_input, results);
+                            find_all_with_clauses_impl(first_input, results, depth + 1);
                         }
                     } else {
                         // All branches have None key — WITH clauses may be deeper in the tree
                         // Recurse into the first branch to find them
                         log::debug!("🔍 find_all_with_clauses_impl: Union branches have no top-level WITH key, recursing into first branch");
                         if let Some(first_input) = union.inputs.first() {
-                            find_all_with_clauses_impl(first_input, results);
+                            find_all_with_clauses_impl(first_input, results, depth + 1);
                         }
                     }
                 } else {
                     // Branches have different WITH structures - recurse into each
                     for input in &union.inputs {
-                        find_all_with_clauses_impl(input, results);
+                        find_all_with_clauses_impl(input, results, depth + 1);
                     }
                 }
             }
@@ -12985,23 +13035,23 @@ pub(crate) fn find_all_with_clauses_grouped(
                 log::info!(
                     "🔍 find_all_with_clauses_impl: Checking CartesianProduct left and right"
                 );
-                find_all_with_clauses_impl(&cp.left, results);
-                find_all_with_clauses_impl(&cp.right, results);
+                find_all_with_clauses_impl(&cp.left, results, depth + 1);
+                find_all_with_clauses_impl(&cp.right, results, depth + 1);
             }
             LogicalPlan::ViewScan(vs) => {
                 if let Some(input) = &vs.input {
-                    find_all_with_clauses_impl(input, results);
+                    find_all_with_clauses_impl(input, results, depth + 1);
                 }
             }
-            LogicalPlan::GraphNode(gn) => find_all_with_clauses_impl(&gn.input, results),
-            LogicalPlan::Cte(c) => find_all_with_clauses_impl(&c.input, results),
-            LogicalPlan::Unwind(u) => find_all_with_clauses_impl(&u.input, results),
+            LogicalPlan::GraphNode(gn) => find_all_with_clauses_impl(&gn.input, results, depth + 1),
+            LogicalPlan::Cte(c) => find_all_with_clauses_impl(&c.input, results, depth + 1),
+            LogicalPlan::Unwind(u) => find_all_with_clauses_impl(&u.input, results, depth + 1),
             _ => {}
         }
     }
 
     let mut all_withs: Vec<(LogicalPlan, String)> = Vec::new();
-    find_all_with_clauses_impl(plan, &mut all_withs);
+    find_all_with_clauses_impl(plan, &mut all_withs, 0);
 
     // Group by alias
     let mut grouped: HashMap<String, Vec<LogicalPlan>> = HashMap::new();
@@ -14069,21 +14119,31 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
             // We need to process it if:
             // 1. It contains a WITH clause, OR
             // 2. It has a GraphNode with the matching alias
-            fn needs_processing(plan: &LogicalPlan, with_alias: &str) -> bool {
+            fn needs_processing(plan: &LogicalPlan, with_alias: &str, depth: usize) -> bool {
+                if depth > crate::render_plan::MAX_TRAVERSAL_DEPTH {
+                    log::warn!("needs_processing: depth limit {} exceeded", depth);
+                    return false;
+                }
                 let result = match plan {
                     LogicalPlan::GraphNode(node) => node.alias == with_alias,
-                    LogicalPlan::WithClause(wc) => needs_processing(&wc.input, with_alias),
-                    LogicalPlan::GraphRel(rel) => {
-                        needs_processing(&rel.left, with_alias)
-                            || needs_processing(&rel.right, with_alias)
+                    LogicalPlan::WithClause(wc) => {
+                        needs_processing(&wc.input, with_alias, depth + 1)
                     }
-                    LogicalPlan::Projection(proj) => needs_processing(&proj.input, with_alias),
-                    LogicalPlan::GraphJoins(gj) => needs_processing(&gj.input, with_alias),
-                    LogicalPlan::Filter(f) => needs_processing(&f.input, with_alias),
-                    LogicalPlan::Unwind(u) => needs_processing(&u.input, with_alias),
+                    LogicalPlan::GraphRel(rel) => {
+                        needs_processing(&rel.left, with_alias, depth + 1)
+                            || needs_processing(&rel.right, with_alias, depth + 1)
+                    }
+                    LogicalPlan::Projection(proj) => {
+                        needs_processing(&proj.input, with_alias, depth + 1)
+                    }
+                    LogicalPlan::GraphJoins(gj) => {
+                        needs_processing(&gj.input, with_alias, depth + 1)
+                    }
+                    LogicalPlan::Filter(f) => needs_processing(&f.input, with_alias, depth + 1),
+                    LogicalPlan::Unwind(u) => needs_processing(&u.input, with_alias, depth + 1),
                     LogicalPlan::CartesianProduct(cp) => {
-                        needs_processing(&cp.left, with_alias)
-                            || needs_processing(&cp.right, with_alias)
+                        needs_processing(&cp.left, with_alias, depth + 1)
+                            || needs_processing(&cp.right, with_alias, depth + 1)
                     }
                     _ => plan_contains_with_clause(plan),
                 };
@@ -14099,7 +14159,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
             // Don't shortcut with is_innermost_with_clause check because the WithClause's input
             // might contain a GraphNode that needs updating from a previous iteration
             let new_left: Arc<LogicalPlan> = if plan_contains_with_clause(&graph_rel.left)
-                || needs_processing(&graph_rel.left, with_alias)
+                || needs_processing(&graph_rel.left, with_alias, 0)
             {
                 Arc::new(replace_with_clause_with_cte_reference_v2(
                     &graph_rel.left,
@@ -14113,7 +14173,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
             };
 
             let new_right: Arc<LogicalPlan> = if plan_contains_with_clause(&graph_rel.right)
-                || needs_processing(&graph_rel.right, with_alias)
+                || needs_processing(&graph_rel.right, with_alias, 0)
             {
                 Arc::new(replace_with_clause_with_cte_reference_v2(
                     &graph_rel.right,

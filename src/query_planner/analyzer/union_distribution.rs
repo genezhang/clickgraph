@@ -120,12 +120,23 @@ where
 /// Recursively distribute wrapping nodes (GraphRel, CartesianProduct, Filter)
 /// over Union, hoisting Union upward. Stops at GroupBy/Projection boundaries.
 fn distribute_union(plan: &LogicalPlan) -> LogicalPlan {
+    distribute_union_impl(plan, 0)
+}
+
+fn distribute_union_impl(plan: &LogicalPlan, depth: usize) -> LogicalPlan {
+    if depth > crate::render_plan::MAX_TRAVERSAL_DEPTH {
+        log::warn!(
+            "distribute_union: depth limit {} exceeded, returning plan unchanged",
+            depth
+        );
+        return plan.clone();
+    }
     match plan {
         LogicalPlan::GraphRel(gr) => {
             // First, recurse into children
-            let new_left = distribute_union(&gr.left);
-            let new_center = distribute_union(&gr.center);
-            let new_right = distribute_union(&gr.right);
+            let new_left = distribute_union_impl(&gr.left, depth + 1);
+            let new_center = distribute_union_impl(&gr.center, depth + 1);
+            let new_right = distribute_union_impl(&gr.right, depth + 1);
 
             // If left became Union after distribution, distribute GraphRel over it
             if let LogicalPlan::Union(union) = &new_left {
@@ -164,8 +175,8 @@ fn distribute_union(plan: &LogicalPlan) -> LogicalPlan {
         }
 
         LogicalPlan::CartesianProduct(cp) => {
-            let new_left = distribute_union(&cp.left);
-            let new_right = distribute_union(&cp.right);
+            let new_left = distribute_union_impl(&cp.left, depth + 1);
+            let new_right = distribute_union_impl(&cp.right, depth + 1);
 
             // CP(left, Union(br0, br1)) → Union(CP(left, br0), CP(left, br1))
             if let LogicalPlan::Union(union) = &new_right {
@@ -209,7 +220,7 @@ fn distribute_union(plan: &LogicalPlan) -> LogicalPlan {
         }
 
         LogicalPlan::Filter(f) => {
-            let new_input = distribute_union(&f.input);
+            let new_input = distribute_union_impl(&f.input, depth + 1);
             // If input became Union after distribution, distribute Filter over it
             if let LogicalPlan::Union(union) = &new_input {
                 log::debug!(
@@ -230,7 +241,7 @@ fn distribute_union(plan: &LogicalPlan) -> LogicalPlan {
         }
 
         LogicalPlan::GraphNode(gn) => {
-            let new_input = distribute_union(&gn.input);
+            let new_input = distribute_union_impl(&gn.input, depth + 1);
             // If input became Union, distribute GraphNode over it
             if let LogicalPlan::Union(union) = &new_input {
                 log::debug!(
@@ -261,13 +272,13 @@ fn distribute_union(plan: &LogicalPlan) -> LogicalPlan {
         // Wrapper nodes: recurse but do NOT distribute over Union
         // (GroupBy/Projection aggregation must apply to the combined result)
         LogicalPlan::Projection(p) => LogicalPlan::Projection(Projection {
-            input: Arc::new(distribute_union(&p.input)),
+            input: Arc::new(distribute_union_impl(&p.input, depth + 1)),
             items: p.items.clone(),
             distinct: p.distinct,
             pattern_comprehensions: p.pattern_comprehensions.clone(),
         }),
         LogicalPlan::GroupBy(gb) => LogicalPlan::GroupBy(GroupBy {
-            input: Arc::new(distribute_union(&gb.input)),
+            input: Arc::new(distribute_union_impl(&gb.input, depth + 1)),
             expressions: gb.expressions.clone(),
             having_clause: gb.having_clause.clone(),
             is_materialization_boundary: gb.is_materialization_boundary,
@@ -275,20 +286,20 @@ fn distribute_union(plan: &LogicalPlan) -> LogicalPlan {
         }),
         LogicalPlan::OrderBy(o) => {
             LogicalPlan::OrderBy(crate::query_planner::logical_plan::OrderBy {
-                input: Arc::new(distribute_union(&o.input)),
+                input: Arc::new(distribute_union_impl(&o.input, depth + 1)),
                 items: o.items.clone(),
             })
         }
         LogicalPlan::Limit(l) => LogicalPlan::Limit(crate::query_planner::logical_plan::Limit {
-            input: Arc::new(distribute_union(&l.input)),
+            input: Arc::new(distribute_union_impl(&l.input, depth + 1)),
             count: l.count,
         }),
         LogicalPlan::Skip(s) => LogicalPlan::Skip(crate::query_planner::logical_plan::Skip {
-            input: Arc::new(distribute_union(&s.input)),
+            input: Arc::new(distribute_union_impl(&s.input, depth + 1)),
             count: s.count,
         }),
         LogicalPlan::Unwind(u) => LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
-            input: Arc::new(distribute_union(&u.input)),
+            input: Arc::new(distribute_union_impl(&u.input, depth + 1)),
             expression: u.expression.clone(),
             alias: u.alias.clone(),
             label: u.label.clone(),
@@ -297,7 +308,7 @@ fn distribute_union(plan: &LogicalPlan) -> LogicalPlan {
 
         // WithClause: recurse into input to distribute any buried Unions
         LogicalPlan::WithClause(wc) => {
-            let new_input = distribute_union(&wc.input);
+            let new_input = distribute_union_impl(&wc.input, depth + 1);
             LogicalPlan::WithClause(crate::query_planner::logical_plan::WithClause {
                 input: Arc::new(new_input),
                 ..wc.clone()
