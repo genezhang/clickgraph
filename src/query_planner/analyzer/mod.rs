@@ -86,9 +86,30 @@ use crate::{
             trivial_with_elimination::TrivialWithElimination,
         },
     },
+    render_plan::MAX_PLAN_NODES,
 };
 
 use super::plan_ctx::PlanCtx;
+
+/// Check that a plan tree hasn't exploded beyond the allowed node count.
+/// Returns an error if the plan exceeds MAX_PLAN_NODES, preventing OOM.
+fn check_plan_size(plan: &LogicalPlan, pass_name: &str) -> AnalyzerResult<()> {
+    let node_count = plan.count_plan_nodes(MAX_PLAN_NODES + 1);
+    if node_count > MAX_PLAN_NODES {
+        log::error!(
+            "Plan explosion detected after {}: {} nodes exceeds limit of {}",
+            pass_name,
+            node_count,
+            MAX_PLAN_NODES
+        );
+        return Err(errors::AnalyzerError::InvalidPlan(format!(
+            "Query plan too large after {} ({} nodes, limit {}). \
+             This usually means the query has too many untyped patterns generating excessive UNION branches.",
+            pass_name, node_count, MAX_PLAN_NODES
+        )));
+    }
+    Ok(())
+}
 
 mod analyzer_pass;
 mod bidirectional_union;
@@ -195,6 +216,8 @@ pub fn initial_analyzing(
     };
     */
 
+    check_plan_size(&plan, "TypeInference")?;
+
     // Step 2.5: VLP Transitivity Check - validate variable-length path patterns
     // This runs after TypeInference to ensure we have relationship types resolved
     // Checks if VLP patterns are semantically valid (relationship must be transitive)
@@ -248,6 +271,8 @@ pub fn initial_analyzing(
         }
     };
 
+    check_plan_size(&plan, "BidirectionalUnion")?;
+
     // Step 3.6: UnionDistribution - Hoist Union from inside GraphRel/CartesianProduct chains
     // After BidirectionalUnion creates Union for undirected edges, it may be buried inside
     // GraphRel/CartesianProduct (from post-WITH MATCH patterns). This pass hoists Union above
@@ -268,6 +293,8 @@ pub fn initial_analyzing(
             plan
         }
     };
+
+    check_plan_size(&plan, "UnionDistribution")?;
 
     log::debug!(
         "🔀 UNION_TRACE after UnionDistribution: has_union={}",

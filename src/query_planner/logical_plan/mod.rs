@@ -1544,6 +1544,56 @@ impl LogicalPlan {
             _ => false,
         }
     }
+
+    /// Count total number of nodes in the plan tree.
+    /// Used to detect plan explosion (e.g., exponential growth from UNION distribution).
+    /// Returns early with the cap value if the count exceeds `cap` to avoid
+    /// spending time counting a massive tree we're going to reject anyway.
+    pub fn count_plan_nodes(&self, cap: usize) -> usize {
+        self.count_plan_nodes_impl(cap, 0)
+    }
+
+    fn count_plan_nodes_impl(&self, cap: usize, current: usize) -> usize {
+        if current >= cap {
+            return current;
+        }
+        let current = current + 1;
+        match self {
+            LogicalPlan::Empty
+            | LogicalPlan::ViewScan(_)
+            | LogicalPlan::Cte(_)
+            | LogicalPlan::PageRank(_) => current,
+            LogicalPlan::GraphNode(gn) => gn.input.count_plan_nodes_impl(cap, current),
+            LogicalPlan::Filter(f) => f.input.count_plan_nodes_impl(cap, current),
+            LogicalPlan::Projection(p) => p.input.count_plan_nodes_impl(cap, current),
+            LogicalPlan::GroupBy(gb) => gb.input.count_plan_nodes_impl(cap, current),
+            LogicalPlan::OrderBy(ob) => ob.input.count_plan_nodes_impl(cap, current),
+            LogicalPlan::Skip(s) => s.input.count_plan_nodes_impl(cap, current),
+            LogicalPlan::Limit(l) => l.input.count_plan_nodes_impl(cap, current),
+            LogicalPlan::GraphJoins(gj) => gj.input.count_plan_nodes_impl(cap, current),
+            LogicalPlan::Unwind(u) => u.input.count_plan_nodes_impl(cap, current),
+            LogicalPlan::WithClause(wc) => wc.input.count_plan_nodes_impl(cap, current),
+            LogicalPlan::GraphRel(gr) => {
+                let c = gr.left.count_plan_nodes_impl(cap, current);
+                let c = gr.center.count_plan_nodes_impl(cap, c);
+                gr.right.count_plan_nodes_impl(cap, c)
+            }
+            LogicalPlan::CartesianProduct(cp) => {
+                let c = cp.left.count_plan_nodes_impl(cap, current);
+                cp.right.count_plan_nodes_impl(cap, c)
+            }
+            LogicalPlan::Union(u) => {
+                let mut c = current;
+                for input in &u.inputs {
+                    c = input.count_plan_nodes_impl(cap, c);
+                    if c >= cap {
+                        return c;
+                    }
+                }
+                c
+            }
+        }
+    }
 }
 
 impl LogicalPlan {

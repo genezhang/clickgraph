@@ -53,6 +53,12 @@ use std::collections::HashMap;
 /// Normal queries rarely exceed depth 50; 200 is generous while protecting against DoS.
 pub const MAX_TRAVERSAL_DEPTH: usize = 200;
 
+/// Maximum total number of nodes allowed in a plan tree.
+/// Prevents OOM from plan width explosion (e.g., UNION distribution through deep trees
+/// can create N^D nodes where N = branch count, D = depth).
+/// Normal queries produce plans with < 100 nodes; 10,000 is generous.
+pub const MAX_PLAN_NODES: usize = 10_000;
+
 // Re-export denormalized alias accessors from unified query context
 // See server/query_context.rs for the task_local! implementation with .scope() support
 pub use crate::server::query_context::{
