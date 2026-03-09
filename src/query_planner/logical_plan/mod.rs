@@ -1559,10 +1559,8 @@ impl LogicalPlan {
         }
         let current = current + 1;
         match self {
-            LogicalPlan::Empty
-            | LogicalPlan::ViewScan(_)
-            | LogicalPlan::Cte(_)
-            | LogicalPlan::PageRank(_) => current,
+            LogicalPlan::Empty | LogicalPlan::ViewScan(_) | LogicalPlan::PageRank(_) => current,
+            LogicalPlan::Cte(cte) => cte.input.count_plan_nodes_impl(cap, current),
             LogicalPlan::GraphNode(gn) => gn.input.count_plan_nodes_impl(cap, current),
             LogicalPlan::Filter(f) => f.input.count_plan_nodes_impl(cap, current),
             LogicalPlan::Projection(p) => p.input.count_plan_nodes_impl(cap, current),

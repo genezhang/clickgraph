@@ -429,7 +429,7 @@ def print_final_report(cumulative: IntervalMetrics, memory_samples: list,
 # ---------------------------------------------------------------------------
 
 async def send_query(session, base_url: str, pattern: QueryPattern,
-                     timeout_sec: float) -> tuple:
+                     client_timeout) -> tuple:
     """Send a single query, return (latency_ms, status_code, error_msg)."""
     payload = {
         "query": f"USE {pattern.schema}\n{pattern.query}",
@@ -441,7 +441,7 @@ async def send_query(session, base_url: str, pattern: QueryPattern,
         async with session.post(
             f"{base_url}/query",
             json=payload,
-            timeout=__import__('aiohttp').ClientTimeout(total=timeout_sec),
+            timeout=client_timeout,
         ) as resp:
             latency_ms = (time.monotonic() - start) * 1000
             status = resp.status
@@ -463,7 +463,7 @@ async def send_query(session, base_url: str, pattern: QueryPattern,
 
 async def worker(worker_id: int, queries: list, session, base_url: str,
                  metrics: MetricsCollector, stop_event: asyncio.Event,
-                 query_timeout: float, rng: random.Random):
+                 client_timeout, rng: random.Random):
     """Worker coroutine that continuously sends queries until stopped."""
     n = len(queries)
     idx = rng.randint(0, n - 1)
@@ -473,7 +473,7 @@ async def worker(worker_id: int, queries: list, session, base_url: str,
         idx += 1
 
         latency_ms, status, error_msg = await send_query(
-            session, base_url, pattern, query_timeout
+            session, base_url, pattern, client_timeout
         )
 
         # For error-category queries, 400 is expected success
@@ -501,6 +501,7 @@ async def memory_monitor_loop(metrics: MetricsCollector, server_pid: int,
 
 async def run_stress_test(args):
     import aiohttp
+    from urllib.parse import urlparse
 
     base_url = args.server
     duration = args.duration
@@ -508,6 +509,7 @@ async def run_stress_test(args):
     report_interval = args.report_interval
     query_timeout = args.query_timeout
     seed = args.seed if args.seed is not None else int(time.time())
+    client_timeout = aiohttp.ClientTimeout(total=query_timeout)
 
     print(f"ClickGraph Stress Test")
     print(f"  Server: {base_url}")
@@ -536,22 +538,27 @@ async def run_stress_test(args):
           f"error={len(ERROR_QUERIES)})")
 
     # Find server PID for memory monitoring
-    port = int(base_url.split(":")[-1].rstrip("/"))
+    parsed = urlparse(base_url)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
     server_pid = find_server_pid(port)
     initial_vmrss = None
     if server_pid:
         initial_vmrss = get_vmrss_mb(server_pid)
-        print(f"Server PID: {server_pid} | Initial VmRSS: {initial_vmrss:.1f} MB")
+        if initial_vmrss is not None:
+            print(f"Server PID: {server_pid} | Initial VmRSS: {initial_vmrss:.1f} MB")
+        else:
+            print(f"Server PID: {server_pid} | Initial VmRSS: unknown (unable to read /proc)")
     else:
         print("WARNING: Could not find server PID for memory monitoring")
 
     # Verify server is up
+    health_timeout = aiohttp.ClientTimeout(total=10.0)
     async with aiohttp.ClientSession() as test_session:
         try:
             resp_lat, resp_status, _ = await send_query(
                 test_session, base_url,
                 QueryPattern("MATCH (u:User) RETURN u.name LIMIT 1", "simple"),
-                10.0,
+                health_timeout,
             )
             if resp_status >= 500:
                 print(f"ERROR: Server returned {resp_status} on health check")
@@ -583,7 +590,7 @@ async def run_stress_test(args):
             worker_rng = random.Random(seed + i + 1)
             task = asyncio.create_task(
                 worker(i, queries, session, base_url, metrics,
-                       stop_event, query_timeout, worker_rng)
+                       stop_event, client_timeout, worker_rng)
             )
             workers.append(task)
 

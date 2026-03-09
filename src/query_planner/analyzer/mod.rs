@@ -104,7 +104,8 @@ fn check_plan_size(plan: &LogicalPlan, pass_name: &str) -> AnalyzerResult<()> {
         );
         return Err(errors::AnalyzerError::InvalidPlan(format!(
             "Query plan too large after {} ({} nodes, limit {}). \
-             This usually means the query has too many untyped patterns generating excessive UNION branches.",
+             Common causes: untyped patterns generating many UNION branches, \
+             UNION distribution through deep plan trees, or undirected edges multiplying branches.",
             pass_name, node_count, MAX_PLAN_NODES
         )));
     }
@@ -570,4 +571,72 @@ pub fn final_analyzing(
     let plan = unwind_property_rewriter::rewrite_unwind_properties(plan);
 
     Ok(plan)
+}
+
+#[cfg(test)]
+mod plan_size_tests {
+    use super::*;
+    use crate::query_planner::logical_expr::{Literal, LogicalExpr};
+    use crate::query_planner::logical_plan::{Filter, Union};
+
+    /// Build a plan tree with `n` Union branches, each containing a Filter chain of depth `d`.
+    fn make_wide_plan(branches: usize, depth: usize) -> Arc<LogicalPlan> {
+        let mut inputs = Vec::new();
+        for _ in 0..branches {
+            let mut plan: Arc<LogicalPlan> = Arc::new(LogicalPlan::Empty);
+            for _ in 0..depth {
+                plan = Arc::new(LogicalPlan::Filter(Filter {
+                    input: plan,
+                    predicate: LogicalExpr::Literal(Literal::Boolean(true)),
+                }));
+            }
+            inputs.push(plan);
+        }
+        Arc::new(LogicalPlan::Union(Union {
+            inputs,
+            union_type: crate::query_planner::logical_plan::UnionType::All,
+        }))
+    }
+
+    #[test]
+    fn test_count_plan_nodes_small() {
+        let plan = make_wide_plan(3, 2);
+        // 1 Union + 3 branches * (2 Filters + 1 Empty) = 1 + 9 = 10
+        assert_eq!(plan.count_plan_nodes(100), 10);
+    }
+
+    #[test]
+    fn test_count_plan_nodes_cap() {
+        let plan = make_wide_plan(100, 10);
+        // 100 branches * 11 nodes each + 1 Union = 1101, but cap at 50
+        let count = plan.count_plan_nodes(50);
+        assert!(count >= 50);
+    }
+
+    #[test]
+    fn test_check_plan_size_ok() {
+        let plan = make_wide_plan(3, 2);
+        assert!(check_plan_size(&plan, "test").is_ok());
+    }
+
+    #[test]
+    fn test_check_plan_size_rejects_oversized() {
+        // Build a plan with more than MAX_PLAN_NODES nodes
+        // MAX_PLAN_NODES = 10,000, so 200 branches * 60 depth = 200*(60+1)+1 = 12,201
+        let plan = make_wide_plan(200, 60);
+        let result = check_plan_size(&plan, "test_pass");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("too large"),
+            "Error should mention 'too large': {}",
+            msg
+        );
+        assert!(
+            msg.contains("test_pass"),
+            "Error should mention pass name: {}",
+            msg
+        );
+    }
 }
