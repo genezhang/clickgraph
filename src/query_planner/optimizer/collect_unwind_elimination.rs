@@ -518,12 +518,24 @@ impl CollectUnwindElimination {
 
                                             // Add the source variable as a passthrough item so it's exported
                                             // (the UNWIND alias will be rewritten to reference this)
-                                            new_items.push(ProjectionItem {
-                                                expression: LogicalExpr::TableAlias(TableAlias(
-                                                    source.clone(),
-                                                )),
-                                                col_alias: Some(ColumnAlias(source.clone())),
-                                            });
+                                            // Only add if source isn't already in the remaining items
+                                            let source_already_present =
+                                                new_items.iter().any(|item| {
+                                                    match &item.expression {
+                                                        LogicalExpr::TableAlias(ta) => {
+                                                            ta.0 == source
+                                                        }
+                                                        _ => false,
+                                                    }
+                                                });
+                                            if !source_already_present {
+                                                new_items.push(ProjectionItem {
+                                                    expression: LogicalExpr::TableAlias(
+                                                        TableAlias(source.clone()),
+                                                    ),
+                                                    col_alias: Some(ColumnAlias(source.clone())),
+                                                });
+                                            }
 
                                             // Update exported aliases: remove collection, add source
                                             let mut new_exported_aliases: Vec<String> = with

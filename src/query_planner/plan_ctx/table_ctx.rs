@@ -37,6 +37,8 @@ pub struct TableCtx {
     /// For relationships: the label of the connected to_node (target)
     /// Used to resolve polymorphic relationships
     to_node_label: Option<String>,
+    /// Whether this alias represents a path variable (from `MATCH p = ...`)
+    is_path: bool,
 }
 
 impl TableCtx {
@@ -63,6 +65,7 @@ impl TableCtx {
             cte_reference: None,
             from_node_label: None,
             to_node_label: None,
+            is_path: false,
         }
     }
 
@@ -108,6 +111,7 @@ impl TableCtx {
             cte_reference: Some(cte_name),
             from_node_label: None,
             to_node_label: None,
+            is_path: false,
         }
     }
 
@@ -135,6 +139,9 @@ impl TableCtx {
     /// Path variables have no label (None) and are not relationships.
     /// Anonymous nodes also have None labels, so we exclude aliases matching "t\d+" pattern.
     pub fn is_path_variable(&self) -> bool {
+        if self.is_path {
+            return true;
+        }
         if self.is_rel {
             return false;
         }
@@ -143,9 +150,6 @@ impl TableCtx {
         }
         // Computed/scalar aliases from WITH (e.g., `WITH size(...) AS cnt`)
         // have explicit_alias=true but no labels — they are NOT path variables.
-        // Note: Real path variables (e.g., `p` in `MATCH p = ...`) are also
-        // explicit_alias=true, but they are registered via define_path() directly
-        // in match_clause/traversal.rs, not through this heuristic.
         if self.explicit_alias {
             return false;
         }
@@ -158,6 +162,11 @@ impl TableCtx {
             }
         }
         true // No labels, not a relationship, not an anonymous node → path variable
+    }
+
+    /// Mark this TableCtx as a path variable.
+    pub fn set_is_path(&mut self, val: bool) {
+        self.is_path = val;
     }
 
     // ========================================================================

@@ -1372,3 +1372,107 @@ async fn test_with_alias_rename_where_filter() {
         sql
     );
 }
+
+/// Test: collect+unwind CTE does not produce duplicate columns after elimination
+#[tokio::test]
+async fn test_collect_unwind_no_duplicate_cte_columns() {
+    use clickgraph::server::query_context::{set_current_schema, with_query_context, QueryContext};
+    use std::sync::Arc;
+
+    let config = clickgraph::graph_catalog::config::GraphSchemaConfig::from_yaml_file(
+        "schemas/test/social_integration.yaml",
+    )
+    .expect("Failed to load social_integration schema");
+    let schema = config.to_graph_schema().expect("Failed to convert schema");
+
+    let cypher = r#"
+        MATCH (u:User)
+        WITH u, collect(u) as users
+        UNWIND users as user
+        RETURN user.name, user.email, user.city
+        LIMIT 3
+    "#;
+
+    let schema_clone = schema.clone();
+    let ctx = QueryContext::new(Some("default".to_string()));
+    let sql = with_query_context(ctx, async {
+        set_current_schema(Arc::new(schema_clone));
+
+        let (_remaining, statement) =
+            clickgraph::open_cypher_parser::parse_cypher_statement(cypher)
+                .unwrap_or_else(|e| panic!("Failed to parse: {:?}", e));
+
+        let (logical_plan, _plan_ctx) = clickgraph::query_planner::evaluate_read_statement(
+            statement, &schema, None, None, None,
+        )
+        .unwrap_or_else(|e| panic!("Failed to plan: {:?}", e));
+
+        let render_plan =
+            clickgraph::render_plan::logical_plan_to_render_plan(logical_plan, &schema)
+                .unwrap_or_else(|e| panic!("Failed to render: {:?}", e));
+        render_plan.to_sql()
+    })
+    .await;
+
+    let sql_lower = sql.to_lowercase();
+    assert!(
+        sql_lower.contains("select"),
+        "Should have SELECT.\nSQL:\n{}",
+        sql
+    );
+
+    // Verify no duplicate columns in CTE body
+    // Count occurrences of each CTE column name
+    let cte_body = sql.split("FROM").next().unwrap_or("");
+    let name_count = cte_body.matches("p1_u_name").count();
+    assert_eq!(
+        name_count, 1,
+        "p1_u_name should appear once in CTE body, found {}.\nSQL:\n{}",
+        name_count, sql
+    );
+}
+
+/// Test: COUNT(p) on a fixed-hop path variable resolves to COUNT(*)
+#[tokio::test]
+async fn test_count_path_variable_fixed_hop() {
+    use clickgraph::server::query_context::{set_current_schema, with_query_context, QueryContext};
+    use std::sync::Arc;
+
+    let schema = create_test_schema();
+
+    let cypher = r#"
+        MATCH p = (a:User)-[:FOLLOWS]->(b:User)
+        RETURN COUNT(p) AS path_count
+    "#;
+
+    let schema_clone = schema.clone();
+    let ctx = QueryContext::new(Some("default".to_string()));
+    let sql = with_query_context(ctx, async {
+        set_current_schema(Arc::new(schema_clone));
+
+        let ast = parse_query(cypher).expect("Failed to parse COUNT(p) query");
+        let result = evaluate_read_query(ast, &schema, None, None);
+        assert!(result.is_ok(), "Failed to plan: {:?}", result.err());
+
+        let (logical_plan, _plan_ctx) = result.unwrap();
+        let render_result = logical_plan_to_render_plan(logical_plan, &schema);
+        assert!(
+            render_result.is_ok(),
+            "Failed to render: {:?}",
+            render_result.err()
+        );
+
+        let render_plan = render_result.unwrap();
+        render_plan.to_sql()
+    })
+    .await;
+
+    println!("Generated SQL for COUNT(p):\n{}", sql);
+
+    let sql_lower = sql.to_lowercase();
+    assert!(
+        sql_lower.contains("count(*)") || sql_lower.contains("count(1)"),
+        "COUNT(p) should be rewritten to COUNT(*) for fixed-hop path.\nSQL:\n{}",
+        sql
+    );
+}

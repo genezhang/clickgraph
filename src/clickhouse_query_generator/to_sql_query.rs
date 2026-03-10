@@ -1153,16 +1153,38 @@ pub(crate) fn rewrite_expr_for_vlp(
             })
         }
 
-        RenderExpr::AggregateFnCall(agg) => RenderExpr::AggregateFnCall(AggregateFnCall {
-            name: agg.name.clone(),
-            args: agg
-                .args
-                .iter()
-                .map(|a| {
-                    rewrite_expr_for_vlp(a, start_alias, end_alias, path_variable, skip_start_alias)
-                })
-                .collect(),
-        }),
+        RenderExpr::AggregateFnCall(agg) => {
+            // COUNT(path_variable) → COUNT(*) since each row represents a path
+            if let Some(path_var) = path_variable {
+                if agg.args.len() == 1 && agg.name.to_lowercase() == "count" {
+                    if let RenderExpr::TableAlias(alias) = &agg.args[0] {
+                        if &alias.0 == path_var {
+                            log::info!("🔧 VLP path aggregate: count({}) → count(*)", path_var);
+                            return RenderExpr::AggregateFnCall(AggregateFnCall {
+                                name: agg.name.clone(),
+                                args: vec![RenderExpr::Star],
+                            });
+                        }
+                    }
+                }
+            }
+            RenderExpr::AggregateFnCall(AggregateFnCall {
+                name: agg.name.clone(),
+                args: agg
+                    .args
+                    .iter()
+                    .map(|a| {
+                        rewrite_expr_for_vlp(
+                            a,
+                            start_alias,
+                            end_alias,
+                            path_variable,
+                            skip_start_alias,
+                        )
+                    })
+                    .collect(),
+            })
+        }
 
         RenderExpr::ColumnAlias(ColumnAlias(alias_str))
             if path_variable.as_ref() == Some(alias_str) =>
@@ -1563,14 +1585,31 @@ fn rewrite_expr_for_fixed_path(
             })
         }
 
-        RenderExpr::AggregateFnCall(agg) => RenderExpr::AggregateFnCall(AggregateFnCall {
-            name: agg.name.clone(),
-            args: agg
-                .args
-                .iter()
-                .map(|a| rewrite_expr_for_fixed_path(a, path_variable, hop_count))
-                .collect(),
-        }),
+        RenderExpr::AggregateFnCall(agg) => {
+            // COUNT(path_variable) → COUNT(*) since each row represents a path
+            if agg.args.len() == 1 {
+                if let RenderExpr::TableAlias(alias) = &agg.args[0] {
+                    if alias.0 == *path_variable && agg.name.to_lowercase() == "count" {
+                        log::info!(
+                            "🔧 Fixed path aggregate: count({}) → count(*)",
+                            path_variable
+                        );
+                        return RenderExpr::AggregateFnCall(AggregateFnCall {
+                            name: agg.name.clone(),
+                            args: vec![RenderExpr::Star],
+                        });
+                    }
+                }
+            }
+            RenderExpr::AggregateFnCall(AggregateFnCall {
+                name: agg.name.clone(),
+                args: agg
+                    .args
+                    .iter()
+                    .map(|a| rewrite_expr_for_fixed_path(a, path_variable, hop_count))
+                    .collect(),
+            })
+        }
 
         // Leave other expressions unchanged
         other => other.clone(),
