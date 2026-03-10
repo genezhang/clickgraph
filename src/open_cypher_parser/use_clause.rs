@@ -1,6 +1,8 @@
 use nom::{
-    bytes::complete::{tag_no_case, take_while1},
+    branch::alt,
+    bytes::complete::{tag, tag_no_case, take_while1},
     error::context,
+    sequence::delimited,
     IResult, Parser,
 };
 
@@ -10,7 +12,7 @@ use super::{ast::UseClause, common::ws, errors::OpenCypherParsingError};
 /// Examples:
 ///   USE social_network
 ///   USE ecommerce
-///   USE mydb
+///   USE `my-database`
 pub fn parse_use_clause<'a>(
     input: &'a str,
 ) -> IResult<&'a str, UseClause<'a>, OpenCypherParsingError<'a>> {
@@ -18,9 +20,12 @@ pub fn parse_use_clause<'a>(
 
     let (input, database_name) = context(
         "Error parsing database name in USE clause",
-        ws(take_while1(|c: char| {
-            c.is_alphanumeric() || c == '_' || c == '.'
-        })),
+        ws(alt((
+            // Backtick-quoted identifier: USE `my-database`
+            delimited(tag("`"), take_while1(|c: char| c != '`'), tag("`")),
+            // Unquoted identifier
+            take_while1(|c: char| c.is_alphanumeric() || c == '_' || c == '.'),
+        ))),
     )
     .parse(input)?;
 
@@ -90,6 +95,32 @@ mod tests {
         let input = "USE ";
         let res = parse_use_clause(input);
         assert!(res.is_err(), "Should fail when database name is missing");
+    }
+
+    #[test]
+    fn test_parse_use_clause_backtick_quoted() {
+        let input = "USE `my-database` MATCH (n) RETURN n";
+        let res = parse_use_clause(input);
+        match res {
+            Ok((remaining, use_clause)) => {
+                assert_eq!(use_clause.database_name, "my-database");
+                assert_eq!(remaining, "MATCH (n) RETURN n");
+            }
+            Err(e) => panic!("Failed to parse backtick-quoted USE clause: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_parse_use_clause_backtick_with_special_chars() {
+        let input = "USE `zeek_logs` MATCH (n) RETURN n";
+        let res = parse_use_clause(input);
+        match res {
+            Ok((remaining, use_clause)) => {
+                assert_eq!(use_clause.database_name, "zeek_logs");
+                assert_eq!(remaining, "MATCH (n) RETURN n");
+            }
+            Err(e) => panic!("Failed to parse backtick-quoted USE clause: {:?}", e),
+        }
     }
 
     #[test]
