@@ -689,16 +689,16 @@ class TestSchemaSpecificPatterns:
     # -------------------------------------------------------------------------
     
     @pytest.mark.parametrize("variation", range(10))
-    def test_social_followers(self, variation):
+    def test_social_followers(self, variation, setup_benchmark_data):
         """Test follower patterns in social benchmark."""
         random.seed(variation + 6000)
         user_id = random.randint(1, 100)
         query = f"MATCH (u:User)-[:FOLLOWS]->(f:User) WHERE u.user_id = {user_id} RETURN f LIMIT 10"
         result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
-    
+
     @pytest.mark.parametrize("variation", range(10))
-    def test_social_mutual_followers(self, variation):
+    def test_social_mutual_followers(self, variation, setup_benchmark_data):
         """Test mutual follower patterns."""
         random.seed(variation + 6100)
         user_id = random.randint(1, 100)
@@ -709,9 +709,9 @@ class TestSchemaSpecificPatterns:
         """
         result = execute_query(query, schema_name="social_integration")
         assert result["success"], f"Query failed: {query}"
-    
+
     @pytest.mark.parametrize("variation", range(10))
-    def test_social_follower_count(self, variation):
+    def test_social_follower_count(self, variation, setup_benchmark_data):
         """Test follower count aggregation."""
         random.seed(variation + 6200)
         limit = random.randint(5, 20)
