@@ -1421,13 +1421,13 @@ async fn test_collect_unwind_no_duplicate_cte_columns() {
         sql
     );
 
-    // Verify no duplicate columns in CTE body
-    // Count occurrences of each CTE column name
-    let cte_body = sql.split("FROM").next().unwrap_or("");
-    let name_count = cte_body.matches("p1_u_name").count();
+    // Verify no duplicate columns in CTE body (case-insensitive split on FROM)
+    let sql_upper = sql.to_uppercase();
+    let cte_body = sql_upper.split("FROM").next().unwrap_or("");
+    let name_count = cte_body.matches("P1_U_NAME").count();
     assert_eq!(
         name_count, 1,
-        "p1_u_name should appear once in CTE body, found {}.\nSQL:\n{}",
+        "P1_U_NAME should appear once in CTE body, found {}.\nSQL:\n{}",
         name_count, sql
     );
 }

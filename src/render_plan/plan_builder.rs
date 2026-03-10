@@ -1797,6 +1797,29 @@ impl RenderPlanBuilder for LogicalPlan {
                                     "Failed to convert where clause".to_string(),
                                 )
                             })?;
+
+                        // 🔧 FIX: Rewrite renamed aliases in WHERE clause back to source aliases.
+                        // Same rewrite as the standard path — needed for Union/bidirectional inputs too.
+                        let render_where = {
+                            let mut reverse_alias_map = HashMap::new();
+                            for item in &with.items {
+                                if let (LogicalExpr::TableAlias(ta), Some(col_alias)) =
+                                    (&item.expression, &item.col_alias)
+                                {
+                                    reverse_alias_map.insert(col_alias.0.clone(), ta.0.clone());
+                                }
+                            }
+                            if reverse_alias_map.is_empty() {
+                                render_where
+                            } else {
+                                log::info!(
+                                    "🔧 Rewriting WITH WHERE aliases (Union path): {:?}",
+                                    reverse_alias_map
+                                );
+                                rewrite_render_expr_aliases(&render_where, &reverse_alias_map)
+                            }
+                        };
+
                         if has_aggregation {
                             input_plan.having_clause = Some(render_where);
                         } else {
