@@ -2385,22 +2385,34 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                     prop.column.raw()
                 );
 
-                // Map the property to the correct column
-                let mapped_column = crate::render_plan::cte_generation::map_property_to_column_with_relationship_context(
-                    prop.column.raw(),
-                    &node_label,
-                    None, // relationship_type
-                    None, // node_role
-                    None, // schema_name will be resolved from task-local
-                ).unwrap_or_else(|_| prop.column.raw().to_string());
+                // Map the property to the correct column, preserving Expression variant
+                if let Ok(mapped_pv) =
+                    crate::render_plan::cte_generation::map_property_to_property_value(
+                        prop.column.raw(),
+                        &node_label,
+                    )
+                {
+                    log::debug!(
+                        "🔍 PROPERTY MAPPING: '{}' -> '{}'",
+                        prop.column.raw(),
+                        mapped_pv.raw()
+                    );
+                    prop.column = mapped_pv;
+                } else {
+                    // Fallback to string-based mapping for denormalized/complex cases
+                    let mapped_column = crate::render_plan::cte_generation::map_property_to_column_with_relationship_context(
+                        prop.column.raw(),
+                        &node_label,
+                        None, None, None,
+                    ).unwrap_or_else(|_| prop.column.raw().to_string());
 
-                log::debug!(
-                    "🔍 PROPERTY MAPPING: '{}' -> '{}'",
-                    prop.column.raw(),
-                    mapped_column
-                );
-
-                prop.column = PropertyValue::Column(mapped_column);
+                    log::debug!(
+                        "🔍 PROPERTY MAPPING (fallback): '{}' -> '{}'",
+                        prop.column.raw(),
+                        mapped_column
+                    );
+                    prop.column = PropertyValue::Column(mapped_column);
+                }
             } else if let Some(rel_type) =
                 get_relationship_type_for_alias(&prop.table_alias.0, plan)
             {
@@ -2412,22 +2424,36 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                     prop.column.raw()
                 );
 
-                // Map the relationship property to the correct column
-                let mapped_column =
-                    crate::render_plan::cte_generation::map_relationship_property_to_column(
+                // Map the relationship property, preserving Expression variant
+                if let Ok(mapped_pv) =
+                    crate::render_plan::cte_generation::map_rel_property_to_property_value(
                         prop.column.raw(),
                         &rel_type,
-                        None, // Use task-local schema context
                     )
-                    .unwrap_or_else(|_| prop.column.raw().to_string());
+                {
+                    log::debug!(
+                        "🔍 RELATIONSHIP PROPERTY MAPPING: '{}' -> '{}'",
+                        prop.column.raw(),
+                        mapped_pv.raw()
+                    );
+                    prop.column = mapped_pv;
+                } else {
+                    // Fallback to string-based mapping
+                    let mapped_column =
+                        crate::render_plan::cte_generation::map_relationship_property_to_column(
+                            prop.column.raw(),
+                            &rel_type,
+                            None,
+                        )
+                        .unwrap_or_else(|_| prop.column.raw().to_string());
 
-                log::debug!(
-                    "🔍 RELATIONSHIP PROPERTY MAPPING: '{}' -> '{}'",
-                    prop.column.raw(),
-                    mapped_column
-                );
-
-                prop.column = PropertyValue::Column(mapped_column);
+                    log::debug!(
+                        "🔍 RELATIONSHIP PROPERTY MAPPING (fallback): '{}' -> '{}'",
+                        prop.column.raw(),
+                        mapped_column
+                    );
+                    prop.column = PropertyValue::Column(mapped_column);
+                }
             }
 
             // For denormalized nodes, remap the table alias to the edge alias
