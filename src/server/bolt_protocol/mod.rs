@@ -385,7 +385,6 @@ mod tests {
         let config = BoltConfig::default();
         let executor: Arc<dyn QueryExecutor> = Arc::new(StubExec);
         let _server = BoltServer::new(config, executor);
-        assert!(true);
     }
 
     #[test]

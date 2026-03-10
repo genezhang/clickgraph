@@ -15,7 +15,7 @@ use crate::{
     graph_catalog::graph_schema::{GraphSchema, GraphSchemaElement},
     graph_catalog::{DraftOptions, DraftRequest, EdgeHint, FkEdgeHint, NodeHint, SchemaDiscovery},
     open_cypher_parser::{self, ast::CypherStatement},
-    query_planner::{self, logical_plan::LogicalPlan, plan_ctx::PlanCtx, types::QueryType},
+    query_planner::{self, types::QueryType},
     render_plan::plan_builder::RenderPlanBuilder,
 };
 

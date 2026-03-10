@@ -295,12 +295,10 @@ pub fn translate_scalar_function(
     // Special handling for datetime({epochMillis: x}) -> identity pass-through
     // The epochMillis value is already an Int64 epoch timestamp, so just return it directly.
     // Temporal accessors like .month/.day will wrap it via fromUnixTimestamp64Milli().
-    if fn_name_lower == "datetime" {
-        if fn_call.args.len() == 1 {
-            if let LogicalExpr::MapLiteral(entries) = &fn_call.args[0] {
-                if entries.len() == 1 && entries[0].0.to_lowercase() == "epochmillis" {
-                    return entries[0].1.to_sql();
-                }
+    if fn_name_lower == "datetime" && fn_call.args.len() == 1 {
+        if let LogicalExpr::MapLiteral(entries) = &fn_call.args[0] {
+            if entries.len() == 1 && entries[0].0.to_lowercase() == "epochmillis" {
+                return entries[0].1.to_sql();
             }
         }
         // Fall through to normal function_registry handling

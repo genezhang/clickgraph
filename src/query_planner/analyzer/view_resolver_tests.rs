@@ -79,20 +79,18 @@ mod tests {
     #[test]
     fn test_view_resolver_creation() {
         let schema = create_test_schema();
-        let resolver = ViewResolver::new(&schema);
+        let _resolver = ViewResolver::new(&schema);
 
         // Basic test - just verify it can be created without panicking
-        drop(resolver);
     }
 
     #[test]
     fn test_basic_structure() {
         let schema = create_test_schema();
-        let resolver = ViewResolver::new(&schema);
+        let _resolver = ViewResolver::new(&schema);
 
         // This is just a basic structure test to ensure the types compile
         // More comprehensive tests would require implementing the full API
-        drop(resolver);
     }
 
     #[test]

@@ -445,13 +445,13 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
             // FROM is None — likely a Union shell where branches have their own FROM.
             // Check if any Union branch FROM uses the VLP CTE. If not, the VLP CTE
             // is consumed by a WITH CTE (not by the main query) — skip rewriting.
-            let any_branch_uses_vlp = plan.union.0.as_ref().map_or(false, |union| {
+            let any_branch_uses_vlp = plan.union.0.as_ref().is_some_and(|union| {
                 union.input.iter().any(|branch| {
                     branch
                         .from
                         .0
                         .as_ref()
-                        .map_or(false, |f| f.name.starts_with("vlp_"))
+                        .is_some_and(|f| f.name.starts_with("vlp_"))
                 })
             });
             if !any_branch_uses_vlp {
@@ -954,6 +954,32 @@ pub(crate) fn rewrite_expr_for_vlp(
                     )));
                 }
             }
+            // Handle bare path variable: p -> tuple(t.path_nodes, t.path_relationships, t.hop_count)
+            // When RETURN p is used for a path variable, expand it to a tuple of path components
+            if path_variable.as_ref() == Some(&alias.0) {
+                log::info!(
+                    "VLP path variable expansion: {} -> tuple({}.path_nodes, ...)",
+                    alias.0,
+                    VLP_CTE_FROM_ALIAS,
+                );
+                return RenderExpr::ScalarFnCall(ScalarFnCall {
+                    name: "tuple".to_string(),
+                    args: vec![
+                        RenderExpr::Column(Column(PropertyValue::Column(format!(
+                            "{}.path_nodes",
+                            VLP_CTE_FROM_ALIAS
+                        )))),
+                        RenderExpr::Column(Column(PropertyValue::Column(format!(
+                            "{}.path_relationships",
+                            VLP_CTE_FROM_ALIAS
+                        )))),
+                        RenderExpr::Column(Column(PropertyValue::Column(format!(
+                            "{}.hop_count",
+                            VLP_CTE_FROM_ALIAS
+                        )))),
+                    ],
+                });
+            }
             expr.clone()
         }
 
@@ -1137,34 +1163,6 @@ pub(crate) fn rewrite_expr_for_vlp(
                 })
                 .collect(),
         }),
-
-        // Handle bare path variable: p → tuple(t.path_nodes, t.path_relationships, t.hop_count)
-        // When RETURN p is used for a path variable, expand it to a tuple of path components
-        RenderExpr::TableAlias(alias) if path_variable.as_ref() == Some(&alias.0) => {
-            log::info!(
-                "🔧 VLP path variable expansion: {} → tuple({}.path_nodes, ...)",
-                alias.0,
-                VLP_CTE_FROM_ALIAS,
-            );
-            // Expand to tuple of path components using VLP_CTE_FROM_ALIAS constant
-            RenderExpr::ScalarFnCall(ScalarFnCall {
-                name: "tuple".to_string(),
-                args: vec![
-                    RenderExpr::Column(Column(PropertyValue::Column(format!(
-                        "{}.path_nodes",
-                        VLP_CTE_FROM_ALIAS
-                    )))),
-                    RenderExpr::Column(Column(PropertyValue::Column(format!(
-                        "{}.path_relationships",
-                        VLP_CTE_FROM_ALIAS
-                    )))),
-                    RenderExpr::Column(Column(PropertyValue::Column(format!(
-                        "{}.hop_count",
-                        VLP_CTE_FROM_ALIAS
-                    )))),
-                ],
-            })
-        }
 
         RenderExpr::ColumnAlias(ColumnAlias(alias_str))
             if path_variable.as_ref() == Some(alias_str) =>
@@ -2336,7 +2334,7 @@ fn flatten_all_ctes(plan: &mut RenderPlan) {
     plan.ctes.0 = collected;
 }
 
-pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
+pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
     // STEP 0: Flatten ALL CTEs to top level in dependency order.
     // CTEs are always a flat, linear chain — never nested inside other CTEs or union branches.
     flatten_all_ctes(&mut plan);
@@ -2547,7 +2545,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, max_cte_depth: u32) -> String {
             if let Some(_union) = &plan.union.0 {
                 if has_aggregation {
                     // Collect aggregate aliases to detect dependent order columns
-                    let agg_aliases: std::collections::HashSet<String> = plan
+                    let _agg_aliases: std::collections::HashSet<String> = plan
                         .select
                         .items
                         .iter()
@@ -3536,8 +3534,7 @@ impl RenderExpr {
                     // CTE column names use p{N}_ prefix (e.g., p6_friend_lastName).
                     // These are output aliases after GROUP BY/UNION and should NOT get
                     // a heuristic table prefix.
-                    if raw_value.starts_with('p') {
-                        let rest = &raw_value[1..];
+                    if let Some(rest) = raw_value.strip_prefix('p') {
                         if let Some(pos) = rest.find('_') {
                             if pos > 0 && rest[..pos].chars().all(|c| c.is_ascii_digit()) {
                                 return raw_value.to_string();

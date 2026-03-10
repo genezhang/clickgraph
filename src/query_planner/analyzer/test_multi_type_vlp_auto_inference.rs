@@ -297,7 +297,7 @@ mod tests {
         if let Some(x_labels) = x_labels_opt {
             println!("Labels for 'x' (single-hop multi-type): {:?}", x_labels);
             // If inference happens: should have 2 labels
-            assert!(x_labels.len() >= 1, "Expected at least 1 label");
+            assert!(!x_labels.is_empty(), "Expected at least 1 label");
         } else {
             println!("No labels inferred for 'x' (single-hop multi-type)");
             // This is also acceptable - single-hop multi-type is ambiguous

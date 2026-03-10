@@ -1372,7 +1372,6 @@ impl DenormalizedCteStrategy {
             let prefix = match position {
                 VlpColumnPosition::Start => "start_",
                 VlpColumnPosition::End => "end_",
-                _ => "",
             };
 
             // 🔧 FIX: For denormalized VLP, CTE columns must have start_/end_ prefixes

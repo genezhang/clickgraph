@@ -49,7 +49,7 @@ fn vlp_cte_alias_for(cte_name: &str) -> String {
 /// Check if a GraphRel with variable_length is a fixed-length VLP (*2..2, *3..3)
 /// that uses inline chained JOINs instead of a recursive CTE.
 pub(super) fn is_fixed_length_vlp(graph_rel: &GraphRel) -> bool {
-    graph_rel.variable_length.as_ref().map_or(false, |spec| {
+    graph_rel.variable_length.as_ref().is_some_and(|spec| {
         spec.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none()
     })
 }

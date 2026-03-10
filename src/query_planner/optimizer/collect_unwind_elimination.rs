@@ -21,7 +21,7 @@
 
 use crate::query_planner::{
     logical_expr::{ColumnAlias, LogicalExpr, TableAlias},
-    logical_plan::{LogicalPlan, ProjectionItem, Unwind, WithClause},
+    logical_plan::{LogicalPlan, ProjectionItem, Unwind},
     optimizer::optimizer_pass::{OptimizerPass, OptimizerResult},
     plan_ctx::PlanCtx,
     transformed::Transformed,

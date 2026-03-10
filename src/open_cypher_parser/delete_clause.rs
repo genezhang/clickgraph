@@ -63,7 +63,7 @@ mod tests {
         match res {
             Ok((remaining, delete_clause)) => {
                 assert_eq!(remaining, "");
-                assert_eq!(delete_clause.is_detach, false);
+                assert!(!delete_clause.is_detach);
                 assert_eq!(delete_clause.delete_items.len(), 1);
                 assert_eq!(&delete_clause.delete_items[0], &Expression::Variable("a"));
             }
@@ -80,7 +80,7 @@ mod tests {
         match res {
             Ok((remaining, delete_clause)) => {
                 assert_eq!(remaining, "");
-                assert_eq!(delete_clause.is_detach, true);
+                assert!(delete_clause.is_detach);
                 assert_eq!(delete_clause.delete_items.len(), 2);
                 assert_eq!(&delete_clause.delete_items[0], &Expression::Variable("a"));
                 assert_eq!(&delete_clause.delete_items[1], &Expression::Variable("b"));
@@ -98,7 +98,7 @@ mod tests {
         match res {
             Ok((remaining, delete_clause)) => {
                 assert_eq!(remaining, "");
-                assert_eq!(delete_clause.is_detach, true);
+                assert!(delete_clause.is_detach);
                 assert_eq!(delete_clause.delete_items.len(), 3);
                 assert_eq!(&delete_clause.delete_items[0], &Expression::Variable("a"));
                 assert_eq!(&delete_clause.delete_items[1], &Expression::Variable("b"));

@@ -31,7 +31,7 @@ use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::expression_utils::references_alias;
 use crate::render_plan::render_expr::{
-    Literal, Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
+    Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
 };
 use crate::render_plan::view_table_ref::ViewTableRef;
 use crate::render_plan::{CteContent, FromTableItem, Join, JoinType, RenderPlan};
@@ -2388,6 +2388,7 @@ fn rewrite_bridge_in_expr(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render_plan::render_expr::Literal;
     use crate::render_plan::render_expr::{ColumnAlias, Operator};
     use crate::render_plan::*;
 

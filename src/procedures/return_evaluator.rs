@@ -310,7 +310,6 @@ fn evaluate_literal(lit: &Literal) -> EvalResult {
         }
         Literal::Boolean(b) => Ok(JsonValue::Bool(*b)),
         Literal::Null => Ok(JsonValue::Null),
-        _ => Err(format!("Unsupported literal type: {:?}", lit)),
     }
 }
 

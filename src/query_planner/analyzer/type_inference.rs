@@ -284,7 +284,7 @@ impl TypeInference {
                 let is_vlp_zero_hop = rel
                     .variable_length
                     .as_ref()
-                    .map_or(false, |vl| vl.min_hops == Some(0) || vl.min_hops.is_none());
+                    .is_some_and(|vl| vl.min_hops == Some(0) || vl.min_hops.is_none());
                 let left_label = if is_vlp_zero_hop
                     && pre_infer_left_label.is_none()
                     && left_label.is_some()
@@ -1632,7 +1632,7 @@ impl TypeInference {
             .filter(|combo| {
                 is_valid_combination_with_direction(
                     combo,
-                    &relationships,
+                    relationships,
                     graph_schema,
                     &typed_nodes,
                 )
@@ -1734,7 +1734,7 @@ impl TypeInference {
         rel_types: &[String],
         right_type: &str,
         plan_ctx: &mut PlanCtx,
-        graph_schema: &GraphSchema,
+        _graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Arc<LogicalPlan>> {
         // Update plan_ctx with inferred types for this branch
         self.update_plan_ctx_with_label(&rel.left_connection, left_type, plan_ctx)?;
@@ -4101,7 +4101,7 @@ fn extract_patterns_recursive(
             let is_vlp_zero_hop = rel
                 .variable_length
                 .as_ref()
-                .map_or(false, |vl| vl.min_hops == Some(0) || vl.min_hops.is_none());
+                .is_some_and(|vl| vl.min_hops == Some(0) || vl.min_hops.is_none());
             patterns.push(RelationshipPattern {
                 left_alias: rel.left_connection.clone(),
                 right_alias: rel.right_connection.clone(),

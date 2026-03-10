@@ -24,7 +24,6 @@ use std::{collections::HashSet, sync::Arc};
 
 use crate::{
     graph_catalog::graph_schema::GraphSchema,
-    graph_catalog::schema_types::SchemaType,
     query_planner::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
@@ -2397,6 +2396,7 @@ impl FilterTagging {
 mod tests {
     use super::*;
     use crate::graph_catalog::config::Identifier;
+    use crate::graph_catalog::schema_types::SchemaType;
     use crate::query_planner::logical_expr::{
         AggregateFnCall, Literal, PropertyAccess, TableAlias,
     };
@@ -2906,9 +2906,9 @@ mod tests {
         assert_eq!(user_ctx.get_filters().len(), 1);
 
         // Should add projections for multi-table condition
-        assert!(user_ctx.get_projections().len() >= 1);
+        assert!(!user_ctx.get_projections().is_empty());
         let company_ctx = plan_ctx.get_table_ctx("company").unwrap();
-        assert!(company_ctx.get_projections().len() >= 1);
+        assert!(!company_ctx.get_projections().is_empty());
     }
 
     #[test]

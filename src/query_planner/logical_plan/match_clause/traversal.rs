@@ -243,7 +243,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 }
 
                 // Deduplicate in case of overlapping expansions
-                let mut unique_labels: Vec<String> = {
+                let unique_labels: Vec<String> = {
                     let mut seen = std::collections::HashSet::new();
                     expanded_labels
                         .into_iter()

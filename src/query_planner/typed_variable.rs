@@ -1072,7 +1072,7 @@ impl VariableRegistry {
                         property_mapping, ..
                     } = &mut n.source
                     {
-                        *property_mapping = Box::new(mapping);
+                        **property_mapping = mapping;
                     }
                 }
                 TypedVariable::Relationship(r) => {
@@ -1080,7 +1080,7 @@ impl VariableRegistry {
                         property_mapping, ..
                     } = &mut r.source
                     {
-                        *property_mapping = Box::new(mapping);
+                        **property_mapping = mapping;
                     }
                 }
                 TypedVariable::Scalar(s) => {
@@ -1088,7 +1088,7 @@ impl VariableRegistry {
                         property_mapping, ..
                     } = &mut s.source
                     {
-                        *property_mapping = Box::new(mapping);
+                        **property_mapping = mapping;
                     }
                 }
                 TypedVariable::Path(p) => {
@@ -1096,7 +1096,7 @@ impl VariableRegistry {
                         property_mapping, ..
                     } = &mut p.source
                     {
-                        *property_mapping = Box::new(mapping);
+                        **property_mapping = mapping;
                     }
                 }
                 TypedVariable::Collection(c) => {
@@ -1104,7 +1104,7 @@ impl VariableRegistry {
                         property_mapping, ..
                     } = &mut c.source
                     {
-                        *property_mapping = Box::new(mapping);
+                        **property_mapping = mapping;
                     }
                 }
             }

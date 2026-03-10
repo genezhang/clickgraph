@@ -481,8 +481,8 @@ mod tests {
     #[test]
     fn test_parse_args_valid_two_args() {
         use crate::open_cypher_parser::ast::{Expression, Literal};
-        let idx = Expression::Literal(Literal::String("my-index".into()));
-        let query = Expression::Literal(Literal::String("search text".into()));
+        let idx = Expression::Literal(Literal::String("my-index"));
+        let query = Expression::Literal(Literal::String("search text"));
         let args = parse_fulltext_search_args(&[&idx, &query]).unwrap();
         assert_eq!(args.index_name, "my-index");
         assert_eq!(args.query_text, "search text");
@@ -492,8 +492,8 @@ mod tests {
     #[test]
     fn test_parse_args_valid_three_args_with_limit() {
         use crate::open_cypher_parser::ast::{Expression, Literal};
-        let idx = Expression::Literal(Literal::String("my-index".into()));
-        let query = Expression::Literal(Literal::String("search text".into()));
+        let idx = Expression::Literal(Literal::String("my-index"));
+        let query = Expression::Literal(Literal::String("search text"));
         let limit = Expression::Literal(Literal::Integer(25));
         let args = parse_fulltext_search_args(&[&idx, &query, &limit]).unwrap();
         assert_eq!(args.index_name, "my-index");
@@ -504,7 +504,7 @@ mod tests {
     #[test]
     fn test_parse_args_too_few() {
         use crate::open_cypher_parser::ast::{Expression, Literal};
-        let idx = Expression::Literal(Literal::String("my-index".into()));
+        let idx = Expression::Literal(Literal::String("my-index"));
         let err = parse_fulltext_search_args(&[&idx]).unwrap_err();
         assert!(err.contains("at least 2 arguments"), "Error: {}", err);
     }
@@ -513,7 +513,7 @@ mod tests {
     fn test_parse_args_non_string_index() {
         use crate::open_cypher_parser::ast::{Expression, Literal};
         let idx = Expression::Literal(Literal::Integer(42));
-        let query = Expression::Literal(Literal::String("text".into()));
+        let query = Expression::Literal(Literal::String("text"));
         let err = parse_fulltext_search_args(&[&idx, &query]).unwrap_err();
         assert!(err.contains("Expected string literal"), "Error: {}", err);
     }
@@ -521,8 +521,8 @@ mod tests {
     #[test]
     fn test_parse_args_empty_query() {
         use crate::open_cypher_parser::ast::{Expression, Literal};
-        let idx = Expression::Literal(Literal::String("idx".into()));
-        let query = Expression::Literal(Literal::String("".into()));
+        let idx = Expression::Literal(Literal::String("idx"));
+        let query = Expression::Literal(Literal::String(""));
         let err = parse_fulltext_search_args(&[&idx, &query]).unwrap_err();
         assert!(err.contains("must not be empty"), "Error: {}", err);
     }
@@ -530,8 +530,8 @@ mod tests {
     #[test]
     fn test_parse_args_whitespace_only_query() {
         use crate::open_cypher_parser::ast::{Expression, Literal};
-        let idx = Expression::Literal(Literal::String("idx".into()));
-        let query = Expression::Literal(Literal::String("   ".into()));
+        let idx = Expression::Literal(Literal::String("idx"));
+        let query = Expression::Literal(Literal::String("   "));
         let err = parse_fulltext_search_args(&[&idx, &query]).unwrap_err();
         assert!(err.contains("must not be empty"), "Error: {}", err);
     }
@@ -539,8 +539,8 @@ mod tests {
     #[test]
     fn test_parse_args_zero_limit() {
         use crate::open_cypher_parser::ast::{Expression, Literal};
-        let idx = Expression::Literal(Literal::String("idx".into()));
-        let query = Expression::Literal(Literal::String("text".into()));
+        let idx = Expression::Literal(Literal::String("idx"));
+        let query = Expression::Literal(Literal::String("text"));
         let limit = Expression::Literal(Literal::Integer(0));
         let err = parse_fulltext_search_args(&[&idx, &query, &limit]).unwrap_err();
         assert!(err.contains("must be positive"), "Error: {}", err);
@@ -549,8 +549,8 @@ mod tests {
     #[test]
     fn test_parse_args_negative_limit() {
         use crate::open_cypher_parser::ast::{Expression, Literal};
-        let idx = Expression::Literal(Literal::String("idx".into()));
-        let query = Expression::Literal(Literal::String("text".into()));
+        let idx = Expression::Literal(Literal::String("idx"));
+        let query = Expression::Literal(Literal::String("text"));
         let limit = Expression::Literal(Literal::Integer(-5));
         let err = parse_fulltext_search_args(&[&idx, &query, &limit]).unwrap_err();
         assert!(err.contains("must be positive"), "Error: {}", err);

@@ -609,7 +609,6 @@ mod tests {
 
         let _connection = BoltConnection::new(stream, context, config, executor);
         // Verify the connection is created without panics
-        assert!(true);
     }
 
     #[test]

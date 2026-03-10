@@ -41,7 +41,6 @@ use super::metadata::{
 
 use crate::{
     graph_catalog::{
-        config::Identifier,
         graph_schema::{GraphSchema, NodeSchema, RelationshipSchema},
         pattern_schema::{JoinStrategy, NodeAccessStrategy, PatternSchemaContext},
     },
@@ -144,7 +143,7 @@ impl AnalyzerPass for GraphJoinInference {
         // Also mark VLP endpoint nodes as referenced — the VLP CTE provides
         // the connection between edges that meet at these nodes, so cross-branch
         // joins would reference a skipped VLP relationship alias.
-        for (alias, _info) in join_ctx.vlp_endpoints() {
+        for alias in join_ctx.vlp_endpoints().keys() {
             if let Some(node_info) = pattern_metadata.nodes.get_mut(alias) {
                 if !node_info.is_referenced {
                     log::debug!(

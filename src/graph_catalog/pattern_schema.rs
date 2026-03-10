@@ -42,7 +42,6 @@ use super::config::Identifier;
 use super::graph_schema::{
     classify_edge_table_pattern, EdgeTablePattern, GraphSchema, NodeSchema, RelationshipSchema,
 };
-use super::schema_types::SchemaType;
 use std::collections::HashMap;
 
 // ============================================================================
@@ -1350,6 +1349,7 @@ mod tests {
     use crate::graph_catalog::config::Identifier;
     use crate::graph_catalog::expression_parser::PropertyValue;
     use crate::graph_catalog::graph_schema::NodeIdSchema;
+    use crate::graph_catalog::schema_types::SchemaType;
 
     fn make_test_node(_label: &str, table: &str, id_col: &str) -> NodeSchema {
         NodeSchema {

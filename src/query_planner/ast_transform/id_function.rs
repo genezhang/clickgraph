@@ -230,8 +230,8 @@ impl<'a> IdFunctionTransformer<'a> {
                 }
                 log::debug!(
                     "      IN operands[0]={:?}, operands[1]={:?}",
-                    op_app.operands.first().map(|e| std::mem::discriminant(e)),
-                    op_app.operands.get(1).map(|e| std::mem::discriminant(e))
+                    op_app.operands.first().map(std::mem::discriminant),
+                    op_app.operands.get(1).map(std::mem::discriminant)
                 );
                 if let Some(_var) = self.extract_label_in_labels(&op_app.operands) {
                     // Normalize: "Label" IN labels(n) → labels(n) = "Label"

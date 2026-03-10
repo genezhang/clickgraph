@@ -3710,7 +3710,7 @@ pub fn extract_ctes_with_context(
                         && !plan_needs_endpoint_properties
                         && start_has_id_filter
                         && end_has_id_filter
-                        && graph_rel.path_variable.as_ref().map_or(true, |pv| {
+                        && graph_rel.path_variable.as_ref().is_none_or(|pv| {
                             !plan_uses_nodes_fn(check_plan, pv)
                                 && !plan_uses_relationships_fn(check_plan, pv)
                                 && !plan_uses_bare_path_variable(check_plan, pv)
@@ -5136,13 +5136,13 @@ pub fn plan_uses_relationships_fn(plan: &LogicalPlan, path_var: &str) -> bool {
             LogicalExpr::Case(c) => {
                 c.expr
                     .as_ref()
-                    .map_or(false, |o| expr_uses_relationships(o, path_var))
+                    .is_some_and(|o| expr_uses_relationships(o, path_var))
                     || c.when_then.iter().any(|(w, t)| {
                         expr_uses_relationships(w, path_var) || expr_uses_relationships(t, path_var)
                     })
                     || c.else_expr
                         .as_ref()
-                        .map_or(false, |e| expr_uses_relationships(e, path_var))
+                        .is_some_and(|e| expr_uses_relationships(e, path_var))
             }
             _ => false,
         }
@@ -5175,7 +5175,7 @@ pub fn plan_uses_relationships_fn(plan: &LogicalPlan, path_var: &str) -> bool {
             LogicalPlan::GraphRel(gr) => {
                 gr.where_predicate
                     .as_ref()
-                    .map_or(false, |p| expr_uses_relationships(p, path_var))
+                    .is_some_and(|p| expr_uses_relationships(p, path_var))
                     || plan_has_relationships(&gr.left, path_var)
                     || plan_has_relationships(&gr.center, path_var)
                     || plan_has_relationships(&gr.right, path_var)
@@ -5219,13 +5219,13 @@ pub fn plan_uses_nodes_fn(plan: &LogicalPlan, path_var: &str) -> bool {
             LogicalExpr::Case(c) => {
                 c.expr
                     .as_ref()
-                    .map_or(false, |o| expr_uses_nodes(o, path_var))
+                    .is_some_and(|o| expr_uses_nodes(o, path_var))
                     || c.when_then
                         .iter()
                         .any(|(w, t)| expr_uses_nodes(w, path_var) || expr_uses_nodes(t, path_var))
                     || c.else_expr
                         .as_ref()
-                        .map_or(false, |e| expr_uses_nodes(e, path_var))
+                        .is_some_and(|e| expr_uses_nodes(e, path_var))
             }
             _ => false,
         }
@@ -5257,7 +5257,7 @@ pub fn plan_uses_nodes_fn(plan: &LogicalPlan, path_var: &str) -> bool {
             LogicalPlan::GraphRel(gr) => {
                 gr.where_predicate
                     .as_ref()
-                    .map_or(false, |p| expr_uses_nodes(p, path_var))
+                    .is_some_and(|p| expr_uses_nodes(p, path_var))
                     || plan_has_nodes(&gr.left, path_var)
                     || plan_has_nodes(&gr.center, path_var)
                     || plan_has_nodes(&gr.right, path_var)
@@ -5314,23 +5314,22 @@ pub fn plan_uses_bare_path_variable(plan: &LogicalPlan, path_var: &str) -> bool 
             LogicalExpr::OperatorApplicationExp(op) => {
                 // `path IS NULL` / `path IS NOT NULL` patterns are safe —
                 // used in CASE WHEN for length-only queries
-                if matches!(op.operator, Operator::IsNull | Operator::IsNotNull) {
-                    if op.operands.len() == 1 && is_path_ref(&op.operands[0], path_var) {
-                        return false;
-                    }
+                if matches!(op.operator, Operator::IsNull | Operator::IsNotNull)
+                    && op.operands.len() == 1
+                    && is_path_ref(&op.operands[0], path_var)
+                {
+                    return false;
                 }
                 op.operands.iter().any(|o| expr_uses_bare(o, path_var))
             }
             LogicalExpr::Case(c) => {
-                c.expr
-                    .as_ref()
-                    .map_or(false, |o| expr_uses_bare(o, path_var))
+                c.expr.as_ref().is_some_and(|o| expr_uses_bare(o, path_var))
                     || c.when_then
                         .iter()
                         .any(|(w, t)| expr_uses_bare(w, path_var) || expr_uses_bare(t, path_var))
                     || c.else_expr
                         .as_ref()
-                        .map_or(false, |e| expr_uses_bare(e, path_var))
+                        .is_some_and(|e| expr_uses_bare(e, path_var))
             }
             LogicalExpr::AggregateFnCall(afc) => {
                 afc.args.iter().any(|a| expr_uses_bare(a, path_var))
@@ -5365,7 +5364,7 @@ pub fn plan_uses_bare_path_variable(plan: &LogicalPlan, path_var: &str) -> bool 
             LogicalPlan::GraphRel(gr) => {
                 gr.where_predicate
                     .as_ref()
-                    .map_or(false, |p| expr_uses_bare(p, path_var))
+                    .is_some_and(|p| expr_uses_bare(p, path_var))
                     || plan_has_bare(&gr.left, path_var)
                     || plan_has_bare(&gr.center, path_var)
                     || plan_has_bare(&gr.right, path_var)
@@ -5402,13 +5401,13 @@ pub fn plan_references_alias_properties(plan: &LogicalPlan, alias: &str) -> bool
                 op.operands.iter().any(|o| expr_refs_alias(o, alias))
             }
             LogicalExpr::Case(c) => {
-                c.expr.as_ref().map_or(false, |e| expr_refs_alias(e, alias))
+                c.expr.as_ref().is_some_and(|e| expr_refs_alias(e, alias))
                     || c.when_then
                         .iter()
                         .any(|(w, t)| expr_refs_alias(w, alias) || expr_refs_alias(t, alias))
                     || c.else_expr
                         .as_ref()
-                        .map_or(false, |e| expr_refs_alias(e, alias))
+                        .is_some_and(|e| expr_refs_alias(e, alias))
             }
             _ => false,
         }

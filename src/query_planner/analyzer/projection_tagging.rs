@@ -152,7 +152,7 @@ impl AnalyzerPass for ProjectionTagging {
                         extract_label_from_plan(projection.input.as_ref(), &alias)
                     {
                         // Save original labels and temporarily set branch-specific label
-                        if let Ok(mut table_ctx) = plan_ctx.get_mut_table_ctx(&alias) {
+                        if let Ok(table_ctx) = plan_ctx.get_mut_table_ctx(&alias) {
                             original_labels.insert(alias.clone(), table_ctx.get_labels().cloned());
                             table_ctx.set_labels(Some(vec![branch_label]));
                             log::debug!(
@@ -170,7 +170,7 @@ impl AnalyzerPass for ProjectionTagging {
 
                 // Restore original labels
                 for (alias, original) in original_labels {
-                    if let Ok(mut table_ctx) = plan_ctx.get_mut_table_ctx(&alias) {
+                    if let Ok(table_ctx) = plan_ctx.get_mut_table_ctx(&alias) {
                         table_ctx.set_labels(original);
                     } else {
                         // Alias should exist since we successfully modified it earlier
@@ -1059,28 +1059,27 @@ impl ProjectionTagging {
                 // Handle startNode(r) and endNode(r) — relationship direction functions.
                 // startNode(r) → PropertyAccess(r.from_id_col), used in CASE WHEN comparisons
                 // to determine if a node is the source or target of a relationship.
-                if matches!(fn_name_lower.as_str(), "startnode" | "endnode") {
-                    if scalar_fn_call.args.len() == 1 {
-                        if let Some(LogicalExpr::TableAlias(TableAlias(alias))) =
-                            scalar_fn_call.args.first()
-                        {
-                            if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias) {
-                                if table_ctx.is_relation() {
-                                    if let Some(label) = table_ctx.get_label_opt() {
-                                        if let Ok(rel_schema) = graph_schema.get_rel_schema(&label)
-                                        {
-                                            let id = if fn_name_lower == "startnode" {
-                                                &rel_schema.from_id
-                                            } else {
-                                                &rel_schema.to_id
-                                            };
-                                            item.expression =
-                                                LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                                    table_alias: TableAlias(alias.clone()),
-                                                    column: id.to_property_value(),
-                                                });
-                                            return Ok(());
-                                        }
+                if matches!(fn_name_lower.as_str(), "startnode" | "endnode")
+                    && scalar_fn_call.args.len() == 1
+                {
+                    if let Some(LogicalExpr::TableAlias(TableAlias(alias))) =
+                        scalar_fn_call.args.first()
+                    {
+                        if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias) {
+                            if table_ctx.is_relation() {
+                                if let Some(label) = table_ctx.get_label_opt() {
+                                    if let Ok(rel_schema) = graph_schema.get_rel_schema(&label) {
+                                        let id = if fn_name_lower == "startnode" {
+                                            &rel_schema.from_id
+                                        } else {
+                                            &rel_schema.to_id
+                                        };
+                                        item.expression =
+                                            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: TableAlias(alias.clone()),
+                                                column: id.to_property_value(),
+                                            });
+                                        return Ok(());
                                     }
                                 }
                             }
