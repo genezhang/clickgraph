@@ -1204,3 +1204,113 @@ async fn test_reversed_anchor_optional_match_with_where_predicate() {
         sql
     );
 }
+
+/// Test VLP path function `length(path)` inside WITH clause
+#[tokio::test]
+async fn test_vlp_length_path_in_with_clause() {
+    let schema = create_test_schema();
+
+    let cypher = r#"
+        MATCH path = (a:User)-[:FOLLOWS*1..3]->(b:User)
+        WITH a, b, length(path) as hops
+        WHERE hops = 2
+        RETURN a.name, b.name, hops
+    "#;
+
+    let ast = parse_query(cypher).expect("Failed to parse VLP length(path) in WITH");
+
+    let result = evaluate_read_query(ast, &schema, None, None);
+    assert!(result.is_ok(), "Failed to build plan: {:?}", result.err());
+
+    let (logical_plan, _plan_ctx) = result.unwrap();
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL: {:?}",
+        render_result.err()
+    );
+
+    let render_plan = render_result.unwrap();
+    let sql = render_plan.to_sql();
+    println!("Generated SQL:\n{}", sql);
+
+    let sql_lower = sql.to_lowercase();
+
+    // VLP should generate recursive CTE
+    assert!(
+        sql_lower.contains("recursive"),
+        "Should contain RECURSIVE CTE for VLP.\nSQL:\n{}",
+        sql
+    );
+
+    // length(path) should be rewritten to t.hop_count, not literal "length(path)"
+    assert!(
+        !sql_lower.contains("length(path)"),
+        "length(path) should be rewritten to hop_count, not left as literal.\nSQL:\n{}",
+        sql
+    );
+
+    // Should contain hop_count reference (from VLP CTE)
+    assert!(
+        sql_lower.contains("hop_count"),
+        "Should contain hop_count from VLP CTE rewriting.\nSQL:\n{}",
+        sql
+    );
+}
+
+/// Test VLP path functions `nodes(path)` and `relationships(path)` inside WITH clause
+#[tokio::test]
+async fn test_vlp_nodes_relationships_path_in_with_clause() {
+    let schema = create_test_schema();
+
+    let cypher = r#"
+        MATCH path = (a:User)-[:FOLLOWS*1..2]->(b:User)
+        WITH a, b, nodes(path) as path_nodes, relationships(path) as path_rels
+        RETURN a.name, size(path_nodes) as node_count, size(path_rels) as rel_count
+    "#;
+
+    let ast = parse_query(cypher).expect("Failed to parse VLP nodes/relationships in WITH");
+
+    let result = evaluate_read_query(ast, &schema, None, None);
+    assert!(result.is_ok(), "Failed to build plan: {:?}", result.err());
+
+    let (logical_plan, _plan_ctx) = result.unwrap();
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL: {:?}",
+        render_result.err()
+    );
+
+    let render_plan = render_result.unwrap();
+    let sql = render_plan.to_sql();
+    println!("Generated SQL:\n{}", sql);
+
+    let sql_lower = sql.to_lowercase();
+
+    // nodes(path) should be rewritten to path_nodes CTE column
+    assert!(
+        !sql_lower.contains("nodes(path)"),
+        "nodes(path) should be rewritten, not left as literal.\nSQL:\n{}",
+        sql
+    );
+
+    // relationships(path) should be rewritten to path_relationships CTE column
+    assert!(
+        !sql_lower.contains("relationships(path)"),
+        "relationships(path) should be rewritten, not left as literal.\nSQL:\n{}",
+        sql
+    );
+
+    // Should contain path_nodes and path_relationships references
+    assert!(
+        sql_lower.contains("path_nodes"),
+        "Should contain path_nodes from VLP CTE rewriting.\nSQL:\n{}",
+        sql
+    );
+    assert!(
+        sql_lower.contains("path_relationships"),
+        "Should contain path_relationships from VLP CTE rewriting.\nSQL:\n{}",
+        sql
+    );
+}

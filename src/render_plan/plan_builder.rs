@@ -1777,6 +1777,12 @@ impl RenderPlanBuilder for LogicalPlan {
                     .iter()
                     .any(|item| matches!(item.expression, LogicalExpr::AggregateFnCall(_)));
 
+                // Extract VLP path variable from input (for path function rewriting in WITH items)
+                let vlp_path_variable = {
+                    use crate::render_plan::cte_extraction::get_path_variable;
+                    get_path_variable(&with.input)
+                };
+
                 let cte_content = if is_denormalized_input || is_bidirectional_union {
                     // Union path: use to_render_plan() which correctly renders both
                     // UNION branches with per-branch property resolution and FROM/JOINs
@@ -1911,6 +1917,56 @@ impl RenderPlanBuilder for LogicalPlan {
                         });
                     }
 
+                    // 🔧 FIX: Rewrite VLP path function expressions in WITH items
+                    // When WITH contains `length(path)`, `nodes(path)`, `relationships(path)`,
+                    // these must be rewritten to reference VLP CTE columns (t.hop_count, etc.)
+                    if let Some(ref path_var) = vlp_path_variable {
+                        // Find start/end aliases from the VLP GraphRel
+                        fn find_vlp_endpoints(plan: &LogicalPlan) -> Option<(String, String)> {
+                            match plan {
+                                LogicalPlan::GraphRel(gr) if gr.variable_length.is_some() => {
+                                    Some((gr.left_connection.clone(), gr.right_connection.clone()))
+                                }
+                                LogicalPlan::GraphRel(gr) => find_vlp_endpoints(&gr.left)
+                                    .or_else(|| find_vlp_endpoints(&gr.right)),
+                                LogicalPlan::GraphNode(gn) => find_vlp_endpoints(&gn.input),
+                                LogicalPlan::Filter(f) => find_vlp_endpoints(&f.input),
+                                LogicalPlan::Projection(p) => find_vlp_endpoints(&p.input),
+                                LogicalPlan::GraphJoins(gj) => find_vlp_endpoints(&gj.input),
+                                LogicalPlan::GroupBy(gb) => find_vlp_endpoints(&gb.input),
+                                LogicalPlan::Union(u) => {
+                                    u.inputs.iter().find_map(|i| find_vlp_endpoints(i))
+                                }
+                                _ => None,
+                            }
+                        }
+
+                        let endpoints = find_vlp_endpoints(&with.input);
+                        let (start_alias, end_alias) = match endpoints {
+                            Some((s, e)) => (Some(s), Some(e)),
+                            None => (None, None),
+                        };
+
+                        log::info!(
+                            "🔧 VLP path rewriting in WITH: path_var={}, start={:?}, end={:?}",
+                            path_var,
+                            start_alias,
+                            end_alias
+                        );
+
+                        use crate::clickhouse_query_generator::to_sql_query::rewrite_expr_for_vlp;
+                        let path_variable_opt = Some(path_var.clone());
+                        for item in cte_select_items.iter_mut() {
+                            item.expression = rewrite_expr_for_vlp(
+                                &item.expression,
+                                &start_alias,
+                                &end_alias,
+                                &path_variable_opt,
+                                false,
+                            );
+                        }
+                    }
+
                     // ✅ FIX (Phase 6): Remap column aliases to match exported aliases
                     // When we have `WITH u AS person`, the select items will have aliases like `u.name`
                     // but they need to be remapped to `person.name` for the CTE output
@@ -1980,6 +2036,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 });
                 let mut cte = Cte::new(cte_name.clone(), cte_content, false);
                 cte.with_exported_aliases = with.exported_aliases.clone();
+                cte.vlp_path_variable = vlp_path_variable.clone();
                 let ctes = CteItems(vec![cte]);
 
                 let from = FromTableItem(Some(ViewTableRef {
