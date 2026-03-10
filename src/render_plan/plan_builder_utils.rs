@@ -8721,6 +8721,28 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         "🔧 build_chained_with_match_cte_plan: Applying WHERE clause from WITH"
                     );
 
+                    // 🔧 FIX: Rewrite renamed aliases back to source aliases in WHERE clause.
+                    // For `WITH u AS person WHERE person.user_id = 1`, "person" must become "u"
+                    // so that property mapping resolution can find the correct schema mappings.
+                    let where_predicate = if let Some(ref items) = with_items {
+                        let mut reverse_map = std::collections::HashMap::new();
+                        for item in items {
+                            if let (LogicalExpr::TableAlias(ta), Some(col_alias)) =
+                                (&item.expression, &item.col_alias)
+                            {
+                                reverse_map.insert(col_alias.0.clone(), ta.0.clone());
+                            }
+                        }
+                        if reverse_map.is_empty() {
+                            where_predicate
+                        } else {
+                            log::info!("🔧 Rewriting WITH WHERE aliases: {:?}", reverse_map);
+                            rewrite_logical_expr_aliases(&where_predicate, &reverse_map)
+                        }
+                    } else {
+                        where_predicate
+                    };
+
                     // Rewrite through scope to map Cypher properties to CTE columns
                     let where_rewritten = rewrite_expression_with_property_mapping(
                         &where_predicate,
@@ -17224,5 +17246,68 @@ fn replace_arraycount_placeholders_in_expr(
             }
         }
         _ => {}
+    }
+}
+
+/// Rewrite table aliases in a LogicalExpr using an alias mapping.
+/// Used for post-WITH WHERE clauses: `person.user_id` → `u.user_id`
+/// when the WHERE uses a renamed alias but the input uses the original.
+fn rewrite_logical_expr_aliases(
+    expr: &LogicalExpr,
+    alias_map: &std::collections::HashMap<String, String>,
+) -> LogicalExpr {
+    match expr {
+        LogicalExpr::PropertyAccessExp(pa) => {
+            if let Some(source_alias) = alias_map.get(&pa.table_alias.0) {
+                LogicalExpr::PropertyAccessExp(crate::query_planner::logical_expr::PropertyAccess {
+                    table_alias: crate::query_planner::logical_expr::TableAlias(
+                        source_alias.clone(),
+                    ),
+                    column: pa.column.clone(),
+                })
+            } else {
+                expr.clone()
+            }
+        }
+        LogicalExpr::TableAlias(ta) => {
+            if let Some(source_alias) = alias_map.get(&ta.0) {
+                LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(
+                    source_alias.clone(),
+                ))
+            } else {
+                expr.clone()
+            }
+        }
+        LogicalExpr::OperatorApplicationExp(op) => LogicalExpr::OperatorApplicationExp(
+            crate::query_planner::logical_expr::OperatorApplication {
+                operator: op.operator.clone(),
+                operands: op
+                    .operands
+                    .iter()
+                    .map(|o| rewrite_logical_expr_aliases(o, alias_map))
+                    .collect(),
+            },
+        ),
+        LogicalExpr::ScalarFnCall(func) => {
+            LogicalExpr::ScalarFnCall(crate::query_planner::logical_expr::ScalarFnCall {
+                name: func.name.clone(),
+                args: func
+                    .args
+                    .iter()
+                    .map(|a| rewrite_logical_expr_aliases(a, alias_map))
+                    .collect(),
+            })
+        }
+        LogicalExpr::AggregateFnCall(func) => {
+            LogicalExpr::AggregateFnCall(crate::query_planner::logical_expr::AggregateFnCall {
+                name: func.name.clone(),
+                args: func
+                    .args
+                    .iter()
+                    .map(|a| rewrite_logical_expr_aliases(a, alias_map))
+                    .collect(),
+            })
+        }
+        _ => expr.clone(),
     }
 }

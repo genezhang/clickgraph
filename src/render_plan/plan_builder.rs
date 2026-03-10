@@ -1844,6 +1844,30 @@ impl RenderPlanBuilder for LogicalPlan {
                                     "Failed to convert where clause".to_string(),
                                 )
                             })?;
+
+                        // 🔧 FIX: Rewrite renamed aliases in WHERE clause back to source aliases.
+                        // For `WITH u AS person WHERE person.user_id = 1`, the WHERE uses "person"
+                        // but inside the CTE body only "u" exists. Reverse the alias mapping.
+                        let render_where = {
+                            let mut reverse_alias_map = HashMap::new();
+                            for item in &with.items {
+                                if let (LogicalExpr::TableAlias(ta), Some(col_alias)) =
+                                    (&item.expression, &item.col_alias)
+                                {
+                                    reverse_alias_map.insert(col_alias.0.clone(), ta.0.clone());
+                                }
+                            }
+                            if reverse_alias_map.is_empty() {
+                                render_where
+                            } else {
+                                log::info!(
+                                    "🔧 Rewriting WITH WHERE aliases: {:?}",
+                                    reverse_alias_map
+                                );
+                                rewrite_render_expr_aliases(&render_where, &reverse_alias_map)
+                            }
+                        };
+
                         if has_aggregation {
                             if cte_having.is_some() {
                                 return Err(RenderBuildError::InvalidRenderPlan(
@@ -4048,6 +4072,63 @@ fn build_with_alias_mapping(
     }
 
     mapping
+}
+
+/// Rewrite table aliases in a RenderExpr using an alias mapping.
+/// Used to rewrite post-WITH WHERE clauses: `person.user_id` → `u.user_id`
+/// when the WHERE uses a renamed alias but the CTE body uses the original.
+fn rewrite_render_expr_aliases(
+    expr: &RenderExpr,
+    alias_map: &HashMap<String, String>,
+) -> RenderExpr {
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => {
+            if let Some(source_alias) = alias_map.get(&pa.table_alias.0) {
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(source_alias.clone()),
+                    column: pa.column.clone(),
+                })
+            } else {
+                expr.clone()
+            }
+        }
+        RenderExpr::TableAlias(ta) => {
+            if let Some(source_alias) = alias_map.get(&ta.0) {
+                RenderExpr::TableAlias(TableAlias(source_alias.clone()))
+            } else {
+                expr.clone()
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator.clone(),
+                operands: op
+                    .operands
+                    .iter()
+                    .map(|o| rewrite_render_expr_aliases(o, alias_map))
+                    .collect(),
+            })
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            RenderExpr::ScalarFnCall(super::render_expr::ScalarFnCall {
+                name: func.name.clone(),
+                args: func
+                    .args
+                    .iter()
+                    .map(|a| rewrite_render_expr_aliases(a, alias_map))
+                    .collect(),
+            })
+        }
+        RenderExpr::AggregateFnCall(func) => RenderExpr::AggregateFnCall(AggregateFnCall {
+            name: func.name.clone(),
+            args: func
+                .args
+                .iter()
+                .map(|a| rewrite_render_expr_aliases(a, alias_map))
+                .collect(),
+        }),
+        _ => expr.clone(),
+    }
 }
 
 /// Remap select item aliases to match WITH clause exported aliases

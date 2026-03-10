@@ -1314,3 +1314,61 @@ async fn test_vlp_nodes_relationships_path_in_with_clause() {
         sql
     );
 }
+
+/// Test WITH alias rename + WHERE uses the renamed alias
+#[tokio::test]
+async fn test_with_alias_rename_where_filter() {
+    use clickgraph::server::query_context::{set_current_schema, with_query_context, QueryContext};
+    use std::sync::Arc;
+
+    let schema = create_test_schema();
+
+    let cypher = r#"
+        MATCH (u:User)
+        WITH u AS person
+        WHERE person.name = 'Alice'
+        RETURN person.name
+    "#;
+
+    let schema_clone = schema.clone();
+    let ctx = QueryContext::new(Some("default".to_string()));
+    let sql = with_query_context(ctx, async {
+        set_current_schema(Arc::new(schema_clone));
+
+        let ast = parse_query(cypher).expect("Failed to parse WITH alias rename + WHERE");
+
+        let result = evaluate_read_query(ast, &schema, None, None);
+        assert!(result.is_ok(), "Failed to build plan: {:?}", result.err());
+
+        let (logical_plan, _plan_ctx) = result.unwrap();
+        let render_result = logical_plan_to_render_plan(logical_plan, &schema);
+        assert!(
+            render_result.is_ok(),
+            "Failed to render SQL: {:?}",
+            render_result.err()
+        );
+
+        let render_plan = render_result.unwrap();
+        render_plan.to_sql()
+    })
+    .await;
+
+    println!("Generated SQL:\n{}", sql);
+
+    let sql_lower = sql.to_lowercase();
+
+    // WHERE clause should NOT reference "person" inside the CTE body
+    // It should be rewritten to use the original alias "u"
+    assert!(
+        !sql_lower.contains("where person."),
+        "WHERE should not use renamed alias 'person' inside CTE.\nSQL:\n{}",
+        sql
+    );
+
+    // Should contain a WHERE filter referencing the table column
+    assert!(
+        sql_lower.contains("where") && sql_lower.contains("full_name"),
+        "WHERE should filter on the mapped column.\nSQL:\n{}",
+        sql
+    );
+}
