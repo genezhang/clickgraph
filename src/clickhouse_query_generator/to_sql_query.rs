@@ -849,6 +849,61 @@ fn rewrite_vlp_branch_select(branch: &mut RenderPlan, parent_ctes: &[crate::rend
         branch.filters.0 = Some(rewritten);
     }
 
+    // 🔧 FIX: Also rewrite JOIN conditions for VLP UNION branches.
+    // JOINs are built during logical plan → render plan conversion using original Cypher
+    // variable names (e.g., u2.user_id). After VLP CTE creation, these must be rewritten
+    // to use VLP CTE columns (e.g., t.end_id). Without this, post-VLP relationship JOINs
+    // (e.g., VLP endpoint -> AUTHORED -> Post) reference non-existent aliases.
+    for join in branch.joins.0.iter_mut() {
+        for condition in join.joining_on.iter_mut() {
+            for operand in condition.operands.iter_mut() {
+                *operand =
+                    rewrite_expr_for_vlp(operand, &start_alias, &end_alias, &path_variable, false);
+            }
+        }
+        if let Some(ref filter_expr) = join.pre_filter {
+            join.pre_filter = Some(rewrite_expr_for_vlp(
+                filter_expr,
+                &start_alias,
+                &end_alias,
+                &path_variable,
+                false,
+            ));
+        }
+    }
+
+    // After rewriting JOIN conditions, re-sort them by dependency.
+    // Pre-rewrite JOINs may reference now-replaced aliases (e.g., u2) causing circular
+    // dependencies in the topological sort. After rewriting, dependencies resolve correctly
+    // (e.g., t2 depends on t which is the FROM alias, p depends on t2).
+    if branch.joins.0.len() > 1 {
+        let from_alias = branch
+            .from
+            .0
+            .as_ref()
+            .and_then(|f| f.alias.as_ref())
+            .cloned()
+            .unwrap_or_else(|| "t".to_string());
+
+        // Simple dependency-based sort: JOINs referencing the FROM alias come first
+        branch.joins.0.sort_by(|a, b| {
+            let a_refs_from = a.joining_on.iter().any(|cond| {
+                cond.operands.iter().any(|op| {
+                    matches!(op, RenderExpr::Column(Column(pv)) if pv.raw().starts_with(&format!("{}.", from_alias)))
+                        || matches!(op, RenderExpr::PropertyAccessExp(pa) if pa.table_alias.0 == from_alias)
+                })
+            });
+            let b_refs_from = b.joining_on.iter().any(|cond| {
+                cond.operands.iter().any(|op| {
+                    matches!(op, RenderExpr::Column(Column(pv)) if pv.raw().starts_with(&format!("{}.", from_alias)))
+                        || matches!(op, RenderExpr::PropertyAccessExp(pa) if pa.table_alias.0 == from_alias)
+                })
+            });
+            // JOINs that reference FROM come first
+            b_refs_from.cmp(&a_refs_from)
+        });
+    }
+
     // 🔧 FIX: Remove spurious JOINs from VLP branches in multi-pattern MATCH.
     // Only for shortestPath queries (path_variable is set): JOINs to regular tables
     // are redundant because the VLP CTE already encodes the full traversal with
@@ -1997,6 +2052,21 @@ fn collect_property_access_sql(expr: &RenderExpr, out: &mut Vec<String>) {
         RenderExpr::PropertyAccessExp(_) => {
             out.push(expr.to_sql());
         }
+        // After VLP rewriting, PropertyAccessExp may become Column("t.end_id")
+        // or remain as TableAlias("u2"). These need to be included in the inner
+        // SELECT so the outer aggregate can reference them.
+        RenderExpr::Column(col) => {
+            let col_str = col.raw();
+            // Only include qualified column references (e.g., t.end_id), not bare column names
+            if col_str.contains('.') {
+                out.push(col_str.to_string());
+            }
+        }
+        RenderExpr::TableAlias(alias) => {
+            // Bare node references in aggregates (e.g., COUNT(DISTINCT u2))
+            // need the node's ID column in the inner SELECT
+            out.push(alias.0.clone());
+        }
         RenderExpr::OperatorApplicationExp(op) => {
             for operand in &op.operands {
                 collect_property_access_sql(operand, out);
@@ -2330,6 +2400,19 @@ fn rewrite_joins_for_vlp(
     }
 }
 
+/// Swap `t.start_*` ↔ `t.end_*` column references in a SQL string.
+/// Used for reverse VLP UNION branches where the direction is swapped.
+/// Uses placeholder-based approach to avoid double-swap issues.
+fn swap_vlp_start_end(sql: &str) -> String {
+    // Phase 1: Replace all t.start_* with placeholder
+    let placeholder = "__VLP_SWAP_PLACEHOLDER_";
+    let result = sql.replace("t.start_", &format!("{}start_", placeholder));
+    // Phase 2: Replace all t.end_* with t.start_*
+    let result = result.replace("t.end_", "t.start_");
+    // Phase 3: Replace placeholders with t.end_*
+    result.replace(&format!("{}start_", placeholder), "t.end_")
+}
+
 /// Recursively collect all CTE definitions from a RenderPlan tree,
 /// removing them from their nested locations (union branches, CTE content, etc.).
 fn collect_nested_ctes(plan: &mut RenderPlan, collected: &mut Vec<Cte>) {
@@ -2656,12 +2739,54 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                     // For aggregation: use pre-computed inner SELECT that includes
                     // non-aggregate columns plus aggregate argument columns.
                     let inner_sql = inner_select_sql.as_ref().unwrap();
+
+                    // For VLP+aggregation+UNION, detect when reverse branches need
+                    // start↔end swapping. The inner_select_sql was computed from
+                    // the first VLP CTE's perspective. Reverse branches have the
+                    // Cypher aliases swapped (start=end, end=start), so t.start_id
+                    // and t.end_id references need to be swapped.
+                    let first_vlp_cte = plan
+                        .ctes
+                        .0
+                        .iter()
+                        .find(|c| c.vlp_cypher_start_alias.is_some());
+                    let first_start = first_vlp_cte.and_then(|c| c.vlp_cypher_start_alias.clone());
+                    let first_end = first_vlp_cte.and_then(|c| c.vlp_cypher_end_alias.clone());
+
                     for (i, union_branch) in union.input.iter().enumerate() {
                         if i > 0 {
                             sql.push_str(union_type_str);
                         }
                         let mut branch_sql = String::new();
-                        branch_sql.push_str(inner_sql);
+
+                        // Check if this branch uses a reverse VLP CTE (aliases swapped)
+                        let branch_from_name = union_branch
+                            .from
+                            .0
+                            .as_ref()
+                            .map(|f| f.name.as_str())
+                            .unwrap_or("");
+                        let branch_vlp_cte = plan.ctes.0.iter().find(|c| {
+                            c.cte_name == branch_from_name && c.vlp_cypher_start_alias.is_some()
+                        });
+                        let needs_swap = if let (Some(bvlp), Some(ref fs), Some(ref fe)) =
+                            (branch_vlp_cte, &first_start, &first_end)
+                        {
+                            // Reverse branch has start/end swapped compared to first CTE
+                            bvlp.vlp_cypher_start_alias.as_deref() == Some(fe.as_str())
+                                && bvlp.vlp_cypher_end_alias.as_deref() == Some(fs.as_str())
+                        } else {
+                            false
+                        };
+
+                        if needs_swap {
+                            // Swap t.start_id ↔ t.end_id and start_* ↔ end_* in SELECT
+                            let swapped = swap_vlp_start_end(inner_sql);
+                            branch_sql.push_str(&swapped);
+                        } else {
+                            branch_sql.push_str(inner_sql);
+                        }
+
                         branch_sql.push_str(&union_branch.from.to_sql());
                         branch_sql.push_str(&union_branch.joins.to_sql());
                         branch_sql.push_str(&union_branch.filters.to_sql());
