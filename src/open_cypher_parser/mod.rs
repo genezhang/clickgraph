@@ -1766,14 +1766,25 @@ mod tests {
         // Multiple USE clauses: last one wins
         let query = "USE wrong_db USE correct_db MATCH (n:Person) RETURN n.name";
         let result = parse_cypher_statement(query);
-        assert!(result.is_ok(), "Failed to parse multiple USE clauses: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to parse multiple USE clauses: {:?}",
+            result.err()
+        );
 
         let (remaining, stmt) = result.unwrap();
-        assert!(remaining.trim().is_empty(), "Expected empty remaining, got: '{}'", remaining);
+        assert!(
+            remaining.trim().is_empty(),
+            "Expected empty remaining, got: '{}'",
+            remaining
+        );
         match &stmt {
             CypherStatement::Query { query, .. } => {
                 let use_clause = query.use_clause.as_ref().expect("Expected USE clause");
-                assert_eq!(use_clause.database_name, "correct_db", "Last USE clause should win");
+                assert_eq!(
+                    use_clause.database_name, "correct_db",
+                    "Last USE clause should win"
+                );
             }
             _ => panic!("Expected Query"),
         }

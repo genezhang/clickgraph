@@ -395,8 +395,8 @@ pub fn determine_optional_anchor(
         let left_optional = optional_aliases.contains(left_conn);
         let right_optional = optional_aliases.contains(right_conn);
         match (left_optional, right_optional) {
-            (true, false) => Some(right_conn.to_string()),  // right is required → anchor (incoming override)
-            (false, true) => None,  // left is required → standard outgoing, no override needed
+            (true, false) => Some(right_conn.to_string()), // right is required → anchor (incoming override)
+            (false, true) => None, // left is required → standard outgoing, no override needed
             _ => {
                 crate::debug_print!(
                     "WARN: OPTIONAL MATCH both aliases have same optionality: left_conn={}, right_conn={}",
