@@ -797,11 +797,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// Cycle detection uses node-uniqueness via `path_nodes` arrays (NOT has(vp.path_nodes, end_id)).
     /// This is more memory-efficient than edge-uniqueness (no separate path_edges arrays) and
     /// equivalent for simple graphs (at most one edge per type between any node pair).
-    /// `path_relationships` is only needed when the query binds a
-    /// path variable (`MATCH p = ...`, `shortestPath(...)`) for `relationships(p)` or
-    /// Bolt Path protocol.
+    /// `path_relationships` is populated whenever a path variable is bound
+    /// (`MATCH p = ...`, `shortestPath(...)`). This ensures `relationships(p)` works
+    /// even when called inside WITH clauses (where the root_plan detection can't see
+    /// the path function usage above the VLP subtree).
     fn needs_path_data(&self) -> bool {
-        self.path_variable.is_some() && self.needs_path_relationships
+        self.path_variable.is_some()
     }
 
     /// Build the SQL expression for the end node ID.
