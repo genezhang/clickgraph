@@ -130,6 +130,12 @@ docs1/
 # Benchmark results
 !benchmarks/ldbc_snb/BENCHMARK_RESULTS.md
 
+# Stress test results
+!tests/stress/RESULTS.md
+
+# Status
+!STATUS.md
+
 # Development assistants
 .claude/
 agent-os/
