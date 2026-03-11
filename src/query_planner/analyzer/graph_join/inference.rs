@@ -2644,7 +2644,29 @@ impl GraphJoinInference {
 
         // Step 1: Generate anchor-aware joins based on strategy
         // Pass join_ctx aliases so the generator knows which nodes are already available.
-        let already_available = join_ctx.to_hashset();
+        // For OPTIONAL MATCH with incoming direction, the anchor_connection (from the
+        // required MATCH) must be treated as "already available" so that the join
+        // generator places it as FROM (not as a new JOIN target). Without this,
+        // incoming OPTIONAL MATCH puts the optional node as FROM instead of the anchor.
+        // Only activate when anchor != left_alias — for outgoing patterns where
+        // anchor IS the left alias, the default (false,false) path already works.
+        let mut already_available = join_ctx.to_hashset();
+        let anchor_needs_from = if let Some(ref anchor) = _graph_rel.anchor_connection {
+            // Only inject anchor as "already available" when it's NOT the left alias.
+            // For outgoing OPTIONAL MATCH (u)-[:R]->(f) with anchor=u (left), the
+            // standard (false,false) branch in generate_pattern_joins handles it correctly.
+            // For incoming OPTIONAL MATCH (b)-[:R]->(a) with anchor=a (right), we need
+            // to force the generator to treat anchor as available so it doesn't create
+            // a FROM marker for the optional node instead.
+            if anchor.as_str() != left_alias && !already_available.contains(anchor) {
+                already_available.insert(anchor.clone());
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
         let mut new_joins = join_generation::generate_pattern_joins(
             ctx,
             &tables,
@@ -2653,6 +2675,29 @@ impl GraphJoinInference {
             pre_filter,
             &already_available,
         )?;
+
+        // Step 1b: If the anchor was injected as "already available" but doesn't have
+        // a FROM marker in collected_graph_joins, prepend one. This happens for
+        // OPTIONAL MATCH with incoming edges where the anchor node comes from the
+        // required MATCH but hasn't been added as a JOIN yet.
+        if anchor_needs_from {
+            if let Some(ref anchor) = _graph_rel.anchor_connection {
+                let anchor_already_joined = collected_graph_joins
+                    .iter()
+                    .any(|j| j.table_alias.as_str() == anchor.as_str());
+                if !anchor_already_joined {
+                    // Determine the anchor's table name
+                    let anchor_table = if anchor.as_str() == right_alias {
+                        tables.right_table
+                    } else {
+                        tables.left_table
+                    };
+                    // Create FROM marker for anchor node
+                    helpers::JoinBuilder::from_marker(anchor_table, anchor.as_str())
+                        .build_and_insert_at(&mut new_joins, 0);
+                }
+            }
+        }
 
         // Step 2: VLP endpoint rewriting (before collection, affects dependencies)
         join_generation::apply_vlp_rewrites(&mut new_joins, plan_ctx);

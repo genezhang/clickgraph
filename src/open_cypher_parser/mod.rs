@@ -152,9 +152,11 @@ pub fn parse_query_with_nom(
 ) -> IResult<&'_ str, OpenCypherQueryAst<'_>, OpenCypherParsingError<'_>> {
     let (input, _) = multispace0.parse(input)?;
 
-    // Parse USE clause first (must come before any other clauses)
-    let (input, use_clause): (&str, Option<UseClause>) =
-        opt(use_clause::parse_use_clause).parse(input)?;
+    // Parse USE clauses first (must come before any other clauses)
+    // Multiple USE clauses are allowed; only the last one takes effect
+    let (input, use_clauses): (&str, Vec<UseClause>) =
+        many0(use_clause::parse_use_clause).parse(input)?;
+    let use_clause = use_clauses.into_iter().last();
 
     // Parse reading clauses (MATCH and OPTIONAL MATCH can appear in any order)
     let (input, reading_clauses): (&str, Vec<ReadingClause>) =
@@ -1756,6 +1758,35 @@ mod tests {
                     e
                 );
             }
+        }
+    }
+
+    #[test]
+    fn test_parse_multiple_use_clauses() {
+        // Multiple USE clauses: last one wins
+        let query = "USE wrong_db USE correct_db MATCH (n:Person) RETURN n.name";
+        let result = parse_cypher_statement(query);
+        assert!(
+            result.is_ok(),
+            "Failed to parse multiple USE clauses: {:?}",
+            result.err()
+        );
+
+        let (remaining, stmt) = result.unwrap();
+        assert!(
+            remaining.trim().is_empty(),
+            "Expected empty remaining, got: '{}'",
+            remaining
+        );
+        match &stmt {
+            CypherStatement::Query { query, .. } => {
+                let use_clause = query.use_clause.as_ref().expect("Expected USE clause");
+                assert_eq!(
+                    use_clause.database_name, "correct_db",
+                    "Last USE clause should win"
+                );
+            }
+            _ => panic!("Expected Query"),
         }
     }
 }

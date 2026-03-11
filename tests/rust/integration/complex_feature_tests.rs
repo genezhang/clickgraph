@@ -1476,3 +1476,104 @@ async fn test_count_path_variable_fixed_hop() {
         sql
     );
 }
+
+/// Regression test: Expression-based property mappings must survive through
+/// the render-phase property mapping without being double-quoted as column names.
+/// See PR #205 for the fix.
+#[tokio::test]
+async fn test_expression_property_preserved_through_render_phase() {
+    // Create a schema where 'tier' is an Expression, not a Column
+    let mut nodes = HashMap::new();
+    let mut props = HashMap::new();
+    props.insert(
+        "user_id".to_string(),
+        PropertyValue::Column("user_id".to_string()),
+    );
+    props.insert(
+        "name".to_string(),
+        PropertyValue::Column("full_name".to_string()),
+    );
+    props.insert(
+        "score".to_string(),
+        PropertyValue::Column("score".to_string()),
+    );
+    props.insert(
+        "tier".to_string(),
+        PropertyValue::Expression(
+            "if(score >= 1000, 'gold', if(score >= 500, 'silver', 'bronze'))".to_string(),
+        ),
+    );
+    nodes.insert(
+        "User".to_string(),
+        NodeSchema {
+            database: "test".to_string(),
+            table_name: "users".to_string(),
+            column_names: vec![
+                "user_id".to_string(),
+                "full_name".to_string(),
+                "score".to_string(),
+            ],
+            primary_keys: "user_id".to_string(),
+            node_id: NodeIdSchema::single("user_id".to_string(), SchemaType::Integer),
+            property_mappings: props,
+            node_id_types: None,
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            is_denormalized: false,
+            from_properties: None,
+            to_properties: None,
+            denormalized_source_table: None,
+            label_column: None,
+            label_value: None,
+            source: None,
+        },
+    );
+
+    let schema = GraphSchema::build(1, "test".to_string(), nodes, HashMap::new());
+
+    // Test 1: Expression property in WHERE clause
+    let cypher = r#"MATCH (u:User) WHERE u.tier = 'gold' RETURN u.name"#;
+    let ast = parse_query(cypher).expect("Failed to parse");
+    let result = evaluate_read_query(ast, &schema, None, None);
+    assert!(result.is_ok(), "Failed to plan: {:?}", result.err());
+
+    let (plan, _ctx) = result.unwrap();
+    let render = logical_plan_to_render_plan(plan, &schema);
+    assert!(render.is_ok(), "Failed to render: {:?}", render.err());
+
+    let sql = render.unwrap().to_sql();
+    println!("Expression in WHERE:\n{}", sql);
+
+    // Must contain the expression, NOT a quoted column name
+    assert!(
+        sql.contains("score >= 1000"),
+        "Expression property 'tier' should render as the ClickHouse expression, not a quoted column.\nSQL:\n{}",
+        sql
+    );
+    assert!(
+        !sql.contains("\"if("),
+        "Expression should NOT be double-quoted as a column name.\nSQL:\n{}",
+        sql
+    );
+
+    // Test 2: Expression property in RETURN clause
+    let cypher2 = r#"MATCH (u:User) RETURN u.tier, u.name"#;
+    let ast2 = parse_query(cypher2).expect("Failed to parse");
+    let result2 = evaluate_read_query(ast2, &schema, None, None);
+    assert!(result2.is_ok(), "Failed to plan: {:?}", result2.err());
+
+    let (plan2, _ctx2) = result2.unwrap();
+    let render2 = logical_plan_to_render_plan(plan2, &schema);
+    assert!(render2.is_ok(), "Failed to render: {:?}", render2.err());
+
+    let sql2 = render2.unwrap().to_sql();
+    println!("Expression in RETURN:\n{}", sql2);
+
+    assert!(
+        sql2.contains("score >= 1000"),
+        "Expression property in RETURN should render as ClickHouse expression.\nSQL:\n{}",
+        sql2
+    );
+}
