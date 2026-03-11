@@ -2709,9 +2709,7 @@ pub fn extract_ctes_with_context(
                         .map(|p| (p.cypher_alias.clone(), p.alias.clone()))
                         .collect();
 
-                    for (alias, label) in
-                        [(&start_alias, &start_label), (&end_alias, &end_label)]
-                    {
+                    for (alias, label) in [(&start_alias, &start_label), (&end_alias, &end_label)] {
                         if label.is_empty() {
                             continue;
                         }
@@ -2737,9 +2735,7 @@ pub fn extract_ctes_with_context(
                                         }
                                     }
                                 }
-                                if !existing_props
-                                    .contains(&(alias.clone(), prop_name.clone()))
-                                {
+                                if !existing_props.contains(&(alias.clone(), prop_name.clone())) {
                                     props.push(NodeProperty {
                                         cypher_alias: alias.clone(),
                                         column_name: prop_value.raw().to_string(),
