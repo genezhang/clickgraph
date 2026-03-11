@@ -1055,7 +1055,7 @@ class TestAggregateNegativeTests:
 class TestComplexAggregatePatterns:
     """Complex query patterns with aggregations."""
     
-    @pytest.mark.xfail(reason="Code bug: VLP + aggregation generates invalid SQL")
+    @pytest.mark.xfail(reason="VLP end-node table resolution: joins ds_users instead of ds_groups for Group endpoint")
     def test_aggregate_after_vlp(self):
         """Aggregate results of variable-length path."""
         response = execute_cypher(
@@ -1122,7 +1122,6 @@ class TestComplexAggregatePatterns:
         # Pattern comprehension may not be supported
         assert response.status_code in [200, 400, 500]
     
-    @pytest.mark.xfail(reason="Code bug: COUNT(p) on path variable not resolved")
     def test_count_paths(self):
         """Count number of paths found."""
         response = execute_cypher(

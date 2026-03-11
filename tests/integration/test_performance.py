@@ -427,7 +427,6 @@ class TestPerformanceBaselines:
         assert avg_time < SIMPLE_QUERY_THRESHOLD
         assert max_time < SIMPLE_QUERY_THRESHOLD
     
-    @pytest.mark.xfail(reason="Undirected shortestPath uses hardcoded from_id/to_id instead of schema columns - KNOWN_ISSUES")
     def test_baseline_complex_queries(self, simple_graph):
         """Establish baseline for complex query suite."""
         queries = [

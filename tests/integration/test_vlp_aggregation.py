@@ -26,18 +26,18 @@ def execute_query(cypher_query, sql_only=False, schema_name="social_integration"
         json={"query": cypher_query, "sql_only": sql_only, "schema_name": schema_name},
         timeout=30
     )
-    
+
     if response.status_code != 200:
         return {
             "error": f"HTTP {response.status_code}: {response.text}",
             "success": False
         }
-    
+
     data = response.json()
-    
+
     if "error" in data and data["error"]:
         return {"error": data["error"], "success": False}
-    
+
     return {"data": data, "success": True}
 
 
@@ -56,17 +56,16 @@ class TestVLPAggregation:
         ORDER BY postCount DESC, userId ASC
         LIMIT 10
         """
-        
+
         result = execute_query(cypher, sql_only=True)
         assert result["success"], f"SQL generation failed: {result.get('error')}"
-        
+
         sql = result["data"].get("generated_sql", "")
         assert sql, "No SQL generated"
         # Verify p (post) columns are included in generated SQL
         assert "p." in sql.lower() or "post" in sql.lower(), \
             "Post columns should be included in UNION SELECT"
 
-    @pytest.mark.xfail(reason="Code bug: VLP with aggregation generates invalid column references")
     def test_vlp_with_count_distinct_basic(self):
         """
         Test basic VLP + additional relationship + COUNT(DISTINCT).
@@ -78,7 +77,7 @@ class TestVLPAggregation:
         ORDER BY postCount DESC, userId ASC
         LIMIT 10
         """
-        
+
         result = execute_query(cypher)
         # Accept success or database/schema errors (not scoping errors)
         if not result["success"]:
@@ -92,22 +91,21 @@ class TestVLPAggregation:
             data = result["data"]
             assert "columns" in data or "results" in data or data.get("rows", 0) >= 0
 
-    @pytest.mark.xfail(reason="Code bug: VLP with aggregation generates invalid column references")
     def test_vlp_with_multiple_aggregates(self):
         """Test VLP with multiple aggregate functions."""
         cypher = """
         MATCH (u1:User {user_id: 1})-[:FOLLOWS*1..2]-(u2:User)-[:AUTHORED]->(p:Post)
-        RETURN u2.user_id AS userId, 
+        RETURN u2.user_id AS userId,
                COUNT(DISTINCT p) AS postCount,
                COUNT(p) AS totalPosts
         ORDER BY postCount DESC
         LIMIT 5
         """
-        
+
         result = execute_query(cypher)
         assert result["success"], f"Query failed: {result.get('error')}"
 
-    @pytest.mark.xfail(reason="Code bug: VLP with aggregation generates invalid column references")
+    @pytest.mark.xfail(reason="VLP CTE missing property columns for u2.name (needs PR #206)")
     def test_vlp_with_sum_aggregate(self):
         """Test VLP with SUM aggregate on node properties."""
         cypher = """
@@ -118,7 +116,7 @@ class TestVLPAggregation:
         ORDER BY postCount DESC
         LIMIT 5
         """
-        
+
         result = execute_query(cypher)
         assert result["success"], f"Query failed: {result.get('error')}"
 
@@ -134,7 +132,7 @@ class TestVLPAggregation:
         ORDER BY postCount DESC
         LIMIT 5
         """
-        
+
         result = execute_query(cypher)
         # This might fail due to schema, but should not have scoping errors
         # Accept success or specific non-scoping errors
@@ -151,7 +149,7 @@ class TestVLPAggregation:
             assert any(err in error_msg for err in acceptable_errors), \
                 f"Unexpected error (possible scoping bug): {result.get('error')}"
 
-    @pytest.mark.xfail(reason="Code bug: VLP with aggregation generates invalid column references")
+    @pytest.mark.xfail(reason="VLP WITH clause CTE column resolution (end_user_id not in CTE)")
     def test_vlp_bidirectional_with_aggregate(self):
         """Test bidirectional VLP pattern (generates UNION) with aggregate."""
         cypher = """
@@ -162,11 +160,11 @@ class TestVLPAggregation:
         ORDER BY postCount DESC
         LIMIT 5
         """
-        
+
         result = execute_query(cypher)
         assert result["success"], f"Query failed: {result.get('error')}"
 
-    @pytest.mark.xfail(reason="Code bug: VLP with aggregation generates invalid column references")
+    @pytest.mark.xfail(reason="VLP WITH clause CTE column resolution (end_user_id not in CTE)")
     def test_vlp_with_having_equivalent(self):
         """Test VLP + GROUP BY + WHERE filter on aggregate (HAVING equivalent)."""
         cypher = """
@@ -177,11 +175,11 @@ class TestVLPAggregation:
         ORDER BY postCount DESC
         LIMIT 5
         """
-        
+
         result = execute_query(cypher)
         assert result["success"], f"Query failed: {result.get('error')}"
 
-    @pytest.mark.xfail(reason="Code bug: VLP with aggregation generates invalid column references")
+    @pytest.mark.xfail(reason="*1..3 hop pattern times out (>30s) on large test data", strict=False)
     def test_vlp_different_hop_counts(self):
         """Test VLP scoping fix works across different hop counts."""
         hop_patterns = [
@@ -190,19 +188,18 @@ class TestVLPAggregation:
             ("*1..2", "1-2"),
             ("*1..3", "1-3"),
         ]
-        
+
         for pattern, description in hop_patterns:
             cypher = f"""
             MATCH (u1:User {{user_id: 1}})-[:FOLLOWS{pattern}]-(u2:User)-[:AUTHORED]->(p:Post)
             RETURN u2.user_id AS userId, COUNT(DISTINCT p) AS postCount
             LIMIT 5
             """
-            
+
             result = execute_query(cypher)
             assert result["success"], \
                 f"Query failed for hop pattern {description}: {result.get('error')}"
 
-    @pytest.mark.xfail(reason="Code bug: VLP with aggregation generates invalid column references")
     def test_vlp_with_order_by_aggregate(self):
         """Test ORDER BY using aggregate result."""
         cypher = """
@@ -211,7 +208,7 @@ class TestVLPAggregation:
         ORDER BY postCount DESC, userId ASC
         LIMIT 10
         """
-        
+
         result = execute_query(cypher)
         assert result["success"], f"Query failed: {result.get('error')}"
 
@@ -221,20 +218,19 @@ class TestVLPAggregation:
         MATCH (u1:User {user_id: 1})-[:FOLLOWS*1..2]-(u2:User)-[:AUTHORED]->(p:Post)
         RETURN u2.user_id, COUNT(DISTINCT p) AS postCount
         """
-        
+
         result = execute_query(cypher, sql_only=True)
         assert result["success"], f"Query failed: {result.get('error')}"
-        
+
         sql = result["data"].get("generated_sql", "")
         assert sql, "No SQL generated"
-        
+
         # The fix should add p.id (or p.post_id) to UNION SELECT
         # Look for patterns indicating p column in SELECT before GROUP BY
         # This is a heuristic check - actual column name depends on schema
         assert "p." in sql.lower() or "post" in sql.lower(), \
             f"Generated SQL may not include post columns in UNION SELECT:\n{sql[:500]}"
 
-    @pytest.mark.xfail(reason="Code bug: VLP with aggregation generates invalid column references")
     def test_vlp_with_nested_property_aggregate(self):
         """Test aggregate with property access inside (e.g., SUM(p.length))."""
         cypher = """
@@ -243,7 +239,7 @@ class TestVLPAggregation:
         ORDER BY totalPosts DESC
         LIMIT 5
         """
-        
+
         result = execute_query(cypher)
         assert result["success"], f"Query failed: {result.get('error')}"
 
@@ -251,7 +247,7 @@ class TestVLPAggregation:
 class TestVLPAggregationEdgeCases:
     """Test edge cases and boundary conditions for VLP aggregation fix."""
 
-    @pytest.mark.xfail(reason="Code bug: VLP with aggregation generates invalid column references")
+    @pytest.mark.xfail(reason="VLP CTE missing property columns for u2.name (needs PR #206)")
     def test_vlp_no_aggregation(self):
         """Verify regular VLP queries (without aggregation) still work."""
         cypher = """
@@ -259,18 +255,17 @@ class TestVLPAggregationEdgeCases:
         RETURN u2.user_id, u2.name, p.post_id
         LIMIT 10
         """
-        
+
         result = execute_query(cypher)
         assert result["success"], f"Query failed: {result.get('error')}"
 
-    @pytest.mark.xfail(reason="Code bug: VLP with aggregation generates invalid column references")
     def test_vlp_only_vlp_nodes_in_aggregate(self):
         """Test aggregates on VLP nodes only (no additional relationships)."""
         cypher = """
         MATCH (u1:User {user_id: 1})-[:FOLLOWS*1..2]-(u2:User)
         RETURN u1.user_id, COUNT(DISTINCT u2) AS friendCount
         """
-        
+
         result = execute_query(cypher)
         assert result["success"], f"Query failed: {result.get('error')}"
 
@@ -283,7 +278,7 @@ class TestVLPAggregationEdgeCases:
         ORDER BY postCount DESC
         LIMIT 5
         """
-        
+
         result = execute_query(cypher)
         # May fail on schema, but should not be a scoping error
         if not result["success"]:

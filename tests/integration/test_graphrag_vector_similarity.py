@@ -278,7 +278,6 @@ def query_with_sql(query: str, schema_name: str, sql_only: bool = False):
 # Test Cases
 # ============================================================================
 
-@pytest.mark.xfail(reason="Array literal elements wrapped in toString() — cosineDistance needs Float32 not String")
 class TestVectorSimilarityWithGraphRAG:
     """Test vector similarity combined with graph patterns."""
     
@@ -493,7 +492,6 @@ class TestVectorSimilarityEdgeCases:
         assert result["results"][0]["doc_count"] > 0, "Should have documents with embeddings"
 
 
-@pytest.mark.xfail(reason="Array literal elements wrapped in toString() — cosineDistance needs Float32 not String")
 class TestVectorSimilarityPerformance:
     """Test performance of vector similarity operations."""
     
