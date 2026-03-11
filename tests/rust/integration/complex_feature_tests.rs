@@ -1369,7 +1369,7 @@ async fn test_vlp_with_specific_property_access() {
 }
 
 /// Regression: VLP path_relationships must be an array (not UInt8 placeholder)
-/// when a path variable is assigned, even without explicit relationships() call
+/// when a path variable is assigned and relationships(path) is used in WITH
 #[tokio::test]
 async fn test_vlp_path_relationships_is_array() {
     let schema = create_test_schema();
@@ -1398,8 +1398,10 @@ async fn test_vlp_path_relationships_is_array() {
     println!("Generated SQL:\n{}", sql);
 
     // path_relationships should be an array, not CAST(0 AS UInt8) placeholder
+    // Normalize to lowercase for case-insensitive matching
+    let sql_lower = sql.to_lowercase();
     assert!(
-        !sql.contains("CAST(0 AS UInt8) as path_relationships"),
+        !sql_lower.contains("cast(0 as uint8) as path_relationships"),
         "path_relationships should be a proper array, not UInt8 placeholder.\nSQL:\n{}",
         sql
     );

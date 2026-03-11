@@ -394,10 +394,11 @@ pub fn rewrite_render_expr_for_vlp(expr: &mut RenderExpr, mappings: &HashMap<Str
 /// For VLP CTEs, the FROM clause looks like: FROM vlp_a_b AS t
 /// So we need to use the alias (t) when rendering, and also add property prefixes (start_/end_).
 ///
-/// `db_to_cypher` is an optional mapping from `(cypher_alias, db_column_name)` to `cypher_property_name`.
-/// VLP CTE columns are named using Cypher property names (e.g., `start_name` for Cypher property `name`),
-/// but PropertyAccessExp may contain DB column names (e.g., `full_name`) after schema resolution.
-/// This mapping ensures we generate `start_name` instead of `start_full_name`.
+/// This function assumes that any necessary translation from DB column names to
+/// Cypher property names has already been performed (e.g., via
+/// `translate_db_columns_to_cypher_properties`) before it is called. Its primary
+/// responsibility is to rewrite expressions to use the correct VLP FROM alias and
+/// the appropriate `start_`/`end_` prefixes for VLP CTE columns.
 pub fn rewrite_render_expr_for_vlp_with_from_alias(
     expr: &mut RenderExpr,
     mappings: &HashMap<String, String>,
@@ -586,6 +587,32 @@ fn translate_db_columns_to_cypher_properties(
             for item in items {
                 translate_db_columns_to_cypher_properties(item, db_to_cypher);
             }
+        }
+        RenderExpr::InSubquery(in_sub) => {
+            translate_db_columns_to_cypher_properties(&mut in_sub.expr, db_to_cypher);
+        }
+        RenderExpr::MapLiteral(entries) => {
+            for (_, val) in entries.iter_mut() {
+                translate_db_columns_to_cypher_properties(val, db_to_cypher);
+            }
+        }
+        RenderExpr::ArraySubscript { array, index } => {
+            translate_db_columns_to_cypher_properties(array, db_to_cypher);
+            translate_db_columns_to_cypher_properties(index, db_to_cypher);
+        }
+        RenderExpr::ArraySlicing { array, from, to } => {
+            translate_db_columns_to_cypher_properties(array, db_to_cypher);
+            if let Some(ref mut from_expr) = from {
+                translate_db_columns_to_cypher_properties(from_expr, db_to_cypher);
+            }
+            if let Some(ref mut to_expr) = to {
+                translate_db_columns_to_cypher_properties(to_expr, db_to_cypher);
+            }
+        }
+        RenderExpr::ReduceExpr(reduce) => {
+            translate_db_columns_to_cypher_properties(&mut reduce.initial_value, db_to_cypher);
+            translate_db_columns_to_cypher_properties(&mut reduce.list, db_to_cypher);
+            translate_db_columns_to_cypher_properties(&mut reduce.expression, db_to_cypher);
         }
         _ => {}
     }
