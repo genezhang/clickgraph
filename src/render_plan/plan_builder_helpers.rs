@@ -2365,25 +2365,24 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
         }
         RenderExpr::PropertyAccessExp(prop) => {
             // If the column is already an Expression (resolved by FilterTagging analyzer),
-            // skip re-mapping — it's already the correct ClickHouse expression.
+            // skip property-name re-mapping — it's already the correct ClickHouse expression.
+            // Still fall through to the denormalized alias remap below (table alias may
+            // need updating even for expression-backed properties on denormalized nodes).
             if matches!(&prop.column, PropertyValue::Expression(_)) {
                 log::debug!(
-                    "🔍 PROPERTY MAPPING: Skipping already-resolved Expression for '{}.{}'",
+                    "🔍 PROPERTY MAPPING: Skipping property-name remap for already-resolved Expression '{}.{}'",
                     prop.table_alias.0,
                     prop.column.raw()
                 );
-                return;
-            }
-
-            // First, try to map the property name to the correct column name
-            // This is essential for queries like: WHERE n.name = ...
-            // where 'name' might map to 'full_name' in the schema
-
-            // For denormalized virtual nodes, try to get property mapping from ViewScan first
-            // This is needed because denormalized nodes have position-specific mappings
-            // (from_node_properties vs to_node_properties)
-            if let Some(mapped_pv) =
-                get_property_from_viewscan(&prop.table_alias.0, prop.column.raw(), plan)
+            } else if let Some(mapped_pv) =
+                // For denormalized virtual nodes, try to get property mapping from ViewScan first
+                // This is needed because denormalized nodes have position-specific mappings
+                // (from_node_properties vs to_node_properties)
+                get_property_from_viewscan(
+                    &prop.table_alias.0,
+                    prop.column.raw(),
+                    plan,
+                )
             {
                 log::debug!(
                     "🔍 PROPERTY MAPPING (ViewScan): '{}.{}' -> '{}'",
