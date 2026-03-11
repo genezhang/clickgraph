@@ -422,16 +422,15 @@ pub fn register_path_variable(
     );
 
     // Then register TableCtx for backward compatibility with code that uses alias_table_ctx_map
-    plan_ctx.insert_table_ctx(
+    let mut table_ctx = TableCtx::build(
         path_var.to_string(),
-        TableCtx::build(
-            path_var.to_string(),
-            None,   // Path variables don't have labels
-            vec![], // Path variables don't have properties
-            false,  // Not a relationship
-            true,   // Explicitly named by user
-        ),
+        None,   // Path variables don't have labels
+        vec![], // Path variables don't have properties
+        false,  // Not a relationship
+        true,   // Explicitly named by user
     );
+    table_ctx.set_is_path(true);
+    plan_ctx.insert_table_ctx(path_var.to_string(), table_ctx);
 
     log::info!(
         "📍 Registered path variable '{}' with TypedVariable::Path (start={}, end={}, bounds={:?})",

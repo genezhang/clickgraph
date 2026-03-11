@@ -17,7 +17,7 @@ Test Scenarios:
 
 Each test verifies:
 - WITH-exported variables expand to multiple columns
-- Column names follow pattern: <alias>.<property>
+- Column names follow pattern: <alias>.<property> or <alias>_<property>
 - Correct number of properties returned
 - No regressions in base table expansion
 """
@@ -41,18 +41,22 @@ def get_columns_from_response(response):
     return []
 
 
+def get_var_columns(columns, var):
+    """Get columns for a variable, accepting both dot and underscore notation."""
+    return [col for col in columns if col.startswith(f"{var}.") or col.startswith(f"{var}_")]
+
+
 class TestWithBasicNodeExpansion:
     """Test 1: Basic WITH node export."""
-    
-    @pytest.mark.xfail(reason="Code bug: WITH CTE node expansion not properly implemented")
+
     def test_with_single_node_export(self):
         """
         Test basic WITH node export.
-        
+
         MATCH (a:User)
         WITH a
         RETURN a
-        
+
         Expected: a expands to a.user_id, a.name, a.email, etc.
         """
         response = execute_cypher(
@@ -64,16 +68,16 @@ class TestWithBasicNodeExpansion:
             """,
             schema_name="social_integration"
         )
-        
+
         assert_query_success(response)
         assert_row_count(response, 1)
-        
+
         columns = get_columns_from_response(response)
-        
-        # Should have multiple columns like "a_user_id", "a_name", etc.
-        a_columns = [col for col in columns if col.startswith("a_")]
-        assert len(a_columns) >= 2, f"Expected multiple a_* columns, got: {columns}"
-        
+
+        # Should have multiple columns like "a.user_id", "a.name", etc.
+        a_columns = get_var_columns(columns, "a")
+        assert len(a_columns) >= 2, f"Expected multiple a.* columns, got: {columns}"
+
         # Verify common properties are present
         assert any("user_id" in col for col in a_columns), \
             f"user_id not found in columns: {columns}"
@@ -83,16 +87,15 @@ class TestWithBasicNodeExpansion:
 
 class TestWithMultipleVariableExport:
     """Test 2: Multi-variable WITH export."""
-    
-    @pytest.mark.xfail(reason="Code bug: WITH CTE node expansion not properly implemented")
+
     def test_with_two_node_export(self):
         """
         Test WITH exporting two related nodes.
-        
+
         MATCH (a:User)-[r:FOLLOWS]->(b:User)
         WITH a, b
         RETURN a, b
-        
+
         Expected: Both a and b expand to properties
         """
         response = execute_cypher(
@@ -104,29 +107,28 @@ class TestWithMultipleVariableExport:
             """,
             schema_name="social_integration"
         )
-        
+
         assert_query_success(response)
         assert_row_count(response, 1)
-        
+
         columns = get_columns_from_response(response)
-        
+
         # Check a.* columns
-        a_columns = [col for col in columns if col.startswith("a_")]
+        a_columns = get_var_columns(columns, "a")
         assert len(a_columns) >= 2, \
             f"Expected multiple a.* columns, got: {columns}"
-        
+
         # Check b.* columns
-        b_columns = [col for col in columns if col.startswith("b_")]
+        b_columns = get_var_columns(columns, "b")
         assert len(b_columns) >= 2, \
             f"Expected multiple b.* columns, got: {columns}"
-        
+
         # Verify both have properties
         assert any("user_id" in col for col in a_columns), \
             f"a.user_id not found in columns: {columns}"
         assert any("user_id" in col for col in b_columns), \
             f"b.user_id not found in columns: {columns}"
 
-    @pytest.mark.xfail(reason="Code bug: WITH CTE node expansion not properly implemented")
     def test_with_three_node_export(self):
         """Test WITH exporting three nodes from multi-hop pattern."""
         response = execute_cypher(
@@ -138,33 +140,32 @@ class TestWithMultipleVariableExport:
             """,
             schema_name="social_integration"
         )
-        
+
         assert_query_success(response)
         assert_row_count(response, 1)
-        
+
         columns = get_columns_from_response(response)
-        
+
         # Check all three variables expanded
         for var in ["a", "b", "c"]:
-            var_columns = [col for col in columns if col.startswith(f"{var}_")]
+            var_columns = get_var_columns(columns, var)
             assert len(var_columns) >= 2, \
                 f"Expected multiple {var}.* columns, got: {columns}"
 
 
 class TestWithChaining:
     """Test 3: WITH chaining (nested CTEs)."""
-    
-    @pytest.mark.xfail(reason="Code bug: WITH CTE node expansion not properly implemented")
+
     def test_with_chaining_two_levels(self):
         """
         Test WITH chaining - nested WITH clauses.
-        
+
         MATCH (a:User)
         WITH a
         MATCH (b:User)
         WITH a, b
         RETURN a, b
-        
+
         Expected: Both a and b expand (a comes from first CTE, b from base table)
         """
         response = execute_cypher(
@@ -178,23 +179,22 @@ class TestWithChaining:
             """,
             schema_name="social_integration"
         )
-        
+
         assert_query_success(response)
         assert_row_count(response, 1)
-        
+
         columns = get_columns_from_response(response)
-        
+
         # Check a.* columns (from first CTE)
-        a_columns = [col for col in columns if col.startswith("a_")]
+        a_columns = get_var_columns(columns, "a")
         assert len(a_columns) >= 2, \
             f"Expected multiple a.* columns from first CTE, got: {columns}"
-        
+
         # Check b.* columns (from base table)
-        b_columns = [col for col in columns if col.startswith("b_")]
+        b_columns = get_var_columns(columns, "b")
         assert len(b_columns) >= 2, \
             f"Expected multiple b.* columns from base table, got: {columns}"
 
-    @pytest.mark.xfail(reason="Code bug: WITH CTE node expansion not properly implemented")
     def test_with_chaining_three_levels(self):
         """Test WITH chaining with three levels."""
         response = execute_cypher(
@@ -210,28 +210,28 @@ class TestWithChaining:
             """,
             schema_name="social_integration"
         )
-        
+
         assert_query_success(response)
-        
+
         columns = get_columns_from_response(response)
-        
+
         # All three should have properties
         for var in ["a", "b", "c"]:
-            var_columns = [col for col in columns if col.startswith(f"{var}_")]
+            var_columns = get_var_columns(columns, var)
             assert len(var_columns) >= 2, \
                 f"Expected {var}.* properties at level 3, got: {columns}"
 
 
 class TestWithScalarExport:
     """Test 4: WITH scalar export (aggregates)."""
-    
+
     def test_with_scalar_count(self):
         """
         Test WITH scalar - aggregation should NOT expand.
-        
+
         MATCH (a:User) WITH COUNT(a) AS count
         RETURN count
-        
+
         Expected: count is single column (scalar), not expanded
         """
         response = execute_cypher(
@@ -242,25 +242,24 @@ class TestWithScalarExport:
             """,
             schema_name="social_integration"
         )
-        
+
         assert_query_success(response)
         assert_row_count(response, 1)
-        
+
         columns = get_columns_from_response(response)
-        
+
         # Should have exactly one column for the count
         assert "user_count" in columns, \
             f"Expected 'user_count' column, got: {columns}"
-        
+
         # Count should NOT expand (no .* columns)
         assert not any("user_count." in col for col in columns), \
             f"Scalar 'user_count' should not expand, got: {columns}"
-        
+
         # Verify value is numeric
         value = get_single_value(response, "user_count", convert_to_int=True)
         assert value > 0, f"Count should be > 0, got: {value}"
 
-    @pytest.mark.xfail(reason="Code bug: WITH CTE node expansion not properly implemented")
     def test_with_scalar_and_node(self):
         """Test WITH mixing scalar aggregation and node export."""
         response = execute_cypher(
@@ -272,16 +271,16 @@ class TestWithScalarExport:
             """,
             schema_name="social_integration"
         )
-        
+
         assert_query_success(response)
-        
+
         columns = get_columns_from_response(response)
-        
+
         # Node a should expand
-        a_columns = [col for col in columns if col.startswith("a_")]
+        a_columns = get_var_columns(columns, "a")
         assert len(a_columns) >= 2, \
             f"Expected a.* columns, got: {columns}"
-        
+
         # Scalar should NOT expand
         assert "follower_count" in columns, \
             f"Expected follower_count column, got: {columns}"
@@ -291,15 +290,14 @@ class TestWithScalarExport:
 
 class TestWithPropertyRename:
     """Test 5: WITH property rename."""
-    
-    @pytest.mark.xfail(reason="Code bug: WITH CTE node expansion not properly implemented")
+
     def test_with_node_rename(self):
         """
         Test WITH node aliased with AS clause.
-        
+
         MATCH (a:User) WITH a AS person
         RETURN person
-        
+
         Expected: person expands to person.user_id, person.name, etc.
         """
         response = execute_cypher(
@@ -311,22 +309,21 @@ class TestWithPropertyRename:
             """,
             schema_name="social_integration"
         )
-        
+
         assert_query_success(response)
-        
+
         columns = get_columns_from_response(response)
-        
+
         # person should expand (not as 'a')
-        person_columns = [col for col in columns if col.startswith("person_")]
+        person_columns = get_var_columns(columns, "person")
         assert len(person_columns) >= 2, \
             f"Expected person.* columns, got: {columns}"
-        
+
         # Should NOT have 'a.' columns
-        a_columns = [col for col in columns if col.startswith("a_")]
+        a_columns = get_var_columns(columns, "a")
         assert len(a_columns) == 0, \
             f"Should not have 'a.' columns (renamed to person), got: {columns}"
 
-    @pytest.mark.xfail(reason="Code bug: WITH CTE node expansion not properly implemented")
     def test_with_multi_rename(self):
         """Test WITH multiple nodes with renames."""
         response = execute_cypher(
@@ -338,34 +335,33 @@ class TestWithPropertyRename:
             """,
             schema_name="social_integration"
         )
-        
+
         assert_query_success(response)
-        
+
         columns = get_columns_from_response(response)
-        
+
         # Both renamed variables should expand
-        follower_columns = [col for col in columns if col.startswith("follower_")]
+        follower_columns = get_var_columns(columns, "follower")
         assert len(follower_columns) >= 2, \
             f"Expected follower.* columns, got: {columns}"
-        
-        followed_columns = [col for col in columns if col.startswith("followed_")]
+
+        followed_columns = get_var_columns(columns, "followed")
         assert len(followed_columns) >= 2, \
             f"Expected followed.* columns, got: {columns}"
 
 
 class TestWithCrossTable:
     """Test 6: Cross-table WITH patterns."""
-    
-    @pytest.mark.xfail(reason="Code bug: WITH CTE node expansion not properly implemented")
+
     def test_with_cross_table_multi_hop(self):
         """
         Test complex WITH with multiple hops and different node types.
-        
+
         MATCH (a:User)-[:FOLLOWS]->(b:User)
         WITH a, b
         MATCH (c:Post) WHERE c.user_id = a.user_id
         RETURN a, b, c
-        
+
         Expected: a and b from WITH expand, c from base table expands
         """
         response = execute_cypher(
@@ -378,18 +374,17 @@ class TestWithCrossTable:
             """,
             schema_name="social_integration"
         )
-        
+
         assert_query_success(response)
-        
+
         columns = get_columns_from_response(response)
-        
+
         # Check all three expand
         for var in ["a", "b", "c"]:
-            var_columns = [col for col in columns if col.startswith(f"{var}_")]
+            var_columns = get_var_columns(columns, var)
             assert len(var_columns) >= 1, \
                 f"Expected {var}.* columns, got: {columns}"
 
-    @pytest.mark.xfail(reason="Code bug: WITH CTE node expansion not properly implemented")
     def test_with_where_filter(self):
         """Test WITH followed by WHERE filter."""
         response = execute_cypher(
@@ -401,28 +396,27 @@ class TestWithCrossTable:
             """,
             schema_name="social_integration"
         )
-        
+
         assert_query_success(response)
-        
+
         columns = get_columns_from_response(response)
-        a_columns = [col for col in columns if col.startswith("a_")]
+        a_columns = get_var_columns(columns, "a")
         assert len(a_columns) >= 2, \
             f"Expected a.* columns after WHERE, got: {columns}"
 
 
 class TestWithOptionalMatch:
     """Test 7: Optional match with WITH."""
-    
-    @pytest.mark.xfail(reason="Code bug: WITH CTE node expansion not properly implemented")
+
     def test_optional_match_with_export(self):
         """
         Test OPTIONAL MATCH followed by WITH.
-        
+
         MATCH (a:User)
         OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
         WITH a, b
         RETURN a, b
-        
+
         Expected: a expands, b may be NULL (OPTIONAL)
         """
         response = execute_cypher(
@@ -435,18 +429,18 @@ class TestWithOptionalMatch:
             """,
             schema_name="social_integration"
         )
-        
+
         assert_query_success(response)
-        
+
         columns = get_columns_from_response(response)
-        
+
         # a should expand
-        a_columns = [col for col in columns if col.startswith("a_")]
+        a_columns = get_var_columns(columns, "a")
         assert len(a_columns) >= 2, \
             f"Expected a.* columns, got: {columns}"
-        
+
         # b should also expand (or be NULL for OPTIONAL matches)
-        b_columns = [col for col in columns if col.startswith("b_")]
+        b_columns = get_var_columns(columns, "b")
         # b might not have values but should have columns
         assert len(b_columns) >= 1, \
             f"Expected b.* columns (optional), got: {columns}"
@@ -454,12 +448,11 @@ class TestWithOptionalMatch:
 
 class TestWithPolymorphicLabels:
     """Test 8: Polymorphic node labels (edge case)."""
-    
-    @pytest.mark.xfail(reason="Code bug: WITH CTE node expansion not properly implemented")
+
     def test_with_multi_label_node(self):
         """
         Test WITH when node might have multiple labels.
-        
+
         In social_integration, User and Post are distinct.
         Test WITH on either type.
         """
@@ -473,12 +466,12 @@ class TestWithPolymorphicLabels:
             """,
             schema_name="social_integration"
         )
-        
+
         assert_query_success(response_user)
         user_columns = get_columns_from_response(response_user)
-        user_a_columns = [col for col in user_columns if col.startswith("a_")]
+        user_a_columns = get_var_columns(user_columns, "a")
         assert len(user_a_columns) >= 2
-        
+
         # Test with Post
         response_post = execute_cypher(
             """
@@ -489,20 +482,20 @@ class TestWithPolymorphicLabels:
             """,
             schema_name="social_integration"
         )
-        
+
         assert_query_success(response_post)
         post_columns = get_columns_from_response(response_post)
-        post_p_columns = [col for col in post_columns if col.startswith("p_")]
+        post_p_columns = get_var_columns(post_columns, "p")
         assert len(post_p_columns) >= 1
 
 
 class TestWithRegressionCases:
     """Regression tests - ensure existing behavior not broken."""
-    
+
     def test_base_table_expansion_unchanged(self):
         """
         Verify base table expansion still works (not changed by fix).
-        
+
         MATCH (a:User)
         RETURN a
         """
@@ -514,19 +507,19 @@ class TestWithRegressionCases:
             """,
             schema_name="social_integration"
         )
-        
+
         assert_query_success(response)
-        
+
         columns = get_columns_from_response(response)
         # Base table expansion can use either format (a_name or a.name)
-        a_columns = [col for col in columns if col.startswith("a_") or col.startswith("a.")]
+        a_columns = get_var_columns(columns, "a")
         assert len(a_columns) >= 2, \
             f"Base table expansion regression - got: {columns}"
 
     def test_property_access_unchanged(self):
         """
         Verify explicit property access still works.
-        
+
         MATCH (a:User)
         RETURN a.user_id, a.name
         """
@@ -538,9 +531,9 @@ class TestWithRegressionCases:
             """,
             schema_name="social_integration"
         )
-        
+
         assert_query_success(response)
-        
+
         columns = get_columns_from_response(response)
         # Should have exactly these columns
         assert "a.user_id" in columns or "user_id" in columns, \
@@ -549,7 +542,7 @@ class TestWithRegressionCases:
     def test_aggregation_without_with(self):
         """
         Verify aggregation still works without WITH.
-        
+
         MATCH (a:User)
         RETURN COUNT(a)
         """
@@ -560,16 +553,16 @@ class TestWithRegressionCases:
             """,
             schema_name="social_integration"
         )
-        
+
         assert_query_success(response)
-        
+
         value = get_single_value(response, "total", convert_to_int=True)
         assert value > 0, f"Aggregation without WITH returned: {value}"
 
     def test_multi_hop_without_with(self):
         """
         Verify multi-hop still works without WITH.
-        
+
         MATCH (a)-[:FOLLOWS]->(b)-[:FOLLOWS]->(c)
         RETURN a, b, c
         """
@@ -581,12 +574,11 @@ class TestWithRegressionCases:
             """,
             schema_name="social_integration"
         )
-        
+
         assert_query_success(response)
-        
+
         columns = get_columns_from_response(response)
         for var in ["a", "b", "c"]:
-            # Base table expansion can use either format (a_name or a.name)
-            var_columns = [col for col in columns if col.startswith(f"{var}_") or col.startswith(f"{var}.")]
+            var_columns = get_var_columns(columns, var)
             assert len(var_columns) >= 1, \
                 f"Expected {var}.* or {var}_* columns, got: {columns}"

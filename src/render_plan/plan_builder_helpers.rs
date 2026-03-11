@@ -2271,7 +2271,11 @@ pub(super) fn plan_type_name(plan: &LogicalPlan) -> &'static str {
 /// and looks up the property in its property_mapping.
 ///
 /// Returns the mapped column name if found, None otherwise.
-fn get_property_from_viewscan(alias: &str, property: &str, plan: &LogicalPlan) -> Option<String> {
+fn get_property_from_viewscan(
+    alias: &str,
+    property: &str,
+    plan: &LogicalPlan,
+) -> Option<PropertyValue> {
     match plan {
         LogicalPlan::GraphNode(node) if node.alias == alias => {
             // Found the matching GraphNode - check its input for ViewScan
@@ -2279,17 +2283,17 @@ fn get_property_from_viewscan(alias: &str, property: &str, plan: &LogicalPlan) -
                 LogicalPlan::ViewScan(scan) => {
                     // Look up property in the ViewScan's property_mapping
                     if let Some(prop_value) = scan.property_mapping.get(property) {
-                        return Some(prop_value.raw().to_string());
+                        return Some(prop_value.clone());
                     }
                     // Also check from_node_properties and to_node_properties
                     if let Some(from_props) = &scan.from_node_properties {
                         if let Some(prop_value) = from_props.get(property) {
-                            return Some(prop_value.raw().to_string());
+                            return Some(prop_value.clone());
                         }
                     }
                     if let Some(to_props) = &scan.to_node_properties {
                         if let Some(prop_value) = to_props.get(property) {
-                            return Some(prop_value.raw().to_string());
+                            return Some(prop_value.clone());
                         }
                     }
                     None
@@ -2367,16 +2371,16 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
             // For denormalized virtual nodes, try to get property mapping from ViewScan first
             // This is needed because denormalized nodes have position-specific mappings
             // (from_node_properties vs to_node_properties)
-            if let Some(column) =
+            if let Some(mapped_pv) =
                 get_property_from_viewscan(&prop.table_alias.0, prop.column.raw(), plan)
             {
                 log::debug!(
                     "🔍 PROPERTY MAPPING (ViewScan): '{}.{}' -> '{}'",
                     prop.table_alias.0,
                     prop.column.raw(),
-                    column
+                    mapped_pv.raw()
                 );
-                prop.column = PropertyValue::Column(column);
+                prop.column = mapped_pv;
             } else if let Some(node_label) = get_node_label_for_alias(&prop.table_alias.0, plan) {
                 log::debug!(
                     "🔍 PROPERTY MAPPING: Alias '{}' -> Label '{}', Property '{}' (before mapping)",
@@ -2385,22 +2389,34 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                     prop.column.raw()
                 );
 
-                // Map the property to the correct column
-                let mapped_column = crate::render_plan::cte_generation::map_property_to_column_with_relationship_context(
-                    prop.column.raw(),
-                    &node_label,
-                    None, // relationship_type
-                    None, // node_role
-                    None, // schema_name will be resolved from task-local
-                ).unwrap_or_else(|_| prop.column.raw().to_string());
+                // Map the property to the correct column, preserving Expression variant
+                if let Ok(mapped_pv) =
+                    crate::render_plan::cte_generation::map_property_to_property_value(
+                        prop.column.raw(),
+                        &node_label,
+                    )
+                {
+                    log::debug!(
+                        "🔍 PROPERTY MAPPING: '{}' -> '{}'",
+                        prop.column.raw(),
+                        mapped_pv.raw()
+                    );
+                    prop.column = mapped_pv;
+                } else {
+                    // Fallback to string-based mapping for denormalized/complex cases
+                    let mapped_column = crate::render_plan::cte_generation::map_property_to_column_with_relationship_context(
+                        prop.column.raw(),
+                        &node_label,
+                        None, None, None,
+                    ).unwrap_or_else(|_| prop.column.raw().to_string());
 
-                log::debug!(
-                    "🔍 PROPERTY MAPPING: '{}' -> '{}'",
-                    prop.column.raw(),
-                    mapped_column
-                );
-
-                prop.column = PropertyValue::Column(mapped_column);
+                    log::debug!(
+                        "🔍 PROPERTY MAPPING (fallback): '{}' -> '{}'",
+                        prop.column.raw(),
+                        mapped_column
+                    );
+                    prop.column = PropertyValue::Column(mapped_column);
+                }
             } else if let Some(rel_type) =
                 get_relationship_type_for_alias(&prop.table_alias.0, plan)
             {
@@ -2412,22 +2428,36 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                     prop.column.raw()
                 );
 
-                // Map the relationship property to the correct column
-                let mapped_column =
-                    crate::render_plan::cte_generation::map_relationship_property_to_column(
+                // Map the relationship property, preserving Expression variant
+                if let Ok(mapped_pv) =
+                    crate::render_plan::cte_generation::map_rel_property_to_property_value(
                         prop.column.raw(),
                         &rel_type,
-                        None, // Use task-local schema context
                     )
-                    .unwrap_or_else(|_| prop.column.raw().to_string());
+                {
+                    log::debug!(
+                        "🔍 RELATIONSHIP PROPERTY MAPPING: '{}' -> '{}'",
+                        prop.column.raw(),
+                        mapped_pv.raw()
+                    );
+                    prop.column = mapped_pv;
+                } else {
+                    // Fallback to string-based mapping
+                    let mapped_column =
+                        crate::render_plan::cte_generation::map_relationship_property_to_column(
+                            prop.column.raw(),
+                            &rel_type,
+                            None,
+                        )
+                        .unwrap_or_else(|_| prop.column.raw().to_string());
 
-                log::debug!(
-                    "🔍 RELATIONSHIP PROPERTY MAPPING: '{}' -> '{}'",
-                    prop.column.raw(),
-                    mapped_column
-                );
-
-                prop.column = PropertyValue::Column(mapped_column);
+                    log::debug!(
+                        "🔍 RELATIONSHIP PROPERTY MAPPING (fallback): '{}' -> '{}'",
+                        prop.column.raw(),
+                        mapped_column
+                    );
+                    prop.column = PropertyValue::Column(mapped_column);
+                }
             }
 
             // For denormalized nodes, remap the table alias to the edge alias

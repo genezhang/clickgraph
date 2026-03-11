@@ -937,6 +937,22 @@ pub struct AggregateFnCall {
     pub args: Vec<RenderExpr>,
 }
 
+/// Check if a RenderExpr is a literal or effectively a literal (e.g., negated numeric literal).
+/// Used to decide whether list elements need toString() wrapping.
+fn is_literal_like(expr: &RenderExpr) -> bool {
+    match expr {
+        RenderExpr::Literal(_) | RenderExpr::Parameter(_) => true,
+        // Unary minus: parser generates `0 - x` for `-x`
+        RenderExpr::OperatorApplicationExp(op)
+            if op.operator == Operator::Subtraction && op.operands.len() == 2 =>
+        {
+            matches!(&op.operands[0], RenderExpr::Literal(Literal::Integer(0)))
+                && matches!(&op.operands[1], RenderExpr::Literal(_))
+        }
+        _ => false,
+    }
+}
+
 impl TryFrom<LogicalExpr> for RenderExpr {
     type Error = RenderBuildError;
 
@@ -985,21 +1001,20 @@ impl TryFrom<LogicalExpr> for RenderExpr {
                 //
                 // Pure literal lists (e.g., [1, 2, 3] for IN clauses, UNWIND) are left as-is
                 // so they preserve their literal element types.
-                let has_non_literal = items
-                    .iter()
-                    .any(|e| !matches!(e, RenderExpr::Literal(_) | RenderExpr::Parameter(_)));
+                let has_non_literal = items.iter().any(|e| !is_literal_like(e));
 
                 // Skip toString() wrapping when all non-literal elements are bare aliases
                 // (TableAlias, ColumnAlias, or wildcard PropertyAccessExp). These represent
                 // node variables that will be resolved to ID columns by rewrite_bare_variables.
-                let all_non_literal_are_aliases = items
-                    .iter()
-                    .filter(|e| !matches!(e, RenderExpr::Literal(_) | RenderExpr::Parameter(_)))
-                    .all(|e| match e {
-                        RenderExpr::TableAlias(_) | RenderExpr::ColumnAlias(_) => true,
-                        RenderExpr::PropertyAccessExp(pa) if pa.column.raw() == "*" => true,
-                        _ => false,
-                    });
+                let all_non_literal_are_aliases =
+                    items
+                        .iter()
+                        .filter(|e| !is_literal_like(e))
+                        .all(|e| match e {
+                            RenderExpr::TableAlias(_) | RenderExpr::ColumnAlias(_) => true,
+                            RenderExpr::PropertyAccessExp(pa) if pa.column.raw() == "*" => true,
+                            _ => false,
+                        });
 
                 if has_non_literal && !all_non_literal_are_aliases {
                     RenderExpr::List(

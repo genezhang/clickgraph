@@ -1777,6 +1777,12 @@ impl RenderPlanBuilder for LogicalPlan {
                     .iter()
                     .any(|item| matches!(item.expression, LogicalExpr::AggregateFnCall(_)));
 
+                // Extract VLP path variable from input (for path function rewriting in WITH items)
+                let vlp_path_variable = {
+                    use crate::render_plan::cte_extraction::get_path_variable;
+                    get_path_variable(&with.input)
+                };
+
                 let cte_content = if is_denormalized_input || is_bidirectional_union {
                     // Union path: use to_render_plan() which correctly renders both
                     // UNION branches with per-branch property resolution and FROM/JOINs
@@ -1791,6 +1797,29 @@ impl RenderPlanBuilder for LogicalPlan {
                                     "Failed to convert where clause".to_string(),
                                 )
                             })?;
+
+                        // 🔧 FIX: Rewrite renamed aliases in WHERE clause back to source aliases.
+                        // Same rewrite as the standard path — needed for Union/bidirectional inputs too.
+                        let render_where = {
+                            let mut reverse_alias_map = HashMap::new();
+                            for item in &with.items {
+                                if let (LogicalExpr::TableAlias(ta), Some(col_alias)) =
+                                    (&item.expression, &item.col_alias)
+                                {
+                                    reverse_alias_map.insert(col_alias.0.clone(), ta.0.clone());
+                                }
+                            }
+                            if reverse_alias_map.is_empty() {
+                                render_where
+                            } else {
+                                log::info!(
+                                    "🔧 Rewriting WITH WHERE aliases (Union path): {:?}",
+                                    reverse_alias_map
+                                );
+                                rewrite_render_expr_aliases(&render_where, &reverse_alias_map)
+                            }
+                        };
+
                         if has_aggregation {
                             input_plan.having_clause = Some(render_where);
                         } else {
@@ -1838,6 +1867,30 @@ impl RenderPlanBuilder for LogicalPlan {
                                     "Failed to convert where clause".to_string(),
                                 )
                             })?;
+
+                        // 🔧 FIX: Rewrite renamed aliases in WHERE clause back to source aliases.
+                        // For `WITH u AS person WHERE person.user_id = 1`, the WHERE uses "person"
+                        // but inside the CTE body only "u" exists. Reverse the alias mapping.
+                        let render_where = {
+                            let mut reverse_alias_map = HashMap::new();
+                            for item in &with.items {
+                                if let (LogicalExpr::TableAlias(ta), Some(col_alias)) =
+                                    (&item.expression, &item.col_alias)
+                                {
+                                    reverse_alias_map.insert(col_alias.0.clone(), ta.0.clone());
+                                }
+                            }
+                            if reverse_alias_map.is_empty() {
+                                render_where
+                            } else {
+                                log::info!(
+                                    "🔧 Rewriting WITH WHERE aliases: {:?}",
+                                    reverse_alias_map
+                                );
+                                rewrite_render_expr_aliases(&render_where, &reverse_alias_map)
+                            }
+                        };
+
                         if has_aggregation {
                             if cte_having.is_some() {
                                 return Err(RenderBuildError::InvalidRenderPlan(
@@ -1911,6 +1964,56 @@ impl RenderPlanBuilder for LogicalPlan {
                         });
                     }
 
+                    // 🔧 FIX: Rewrite VLP path function expressions in WITH items
+                    // When WITH contains `length(path)`, `nodes(path)`, `relationships(path)`,
+                    // these must be rewritten to reference VLP CTE columns (t.hop_count, etc.)
+                    if let Some(ref path_var) = vlp_path_variable {
+                        // Find start/end aliases from the VLP GraphRel
+                        fn find_vlp_endpoints(plan: &LogicalPlan) -> Option<(String, String)> {
+                            match plan {
+                                LogicalPlan::GraphRel(gr) if gr.variable_length.is_some() => {
+                                    Some((gr.left_connection.clone(), gr.right_connection.clone()))
+                                }
+                                LogicalPlan::GraphRel(gr) => find_vlp_endpoints(&gr.left)
+                                    .or_else(|| find_vlp_endpoints(&gr.right)),
+                                LogicalPlan::GraphNode(gn) => find_vlp_endpoints(&gn.input),
+                                LogicalPlan::Filter(f) => find_vlp_endpoints(&f.input),
+                                LogicalPlan::Projection(p) => find_vlp_endpoints(&p.input),
+                                LogicalPlan::GraphJoins(gj) => find_vlp_endpoints(&gj.input),
+                                LogicalPlan::GroupBy(gb) => find_vlp_endpoints(&gb.input),
+                                LogicalPlan::Union(u) => {
+                                    u.inputs.iter().find_map(|i| find_vlp_endpoints(i))
+                                }
+                                _ => None,
+                            }
+                        }
+
+                        let endpoints = find_vlp_endpoints(&with.input);
+                        let (start_alias, end_alias) = match endpoints {
+                            Some((s, e)) => (Some(s), Some(e)),
+                            None => (None, None),
+                        };
+
+                        log::info!(
+                            "🔧 VLP path rewriting in WITH: path_var={}, start={:?}, end={:?}",
+                            path_var,
+                            start_alias,
+                            end_alias
+                        );
+
+                        use crate::clickhouse_query_generator::to_sql_query::rewrite_expr_for_vlp;
+                        let path_variable_opt = Some(path_var.clone());
+                        for item in cte_select_items.iter_mut() {
+                            item.expression = rewrite_expr_for_vlp(
+                                &item.expression,
+                                &start_alias,
+                                &end_alias,
+                                &path_variable_opt,
+                                false,
+                            );
+                        }
+                    }
+
                     // ✅ FIX (Phase 6): Remap column aliases to match exported aliases
                     // When we have `WITH u AS person`, the select items will have aliases like `u.name`
                     // but they need to be remapped to `person.name` for the CTE output
@@ -1980,6 +2083,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 });
                 let mut cte = Cte::new(cte_name.clone(), cte_content, false);
                 cte.with_exported_aliases = with.exported_aliases.clone();
+                cte.vlp_path_variable = vlp_path_variable.clone();
                 let ctes = CteItems(vec![cte]);
 
                 let from = FromTableItem(Some(ViewTableRef {
@@ -3991,6 +4095,63 @@ fn build_with_alias_mapping(
     }
 
     mapping
+}
+
+/// Rewrite table aliases in a RenderExpr using an alias mapping.
+/// Used to rewrite post-WITH WHERE clauses: `person.user_id` → `u.user_id`
+/// when the WHERE uses a renamed alias but the CTE body uses the original.
+fn rewrite_render_expr_aliases(
+    expr: &RenderExpr,
+    alias_map: &HashMap<String, String>,
+) -> RenderExpr {
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => {
+            if let Some(source_alias) = alias_map.get(&pa.table_alias.0) {
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(source_alias.clone()),
+                    column: pa.column.clone(),
+                })
+            } else {
+                expr.clone()
+            }
+        }
+        RenderExpr::TableAlias(ta) => {
+            if let Some(source_alias) = alias_map.get(&ta.0) {
+                RenderExpr::TableAlias(TableAlias(source_alias.clone()))
+            } else {
+                expr.clone()
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator.clone(),
+                operands: op
+                    .operands
+                    .iter()
+                    .map(|o| rewrite_render_expr_aliases(o, alias_map))
+                    .collect(),
+            })
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            RenderExpr::ScalarFnCall(super::render_expr::ScalarFnCall {
+                name: func.name.clone(),
+                args: func
+                    .args
+                    .iter()
+                    .map(|a| rewrite_render_expr_aliases(a, alias_map))
+                    .collect(),
+            })
+        }
+        RenderExpr::AggregateFnCall(func) => RenderExpr::AggregateFnCall(AggregateFnCall {
+            name: func.name.clone(),
+            args: func
+                .args
+                .iter()
+                .map(|a| rewrite_render_expr_aliases(a, alias_map))
+                .collect(),
+        }),
+        _ => expr.clone(),
+    }
 }
 
 /// Remap select item aliases to match WITH clause exported aliases

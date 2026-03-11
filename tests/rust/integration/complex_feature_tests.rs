@@ -1204,3 +1204,275 @@ async fn test_reversed_anchor_optional_match_with_where_predicate() {
         sql
     );
 }
+
+/// Test VLP path function `length(path)` inside WITH clause
+#[tokio::test]
+async fn test_vlp_length_path_in_with_clause() {
+    let schema = create_test_schema();
+
+    let cypher = r#"
+        MATCH path = (a:User)-[:FOLLOWS*1..3]->(b:User)
+        WITH a, b, length(path) as hops
+        WHERE hops = 2
+        RETURN a.name, b.name, hops
+    "#;
+
+    let ast = parse_query(cypher).expect("Failed to parse VLP length(path) in WITH");
+
+    let result = evaluate_read_query(ast, &schema, None, None);
+    assert!(result.is_ok(), "Failed to build plan: {:?}", result.err());
+
+    let (logical_plan, _plan_ctx) = result.unwrap();
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL: {:?}",
+        render_result.err()
+    );
+
+    let render_plan = render_result.unwrap();
+    let sql = render_plan.to_sql();
+    println!("Generated SQL:\n{}", sql);
+
+    let sql_lower = sql.to_lowercase();
+
+    // VLP should generate recursive CTE
+    assert!(
+        sql_lower.contains("recursive"),
+        "Should contain RECURSIVE CTE for VLP.\nSQL:\n{}",
+        sql
+    );
+
+    // length(path) should be rewritten to t.hop_count, not literal "length(path)"
+    assert!(
+        !sql_lower.contains("length(path)"),
+        "length(path) should be rewritten to hop_count, not left as literal.\nSQL:\n{}",
+        sql
+    );
+
+    // Should contain hop_count reference (from VLP CTE)
+    assert!(
+        sql_lower.contains("hop_count"),
+        "Should contain hop_count from VLP CTE rewriting.\nSQL:\n{}",
+        sql
+    );
+}
+
+/// Test VLP path functions `nodes(path)` and `relationships(path)` inside WITH clause
+#[tokio::test]
+async fn test_vlp_nodes_relationships_path_in_with_clause() {
+    let schema = create_test_schema();
+
+    let cypher = r#"
+        MATCH path = (a:User)-[:FOLLOWS*1..2]->(b:User)
+        WITH a, b, nodes(path) as path_nodes, relationships(path) as path_rels
+        RETURN a.name, size(path_nodes) as node_count, size(path_rels) as rel_count
+    "#;
+
+    let ast = parse_query(cypher).expect("Failed to parse VLP nodes/relationships in WITH");
+
+    let result = evaluate_read_query(ast, &schema, None, None);
+    assert!(result.is_ok(), "Failed to build plan: {:?}", result.err());
+
+    let (logical_plan, _plan_ctx) = result.unwrap();
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL: {:?}",
+        render_result.err()
+    );
+
+    let render_plan = render_result.unwrap();
+    let sql = render_plan.to_sql();
+    println!("Generated SQL:\n{}", sql);
+
+    let sql_lower = sql.to_lowercase();
+
+    // nodes(path) should be rewritten to path_nodes CTE column
+    assert!(
+        !sql_lower.contains("nodes(path)"),
+        "nodes(path) should be rewritten, not left as literal.\nSQL:\n{}",
+        sql
+    );
+
+    // relationships(path) should be rewritten to path_relationships CTE column
+    assert!(
+        !sql_lower.contains("relationships(path)"),
+        "relationships(path) should be rewritten, not left as literal.\nSQL:\n{}",
+        sql
+    );
+
+    // Should contain path_nodes and path_relationships references
+    assert!(
+        sql_lower.contains("path_nodes"),
+        "Should contain path_nodes from VLP CTE rewriting.\nSQL:\n{}",
+        sql
+    );
+    assert!(
+        sql_lower.contains("path_relationships"),
+        "Should contain path_relationships from VLP CTE rewriting.\nSQL:\n{}",
+        sql
+    );
+}
+
+/// Test WITH alias rename + WHERE uses the renamed alias
+#[tokio::test]
+async fn test_with_alias_rename_where_filter() {
+    use clickgraph::server::query_context::{set_current_schema, with_query_context, QueryContext};
+    use std::sync::Arc;
+
+    let schema = create_test_schema();
+
+    let cypher = r#"
+        MATCH (u:User)
+        WITH u AS person
+        WHERE person.name = 'Alice'
+        RETURN person.name
+    "#;
+
+    let schema_clone = schema.clone();
+    let ctx = QueryContext::new(Some("default".to_string()));
+    let sql = with_query_context(ctx, async {
+        set_current_schema(Arc::new(schema_clone));
+
+        let ast = parse_query(cypher).expect("Failed to parse WITH alias rename + WHERE");
+
+        let result = evaluate_read_query(ast, &schema, None, None);
+        assert!(result.is_ok(), "Failed to build plan: {:?}", result.err());
+
+        let (logical_plan, _plan_ctx) = result.unwrap();
+        let render_result = logical_plan_to_render_plan(logical_plan, &schema);
+        assert!(
+            render_result.is_ok(),
+            "Failed to render SQL: {:?}",
+            render_result.err()
+        );
+
+        let render_plan = render_result.unwrap();
+        render_plan.to_sql()
+    })
+    .await;
+
+    println!("Generated SQL:\n{}", sql);
+
+    let sql_lower = sql.to_lowercase();
+
+    // WHERE clause should NOT reference "person" inside the CTE body
+    // It should be rewritten to use the original alias "u"
+    assert!(
+        !sql_lower.contains("where person."),
+        "WHERE should not use renamed alias 'person' inside CTE.\nSQL:\n{}",
+        sql
+    );
+
+    // Should contain a WHERE filter referencing the table column
+    assert!(
+        sql_lower.contains("where") && sql_lower.contains("full_name"),
+        "WHERE should filter on the mapped column.\nSQL:\n{}",
+        sql
+    );
+}
+
+/// Test: collect+unwind CTE does not produce duplicate columns after elimination
+#[tokio::test]
+async fn test_collect_unwind_no_duplicate_cte_columns() {
+    use clickgraph::server::query_context::{set_current_schema, with_query_context, QueryContext};
+    use std::sync::Arc;
+
+    let config = clickgraph::graph_catalog::config::GraphSchemaConfig::from_yaml_file(
+        "schemas/test/social_integration.yaml",
+    )
+    .expect("Failed to load social_integration schema");
+    let schema = config.to_graph_schema().expect("Failed to convert schema");
+
+    let cypher = r#"
+        MATCH (u:User)
+        WITH u, collect(u) as users
+        UNWIND users as user
+        RETURN user.name, user.email, user.city
+        LIMIT 3
+    "#;
+
+    let schema_clone = schema.clone();
+    let ctx = QueryContext::new(Some("default".to_string()));
+    let sql = with_query_context(ctx, async {
+        set_current_schema(Arc::new(schema_clone));
+
+        let (_remaining, statement) =
+            clickgraph::open_cypher_parser::parse_cypher_statement(cypher)
+                .unwrap_or_else(|e| panic!("Failed to parse: {:?}", e));
+
+        let (logical_plan, _plan_ctx) = clickgraph::query_planner::evaluate_read_statement(
+            statement, &schema, None, None, None,
+        )
+        .unwrap_or_else(|e| panic!("Failed to plan: {:?}", e));
+
+        let render_plan =
+            clickgraph::render_plan::logical_plan_to_render_plan(logical_plan, &schema)
+                .unwrap_or_else(|e| panic!("Failed to render: {:?}", e));
+        render_plan.to_sql()
+    })
+    .await;
+
+    let sql_lower = sql.to_lowercase();
+    assert!(
+        sql_lower.contains("select"),
+        "Should have SELECT.\nSQL:\n{}",
+        sql
+    );
+
+    // Verify no duplicate columns in CTE body (case-insensitive split on FROM)
+    let sql_upper = sql.to_uppercase();
+    let cte_body = sql_upper.split("FROM").next().unwrap_or("");
+    let name_count = cte_body.matches("P1_U_NAME").count();
+    assert_eq!(
+        name_count, 1,
+        "P1_U_NAME should appear once in CTE body, found {}.\nSQL:\n{}",
+        name_count, sql
+    );
+}
+
+/// Test: COUNT(p) on a fixed-hop path variable resolves to COUNT(*)
+#[tokio::test]
+async fn test_count_path_variable_fixed_hop() {
+    use clickgraph::server::query_context::{set_current_schema, with_query_context, QueryContext};
+    use std::sync::Arc;
+
+    let schema = create_test_schema();
+
+    let cypher = r#"
+        MATCH p = (a:User)-[:FOLLOWS]->(b:User)
+        RETURN COUNT(p) AS path_count
+    "#;
+
+    let schema_clone = schema.clone();
+    let ctx = QueryContext::new(Some("default".to_string()));
+    let sql = with_query_context(ctx, async {
+        set_current_schema(Arc::new(schema_clone));
+
+        let ast = parse_query(cypher).expect("Failed to parse COUNT(p) query");
+        let result = evaluate_read_query(ast, &schema, None, None);
+        assert!(result.is_ok(), "Failed to plan: {:?}", result.err());
+
+        let (logical_plan, _plan_ctx) = result.unwrap();
+        let render_result = logical_plan_to_render_plan(logical_plan, &schema);
+        assert!(
+            render_result.is_ok(),
+            "Failed to render: {:?}",
+            render_result.err()
+        );
+
+        let render_plan = render_result.unwrap();
+        render_plan.to_sql()
+    })
+    .await;
+
+    println!("Generated SQL for COUNT(p):\n{}", sql);
+
+    let sql_lower = sql.to_lowercase();
+    assert!(
+        sql_lower.contains("count(*)") || sql_lower.contains("count(1)"),
+        "COUNT(p) should be rewritten to COUNT(*) for fixed-hop path.\nSQL:\n{}",
+        sql
+    );
+}

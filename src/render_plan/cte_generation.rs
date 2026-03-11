@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use crate::clickhouse_query_generator::variable_length_cte::WeightCteConfig;
 use crate::clickhouse_query_generator::NodeProperty;
 use crate::graph_catalog::config::Identifier;
+use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_plan::LogicalPlan;
@@ -781,6 +782,67 @@ pub fn map_property_to_column_with_relationship_context(
     })?;
 
     Ok(column.raw().to_string())
+}
+
+/// Like `map_property_to_column_with_relationship_context` but preserves
+/// the `PropertyValue` variant (Column vs Expression). Use this when the
+/// caller needs to generate correct SQL for expression-based mappings.
+pub fn map_property_to_property_value(
+    property: &str,
+    node_label: &str,
+) -> Result<PropertyValue, String> {
+    let current_schema = crate::server::query_context::get_current_schema_with_fallback();
+    let schema = current_schema.as_ref().ok_or_else(|| {
+        format!(
+            "No schema available for property '{}' on node '{}'",
+            property, node_label
+        )
+    })?;
+
+    let node_schema = schema
+        .all_node_schemas()
+        .get(node_label)
+        .ok_or_else(|| format!("Node label '{}' not found in schema", node_label))?;
+
+    node_schema
+        .property_mappings
+        .get(property)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "Property '{}' not found for node label '{}'",
+                property, node_label
+            )
+        })
+}
+
+/// Like `map_property_to_property_value` but for relationship properties.
+pub fn map_rel_property_to_property_value(
+    property: &str,
+    relationship_type: &str,
+) -> Result<PropertyValue, String> {
+    let current_schema = crate::server::query_context::get_current_schema_with_fallback();
+    let schema = current_schema.as_ref().ok_or_else(|| {
+        format!(
+            "No schema available for property '{}' on rel '{}'",
+            property, relationship_type
+        )
+    })?;
+
+    let rel_schema = schema
+        .get_rel_schema(relationship_type)
+        .map_err(|e| format!("Relationship type '{}' not found: {}", relationship_type, e))?;
+
+    rel_schema
+        .property_mappings
+        .get(property)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "Property '{}' not found for relationship type '{}'",
+                property, relationship_type
+            )
+        })
 }
 
 /// Map a relationship property to its corresponding column name in the schema.
