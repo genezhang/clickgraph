@@ -379,6 +379,34 @@ SELECT
     Comment2Id AS MessageId
 FROM ldbc.Comment_replyOf_Comment;
 
+-- Unified Message tag view (Post tags + Comment tags)
+CREATE VIEW IF NOT EXISTS ldbc.Message_hasTag_Tag AS
+SELECT
+    creationDate,
+    PostId AS MessageId,
+    TagId
+FROM ldbc.Post_hasTag_Tag
+UNION ALL
+SELECT
+    creationDate,
+    CommentId AS MessageId,
+    TagId
+FROM ldbc.Comment_hasTag_Tag;
+
+-- Unified Message location view (Post location + Comment location)
+CREATE VIEW IF NOT EXISTS ldbc.Message_isLocatedIn_Place AS
+SELECT
+    creationDate,
+    PostId AS MessageId,
+    CountryId
+FROM ldbc.Post_isLocatedIn_Place
+UNION ALL
+SELECT
+    creationDate,
+    CommentId AS MessageId,
+    CountryId
+FROM ldbc.Comment_isLocatedIn_Place;
+
 -- Unified reply-of view (to get target Message of a reply)
 CREATE OR REPLACE VIEW Message_replyOf_Message AS
 SELECT 

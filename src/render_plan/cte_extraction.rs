@@ -2674,6 +2674,8 @@ pub fn extract_ctes_with_context(
 
                 // Extract properties from filter expressions for shortest path queries
                 // Even in SQL_ONLY mode, we need properties that appear in filters
+                // Also include properties required by downstream WITH/RETURN clauses
+                // (PropertyRequirements captures what the rest of the query needs)
                 let filter_properties = if graph_rel.shortest_path_mode.is_some() {
                     use crate::render_plan::cte_generation::extract_properties_from_filter;
 
@@ -2695,6 +2697,52 @@ pub fn extract_ctes_with_context(
                             let end_props =
                                 extract_properties_from_filter(filter_expr, &end_alias, &end_label);
                             props.extend(end_props);
+                        }
+                    }
+
+                    // Also include properties from PropertyRequirements (downstream usage)
+                    // Without this, properties like friend.birthday referenced after WITH
+                    // won't be included in the VLP CTE columns
+                    let prop_reqs = plan_ctx.and_then(|ctx| ctx.get_property_requirements());
+                    let existing_props: std::collections::HashSet<(String, String)> = props
+                        .iter()
+                        .map(|p| (p.cypher_alias.clone(), p.alias.clone()))
+                        .collect();
+
+                    for (alias, label) in [(&start_alias, &start_label), (&end_alias, &end_label)] {
+                        if label.is_empty() {
+                            continue;
+                        }
+                        let reqs = prop_reqs.and_then(|r| r.get_requirements(alias));
+                        let include_all = prop_reqs.is_none_or(|r| {
+                            r.requires_all(alias) || r.get_requirements(alias).is_none()
+                        });
+                        if let Ok(node_schema) = schema.node_schema(label) {
+                            let id_columns = node_schema.node_id.columns();
+                            let mut sorted_props: Vec<_> =
+                                node_schema.property_mappings.iter().collect();
+                            sorted_props.sort_by_key(|(k, _)| k.as_str());
+                            for (prop_name, prop_value) in sorted_props {
+                                if id_columns.contains(&prop_value.raw()) {
+                                    continue;
+                                }
+                                if !include_all {
+                                    if let Some(ref req_set) = reqs {
+                                        if !req_set.contains(prop_name.as_str())
+                                            && !req_set.contains(prop_value.raw())
+                                        {
+                                            continue;
+                                        }
+                                    }
+                                }
+                                if !existing_props.contains(&(alias.clone(), prop_name.clone())) {
+                                    props.push(NodeProperty {
+                                        cypher_alias: alias.clone(),
+                                        column_name: prop_value.raw().to_string(),
+                                        alias: prop_name.clone(),
+                                    });
+                                }
+                            }
                         }
                     }
 

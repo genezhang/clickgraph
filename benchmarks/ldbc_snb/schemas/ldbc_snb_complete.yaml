@@ -247,7 +247,7 @@ graph_schema:
       database: ldbc
       table: Person_studyAt_Organisation
       from_id: PersonId
-      to_id: OrganisationId
+      to_id: UniversityId
       from_node: Person
       to_node: University
       property_mappings:
@@ -261,7 +261,7 @@ graph_schema:
       database: ldbc
       table: Person_workAt_Organisation
       from_id: PersonId
-      to_id: OrganisationId
+      to_id: CompanyId
       from_node: Person
       to_node: Company
       property_mappings:
@@ -613,7 +613,7 @@ graph_schema:
       database: ldbc
       table: Message_isLocatedIn_Place
       from_id: MessageId
-      to_id: PlaceId
+      to_id: CountryId
       from_node: Message
       to_node: Country
       property_mappings:
