@@ -2684,26 +2684,17 @@ impl GraphJoinInference {
             if let Some(ref anchor) = _graph_rel.anchor_connection {
                 let anchor_already_joined = collected_graph_joins
                     .iter()
-                    .any(|j| j.table_alias == *anchor);
+                    .any(|j| j.table_alias.as_str() == anchor.as_str());
                 if !anchor_already_joined {
                     // Determine the anchor's table name
-                    let anchor_table = if *anchor == right_alias {
+                    let anchor_table = if anchor.as_str() == right_alias {
                         tables.right_table
                     } else {
                         tables.left_table
                     };
                     // Create FROM marker for anchor node
-                    let from_join = Join {
-                        table_name: anchor_table.to_string(),
-                        table_alias: anchor.clone(),
-                        joining_on: vec![],
-                        join_type: JoinType::Inner,
-                        pre_filter: None,
-                        from_id_column: None,
-                        to_id_column: None,
-                        graph_rel: None,
-                    };
-                    new_joins.insert(0, from_join);
+                    helpers::JoinBuilder::from_marker(anchor_table, anchor.as_str())
+                        .build_and_insert_at(&mut new_joins, 0);
                 }
             }
         }
