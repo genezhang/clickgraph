@@ -23,25 +23,27 @@ Schema Types:
 - Polymorphic: Multiple relationship types
 """
 
+import os
+
 import pytest
 import requests
 import json
 
 
 # Server endpoint
-CLICKGRAPH_URL = "http://localhost:8080"
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 
 
 def query_clickgraph(cypher_query, schema_name="social_integration", variables=None):
     """Execute Cypher query against ClickGraph server."""
     payload = {"query": cypher_query}
+    # Only include schema_name when the query doesn't use an explicit USE clause,
+    # so USE-clause interaction tests exercise the real parsing/precedence path.
+    if not cypher_query.lstrip().upper().startswith("USE "):
+        payload["schema_name"] = schema_name
     if variables:
         payload["parameters"] = variables
-    
-    # Add USE clause if not present
-    if not cypher_query.strip().upper().startswith("USE"):
-        payload["query"] = f"USE {schema_name}; {cypher_query}"
-    
+
     response = requests.post(f"{CLICKGRAPH_URL}/query", json=payload)
     return response
 
@@ -72,7 +74,6 @@ class TestMultiTableNodes:
         assert "results" in data
         # Should scan all node types (User, Post)
     
-    @pytest.mark.xfail(reason="Code bug: unlabeled node with relationship inference fails")
     def test_unlabeled_with_relationship_infers_label(self):
         """MATCH (a)-[:FOLLOWS]->(b) should infer both are Users."""
         query = "MATCH (a)-[:FOLLOWS]->(b) RETURN count(*) as total"
@@ -80,7 +81,6 @@ class TestMultiTableNodes:
         assert response.status_code == 200
         # Both a and b should be inferred as User from FOLLOWS relationship
     
-    @pytest.mark.xfail(reason="Code bug: unlabeled bidirectional node inference fails")
     def test_unlabeled_bidirectional_infers_from_schema(self):
         """MATCH (a)--(b) with undirected pattern."""
         query = "MATCH (a:User)--(b) RETURN count(DISTINCT b) as total"
@@ -88,7 +88,6 @@ class TestMultiTableNodes:
         assert response.status_code == 200
         # b can be User (from FOLLOWS) or Post (from AUTHORED)
     
-    @pytest.mark.xfail(reason="Code bug: unlabeled node with multiple patterns fails")
     def test_unlabeled_multiple_patterns_same_var(self):
         """Multiple patterns with same unlabeled variable."""
         query = """
@@ -402,7 +401,6 @@ class TestLabelInference:
     """
     
     # Case 1: All known (baseline)
-    @pytest.mark.xfail(reason="Code bug: label inference with all labels known fails")
     def test_inference_all_labels_known(self):
         """Case 1: (a:User)-[r:FOLLOWS]->(b:User) - all known."""
         query = """
@@ -413,7 +411,6 @@ class TestLabelInference:
         assert response.status_code == 200
     
     # Case 2: Infer left from rel+right
-    @pytest.mark.xfail(reason="Code bug: label inference from relationship fails")
     def test_inference_left_from_rel_and_right(self):
         """Case 2: (a)-[r:FOLLOWS]->(b:User) - infer a is User."""
         query = """
@@ -434,7 +431,6 @@ class TestLabelInference:
         # AUTHORED: User → Post, so a must be User
     
     # Case 3: Infer right from rel+left
-    @pytest.mark.xfail(reason="Code bug: label inference from relationship fails")
     def test_inference_right_from_rel_and_left(self):
         """Case 3: (a:User)-[r:FOLLOWS]->(b) - infer b is User."""
         query = """
