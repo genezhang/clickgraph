@@ -797,11 +797,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// Cycle detection uses node-uniqueness via `path_nodes` arrays (NOT has(vp.path_nodes, end_id)).
     /// This is more memory-efficient than edge-uniqueness (no separate path_edges arrays) and
     /// equivalent for simple graphs (at most one edge per type between any node pair).
-    /// `path_relationships` is only needed when the query binds a
-    /// path variable (`MATCH p = ...`, `shortestPath(...)`) for `relationships(p)` or
-    /// Bolt Path protocol.
+    /// `path_relationships` is populated whenever a path variable is bound
+    /// (`MATCH p = ...`, `shortestPath(...)`). This ensures `relationships(p)` works
+    /// even when called inside WITH clauses (where the root_plan detection can't see
+    /// the path function usage above the VLP subtree).
     fn needs_path_data(&self) -> bool {
-        self.path_variable.is_some() && self.needs_path_relationships
+        self.path_variable.is_some()
     }
 
     /// Build the SQL expression for the end node ID.
@@ -1195,7 +1196,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                  CASE WHEN countIf(node_id = {target}) > 0\n            \
                  THEN minIf(toUInt16(hop), node_id = {target})\n            \
                  ELSE NULL END AS hop_count,\n        \
-                 CAST(0 AS UInt8) AS path_relationships,\n        \
+                 CAST([] AS Array(String)) AS path_relationships,\n        \
                  CAST([] AS Array(UInt64)) AS path_nodes\n    \
                  FROM {bfs_cte}\n)",
                 name = self.cte_name,
@@ -1210,7 +1211,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                  {start_id} AS start_id,\n        \
                  node_id AS end_id,\n        \
                  min(toUInt16(hop)) AS hop_count,\n        \
-                 CAST(0 AS UInt8) AS path_relationships,\n        \
+                 CAST([] AS Array(String)) AS path_relationships,\n        \
                  CAST([] AS Array(UInt64)) AS path_nodes\n    \
                  FROM {bfs_cte}\n    \
                  WHERE node_id != {start_id}\n    \
@@ -1308,7 +1309,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             "{name} AS (\n    \
              SELECT {start_id} AS start_id, {target_id} AS end_id,\n           \
              toUInt16(length(path_nodes) - 1) AS hop_count,\n           \
-             total_weight, path_nodes, CAST(0 AS UInt8) AS path_relationships\n    \
+             total_weight, path_nodes, CAST([] AS Array(String)) AS path_relationships\n    \
              FROM {recon_cte} WHERE remaining = 0\n    \
              ORDER BY total_weight ASC LIMIT 1\n)",
             name = self.cte_name,
@@ -1783,7 +1784,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 self.start_node_id_column // Same node for self-loop
             ),
             "0 as hop_count".to_string(), // Zero hops
-            "CAST(0 AS UInt8) as path_relationships".to_string(), // Minimal placeholder when path data not needed
+            "CAST([] AS Array(String)) as path_relationships".to_string(), // Minimal placeholder when path data not needed
             // Add path_nodes for UNWIND nodes(p) support - for zero hop, just the start node
             format!(
                 "[{}.{}] as path_nodes",
@@ -2011,7 +2012,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             if self.needs_path_data() {
                 select_items.push(self.generate_relationship_type_for_hop(1));
             } else {
-                select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
+                select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
             }
             select_items.push(path_nodes_selection);
 
@@ -2185,7 +2186,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let path_rel_expr = if self.needs_path_data() {
             "CAST([] AS Array(String)) AS path_relationships"
         } else {
-            "CAST(0 AS UInt8) AS path_relationships"
+            "CAST([] AS Array(String)) AS path_relationships"
         };
         format!(
             "    SELECT\n        ew.{source} AS start_id,\n        ew.{target} AS end_id,\n        1 AS hop_count,\n        ew.{weight} AS total_weight,\n        [ew.{source}, ew.{target}] AS path_nodes,\n        {path_rel_expr} \n    FROM {cte} ew{where_clause}",
@@ -2207,7 +2208,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let path_rel_col = if self.needs_path_data() {
             "arrayConcat(vp.path_relationships, []) AS path_relationships"
         } else {
-            "CAST(0 AS UInt8) AS path_relationships"
+            "CAST([] AS Array(String)) AS path_relationships"
         };
 
         format!(
@@ -2334,7 +2335,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
+            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
         }
         select_items.push(path_nodes_selection);
 
@@ -2564,7 +2565,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
+            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
         }
         // Track intermediate node IDs in path_nodes
         select_items.push(format!(
@@ -2667,7 +2668,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         if self.needs_path_data() {
             select_items.push(self.generate_relationship_type_for_hop(1));
         } else {
-            select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
+            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
         }
         select_items.push(format!(
             "[{}.{}, {}.{}] as path_nodes",
@@ -2791,7 +2792,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
+            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
         }
         // APPEND the new node to path_nodes
         select_items.push(format!(
@@ -2877,7 +2878,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
+            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
         }
         // PREPEND the new node to path_nodes
         select_items.push(format!(
@@ -2985,7 +2986,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         if self.needs_path_data() {
             select_items.push(self.generate_relationship_type_for_hop(1));
         } else {
-            select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
+            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
         }
         select_items.push(format!(
             "[{}.{}, {}.{}] as path_nodes",
@@ -3207,7 +3208,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
+            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
         }
         select_items.push(format!(
             "arrayConcat(vp.path_nodes, [{}.{}]) as path_nodes",
@@ -3428,7 +3429,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         if self.needs_path_data() {
             select_items.push(self.generate_relationship_type_for_hop(1));
         } else {
-            select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
+            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
         }
         select_items.push(format!(
             "[{}, {}] as path_nodes",
@@ -3554,7 +3555,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("CAST(0 AS UInt8) as path_relationships".to_string());
+            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
         }
         // path_nodes always maintained for cycle detection
         select_items.push(format!(

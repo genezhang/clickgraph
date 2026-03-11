@@ -393,6 +393,12 @@ pub fn rewrite_render_expr_for_vlp(expr: &mut RenderExpr, mappings: &HashMap<Str
 /// Enhanced version that takes the FROM alias into account.
 /// For VLP CTEs, the FROM clause looks like: FROM vlp_a_b AS t
 /// So we need to use the alias (t) when rendering, and also add property prefixes (start_/end_).
+///
+/// This function assumes that any necessary translation from DB column names to
+/// Cypher property names has already been performed (e.g., via
+/// `translate_db_columns_to_cypher_properties`) before it is called. Its primary
+/// responsibility is to rewrite expressions to use the correct VLP FROM alias and
+/// the appropriate `start_`/`end_` prefixes for VLP CTE columns.
 pub fn rewrite_render_expr_for_vlp_with_from_alias(
     expr: &mut RenderExpr,
     mappings: &HashMap<String, String>,
@@ -524,6 +530,90 @@ pub fn rewrite_render_expr_for_vlp_with_from_alias(
             }
         }
         // Other expression types don't contain table aliases
+        _ => {}
+    }
+}
+
+/// Translate DB column names to Cypher property names in PropertyAccessExp expressions.
+/// VLP CTE columns use Cypher property names (e.g., `start_name` for `name`), but
+/// after schema resolution, PropertyAccessExp may contain DB column names (e.g., `full_name`).
+/// This pre-processes expressions so the VLP rewriter generates correct column references.
+fn translate_db_columns_to_cypher_properties(
+    expr: &mut RenderExpr,
+    db_to_cypher: &HashMap<(String, String), String>,
+) {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop_access) => {
+            let key = (
+                prop_access.table_alias.0.clone(),
+                prop_access.column.raw().to_string(),
+            );
+            if let Some(cypher_prop) = db_to_cypher.get(&key) {
+                log::debug!(
+                    "🔄 VLP DB→Cypher: {}.{} → {}.{}",
+                    key.0,
+                    key.1,
+                    key.0,
+                    cypher_prop
+                );
+                prop_access.column = PropertyValue::Column(cypher_prop.clone());
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in &mut op.operands {
+                translate_db_columns_to_cypher_properties(operand, db_to_cypher);
+            }
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            for arg in &mut func.args {
+                translate_db_columns_to_cypher_properties(arg, db_to_cypher);
+            }
+        }
+        RenderExpr::AggregateFnCall(func) => {
+            for arg in &mut func.args {
+                translate_db_columns_to_cypher_properties(arg, db_to_cypher);
+            }
+        }
+        RenderExpr::Case(case_exp) => {
+            for (when_expr, then_expr) in &mut case_exp.when_then {
+                translate_db_columns_to_cypher_properties(when_expr, db_to_cypher);
+                translate_db_columns_to_cypher_properties(then_expr, db_to_cypher);
+            }
+            if let Some(else_expr) = &mut case_exp.else_expr {
+                translate_db_columns_to_cypher_properties(else_expr, db_to_cypher);
+            }
+        }
+        RenderExpr::List(items) => {
+            for item in items {
+                translate_db_columns_to_cypher_properties(item, db_to_cypher);
+            }
+        }
+        RenderExpr::InSubquery(in_sub) => {
+            translate_db_columns_to_cypher_properties(&mut in_sub.expr, db_to_cypher);
+        }
+        RenderExpr::MapLiteral(entries) => {
+            for (_, val) in entries.iter_mut() {
+                translate_db_columns_to_cypher_properties(val, db_to_cypher);
+            }
+        }
+        RenderExpr::ArraySubscript { array, index } => {
+            translate_db_columns_to_cypher_properties(array, db_to_cypher);
+            translate_db_columns_to_cypher_properties(index, db_to_cypher);
+        }
+        RenderExpr::ArraySlicing { array, from, to } => {
+            translate_db_columns_to_cypher_properties(array, db_to_cypher);
+            if let Some(ref mut from_expr) = from {
+                translate_db_columns_to_cypher_properties(from_expr, db_to_cypher);
+            }
+            if let Some(ref mut to_expr) = to {
+                translate_db_columns_to_cypher_properties(to_expr, db_to_cypher);
+            }
+        }
+        RenderExpr::ReduceExpr(reduce) => {
+            translate_db_columns_to_cypher_properties(&mut reduce.initial_value, db_to_cypher);
+            translate_db_columns_to_cypher_properties(&mut reduce.list, db_to_cypher);
+            translate_db_columns_to_cypher_properties(&mut reduce.expression, db_to_cypher);
+        }
         _ => {}
     }
 }
@@ -8370,6 +8460,21 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                                     }
                                                                 }
                                                                 if !mappings.is_empty() {
+                                                                    // Build DB→Cypher property name mapping for VLP column name translation.
+                                                                    // VLP CTE columns use Cypher names (start_name) but PropertyAccessExp
+                                                                    // may have DB column names (full_name) after schema resolution.
+                                                                    let mut db_to_cypher: HashMap<(String, String), String> = HashMap::new();
+                                                                    for col_meta in col_metadata {
+                                                                        if col_meta.db_column != col_meta.cypher_property {
+                                                                            db_to_cypher.insert(
+                                                                                (col_meta.cypher_alias.clone(), col_meta.db_column.clone()),
+                                                                                col_meta.cypher_property.clone(),
+                                                                            );
+                                                                        }
+                                                                    }
+                                                                    if !db_to_cypher.is_empty() {
+                                                                        translate_db_columns_to_cypher_properties(&mut expr, &db_to_cypher);
+                                                                    }
                                                                     log::debug!("🔧 VLP WITH item rewrite: mappings={:?}, from_alias={}", mappings, from_alias);
                                                                     rewrite_render_expr_for_vlp_with_from_alias(&mut expr, &mappings, from_alias);
                                                                 }

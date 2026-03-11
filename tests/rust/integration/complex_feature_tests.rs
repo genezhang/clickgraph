@@ -1315,6 +1315,98 @@ async fn test_vlp_nodes_relationships_path_in_with_clause() {
     );
 }
 
+/// Regression: VLP + WITH using specific property access (u1.name) must:
+/// 1. Include property columns in VLP CTE (property requirements must match DB column names)
+/// 2. Reference correct VLP CTE column name (start_name, not start_full_name)
+#[tokio::test]
+async fn test_vlp_with_specific_property_access() {
+    let schema = create_test_schema();
+
+    let cypher = r#"
+        MATCH path = (a:User)-[:FOLLOWS*1..2]->(b:User)
+        WITH a.name as start_name, b.name as end_name
+        WHERE start_name IS NOT NULL
+        RETURN start_name, end_name
+    "#;
+
+    let ast = parse_query(cypher).expect("Failed to parse VLP WITH property access");
+
+    let result = evaluate_read_query(ast, &schema, None, None);
+    assert!(result.is_ok(), "Failed to build plan: {:?}", result.err());
+
+    let (logical_plan, _plan_ctx) = result.unwrap();
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL: {:?}",
+        render_result.err()
+    );
+
+    let render_plan = render_result.unwrap();
+    let sql = render_plan.to_sql();
+    println!("Generated SQL:\n{}", sql);
+
+    let sql_lower = sql.to_lowercase();
+
+    // VLP CTE must include property columns (start_name, end_name)
+    assert!(
+        sql_lower.contains("as start_name"),
+        "VLP CTE should include start_name property column.\nSQL:\n{}",
+        sql
+    );
+    assert!(
+        sql_lower.contains("as end_name"),
+        "VLP CTE should include end_name property column.\nSQL:\n{}",
+        sql
+    );
+
+    // CTE body must reference t.start_name (Cypher name), NOT t.start_full_name (DB name)
+    assert!(
+        !sql_lower.contains("start_full_name"),
+        "CTE body should use Cypher property name (start_name), not DB column name (start_full_name).\nSQL:\n{}",
+        sql
+    );
+}
+
+/// Regression: VLP path_relationships must be an array (not UInt8 placeholder)
+/// when a path variable is assigned and relationships(path) is used in WITH
+#[tokio::test]
+async fn test_vlp_path_relationships_is_array() {
+    let schema = create_test_schema();
+
+    let cypher = r#"
+        MATCH path = (a:User)-[:FOLLOWS*1..2]->(b:User)
+        WITH a, b, relationships(path) as rels
+        RETURN a.name, size(rels) as rel_count
+    "#;
+
+    let ast = parse_query(cypher).expect("Failed to parse VLP relationships in WITH");
+
+    let result = evaluate_read_query(ast, &schema, None, None);
+    assert!(result.is_ok(), "Failed to build plan: {:?}", result.err());
+
+    let (logical_plan, _plan_ctx) = result.unwrap();
+    let render_result = logical_plan_to_render_plan(logical_plan, &schema);
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL: {:?}",
+        render_result.err()
+    );
+
+    let render_plan = render_result.unwrap();
+    let sql = render_plan.to_sql();
+    println!("Generated SQL:\n{}", sql);
+
+    // path_relationships should be an array, not CAST(0 AS UInt8) placeholder
+    // Normalize to lowercase for case-insensitive matching
+    let sql_lower = sql.to_lowercase();
+    assert!(
+        !sql_lower.contains("cast(0 as uint8) as path_relationships"),
+        "path_relationships should be a proper array, not UInt8 placeholder.\nSQL:\n{}",
+        sql
+    );
+}
+
 /// Test WITH alias rename + WHERE uses the renamed alias
 #[tokio::test]
 async fn test_with_alias_rename_where_filter() {
