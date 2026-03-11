@@ -1615,6 +1615,11 @@ fn apply_property_mapping_to_expr_with_context(
 ) {
     match expr {
         RenderExpr::PropertyAccessExp(prop) => {
+            // If the column is already an Expression (resolved by FilterTagging),
+            // skip re-mapping — it's already the correct ClickHouse expression.
+            if matches!(&prop.column, PropertyValue::Expression(_)) {
+                return;
+            }
             // Get the node label for this table alias
             if let Some(node_label) = get_node_label_for_alias(&prop.table_alias.0, plan) {
                 // Map the property to the correct column with relationship context

@@ -2364,6 +2364,17 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
             }
         }
         RenderExpr::PropertyAccessExp(prop) => {
+            // If the column is already an Expression (resolved by FilterTagging analyzer),
+            // skip re-mapping — it's already the correct ClickHouse expression.
+            if matches!(&prop.column, PropertyValue::Expression(_)) {
+                log::debug!(
+                    "🔍 PROPERTY MAPPING: Skipping already-resolved Expression for '{}.{}'",
+                    prop.table_alias.0,
+                    prop.column.raw()
+                );
+                return;
+            }
+
             // First, try to map the property name to the correct column name
             // This is essential for queries like: WHERE n.name = ...
             // where 'name' might map to 'full_name' in the schema
