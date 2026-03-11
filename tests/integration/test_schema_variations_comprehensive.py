@@ -23,18 +23,24 @@ Schema Types:
 - Polymorphic: Multiple relationship types
 """
 
+import os
+
 import pytest
 import requests
 import json
 
 
 # Server endpoint
-CLICKGRAPH_URL = "http://localhost:8080"
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 
 
 def query_clickgraph(cypher_query, schema_name="social_integration", variables=None):
     """Execute Cypher query against ClickGraph server."""
-    payload = {"query": cypher_query, "schema_name": schema_name}
+    payload = {"query": cypher_query}
+    # Only include schema_name when the query doesn't use an explicit USE clause,
+    # so USE-clause interaction tests exercise the real parsing/precedence path.
+    if not cypher_query.lstrip().upper().startswith("USE "):
+        payload["schema_name"] = schema_name
     if variables:
         payload["parameters"] = variables
 
