@@ -370,14 +370,44 @@ pub fn determine_optional_anchor(
     }
 
     let alias_map = plan_ctx.get_alias_table_ctx_map();
+    let optional_aliases = plan_ctx.get_optional_aliases();
+    log::debug!(
+        "determine_optional_anchor: left_conn={}, right_conn={}, alias_map_keys={:?}, optional={:?}",
+        left_conn,
+        right_conn,
+        alias_map.keys().collect::<Vec<_>>(),
+        optional_aliases
+    );
     if alias_map.contains_key(left_conn) && !alias_map.contains_key(right_conn) {
         // left_conn exists, right_conn is new -> left_conn is anchor
         Some(left_conn.to_string())
     } else if alias_map.contains_key(right_conn) && !alias_map.contains_key(left_conn) {
         // right_conn exists, left_conn is new -> right_conn is anchor
         Some(right_conn.to_string())
+    } else if alias_map.contains_key(left_conn) && alias_map.contains_key(right_conn) {
+        // Both exist — check optionality to determine which is the anchor.
+        // The non-optional node (from the required MATCH) is the anchor.
+        // IMPORTANT: Only return Some() when the anchor is the RIGHT connection
+        // (incoming direction override). When anchor is left (standard outgoing),
+        // return None — the default left-as-FROM behavior works correctly, and
+        // setting anchor_connection triggers predicate filtering that drops WHERE
+        // clauses referencing only the optional alias.
+        let left_optional = optional_aliases.contains(left_conn);
+        let right_optional = optional_aliases.contains(right_conn);
+        match (left_optional, right_optional) {
+            (true, false) => Some(right_conn.to_string()),  // right is required → anchor (incoming override)
+            (false, true) => None,  // left is required → standard outgoing, no override needed
+            _ => {
+                crate::debug_print!(
+                    "WARN: OPTIONAL MATCH both aliases have same optionality: left_conn={}, right_conn={}",
+                    left_conn,
+                    right_conn
+                );
+                None
+            }
+        }
     } else {
-        // Both exist or neither exists - shouldn't happen in normal OPTIONAL MATCH
+        // Neither exists
         crate::debug_print!(
             "WARN: OPTIONAL MATCH could not determine anchor: left_conn={}, right_conn={}",
             left_conn,
