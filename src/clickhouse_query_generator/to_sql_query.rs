@@ -872,37 +872,8 @@ fn rewrite_vlp_branch_select(branch: &mut RenderPlan, parent_ctes: &[crate::rend
         }
     }
 
-    // After rewriting JOIN conditions, re-sort them by dependency.
-    // Pre-rewrite JOINs may reference now-replaced aliases (e.g., u2) causing circular
-    // dependencies in the topological sort. After rewriting, dependencies resolve correctly
-    // (e.g., t2 depends on t which is the FROM alias, p depends on t2).
-    if branch.joins.0.len() > 1 {
-        let from_alias = branch
-            .from
-            .0
-            .as_ref()
-            .and_then(|f| f.alias.as_ref())
-            .cloned()
-            .unwrap_or_else(|| "t".to_string());
-
-        // Simple dependency-based sort: JOINs referencing the FROM alias come first
-        branch.joins.0.sort_by(|a, b| {
-            let a_refs_from = a.joining_on.iter().any(|cond| {
-                cond.operands.iter().any(|op| {
-                    matches!(op, RenderExpr::Column(Column(pv)) if pv.raw().starts_with(&format!("{}.", from_alias)))
-                        || matches!(op, RenderExpr::PropertyAccessExp(pa) if pa.table_alias.0 == from_alias)
-                })
-            });
-            let b_refs_from = b.joining_on.iter().any(|cond| {
-                cond.operands.iter().any(|op| {
-                    matches!(op, RenderExpr::Column(Column(pv)) if pv.raw().starts_with(&format!("{}.", from_alias)))
-                        || matches!(op, RenderExpr::PropertyAccessExp(pa) if pa.table_alias.0 == from_alias)
-                })
-            });
-            // JOINs that reference FROM come first
-            b_refs_from.cmp(&a_refs_from)
-        });
-    }
+    // JOIN ordering for VLP branches is handled later by the global
+    // `sort_joins_by_dependency` pass in `render_plan_to_sql()`.
 
     // 🔧 FIX: Remove spurious JOINs from VLP branches in multi-pattern MATCH.
     // Only for shortestPath queries (path_variable is set): JOINs to regular tables
@@ -2745,13 +2716,27 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                     // the first VLP CTE's perspective. Reverse branches have the
                     // Cypher aliases swapped (start=end, end=start), so t.start_id
                     // and t.end_id references need to be swapped.
-                    let first_vlp_cte = plan
-                        .ctes
-                        .0
-                        .iter()
-                        .find(|c| c.vlp_cypher_start_alias.is_some());
-                    let first_start = first_vlp_cte.and_then(|c| c.vlp_cypher_start_alias.clone());
-                    let first_end = first_vlp_cte.and_then(|c| c.vlp_cypher_end_alias.clone());
+                    //
+                    // Derive the baseline start/end aliases from the VLP CTE backing
+                    // the first UNION branch (match the branch's `from` CTE name),
+                    // so we don't accidentally pick an unrelated VLP CTE.
+                    let (first_start, first_end) = if let Some(first_branch) = union.input.first() {
+                        let first_from_name = first_branch
+                            .from
+                            .0
+                            .as_ref()
+                            .map(|f| f.name.as_str())
+                            .unwrap_or("");
+                        let first_vlp_cte = plan.ctes.0.iter().find(|c| {
+                            c.cte_name == first_from_name && c.vlp_cypher_start_alias.is_some()
+                        });
+                        (
+                            first_vlp_cte.and_then(|c| c.vlp_cypher_start_alias.clone()),
+                            first_vlp_cte.and_then(|c| c.vlp_cypher_end_alias.clone()),
+                        )
+                    } else {
+                        (None, None)
+                    };
 
                     for (i, union_branch) in union.input.iter().enumerate() {
                         if i > 0 {
