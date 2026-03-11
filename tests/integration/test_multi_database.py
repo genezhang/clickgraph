@@ -106,7 +106,6 @@ class TestUSEClause:
         # USE clause takes precedence
         assert_row_count(response, 1)
     
-    @pytest.mark.xfail(reason="USE clause with backticks not yet supported - parser limitation")
     def test_use_clause_with_backticks(self, simple_graph):
         """Test USE clause with backtick-quoted names."""
         db_name = simple_graph["schema_name"]
@@ -375,7 +374,6 @@ class TestDatabaseEdgeCases:
 class TestUSEClauseEdgeCases:
     """Test edge cases for USE clause."""
     
-    @pytest.mark.xfail(reason="Multiple USE clauses cause parser to return empty AST")
     def test_use_clause_multiple_times(self, simple_graph):
         """Test multiple USE clauses in same query."""
         db_name = simple_graph["schema_name"]
@@ -394,7 +392,6 @@ class TestUSEClauseEdgeCases:
         # Last USE clause wins
         assert_row_count(response, 1)
     
-    @pytest.mark.xfail(reason="USE clause with preceding comments not yet supported")
     def test_use_clause_with_comments(self, simple_graph):
         """Test USE clause with comments."""
         db_name = simple_graph["schema_name"]
