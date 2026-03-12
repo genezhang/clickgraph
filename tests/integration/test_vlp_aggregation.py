@@ -179,11 +179,7 @@ class TestVLPAggregation:
         result = execute_query(cypher)
         assert result["success"], f"Query failed: {result.get('error')}"
 
-<<<<<<< fix/vlp-aggregation-join-rewriting
-    @pytest.mark.xfail(reason="*1..3 hop pattern times out (>30s) on test data")
-=======
     @pytest.mark.xfail(reason="*1..3 hop pattern times out (>30s) on large test data", strict=False)
->>>>>>> main
     def test_vlp_different_hop_counts(self):
         """Test VLP scoping fix works across different hop counts."""
         hop_patterns = [

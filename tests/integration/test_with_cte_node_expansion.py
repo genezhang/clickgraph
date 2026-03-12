@@ -359,7 +359,7 @@ class TestWithCrossTable:
 
         MATCH (a:User)-[:FOLLOWS]->(b:User)
         WITH a, b
-        MATCH (c:Post) WHERE c.user_id = a.user_id
+        MATCH (a)-[:AUTHORED]->(c:Post)
         RETURN a, b, c
 
         Expected: a and b from WITH expand, c from base table expands
@@ -368,7 +368,7 @@ class TestWithCrossTable:
             """
             MATCH (a:User)-[:FOLLOWS]->(b:User)
             WITH a, b
-            MATCH (c:Post) WHERE c.user_id = a.user_id
+            MATCH (a)-[:AUTHORED]->(c:Post)
             RETURN a, b, c
             LIMIT 1
             """,

@@ -66,6 +66,32 @@ fn is_scoping_only_with(wc: &WithClause) -> bool {
     true
 }
 
+/// Check if a plan subtree contains any WithClause node.
+fn contains_with_clause(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::WithClause(_) => true,
+        LogicalPlan::GraphRel(gr) => {
+            contains_with_clause(&gr.left)
+                || contains_with_clause(&gr.center)
+                || contains_with_clause(&gr.right)
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            contains_with_clause(&cp.left) || contains_with_clause(&cp.right)
+        }
+        LogicalPlan::Filter(f) => contains_with_clause(&f.input),
+        LogicalPlan::Projection(p) => contains_with_clause(&p.input),
+        LogicalPlan::GraphJoins(gj) => contains_with_clause(&gj.input),
+        LogicalPlan::GroupBy(gb) => contains_with_clause(&gb.input),
+        LogicalPlan::OrderBy(ob) => contains_with_clause(&ob.input),
+        LogicalPlan::Limit(lim) => contains_with_clause(&lim.input),
+        LogicalPlan::Skip(s) => contains_with_clause(&s.input),
+        LogicalPlan::Unwind(uw) => contains_with_clause(&uw.input),
+        LogicalPlan::Union(u) => u.inputs.iter().any(|i| contains_with_clause(i)),
+        LogicalPlan::Cte(c) => contains_with_clause(&c.input),
+        _ => false,
+    }
+}
+
 /// Recursively collapse scoping-only WITH clauses in the plan tree.
 /// Replaces qualifying WithClause nodes with their input subtrees.
 ///
@@ -89,7 +115,11 @@ fn collapse_recursive(plan: &LogicalPlan) -> LogicalPlan {
             let new_input = collapse_recursive(&wc.input);
 
             // Check if this is a scoping-only WITH
-            if is_scoping_only_with(wc) {
+            // Guard: don't collapse if the (recursed) input still contains a WithClause.
+            // In chained WITH patterns (WITH a → MATCH (b) → WITH a, b → MATCH (c) → ...),
+            // collapsing an outer WITH loses the CTE boundary needed to materialize the
+            // inner WITH's results, causing downstream patterns to lose their JOINs.
+            if is_scoping_only_with(wc) && !contains_with_clause(&new_input) {
                 log::info!(
                     "ScopingWithCollapse: Collapsing scoping-only WITH ({} items: {:?})",
                     wc.items.len(),
