@@ -256,6 +256,10 @@ def load_all_test_schemas():
         
         # Benchmark schemas
         ("ontime_flights", "schemas/examples/ontime_denormalized.yaml"),
+
+        # Additional schemas for pattern matrix tests
+        ("social_polymorphic", "schemas/examples/social_polymorphic.yaml"),
+        ("zeek_dns", "schemas/examples/zeek_dns_log.yaml"),
         
         # NOTE: unified_test_multi_schema.yaml is loaded as default via GRAPH_CONFIG_PATH
         # It contains 6 schemas loaded automatically by the server at startup

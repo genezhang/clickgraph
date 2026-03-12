@@ -523,7 +523,6 @@ class TestStandardSchema:
         assert "error" not in result, f"Query failed: {result}"
 
 
-@pytest.mark.skip(reason="ontime_flights schema not available in integration environment")
 class TestDenormalizedSchema:
     """Tests for denormalized schema type"""
 
@@ -556,7 +555,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Bug: Wildcard expansion doesn't use from/to_node_properties")
     def test_return_node_0(self):
         """
         Return whole node (wildcard expansion)
@@ -566,7 +564,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Bug: Wildcard expansion doesn't use from/to_node_properties")
     def test_return_node_1(self):
         """
         Return whole node (wildcard expansion)
@@ -576,7 +573,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Bug: Wildcard expansion doesn't use from/to_node_properties")
     def test_return_node_2(self):
         """
         Return whole node (wildcard expansion)
@@ -604,6 +600,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_node_filter_2(self):
         """
         Node scan with IS NOT NULL filter
@@ -613,6 +610,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_single_hop_0(self):
         """
         Single hop relationship
@@ -676,6 +674,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_multi_hop_1(self):
         """
         Multi-hop traversal
@@ -685,6 +684,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_multi_hop_2(self):
         """
         Multi-hop traversal
@@ -694,6 +694,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_vlp_exact_0(self):
         """
         Variable-length path with exact hops
@@ -703,6 +704,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_vlp_exact_1(self):
         """
         Variable-length path with exact hops
@@ -712,6 +714,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_vlp_exact_2(self):
         """
         Variable-length path with exact hops
@@ -721,6 +724,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_vlp_range_0(self):
         """
         Variable-length path with range
@@ -730,6 +734,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_vlp_range_1(self):
         """
         Variable-length path with range
@@ -739,6 +744,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_vlp_range_2(self):
         """
         Variable-length path with range
@@ -748,6 +754,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_vlp_path_var_0(self):
         """
         Path variable with functions
@@ -757,6 +764,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_vlp_path_var_1(self):
         """
         Path variable with functions
@@ -766,6 +774,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_vlp_path_var_2(self):
         """
         Path variable with functions
@@ -775,6 +784,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_simple_agg_0(self):
         """
         Simple count aggregation
@@ -784,6 +794,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_simple_agg_1(self):
         """
         Simple count aggregation
@@ -793,6 +804,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_simple_agg_2(self):
         """
         Simple count aggregation
@@ -802,6 +814,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_group_by_0(self):
         """
         GROUP BY with count
@@ -811,6 +824,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_group_by_1(self):
         """
         GROUP BY with count
@@ -820,6 +834,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_group_by_2(self):
         """
         GROUP BY with count
@@ -886,6 +901,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_graph_funcs_0(self):
         """
         Graph functions (type, id, labels)
@@ -895,6 +911,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_graph_funcs_1(self):
         """
         Graph functions (type, id, labels)
@@ -904,6 +921,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_graph_funcs_2(self):
         """
         Graph functions (type, id, labels)
@@ -913,7 +931,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="N/A: Denormalized schema has single relationship type")
     def test_multi_type_0(self):
         """
         Multiple relationship types
@@ -923,7 +940,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="N/A: Denormalized schema has single relationship type")
     def test_multi_type_1(self):
         """
         Multiple relationship types
@@ -933,7 +949,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="N/A: Denormalized schema has single relationship type")
     def test_multi_type_2(self):
         """
         Multiple relationship types
@@ -961,6 +976,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_order_limit_2(self):
         """
         ORDER BY with LIMIT and SKIP
@@ -970,6 +986,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_shortest_path_0(self):
         """
         Shortest path query
@@ -979,6 +996,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_shortest_path_1(self):
         """
         Shortest path query
@@ -988,6 +1006,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_shortest_path_2(self):
         """
         Shortest path query
@@ -998,7 +1017,6 @@ class TestDenormalizedSchema:
         assert "error" not in result, f"Query failed: {result}"
 
 
-@pytest.mark.skip(reason="social_polymorphic schema not available in integration environment")
 class TestPolymorphicSchema:
     """Tests for polymorphic schema type"""
 
@@ -1184,6 +1202,7 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_vlp_exact_2(self):
         """
         Variable-length path with exact hops
@@ -1193,6 +1212,7 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_vlp_range_0(self):
         """
         Variable-length path with range
@@ -1202,6 +1222,7 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_vlp_range_1(self):
         """
         Variable-length path with range
@@ -1211,6 +1232,7 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_vlp_range_2(self):
         """
         Variable-length path with range
@@ -1220,6 +1242,7 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_vlp_path_var_0(self):
         """
         Path variable with functions
@@ -1229,6 +1252,7 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_vlp_path_var_1(self):
         """
         Path variable with functions
@@ -1238,6 +1262,7 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_vlp_path_var_2(self):
         """
         Path variable with functions
@@ -1301,7 +1326,6 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Bug: WITH aggregation generates incorrect SQL")
     def test_with_agg_0(self):
         """
         WITH clause aggregation
@@ -1311,7 +1335,6 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Bug: WITH aggregation generates incorrect SQL")
     def test_with_agg_1(self):
         """
         WITH clause aggregation
@@ -1321,7 +1344,6 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Bug: WITH aggregation generates incorrect SQL")
     def test_with_agg_2(self):
         """
         WITH clause aggregation
@@ -1439,6 +1461,7 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_shortest_path_0(self):
         """
         Shortest path query
@@ -1448,6 +1471,7 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_shortest_path_1(self):
         """
         Shortest path query
@@ -1457,6 +1481,7 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_shortest_path_2(self):
         """
         Shortest path query
@@ -1467,7 +1492,6 @@ class TestPolymorphicSchema:
         assert "error" not in result, f"Query failed: {result}"
 
 
-@pytest.mark.skip(reason="zeek_dns schema not available in integration environment")
 class TestCoupledSchema:
     """Tests for coupled schema type"""
 
@@ -1491,6 +1515,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_node_scan_2(self):
         """
         Basic node scan with single property
@@ -1500,6 +1525,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_return_node_0(self):
         """
         Return whole node (wildcard expansion)
@@ -1509,6 +1535,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_return_node_1(self):
         """
         Return whole node (wildcard expansion)
@@ -1518,6 +1545,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_return_node_2(self):
         """
         Return whole node (wildcard expansion)
@@ -1536,6 +1564,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_node_filter_1(self):
         """
         Node scan with IS NOT NULL filter
@@ -1554,6 +1583,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_single_hop_0(self):
         """
         Single hop relationship
@@ -1563,6 +1593,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_single_hop_1(self):
         """
         Single hop relationship
@@ -1572,6 +1603,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_single_hop_2(self):
         """
         Single hop relationship
@@ -1581,6 +1613,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_return_rel_0(self):
         """
         Return whole relationship
@@ -1590,6 +1623,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_return_rel_1(self):
         """
         Return whole relationship
@@ -1599,6 +1633,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_return_rel_2(self):
         """
         Return whole relationship
@@ -1608,6 +1643,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_multi_hop_0(self):
         """
         Multi-hop traversal
@@ -1617,6 +1653,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_multi_hop_1(self):
         """
         Multi-hop traversal
@@ -1626,6 +1663,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_multi_hop_2(self):
         """
         Multi-hop traversal
@@ -1635,6 +1673,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_vlp_exact_0(self):
         """
         Variable-length path with exact hops
@@ -1644,6 +1683,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_vlp_exact_1(self):
         """
         Variable-length path with exact hops
@@ -1653,6 +1693,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_vlp_exact_2(self):
         """
         Variable-length path with exact hops
@@ -1662,6 +1703,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_vlp_range_0(self):
         """
         Variable-length path with range
@@ -1671,6 +1713,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_vlp_range_1(self):
         """
         Variable-length path with range
@@ -1680,6 +1723,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_vlp_range_2(self):
         """
         Variable-length path with range
@@ -1689,6 +1733,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_vlp_path_var_0(self):
         """
         Path variable with functions
@@ -1698,6 +1743,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_vlp_path_var_1(self):
         """
         Path variable with functions
@@ -1707,6 +1753,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_vlp_path_var_2(self):
         """
         Path variable with functions
@@ -1716,6 +1763,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_simple_agg_0(self):
         """
         Simple count aggregation
@@ -1725,6 +1773,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_simple_agg_1(self):
         """
         Simple count aggregation
@@ -1734,6 +1783,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_simple_agg_2(self):
         """
         Simple count aggregation
@@ -1743,6 +1793,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_group_by_0(self):
         """
         GROUP BY with count
@@ -1752,6 +1803,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_group_by_1(self):
         """
         GROUP BY with count
@@ -1761,6 +1813,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_group_by_2(self):
         """
         GROUP BY with count
@@ -1827,6 +1880,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_graph_funcs_0(self):
         """
         Graph functions (type, id, labels)
@@ -1836,6 +1890,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_graph_funcs_1(self):
         """
         Graph functions (type, id, labels)
@@ -1881,6 +1936,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_order_limit_0(self):
         """
         ORDER BY with LIMIT and SKIP
@@ -1890,6 +1946,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_order_limit_1(self):
         """
         ORDER BY with LIMIT and SKIP
@@ -1899,6 +1956,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_order_limit_2(self):
         """
         ORDER BY with LIMIT and SKIP
@@ -1908,6 +1966,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_shortest_path_0(self):
         """
         Shortest path query
@@ -1917,6 +1976,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_shortest_path_1(self):
         """
         Shortest path query
@@ -1926,6 +1986,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
+    @pytest.mark.xfail(reason="Zeek coupled schema: backtick column names or query generation gap")
     def test_shortest_path_2(self):
         """
         Shortest path query
