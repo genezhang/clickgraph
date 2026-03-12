@@ -266,7 +266,8 @@ def load_all_test_schemas():
         ("fk_edge", "schemas/examples/orders_customers_fk.yaml"),
         ("polymorphic", "schemas/examples/social_polymorphic.yaml"),  # alias for social_polymorphic
         ("composite_id", "schemas/examples/composite_node_id_test.yaml"),
-        
+        ("zeek_merged_test", "schemas/examples/zeek_merged.yaml"),
+
         # NOTE: unified_test_multi_schema.yaml is loaded as default via GRAPH_CONFIG_PATH
         # It contains 6 schemas loaded automatically by the server at startup
         # (test_fixtures, social_integration, ldbc_snb, denormalized_flights, zeek_logs, pattern_comp)
@@ -503,10 +504,72 @@ def load_all_test_data(clickhouse_client, test_database, setup_test_database):
                     (1, 2, '2024-01-02 13:00:00')
             """)
             
+            # Polymorphic interactions table for social_polymorphic schema
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS brahmand.interactions (
+                    from_id UInt32,
+                    to_id UInt32,
+                    interaction_type String,
+                    from_type String,
+                    to_type String,
+                    timestamp DateTime,
+                    interaction_weight Float32
+                ) ENGINE = Memory
+            """)
+
+            clickhouse_client.command("TRUNCATE TABLE IF EXISTS brahmand.interactions")
+            clickhouse_client.command("""
+                INSERT INTO brahmand.interactions VALUES
+                    (1, 2, 'FOLLOWS', 'User', 'User', '2023-01-15 10:00:00', 1.0),
+                    (1, 3, 'FOLLOWS', 'User', 'User', '2023-01-20 10:00:00', 1.0),
+                    (2, 3, 'FOLLOWS', 'User', 'User', '2023-02-10 10:00:00', 1.0),
+                    (3, 4, 'FOLLOWS', 'User', 'User', '2023-03-05 10:00:00', 1.0),
+                    (1, 1, 'AUTHORED', 'User', 'Post', '2024-01-01 10:00:00', 0.5),
+                    (2, 2, 'AUTHORED', 'User', 'Post', '2024-01-02 11:00:00', 0.5),
+                    (3, 3, 'AUTHORED', 'User', 'Post', '2024-01-03 12:00:00', 0.5),
+                    (2, 1, 'LIKES', 'User', 'Post', '2024-01-01 11:00:00', 0.8),
+                    (3, 1, 'LIKES', 'User', 'Post', '2024-01-01 12:00:00', 0.8),
+                    (1, 2, 'LIKES', 'User', 'Post', '2024-01-02 13:00:00', 0.8)
+            """)
+
             print("  ✓ brahmand (social_integration) data loaded")
         except Exception as e:
             print(f"  ⚠ brahmand (social_integration) data load failed: {e}")
     
+    def load_flights_data():
+        """Load denormalized flights table for ontime_flights schema."""
+        try:
+            clickhouse_client.command("""
+                CREATE TABLE IF NOT EXISTS default.flights (
+                    flight_id UInt32,
+                    flight_number String,
+                    Origin String,
+                    Dest String,
+                    OriginCityName String,
+                    OriginState String,
+                    DestCityName String,
+                    DestState String,
+                    airline String,
+                    dep_time String,
+                    arr_time String,
+                    distance_miles UInt32
+                ) ENGINE = Memory
+            """)
+
+            clickhouse_client.command("TRUNCATE TABLE IF EXISTS default.flights")
+            clickhouse_client.command("""
+                INSERT INTO default.flights VALUES
+                    (1, 'AA100', 'JFK', 'LAX', 'New York', 'NY', 'Los Angeles', 'CA', 'American', '08:00', '11:00', 2475),
+                    (2, 'UA200', 'SFO', 'ORD', 'San Francisco', 'CA', 'Chicago', 'IL', 'United', '09:00', '15:00', 1846),
+                    (3, 'DL300', 'LAX', 'JFK', 'Los Angeles', 'CA', 'New York', 'NY', 'Delta', '14:00', '22:00', 2475),
+                    (4, 'SW400', 'ORD', 'DFW', 'Chicago', 'IL', 'Dallas', 'TX', 'Southwest', '10:00', '12:30', 802),
+                    (5, 'AA101', 'JFK', 'SFO', 'New York', 'NY', 'San Francisco', 'CA', 'American', '07:00', '10:30', 2586)
+            """)
+
+            print("  ✓ default.flights (ontime_flights) data loaded")
+        except Exception as e:
+            print(f"  ⚠ default.flights data load failed: {e}")
+
     def load_filesystem_data():
         """Load filesystem schema tables (in test_integration database)."""
         try:
@@ -886,6 +949,7 @@ def load_all_test_data(clickhouse_client, test_database, setup_test_database):
     # Load each schema's data independently
     load_test_integration_data()
     load_brahmand_data()
+    load_flights_data()
     load_filesystem_data()
     load_group_membership_data()
     load_social_integration_data()
