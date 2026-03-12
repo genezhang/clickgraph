@@ -48,7 +48,7 @@ def query_clickgraph(cypher: str, schema_path: str = GRAPH_CONFIG_PATH) -> Dict[
 
 
 @pytest.mark.integration
-@pytest.mark.skip(reason="Part 1D SQL generation not yet implemented - property access on multi-type nodes not supported")
+@pytest.mark.xfail(reason="Part 1D SQL generation not yet implemented - property access on multi-type nodes not supported")
 def test_graphrag_auto_inference_basic():
     """
     Test basic auto-inference for multi-type VLP with unlabeled end node.
@@ -227,7 +227,7 @@ def test_graphrag_no_inference_when_labeled():
 
 
 @pytest.mark.integration
-@pytest.mark.skip(reason="Part 1D SQL generation not yet implemented")
+@pytest.mark.xfail(reason="Part 1D SQL generation not yet implemented")
 def test_graphrag_correct_results():
     """
     Verify that auto-inferred query returns correct results.
