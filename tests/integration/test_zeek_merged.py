@@ -33,7 +33,7 @@ import requests
 import json
 from pathlib import Path
 
-pytestmark = pytest.mark.skip(reason="Requires zeek database with dns_log and conn_log tables")
+# Data loaded by scripts/test/setup_all_test_data.sh
 
 # Server endpoint
 CLICKGRAPH_URL = "http://localhost:8080"
@@ -169,12 +169,14 @@ class TestZeekMergedHelpers:
 class TestSingleTableRequested(TestZeekMergedHelpers):
     """Tests for REQUESTED relationship (dns_log table only)."""
     
+    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_count_dns_requests(self, setup_zeek_merged):
         """Count total DNS requests."""
         result = self.query("MATCH ()-[r:REQUESTED]->() RETURN count(*) as total")
         assert self.get_data(result), f"Query failed: {result}"
         assert self.get_data(result)[0]["total"] == 4
     
+    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_dns_requests_from_ip(self, setup_zeek_merged):
         """Find all DNS requests from a specific IP."""
         cypher = """
@@ -192,6 +194,7 @@ class TestSingleTableRequested(TestZeekMergedHelpers):
         assert "malware.bad" in domains
         assert "cdn.example.com" in domains
     
+    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_dns_requests_with_answers(self, setup_zeek_merged):
         """Query DNS requests with resolved answers array."""
         cypher = """
@@ -226,10 +229,11 @@ class TestCoupledDNSPath(TestZeekMergedHelpers):
     Both relationships come from the same dns_log table.
     """
     
+    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_full_dns_path(self, setup_zeek_merged):
         """
         Query the full DNS resolution path.
-        
+
         Pattern: src looked up domain which resolved to IPs
         """
         cypher = """
@@ -279,6 +283,7 @@ class TestSingleTableAccessed(TestZeekMergedHelpers):
         assert self.get_data(result), f"Query failed: {result}"
         assert self.get_data(result)[0]["total"] == 5
     
+    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_connections_from_ip(self, setup_zeek_merged):
         """Find all connections from a specific IP."""
         cypher = """
@@ -355,6 +360,7 @@ class TestMultiHopConnections(TestZeekMergedHelpers):
         # Should find at least one two-hop chain
         assert len(data) >= 1
     
+    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_two_hop_with_filter(self, setup_zeek_merged):
         """Find two-hop chains starting from specific IP."""
         cypher = """
@@ -403,6 +409,7 @@ class TestCrossTableCorrelation(TestZeekMergedHelpers):
     # Variation 1: Multi-path comma pattern (two paths in same MATCH)
     # -------------------------------------------------------------------------
     
+    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_comma_pattern_cross_table(self, setup_zeek_merged):
         """
         Multi-path comma pattern: Find DNS lookups AND connections from same source.
@@ -433,6 +440,7 @@ class TestCrossTableCorrelation(TestZeekMergedHelpers):
     # Variation 2: Full path with comma (DNS path + connection)
     # -------------------------------------------------------------------------
     
+    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_comma_pattern_full_dns_path(self, setup_zeek_merged):
         """
         Full DNS path combined with connection in same MATCH.
@@ -459,6 +467,7 @@ class TestCrossTableCorrelation(TestZeekMergedHelpers):
     # Variation 3: Sequential MATCH (same node reused)
     # -------------------------------------------------------------------------
     
+    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_sequential_match_same_node(self, setup_zeek_merged):
         """
         Sequential MATCH with same node variable reused.
@@ -484,6 +493,7 @@ class TestCrossTableCorrelation(TestZeekMergedHelpers):
     # Variation 4: WITH...MATCH correlation
     # -------------------------------------------------------------------------
     
+    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_with_match_correlation(self, setup_zeek_merged):
         """
         WITH...MATCH pattern for cross-table correlation.
@@ -511,6 +521,7 @@ class TestCrossTableCorrelation(TestZeekMergedHelpers):
     # Variation 5: Predicate-based correlation
     # -------------------------------------------------------------------------
     
+    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_predicate_correlation(self, setup_zeek_merged):
         """
         Predicate-based correlation using WHERE clause.
