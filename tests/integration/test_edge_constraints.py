@@ -392,7 +392,6 @@ def test_polymorphic_edge_constraints(edge_constraints_schemas, edge_constraints
 
 @pytest.mark.edge_constraints
 @pytest.mark.vlp
-@pytest.mark.xfail(reason="VLP edge constraint (temporal ordering) not propagated to CTE")
 def test_vlp_with_relationship_filters_and_constraints(edge_constraints_data):
     """
     Test VLP with edge constraints (temporal ordering).
