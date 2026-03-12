@@ -45,17 +45,17 @@ def setup_zeek_merged(clickhouse_conn):
     """Set up test database and schema for Zeek merged logs."""
     
     # Create test database
-    clickhouse_conn.command("CREATE DATABASE IF NOT EXISTS test_zeek")
+    clickhouse_conn.command("CREATE DATABASE IF NOT EXISTS zeek")
     
-    # Create dns_log table
+    # Create dns_log table (column names use Zeek's id.* naming convention)
     clickhouse_conn.command("""
-        CREATE TABLE IF NOT EXISTS test_zeek.dns_log (
+        CREATE TABLE IF NOT EXISTS zeek.dns_log (
             ts Float64,
             uid String,
-            orig_h String,
-            orig_p UInt16,
-            resp_h String,
-            resp_p UInt16,
+            `id.orig_h` String,
+            `id.orig_p` UInt16,
+            `id.resp_h` String,
+            `id.resp_p` UInt16,
             proto String,
             query String,
             qtype_name String,
@@ -64,16 +64,16 @@ def setup_zeek_merged(clickhouse_conn):
             TTLs Array(UInt32)
         ) ENGINE = Memory
     """)
-    
-    # Create conn_log table
+
+    # Create conn_log table (column names use Zeek's id.* naming convention)
     clickhouse_conn.command("""
-        CREATE TABLE IF NOT EXISTS test_zeek.conn_log (
+        CREATE TABLE IF NOT EXISTS zeek.conn_log (
             ts Float64,
             uid String,
-            orig_h String,
-            orig_p UInt16,
-            resp_h String,
-            resp_p UInt16,
+            `id.orig_h` String,
+            `id.orig_p` UInt16,
+            `id.resp_h` String,
+            `id.resp_p` UInt16,
             proto String,
             service String,
             duration Float64,
@@ -91,11 +91,11 @@ def setup_zeek_merged(clickhouse_conn):
     # - 192.168.1.10 looks up cdn.example.com → resolves to ['93.184.216.34', '93.184.216.35'] (multiple IPs)
     # Use JSONEachRow format to handle arrays properly
     clickhouse_conn.command("""
-        INSERT INTO test_zeek.dns_log FORMAT JSONEachRow
-        {"ts":1700000001.0,"uid":"DNS001","orig_h":"192.168.1.10","orig_p":54321,"resp_h":"8.8.8.8","resp_p":53,"proto":"udp","query":"example.com","qtype_name":"A","rcode_name":"NOERROR","answers":["93.184.216.34"],"TTLs":[3600]}
-        {"ts":1700000002.0,"uid":"DNS002","orig_h":"192.168.1.10","orig_p":54322,"resp_h":"8.8.8.8","resp_p":53,"proto":"udp","query":"malware.bad","qtype_name":"A","rcode_name":"NOERROR","answers":["10.0.0.99"],"TTLs":[3600]}
-        {"ts":1700000003.0,"uid":"DNS003","orig_h":"192.168.1.20","orig_p":54323,"resp_h":"8.8.8.8","resp_p":53,"proto":"udp","query":"google.com","qtype_name":"A","rcode_name":"NOERROR","answers":["142.250.80.46"],"TTLs":[300]}
-        {"ts":1700000004.0,"uid":"DNS004","orig_h":"192.168.1.10","orig_p":54324,"resp_h":"8.8.8.8","resp_p":53,"proto":"udp","query":"cdn.example.com","qtype_name":"A","rcode_name":"NOERROR","answers":["93.184.216.34","93.184.216.35"],"TTLs":[60,60]}
+        INSERT INTO zeek.dns_log FORMAT JSONEachRow
+        {"ts":1700000001.0,"uid":"DNS001","id.orig_h":"192.168.1.10","id.orig_p":54321,"id.resp_h":"8.8.8.8","id.resp_p":53,"proto":"udp","query":"example.com","qtype_name":"A","rcode_name":"NOERROR","answers":["93.184.216.34"],"TTLs":[3600]}
+        {"ts":1700000002.0,"uid":"DNS002","id.orig_h":"192.168.1.10","id.orig_p":54322,"id.resp_h":"8.8.8.8","id.resp_p":53,"proto":"udp","query":"malware.bad","qtype_name":"A","rcode_name":"NOERROR","answers":["10.0.0.99"],"TTLs":[3600]}
+        {"ts":1700000003.0,"uid":"DNS003","id.orig_h":"192.168.1.20","id.orig_p":54323,"id.resp_h":"8.8.8.8","id.resp_p":53,"proto":"udp","query":"google.com","qtype_name":"A","rcode_name":"NOERROR","answers":["142.250.80.46"],"TTLs":[300]}
+        {"ts":1700000004.0,"uid":"DNS004","id.orig_h":"192.168.1.10","id.orig_p":54324,"id.resp_h":"8.8.8.8","id.resp_p":53,"proto":"udp","query":"cdn.example.com","qtype_name":"A","rcode_name":"NOERROR","answers":["93.184.216.34","93.184.216.35"],"TTLs":[60,60]}
     """)
     
     # Insert connection log data
@@ -107,12 +107,12 @@ def setup_zeek_merged(clickhouse_conn):
     # - 192.168.1.10 -> 192.168.1.20:22 (lateral movement, no DNS)
     # Use JSONEachRow format to handle column order correctly
     clickhouse_conn.command("""
-        INSERT INTO test_zeek.conn_log FORMAT JSONEachRow
-        {"uid":"CONN001","ts":1700000010.0,"orig_h":"192.168.1.10","orig_p":49001,"resp_h":"93.184.216.34","resp_p":443,"proto":"tcp","service":"ssl","duration":2.5,"orig_bytes":1024,"resp_bytes":4096,"conn_state":"SF"}
-        {"uid":"CONN002","ts":1700000011.0,"orig_h":"192.168.1.10","orig_p":49002,"resp_h":"10.0.0.99","resp_p":80,"proto":"tcp","service":"http","duration":0.5,"orig_bytes":512,"resp_bytes":256,"conn_state":"SF"}
-        {"uid":"CONN003","ts":1700000012.0,"orig_h":"192.168.1.20","orig_p":49003,"resp_h":"142.250.80.46","resp_p":443,"proto":"tcp","service":"ssl","duration":3.0,"orig_bytes":2048,"resp_bytes":8192,"conn_state":"SF"}
-        {"uid":"CONN004","ts":1700000013.0,"orig_h":"93.184.216.34","orig_p":443,"resp_h":"192.168.1.10","resp_p":49001,"proto":"tcp","service":"ssl","duration":0.1,"orig_bytes":100,"resp_bytes":200,"conn_state":"SF"}
-        {"uid":"CONN005","ts":1700000014.0,"orig_h":"192.168.1.10","orig_p":49004,"resp_h":"192.168.1.20","resp_p":22,"proto":"tcp","service":"ssh","duration":60.0,"orig_bytes":10000,"resp_bytes":20000,"conn_state":"SF"}
+        INSERT INTO zeek.conn_log FORMAT JSONEachRow
+        {"uid":"CONN001","ts":1700000010.0,"id.orig_h":"192.168.1.10","id.orig_p":49001,"id.resp_h":"93.184.216.34","id.resp_p":443,"proto":"tcp","service":"ssl","duration":2.5,"orig_bytes":1024,"resp_bytes":4096,"conn_state":"SF"}
+        {"uid":"CONN002","ts":1700000011.0,"id.orig_h":"192.168.1.10","id.orig_p":49002,"id.resp_h":"10.0.0.99","id.resp_p":80,"proto":"tcp","service":"http","duration":0.5,"orig_bytes":512,"resp_bytes":256,"conn_state":"SF"}
+        {"uid":"CONN003","ts":1700000012.0,"id.orig_h":"192.168.1.20","id.orig_p":49003,"id.resp_h":"142.250.80.46","id.resp_p":443,"proto":"tcp","service":"ssl","duration":3.0,"orig_bytes":2048,"resp_bytes":8192,"conn_state":"SF"}
+        {"uid":"CONN004","ts":1700000013.0,"id.orig_h":"93.184.216.34","id.orig_p":443,"id.resp_h":"192.168.1.10","id.resp_p":49001,"proto":"tcp","service":"ssl","duration":0.1,"orig_bytes":100,"resp_bytes":200,"conn_state":"SF"}
+        {"uid":"CONN005","ts":1700000014.0,"id.orig_h":"192.168.1.10","id.orig_p":49004,"id.resp_h":"192.168.1.20","id.resp_p":22,"proto":"tcp","service":"ssh","duration":60.0,"orig_bytes":10000,"resp_bytes":20000,"conn_state":"SF"}
     """)
     
     # Load schema into ClickGraph
@@ -128,9 +128,9 @@ def setup_zeek_merged(clickhouse_conn):
     yield
     
     # Cleanup
-    clickhouse_conn.command("DROP TABLE IF EXISTS test_zeek.dns_log")
-    clickhouse_conn.command("DROP TABLE IF EXISTS test_zeek.conn_log")
-    clickhouse_conn.command("DROP DATABASE IF EXISTS test_zeek")
+    clickhouse_conn.command("DROP TABLE IF EXISTS zeek.dns_log")
+    clickhouse_conn.command("DROP TABLE IF EXISTS zeek.conn_log")
+    clickhouse_conn.command("DROP DATABASE IF EXISTS zeek")
 
 
 class TestZeekMergedHelpers:
@@ -169,14 +169,12 @@ class TestZeekMergedHelpers:
 class TestSingleTableRequested(TestZeekMergedHelpers):
     """Tests for REQUESTED relationship (dns_log table only)."""
     
-    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_count_dns_requests(self, setup_zeek_merged):
         """Count total DNS requests."""
         result = self.query("MATCH ()-[r:REQUESTED]->() RETURN count(*) as total")
         assert self.get_data(result), f"Query failed: {result}"
         assert self.get_data(result)[0]["total"] == 4
     
-    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_dns_requests_from_ip(self, setup_zeek_merged):
         """Find all DNS requests from a specific IP."""
         cypher = """
@@ -194,7 +192,6 @@ class TestSingleTableRequested(TestZeekMergedHelpers):
         assert "malware.bad" in domains
         assert "cdn.example.com" in domains
     
-    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_dns_requests_with_answers(self, setup_zeek_merged):
         """Query DNS requests with resolved answers array."""
         cypher = """
@@ -229,7 +226,6 @@ class TestCoupledDNSPath(TestZeekMergedHelpers):
     Both relationships come from the same dns_log table.
     """
     
-    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_full_dns_path(self, setup_zeek_merged):
         """
         Query the full DNS resolution path.
@@ -283,7 +279,6 @@ class TestSingleTableAccessed(TestZeekMergedHelpers):
         assert self.get_data(result), f"Query failed: {result}"
         assert self.get_data(result)[0]["total"] == 5
     
-    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_connections_from_ip(self, setup_zeek_merged):
         """Find all connections from a specific IP."""
         cypher = """
@@ -360,7 +355,6 @@ class TestMultiHopConnections(TestZeekMergedHelpers):
         # Should find at least one two-hop chain
         assert len(data) >= 1
     
-    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_two_hop_with_filter(self, setup_zeek_merged):
         """Find two-hop chains starting from specific IP."""
         cypher = """
@@ -409,7 +403,6 @@ class TestCrossTableCorrelation(TestZeekMergedHelpers):
     # Variation 1: Multi-path comma pattern (two paths in same MATCH)
     # -------------------------------------------------------------------------
     
-    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_comma_pattern_cross_table(self, setup_zeek_merged):
         """
         Multi-path comma pattern: Find DNS lookups AND connections from same source.
@@ -440,7 +433,6 @@ class TestCrossTableCorrelation(TestZeekMergedHelpers):
     # Variation 2: Full path with comma (DNS path + connection)
     # -------------------------------------------------------------------------
     
-    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_comma_pattern_full_dns_path(self, setup_zeek_merged):
         """
         Full DNS path combined with connection in same MATCH.
@@ -467,7 +459,6 @@ class TestCrossTableCorrelation(TestZeekMergedHelpers):
     # Variation 3: Sequential MATCH (same node reused)
     # -------------------------------------------------------------------------
     
-    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_sequential_match_same_node(self, setup_zeek_merged):
         """
         Sequential MATCH with same node variable reused.
