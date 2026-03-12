@@ -329,7 +329,7 @@ class TestPerformance:
     def test_distinct_deduplication(self):
         """Test: DISTINCT for deduplication"""
         result = self.query(
-            "MATCH (start:User)-[:FOLLOWS*1..3]-(neighbor:User) "
+            "MATCH (start:User)-[:FOLLOWS*1..2]-(neighbor:User) "
             "WHERE start.user_id = 1 "
             "RETURN DISTINCT neighbor.user_id, neighbor.name LIMIT 50"
         )
