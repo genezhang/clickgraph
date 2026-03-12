@@ -24,8 +24,8 @@ class TestVLPRelationshipReturn:
     def setup(self, verify_clickgraph_running):
         """Ensure ClickGraph is running."""
         self.base_url = "http://localhost:8080"
-        # Use social_demo schema which has real data from demos/neo4j-browser
-        self.schema_name = "social_demo"
+        # Use social_integration schema with test data
+        self.schema_name = "social_integration"
 
     def query(self, cypher, parameters=None):
         """Execute a Cypher query."""
@@ -114,17 +114,17 @@ class TestVLPRelationshipReturn:
         response = self.query(
             "MATCH (start:User)-[r:FOLLOWS]->(neighbor) "
             "WHERE start.user_id = 1 "
-            "RETURN neighbor.user_id, r.created_at "
+            "RETURN neighbor.user_id, r.follow_date "
             "LIMIT 3"
         )
         assert response.status_code == 200, f"Query failed: {response.text}"
         data = response.json()
         assert len(data["results"]) > 0
-        
+
         # Verify relationship property is returned
         result = data["results"][0]
         assert "neighbor.user_id" in result
-        assert "r.created_at" in result
+        assert "r.follow_date" in result
 
     @pytest.mark.xfail(reason="VLP CTE property propagation: type info columns not in recursive CTE")
     def test_single_type_vlp_with_type_info(self):
@@ -173,7 +173,7 @@ class TestVLPMultiType:
     def setup(self, ensure_clickgraph):
         """Ensure ClickGraph is running."""
         self.base_url = "http://localhost:8080"
-        self.schema_name = "social_demo"
+        self.schema_name = "social_integration"
 
     def query(self, cypher, parameters=None):
         """Execute a Cypher query."""

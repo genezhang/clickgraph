@@ -22,7 +22,7 @@ def test_property_requirements_basic_query(clickgraph_client, setup_benchmark_da
     # In the future, we can check SQL generation to verify only name & email columns are expanded
     response = clickgraph_client.post(
         "/query",
-        json={"query": query},
+        json={"query": query, "schema_name": "social_integration"},
         headers={"Content-Type": "application/json"}
     )
     
@@ -60,7 +60,7 @@ def test_property_requirements_with_wildcard(clickgraph_client, setup_benchmark_
     # u (whole node return) should expand to ALL properties
     response = clickgraph_client.post(
         "/query",
-        json={"query": query},
+        json={"query": query, "schema_name": "social_integration"},
         headers={"Content-Type": "application/json"}
     )
     
@@ -86,7 +86,7 @@ def test_property_requirements_with_clause_propagation(clickgraph_client, setup_
     
     response = clickgraph_client.post(
         "/query",
-        json={"query": query},
+        json={"query": query, "schema_name": "social_integration"},
         headers={"Content-Type": "application/json"}
     )
     
@@ -107,7 +107,7 @@ def test_property_requirements_in_filter(clickgraph_client, setup_benchmark_data
     
     response = clickgraph_client.post(
         "/query",
-        json={"query": query},
+        json={"query": query, "schema_name": "social_integration"},
         headers={"Content-Type": "application/json"}
     )
     

@@ -16,7 +16,7 @@ class TestGraphRAGPatterns:
     def setup(self, verify_clickgraph_running):
         """Ensure ClickGraph is running."""
         self.base_url = "http://localhost:8080"
-        self.schema_name = "social_demo"
+        self.schema_name = "social_integration"
 
     def query(self, cypher: str, parameters: Dict = None) -> Dict[str, Any]:
         """Execute a Cypher query."""
@@ -202,7 +202,7 @@ class TestGraphRAGPatterns:
         result = self.query(
             "MATCH (start:User)-[r:FOLLOWS]->(neighbor:User) "
             "WHERE start.user_id = 1 "
-            "RETURN r.created_at, neighbor.user_id LIMIT 3"
+            "RETURN r.follow_date, neighbor.user_id LIMIT 3"
         )
         assert "results" in result
 
@@ -277,7 +277,7 @@ class TestEdgeConstraints:
     @pytest.fixture(autouse=True)
     def setup(self, verify_clickgraph_running):
         self.base_url = "http://localhost:8080"
-        self.schema_name = "social_demo"
+        self.schema_name = "social_integration"
 
     def query(self, cypher: str) -> Dict[str, Any]:
         response = requests.post(
@@ -292,7 +292,7 @@ class TestEdgeConstraints:
         """Test: Edge with property filter"""
         result = self.query(
             "MATCH (start:User)-[r:FOLLOWS]->(neighbor:User) "
-            "WHERE start.user_id = 1 AND r.created_at > '2020-01-01' "
+            "WHERE start.user_id = 1 AND r.follow_date > '2020-01-01' "
             "RETURN neighbor.user_id LIMIT 5"
         )
         assert "results" in result
@@ -304,7 +304,7 @@ class TestPerformance:
     @pytest.fixture(autouse=True)
     def setup(self, verify_clickgraph_running):
         self.base_url = "http://localhost:8080"
-        self.schema_name = "social_demo"
+        self.schema_name = "social_integration"
 
     def query(self, cypher: str) -> Dict[str, Any]:
         response = requests.post(

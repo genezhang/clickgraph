@@ -30,7 +30,7 @@ TIMEOUT = 30
 
 def query_api(cypher: str, sql_only: bool = False) -> dict:
     """Execute a Cypher query via the ClickGraph API."""
-    payload = {"query": cypher}
+    payload = {"query": cypher, "schema_name": "social_integration"}
     if sql_only:
         payload["sql_only"] = True
     response = requests.post(CLICKGRAPH_URL, json=payload, timeout=TIMEOUT)

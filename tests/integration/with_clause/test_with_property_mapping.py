@@ -23,7 +23,7 @@ def check_query(query: str, expected_patterns: list, forbidden_patterns: list = 
     try:
         resp = requests.post(
             f"{BASE_URL}/query",
-            json={"query": query, "sql_only": True},
+            json={"query": query, "sql_only": True, "schema_name": "social_integration"},
             timeout=10
         )
         result = resp.json()

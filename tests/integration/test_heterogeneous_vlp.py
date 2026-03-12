@@ -25,7 +25,7 @@ class TestHeterogeneousMultiTypeVLP:
     def setup(self, verify_clickgraph_running):
         """Ensure ClickGraph is running."""
         self.base_url = "http://localhost:8080"
-        self.schema_name = "social_demo"
+        self.schema_name = "social_integration"
 
     def query(self, cypher, parameters=None):
         """Execute a Cypher query."""
@@ -115,7 +115,7 @@ class TestWorkaroundForHeterogeneousVLP:
     def setup(self, verify_clickgraph_running):
         """Ensure ClickGraph is running."""
         self.base_url = "http://localhost:8080"
-        self.schema_name = "social_demo"
+        self.schema_name = "social_integration"
 
     def query(self, cypher, parameters=None):
         """Execute a Cypher query."""

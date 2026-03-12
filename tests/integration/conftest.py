@@ -260,6 +260,12 @@ def load_all_test_schemas():
         # Additional schemas for pattern matrix tests
         ("social_polymorphic", "schemas/examples/social_polymorphic.yaml"),
         ("zeek_dns", "schemas/examples/zeek_dns_log.yaml"),
+
+        # Schema variation test schemas (sql_only mode — no data needed)
+        ("standard", "schemas/test/social_integration.yaml"),  # reuse social_integration YAML
+        ("fk_edge", "schemas/examples/orders_customers_fk.yaml"),
+        ("polymorphic", "schemas/examples/social_polymorphic.yaml"),  # alias for social_polymorphic
+        ("composite_id", "schemas/examples/composite_node_id_test.yaml"),
         
         # NOTE: unified_test_multi_schema.yaml is loaded as default via GRAPH_CONFIG_PATH
         # It contains 6 schemas loaded automatically by the server at startup
