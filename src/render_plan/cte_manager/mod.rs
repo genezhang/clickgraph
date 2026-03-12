@@ -1459,8 +1459,13 @@ impl DenormalizedCteStrategy {
         };
 
         if let Some(map) = property_map {
-            // Find the physical column for the logical property
+            // Try logical property name first (e.g., "code" → "origin_code")
             if let Some(physical_col) = map.get(logical_prop) {
+                return Ok(physical_col.clone());
+            }
+            // Also try reverse lookup: caller may have passed the physical column name
+            // (e.g., "origin_code" → find that it maps to "origin_code" via key "code")
+            if let Some(physical_col) = map.values().find(|v| v.as_str() == logical_prop) {
                 return Ok(physical_col.clone());
             }
         }
