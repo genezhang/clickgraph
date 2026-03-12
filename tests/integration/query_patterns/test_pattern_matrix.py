@@ -241,7 +241,6 @@ class TestStandardSchema:
         result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="VLP with email property: end_email_address not in recursive CTE")
     def test_vlp_range_2(self):
         """
         Variable-length path with range

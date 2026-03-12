@@ -75,7 +75,6 @@ class TestVLPRelationshipReturn:
         results = data["results"]
         assert len(results) >= 3, f"Expected at least 3 results, got {len(results)}"
 
-    @pytest.mark.xfail(reason="VLP CTE property propagation: end_full_name not in recursive CTE")
     def test_single_type_vlp_return_nodes_only(self):
         """Test single-type VLP returning nodes only."""
         response = self.query(

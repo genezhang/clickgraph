@@ -173,7 +173,6 @@ class TestShortestPathWithFilters:
         # Alice (age 30) can reach multiple nodes
         assert isinstance(response["results"], list)
     
-    @pytest.mark.xfail(reason="Code bug: shortest path with filters/properties generates invalid SQL")
     def test_shortest_path_filter_end_node(self, simple_graph):
         """Test shortest path with filter on end node."""
         response = execute_cypher(
@@ -189,7 +188,6 @@ class TestShortestPathWithFilters:
         # Should find paths to users older than 30
         assert isinstance(response["results"], list)
     
-    @pytest.mark.xfail(reason="Code bug: shortest path with filters/properties generates invalid SQL")
     def test_shortest_path_filter_both_nodes(self, simple_graph):
         """Test shortest path with filters on both start and end."""
         response = execute_cypher(
@@ -209,7 +207,6 @@ class TestShortestPathWithFilters:
 class TestShortestPathProperties:
     """Test accessing properties in shortest path results."""
     
-    @pytest.mark.xfail(reason="Code bug: shortest path with filters/properties generates invalid SQL")
     def test_shortest_path_return_properties(self, simple_graph):
         """Test returning node properties from shortest path."""
         response = execute_cypher(
@@ -227,7 +224,6 @@ class TestShortestPathProperties:
         assert_column_exists(response, "b.name")
         assert_column_exists(response, "b.age")
     
-    @pytest.mark.xfail(reason="Code bug: shortest path with filters/properties generates invalid SQL")
     def test_shortest_path_order_by_property(self, simple_graph):
         """Test ordering shortest paths by property."""
         response = execute_cypher(
@@ -269,7 +265,6 @@ class TestShortestPathAggregation:
             col_idx = response["columns"].index("reachable_count")
             assert results[0][col_idx] >= 2
     
-    @pytest.mark.xfail(reason="Code bug: shortest path with filters/properties generates invalid SQL")
     def test_group_shortest_paths_by_start(self, simple_graph):
         """Test grouping shortest paths by start node."""
         response = execute_cypher(
@@ -304,7 +299,6 @@ class TestShortestPathDepth:
         # Diana is exactly 2 hops from Alice
         assert_row_count(response, 1)
     
-    @pytest.mark.xfail(reason="Code bug: shortest path with filters/properties generates invalid SQL")
     def test_shortest_path_exact_depth(self, simple_graph):
         """Test shortest path with exact depth requirement."""
         response = execute_cypher(
@@ -406,7 +400,6 @@ class TestShortestPathPerformance:
         # Should find 1-hop path and stop
         assert_row_count(response, 1)
     
-    @pytest.mark.xfail(reason="Code bug: shortest path with filters/properties generates invalid SQL")
     def test_all_shortest_paths_limit(self, simple_graph):
         """Test limiting all shortest paths results."""
         response = execute_cypher(
@@ -426,7 +419,6 @@ class TestShortestPathPerformance:
 class TestShortestPathDistinct:
     """Test DISTINCT with shortest paths."""
     
-    @pytest.mark.xfail(reason="Code bug: shortest path with filters/properties generates invalid SQL")
     def test_distinct_shortest_path_targets(self, simple_graph):
         """Test DISTINCT on shortest path targets."""
         response = execute_cypher(

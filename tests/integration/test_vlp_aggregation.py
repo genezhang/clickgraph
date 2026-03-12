@@ -105,7 +105,6 @@ class TestVLPAggregation:
         result = execute_query(cypher)
         assert result["success"], f"Query failed: {result.get('error')}"
 
-    @pytest.mark.xfail(reason="VLP CTE missing property columns for u2.name (needs PR #206)")
     def test_vlp_with_sum_aggregate(self):
         """Test VLP with SUM aggregate on node properties."""
         cypher = """
@@ -247,7 +246,6 @@ class TestVLPAggregation:
 class TestVLPAggregationEdgeCases:
     """Test edge cases and boundary conditions for VLP aggregation fix."""
 
-    @pytest.mark.xfail(reason="VLP CTE missing property columns for u2.name (needs PR #206)")
     def test_vlp_no_aggregation(self):
         """Verify regular VLP queries (without aggregation) still work."""
         cypher = """

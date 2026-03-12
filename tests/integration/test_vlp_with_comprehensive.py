@@ -61,7 +61,6 @@ class TestVLPWithStandardSchema:
         for row in result["data"]:
             assert row["node_count"] == 3  # 2 hops = 3 nodes
 
-    @pytest.mark.xfail(reason="Code bug: VLP path functions in WITH clause not resolved")
     def test_relationships_path_in_with(self):
         """Standard schema: relationships(path) in WITH clause."""
         query = """
@@ -77,7 +76,6 @@ class TestVLPWithStandardSchema:
         for row in result["data"]:
             assert row["rel_count"] == 2  # 2 hops = 2 relationships
 
-    @pytest.mark.xfail(reason="Code bug: VLP path functions in WITH clause not resolved")
     def test_multiple_path_functions_in_with(self):
         """Standard schema: Multiple path functions in WITH clause."""
         query = """
@@ -100,7 +98,6 @@ class TestVLPWithStandardSchema:
             assert row["node_count"] == 3
             assert row["rel_count"] == 2
 
-    @pytest.mark.xfail(reason="Code bug: VLP path functions in WITH clause not resolved")
     def test_with_non_path_properties(self):
         """Standard schema: Non-path properties in WITH clause."""
         query = """

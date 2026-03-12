@@ -326,7 +326,6 @@ class TestPerformance:
         assert "results" in result
         assert len(result["results"]) <= 100
 
-    @pytest.mark.xfail(reason="Bidirectional VLP execution: VLP CTE property propagation issue")
     def test_distinct_deduplication(self):
         """Test: DISTINCT for deduplication"""
         result = self.query(

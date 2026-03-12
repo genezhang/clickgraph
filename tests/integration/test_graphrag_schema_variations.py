@@ -423,7 +423,6 @@ class TestFKEdgeVLP:
 class TestDenormalizedMultiTypeVLP:
     """Tests for multi-type VLP on denormalized edge patterns."""
     
-    @pytest.mark.xfail(reason="Denormalized VLP CTE not fully wired into final SQL output yet")
     def test_denormalized_vlp_range(self, schema_variation_data):
         """
         Test VLP range pattern on denormalized schema.

@@ -289,7 +289,6 @@ class TestRelationshipsFunction:
                 col_idx = response["columns"].index("rel_count")
                 assert row[col_idx] == 2
     
-    @pytest.mark.xfail(reason="length(relationships(p)): path_relationships is UInt8, length() needs array/string")
     def test_relationships_equals_length(self, simple_graph):
         """Test that length(relationships(p)) equals length(p)."""
         response = execute_cypher(
@@ -338,7 +337,6 @@ class TestPathWithShortestPath:
             col_idx = response["columns"].index("path_length")
             assert results[0][col_idx] == 2
     
-    @pytest.mark.xfail(reason="Path functions with shortest path have SQL generation issues - KNOWN_ISSUES")
     def test_shortest_path_length_comparison(self, simple_graph):
         """Test comparing shortest path lengths."""
         response = execute_cypher(
@@ -410,7 +408,6 @@ class TestPathFunctionsInWhere:
 class TestPathFunctionsInReturn:
     """Test path functions in RETURN clause."""
     
-    @pytest.mark.xfail(reason="length(relationships(p)): path_relationships is UInt8, length() needs array/string")
     def test_return_all_path_functions(self, simple_graph):
         """Test returning multiple path functions."""
         response = execute_cypher(
