@@ -125,7 +125,6 @@ class TestPropertyFilteringNodes:
 class TestPropertyFilteringRelationships:
     """Test property-based filtering for relationship patterns"""
 
-    @pytest.mark.skip(reason="Untyped relationship patterns not yet supported")
     def test_relationship_property_filter(self):
         """
         Query: MATCH ()-[r]->() WHERE r.property IS NOT NULL
@@ -149,7 +148,7 @@ class TestPropertyFilteringRelationships:
 class TestUnionAllSupport:
     """Test property-based filtering for UNION ALL queries"""
 
-    @pytest.mark.skip(reason="Schema loading setup needed")
+    @pytest.mark.xfail(reason="UNION ALL type mismatch - incompatible value column types across branches")
     def test_union_node_and_relationship(self):
         """
         Query: UNION ALL with different property filters per branch
@@ -178,7 +177,7 @@ class TestUnionAllSupport:
         entities = {row["entity"] for row in result["results"]}
         assert "node" in entities or "relationship" in entities
 
-    @pytest.mark.skip(reason="Schema loading setup needed")
+    @pytest.mark.xfail(reason="UNION ALL type mismatch - incompatible value column types across branches")
     def test_union_both_branches_filtered(self):
         """
         Test Neo4j Browser pattern: both branches use property filtering
