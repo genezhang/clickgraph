@@ -158,9 +158,15 @@ class TestStandardSchema:
         )
         assert_sql_generated(result, "follow_date", "full_name")
 
-    @pytest.mark.skip(reason="GraphRAG expansion test not yet implemented")
     def test_graphrag_expansion(self):
-        pass
+        """Multi-type VLP expansion across FOLLOWS and AUTHORED edges."""
+        result = query_sql_only(
+            "MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(target) "
+            "WHERE u.user_id = 1 "
+            "RETURN target LIMIT 10",
+            self.config.schema_name
+        )
+        assert_sql_generated(result, "vlp_multi_type")
 
 
 # ============================================================================
@@ -217,9 +223,19 @@ class TestFKEdgeSchema:
         )
         assert_sql_generated(result)
 
-    @pytest.mark.skip(reason="GraphRAG expansion test not yet implemented")
     def test_graphrag_expansion(self):
-        pass
+        """Multi-hop VLP expansion through FK-edge relationship.
+
+        PLACED_BY is Order->Customer (non-transitive), so VLP degenerates
+        to single hop — no recursive CTE, just direct table scan.
+        """
+        result = query_sql_only(
+            "MATCH p = (c:Customer)<-[:PLACED_BY*1..2]-(o:Order) "
+            "WHERE c.customer_id = 1 "
+            "RETURN length(p), o.order_id LIMIT 10",
+            self.config.schema_name
+        )
+        assert_sql_generated(result, "orders_fk")
 
 
 # ============================================================================
@@ -276,9 +292,15 @@ class TestDenormalizedSchema:
         )
         assert_sql_generated(result, "carrier", "flight_number")
 
-    @pytest.mark.skip(reason="GraphRAG expansion test not yet implemented")
     def test_graphrag_expansion(self):
-        pass
+        """VLP expansion with path variable on denormalized flights."""
+        result = query_sql_only(
+            "MATCH p = (a:Airport)-[:FLIGHT*1..2]->(dest:Airport) "
+            "WHERE a.code = 'JFK' "
+            "RETURN length(p), dest.code LIMIT 10",
+            self.config.schema_name
+        )
+        assert_sql_generated(result, "vlp_")
 
 
 # ============================================================================
@@ -351,9 +373,15 @@ class TestPolymorphicSchema:
         )
         assert_sql_generated(result, "interactions")
 
-    @pytest.mark.skip(reason="GraphRAG expansion test not yet implemented")
     def test_graphrag_expansion(self):
-        pass
+        """Multi-type VLP expansion across FOLLOWS and LIKES edges."""
+        result = query_sql_only(
+            "MATCH (u:User)-[:FOLLOWS|LIKES*1..2]->(target) "
+            "WHERE u.user_id = 1 "
+            "RETURN target LIMIT 10",
+            self.config.schema_name
+        )
+        assert_sql_generated(result, "vlp_multi_type")
 
 
 # ============================================================================
@@ -408,9 +436,15 @@ class TestCompositeIDSchema:
         )
         assert_sql_generated(result, "amount", "transfer_date")
 
-    @pytest.mark.skip(reason="GraphRAG expansion test not yet implemented")
     def test_graphrag_expansion(self):
-        pass
+        """Multi-hop VLP expansion with composite ID transfers."""
+        result = query_sql_only(
+            "MATCH p = (a:Account)-[:TRANSFERRED*1..2]->(dest:Account) "
+            "WHERE a.bank_id = 'B001' AND a.account_number = 'ACC001' "
+            "RETURN length(p), dest.bank_id, dest.account_number LIMIT 10",
+            self.config.schema_name
+        )
+        assert_sql_generated(result, "vlp_")
 
 
 # ============================================================================
