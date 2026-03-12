@@ -853,6 +853,9 @@ def load_all_test_data(clickhouse_client, test_database, setup_test_database):
                 ) ENGINE = Memory
             """)
 
+            clickhouse_client.command("TRUNCATE TABLE IF EXISTS zeek.dns_log")
+            clickhouse_client.command("TRUNCATE TABLE IF EXISTS zeek.conn_log")
+
             clickhouse_client.command("""
                 INSERT INTO zeek.dns_log FORMAT JSONEachRow
                 {"ts":1700000001.0,"uid":"DNS001","id.orig_h":"192.168.1.10","id.orig_p":54321,"id.resp_h":"8.8.8.8","id.resp_p":53,"proto":"udp","query":"example.com","qtype_name":"A","rcode_name":"NOERROR","answers":["93.184.216.34"],"TTLs":[3600]}
