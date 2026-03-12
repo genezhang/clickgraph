@@ -42,95 +42,43 @@ SCHEMA_PATH = Path(__file__).parent / "fixtures" / "schemas" / "zeek_merged_test
 
 @pytest.fixture(scope="module")
 def setup_zeek_merged(clickhouse_conn):
-    """Set up test database and schema for Zeek merged logs."""
-    
-    # Create test database
+    """Ensure zeek database/tables exist and schema is loaded.
+
+    Data is created by conftest.py (load_zeek_data). This fixture just
+    ensures the schema is loaded into ClickGraph for this test module.
+    """
+    # Ensure tables exist (conftest creates them, but be defensive)
     clickhouse_conn.command("CREATE DATABASE IF NOT EXISTS zeek")
-    
-    # Create dns_log table (column names use Zeek's id.* naming convention)
     clickhouse_conn.command("""
         CREATE TABLE IF NOT EXISTS zeek.dns_log (
-            ts Float64,
-            uid String,
-            `id.orig_h` String,
-            `id.orig_p` UInt16,
-            `id.resp_h` String,
-            `id.resp_p` UInt16,
-            proto String,
-            query String,
-            qtype_name String,
-            rcode_name String,
-            answers Array(String),
-            TTLs Array(UInt32)
+            ts Float64, uid String,
+            `id.orig_h` String, `id.orig_p` UInt16,
+            `id.resp_h` String, `id.resp_p` UInt16,
+            proto String, query String, qtype_name String,
+            rcode_name String, answers Array(String), TTLs Array(UInt32)
+        ) ENGINE = Memory
+    """)
+    clickhouse_conn.command("""
+        CREATE TABLE IF NOT EXISTS zeek.conn_log (
+            ts Float64, uid String,
+            `id.orig_h` String, `id.orig_p` UInt16,
+            `id.resp_h` String, `id.resp_p` UInt16,
+            proto String, service String, duration Float64,
+            orig_bytes UInt64, resp_bytes UInt64, conn_state String
         ) ENGINE = Memory
     """)
 
-    # Create conn_log table (column names use Zeek's id.* naming convention)
-    clickhouse_conn.command("""
-        CREATE TABLE IF NOT EXISTS zeek.conn_log (
-            ts Float64,
-            uid String,
-            `id.orig_h` String,
-            `id.orig_p` UInt16,
-            `id.resp_h` String,
-            `id.resp_p` UInt16,
-            proto String,
-            service String,
-            duration Float64,
-            orig_bytes UInt64,
-            resp_bytes UInt64,
-            conn_state String
-        ) ENGINE = Memory
-    """)
-    
-    # Insert DNS log data
-    # Test data designed for correlation scenarios:
-    # - 192.168.1.10 looks up example.com → resolves to ['93.184.216.34']
-    # - 192.168.1.10 looks up malware.bad → resolves to ['10.0.0.99']
-    # - 192.168.1.20 looks up google.com → resolves to ['142.250.80.46']
-    # - 192.168.1.10 looks up cdn.example.com → resolves to ['93.184.216.34', '93.184.216.35'] (multiple IPs)
-    # Use JSONEachRow format to handle arrays properly
-    clickhouse_conn.command("""
-        INSERT INTO zeek.dns_log FORMAT JSONEachRow
-        {"ts":1700000001.0,"uid":"DNS001","id.orig_h":"192.168.1.10","id.orig_p":54321,"id.resp_h":"8.8.8.8","id.resp_p":53,"proto":"udp","query":"example.com","qtype_name":"A","rcode_name":"NOERROR","answers":["93.184.216.34"],"TTLs":[3600]}
-        {"ts":1700000002.0,"uid":"DNS002","id.orig_h":"192.168.1.10","id.orig_p":54322,"id.resp_h":"8.8.8.8","id.resp_p":53,"proto":"udp","query":"malware.bad","qtype_name":"A","rcode_name":"NOERROR","answers":["10.0.0.99"],"TTLs":[3600]}
-        {"ts":1700000003.0,"uid":"DNS003","id.orig_h":"192.168.1.20","id.orig_p":54323,"id.resp_h":"8.8.8.8","id.resp_p":53,"proto":"udp","query":"google.com","qtype_name":"A","rcode_name":"NOERROR","answers":["142.250.80.46"],"TTLs":[300]}
-        {"ts":1700000004.0,"uid":"DNS004","id.orig_h":"192.168.1.10","id.orig_p":54324,"id.resp_h":"8.8.8.8","id.resp_p":53,"proto":"udp","query":"cdn.example.com","qtype_name":"A","rcode_name":"NOERROR","answers":["93.184.216.34","93.184.216.35"],"TTLs":[60,60]}
-    """)
-    
-    # Insert connection log data
-    # Test data with correlations to DNS lookups:
-    # - 192.168.1.10 -> 93.184.216.34:443 (matches DNS lookup for example.com and cdn.example.com)
-    # - 192.168.1.10 -> 10.0.0.99:80 (matches DNS lookup for malware.bad) ⚠️ Threat indicator!
-    # - 192.168.1.20 -> 142.250.80.46:443 (matches DNS lookup for google.com)
-    # - 93.184.216.34 -> 192.168.1.10:49001 (reverse connection, no DNS correlation)
-    # - 192.168.1.10 -> 192.168.1.20:22 (lateral movement, no DNS)
-    # Use JSONEachRow format to handle column order correctly
-    clickhouse_conn.command("""
-        INSERT INTO zeek.conn_log FORMAT JSONEachRow
-        {"uid":"CONN001","ts":1700000010.0,"id.orig_h":"192.168.1.10","id.orig_p":49001,"id.resp_h":"93.184.216.34","id.resp_p":443,"proto":"tcp","service":"ssl","duration":2.5,"orig_bytes":1024,"resp_bytes":4096,"conn_state":"SF"}
-        {"uid":"CONN002","ts":1700000011.0,"id.orig_h":"192.168.1.10","id.orig_p":49002,"id.resp_h":"10.0.0.99","id.resp_p":80,"proto":"tcp","service":"http","duration":0.5,"orig_bytes":512,"resp_bytes":256,"conn_state":"SF"}
-        {"uid":"CONN003","ts":1700000012.0,"id.orig_h":"192.168.1.20","id.orig_p":49003,"id.resp_h":"142.250.80.46","id.resp_p":443,"proto":"tcp","service":"ssl","duration":3.0,"orig_bytes":2048,"resp_bytes":8192,"conn_state":"SF"}
-        {"uid":"CONN004","ts":1700000013.0,"id.orig_h":"93.184.216.34","id.orig_p":443,"id.resp_h":"192.168.1.10","id.resp_p":49001,"proto":"tcp","service":"ssl","duration":0.1,"orig_bytes":100,"resp_bytes":200,"conn_state":"SF"}
-        {"uid":"CONN005","ts":1700000014.0,"id.orig_h":"192.168.1.10","id.orig_p":49004,"id.resp_h":"192.168.1.20","id.resp_p":22,"proto":"tcp","service":"ssh","duration":60.0,"orig_bytes":10000,"resp_bytes":20000,"conn_state":"SF"}
-    """)
-    
     # Load schema into ClickGraph
     with open(SCHEMA_PATH, 'r') as f:
         schema_yaml = f.read()
-    
+
     response = requests.post(
         f"{CLICKGRAPH_URL}/schemas/load",
         json={"schema_name": "zeek_merged_test", "config_content": schema_yaml}
     )
     assert response.status_code == 200, f"Failed to load schema: {response.text}"
-    
+
     yield
-    
-    # Cleanup
-    clickhouse_conn.command("DROP TABLE IF EXISTS zeek.dns_log")
-    clickhouse_conn.command("DROP TABLE IF EXISTS zeek.conn_log")
-    clickhouse_conn.command("DROP DATABASE IF EXISTS zeek")
 
 
 class TestZeekMergedHelpers:
