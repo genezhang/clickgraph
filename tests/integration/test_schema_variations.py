@@ -158,7 +158,7 @@ class TestStandardSchema:
         )
         assert_sql_generated(result, "follow_date", "full_name")
 
-    @pytest.mark.skip(reason="GraphRAG endpoint not available in test environment")
+    @pytest.mark.skip(reason="GraphRAG expansion test not yet implemented")
     def test_graphrag_expansion(self):
         pass
 
@@ -217,7 +217,7 @@ class TestFKEdgeSchema:
         )
         assert_sql_generated(result)
 
-    @pytest.mark.skip(reason="GraphRAG endpoint not available in test environment")
+    @pytest.mark.skip(reason="GraphRAG expansion test not yet implemented")
     def test_graphrag_expansion(self):
         pass
 
@@ -276,7 +276,7 @@ class TestDenormalizedSchema:
         )
         assert_sql_generated(result, "carrier", "flight_number")
 
-    @pytest.mark.skip(reason="GraphRAG endpoint not available in test environment")
+    @pytest.mark.skip(reason="GraphRAG expansion test not yet implemented")
     def test_graphrag_expansion(self):
         pass
 
@@ -351,7 +351,7 @@ class TestPolymorphicSchema:
         )
         assert_sql_generated(result, "interactions")
 
-    @pytest.mark.skip(reason="GraphRAG endpoint not available in test environment")
+    @pytest.mark.skip(reason="GraphRAG expansion test not yet implemented")
     def test_graphrag_expansion(self):
         pass
 
@@ -408,7 +408,7 @@ class TestCompositeIDSchema:
         )
         assert_sql_generated(result, "amount", "transfer_date")
 
-    @pytest.mark.skip(reason="GraphRAG endpoint not available in test environment")
+    @pytest.mark.skip(reason="GraphRAG expansion test not yet implemented")
     def test_graphrag_expansion(self):
         pass
 

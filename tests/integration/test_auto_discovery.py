@@ -67,7 +67,7 @@ def load_auto_discovery_schema():
     yield schema_name
 
 
-@pytest.mark.skip(reason="Requires demo data setup - auto_discovery tables don't exist in test DB")
+@pytest.mark.xfail(reason="Requires demo data setup - auto_discovery tables don't exist in test DB")
 def test_auto_discovery_basic_query(load_auto_discovery_schema):
     """Test that auto-discovered properties work in basic queries."""
     schema_name = load_auto_discovery_schema
@@ -95,7 +95,7 @@ def test_auto_discovery_basic_query(load_auto_discovery_schema):
     assert "country" in row  # Identity mapping
 
 
-@pytest.mark.skip(reason="Requires demo data setup - auto_discovery tables don't exist in test DB")
+@pytest.mark.xfail(reason="Requires demo data setup - auto_discovery tables don't exist in test DB")
 def test_auto_discovery_all_columns(load_auto_discovery_schema):
     """Test that all non-excluded columns are discovered."""
     schema_name = load_auto_discovery_schema
@@ -127,7 +127,7 @@ def test_auto_discovery_all_columns(load_auto_discovery_schema):
     assert "city" in row
 
 
-@pytest.mark.skip(reason="Requires demo data setup - auto_discovery tables don't exist in test DB")
+@pytest.mark.xfail(reason="Requires demo data setup - auto_discovery tables don't exist in test DB")
 def test_auto_discovery_relationship_properties(load_auto_discovery_schema):
     """Test that relationship properties are auto-discovered."""
     schema_name = load_auto_discovery_schema
@@ -152,7 +152,7 @@ def test_auto_discovery_relationship_properties(load_auto_discovery_schema):
         assert "follow_date" in row
 
 
-@pytest.mark.skip(reason="Requires demo data setup - auto_discovery tables don't exist in test DB")
+@pytest.mark.xfail(reason="Requires demo data setup - auto_discovery tables don't exist in test DB")
 def test_auto_discovery_with_manual_override(load_auto_discovery_schema):
     """Test that manual property_mappings override auto-discovered mappings."""
     schema_name = load_auto_discovery_schema
@@ -179,7 +179,7 @@ def test_auto_discovery_with_manual_override(load_auto_discovery_schema):
         assert "post_id" in row
 
 
-@pytest.mark.skip(reason="Requires demo data setup - auto_discovery tables don't exist in test DB")
+@pytest.mark.xfail(reason="Requires demo data setup - auto_discovery tables don't exist in test DB")
 def test_auto_discovery_exclusion(load_auto_discovery_schema):
     """Test that excluded columns are not accessible."""
     schema_name = load_auto_discovery_schema
@@ -209,7 +209,7 @@ def test_auto_discovery_exclusion(load_auto_discovery_schema):
         assert "error" in result
 
 
-@pytest.mark.skip(reason="Requires demo data setup - auto_discovery tables don't exist in test DB")
+@pytest.mark.xfail(reason="Requires demo data setup - auto_discovery tables don't exist in test DB")
 def test_engine_detection_and_final(load_auto_discovery_schema):
     """Test that engine type is detected and FINAL is applied when needed."""
     schema_name = load_auto_discovery_schema
@@ -239,7 +239,6 @@ def test_engine_detection_and_final(load_auto_discovery_schema):
     print(f"FINAL keyword present: {'FINAL' in sql}")
 
 
-@pytest.mark.skip(reason="Requires demo data setup - auto_discovery tables don't exist in test DB")
 def test_manual_schema_still_works():
     """Test that schemas without auto_discover_columns still work (backward compatibility)."""
     # Use the regular benchmark schema (no auto-discovery)
