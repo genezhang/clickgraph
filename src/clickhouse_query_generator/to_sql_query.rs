@@ -1719,10 +1719,7 @@ fn add_order_by_columns_to_select(
 /// For standalone UNION scans (no path context), if ORDER BY references
 /// `n.ip_address` and SELECT already has `n."id.orig_h" AS "n.ip_address"`,
 /// reuse the mapped expression `n."id.orig_h"`.
-fn resolve_order_by_from_existing_select(
-    expr: &RenderExpr,
-    select: &SelectItems,
-) -> RenderExpr {
+fn resolve_order_by_from_existing_select(expr: &RenderExpr, select: &SelectItems) -> RenderExpr {
     if let RenderExpr::PropertyAccessExp(pa) = expr {
         let target_alias = format!("{}.{}", pa.table_alias.0, pa.column.raw());
         // Look for a SELECT item whose output alias matches this property access
@@ -1732,7 +1729,9 @@ fn resolve_order_by_from_existing_select(
                     // Found matching SELECT item — reuse its (already mapped) expression
                     log::info!(
                         "ORDER BY: Resolved {}.{} via existing SELECT alias '{}'",
-                        pa.table_alias.0, pa.column.raw(), col_alias.0
+                        pa.table_alias.0,
+                        pa.column.raw(),
+                        col_alias.0
                     );
                     return item.expression.clone();
                 }
@@ -2093,7 +2092,7 @@ fn build_outer_aggregate_select(select: &SelectItems, agg_arg_cols: &[String]) -
     // This maps raw expression SQL (e.g., "n.answers") to the output alias
     // (e.g., "n.resolved_ip") so aggregate expressions can reference the correct
     // UNION output column when the raw DB column name differs from the alias.
-    let expr_to_alias: std::collections::HashMap<String, String> = select
+    let expr_to_alias: std::collections::BTreeMap<String, String> = select
         .items
         .iter()
         .filter(|item| !render_expr_contains_aggregate(&item.expression))
@@ -2845,14 +2844,13 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                         // schema UNION), use the branch's SELECT which has correctly mapped
                         // DB column names. The pre-computed inner_sql from the outer plan
                         // may have unmapped Cypher property names.
-                        let branch_has_own_select = !union_branch.select.items.is_empty()
-                            && branch_vlp_cte.is_none();
+                        let branch_has_own_select =
+                            !union_branch.select.items.is_empty() && branch_vlp_cte.is_none();
 
                         if branch_has_own_select {
                             // Build inner SELECT from branch's own items (correctly mapped)
                             // Filter out aggregate items and add agg arg columns
-                            let (branch_inner, _) =
-                                build_union_inner_select(&union_branch.select);
+                            let (branch_inner, _) = build_union_inner_select(&union_branch.select);
                             branch_sql.push_str(&branch_inner);
                         } else if needs_swap {
                             // Swap t.start_id ↔ t.end_id and start_* ↔ end_* in SELECT

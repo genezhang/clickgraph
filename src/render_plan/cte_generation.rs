@@ -725,7 +725,9 @@ pub fn map_property_to_column_with_relationship_context(
                 if let Some(column) = from_props.get(property) {
                     log::info!(
                         "✓ Denormalized standalone node: {}.{} → {} (from_properties)",
-                        node_label, property, column
+                        node_label,
+                        property,
+                        column
                     );
                     return Ok(column.clone());
                 }
@@ -734,7 +736,9 @@ pub fn map_property_to_column_with_relationship_context(
                 if let Some(column) = to_props.get(property) {
                     log::info!(
                         "✓ Denormalized standalone node: {}.{} → {} (to_properties)",
-                        node_label, property, column
+                        node_label,
+                        property,
+                        column
                     );
                     return Ok(column.clone());
                 }
