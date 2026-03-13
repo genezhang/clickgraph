@@ -8466,9 +8466,15 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                     resolve_denormalized_property_in_expr(&mut insub.expr, plan);
                                 }
                                 RenderExpr::ReduceExpr(reduce) => {
-                                    resolve_denormalized_property_in_expr(&mut reduce.initial_value, plan);
+                                    resolve_denormalized_property_in_expr(
+                                        &mut reduce.initial_value,
+                                        plan,
+                                    );
                                     resolve_denormalized_property_in_expr(&mut reduce.list, plan);
-                                    resolve_denormalized_property_in_expr(&mut reduce.expression, plan);
+                                    resolve_denormalized_property_in_expr(
+                                        &mut reduce.expression,
+                                        plan,
+                                    );
                                 }
                                 _ => {}
                             }
