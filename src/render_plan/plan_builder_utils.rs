@@ -8284,45 +8284,156 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         // Performance optimization: Wrap non-ID columns with ANY() when aggregating
                         // This allows GROUP BY to only include ID column (more efficient)
 
-                        // Rewrite denormalized node aliases to edge aliases in RenderExpr.
-                        // For denormalized schemas (e.g., Airport in flights table),
-                        // PropertyAccessExp(a, OriginCityName) must become
-                        // PropertyAccessExp(r, OriginCityName) because FROM is `flights AS r`.
-                        fn rewrite_denormalized_aliases_in_expr(
+                        // Resolve denormalized property access in RenderExpr.
+                        // For denormalized schemas (e.g., Airport properties in flights table):
+                        // 1. Rewrites table alias: a → r (node alias → edge alias)
+                        // 2. Rewrites property name: uses get_properties_with_table_alias()
+                        //    to map Cypher property → correct DB column (from_node vs to_node aware)
+                        //
+                        // This centralizes what was previously split across:
+                        // - rewrite_expression_with_property_mapping (property names via schema)
+                        // - separate alias rewriting (table aliases)
+                        // Both aspects are now handled here using the plan's
+                        // get_properties_with_table_alias(), which knows the from/to position.
+                        fn resolve_denormalized_property_in_expr(
                             expr: &mut RenderExpr,
                             plan: &LogicalPlan,
                         ) {
                             match expr {
                                 RenderExpr::PropertyAccessExp(prop) => {
-                                    if let Ok((_, Some(edge_alias))) =
+                                    if let Ok((properties, table_alias_override)) =
                                         plan.get_properties_with_table_alias(&prop.table_alias.0)
                                     {
-                                        if edge_alias != prop.table_alias.0 {
-                                            log::info!(
-                                                "🔧 Denormalized alias rewrite in WITH: '{}.{}' → '{}.{}'",
-                                                prop.table_alias.0, prop.column.raw(),
-                                                edge_alias, prop.column.raw()
-                                            );
-                                            prop.table_alias =
-                                                crate::render_plan::render_expr::TableAlias(
-                                                    edge_alias,
+                                        if let Some(edge_alias) = table_alias_override {
+                                            // This is a denormalized node — resolve both alias and property.
+                                            // The properties list is (cypher_name, db_column) pairs
+                                            // from from_node_properties or to_node_properties,
+                                            // correctly distinguishing Origin* vs Dest* columns.
+                                            let current_col = prop.column.raw().to_string();
+
+                                            // Match by Cypher property name first (before schema rewriting),
+                                            // then by DB column name (after schema rewriting).
+                                            // This handles both pre- and post-rewritten expressions.
+                                            let mapped_column = properties
+                                                .iter()
+                                                .find(|(prop_name, _)| *prop_name == current_col)
+                                                .map(|(_, col)| col.clone())
+                                                .or_else(|| {
+                                                    // The column may have been rewritten by schema mapping
+                                                    // to a DB column (e.g., city → OriginCityName).
+                                                    // Check if current_col matches any DB column in our
+                                                    // properties list (correct side).
+                                                    if properties.iter().any(|(_, col)| *col == current_col) {
+                                                        Some(current_col.clone())
+                                                    } else {
+                                                        // Schema mapped to wrong side's column (e.g., b.city
+                                                        // became b.OriginCityName but should be DestCityName).
+                                                        // Reverse-lookup: find the Cypher property that maps
+                                                        // to current_col using from/to_properties on the
+                                                        // node schema, then map through our properties list.
+                                                        use crate::server::query_context::get_current_schema_with_fallback;
+                                                        if let Some(schema) = get_current_schema_with_fallback() {
+                                                            for node_schema in schema.all_node_schemas().values() {
+                                                                // Check from_properties
+                                                                if let Some(from_props) = &node_schema.from_properties {
+                                                                    for (cypher_name, db_col) in from_props {
+                                                                        if *db_col == current_col {
+                                                                            if let Some((_, correct_col)) = properties
+                                                                                .iter()
+                                                                                .find(|(pn, _)| pn == cypher_name)
+                                                                            {
+                                                                                log::info!(
+                                                                                    "🔧 Denormalized cross-side fix: '{}.{}' (from '{}') → '{}.{}'",
+                                                                                    prop.table_alias.0, current_col,
+                                                                                    cypher_name, edge_alias, correct_col
+                                                                                );
+                                                                                return Some(correct_col.clone());
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                                // Check to_properties
+                                                                if let Some(to_props) = &node_schema.to_properties {
+                                                                    for (cypher_name, db_col) in to_props {
+                                                                        if *db_col == current_col {
+                                                                            if let Some((_, correct_col)) = properties
+                                                                                .iter()
+                                                                                .find(|(pn, _)| pn == cypher_name)
+                                                                            {
+                                                                                log::info!(
+                                                                                    "🔧 Denormalized cross-side fix: '{}.{}' (from '{}') → '{}.{}'",
+                                                                                    prop.table_alias.0, current_col,
+                                                                                    cypher_name, edge_alias, correct_col
+                                                                                );
+                                                                                return Some(correct_col.clone());
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        None
+                                                    }
+                                                });
+
+                                            if let Some(actual_column) = mapped_column {
+                                                if edge_alias != prop.table_alias.0
+                                                    || actual_column != current_col
+                                                {
+                                                    log::info!(
+                                                        "🔧 Denormalized property resolve in WITH: '{}.{}' → '{}.{}'",
+                                                        prop.table_alias.0, current_col,
+                                                        edge_alias, actual_column
+                                                    );
+                                                    prop.table_alias =
+                                                        crate::render_plan::render_expr::TableAlias(
+                                                            edge_alias,
+                                                        );
+                                                    prop.column =
+                                                        crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                            actual_column,
+                                                        );
+                                                }
+                                            } else if edge_alias != prop.table_alias.0 {
+                                                // Property not in any mapping but alias needs rewriting
+                                                log::info!(
+                                                    "🔧 Denormalized alias rewrite in WITH: '{}.{}' → '{}.{}'",
+                                                    prop.table_alias.0, current_col,
+                                                    edge_alias, current_col
                                                 );
+                                                prop.table_alias =
+                                                    crate::render_plan::render_expr::TableAlias(
+                                                        edge_alias,
+                                                    );
+                                            }
                                         }
                                     }
                                 }
                                 RenderExpr::AggregateFnCall(agg) => {
                                     for arg in &mut agg.args {
-                                        rewrite_denormalized_aliases_in_expr(arg, plan);
+                                        resolve_denormalized_property_in_expr(arg, plan);
                                     }
                                 }
                                 RenderExpr::ScalarFnCall(f) => {
                                     for arg in &mut f.args {
-                                        rewrite_denormalized_aliases_in_expr(arg, plan);
+                                        resolve_denormalized_property_in_expr(arg, plan);
                                     }
                                 }
                                 RenderExpr::OperatorApplicationExp(op) => {
                                     for operand in &mut op.operands {
-                                        rewrite_denormalized_aliases_in_expr(operand, plan);
+                                        resolve_denormalized_property_in_expr(operand, plan);
+                                    }
+                                }
+                                RenderExpr::Case(case) => {
+                                    if let Some(expr) = &mut case.expr {
+                                        resolve_denormalized_property_in_expr(expr, plan);
+                                    }
+                                    for (cond, then_expr) in &mut case.when_then {
+                                        resolve_denormalized_property_in_expr(cond, plan);
+                                        resolve_denormalized_property_in_expr(then_expr, plan);
+                                    }
+                                    if let Some(else_expr) = &mut case.else_expr {
+                                        resolve_denormalized_property_in_expr(else_expr, plan);
                                     }
                                 }
                                 _ => {}
@@ -8484,7 +8595,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                 let expr_result: Result<RenderExpr, _> = expanded_expr.try_into();
                                                 expr_result.ok().map(|mut expr| {
                                                     // Rewrite denormalized node aliases (e.g., a → r)
-                                                    rewrite_denormalized_aliases_in_expr(&mut expr, plan_to_render);
+                                                    resolve_denormalized_property_in_expr(&mut expr, plan_to_render);
 
                                                     // 🔧 FIX: VLP CTE column rewriting for non-TableAlias WITH items
                                                     // When FROM is a VLP/multi-type CTE, PropertyAccess references
@@ -8789,7 +8900,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                         };
                                                         let rewritten = rewrite_expression_with_property_mapping(&item.expression, &rewrite_ctx);
                                                         let expr_vec: Vec<RenderExpr> = rewritten.try_into().ok().map(|mut expr: RenderExpr| {
-                                                            rewrite_denormalized_aliases_in_expr(&mut expr, plan_to_render);
+                                                            resolve_denormalized_property_in_expr(&mut expr, plan_to_render);
                                                             expr
                                                         }).into_iter().collect();
                                                         expr_vec

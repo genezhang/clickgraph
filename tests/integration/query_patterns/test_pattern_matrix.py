@@ -1780,7 +1780,6 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="No cyclic relationships available")
     def test_with_agg_0(self):
         """
         WITH clause aggregation
@@ -1790,7 +1789,6 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="No cyclic relationships available")
     def test_with_agg_1(self):
         """
         WITH clause aggregation
@@ -1800,7 +1798,6 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="No cyclic relationships available")
     def test_with_agg_2(self):
         """
         WITH clause aggregation
