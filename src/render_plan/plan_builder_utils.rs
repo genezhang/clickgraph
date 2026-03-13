@@ -8331,9 +8331,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                         // Reverse-lookup: find the Cypher property that maps
                                                         // to current_col using from/to_properties on the
                                                         // node schema, then map through our properties list.
+                                                        // Scoped to the alias's node label to avoid false matches.
+                                                        use crate::query_planner::logical_expr::expression_rewriter::find_label_for_alias_in_plan;
                                                         use crate::server::query_context::get_current_schema_with_fallback;
-                                                        if let Some(schema) = get_current_schema_with_fallback() {
-                                                            for node_schema in schema.all_node_schemas().values() {
+                                                        let node_label = find_label_for_alias_in_plan(plan, &prop.table_alias.0);
+                                                        if let (Some(label), Some(schema)) = (node_label, get_current_schema_with_fallback()) {
+                                                            if let Some(node_schema) = schema.all_node_schemas().get(&label) {
                                                                 // Check from_properties
                                                                 if let Some(from_props) = &node_schema.from_properties {
                                                                     for (cypher_name, db_col) in from_props {
@@ -8435,6 +8438,37 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                     if let Some(else_expr) = &mut case.else_expr {
                                         resolve_denormalized_property_in_expr(else_expr, plan);
                                     }
+                                }
+                                RenderExpr::List(items) => {
+                                    for item in items {
+                                        resolve_denormalized_property_in_expr(item, plan);
+                                    }
+                                }
+                                RenderExpr::MapLiteral(entries) => {
+                                    for (_, value) in entries {
+                                        resolve_denormalized_property_in_expr(value, plan);
+                                    }
+                                }
+                                RenderExpr::ArraySubscript { array, index } => {
+                                    resolve_denormalized_property_in_expr(array, plan);
+                                    resolve_denormalized_property_in_expr(index, plan);
+                                }
+                                RenderExpr::ArraySlicing { array, from, to } => {
+                                    resolve_denormalized_property_in_expr(array, plan);
+                                    if let Some(f) = from {
+                                        resolve_denormalized_property_in_expr(f, plan);
+                                    }
+                                    if let Some(t) = to {
+                                        resolve_denormalized_property_in_expr(t, plan);
+                                    }
+                                }
+                                RenderExpr::InSubquery(insub) => {
+                                    resolve_denormalized_property_in_expr(&mut insub.expr, plan);
+                                }
+                                RenderExpr::ReduceExpr(reduce) => {
+                                    resolve_denormalized_property_in_expr(&mut reduce.initial_value, plan);
+                                    resolve_denormalized_property_in_expr(&mut reduce.list, plan);
+                                    resolve_denormalized_property_in_expr(&mut reduce.expression, plan);
                                 }
                                 _ => {}
                             }
