@@ -8288,17 +8288,25 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         // For denormalized schemas (e.g., Airport in flights table),
                         // PropertyAccessExp(a, OriginCityName) must become
                         // PropertyAccessExp(r, OriginCityName) because FROM is `flights AS r`.
-                        fn rewrite_denormalized_aliases_in_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
+                        fn rewrite_denormalized_aliases_in_expr(
+                            expr: &mut RenderExpr,
+                            plan: &LogicalPlan,
+                        ) {
                             match expr {
                                 RenderExpr::PropertyAccessExp(prop) => {
-                                    if let Ok((_, Some(edge_alias))) = plan.get_properties_with_table_alias(&prop.table_alias.0) {
+                                    if let Ok((_, Some(edge_alias))) =
+                                        plan.get_properties_with_table_alias(&prop.table_alias.0)
+                                    {
                                         if edge_alias != prop.table_alias.0 {
                                             log::info!(
                                                 "🔧 Denormalized alias rewrite in WITH: '{}.{}' → '{}.{}'",
                                                 prop.table_alias.0, prop.column.raw(),
                                                 edge_alias, prop.column.raw()
                                             );
-                                            prop.table_alias = crate::render_plan::render_expr::TableAlias(edge_alias);
+                                            prop.table_alias =
+                                                crate::render_plan::render_expr::TableAlias(
+                                                    edge_alias,
+                                                );
                                         }
                                     }
                                 }
