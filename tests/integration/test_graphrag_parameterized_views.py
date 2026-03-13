@@ -39,7 +39,7 @@ def clickhouse_client():
     """ClickHouse client for data setup."""
     return clickhouse_connect.get_client(
         host='localhost',
-        port=8123,
+        port=int(os.getenv('CLICKHOUSE_PORT', '8123')),
         username=os.getenv('CLICKHOUSE_USER', 'test_user'),
         password=os.getenv('CLICKHOUSE_PASSWORD', 'test_pass')
     )
