@@ -716,6 +716,29 @@ pub fn map_property_to_column_with_relationship_context(
                     }
                 }
             }
+        } else {
+            // No relationship context (standalone node scan).
+            // Try from_properties first, then to_properties as fallback.
+            // This handles coupled schemas where nodes have no property_mappings
+            // but store column mappings in from/to_node_properties.
+            if let Some(from_props) = &node_schema.from_properties {
+                if let Some(column) = from_props.get(property) {
+                    log::info!(
+                        "✓ Denormalized standalone node: {}.{} → {} (from_properties)",
+                        node_label, property, column
+                    );
+                    return Ok(column.clone());
+                }
+            }
+            if let Some(to_props) = &node_schema.to_properties {
+                if let Some(column) = to_props.get(property) {
+                    log::info!(
+                        "✓ Denormalized standalone node: {}.{} → {} (to_properties)",
+                        node_label, property, column
+                    );
+                    return Ok(column.clone());
+                }
+            }
         }
     }
 

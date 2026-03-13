@@ -264,18 +264,23 @@ fn test_no_relationship_context() {
     let schema = setup_denormalized_schema();
     init_test_schema(schema);
 
-    // Without relationship context, denormalized properties cannot be resolved
-    // (they only exist in edge tables, need to know which edge)
+    // Without relationship context, denormalized properties resolve via
+    // from_properties fallback (standalone node scan picks from_properties first)
     let result = map_property_to_column_with_relationship_context(
         "city", // Denormalized property
         "Airport", None, // No relationship context
         None, None, // schema_name - will be resolved from global state
     );
 
-    // Should fail because 'city' only exists in edge tables
+    // Should succeed using from_properties fallback (origin_city)
     assert!(
-        result.is_err(),
-        "Denormalized properties should fail without relationship context"
+        result.is_ok(),
+        "Denormalized properties should resolve via from_properties fallback"
+    );
+    assert_eq!(
+        result.unwrap(),
+        "origin_city",
+        "Without relationship context, from_properties is used as fallback"
     );
 
     // But non-denormalized properties should still work

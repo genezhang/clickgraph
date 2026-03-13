@@ -1699,7 +1699,11 @@ fn add_order_by_columns_to_select(
         let resolved_expr = if let Some(ref ctx) = path_context {
             resolve_denormalized_order_by_expr(expr, ctx)
         } else {
-            expr.clone()
+            // No path context (e.g., standalone node UNION scan).
+            // Try to resolve by matching against existing SELECT items:
+            // if SELECT already has `n."id.orig_h" AS "n.ip_address"` and
+            // ORDER BY is `n.ip_address`, reuse the mapped expression.
+            resolve_order_by_from_existing_select(expr, &plan.select)
         };
 
         plan.select.items.push(SelectItem {
@@ -1709,6 +1713,33 @@ fn add_order_by_columns_to_select(
     }
 
     plan
+}
+
+/// Resolve ORDER BY expression by finding a matching SELECT item.
+/// For standalone UNION scans (no path context), if ORDER BY references
+/// `n.ip_address` and SELECT already has `n."id.orig_h" AS "n.ip_address"`,
+/// reuse the mapped expression `n."id.orig_h"`.
+fn resolve_order_by_from_existing_select(
+    expr: &RenderExpr,
+    select: &SelectItems,
+) -> RenderExpr {
+    if let RenderExpr::PropertyAccessExp(pa) = expr {
+        let target_alias = format!("{}.{}", pa.table_alias.0, pa.column.raw());
+        // Look for a SELECT item whose output alias matches this property access
+        for item in &select.items {
+            if let Some(ref col_alias) = item.col_alias {
+                if col_alias.0 == target_alias {
+                    // Found matching SELECT item — reuse its (already mapped) expression
+                    log::info!(
+                        "ORDER BY: Resolved {}.{} via existing SELECT alias '{}'",
+                        pa.table_alias.0, pa.column.raw(), col_alias.0
+                    );
+                    return item.expression.clone();
+                }
+            }
+        }
+    }
+    expr.clone()
 }
 
 /// Path context extracted from a branch's SELECT items
@@ -2058,6 +2089,21 @@ fn collect_property_access_sql(expr: &RenderExpr, out: &mut Vec<String>) {
 /// Aggregate items rewrite property-access arguments to backtick-escaped
 /// column aliases so they reference the inner projection.
 fn build_outer_aggregate_select(select: &SelectItems, agg_arg_cols: &[String]) -> String {
+    // Build expression→alias map for non-aggregate SELECT items.
+    // This maps raw expression SQL (e.g., "n.answers") to the output alias
+    // (e.g., "n.resolved_ip") so aggregate expressions can reference the correct
+    // UNION output column when the raw DB column name differs from the alias.
+    let expr_to_alias: std::collections::HashMap<String, String> = select
+        .items
+        .iter()
+        .filter(|item| !render_expr_contains_aggregate(&item.expression))
+        .filter_map(|item| {
+            item.col_alias
+                .as_ref()
+                .map(|a| (item.expression.to_sql(), a.0.clone()))
+        })
+        .collect();
+
     let items: Vec<String> = select
         .items
         .iter()
@@ -2077,8 +2123,42 @@ fn build_outer_aggregate_select(select: &SelectItems, agg_arg_cols: &[String]) -
                 .unwrap_or_else(|| "result".to_string());
             if render_expr_contains_aggregate(&item.expression) {
                 let mut agg_sql = item.expression.to_sql();
+                // First, rewrite column references that are covered by non-agg
+                // SELECT items with different aliases (e.g., n.answers → n.resolved_ip)
+                for (expr_sql, col_alias) in &expr_to_alias {
+                    if expr_sql != col_alias && agg_sql.contains(expr_sql.as_str()) {
+                        agg_sql = agg_sql.replace(expr_sql, &format!("`{}`", col_alias));
+                    }
+                }
+                // Handle agg_arg_cols: columns that aggregates reference.
+                // For UNION queries, the inner SELECT might alias these differently
+                // (e.g., n.answers exposed as "n.resolved_ip"). Match by table alias
+                // prefix to find the correct UNION output column name.
                 for col_ref in agg_arg_cols {
-                    agg_sql = agg_sql.replace(col_ref, &format!("`{}`", col_ref));
+                    if agg_sql.contains(col_ref.as_str()) {
+                        // Check if a non-agg SELECT item covers this column
+                        // via same table alias prefix (e.g., "n." matches both
+                        // "n.answers" and "n.resolved_ip")
+                        let prefix = col_ref.split('.').next().unwrap_or("");
+                        let mut replaced = false;
+                        if !prefix.is_empty() {
+                            let prefix_dot = format!("{}.", prefix);
+                            for (_, alias) in &expr_to_alias {
+                                if alias.starts_with(&prefix_dot) && alias != col_ref {
+                                    log::info!(
+                                        "UNION aggregate: rewriting {} → `{}` (matched by prefix '{}')",
+                                        col_ref, alias, prefix
+                                    );
+                                    agg_sql = agg_sql.replace(col_ref, &format!("`{}`", alias));
+                                    replaced = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if !replaced {
+                            agg_sql = agg_sql.replace(col_ref, &format!("`{}`", col_ref));
+                        }
+                    }
                 }
                 format!("{} AS \"{}\"", agg_sql, alias_str)
             } else {
@@ -2615,9 +2695,6 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
             plan.select.items.len(),
             agg_arg_cols
         );
-        for (idx, item) in plan.select.items.iter().enumerate() {
-            log::debug!("  select[{}]: expr={:?}", idx, item.expression);
-        }
 
         // Check if we need the subquery wrapper (when there's ORDER BY, LIMIT, GROUP BY, or aggregation)
         let needs_subquery = !plan.order_by.0.is_empty()
@@ -2764,7 +2841,20 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                             false
                         };
 
-                        if needs_swap {
+                        // For non-VLP branches with their own SELECT items (e.g., coupled
+                        // schema UNION), use the branch's SELECT which has correctly mapped
+                        // DB column names. The pre-computed inner_sql from the outer plan
+                        // may have unmapped Cypher property names.
+                        let branch_has_own_select = !union_branch.select.items.is_empty()
+                            && branch_vlp_cte.is_none();
+
+                        if branch_has_own_select {
+                            // Build inner SELECT from branch's own items (correctly mapped)
+                            // Filter out aggregate items and add agg arg columns
+                            let (branch_inner, _) =
+                                build_union_inner_select(&union_branch.select);
+                            branch_sql.push_str(&branch_inner);
+                        } else if needs_swap {
                             // Swap t.start_id ↔ t.end_id and start_* ↔ end_* in SELECT
                             let swapped = swap_vlp_start_end(inner_sql);
                             branch_sql.push_str(&swapped);

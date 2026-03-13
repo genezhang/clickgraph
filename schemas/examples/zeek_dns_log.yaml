@@ -62,9 +62,12 @@ graph_schema:
       table: dns_log
       node_id: answers
       property_mappings: {}
-      
+
+      from_node_properties:
+        resolved_ip: answers
+
       to_node_properties:
-        ips: answers  # rip.ips -> answers array, use UNWIND rip.ips AS ip
+        resolved_ip: answers
 
   edges:
     # REQUESTED relationship - "192.168.4.76 requested testmyids.com"
@@ -84,7 +87,6 @@ graph_schema:
         dns_server: "id.resp_h"
         qtype: qtype_name
         rcode: rcode_name
-        rtt: rtt
 
     # RESOLVED_TO relationship - "testmyids.com resolved_to 31.3.245.133"
     # Note: use UNWIND to flatten the answers array
@@ -103,4 +105,3 @@ graph_schema:
         uid: uid
         timestamp: ts
         query: query
-        ttl: ttl  # After ARRAY JOIN TTLs, individual TTL (if needed)
