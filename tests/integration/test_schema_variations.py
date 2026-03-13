@@ -40,7 +40,7 @@ SCHEMAS = {
     ),
     "denormalized": SchemaTestConfig(
         name="Denormalized (node props in edge table)",
-        schema_name="denormalized_flights"
+        schema_name="ontime_flights"
     ),
     "polymorphic": SchemaTestConfig(
         name="Polymorphic (single table, type_column)",
@@ -460,8 +460,8 @@ class TestCoupledEdgesSchema:
     """Tests for coupled edges schema (multiple relationships from one table).
 
     This schema demonstrates the Zeek network log pattern where:
-    - dns_log table defines 2 edges: REQUESTED (IP->Domain) and RESOLVED_TO (Domain->ResolvedIP)
-    - conn_log table defines 1 edge: ACCESSED (IP->IP)
+    - dns_log table defines 1 edge: DNS_REQUESTED (IP->Domain)
+    - conn_log table defines 1 edge: CONNECTED_TO (IP->IP)
     """
 
     @pytest.fixture(autouse=True)
@@ -470,34 +470,16 @@ class TestCoupledEdgesSchema:
 
     def test_dns_requested_edge(self):
         result = query_sql_only(
-            "MATCH (ip:IP)-[:REQUESTED]->(domain:Domain) "
+            "MATCH (ip:IP)-[:DNS_REQUESTED]->(domain:Domain) "
             "WHERE ip.ip = '192.168.1.10' "
             "RETURN domain.name, ip.ip LIMIT 10",
             self.config.schema_name
         )
         assert_sql_generated(result, "dns_log")
 
-    def test_dns_resolved_to_edge(self):
+    def test_conn_connected_to_edge(self):
         result = query_sql_only(
-            "MATCH (domain:Domain)-[:RESOLVED_TO]->(rip:ResolvedIP) "
-            "WHERE domain.name = 'example.com' "
-            "RETURN rip.ip LIMIT 10",
-            self.config.schema_name
-        )
-        assert_sql_generated(result, "dns_log")
-
-    def test_coupled_dns_path(self):
-        result = query_sql_only(
-            "MATCH (ip:IP)-[:REQUESTED]->(domain:Domain)-[:RESOLVED_TO]->(rip:ResolvedIP) "
-            "WHERE ip.ip = '192.168.1.10' "
-            "RETURN domain.name, rip.ip LIMIT 20",
-            self.config.schema_name
-        )
-        assert_sql_generated(result, "dns_log")
-
-    def test_conn_accessed_edge(self):
-        result = query_sql_only(
-            "MATCH (src:IP)-[:ACCESSED]->(dest:IP) "
+            "MATCH (src:IP)-[:CONNECTED_TO]->(dest:IP) "
             "WHERE src.ip = '192.168.1.10' "
             "RETURN dest.ip LIMIT 10",
             self.config.schema_name
@@ -506,7 +488,7 @@ class TestCoupledEdgesSchema:
 
     def test_return_edge_properties_dns(self):
         result = query_sql_only(
-            "MATCH (ip:IP)-[r:REQUESTED]->(domain:Domain) "
+            "MATCH (ip:IP)-[r:DNS_REQUESTED]->(domain:Domain) "
             "WHERE ip.ip = '192.168.1.10' "
             "RETURN r.qtype, r.rcode, domain.name LIMIT 5",
             self.config.schema_name
@@ -515,7 +497,7 @@ class TestCoupledEdgesSchema:
 
     def test_return_edge_properties_conn(self):
         result = query_sql_only(
-            "MATCH (src:IP)-[r:ACCESSED]->(dest:IP) "
+            "MATCH (src:IP)-[r:CONNECTED_TO]->(dest:IP) "
             "WHERE src.ip = '192.168.1.10' "
             "RETURN r.service, r.duration, dest.ip LIMIT 5",
             self.config.schema_name
@@ -533,7 +515,7 @@ class TestCoupledEdgesSchema:
 
     def test_multi_edge_type(self):
         result = query_sql_only(
-            "MATCH (ip:IP)-[:REQUESTED|ACCESSED]->(target) "
+            "MATCH (ip:IP)-[:DNS_REQUESTED|CONNECTED_TO]->(target) "
             "WHERE ip.ip = '192.168.1.10' "
             "RETURN target LIMIT 20",
             self.config.schema_name
