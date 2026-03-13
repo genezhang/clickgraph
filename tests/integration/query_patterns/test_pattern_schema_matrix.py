@@ -836,7 +836,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Bug: WITH aggregation generates incorrect SQL")
     def test_with_agg_0(self):
         """
         WITH clause aggregation
@@ -846,7 +845,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Bug: WITH aggregation generates incorrect SQL")
     def test_with_agg_1(self):
         """
         WITH clause aggregation
@@ -856,7 +854,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Bug: WITH aggregation generates incorrect SQL")
+    @pytest.mark.xfail(reason="Bug: denormalized node_id property not mapped to DB column in WITH")
     def test_with_agg_2(self):
         """
         WITH clause aggregation

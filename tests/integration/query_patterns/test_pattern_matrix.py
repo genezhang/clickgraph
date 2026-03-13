@@ -817,7 +817,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
+    @pytest.mark.xfail(reason="Denormalized schema: 'airport' property not in schema mapping")
     def test_with_agg_0(self):
         """
         WITH clause aggregation
@@ -827,7 +827,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_with_agg_1(self):
         """
         WITH clause aggregation
@@ -837,7 +836,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
+    @pytest.mark.xfail(reason="Denormalized schema: 'airport' property not in schema mapping")
     def test_with_agg_2(self):
         """
         WITH clause aggregation

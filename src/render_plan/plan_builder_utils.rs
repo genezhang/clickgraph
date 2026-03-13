@@ -8284,6 +8284,43 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         // Performance optimization: Wrap non-ID columns with ANY() when aggregating
                         // This allows GROUP BY to only include ID column (more efficient)
 
+                        // Rewrite denormalized node aliases to edge aliases in RenderExpr.
+                        // For denormalized schemas (e.g., Airport in flights table),
+                        // PropertyAccessExp(a, OriginCityName) must become
+                        // PropertyAccessExp(r, OriginCityName) because FROM is `flights AS r`.
+                        fn rewrite_denormalized_aliases_in_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
+                            match expr {
+                                RenderExpr::PropertyAccessExp(prop) => {
+                                    if let Ok((_, Some(edge_alias))) = plan.get_properties_with_table_alias(&prop.table_alias.0) {
+                                        if edge_alias != prop.table_alias.0 {
+                                            log::info!(
+                                                "🔧 Denormalized alias rewrite in WITH: '{}.{}' → '{}.{}'",
+                                                prop.table_alias.0, prop.column.raw(),
+                                                edge_alias, prop.column.raw()
+                                            );
+                                            prop.table_alias = crate::render_plan::render_expr::TableAlias(edge_alias);
+                                        }
+                                    }
+                                }
+                                RenderExpr::AggregateFnCall(agg) => {
+                                    for arg in &mut agg.args {
+                                        rewrite_denormalized_aliases_in_expr(arg, plan);
+                                    }
+                                }
+                                RenderExpr::ScalarFnCall(f) => {
+                                    for arg in &mut f.args {
+                                        rewrite_denormalized_aliases_in_expr(arg, plan);
+                                    }
+                                }
+                                RenderExpr::OperatorApplicationExp(op) => {
+                                    for operand in &mut op.operands {
+                                        rewrite_denormalized_aliases_in_expr(operand, plan);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
                         // Extract UNWIND alias from plan if present — UNWIND aliases are simple
                         // ARRAY JOIN column references, not table aliases to expand.
                         // Must recurse through wrapping nodes (Filter, Projection, etc.)
@@ -8438,6 +8475,9 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                                                 let expr_result: Result<RenderExpr, _> = expanded_expr.try_into();
                                                 expr_result.ok().map(|mut expr| {
+                                                    // Rewrite denormalized node aliases (e.g., a → r)
+                                                    rewrite_denormalized_aliases_in_expr(&mut expr, plan_to_render);
+
                                                     // 🔧 FIX: VLP CTE column rewriting for non-TableAlias WITH items
                                                     // When FROM is a VLP/multi-type CTE, PropertyAccess references
                                                     // (e.g., message.content) must be rewritten to CTE columns
@@ -8740,7 +8780,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                             ExpressionRewriteContext::new(plan_to_render)
                                                         };
                                                         let rewritten = rewrite_expression_with_property_mapping(&item.expression, &rewrite_ctx);
-                                                        let expr_vec: Vec<RenderExpr> = rewritten.try_into().ok().into_iter().collect();
+                                                        let expr_vec: Vec<RenderExpr> = rewritten.try_into().ok().map(|mut expr: RenderExpr| {
+                                                            rewrite_denormalized_aliases_in_expr(&mut expr, plan_to_render);
+                                                            expr
+                                                        }).into_iter().collect();
                                                         expr_vec
                                                     }
                                                 }
