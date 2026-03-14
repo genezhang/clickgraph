@@ -1118,19 +1118,38 @@ impl SelectBuilder for LogicalPlan {
                                         };
 
                                         if let Some(id_col) = id_column {
+                                            // For denormalized nodes, resolve alias and column
+                                            // through from/to_node_properties (e.g., a.code → r.Origin)
+                                            let (resolved_alias, resolved_col) = match self
+                                                .get_properties_with_table_alias(&alias.0)
+                                            {
+                                                Ok((props, Some(edge_alias)))
+                                                    if !props.is_empty() =>
+                                                {
+                                                    // Find the mapped column for this id property
+                                                    let mapped = props
+                                                        .iter()
+                                                        .find(|(prop_name, _)| *prop_name == id_col)
+                                                        .map(|(_, col)| col.clone())
+                                                        .unwrap_or_else(|| id_col.clone());
+                                                    (edge_alias, mapped)
+                                                }
+                                                _ => (alias.0.clone(), id_col),
+                                            };
+
                                             log::info!(
                                                 "🔍 SelectBuilder: id({}) -> {}.{}",
                                                 alias.0,
-                                                alias.0,
-                                                id_col
+                                                resolved_alias,
+                                                resolved_col
                                             );
                                             select_items.push(SelectItem {
                                                 expression: RenderExpr::PropertyAccessExp(
                                                     PropertyAccess {
                                                         table_alias: RenderTableAlias(
-                                                            alias.0.clone(),
+                                                            resolved_alias,
                                                         ),
-                                                        column: PropertyValue::Column(id_col),
+                                                        column: PropertyValue::Column(resolved_col),
                                                     },
                                                 ),
                                                 col_alias: item
