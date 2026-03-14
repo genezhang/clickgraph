@@ -21,13 +21,12 @@
 - **Golang and Python bindings** - for embedded ClickGraph in addition to Rust native interface.
 - **Export query result to external destinations** - export query results to common destinations, such as files and S3.
 
-## What's New in v0.6.3-dev
+## What's New in v0.6.4-dev
 
-- **LDBC SNB: 36/37 queries (97%)** - Up from 14/37, near-complete Social Network Benchmark coverage
-- **GraphRAG structured output** - `format: "Graph"` returns deduplicated nodes, edges, and stats
-- **ClickHouse cluster load balancing** - Set `CLICKHOUSE_CLUSTER` to auto-discover and balance across cluster nodes
-- **`apoc.meta.schema()` for MCP** - Schema discovery procedure for AI assistant integration
-- **LLM-powered schema design tool** - Interactive schema generation from natural language
+- **Denormalized & coupled schema support** - Full query support for schemas where node properties are embedded in edge tables (from/to_node_properties)
+- **OPTIONAL MATCH on denormalized schemas** - CTE + LEFT JOIN architecture for correct LEFT JOIN semantics
+- **VLP on denormalized/polymorphic schemas** - Fixed cycle prevention, exact-length VLP, and multi-type VLP
+- **1,588 unit tests** - Up from 1,277, with comprehensive cross-schema pattern matrix tests
 
 See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 
@@ -224,10 +223,10 @@ RETURN friend.name
 
 ## Development Status
 
-**Current Version**: v0.6.3-dev
+**Current Version**: v0.6.4-dev
 
 ### Test Coverage
-- **Rust Unit Tests**: 1,360 passing (100%)
+- **Rust Unit Tests**: 1,588 passing (100%)
 - **Integration Tests**: 3,068 passing (108 environment-dependent)
 - **LDBC SNB**: 36/37 queries passing (97%)
 - **Benchmarks**: 14/14 passing (100%)

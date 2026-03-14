@@ -1,3 +1,32 @@
+## [0.6.4-dev] - 2026-03-14
+
+### 🚀 Features
+
+- **Denormalized & coupled schema support**: Full query support for schemas where node properties are embedded in edge tables via `from_node_properties`/`to_node_properties`. Includes property mapping, ORDER BY resolution, UNION aggregate column rewriting, and `id()` on virtual nodes (PRs #224-#228).
+
+- **OPTIONAL MATCH on denormalized schemas**: New CTE + LEFT JOIN architecture for correct LEFT JOIN semantics when MATCH produces a UNION standalone node scan. Includes UnionDistribution skip for optional patterns, column reference rewriting, and join preservation through the optimizer (PRs #229-#230).
+
+- **VLP on denormalized/polymorphic schemas**: Fixed exact-length VLP cycle prevention for virtual nodes (no separate table), enabling `*2`, `*3` patterns. Range VLP (`*1..3`), path variables, and shortestPath all work on denormalized schemas (PR #231).
+
+- **Cross-schema pattern matrix tests**: Comprehensive test suite covering 15 query patterns across 5 schema types (standard, FK-edge, denormalized, polymorphic, coupled). 151 tests passing, 0 xfails (PRs #226-#232).
+
+### 🐛 Bug Fixes
+
+- **Denormalized property mapping**: `get_properties_with_table_alias()` resolves node properties through edge table's `from_node_properties`/`to_node_properties` with direction awareness (PR #225).
+- **`id(node)` on denormalized nodes**: SelectBuilder Case 5 now resolves through edge alias and mapped column instead of using the virtual node alias directly (PR #227).
+- **UNION branch Column qualification**: Bare `Column("OriginCityName")` expressions from denormalized ViewScans converted to `PropertyAccessExp` with correct alias in GraphNode handler (PR #228).
+- **VLP cycle prevention**: Moved `extract_table_name` calls inside non-denormalized branch — denormalized patterns use `from_id`/`to_id` directly (PR #231).
+- **UnionDistribution**: Skip distributing optional GraphRel over denormalized Union to preserve LEFT JOIN semantics (PR #229).
+- **`is_node_denormalized`**: Now handles Union of denormalized GraphNodes (PR #229).
+
+### 🧹 Infrastructure
+
+- **jemalloc memory allocator**: Reduces memory fragmentation for long-running server workloads (PR #213).
+- **Plan explosion guard**: Prevents combinatorial blowup in multi-type VLP expansion (PR #212).
+- **Test cleanup**: ~103 stale xfail markers removed, 25 invalid test queries converted to skips (PRs #211, #218-#223, #227, #232).
+
+---
+
 ## [0.6.3-dev] - 2026-03-05
 
 ### 🚀 Features
