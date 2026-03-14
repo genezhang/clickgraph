@@ -3050,39 +3050,104 @@ impl RenderPlanBuilder for LogicalPlan {
                             None
                         };
 
-                        if let (Some(ref node_alias), Some(ref from_props)) =
-                            (&node_alias, &edge_vs.from_node_properties)
-                        {
-                            // Build reverse mapping: db_column → cypher_property
-                            let col_map: std::collections::HashMap<String, String> = from_props
-                                .iter()
-                                .map(|(prop, val)| (val.raw().to_string(), prop.clone()))
-                                .collect();
+                        if let Some(ref node_alias) = node_alias {
+                            // Build reverse mapping: db_column → (target_alias, cypher_property)
+                            // Include both from_node_properties (left/start node) and
+                            // to_node_properties (right/end node) for complete coverage.
+                            let mut col_map: std::collections::HashMap<String, (String, String)> =
+                                std::collections::HashMap::new();
 
-                            let rewrite = |expr: &mut RenderExpr| {
-                                if let RenderExpr::PropertyAccessExp(ref pa) = expr {
-                                    if pa.table_alias.0 == *edge_alias {
+                            if let Some(ref from_props) = edge_vs.from_node_properties {
+                                for (prop, val) in from_props {
+                                    col_map.insert(
+                                        val.raw().to_string(),
+                                        (node_alias.clone(), prop.clone()),
+                                    );
+                                }
+                            }
+                            // to_node_properties map to the right-side alias (b)
+                            if let Some(ref to_props) = edge_vs.to_node_properties {
+                                let right_alias = &gr.right_connection;
+                                for (prop, val) in to_props {
+                                    col_map.insert(
+                                        val.raw().to_string(),
+                                        (right_alias.clone(), prop.clone()),
+                                    );
+                                }
+                            }
+
+                            // Recursive rewrite: edge_alias.db_col → node_alias.cypher_prop
+                            fn rewrite_denorm_refs(
+                                expr: &mut RenderExpr,
+                                edge_alias: &str,
+                                col_map: &std::collections::HashMap<String, (String, String)>,
+                            ) {
+                                match expr {
+                                    RenderExpr::PropertyAccessExp(ref pa)
+                                        if pa.table_alias.0 == edge_alias =>
+                                    {
                                         let db_col = pa.column.raw().to_string();
-                                        if let Some(cypher_prop) = col_map.get(&db_col) {
-                                            *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
-                                                table_alias: TableAlias(node_alias.clone()),
-                                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                    cypher_prop.clone(),
-                                                ),
-                                            });
+                                        if let Some((target_alias, cypher_prop)) =
+                                            col_map.get(&db_col)
+                                        {
+                                            *expr =
+                                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                    table_alias: TableAlias(
+                                                        target_alias.clone(),
+                                                    ),
+                                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                        cypher_prop.clone(),
+                                                    ),
+                                                });
                                         }
                                     }
+                                    RenderExpr::AggregateFnCall(agg) => {
+                                        for arg in &mut agg.args {
+                                            rewrite_denorm_refs(arg, edge_alias, col_map);
+                                        }
+                                    }
+                                    RenderExpr::ScalarFnCall(sf) => {
+                                        for arg in &mut sf.args {
+                                            rewrite_denorm_refs(arg, edge_alias, col_map);
+                                        }
+                                    }
+                                    RenderExpr::OperatorApplicationExp(op) => {
+                                        for operand in &mut op.operands {
+                                            rewrite_denorm_refs(operand, edge_alias, col_map);
+                                        }
+                                    }
+                                    RenderExpr::Case(case) => {
+                                        if let Some(ref mut e) = case.expr {
+                                            rewrite_denorm_refs(e, edge_alias, col_map);
+                                        }
+                                        for (cond, result) in &mut case.when_then {
+                                            rewrite_denorm_refs(cond, edge_alias, col_map);
+                                            rewrite_denorm_refs(result, edge_alias, col_map);
+                                        }
+                                        if let Some(ref mut e) = case.else_expr {
+                                            rewrite_denorm_refs(e, edge_alias, col_map);
+                                        }
+                                    }
+                                    RenderExpr::List(items) => {
+                                        for item in items {
+                                            rewrite_denorm_refs(item, edge_alias, col_map);
+                                        }
+                                    }
+                                    _ => {}
                                 }
-                            };
+                            }
 
                             for item in &mut render.select.items {
-                                rewrite(&mut item.expression);
+                                rewrite_denorm_refs(&mut item.expression, edge_alias, &col_map);
                             }
                             for expr in &mut render.group_by.0 {
-                                rewrite(expr);
+                                rewrite_denorm_refs(expr, edge_alias, &col_map);
                             }
                             for item in &mut render.order_by.0 {
-                                rewrite(&mut item.expression);
+                                rewrite_denorm_refs(&mut item.expression, edge_alias, &col_map);
+                            }
+                            if let Some(ref mut having) = render.having_clause {
+                                rewrite_denorm_refs(having, edge_alias, &col_map);
                             }
                         }
                     }
