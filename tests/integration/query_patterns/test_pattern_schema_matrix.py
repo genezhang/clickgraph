@@ -1623,7 +1623,8 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
+    @pytest.mark.skip(reason="Invalid: zeek_dns has no transitive relationships (IP→Domain, Domain→ResolvedIP — no same-label VLP paths)")
+
     def test_vlp_exact_0(self):
         """
         Variable-length path with exact hops
@@ -1633,7 +1634,8 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
+    @pytest.mark.skip(reason="Invalid: zeek_dns has no transitive relationships (IP→Domain, Domain→ResolvedIP — no same-label VLP paths)")
+
     def test_vlp_exact_1(self):
         """
         Variable-length path with exact hops
@@ -1643,7 +1645,8 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
+    @pytest.mark.skip(reason="Invalid: zeek_dns has no transitive relationships (IP→Domain, Domain→ResolvedIP — no same-label VLP paths)")
+
     def test_vlp_exact_2(self):
         """
         Variable-length path with exact hops
@@ -1653,7 +1656,8 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
+    @pytest.mark.skip(reason="Invalid: zeek_dns has no transitive relationships (IP→Domain, Domain→ResolvedIP — no same-label VLP paths)")
+
     def test_vlp_range_0(self):
         """
         Variable-length path with range
@@ -1663,7 +1667,8 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
+    @pytest.mark.skip(reason="Invalid: zeek_dns has no transitive relationships (IP→Domain, Domain→ResolvedIP — no same-label VLP paths)")
+
     def test_vlp_range_1(self):
         """
         Variable-length path with range
@@ -1673,7 +1678,8 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
+    @pytest.mark.skip(reason="Invalid: zeek_dns has no transitive relationships (IP→Domain, Domain→ResolvedIP — no same-label VLP paths)")
+
     def test_vlp_range_2(self):
         """
         Variable-length path with range
@@ -1683,7 +1689,8 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
+    @pytest.mark.skip(reason="Invalid: zeek_dns has no transitive relationships (IP→Domain, Domain→ResolvedIP — no same-label VLP paths)")
+
     def test_vlp_path_var_0(self):
         """
         Path variable with functions
@@ -1693,7 +1700,8 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
+    @pytest.mark.skip(reason="Invalid: zeek_dns has no transitive relationships (IP→Domain, Domain→ResolvedIP — no same-label VLP paths)")
+
     def test_vlp_path_var_1(self):
         """
         Path variable with functions
@@ -1703,7 +1711,8 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
+    @pytest.mark.skip(reason="Invalid: zeek_dns has no transitive relationships (IP→Domain, Domain→ResolvedIP — no same-label VLP paths)")
+
     def test_vlp_path_var_2(self):
         """
         Path variable with functions
@@ -1905,7 +1914,8 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
+    @pytest.mark.skip(reason="Invalid: zeek_dns has no transitive relationships (IP→Domain, Domain→ResolvedIP — no same-label VLP paths)")
+
     def test_shortest_path_0(self):
         """
         Shortest path query
@@ -1915,7 +1925,8 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
+    @pytest.mark.skip(reason="Invalid: zeek_dns has no transitive relationships (IP→Domain, Domain→ResolvedIP — no same-label VLP paths)")
+
     def test_shortest_path_1(self):
         """
         Shortest path query
@@ -1925,7 +1936,8 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
+    @pytest.mark.skip(reason="Invalid: zeek_dns has no transitive relationships (IP→Domain, Domain→ResolvedIP — no same-label VLP paths)")
+
     def test_shortest_path_2(self):
         """
         Shortest path query
