@@ -3249,6 +3249,12 @@ impl RenderPlanBuilder for LogicalPlan {
                         }));
                     }
 
+                    // Save original first render's SELECT before apply_wrappers overwrites it.
+                    // This SELECT has correctly mapped property names from ViewScan resolution.
+                    // Needed for GROUP BY + UNION: first branch needs its own SELECT with
+                    // correct column mappings (not the outer aggregation SELECT).
+                    let original_first_select = base_render.select.clone();
+
                     // Apply Limit/OrderBy/Skip/GroupBy/Projection from wrapper nodes
                     fn apply_wrappers(
                         plan: &LogicalPlan,
@@ -3328,13 +3334,13 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Move the first branch into union.input and make base a shell.
                     if !base_render.group_by.0.is_empty() {
                         if let Some(ref mut union_data) = base_render.union.0 {
-                            // Extract the first branch's render components
+                            // Extract the first branch's render components.
+                            // Use saved original SELECT (with correct property mappings)
+                            // rather than empty SELECT, so UNION branches can use it
+                            // for inner SELECT in aggregation rendering.
                             let first_branch = RenderPlan {
                                 ctes: CteItems(vec![]),
-                                select: SelectItems {
-                                    items: vec![],
-                                    distinct: false,
-                                },
+                                select: original_first_select.clone(),
                                 from: std::mem::replace(&mut base_render.from, FromTableItem(None)),
                                 joins: std::mem::replace(
                                     &mut base_render.joins,
