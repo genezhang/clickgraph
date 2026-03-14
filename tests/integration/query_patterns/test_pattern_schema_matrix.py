@@ -858,7 +858,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: OPTIONAL MATCH with virtual node alias resolution")
     def test_optional_match_0(self):
         """
         OPTIONAL MATCH with aggregation
@@ -868,7 +867,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: OPTIONAL MATCH with virtual node alias resolution")
     def test_optional_match_1(self):
         """
         OPTIONAL MATCH with aggregation
@@ -878,7 +876,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: OPTIONAL MATCH with virtual node alias resolution")
     def test_optional_match_2(self):
         """
         OPTIONAL MATCH with aggregation
@@ -1816,7 +1813,6 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: OPTIONAL MATCH with UNION standalone node scan")
     def test_optional_match_0(self):
         """
         OPTIONAL MATCH with aggregation
@@ -1826,7 +1822,6 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: OPTIONAL MATCH with UNION standalone node scan")
     def test_optional_match_1(self):
         """
         OPTIONAL MATCH with aggregation
@@ -1836,7 +1831,6 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: OPTIONAL MATCH with UNION standalone node scan")
     def test_optional_match_2(self):
         """
         OPTIONAL MATCH with aggregation

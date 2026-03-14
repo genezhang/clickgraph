@@ -3029,6 +3029,65 @@ impl RenderPlanBuilder for LogicalPlan {
                 render.order_by = OrderByItems(super::plan_builder_utils::extract_order_by(self)?);
                 render.skip = SkipItem(super::plan_builder_utils::extract_skip(self));
                 render.limit = LimitItem(super::plan_builder_utils::extract_limit(self));
+
+                // Rewrite column references: the SELECT/GROUP BY were extracted from
+                // the full plan which resolves denormalized node properties through the
+                // edge table (e.g., r.origin_code). But after CTE + LEFT JOIN restructuring,
+                // the node properties come from the CTE (e.g., a.code).
+                // Build edge_alias.db_col → node_alias.cypher_prop mapping from the GraphRel.
+                if let LogicalPlan::GraphRel(gr) = inner {
+                    if let LogicalPlan::ViewScan(edge_vs) = gr.center.as_ref() {
+                        let edge_alias = &gr.alias;
+                        let node_alias = if let LogicalPlan::Union(u) = gr.left.as_ref() {
+                            u.inputs.first().and_then(|i| {
+                                if let LogicalPlan::GraphNode(gn) = i.as_ref() {
+                                    Some(gn.alias.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                        } else {
+                            None
+                        };
+
+                        if let (Some(ref node_alias), Some(ref from_props)) =
+                            (&node_alias, &edge_vs.from_node_properties)
+                        {
+                            // Build reverse mapping: db_column → cypher_property
+                            let col_map: std::collections::HashMap<String, String> = from_props
+                                .iter()
+                                .map(|(prop, val)| (val.raw().to_string(), prop.clone()))
+                                .collect();
+
+                            let rewrite = |expr: &mut RenderExpr| {
+                                if let RenderExpr::PropertyAccessExp(ref pa) = expr {
+                                    if pa.table_alias.0 == *edge_alias {
+                                        let db_col = pa.column.raw().to_string();
+                                        if let Some(cypher_prop) = col_map.get(&db_col) {
+                                            *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: TableAlias(node_alias.clone()),
+                                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                    cypher_prop.clone(),
+                                                ),
+                                            });
+                                        }
+                                    }
+                                }
+                            };
+
+                            for item in &mut render.select.items {
+                                rewrite(&mut item.expression);
+                            }
+                            for expr in &mut render.group_by.0 {
+                                rewrite(expr);
+                            }
+                            for item in &mut render.order_by.0 {
+                                rewrite(&mut item.expression);
+                            }
+                        }
+                    }
+                }
+
                 return Ok(render);
             }
         }
