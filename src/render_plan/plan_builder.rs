@@ -1018,6 +1018,153 @@ impl RenderPlanBuilder for LogicalPlan {
                 Ok(render_plan)
             }
             LogicalPlan::GraphRel(gr) => {
+                // Check if this is an optional denormalized pattern with a Union
+                // as the left side (standalone node scan preserved by UnionDistribution).
+                // The OPTIONAL MATCH edge needs to become a LEFT JOIN against the
+                // Union subquery.
+                if super::plan_builder_helpers::is_optional_denorm_union_graphrel(gr) {
+                    log::info!("🎯 OPTIONAL denormalized Union: restructuring to CTE + LEFT JOIN");
+
+                    // 1. Render the Union as a CTE
+                    let left_render = gr.left.to_render_plan(schema)?;
+                    // Find the node alias from the first Union branch
+                    let node_alias = if let LogicalPlan::Union(union) = gr.left.as_ref() {
+                        if let Some(LogicalPlan::GraphNode(gn)) =
+                            union.inputs.first().map(|i| i.as_ref())
+                        {
+                            gn.alias.clone()
+                        } else {
+                            gr.left_connection.clone()
+                        }
+                    } else {
+                        gr.left_connection.clone()
+                    };
+
+                    // Build the CTE SQL from the Union render plan
+                    let cte_name = format!("__denorm_scan_{}", node_alias);
+                    let cte_sql =
+                        crate::clickhouse_query_generator::to_sql_query::render_plan_to_sql(
+                            left_render,
+                            10,
+                        );
+                    let cte = super::Cte::new(
+                        cte_name.clone(),
+                        super::CteContent::RawSql(cte_sql),
+                        false,
+                    );
+
+                    // 2. Use the CTE as FROM
+                    let from = FromTableItem(Some(ViewTableRef {
+                        source: std::sync::Arc::new(LogicalPlan::Empty),
+                        name: cte_name.clone(),
+                        alias: Some(node_alias.clone()),
+                        use_final: false,
+                    }));
+
+                    // 3. Extract edge info for LEFT JOIN
+                    let (edge_table, edge_alias, from_id_col, node_id_col) =
+                        if let LogicalPlan::ViewScan(edge_vs) = gr.center.as_ref() {
+                            let from_id = edge_vs
+                                .from_id
+                                .as_ref()
+                                .map(|id| id.first_column().to_string())
+                                .unwrap_or_else(|| edge_vs.id_column.clone());
+                            // Find the Cypher property name that maps to the from_id DB column
+                            let node_id = edge_vs
+                                .from_node_properties
+                                .as_ref()
+                                .and_then(|props| {
+                                    props.iter().find_map(|(prop_name, prop_val)| {
+                                        if prop_val.raw() == from_id {
+                                            Some(prop_name.clone())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                })
+                                .unwrap_or_else(|| from_id.clone());
+                            (
+                                edge_vs.source_table.clone(),
+                                gr.alias.clone(),
+                                from_id,
+                                node_id,
+                            )
+                        } else {
+                            return Err(RenderBuildError::MissingTableInfo(
+                                "edge ViewScan for OPTIONAL denormalized pattern".to_string(),
+                            ));
+                        };
+
+                    // Build LEFT JOIN condition: CTE.node_id_col = edge.from_id_col
+                    let join_condition = OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(node_alias.clone()),
+                                column:
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        node_id_col,
+                                    ),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(edge_alias.clone()),
+                                column:
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        from_id_col.clone(),
+                                    ),
+                            }),
+                        ],
+                    };
+
+                    let edge_join = Join {
+                        join_type: JoinType::Left,
+                        table_name: edge_table,
+                        table_alias: edge_alias.clone(),
+                        joining_on: vec![join_condition],
+                        pre_filter: None,
+                        // Set from_id_column to prevent the optimizer from removing
+                        // this LEFT JOIN as "unreferenced" (count(r) → count(*) loses
+                        // the alias reference, but the join is essential for OPTIONAL
+                        // MATCH semantics).
+                        from_id_column: Some(from_id_col),
+                        to_id_column: None,
+                        graph_rel: None,
+                    };
+
+                    // 4. Extract SELECT, GROUP BY, etc. from the full plan
+                    let select_items = SelectItems {
+                        items: <LogicalPlan as SelectBuilder>::extract_select_items(self, None)?,
+                        distinct: FilterBuilder::extract_distinct(self),
+                    };
+                    let filters = FilterItems(FilterBuilder::extract_filters(self)?);
+                    let group_by = GroupByExpressions(
+                        <LogicalPlan as GroupByBuilder>::extract_group_by(self)?,
+                    );
+                    let order_by = OrderByItems(super::plan_builder_utils::extract_order_by(self)?);
+                    let skip = SkipItem(super::plan_builder_utils::extract_skip(self));
+                    let limit = LimitItem(super::plan_builder_utils::extract_limit(self));
+
+                    let render_plan = RenderPlan {
+                        ctes: CteItems(vec![cte]),
+                        select: select_items,
+                        from,
+                        joins: JoinItems::new(vec![edge_join]),
+                        array_join: ArrayJoinItem(vec![]),
+                        filters,
+                        group_by,
+                        having_clause: None,
+                        order_by,
+                        skip,
+                        limit,
+                        union: UnionItems(None),
+                        fixed_path_info: None,
+                        is_multi_label_scan: false,
+                        variable_registry: None,
+                    };
+
+                    return Ok(render_plan);
+                }
+
                 // Check if this is an optional variable-length path
                 let is_optional_vlp =
                     gr.variable_length.is_some() && gr.is_optional.unwrap_or(false);
@@ -2202,9 +2349,8 @@ impl RenderPlanBuilder for LogicalPlan {
                     (left_render, right_render, cp.is_optional)
                 };
 
-                // Merge CTEs from both sides
-                let mut all_ctes = base_render.ctes.0;
-                all_ctes.extend(joined_render.ctes.0);
+                // Pre-compute state checks before partial moves
+                let base_has_union = base_render.union.0.is_some();
 
                 // Get the joined side's FROM as a JOIN target
                 if let FromTableItem(Some(joined_from)) = &joined_render.from {
@@ -2219,6 +2365,15 @@ impl RenderPlanBuilder for LogicalPlan {
                     let joining_on: Vec<OperatorApplication> =
                         if let Some(ref join_cond) = cp.join_condition {
                             extract_join_condition_ops(join_cond).unwrap_or_default()
+                        } else if joined_is_optional && base_has_union {
+                            // OPTIONAL denormalized pattern: Union (standalone node scan) as base,
+                            // edge table as LEFT JOIN. Synthesize the join condition using
+                            // the edge's from_id and the node's ID property from the CTE.
+                            synthesize_denorm_optional_join_condition(
+                                &cp.right,
+                                &base_render,
+                                joined_from,
+                            )
                         } else {
                             vec![]
                         };
@@ -2294,7 +2449,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     log::info!("🔧 Keeping base_filter (joined has none)");
                 }
 
-                base_render.ctes = CteItems(all_ctes);
+                // Merge CTEs from both sides (done after all borrows of base_render)
+                let mut merged_ctes = std::mem::take(&mut base_render.ctes.0);
+                merged_ctes.extend(joined_render.ctes.0);
+                base_render.ctes = CteItems(merged_ctes);
 
                 Ok(base_render)
             }
@@ -2838,6 +2996,40 @@ impl RenderPlanBuilder for LogicalPlan {
                 LogicalPlan::GroupBy(gb) => contains_union(&gb.input),
                 LogicalPlan::GraphJoins(gj) => contains_union(&gj.input),
                 _ => false,
+            }
+        }
+
+        // OPTIONAL denormalized Union: when the plan contains a GraphRel with
+        // is_optional=true and left=Union(denormalized), delegate to to_render_plan
+        // which has special handling for this pattern (CTE + LEFT JOIN).
+        // Uses unified find_inner_optional_denorm_graphrel to both detect and locate
+        // the inner GraphRel, avoiding divergent detection/unwrap logic.
+        {
+            if let Some(inner) =
+                super::plan_builder_helpers::find_inner_optional_denorm_graphrel(self)
+            {
+                log::info!(
+                    "🎯 to_render_plan_with_ctx: OPTIONAL denormalized Union detected, delegating to inner plan"
+                );
+                // Render the inner GraphRel (CTE + FROM + LEFT JOIN only)
+                let mut render = inner.to_render_plan(schema)?;
+                log::debug!(
+                    "🔍 After inner render: from={:?}, joins={}, ctes={}",
+                    render.from.0.as_ref().map(|f| &f.name),
+                    render.joins.0.len(),
+                    render.ctes.0.len()
+                );
+                // Re-extract outer SELECT/GROUP BY/ORDER BY from the full plan
+                render.select = SelectItems {
+                    items: <LogicalPlan as SelectBuilder>::extract_select_items(self, plan_ctx)?,
+                    distinct: FilterBuilder::extract_distinct(self),
+                };
+                render.group_by =
+                    GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(self)?);
+                render.order_by = OrderByItems(super::plan_builder_utils::extract_order_by(self)?);
+                render.skip = SkipItem(super::plan_builder_utils::extract_skip(self));
+                render.limit = LimitItem(super::plan_builder_utils::extract_limit(self));
+                return Ok(render);
             }
         }
 
@@ -4033,6 +4225,115 @@ impl RenderPlanBuilder for LogicalPlan {
         // TODO: This loses plan_ctx - each case should have a proper handler
         self.to_render_plan(schema)
     }
+}
+
+/// Synthesize a join condition for OPTIONAL denormalized patterns.
+///
+/// When `CartesianProduct(left=Union(denorm_node_scan), right=GraphRel(denorm_edge), is_optional=true)`,
+/// the Union anchor needs a LEFT JOIN ON condition connecting the node ID column from
+/// the Union subquery to the edge table's from_id column.
+///
+/// Returns `a.code = r.origin_code` style join condition.
+fn synthesize_denorm_optional_join_condition(
+    right_plan: &LogicalPlan,
+    base_render: &RenderPlan,
+    joined_from: &ViewTableRef,
+) -> Vec<OperatorApplication> {
+    // Extract the edge ViewScan from the right side (GraphRel)
+    fn find_edge_viewscan(
+        plan: &LogicalPlan,
+    ) -> Option<&crate::query_planner::logical_plan::ViewScan> {
+        match plan {
+            LogicalPlan::GraphRel(gr) => {
+                if let LogicalPlan::ViewScan(vs) = gr.center.as_ref() {
+                    Some(vs)
+                } else {
+                    None
+                }
+            }
+            LogicalPlan::Filter(f) => find_edge_viewscan(&f.input),
+            LogicalPlan::Projection(p) => find_edge_viewscan(&p.input),
+            LogicalPlan::GraphJoins(gj) => find_edge_viewscan(&gj.input),
+            _ => None,
+        }
+    }
+
+    let Some(edge_vs) = find_edge_viewscan(right_plan) else {
+        log::debug!("synthesize_denorm_optional_join: no edge ViewScan found in right plan");
+        return vec![];
+    };
+
+    // Get the edge's from_id column (e.g., "origin_code")
+    let from_id = match &edge_vs.from_id {
+        Some(id) => id.first_column().to_string(),
+        None => {
+            log::debug!("synthesize_denorm_optional_join: edge ViewScan has no from_id");
+            return vec![];
+        }
+    };
+
+    // Find which Cypher property name maps to the from_id DB column
+    // in the from_node_properties mapping
+    let node_id_prop = edge_vs
+        .from_node_properties
+        .as_ref()
+        .and_then(|props| {
+            props.iter().find_map(|(prop_name, prop_val)| {
+                if prop_val.raw() == from_id {
+                    Some(prop_name.clone())
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_else(|| from_id.clone());
+
+    // Get the base (Union) alias — the Union subquery is aliased as __union,
+    // and column references use backtick aliases from the SELECT items.
+    // The join ON should reference the Union's output column by its alias.
+    //
+    // Find the node alias from the base render plan's select items that
+    // contains the node ID property.
+    let base_alias = base_render
+        .from
+        .0
+        .as_ref()
+        .and_then(|f| f.alias.clone())
+        .unwrap_or_default();
+
+    let edge_alias = joined_from
+        .alias
+        .clone()
+        .unwrap_or_else(|| joined_from.name.clone());
+
+    if base_alias.is_empty() {
+        log::debug!("synthesize_denorm_optional_join: no base alias found");
+        return vec![];
+    }
+
+    log::info!(
+        "🔗 Synthesized OPTIONAL denorm join: {}.{} = {}.{}",
+        base_alias,
+        node_id_prop,
+        edge_alias,
+        from_id
+    );
+
+    vec![OperatorApplication {
+        operator: Operator::Equal,
+        operands: vec![
+            RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(base_alias),
+                column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                    node_id_prop,
+                ),
+            }),
+            RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(edge_alias),
+                column: crate::graph_catalog::expression_parser::PropertyValue::Column(from_id),
+            }),
+        ],
+    }]
 }
 
 /// Extract join condition as OperatorApplication format for JOIN ON clauses

@@ -343,7 +343,48 @@ pub(super) fn is_node_denormalized(plan: &LogicalPlan) -> bool {
             // Recursively check the left side to find the leftmost GraphNode
             is_node_denormalized(&graph_rel.left)
         }
+        // Union of denormalized GraphNodes (standalone denormalized node scan)
+        LogicalPlan::Union(union) => {
+            !union.inputs.is_empty() && union.inputs.iter().all(|input| is_node_denormalized(input))
+        }
         _ => false,
+    }
+}
+
+/// Check if a Union plan consists entirely of denormalized GraphNodes.
+/// Returns true only for standalone denormalized node scans (from/to branches).
+pub(super) fn is_denormalized_union(plan: &LogicalPlan) -> bool {
+    if let LogicalPlan::Union(union) = plan {
+        !union.inputs.is_empty() && union.inputs.iter().all(|input| is_node_denormalized(input))
+    } else {
+        false
+    }
+}
+
+/// Check if a GraphRel is an OPTIONAL denormalized pattern with a Union left side.
+/// This pattern requires special CTE + LEFT JOIN rendering.
+pub(super) fn is_optional_denorm_union_graphrel(
+    gr: &crate::query_planner::logical_plan::GraphRel,
+) -> bool {
+    gr.is_optional.unwrap_or(false)
+        && gr.variable_length.is_none()
+        && is_denormalized_union(&gr.left)
+}
+
+/// Traverse through wrapper nodes (GraphJoins, Projection, GroupBy, etc.) to find
+/// an OPTIONAL denormalized GraphRel with Union left. Returns the inner GraphRel
+/// plan node if found.
+pub(super) fn find_inner_optional_denorm_graphrel(plan: &LogicalPlan) -> Option<&LogicalPlan> {
+    match plan {
+        LogicalPlan::GraphRel(gr) if is_optional_denorm_union_graphrel(gr) => Some(plan),
+        LogicalPlan::GraphJoins(gj) => find_inner_optional_denorm_graphrel(&gj.input),
+        LogicalPlan::Projection(p) => find_inner_optional_denorm_graphrel(&p.input),
+        LogicalPlan::GroupBy(gb) => find_inner_optional_denorm_graphrel(&gb.input),
+        LogicalPlan::Filter(f) => find_inner_optional_denorm_graphrel(&f.input),
+        LogicalPlan::OrderBy(o) => find_inner_optional_denorm_graphrel(&o.input),
+        LogicalPlan::Limit(l) => find_inner_optional_denorm_graphrel(&l.input),
+        LogicalPlan::Skip(s) => find_inner_optional_denorm_graphrel(&s.input),
+        _ => None,
     }
 }
 

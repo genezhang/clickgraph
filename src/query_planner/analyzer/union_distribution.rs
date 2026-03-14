@@ -102,6 +102,18 @@ fn graph_rel_with(
     }
 }
 
+/// Check if all Union branches are denormalized GraphNodes (standalone denormalized node scan).
+fn is_all_denormalized_nodes(union: &Union) -> bool {
+    !union.inputs.is_empty()
+        && union.inputs.iter().all(|input| match input.as_ref() {
+            LogicalPlan::GraphNode(gn) => {
+                gn.is_denormalized
+                    || matches!(gn.input.as_ref(), LogicalPlan::ViewScan(vs) if vs.is_denormalized)
+            }
+            _ => false,
+        })
+}
+
 /// Distribute Union over the branches of a parent node, producing `Union(parent(br0), parent(br1), ...)`.
 fn distribute_over_union<F>(union: &Union, make_branch: F) -> LogicalPlan
 where
@@ -139,17 +151,36 @@ fn distribute_union_impl(plan: &LogicalPlan, depth: usize) -> LogicalPlan {
             let new_right = distribute_union_impl(&gr.right, depth + 1);
 
             // If left became Union after distribution, distribute GraphRel over it
+            // EXCEPTION: Skip when the GraphRel is OPTIONAL and the Union is a
+            // denormalized standalone node scan. Distribution would push the OPTIONAL
+            // MATCH edge into each Union branch, losing LEFT JOIN semantics (every
+            // flight row has airports, so no airport would appear "without flights").
             if let LogicalPlan::Union(union) = &new_left {
-                log::debug!(
-                    "🔀 UnionDistribution: distributing GraphRel '{}' over left Union ({} branches)",
-                    gr.alias,
-                    union.inputs.len()
-                );
-                let center = Arc::new(new_center);
-                let right = Arc::new(new_right);
-                return distribute_over_union(union, |branch| {
-                    LogicalPlan::GraphRel(graph_rel_with(gr, branch, center.clone(), right.clone()))
-                });
+                let skip = gr.is_optional.unwrap_or(false) && is_all_denormalized_nodes(union);
+
+                if skip {
+                    log::info!(
+                        "🔀 UnionDistribution: SKIPPING GraphRel '{}' distribution over denormalized OPTIONAL Union — preserving LEFT JOIN semantics",
+                        gr.alias
+                    );
+                    // Keep the Union as-is; wrap in GraphRel without distributing
+                } else {
+                    log::debug!(
+                        "🔀 UnionDistribution: distributing GraphRel '{}' over left Union ({} branches)",
+                        gr.alias,
+                        union.inputs.len()
+                    );
+                    let center = Arc::new(new_center);
+                    let right = Arc::new(new_right);
+                    return distribute_over_union(union, |branch| {
+                        LogicalPlan::GraphRel(graph_rel_with(
+                            gr,
+                            branch,
+                            center.clone(),
+                            right.clone(),
+                        ))
+                    });
+                }
             }
 
             // If right became Union after distribution, distribute GraphRel over it
@@ -195,20 +226,34 @@ fn distribute_union_impl(plan: &LogicalPlan, depth: usize) -> LogicalPlan {
                 });
             }
             // CP(Union(br0, br1), right) → Union(CP(br0, right), CP(br1, right))
+            // EXCEPTION: Skip distribution when:
+            // - The CartesianProduct is optional (OPTIONAL MATCH pattern)
+            // - The Union is a denormalized standalone node scan
+            // Distribution would push the OPTIONAL MATCH into each Union branch,
+            // losing LEFT JOIN semantics (every branch would scan the edge table
+            // directly, making all airports appear to have flights).
             if let LogicalPlan::Union(union) = &new_left {
-                log::debug!(
-                    "🔀 UnionDistribution: distributing CP over left Union ({} branches)",
-                    union.inputs.len()
-                );
-                let right = Arc::new(new_right);
-                return distribute_over_union(union, |branch| {
-                    LogicalPlan::CartesianProduct(CartesianProduct {
-                        left: branch,
-                        right: right.clone(),
-                        is_optional: cp.is_optional,
-                        join_condition: cp.join_condition.clone(),
-                    })
-                });
+                if cp.is_optional && is_all_denormalized_nodes(union) {
+                    log::info!(
+                        "🔀 UnionDistribution: SKIPPING distribution of OPTIONAL CP over denormalized Union ({} branches) — preserving LEFT JOIN semantics",
+                        union.inputs.len()
+                    );
+                    // Don't distribute; keep the CartesianProduct intact
+                } else {
+                    log::debug!(
+                        "🔀 UnionDistribution: distributing CP over left Union ({} branches)",
+                        union.inputs.len()
+                    );
+                    let right = Arc::new(new_right);
+                    return distribute_over_union(union, |branch| {
+                        LogicalPlan::CartesianProduct(CartesianProduct {
+                            left: branch,
+                            right: right.clone(),
+                            is_optional: cp.is_optional,
+                            join_condition: cp.join_condition.clone(),
+                        })
+                    });
+                }
             }
 
             LogicalPlan::CartesianProduct(CartesianProduct {
