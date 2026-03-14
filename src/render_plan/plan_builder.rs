@@ -1673,6 +1673,22 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                 }
 
+                // Also qualify UNION branch SELECT items (denormalized node UNION
+                // branches are ViewScans that generate bare Column expressions).
+                if let UnionItems(Some(ref mut union)) = render_plan.union {
+                    for branch in &mut union.input {
+                        for item in &mut branch.select.items {
+                            if let RenderExpr::Column(Column(ref prop_val)) = item.expression {
+                                let col_name = prop_val.raw().to_string();
+                                item.expression = RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(gn.alias.clone()),
+                                    column: PropertyValue::Column(col_name),
+                                });
+                            }
+                        }
+                    }
+                }
+
                 Ok(render_plan)
             }
             LogicalPlan::ViewScan(vs) => {
