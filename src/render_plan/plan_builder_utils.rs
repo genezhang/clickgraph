@@ -1725,19 +1725,6 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
                         let is_denormalized = is_node_denormalized(&graph_rel.left)
                             && is_node_denormalized(&graph_rel.right);
 
-                        // Extract table/column info for cycle prevention
-                        // Use extract_table_name directly to avoid wrong fallbacks
-                        let start_table = extract_table_name(&graph_rel.left).ok_or_else(|| {
-                            RenderBuildError::MissingTableInfo(
-                                "start node in cycle prevention".to_string(),
-                            )
-                        })?;
-                        let end_table = extract_table_name(&graph_rel.right).ok_or_else(|| {
-                            RenderBuildError::MissingTableInfo(
-                                "end node in cycle prevention".to_string(),
-                            )
-                        })?;
-
                         let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
                             RelationshipColumns {
                                 from_id: Identifier::Single("from_node_id".to_string()),
@@ -1745,11 +1732,24 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
                             },
                         );
 
-                        // For denormalized, use relationship columns directly
-                        // For normal, use node ID columns
+                        // For denormalized, use relationship columns directly (nodes
+                        // have no separate table — extract_table_name would fail).
+                        // For normal schemas, use node ID columns from node tables.
                         let (start_id_col, end_id_col) = if is_denormalized {
                             (rel_cols.from_id.to_string(), rel_cols.to_id.to_string())
                         } else {
+                            let start_table =
+                                extract_table_name(&graph_rel.left).ok_or_else(|| {
+                                    RenderBuildError::MissingTableInfo(
+                                        "start node in cycle prevention".to_string(),
+                                    )
+                                })?;
+                            let end_table =
+                                extract_table_name(&graph_rel.right).ok_or_else(|| {
+                                    RenderBuildError::MissingTableInfo(
+                                        "end node in cycle prevention".to_string(),
+                                    )
+                                })?;
                             // Use extract_end_node_id_column for nested GraphRel patterns
                             // (e.g., (a)-[:R]->(b)-[:VLP*]->(c) where left is a GraphRel).
                             // extract_id_column follows rel.center (relationship table) returning FKs
