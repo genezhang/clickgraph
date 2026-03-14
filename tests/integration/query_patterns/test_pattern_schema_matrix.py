@@ -775,7 +775,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: count(n) UNION branch SELECT missing node_id column")
     def test_simple_agg_0(self):
         """
         Simple count aggregation
@@ -785,7 +784,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: count(n) UNION branch SELECT missing node_id column")
     def test_simple_agg_1(self):
         """
         Simple count aggregation
@@ -795,7 +793,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: count(n) UNION branch SELECT missing node_id column")
     def test_simple_agg_2(self):
         """
         Simple count aggregation
