@@ -221,7 +221,7 @@ class TestStandardSchema:
         result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="BUG: VLP chained join optimization generates undefined table alias - needs investigation")
+    @pytest.mark.skip(reason="Invalid test: social_integration schema has no Post→Post relationships")
     def test_vlp_exact_2(self):
         """
         Variable-length path with exact hops
@@ -231,7 +231,7 @@ class TestStandardSchema:
         result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="BUG: VLP pattern with invalid Post->Post relationship - schema defines Post relationships as User->Post only")
+    @pytest.mark.skip(reason="Invalid test: social_integration schema has no Post→Post relationships")
     def test_vlp_range_0(self):
         """
         Variable-length path with range
@@ -268,7 +268,7 @@ class TestStandardSchema:
         result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="BUG: VLP path variable likely affected by same alias bug")
+    @pytest.mark.skip(reason="Invalid test: social_integration schema has no Post→Post relationships")
     def test_vlp_path_var_1(self):
         """
         Path variable with functions
@@ -278,7 +278,7 @@ class TestStandardSchema:
         result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="BUG: VLP path variable likely affected by same alias bug")
+    @pytest.mark.skip(reason="Invalid test: social_integration schema has no Post→Post relationships")
     def test_vlp_path_var_2(self):
         """
         Path variable with functions
@@ -351,7 +351,7 @@ class TestStandardSchema:
         result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Bug: WITH aggregation generates incorrect SQL")
+    @pytest.mark.skip(reason="Invalid test: LIKED is (User)->(Post), not (Post)->(User)")
     def test_with_agg_1(self):
         """
         WITH clause aggregation
@@ -361,7 +361,7 @@ class TestStandardSchema:
         result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Bug: WITH aggregation generates incorrect SQL")
+    @pytest.mark.skip(reason="Invalid test: LIKED is (User)->(Post), not (Post)->(Post)")
     def test_with_agg_2(self):
         """
         WITH clause aggregation
@@ -483,7 +483,6 @@ class TestStandardSchema:
         result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="BUG: Shortest path with untyped VLP pattern - analyzer requires relationship type")
     @pytest.mark.skip(reason="Invalid test: social_integration schema has no Post→Post relationships")
     def test_shortest_path_0(self):
         """
@@ -494,7 +493,7 @@ class TestStandardSchema:
         result = execute_query(query, "social_integration")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="BUG: Shortest path with untyped VLP pattern - analyzer requires relationship type")
+    @pytest.mark.skip(reason="Invalid test: social_integration schema has no Post→Post relationships")
     def test_shortest_path_1(self):
         """
         Shortest path query
@@ -592,7 +591,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
+    @pytest.mark.skip(reason="Invalid test: Airport has no 'airport' property (valid: code, city, state)")
     def test_node_filter_2(self):
         """
         Node scan with IS NOT NULL filter
@@ -602,7 +601,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
+    @pytest.mark.skip(reason="Invalid test: Airport has no 'airport' property (valid: code, city, state)")
     def test_single_hop_0(self):
         """
         Single hop relationship
@@ -666,7 +665,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
+    @pytest.mark.skip(reason="Invalid test: Airport has no 'airport' property (valid: code, city, state)")
     def test_multi_hop_1(self):
         """
         Multi-hop traversal
@@ -676,7 +675,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
+    @pytest.mark.skip(reason="Invalid test: Airport has no 'airport' property (valid: code, city, state)")
     def test_multi_hop_2(self):
         """
         Multi-hop traversal
@@ -806,7 +805,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
+    @pytest.mark.skip(reason="Invalid test: Airport has no 'airport' property (valid: code, city, state)")
     def test_group_by_0(self):
         """
         GROUP BY with count
@@ -816,7 +815,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
+    @pytest.mark.skip(reason="Invalid test: Airport has no 'airport' property (valid: code, city, state)")
     def test_group_by_1(self):
         """
         GROUP BY with count
@@ -892,7 +891,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_graph_funcs_0(self):
         """
         Graph functions (type, id, labels)
@@ -902,7 +900,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_graph_funcs_1(self):
         """
         Graph functions (type, id, labels)
@@ -912,7 +909,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_graph_funcs_2(self):
         """
         Graph functions (type, id, labels)
@@ -1577,7 +1573,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: to-node property mapping in relationship context")
+    @pytest.mark.skip(reason="Invalid test: RESOLVED_TO is (Domain)->(ResolvedIP), not (Domain)->(Domain)")
     def test_single_hop_1(self):
         """
         Single hop relationship
@@ -1587,7 +1583,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: to-node property mapping in relationship context")
+    @pytest.mark.skip(reason="Invalid test: RESOLVED_TO is (Domain)->(ResolvedIP), not (Domain)->(Domain)")
     def test_single_hop_2(self):
         """
         Single hop relationship
@@ -1624,7 +1620,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: to-node property mapping in multi-hop relationship")
+    @pytest.mark.skip(reason="Invalid test: REQUESTED is (IP)->(Domain), not (Domain)->(Domain)")
     def test_multi_hop_0(self):
         """
         Multi-hop traversal
@@ -1853,7 +1849,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: id()/labels() on virtual node aliases in denormalized schema")
+    @pytest.mark.skip(reason="Invalid test: REQUESTED is (IP)->(Domain), not (Domain)->(ResolvedIP)")
     def test_graph_funcs_0(self):
         """
         Graph functions (type, id, labels)
@@ -1863,7 +1859,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: id()/labels() on virtual node aliases in denormalized schema")
+    @pytest.mark.skip(reason="Invalid test: RESOLVED_TO is (Domain)->(ResolvedIP), not (Domain)->(Domain)")
     def test_graph_funcs_1(self):
         """
         Graph functions (type, id, labels)
@@ -1873,7 +1869,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: id()/labels() on virtual node aliases in denormalized schema")
+    @pytest.mark.skip(reason="Invalid test: RESOLVED_TO is (Domain)->(ResolvedIP), not (ResolvedIP)->(IP)")
     def test_graph_funcs_2(self):
         """
         Graph functions (type, id, labels)
