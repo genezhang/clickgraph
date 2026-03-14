@@ -2202,33 +2202,6 @@ fn build_aliased_group_by(group_by: &GroupByExpressions, select: &SelectItems) -
     sql
 }
 
-/// Qualify bare `Column` expressions in a RenderPlan's SELECT using its FROM alias.
-/// Denormalized ViewScans may produce bare Column("OriginCityName") without a table
-/// qualifier. The SQL renderer would then guess "t" via heuristics. By qualifying
-/// with the FROM alias here, we ensure correct SQL like `r.OriginCityName`.
-fn qualify_bare_columns_from_alias(plan: &mut RenderPlan) {
-    use crate::graph_catalog::expression_parser::PropertyValue;
-
-    let from_alias = plan
-        .from
-        .0
-        .as_ref()
-        .and_then(|f| f.alias.clone())
-        .unwrap_or_default();
-    if from_alias.is_empty() {
-        return;
-    }
-    for item in &mut plan.select.items {
-        if let RenderExpr::Column(Column(ref prop_val)) = item.expression {
-            let col_name = prop_val.raw().to_string();
-            item.expression = RenderExpr::PropertyAccessExp(PropertyAccess {
-                table_alias: TableAlias(from_alias.clone()),
-                column: PropertyValue::Column(col_name),
-            });
-        }
-    }
-}
-
 /// Render a single UNION branch to SQL. Simple branches produce
 /// `SELECT ... FROM ... WHERE ...`. Complex branches (with inner
 /// unions or per-arm LIMIT) wrap in a subselect.
@@ -2698,17 +2671,6 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
 
         // Use the modified plan for SQL generation
         plan = modified_plan;
-
-        // Qualify bare Column expressions in UNION branches.
-        // Denormalized ViewScans produce bare Column("OriginCityName") without a
-        // table qualifier. Without this fix, Column.to_sql() guesses "t" as the
-        // alias. We also qualify the base plan's SELECT for the first-branch path.
-        if let Some(ref mut union) = plan.union.0 {
-            for branch in &mut union.input {
-                qualify_bare_columns_from_alias(branch);
-            }
-        }
-        qualify_bare_columns_from_alias(&mut plan);
 
         // Check if SELECT items contain aggregation (e.g., count(*), sum(), etc.)
         // Uses recursive check to detect aggregates nested in CASE, function calls, etc.
