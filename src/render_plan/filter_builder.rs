@@ -267,32 +267,30 @@ impl FilterBuilder for LogicalPlan {
                             let is_denormalized = is_node_denormalized(&graph_rel.left)
                                 && is_node_denormalized(&graph_rel.right);
 
-                            // Extract table/column info for cycle prevention
-                            // Use extract_table_name directly to avoid wrong fallbacks
-                            let start_table =
-                                extract_table_name(&graph_rel.left).ok_or_else(|| {
-                                    RenderBuildError::MissingTableInfo(
-                                        "start node in cycle prevention".to_string(),
-                                    )
-                                })?;
-                            let end_table =
-                                extract_table_name(&graph_rel.right).ok_or_else(|| {
-                                    RenderBuildError::MissingTableInfo(
-                                        "end node in cycle prevention".to_string(),
-                                    )
-                                })?;
-
                             let rel_cols = extract_relationship_columns(&graph_rel.center)
                                 .unwrap_or(RelationshipColumns {
                                     from_id: Identifier::Single("from_node_id".to_string()),
                                     to_id: Identifier::Single("to_node_id".to_string()),
                                 });
 
-                            // For denormalized, use relationship columns directly
-                            // For normal, use node ID columns
+                            // For denormalized, use relationship columns directly (nodes
+                            // have no separate table — extract_table_name would fail).
+                            // For normal schemas, use node ID columns from node tables.
                             let (start_id_col, end_id_col) = if is_denormalized {
                                 (rel_cols.from_id.to_string(), rel_cols.to_id.to_string())
                             } else {
+                                let start_table =
+                                    extract_table_name(&graph_rel.left).ok_or_else(|| {
+                                        RenderBuildError::MissingTableInfo(
+                                            "start node in cycle prevention".to_string(),
+                                        )
+                                    })?;
+                                let end_table =
+                                    extract_table_name(&graph_rel.right).ok_or_else(|| {
+                                        RenderBuildError::MissingTableInfo(
+                                            "end node in cycle prevention".to_string(),
+                                        )
+                                    })?;
                                 let start = extract_id_column(&graph_rel.left)
                                     .unwrap_or_else(|| table_to_id_column(&start_table));
                                 let end = extract_id_column(&graph_rel.right)

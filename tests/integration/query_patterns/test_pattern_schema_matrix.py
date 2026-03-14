@@ -685,7 +685,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_vlp_exact_0(self):
         """
         Variable-length path with exact hops
@@ -695,7 +694,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
+    @pytest.mark.skip(reason="Invalid test: Airport has no 'airport' property (valid: code, city, state)")
     def test_vlp_exact_1(self):
         """
         Variable-length path with exact hops
@@ -705,7 +704,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_vlp_exact_2(self):
         """
         Variable-length path with exact hops
@@ -715,7 +713,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_vlp_range_0(self):
         """
         Variable-length path with range
@@ -725,7 +722,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_vlp_range_1(self):
         """
         Variable-length path with range
@@ -735,7 +731,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_vlp_range_2(self):
         """
         Variable-length path with range
@@ -745,7 +740,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_vlp_path_var_0(self):
         """
         Path variable with functions
@@ -755,7 +749,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_vlp_path_var_1(self):
         """
         Path variable with functions
@@ -765,7 +758,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_vlp_path_var_2(self):
         """
         Path variable with functions
@@ -966,7 +958,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
+    @pytest.mark.skip(reason="Invalid test: Airport has no 'airport' property (valid: code, city, state)")
     def test_shortest_path_0(self):
         """
         Shortest path query
@@ -976,7 +968,7 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
+    @pytest.mark.skip(reason="Invalid test: Airport has no 'airport' property (valid: code, city, state)")
     def test_shortest_path_1(self):
         """
         Shortest path query
@@ -986,7 +978,6 @@ class TestDenormalizedSchema:
         result = execute_query(query, "ontime_flights")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Denormalized schema: node property resolution or VLP CTE gap")
     def test_shortest_path_2(self):
         """
         Shortest path query
@@ -1182,7 +1173,6 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_vlp_exact_2(self):
         """
         Variable-length path with exact hops
@@ -1192,7 +1182,6 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_vlp_range_0(self):
         """
         Variable-length path with range
@@ -1202,7 +1191,6 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_vlp_range_1(self):
         """
         Variable-length path with range
@@ -1212,7 +1200,6 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_vlp_range_2(self):
         """
         Variable-length path with range
@@ -1222,7 +1209,6 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_vlp_path_var_0(self):
         """
         Path variable with functions
@@ -1232,7 +1218,6 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_vlp_path_var_1(self):
         """
         Path variable with functions
@@ -1242,7 +1227,6 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_vlp_path_var_2(self):
         """
         Path variable with functions
@@ -1441,7 +1425,6 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_shortest_path_0(self):
         """
         Shortest path query
@@ -1451,7 +1434,6 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_shortest_path_1(self):
         """
         Shortest path query
@@ -1461,7 +1443,6 @@ class TestPolymorphicSchema:
         result = execute_query(query, "social_polymorphic")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Polymorphic schema: VLP or shortest path gap")
     def test_shortest_path_2(self):
         """
         Shortest path query
@@ -1642,7 +1623,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP not supported on denormalized edge tables")
+    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
     def test_vlp_exact_0(self):
         """
         Variable-length path with exact hops
@@ -1652,7 +1633,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP not supported on denormalized edge tables")
+    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
     def test_vlp_exact_1(self):
         """
         Variable-length path with exact hops
@@ -1662,7 +1643,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP not supported on denormalized edge tables")
+    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
     def test_vlp_exact_2(self):
         """
         Variable-length path with exact hops
@@ -1672,7 +1653,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP not supported on denormalized edge tables")
+    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
     def test_vlp_range_0(self):
         """
         Variable-length path with range
@@ -1682,7 +1663,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP not supported on denormalized edge tables")
+    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
     def test_vlp_range_1(self):
         """
         Variable-length path with range
@@ -1692,7 +1673,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP not supported on denormalized edge tables")
+    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
     def test_vlp_range_2(self):
         """
         Variable-length path with range
@@ -1702,7 +1683,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP not supported on denormalized edge tables")
+    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
     def test_vlp_path_var_0(self):
         """
         Path variable with functions
@@ -1712,7 +1693,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP not supported on denormalized edge tables")
+    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
     def test_vlp_path_var_1(self):
         """
         Path variable with functions
@@ -1722,7 +1703,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP not supported on denormalized edge tables")
+    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
     def test_vlp_path_var_2(self):
         """
         Path variable with functions
@@ -1924,7 +1905,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP/shortestPath not supported on denormalized edge tables")
+    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
     def test_shortest_path_0(self):
         """
         Shortest path query
@@ -1934,7 +1915,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP/shortestPath not supported on denormalized edge tables")
+    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
     def test_shortest_path_1(self):
         """
         Shortest path query
@@ -1944,7 +1925,7 @@ class TestCoupledSchema:
         result = execute_query(query, "zeek_dns")
         assert "error" not in result, f"Query failed: {result}"
 
-    @pytest.mark.xfail(reason="Coupled schema: VLP/shortestPath not supported on denormalized edge tables")
+    @pytest.mark.xfail(reason="Coupled schema: VLP on multi-relationship denormalized tables")
     def test_shortest_path_2(self):
         """
         Shortest path query
