@@ -343,6 +343,10 @@ pub(super) fn is_node_denormalized(plan: &LogicalPlan) -> bool {
             // Recursively check the left side to find the leftmost GraphNode
             is_node_denormalized(&graph_rel.left)
         }
+        // Union of denormalized GraphNodes (standalone denormalized node scan)
+        LogicalPlan::Union(union) => {
+            !union.inputs.is_empty() && union.inputs.iter().all(|input| is_node_denormalized(input))
+        }
         _ => false,
     }
 }

@@ -2507,6 +2507,13 @@ fn flatten_all_ctes(plan: &mut RenderPlan) {
 }
 
 pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
+    log::trace!(
+        "render_plan_to_sql: from={:?}, joins={}, union={}, ctes={}",
+        plan.from.0.as_ref().map(|f| &f.name),
+        plan.joins.0.len(),
+        plan.union.0.is_some(),
+        plan.ctes.0.len()
+    );
     // STEP 0: Flatten ALL CTEs to top level in dependency order.
     // CTEs are always a flat, linear chain — never nested inside other CTEs or union branches.
     flatten_all_ctes(&mut plan);
@@ -2548,6 +2555,10 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
 
         sort_joins_by_dependency(plan.joins.0, from_table.as_ref())
     };
+    log::trace!(
+        "render_plan_to_sql after sort_joins: joins={}",
+        plan.joins.0.len()
+    );
 
     // Also sort JOINs in UNION branches
     if let Some(ref mut union) = plan.union.0 {
