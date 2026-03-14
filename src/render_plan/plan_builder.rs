@@ -1022,18 +1022,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 // as the left side (standalone node scan preserved by UnionDistribution).
                 // The OPTIONAL MATCH edge needs to become a LEFT JOIN against the
                 // Union subquery.
-                let is_optional = gr.is_optional.unwrap_or(false);
-                let left_is_denorm_union = if let LogicalPlan::Union(union) = gr.left.as_ref() {
-                    !union.inputs.is_empty()
-                        && union
-                            .inputs
-                            .iter()
-                            .all(|input| super::plan_builder_helpers::is_node_denormalized(input))
-                } else {
-                    false
-                };
-
-                if is_optional && left_is_denorm_union && gr.variable_length.is_none() {
+                if super::plan_builder_helpers::is_optional_denorm_union_graphrel(gr) {
                     log::info!("🎯 OPTIONAL denormalized Union: restructuring to CTE + LEFT JOIN");
 
                     // 1. Render the Union as a CTE
@@ -2360,9 +2349,8 @@ impl RenderPlanBuilder for LogicalPlan {
                     (left_render, right_render, cp.is_optional)
                 };
 
-                // Merge CTEs from both sides (clone to avoid partial move)
-                let mut all_ctes = base_render.ctes.0.clone();
-                all_ctes.extend(joined_render.ctes.0.clone());
+                // Pre-compute state checks before partial moves
+                let base_has_union = base_render.union.0.is_some();
 
                 // Get the joined side's FROM as a JOIN target
                 if let FromTableItem(Some(joined_from)) = &joined_render.from {
@@ -2377,12 +2365,11 @@ impl RenderPlanBuilder for LogicalPlan {
                     let joining_on: Vec<OperatorApplication> =
                         if let Some(ref join_cond) = cp.join_condition {
                             extract_join_condition_ops(join_cond).unwrap_or_default()
-                        } else if joined_is_optional && base_render.union.0.is_some() {
+                        } else if joined_is_optional && base_has_union {
                             // OPTIONAL denormalized pattern: Union (standalone node scan) as base,
                             // edge table as LEFT JOIN. Synthesize the join condition using
                             // the edge's from_id and the node's ID property from the CTE.
                             synthesize_denorm_optional_join_condition(
-                                &cp.left,
                                 &cp.right,
                                 &base_render,
                                 joined_from,
@@ -2462,7 +2449,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     log::info!("🔧 Keeping base_filter (joined has none)");
                 }
 
-                base_render.ctes = CteItems(all_ctes);
+                // Merge CTEs from both sides (done after all borrows of base_render)
+                let mut merged_ctes = std::mem::take(&mut base_render.ctes.0);
+                merged_ctes.extend(joined_render.ctes.0);
+                base_render.ctes = CteItems(merged_ctes);
 
                 Ok(base_render)
             }
@@ -3012,54 +3002,16 @@ impl RenderPlanBuilder for LogicalPlan {
         // OPTIONAL denormalized Union: when the plan contains a GraphRel with
         // is_optional=true and left=Union(denormalized), delegate to to_render_plan
         // which has special handling for this pattern (CTE + LEFT JOIN).
+        // Uses unified find_inner_optional_denorm_graphrel to both detect and locate
+        // the inner GraphRel, avoiding divergent detection/unwrap logic.
         {
-            fn find_optional_denorm_graphrel(plan: &LogicalPlan) -> bool {
-                match plan {
-                    LogicalPlan::GraphRel(gr) => {
-                        let is_opt = gr.is_optional.unwrap_or(false);
-                        let left_denorm_union = if let LogicalPlan::Union(u) = gr.left.as_ref() {
-                            !u.inputs.is_empty()
-                                    && u.inputs.iter().all(|input| {
-                                        matches!(input.as_ref(), LogicalPlan::GraphNode(gn)
-                                            if gn.is_denormalized
-                                                || matches!(gn.input.as_ref(), LogicalPlan::ViewScan(vs) if vs.is_denormalized))
-                                    })
-                        } else {
-                            false
-                        };
-                        is_opt && left_denorm_union && gr.variable_length.is_none()
-                    }
-                    LogicalPlan::GraphJoins(gj) => find_optional_denorm_graphrel(&gj.input),
-                    LogicalPlan::Projection(p) => find_optional_denorm_graphrel(&p.input),
-                    LogicalPlan::GroupBy(gb) => find_optional_denorm_graphrel(&gb.input),
-                    LogicalPlan::Filter(f) => find_optional_denorm_graphrel(&f.input),
-                    LogicalPlan::OrderBy(o) => find_optional_denorm_graphrel(&o.input),
-                    LogicalPlan::Limit(l) => find_optional_denorm_graphrel(&l.input),
-                    LogicalPlan::Skip(s) => find_optional_denorm_graphrel(&s.input),
-                    _ => false,
-                }
-            }
-
-            if find_optional_denorm_graphrel(self) {
+            if let Some(inner) =
+                super::plan_builder_helpers::find_inner_optional_denorm_graphrel(self)
+            {
                 log::info!(
                     "🎯 to_render_plan_with_ctx: OPTIONAL denormalized Union detected, delegating to inner plan"
                 );
-                // Unwrap GraphJoins/Projection/GroupBy/OrderBy/etc. to reach the
-                // GraphRel directly, then call to_render_plan on it.
-                let mut inner: &LogicalPlan = self;
-                loop {
-                    match inner {
-                        LogicalPlan::GraphJoins(gj) => inner = gj.input.as_ref(),
-                        LogicalPlan::Projection(p) => inner = p.input.as_ref(),
-                        LogicalPlan::GroupBy(gb) => inner = gb.input.as_ref(),
-                        LogicalPlan::Filter(f) => inner = f.input.as_ref(),
-                        LogicalPlan::OrderBy(o) => inner = o.input.as_ref(),
-                        LogicalPlan::Limit(l) => inner = l.input.as_ref(),
-                        LogicalPlan::Skip(s) => inner = s.input.as_ref(),
-                        _ => break,
-                    }
-                }
-                // inner should now be the GraphRel; render it + overlay outer items
+                // Render the inner GraphRel (CTE + FROM + LEFT JOIN only)
                 let mut render = inner.to_render_plan(schema)?;
                 log::debug!(
                     "🔍 After inner render: from={:?}, joins={}, ctes={}",
@@ -4283,7 +4235,6 @@ impl RenderPlanBuilder for LogicalPlan {
 ///
 /// Returns `a.code = r.origin_code` style join condition.
 fn synthesize_denorm_optional_join_condition(
-    _left_plan: &LogicalPlan,
     right_plan: &LogicalPlan,
     base_render: &RenderPlan,
     joined_from: &ViewTableRef,

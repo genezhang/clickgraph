@@ -1539,7 +1539,11 @@ fn remove_unreferenced_joins(plan: &mut RenderPlan, protected_aliases: &HashSet<
             continue;
         }
 
-        // Never remove edge tables — they provide the traversal
+        // Never remove edge tables — they provide the traversal.
+        // This also protects synthetic LEFT JOINs from OPTIONAL MATCH on
+        // denormalized schemas (plan_builder.rs sets from_id_column as a
+        // preservation marker when count(r) resolves to count(*) and the
+        // alias appears unreferenced).
         if join.from_id_column.is_some() || join.to_id_column.is_some() {
             continue;
         }

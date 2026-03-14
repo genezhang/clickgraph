@@ -102,6 +102,18 @@ fn graph_rel_with(
     }
 }
 
+/// Check if all Union branches are denormalized GraphNodes (standalone denormalized node scan).
+fn is_all_denormalized_nodes(union: &Union) -> bool {
+    !union.inputs.is_empty()
+        && union.inputs.iter().all(|input| match input.as_ref() {
+            LogicalPlan::GraphNode(gn) => {
+                gn.is_denormalized
+                    || matches!(gn.input.as_ref(), LogicalPlan::ViewScan(vs) if vs.is_denormalized)
+            }
+            _ => false,
+        })
+}
+
 /// Distribute Union over the branches of a parent node, producing `Union(parent(br0), parent(br1), ...)`.
 fn distribute_over_union<F>(union: &Union, make_branch: F) -> LogicalPlan
 where
@@ -144,16 +156,9 @@ fn distribute_union_impl(plan: &LogicalPlan, depth: usize) -> LogicalPlan {
             // MATCH edge into each Union branch, losing LEFT JOIN semantics (every
             // flight row has airports, so no airport would appear "without flights").
             if let LogicalPlan::Union(union) = &new_left {
-                let is_optional_gr = gr.is_optional.unwrap_or(false);
-                let is_denorm_union = is_optional_gr
-                    && !union.inputs.is_empty()
-                    && union.inputs.iter().all(|input| {
-                        matches!(input.as_ref(), LogicalPlan::GraphNode(gn)
-                            if gn.is_denormalized
-                                || matches!(gn.input.as_ref(), LogicalPlan::ViewScan(vs) if vs.is_denormalized))
-                    });
+                let skip = gr.is_optional.unwrap_or(false) && is_all_denormalized_nodes(union);
 
-                if is_denorm_union {
+                if skip {
                     log::info!(
                         "🔀 UnionDistribution: SKIPPING GraphRel '{}' distribution over denormalized OPTIONAL Union — preserving LEFT JOIN semantics",
                         gr.alias
@@ -228,20 +233,7 @@ fn distribute_union_impl(plan: &LogicalPlan, depth: usize) -> LogicalPlan {
             // losing LEFT JOIN semantics (every branch would scan the edge table
             // directly, making all airports appear to have flights).
             if let LogicalPlan::Union(union) = &new_left {
-                let is_denorm_union = union.inputs.iter().all(|input| {
-                    fn is_denorm_node(plan: &LogicalPlan) -> bool {
-                        match plan {
-                            LogicalPlan::GraphNode(gn) => {
-                                gn.is_denormalized
-                                    || matches!(gn.input.as_ref(), LogicalPlan::ViewScan(vs) if vs.is_denormalized)
-                            }
-                            _ => false,
-                        }
-                    }
-                    is_denorm_node(input)
-                });
-
-                if cp.is_optional && is_denorm_union {
+                if cp.is_optional && is_all_denormalized_nodes(union) {
                     log::info!(
                         "🔀 UnionDistribution: SKIPPING distribution of OPTIONAL CP over denormalized Union ({} branches) — preserving LEFT JOIN semantics",
                         union.inputs.len()
