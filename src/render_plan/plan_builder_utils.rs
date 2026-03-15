@@ -1141,8 +1141,15 @@ fn rewrite_render_expr_for_cte_operand(
         RenderExpr::PropertyAccessExp(pa) => {
             // Check if this alias is from a CTE
             if cte_references.contains_key(&pa.table_alias.0) {
-                // Rewrite to use CTE alias and column naming
-                let cte_column = cte_column_name(&pa.table_alias.0, pa.column.raw());
+                // Rewrite to use CTE alias and column naming.
+                // Skip re-encoding if the column is already a CTE-encoded name (p{N}_...)
+                // to avoid double-encoding like p20_a_allNeighboursCount_p1_a_user_id
+                let raw_col = pa.column.raw();
+                let cte_column = if crate::utils::cte_column_naming::is_cte_column(raw_col) {
+                    raw_col.to_string()
+                } else {
+                    cte_column_name(&pa.table_alias.0, raw_col)
+                };
                 log::info!(
                     "🔧 Rewriting property access: {}.{} -> {}.{}",
                     pa.table_alias.0,
