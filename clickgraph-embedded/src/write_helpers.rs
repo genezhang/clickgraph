@@ -137,7 +137,7 @@ mod tests {
         let sql = build_insert_sql("mydb", "mytable", &cols, &rows);
         assert_eq!(
             sql,
-            "INSERT INTO `mydb`.`mytable` (id, name) VALUES ('abc', 'Alice')"
+            "INSERT INTO `mydb`.`mytable` (`id`, `name`) VALUES ('abc', 'Alice')"
         );
     }
 
@@ -151,7 +151,7 @@ mod tests {
         let sql = build_insert_sql("mydb", "mytable", &cols, &rows);
         assert_eq!(
             sql,
-            "INSERT INTO `mydb`.`mytable` (id, name) VALUES ('a', 'Alice'), ('b', 'Bob')"
+            "INSERT INTO `mydb`.`mytable` (`id`, `name`) VALUES ('a', 'Alice'), ('b', 'Bob')"
         );
     }
 

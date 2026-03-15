@@ -153,6 +153,12 @@ pub fn create_writable_tables(
 ///     _version UInt64 DEFAULT now64()
 /// ) ENGINE = ReplacingMergeTree(_version) ORDER BY ({id_col})
 /// ```
+/// Build CREATE TABLE DDL for a writable node table.
+///
+/// **V1 limitation**: All property columns use `String` type. The schema YAML
+/// doesn't carry column type information. Numeric comparisons and aggregations
+/// in Cypher will operate on string values. A future `column_types` or
+/// `type_hints` field in the schema could address this.
 pub fn build_node_ddl(node_schema: &NodeSchema) -> String {
     let id_columns = node_schema.node_id.id.columns();
     let id_col_set: HashSet<&str> = id_columns.iter().copied().collect();
@@ -202,6 +208,8 @@ pub fn build_node_ddl(node_schema: &NodeSchema) -> String {
 ///     _version UInt64 DEFAULT now64()
 /// ) ENGINE = ReplacingMergeTree(_version) ORDER BY ({from_id}, {to_id})
 /// ```
+/// Build CREATE TABLE DDL for a writable edge table.
+/// See [`build_node_ddl`] for the String-column-type limitation.
 pub fn build_edge_ddl(rel_schema: &RelationshipSchema) -> String {
     let from_id_cols = rel_schema.from_id.columns();
     let to_id_cols = rel_schema.to_id.columns();

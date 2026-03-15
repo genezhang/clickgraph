@@ -571,6 +571,8 @@ conn.create_edge("MENTIONS", "doc:123", "person:alice", edge_props)?;
 
 Re-extracting the same entity from a different document? `upsert_node` inserts with `ReplacingMergeTree` dedup — latest version wins.
 
+> **Deduplication timing**: ReplacingMergeTree deduplication is *eventual* — it happens during background merges, not at INSERT time. Cypher queries automatically use `FINAL` to read only the latest version, so query results are always consistent. No action needed from the caller.
+
 ```rust
 // Upsert — requires the ID property
 let props = HashMap::from([

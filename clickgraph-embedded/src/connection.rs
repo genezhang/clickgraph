@@ -89,6 +89,24 @@ impl<'db> Connection<'db> {
     }
 
     /// Export Cypher query results to a file.
+    ///
+    /// Translates the Cypher query to SQL, wraps it in
+    /// `INSERT INTO FUNCTION file(...)`, and executes via chdb.
+    /// The file is written directly by chdb — results are streamed to disk
+    /// without buffering the full result set in memory.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use clickgraph_embedded::{Database, Connection, SystemConfig, ExportOptions};
+    /// # let db = Database::new("schema.yaml", SystemConfig::default()).unwrap();
+    /// # let conn = Connection::new(&db).unwrap();
+    /// // Auto-detect format from extension
+    /// conn.export("MATCH (u:User) RETURN u.name", "users.parquet", ExportOptions::default()).unwrap();
+    ///
+    /// // CSV with explicit options
+    /// conn.export("MATCH (u:User) RETURN u.name", "users.csv", ExportOptions::default()).unwrap();
+    /// ```
     pub fn export(
         &self,
         cypher: &str,
@@ -249,6 +267,12 @@ impl<'db> Connection<'db> {
     /// Upsert a node (INSERT with ReplacingMergeTree deduplication).
     ///
     /// The node_id property MUST be present in the properties map.
+    ///
+    /// **Note on deduplication timing**: ReplacingMergeTree deduplication is
+    /// *eventual* — it happens during background merges, not at INSERT time.
+    /// Between INSERT and the next merge, both old and new rows may be visible.
+    /// Cypher queries use `FINAL` (handled automatically by ClickGraph's engine
+    /// detection) to read only the latest version, so query results are consistent.
     pub fn upsert_node(
         &self,
         label: &str,
@@ -271,7 +295,8 @@ impl<'db> Connection<'db> {
     /// Upsert an edge (INSERT with ReplacingMergeTree deduplication).
     ///
     /// Same INSERT semantics as `create_edge`; ReplacingMergeTree handles
-    /// deduplication by the ORDER BY key.
+    /// deduplication by the ORDER BY key. See [`upsert_node`] for deduplication
+    /// timing caveats.
     pub fn upsert_edge(
         &self,
         edge_type: &str,
@@ -529,6 +554,10 @@ impl<'db> Connection<'db> {
         .await
     }
 
+    /// Handle `CALL apoc.export.{csv|json|parquet}.query(...)` in embedded mode.
+    ///
+    /// Parses arguments, translates inner Cypher to SQL, builds export SQL, executes.
+    /// Returns a single-row result with export status.
     async fn handle_export_call(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
         use clickgraph::clickhouse_query_generator::cypher_to_sql;
         use clickgraph::open_cypher_parser;
@@ -606,6 +635,7 @@ impl<'db> Connection<'db> {
         .await
     }
 
+    /// Handle `COPY (<cypher>) TO '<destination>' [FORMAT <fmt>] [(options)]` in embedded mode.
     async fn handle_copy_to(
         &self,
         inner_cypher: &str,
@@ -667,6 +697,7 @@ impl<'db> Connection<'db> {
         .await
     }
 
+    /// Handle `CALL db.index.vector.queryNodes(...)` in embedded mode.
     async fn handle_vector_search_call(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
         use clickgraph::open_cypher_parser;
         use clickgraph::open_cypher_parser::ast::CypherStatement;
