@@ -1,6 +1,9 @@
 name: Docker Publish
 
 on:
+  push:
+    tags:
+      - 'v*'
   release:
     types: [published]
   workflow_dispatch:
@@ -33,10 +36,11 @@ jobs:
       - name: Extract version
         id: version
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            VERSION=${GITHUB_REF#refs/tags/}
-          else
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION=${{ inputs.tag }}
+          else
+            # Works for both push (refs/tags/vX.Y.Z) and release events
+            VERSION=${GITHUB_REF#refs/tags/}
           fi
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "version_short=${VERSION#v}" >> $GITHUB_OUTPUT
