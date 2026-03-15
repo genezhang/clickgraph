@@ -4,6 +4,7 @@
 //! This crate is a thin wrapper around `clickgraph-embedded` that satisfies
 //! UniFFI's ownership model (Arc-based, no lifetimes).
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -31,6 +32,9 @@ pub enum ClickGraphError {
 
     #[error("{msg}")]
     ExportError { msg: String },
+
+    #[error("{msg}")]
+    ValidationError { msg: String },
 }
 
 impl From<clickgraph_embedded::error::EmbeddedError> for ClickGraphError {
@@ -47,6 +51,9 @@ impl From<clickgraph_embedded::error::EmbeddedError> for ClickGraphError {
             }
             clickgraph_embedded::error::EmbeddedError::Query(msg) => {
                 ClickGraphError::QueryError { msg }
+            }
+            clickgraph_embedded::error::EmbeddedError::Validation(msg) => {
+                ClickGraphError::ValidationError { msg }
             }
         }
     }
@@ -95,6 +102,43 @@ impl From<RustValue> for Value {
             },
         }
     }
+}
+
+/// Convert an FFI `Value` to a Rust `Value`.
+fn to_rust_value(v: Value) -> RustValue {
+    match v {
+        Value::Null => RustValue::Null,
+        Value::Bool { v } => RustValue::Bool(v),
+        Value::Int64 { v } => RustValue::Int64(v),
+        Value::Float64 { v } => RustValue::Float64(v),
+        Value::String { v } => RustValue::String(v),
+        Value::List { items } => RustValue::List(items.into_iter().map(to_rust_value).collect()),
+        Value::Map { entries } => RustValue::Map(
+            entries
+                .into_iter()
+                .map(|e| (e.key, to_rust_value(e.value)))
+                .collect(),
+        ),
+    }
+}
+
+/// Convert an FFI property map to a Rust property map.
+fn to_rust_properties(props: HashMap<String, Value>) -> HashMap<String, RustValue> {
+    props
+        .into_iter()
+        .map(|(k, v)| (k, to_rust_value(v)))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// EdgeInput — FFI-friendly record for batch edge creation
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct EdgeInput {
+    pub from_id: String,
+    pub to_id: String,
+    pub properties: HashMap<String, Value>,
 }
 
 // ---------------------------------------------------------------------------
@@ -275,7 +319,7 @@ impl Database {
 }
 
 // ---------------------------------------------------------------------------
-// Connection — executes queries
+// Connection — executes queries and write operations
 // ---------------------------------------------------------------------------
 
 #[derive(uniffi::Object)]
@@ -338,6 +382,97 @@ impl Connection {
         };
         let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
         conn.export_to_sql(&cypher, &output_path, rust_opts)
+            .map_err(ClickGraphError::from)
+    }
+
+    /// Execute a raw SQL statement (DDL, DML, or administrative command).
+    ///
+    /// No Cypher parsing or schema validation; the caller is responsible for
+    /// SQL correctness.
+    pub fn execute_sql(&self, sql: String) -> Result<(), ClickGraphError> {
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        conn.execute_sql(&sql).map_err(ClickGraphError::from)
+    }
+
+    /// Create a node with the given label and properties.
+    ///
+    /// Returns the node ID (caller-provided or auto-generated UUID).
+    pub fn create_node(
+        &self,
+        label: String,
+        properties: HashMap<String, Value>,
+    ) -> Result<String, ClickGraphError> {
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        conn.create_node(&label, to_rust_properties(properties))
+            .map_err(ClickGraphError::from)
+    }
+
+    /// Create an edge between two nodes.
+    pub fn create_edge(
+        &self,
+        edge_type: String,
+        from_id: String,
+        to_id: String,
+        properties: HashMap<String, Value>,
+    ) -> Result<(), ClickGraphError> {
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        conn.create_edge(&edge_type, &from_id, &to_id, to_rust_properties(properties))
+            .map_err(ClickGraphError::from)
+    }
+
+    /// Upsert a node (INSERT with ReplacingMergeTree deduplication).
+    ///
+    /// The node_id property MUST be present in the properties map.
+    pub fn upsert_node(
+        &self,
+        label: String,
+        properties: HashMap<String, Value>,
+    ) -> Result<String, ClickGraphError> {
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        conn.upsert_node(&label, to_rust_properties(properties))
+            .map_err(ClickGraphError::from)
+    }
+
+    /// Upsert an edge (INSERT with ReplacingMergeTree deduplication).
+    pub fn upsert_edge(
+        &self,
+        edge_type: String,
+        from_id: String,
+        to_id: String,
+        properties: HashMap<String, Value>,
+    ) -> Result<(), ClickGraphError> {
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        conn.upsert_edge(&edge_type, &from_id, &to_id, to_rust_properties(properties))
+            .map_err(ClickGraphError::from)
+    }
+
+    /// Create multiple nodes in a single batch INSERT.
+    ///
+    /// Returns a Vec of node IDs.
+    pub fn create_nodes(
+        &self,
+        label: String,
+        batch: Vec<HashMap<String, Value>>,
+    ) -> Result<Vec<String>, ClickGraphError> {
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        let rust_batch: Vec<HashMap<String, RustValue>> =
+            batch.into_iter().map(to_rust_properties).collect();
+        conn.create_nodes(&label, rust_batch)
+            .map_err(ClickGraphError::from)
+    }
+
+    /// Create multiple edges in a single batch INSERT.
+    pub fn create_edges(
+        &self,
+        edge_type: String,
+        batch: Vec<EdgeInput>,
+    ) -> Result<(), ClickGraphError> {
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        let rust_batch: Vec<(String, String, HashMap<String, RustValue>)> = batch
+            .into_iter()
+            .map(|e| (e.from_id, e.to_id, to_rust_properties(e.properties)))
+            .collect();
+        conn.create_edges(&edge_type, rust_batch)
             .map_err(ClickGraphError::from)
     }
 }

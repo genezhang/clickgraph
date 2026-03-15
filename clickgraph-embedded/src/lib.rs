@@ -25,7 +25,7 @@
 //! | `Database::new(path, config)` | `Database::new(schema_yaml, config)` |
 //! | `Connection::new(&db)` | `Connection::new(&db)` |
 //! | `conn.query(cypher)` | `conn.query(cypher)` |
-//! | `result.next()` → `FlatTuple` | `result.next()` → `Row` |
+//! | `result.next()` -> `FlatTuple` | `result.next()` -> `Row` |
 //! | `row[0]` | `row[0]` |
 //!
 //! ## Key Differences vs Kuzu
@@ -41,6 +41,7 @@ pub mod error;
 pub mod export;
 pub mod query_result;
 pub mod value;
+pub(crate) mod write_helpers;
 
 pub use connection::Connection;
 pub use database::{Database, StorageCredentials, SystemConfig};

@@ -26,12 +26,12 @@ pub struct SystemConfig {
 
     /// Base directory for resolving relative `source:` paths in the schema.
     /// If `None`, relative paths are resolved from the current working directory.
-    /// Reserved for future use — not yet wired into source resolution.
+    /// Reserved for future use -- not yet wired into source resolution.
     pub data_dir: Option<PathBuf>,
 
     /// Maximum number of threads for chdb query execution.
     /// `None` uses the chdb default (typically number of CPU cores).
-    /// Reserved for future use — not yet passed to chdb session.
+    /// Reserved for future use -- not yet passed to chdb session.
     pub max_threads: Option<usize>,
 
     /// Storage credentials for remote sources (S3, GCS, Azure Blob, Iceberg).
@@ -58,20 +58,21 @@ pub struct Database {
     pub(crate) executor: Arc<dyn QueryExecutor>,
     pub(crate) schema: Arc<GraphSchema>,
     /// Shared Tokio runtime for blocking `Connection::query()` calls.
-    /// Created once, reused by all connections — avoids per-call overhead.
+    /// Created once, reused by all connections -- avoids per-call overhead.
     pub(crate) runtime: tokio::runtime::Runtime,
 }
 
 impl Database {
     /// Open a database using a YAML schema file.
     ///
-    /// Loads the schema, creates a chdb session, and — if any schema entries have
-    /// a `source:` field — creates the corresponding chdb VIEWs.
+    /// Loads the schema, creates a chdb session, and:
+    /// - Creates VIEWs for schema entries WITH a `source:` field
+    /// - Creates writable ReplacingMergeTree tables for entries WITHOUT `source:`
     ///
     /// # Arguments
     ///
-    /// * `schema_path` — path to the YAML schema file
-    /// * `config` — session configuration (session dir, data dir, threads)
+    /// * `schema_path` -- path to the YAML schema file
+    /// * `config` -- session configuration (session dir, data dir, threads)
     pub fn new(schema_path: impl AsRef<Path>, config: SystemConfig) -> Result<Self, EmbeddedError> {
         let graph_schema = load_graph_schema(schema_path.as_ref())?;
         Self::from_schema(Arc::new(graph_schema), config)
@@ -110,6 +111,18 @@ impl Database {
             );
         }
 
+        // Create writable ReplacingMergeTree tables for entries without source:
+        let table_count =
+            clickgraph::executor::data_loader::create_writable_tables(&executor, &schema)
+                .map_err(|e| EmbeddedError::Executor(e.to_string()))?;
+
+        if table_count > 0 {
+            log::info!(
+                "Created {} writable ReplacingMergeTree table(s)",
+                table_count
+            );
+        }
+
         Ok(Database {
             executor: Arc::new(executor),
             schema,
@@ -124,7 +137,7 @@ impl Database {
 
     /// Create a `Database` from a pre-built schema and executor.
     ///
-    /// Primarily intended for testing — allows injection of a custom executor
+    /// Primarily intended for testing -- allows injection of a custom executor
     /// (e.g. a stub) without needing a chdb session.
     pub fn from_executor(
         schema: Arc<GraphSchema>,
@@ -137,10 +150,10 @@ impl Database {
         })
     }
 
-    /// Open a database in SQL-only mode — schema loaded, no chdb session.
+    /// Open a database in SQL-only mode -- schema loaded, no chdb session.
     ///
     /// This mode supports `query_to_sql()` and `export_to_sql()` for
-    /// Cypher → SQL translation without requiring the chdb native library.
+    /// Cypher -> SQL translation without requiring the chdb native library.
     /// Calling `query()` or `export()` will return an error.
     ///
     /// Useful for testing, debugging, and build-time SQL validation.
@@ -161,7 +174,7 @@ impl QueryExecutor for NullExecutor {
         _role: Option<&str>,
     ) -> Result<Vec<serde_json::Value>, ExecutorError> {
         Err(ExecutorError::QueryFailed(
-            "Cannot execute queries in sql_only mode — no backend is configured".to_string(),
+            "Cannot execute queries in sql_only mode -- no backend is configured".to_string(),
         ))
     }
 
@@ -172,7 +185,7 @@ impl QueryExecutor for NullExecutor {
         _role: Option<&str>,
     ) -> Result<String, ExecutorError> {
         Err(ExecutorError::QueryFailed(
-            "Cannot execute queries in sql_only mode — no backend is configured".to_string(),
+            "Cannot execute queries in sql_only mode -- no backend is configured".to_string(),
         ))
     }
 }

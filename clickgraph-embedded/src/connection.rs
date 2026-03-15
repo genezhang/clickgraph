@@ -3,6 +3,7 @@
 //! Analogous to `kuzu::Connection`. Multiple connections can share one `Database`.
 //! Each `Connection` holds a reference to the `Database`'s executor and schema.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use clickgraph::executor::QueryExecutor;
@@ -13,6 +14,7 @@ use super::error::EmbeddedError;
 use super::export::{build_export_sql, ExportOptions};
 use super::query_result::QueryResult;
 use super::value::Value;
+use super::write_helpers;
 
 /// A connection to an embedded ClickGraph database.
 ///
@@ -127,6 +129,398 @@ impl<'db> Connection<'db> {
         build_export_sql(&select_sql, output_path, &options).map_err(EmbeddedError::Query)
     }
 
+    /// Execute a raw SQL statement (DDL, DML, or administrative command).
+    ///
+    /// No Cypher parsing or schema validation; the caller is responsible for
+    /// SQL correctness. Delegates to the executor's `execute_text` method.
+    pub fn execute_sql(&self, sql: &str) -> Result<(), EmbeddedError> {
+        self.db.runtime.block_on(async {
+            self.executor
+                .execute_text(sql, "TabSeparated", None)
+                .await
+                .map_err(EmbeddedError::from)?;
+            Ok(())
+        })
+    }
+
+    /// Create a node with the given label and properties.
+    ///
+    /// Returns the node ID (caller-provided or auto-generated UUID).
+    /// Properties use Cypher names and are mapped to ClickHouse columns via schema.
+    pub fn create_node(
+        &self,
+        label: &str,
+        properties: HashMap<String, Value>,
+    ) -> Result<String, EmbeddedError> {
+        let node_schema = self.get_node_schema(label)?;
+        let id_columns = node_schema.node_id.id.columns();
+        let id_col_strs: Vec<&str> = id_columns.iter().copied().collect();
+        let property_mappings =
+            write_helpers::extract_property_mappings(&node_schema.property_mappings);
+
+        write_helpers::validate_properties(&properties, &property_mappings, &id_col_strs)?;
+
+        // Resolve node ID: use caller-provided value or generate UUID client-side.
+        // Client-side UUID ensures the caller can use the returned ID for edge creation.
+        let id_key = id_columns.first().copied().unwrap_or("id");
+        let node_id = if let Some(v) = properties.get(id_key) {
+            match v {
+                Value::String(s) => s.clone(),
+                other => other
+                    .to_sql_literal()
+                    .map_err(EmbeddedError::Validation)?
+                    .trim_matches('\'')
+                    .to_string(),
+            }
+        } else {
+            uuid::Uuid::new_v4().to_string()
+        };
+
+        let mut columns = vec![id_key.to_string()];
+        let mut values = vec![Value::String(node_id.clone())
+            .to_sql_literal()
+            .map_err(EmbeddedError::Validation)?];
+
+        // Map properties to columns (excluding the ID column which we handle above)
+        for (cypher_name, value) in &properties {
+            if cypher_name == id_key {
+                continue;
+            }
+            let col_name = property_mappings
+                .get(cypher_name.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| cypher_name.clone());
+            columns.push(col_name);
+            values.push(value.to_sql_literal().map_err(EmbeddedError::Validation)?);
+        }
+
+        let sql = write_helpers::build_insert_sql(
+            &node_schema.database,
+            &node_schema.table_name,
+            &columns,
+            &[values],
+        );
+        self.execute_sql(&sql)?;
+
+        Ok(node_id)
+    }
+
+    /// Create an edge between two nodes.
+    ///
+    /// Properties use Cypher names and are mapped to ClickHouse columns via schema.
+    pub fn create_edge(
+        &self,
+        edge_type: &str,
+        from_id: &str,
+        to_id: &str,
+        properties: HashMap<String, Value>,
+    ) -> Result<(), EmbeddedError> {
+        let rel_schema = self.get_rel_schema(edge_type)?;
+        let from_id_cols = rel_schema.from_id.columns();
+        let to_id_cols = rel_schema.to_id.columns();
+        let mut id_col_strs: Vec<&str> = Vec::new();
+        id_col_strs.extend(from_id_cols.iter().copied());
+        id_col_strs.extend(to_id_cols.iter().copied());
+        let property_mappings =
+            write_helpers::extract_property_mappings(&rel_schema.property_mappings);
+
+        write_helpers::validate_properties(&properties, &property_mappings, &id_col_strs)?;
+
+        let mut columns = Vec::new();
+        let mut values = Vec::new();
+
+        // Add from_id and to_id
+        let from_col = from_id_cols.first().copied().unwrap_or("from_id");
+        let to_col = to_id_cols.first().copied().unwrap_or("to_id");
+        columns.push(from_col.to_string());
+        values.push(
+            Value::String(from_id.to_string())
+                .to_sql_literal()
+                .map_err(EmbeddedError::Validation)?,
+        );
+        columns.push(to_col.to_string());
+        values.push(
+            Value::String(to_id.to_string())
+                .to_sql_literal()
+                .map_err(EmbeddedError::Validation)?,
+        );
+
+        // Map properties to columns
+        for (cypher_name, value) in &properties {
+            let col_name = property_mappings
+                .get(cypher_name.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| cypher_name.clone());
+            columns.push(col_name);
+            values.push(value.to_sql_literal().map_err(EmbeddedError::Validation)?);
+        }
+
+        let sql = write_helpers::build_insert_sql(
+            &rel_schema.database,
+            &rel_schema.table_name,
+            &columns,
+            &[values],
+        );
+        self.execute_sql(&sql)
+    }
+
+    /// Upsert a node (INSERT with ReplacingMergeTree deduplication).
+    ///
+    /// The node_id property MUST be present in the properties map.
+    ///
+    /// **Note on deduplication timing**: ReplacingMergeTree deduplication is
+    /// *eventual* — it happens during background merges, not at INSERT time.
+    /// Between INSERT and the next merge, both old and new rows may be visible.
+    /// Cypher queries use `FINAL` (handled automatically by ClickGraph's engine
+    /// detection) to read only the latest version, so query results are consistent.
+    pub fn upsert_node(
+        &self,
+        label: &str,
+        properties: HashMap<String, Value>,
+    ) -> Result<String, EmbeddedError> {
+        let node_schema = self.get_node_schema(label)?;
+        let id_columns = node_schema.node_id.id.columns();
+        let id_key = id_columns.first().copied().unwrap_or("id");
+
+        if !properties.contains_key(id_key) {
+            return Err(EmbeddedError::Validation(format!(
+                "Missing required node_id property '{}' for upsert",
+                id_key
+            )));
+        }
+
+        self.create_node(label, properties)
+    }
+
+    /// Upsert an edge (INSERT with ReplacingMergeTree deduplication).
+    ///
+    /// Same INSERT semantics as `create_edge`; ReplacingMergeTree handles
+    /// deduplication by the ORDER BY key. See [`upsert_node`] for deduplication
+    /// timing caveats.
+    pub fn upsert_edge(
+        &self,
+        edge_type: &str,
+        from_id: &str,
+        to_id: &str,
+        properties: HashMap<String, Value>,
+    ) -> Result<(), EmbeddedError> {
+        self.create_edge(edge_type, from_id, to_id, properties)
+    }
+
+    /// Create multiple nodes in a single batch INSERT.
+    ///
+    /// Returns a Vec of node IDs (caller-provided or placeholder for auto-generated).
+    pub fn create_nodes(
+        &self,
+        label: &str,
+        batch: Vec<HashMap<String, Value>>,
+    ) -> Result<Vec<String>, EmbeddedError> {
+        if batch.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let node_schema = self.get_node_schema(label)?;
+        let id_columns = node_schema.node_id.id.columns();
+        let id_col_strs: Vec<&str> = id_columns.iter().copied().collect();
+        let id_key = id_columns.first().copied().unwrap_or("id");
+        let property_mappings =
+            write_helpers::extract_property_mappings(&node_schema.property_mappings);
+
+        // Validate all rows first
+        for row_props in &batch {
+            write_helpers::validate_properties(row_props, &property_mappings, &id_col_strs)?;
+        }
+
+        // Collect all unique column names across all rows (deterministic order)
+        let mut all_columns: Vec<String> = Vec::new();
+        let mut seen_columns = std::collections::HashSet::new();
+        for row_props in &batch {
+            if row_props.contains_key(id_key) && !seen_columns.contains(id_key) {
+                all_columns.push(id_key.to_string());
+                seen_columns.insert(id_key.to_string());
+            }
+            for cypher_name in row_props.keys() {
+                if cypher_name == id_key {
+                    continue;
+                }
+                let col_name = property_mappings
+                    .get(cypher_name.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| cypher_name.clone());
+                if !seen_columns.contains(&col_name) {
+                    all_columns.push(col_name.clone());
+                    seen_columns.insert(col_name);
+                }
+            }
+        }
+
+        // Build reverse mapping: CH column -> Cypher name for lookup
+        let mut reverse_map: HashMap<String, String> = HashMap::new();
+        for (cypher_name, ch_col) in &property_mappings {
+            reverse_map.insert(ch_col.to_string(), cypher_name.to_string());
+        }
+
+        let mut all_values_rows = Vec::new();
+        let mut ids = Vec::new();
+        for row_props in &batch {
+            // Resolve ID: caller-provided or client-side UUID
+            let node_id = if let Some(v) = row_props.get(id_key) {
+                match v {
+                    Value::String(s) => s.clone(),
+                    other => other
+                        .to_sql_literal()
+                        .map_err(EmbeddedError::Validation)?
+                        .trim_matches('\'')
+                        .to_string(),
+                }
+            } else {
+                uuid::Uuid::new_v4().to_string()
+            };
+            ids.push(node_id.clone());
+
+            let mut row_values = Vec::new();
+            for col in &all_columns {
+                if col == id_key {
+                    row_values.push(
+                        Value::String(node_id.clone())
+                            .to_sql_literal()
+                            .map_err(EmbeddedError::Validation)?,
+                    );
+                } else {
+                    let cypher_name = reverse_map.get(col).unwrap_or(col);
+                    if let Some(val) = row_props.get(cypher_name) {
+                        row_values.push(val.to_sql_literal().map_err(EmbeddedError::Validation)?);
+                    } else {
+                        row_values.push("DEFAULT".to_string());
+                    }
+                }
+            }
+            all_values_rows.push(row_values);
+        }
+
+        let sql = write_helpers::build_insert_sql(
+            &node_schema.database,
+            &node_schema.table_name,
+            &all_columns,
+            &all_values_rows,
+        );
+        self.execute_sql(&sql)?;
+        Ok(ids)
+    }
+
+    /// Create multiple edges in a single batch INSERT.
+    pub fn create_edges(
+        &self,
+        edge_type: &str,
+        batch: Vec<(String, String, HashMap<String, Value>)>,
+    ) -> Result<(), EmbeddedError> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+
+        let rel_schema = self.get_rel_schema(edge_type)?;
+        let from_id_cols = rel_schema.from_id.columns();
+        let to_id_cols = rel_schema.to_id.columns();
+        let mut id_col_strs: Vec<&str> = Vec::new();
+        id_col_strs.extend(from_id_cols.iter().copied());
+        id_col_strs.extend(to_id_cols.iter().copied());
+        let from_col = from_id_cols.first().copied().unwrap_or("from_id");
+        let to_col = to_id_cols.first().copied().unwrap_or("to_id");
+        let property_mappings =
+            write_helpers::extract_property_mappings(&rel_schema.property_mappings);
+
+        // Validate all rows first
+        for (_, _, row_props) in &batch {
+            write_helpers::validate_properties(row_props, &property_mappings, &id_col_strs)?;
+        }
+
+        // Collect all unique property columns
+        let mut prop_columns: Vec<String> = Vec::new();
+        let mut seen_columns = std::collections::HashSet::new();
+        for (_, _, row_props) in &batch {
+            for cypher_name in row_props.keys() {
+                let col_name = property_mappings
+                    .get(cypher_name.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| cypher_name.clone());
+                if !seen_columns.contains(&col_name) {
+                    prop_columns.push(col_name.clone());
+                    seen_columns.insert(col_name);
+                }
+            }
+        }
+
+        let mut columns = vec![from_col.to_string(), to_col.to_string()];
+        columns.extend(prop_columns.iter().cloned());
+
+        let mut reverse_map: HashMap<String, String> = HashMap::new();
+        for (cypher_name, ch_col) in &property_mappings {
+            reverse_map.insert(ch_col.to_string(), cypher_name.to_string());
+        }
+
+        let mut all_values_rows = Vec::new();
+        for (from_id, to_id, row_props) in &batch {
+            let mut row_values = vec![
+                Value::String(from_id.clone())
+                    .to_sql_literal()
+                    .map_err(EmbeddedError::Validation)?,
+                Value::String(to_id.clone())
+                    .to_sql_literal()
+                    .map_err(EmbeddedError::Validation)?,
+            ];
+            for col in &prop_columns {
+                let cypher_name = reverse_map.get(col).unwrap_or(col);
+                if let Some(val) = row_props.get(cypher_name) {
+                    row_values.push(val.to_sql_literal().map_err(EmbeddedError::Validation)?);
+                } else {
+                    row_values.push("DEFAULT".to_string());
+                }
+            }
+            all_values_rows.push(row_values);
+        }
+
+        let sql = write_helpers::build_insert_sql(
+            &rel_schema.database,
+            &rel_schema.table_name,
+            &columns,
+            &all_values_rows,
+        );
+        self.execute_sql(&sql)
+    }
+
+    // --- Private schema lookup helpers ---
+
+    fn get_node_schema(
+        &self,
+        label: &str,
+    ) -> Result<&clickgraph::graph_catalog::graph_schema::NodeSchema, EmbeddedError> {
+        self.schema.all_node_schemas().get(label).ok_or_else(|| {
+            EmbeddedError::Validation(format!(
+                "Unknown node label '{}'. Valid labels: {:?}",
+                label,
+                self.schema.all_node_schemas().keys().collect::<Vec<_>>()
+            ))
+        })
+    }
+
+    fn get_rel_schema(
+        &self,
+        edge_type: &str,
+    ) -> Result<&clickgraph::graph_catalog::graph_schema::RelationshipSchema, EmbeddedError> {
+        // Use the schema's get_rel_schema which handles both exact keys
+        // (e.g., "KNOWS::Person::Person") and simple type names (e.g., "KNOWS")
+        self.schema.get_rel_schema(edge_type).map_err(|_| {
+            EmbeddedError::Validation(format!(
+                "Unknown relationship type '{}'. Valid types: {:?}",
+                edge_type,
+                self.schema
+                    .get_relationships_schemas()
+                    .keys()
+                    .collect::<Vec<_>>()
+            ))
+        })
+    }
+
     async fn export_async(
         &self,
         cypher: &str,
@@ -150,7 +544,6 @@ impl<'db> Connection<'db> {
             let export_sql = build_export_sql(&select_sql, &output_path, &options)
                 .map_err(EmbeddedError::Query)?;
 
-            // Execute the INSERT INTO FUNCTION file(...) — no result rows expected
             executor
                 .execute_text(&export_sql, "TabSeparated", None)
                 .await
@@ -163,7 +556,7 @@ impl<'db> Connection<'db> {
 
     /// Handle `CALL apoc.export.{csv|json|parquet}.query(...)` in embedded mode.
     ///
-    /// Parses arguments, translates inner Cypher → SQL, builds export SQL, executes.
+    /// Parses arguments, translates inner Cypher to SQL, builds export SQL, executes.
     /// Returns a single-row result with export status.
     async fn handle_export_call(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
         use clickgraph::clickhouse_query_generator::cypher_to_sql;
@@ -181,11 +574,9 @@ impl<'db> Connection<'db> {
         with_query_context(QueryContext::new(None), async move {
             set_current_schema(Arc::clone(&schema));
 
-            // Parse the CALL statement
             let (_, stmt) = open_cypher_parser::parse_cypher_statement(&cypher)
                 .map_err(|e| EmbeddedError::Query(format!("Parse error: {}", e)))?;
 
-            // Extract procedure name and arguments
             let (proc_name, expressions): (String, Vec<_>) = match &stmt {
                 CypherStatement::ProcedureCall(pc) => {
                     (pc.procedure_name.to_string(), pc.arguments.iter().collect())
@@ -213,11 +604,9 @@ impl<'db> Connection<'db> {
             let args =
                 apoc_export::parse_export_call(&expressions).map_err(EmbeddedError::Query)?;
 
-            // Translate inner Cypher → SQL
             let inner_sql =
                 cypher_to_sql(&args.cypher_query, &schema, 100).map_err(EmbeddedError::Query)?;
 
-            // Build export SQL using the full destination resolver
             let export_sql = apoc_export::build_export_sql(
                 &inner_sql,
                 &args.destination,
@@ -226,13 +615,11 @@ impl<'db> Connection<'db> {
             )
             .map_err(EmbeddedError::Query)?;
 
-            // Execute
             executor
                 .execute_text(&export_sql, "TabSeparated", None)
                 .await
                 .map_err(EmbeddedError::from)?;
 
-            // Return status as a single-row result
             let columns = vec![
                 "file".to_string(),
                 "format".to_string(),
@@ -320,11 +707,9 @@ impl<'db> Connection<'db> {
         let executor = Arc::clone(&self.executor);
         let cypher = cypher.to_string();
 
-        // Parse the CALL statement
         let (_, stmt) = open_cypher_parser::parse_cypher_statement(&cypher)
             .map_err(|e| EmbeddedError::Query(format!("Parse error: {}", e)))?;
 
-        // Extract arguments
         let expressions: Vec<_> = match &stmt {
             CypherStatement::ProcedureCall(pc) => pc.arguments.iter().collect(),
             CypherStatement::Query { query, .. } => {
@@ -350,15 +735,11 @@ impl<'db> Connection<'db> {
         let search_sql = vector_search::build_vector_search_sql(&search_args, index_config)
             .map_err(EmbeddedError::Query)?;
 
-        // Execute and parse results
         let json_rows = executor
             .execute_json(&search_sql, None)
             .await
             .map_err(EmbeddedError::from)?;
 
-        // Derive columns from the first row, or use defaults for empty results.
-        // The SQL is `SELECT *, <score_expr> AS score` so columns come from the table
-        // schema plus `score`. We derive from the first row to stay schema-agnostic.
         let columns: Vec<String> = if let Some(first_row) = json_rows.first() {
             if let serde_json::Value::Object(map) = first_row {
                 map.keys().cloned().collect()
@@ -366,7 +747,6 @@ impl<'db> Connection<'db> {
                 vec!["result".to_string()]
             }
         } else {
-            // Empty results — return minimal columns consistent with YIELD node, score
             return Ok(QueryResult::new(
                 vec!["node".to_string(), "score".to_string()],
                 vec![],
@@ -470,9 +850,7 @@ impl<'db> Connection<'db> {
     }
 
     async fn query_async(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
-        // Intercept CALL apoc.export.* and COPY TO — parse first to avoid false positives
         if let Ok((_, stmt)) = clickgraph::open_cypher_parser::parse_cypher_statement(cypher) {
-            // COPY TO intercept
             if let clickgraph::open_cypher_parser::ast::CypherStatement::CopyTo(ref copy_stmt) =
                 stmt
             {
@@ -486,7 +864,6 @@ impl<'db> Connection<'db> {
                     .await;
             }
 
-            // APOC export intercept
             let proc_name = match &stmt {
                 clickgraph::open_cypher_parser::ast::CypherStatement::ProcedureCall(pc) => {
                     Some(pc.procedure_name.to_string())
@@ -529,7 +906,6 @@ impl<'db> Connection<'db> {
                 .await
                 .map_err(EmbeddedError::from)?;
 
-            // Build column names from the first row (preserve insertion order via serde_json)
             let mut column_names: Vec<String> = Vec::new();
             let mut rows: Vec<Vec<Value>> = Vec::new();
 
@@ -588,7 +964,39 @@ graph_schema:
         Arc::new(config.to_graph_schema().expect("valid schema"))
     }
 
+    fn build_writable_test_schema() -> Arc<GraphSchema> {
+        let yaml = r#"
+name: test_writable
+graph_schema:
+  nodes:
+    - label: Person
+      database: test_db
+      table: persons
+      node_id: person_id
+      property_mappings:
+        person_id: person_id
+        name: full_name
+        age: age
+  edges:
+    - type: KNOWS
+      database: test_db
+      table: knows
+      from_node: Person
+      to_node: Person
+      from_id: from_person_id
+      to_id: to_person_id
+      property_mappings:
+        since: since_year
+"#;
+        let config: GraphSchemaConfig = serde_yaml::from_str(yaml).expect("valid yaml");
+        Arc::new(config.to_graph_schema().expect("valid schema"))
+    }
+
     fn make_stub_db() -> Database {
+        make_stub_db_with_schema(build_test_schema())
+    }
+
+    fn make_stub_db_with_schema(schema: Arc<GraphSchema>) -> Database {
         use async_trait::async_trait;
         use clickgraph::executor::ExecutorError;
         use clickgraph::executor::QueryExecutor;
@@ -617,7 +1025,95 @@ graph_schema:
 
         Database {
             executor: Arc::new(StubExecutor),
-            schema: build_test_schema(),
+            schema,
+            runtime: tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        }
+    }
+
+    /// Create a stub DB whose executor captures executed SQL for inspection.
+    fn make_capturing_db(
+        schema: Arc<GraphSchema>,
+    ) -> (Database, Arc<std::sync::Mutex<Vec<String>>>) {
+        use async_trait::async_trait;
+        use clickgraph::executor::ExecutorError;
+        use clickgraph::executor::QueryExecutor;
+
+        struct CapturingExecutor {
+            captured: Arc<std::sync::Mutex<Vec<String>>>,
+        }
+
+        #[async_trait]
+        impl QueryExecutor for CapturingExecutor {
+            async fn execute_json(
+                &self,
+                _sql: &str,
+                _role: Option<&str>,
+            ) -> Result<Vec<serde_json::Value>, ExecutorError> {
+                Ok(vec![])
+            }
+
+            async fn execute_text(
+                &self,
+                sql: &str,
+                _format: &str,
+                _role: Option<&str>,
+            ) -> Result<String, ExecutorError> {
+                self.captured.lock().unwrap().push(sql.to_string());
+                Ok(String::new())
+            }
+        }
+
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let executor = Arc::new(CapturingExecutor {
+            captured: Arc::clone(&captured),
+        });
+
+        let db = Database {
+            executor,
+            schema,
+            runtime: tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        };
+
+        (db, captured)
+    }
+
+    /// Create a stub DB whose executor returns errors.
+    fn make_error_db(schema: Arc<GraphSchema>) -> Database {
+        use async_trait::async_trait;
+        use clickgraph::executor::ExecutorError;
+        use clickgraph::executor::QueryExecutor;
+
+        struct ErrorExecutor;
+
+        #[async_trait]
+        impl QueryExecutor for ErrorExecutor {
+            async fn execute_json(
+                &self,
+                _sql: &str,
+                _role: Option<&str>,
+            ) -> Result<Vec<serde_json::Value>, ExecutorError> {
+                Err(ExecutorError::QueryFailed("test error".to_string()))
+            }
+
+            async fn execute_text(
+                &self,
+                _sql: &str,
+                _format: &str,
+                _role: Option<&str>,
+            ) -> Result<String, ExecutorError> {
+                Err(ExecutorError::QueryFailed("test error".to_string()))
+            }
+        }
+
+        Database {
+            executor: Arc::new(ErrorExecutor),
+            schema,
             runtime: tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -737,14 +1233,11 @@ graph_schema:
 
     #[test]
     fn test_call_export_via_query() {
-        // Verify that CALL apoc.export.*.query() is intercepted and routed
-        // to the export handler (returns a status result, not SQL error)
         let db = make_stub_db();
         let conn = Connection::new(&db).unwrap();
         let result = conn.query(
             r#"CALL apoc.export.parquet.query("MATCH (u:User) RETURN u.name", "/tmp/users.parquet", {})"#,
         );
-        // With stub executor, this should succeed (StubExecutor returns empty string)
         assert!(
             result.is_ok(),
             "CALL export should be handled: {:?}",
@@ -772,5 +1265,262 @@ graph_schema:
             r#"CALL apoc.export.json.query("MATCH (u:User) RETURN u.name", "s3://mybucket/users.json", {})"#,
         );
         assert!(result.is_ok(), "S3 export should work: {:?}", result.err());
+    }
+
+    // --- execute_sql tests ---
+
+    #[test]
+    fn test_execute_sql_ddl_returns_ok() {
+        let db = make_stub_db();
+        let conn = Connection::new(&db).unwrap();
+        let result = conn.execute_sql(
+            "CREATE TABLE IF NOT EXISTS test_db.foo (id String) ENGINE = MergeTree() ORDER BY id",
+        );
+        assert!(result.is_ok(), "DDL should succeed: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_execute_sql_insert_returns_ok() {
+        let db = make_stub_db();
+        let conn = Connection::new(&db).unwrap();
+        let result = conn.execute_sql("INSERT INTO test_db.foo (id) VALUES ('abc')");
+        assert!(result.is_ok(), "INSERT should succeed: {:?}", result.err());
+    }
+
+    #[test]
+    fn test_execute_sql_propagates_executor_errors() {
+        let db = make_error_db(build_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let result = conn.execute_sql("SELECT 1");
+        assert!(result.is_err(), "should propagate executor error");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, EmbeddedError::Executor(_)),
+            "should be Executor error: {:?}",
+            err
+        );
+    }
+
+    // --- create_node tests ---
+
+    #[test]
+    fn test_create_node_with_caller_provided_id() {
+        let schema = build_writable_test_schema();
+        let (db, captured) = make_capturing_db(schema);
+        let conn = Connection::new(&db).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("person_id".to_string(), Value::String("p1".to_string()));
+        props.insert("name".to_string(), Value::String("Alice".to_string()));
+
+        let result = conn.create_node("Person", props);
+        assert!(
+            result.is_ok(),
+            "create_node should succeed: {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap(), "p1");
+
+        let sqls = captured.lock().unwrap();
+        assert_eq!(sqls.len(), 1);
+        let sql = &sqls[0];
+        assert!(sql.contains("INSERT INTO"), "should be INSERT");
+        assert!(sql.contains("test_db"), "should reference database");
+        assert!(sql.contains("persons"), "should reference table");
+        assert!(sql.contains("person_id"), "should include ID column");
+        assert!(sql.contains("'p1'"), "should include ID value");
+        assert!(sql.contains("full_name"), "should map name -> full_name");
+        assert!(sql.contains("'Alice'"), "should include property value");
+    }
+
+    #[test]
+    fn test_create_node_without_id_omits_id_column() {
+        let schema = build_writable_test_schema();
+        let (db, captured) = make_capturing_db(schema);
+        let conn = Connection::new(&db).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), Value::String("Bob".to_string()));
+
+        let result = conn.create_node("Person", props);
+        assert!(
+            result.is_ok(),
+            "create_node should succeed: {:?}",
+            result.err()
+        );
+        let id = result.unwrap();
+        // Client-side UUID should be a valid UUID (36 chars with hyphens)
+        assert_eq!(id.len(), 36, "auto-generated ID should be a UUID: {}", id);
+        assert!(id.contains('-'), "UUID should contain hyphens: {}", id);
+
+        let sqls = captured.lock().unwrap();
+        let sql = &sqls[0];
+        assert!(sql.contains("full_name"), "should map name -> full_name");
+        assert!(
+            sql.contains(&id),
+            "INSERT should contain the generated UUID"
+        );
+        assert!(
+            sql.contains("person_id"),
+            "should include ID column with auto-generated UUID"
+        );
+    }
+
+    #[test]
+    fn test_create_node_unknown_property_returns_validation_error() {
+        let schema = build_writable_test_schema();
+        let db = make_stub_db_with_schema(schema);
+        let conn = Connection::new(&db).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("nonexistent".to_string(), Value::String("val".to_string()));
+
+        let result = conn.create_node("Person", props);
+        assert!(result.is_err(), "unknown property should return error");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, EmbeddedError::Validation(_)),
+            "should be Validation error: {:?}",
+            err
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("nonexistent"), "error should list unknown key");
+    }
+
+    // --- create_edge tests ---
+
+    #[test]
+    fn test_create_edge_generates_correct_insert() {
+        let schema = build_writable_test_schema();
+        let (db, captured) = make_capturing_db(schema);
+        let conn = Connection::new(&db).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("since".to_string(), Value::Int64(2020));
+
+        let result = conn.create_edge("KNOWS", "p1", "p2", props);
+        assert!(
+            result.is_ok(),
+            "create_edge should succeed: {:?}",
+            result.err()
+        );
+
+        let sqls = captured.lock().unwrap();
+        let sql = &sqls[0];
+        assert!(sql.contains("INSERT INTO"), "should be INSERT");
+        assert!(sql.contains("knows"), "should reference table");
+        assert!(
+            sql.contains("from_person_id"),
+            "should include from_id column"
+        );
+        assert!(sql.contains("to_person_id"), "should include to_id column");
+        assert!(sql.contains("'p1'"), "should include from_id value");
+        assert!(sql.contains("'p2'"), "should include to_id value");
+        assert!(sql.contains("since_year"), "should map since -> since_year");
+        assert!(sql.contains("2020"), "should include property value");
+    }
+
+    // --- upsert_node tests ---
+
+    #[test]
+    fn test_upsert_node_without_id_returns_validation_error() {
+        let schema = build_writable_test_schema();
+        let db = make_stub_db_with_schema(schema);
+        let conn = Connection::new(&db).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("name".to_string(), Value::String("Alice".to_string()));
+
+        let result = conn.upsert_node("Person", props);
+        assert!(result.is_err(), "upsert without ID should fail");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, EmbeddedError::Validation(_)),
+            "should be Validation error: {:?}",
+            err
+        );
+        assert!(
+            err.to_string().contains("person_id"),
+            "should mention the required ID property"
+        );
+    }
+
+    #[test]
+    fn test_upsert_node_with_id_generates_insert() {
+        let schema = build_writable_test_schema();
+        let (db, captured) = make_capturing_db(schema);
+        let conn = Connection::new(&db).unwrap();
+
+        let mut props = HashMap::new();
+        props.insert("person_id".to_string(), Value::String("p1".to_string()));
+        props.insert("name".to_string(), Value::String("Alice".to_string()));
+
+        let result = conn.upsert_node("Person", props);
+        assert!(
+            result.is_ok(),
+            "upsert_node should succeed: {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap(), "p1");
+
+        let sqls = captured.lock().unwrap();
+        assert!(!sqls.is_empty(), "should have executed INSERT");
+    }
+
+    // --- batch tests ---
+
+    #[test]
+    fn test_create_nodes_batch_generates_single_insert() {
+        let schema = build_writable_test_schema();
+        let (db, captured) = make_capturing_db(schema);
+        let conn = Connection::new(&db).unwrap();
+
+        let mut row1 = HashMap::new();
+        row1.insert("person_id".to_string(), Value::String("p1".to_string()));
+        row1.insert("name".to_string(), Value::String("Alice".to_string()));
+
+        let mut row2 = HashMap::new();
+        row2.insert("person_id".to_string(), Value::String("p2".to_string()));
+        row2.insert("name".to_string(), Value::String("Bob".to_string()));
+
+        let result = conn.create_nodes("Person", vec![row1, row2]);
+        assert!(
+            result.is_ok(),
+            "batch create should succeed: {:?}",
+            result.err()
+        );
+        let ids = result.unwrap();
+        assert_eq!(ids, vec!["p1", "p2"]);
+
+        let sqls = captured.lock().unwrap();
+        assert_eq!(sqls.len(), 1, "should be a single INSERT");
+        let sql = &sqls[0];
+        assert!(sql.contains("'p1'"), "should include first row");
+        assert!(sql.contains("'p2'"), "should include second row");
+    }
+
+    #[test]
+    fn test_create_edges_batch_generates_single_insert() {
+        let schema = build_writable_test_schema();
+        let (db, captured) = make_capturing_db(schema);
+        let conn = Connection::new(&db).unwrap();
+
+        let batch = vec![
+            ("p1".to_string(), "p2".to_string(), HashMap::new()),
+            ("p2".to_string(), "p3".to_string(), HashMap::new()),
+        ];
+
+        let result = conn.create_edges("KNOWS", batch);
+        assert!(
+            result.is_ok(),
+            "batch create edges should succeed: {:?}",
+            result.err()
+        );
+
+        let sqls = captured.lock().unwrap();
+        assert_eq!(sqls.len(), 1, "should be a single INSERT");
+        let sql = &sqls[0];
+        assert!(sql.contains("'p1'"), "should include first edge from_id");
+        assert!(sql.contains("'p3'"), "should include second edge to_id");
     }
 }
