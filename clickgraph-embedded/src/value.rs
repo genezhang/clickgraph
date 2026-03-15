@@ -45,6 +45,30 @@ impl Value {
     pub fn is_null(&self) -> bool {
         matches!(self, Value::Null)
     }
+
+    /// Render this value as a SQL literal for use in INSERT statements.
+    ///
+    /// - `String` values are single-quoted with internal `'` doubled.
+    /// - `Int64` and `Float64` render as bare numeric literals.
+    /// - `Bool` renders as `1` (true) or `0` (false).
+    /// - `Null` renders as `NULL`.
+    /// - `List` and `Map` are unsupported for INSERT and will panic.
+    pub fn to_sql_literal(&self) -> String {
+        match self {
+            Value::Null => "NULL".to_string(),
+            Value::Bool(true) => "1".to_string(),
+            Value::Bool(false) => "0".to_string(),
+            Value::Int64(n) => n.to_string(),
+            Value::Float64(f) => f.to_string(),
+            Value::String(s) => format!("'{}'", s.replace('\'', "''")),
+            Value::List(_) => {
+                panic!("List values are not supported in INSERT statements")
+            }
+            Value::Map(_) => {
+                panic!("Map values are not supported in INSERT statements")
+            }
+        }
+    }
 }
 
 impl From<JsonValue> for Value {
@@ -139,6 +163,40 @@ mod tests {
             format!("{}", Value::List(vec![Value::Int64(1), Value::Int64(2)])),
             "[1, 2]"
         );
+    }
+
+    // --- to_sql_literal tests ---
+
+    #[test]
+    fn test_sql_literal_string_with_quote_doubling() {
+        assert_eq!(
+            Value::String("O'Brien".to_string()).to_sql_literal(),
+            "'O''Brien'"
+        );
+        assert_eq!(
+            Value::String("hello".to_string()).to_sql_literal(),
+            "'hello'"
+        );
+        assert_eq!(Value::String("".to_string()).to_sql_literal(), "''");
+    }
+
+    #[test]
+    fn test_sql_literal_int64_and_float64() {
+        assert_eq!(Value::Int64(42).to_sql_literal(), "42");
+        assert_eq!(Value::Int64(-1).to_sql_literal(), "-1");
+        assert_eq!(Value::Float64(3.14).to_sql_literal(), "3.14");
+        assert_eq!(Value::Float64(0.0).to_sql_literal(), "0");
+    }
+
+    #[test]
+    fn test_sql_literal_bool() {
+        assert_eq!(Value::Bool(true).to_sql_literal(), "1");
+        assert_eq!(Value::Bool(false).to_sql_literal(), "0");
+    }
+
+    #[test]
+    fn test_sql_literal_null() {
+        assert_eq!(Value::Null.to_sql_literal(), "NULL");
     }
 }
 

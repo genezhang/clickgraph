@@ -15,6 +15,9 @@ pub enum EmbeddedError {
 
     #[error("I/O error: {0}")]
     Io(String),
+
+    #[error("Validation error: {0}")]
+    Validation(String),
 }
 
 impl From<clickgraph::executor::ExecutorError> for EmbeddedError {
