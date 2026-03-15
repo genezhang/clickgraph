@@ -70,7 +70,11 @@ pub fn build_insert_sql(
     columns: &[String],
     values_rows: &[Vec<String>],
 ) -> String {
-    let cols = columns.join(", ");
+    let cols = columns
+        .iter()
+        .map(|c| format!("`{}`", c))
+        .collect::<Vec<_>>()
+        .join(", ");
     let rows: Vec<String> = values_rows
         .iter()
         .map(|row| format!("({})", row.join(", ")))

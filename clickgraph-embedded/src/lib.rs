@@ -41,7 +41,7 @@ pub mod error;
 pub mod export;
 pub mod query_result;
 pub mod value;
-pub mod write_helpers;
+pub(crate) mod write_helpers;
 
 pub use connection::Connection;
 pub use database::{Database, StorageCredentials, SystemConfig};

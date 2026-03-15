@@ -48,25 +48,26 @@ impl Value {
 
     /// Render this value as a SQL literal for use in INSERT statements.
     ///
-    /// - `String` values are single-quoted with internal `'` doubled.
+    /// - `String` values are single-quoted with backslashes and quotes escaped.
     /// - `Int64` and `Float64` render as bare numeric literals.
     /// - `Bool` renders as `1` (true) or `0` (false).
     /// - `Null` renders as `NULL`.
-    /// - `List` and `Map` are unsupported for INSERT and will panic.
-    pub fn to_sql_literal(&self) -> String {
+    /// - `List` and `Map` return `Err` (not supported in INSERT).
+    pub fn to_sql_literal(&self) -> Result<String, String> {
         match self {
-            Value::Null => "NULL".to_string(),
-            Value::Bool(true) => "1".to_string(),
-            Value::Bool(false) => "0".to_string(),
-            Value::Int64(n) => n.to_string(),
-            Value::Float64(f) => f.to_string(),
-            Value::String(s) => format!("'{}'", s.replace('\'', "''")),
-            Value::List(_) => {
-                panic!("List values are not supported in INSERT statements")
+            Value::Null => Ok("NULL".to_string()),
+            Value::Bool(true) => Ok("1".to_string()),
+            Value::Bool(false) => Ok("0".to_string()),
+            Value::Int64(n) => Ok(n.to_string()),
+            Value::Float64(f) => Ok(f.to_string()),
+            // Escape backslashes first, then single quotes, to prevent
+            // backslash-quote injection (e.g., `\' OR 1=1--`).
+            Value::String(s) => {
+                let escaped = s.replace('\\', "\\\\").replace('\'', "''");
+                Ok(format!("'{}'", escaped))
             }
-            Value::Map(_) => {
-                panic!("Map values are not supported in INSERT statements")
-            }
+            Value::List(_) => Err("List values are not supported in INSERT statements".to_string()),
+            Value::Map(_) => Err("Map values are not supported in INSERT statements".to_string()),
         }
     }
 }
@@ -168,35 +169,53 @@ mod tests {
     // --- to_sql_literal tests ---
 
     #[test]
-    fn test_sql_literal_string_with_quote_doubling() {
+    fn test_sql_literal_string_with_escaping() {
         assert_eq!(
-            Value::String("O'Brien".to_string()).to_sql_literal(),
+            Value::String("O'Brien".to_string())
+                .to_sql_literal()
+                .unwrap(),
             "'O''Brien'"
         );
         assert_eq!(
-            Value::String("hello".to_string()).to_sql_literal(),
+            Value::String("hello".to_string()).to_sql_literal().unwrap(),
             "'hello'"
         );
-        assert_eq!(Value::String("".to_string()).to_sql_literal(), "''");
+        assert_eq!(
+            Value::String("".to_string()).to_sql_literal().unwrap(),
+            "''"
+        );
+        // Backslash escaping prevents SQL injection
+        assert_eq!(
+            Value::String("test\\' OR 1=1--".to_string())
+                .to_sql_literal()
+                .unwrap(),
+            "'test\\\\'' OR 1=1--'"
+        );
     }
 
     #[test]
     fn test_sql_literal_int64_and_float64() {
-        assert_eq!(Value::Int64(42).to_sql_literal(), "42");
-        assert_eq!(Value::Int64(-1).to_sql_literal(), "-1");
-        assert_eq!(Value::Float64(3.14).to_sql_literal(), "3.14");
-        assert_eq!(Value::Float64(0.0).to_sql_literal(), "0");
+        assert_eq!(Value::Int64(42).to_sql_literal().unwrap(), "42");
+        assert_eq!(Value::Int64(-1).to_sql_literal().unwrap(), "-1");
+        assert_eq!(Value::Float64(3.14).to_sql_literal().unwrap(), "3.14");
+        assert_eq!(Value::Float64(0.0).to_sql_literal().unwrap(), "0");
     }
 
     #[test]
     fn test_sql_literal_bool() {
-        assert_eq!(Value::Bool(true).to_sql_literal(), "1");
-        assert_eq!(Value::Bool(false).to_sql_literal(), "0");
+        assert_eq!(Value::Bool(true).to_sql_literal().unwrap(), "1");
+        assert_eq!(Value::Bool(false).to_sql_literal().unwrap(), "0");
     }
 
     #[test]
     fn test_sql_literal_null() {
-        assert_eq!(Value::Null.to_sql_literal(), "NULL");
+        assert_eq!(Value::Null.to_sql_literal().unwrap(), "NULL");
+    }
+
+    #[test]
+    fn test_sql_literal_list_and_map_return_err() {
+        assert!(Value::List(vec![]).to_sql_literal().is_err());
+        assert!(Value::Map(vec![]).to_sql_literal().is_err());
     }
 }
 

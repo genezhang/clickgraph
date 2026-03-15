@@ -142,24 +142,26 @@ impl<'db> Connection<'db> {
 
         write_helpers::validate_properties(&properties, &property_mappings, &id_col_strs)?;
 
-        // Check if the node_id is provided in properties
+        // Resolve node ID: use caller-provided value or generate UUID client-side.
+        // Client-side UUID ensures the caller can use the returned ID for edge creation.
         let id_key = id_columns.first().copied().unwrap_or("id");
-        let provided_id = properties.get(id_key).and_then(|v| {
-            if let Value::String(s) = v {
-                Some(s.clone())
-            } else {
-                Some(v.to_sql_literal())
+        let node_id = if let Some(v) = properties.get(id_key) {
+            match v {
+                Value::String(s) => s.clone(),
+                other => other
+                    .to_sql_literal()
+                    .map_err(EmbeddedError::Validation)?
+                    .trim_matches('\'')
+                    .to_string(),
             }
-        });
+        } else {
+            uuid::Uuid::new_v4().to_string()
+        };
 
-        let mut columns = Vec::new();
-        let mut values = Vec::new();
-
-        // Add ID column if provided
-        if let Some(ref id_val) = provided_id {
-            columns.push(id_key.to_string());
-            values.push(Value::String(id_val.clone()).to_sql_literal());
-        }
+        let mut columns = vec![id_key.to_string()];
+        let mut values = vec![Value::String(node_id.clone())
+            .to_sql_literal()
+            .map_err(EmbeddedError::Validation)?];
 
         // Map properties to columns (excluding the ID column which we handle above)
         for (cypher_name, value) in &properties {
@@ -171,7 +173,7 @@ impl<'db> Connection<'db> {
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| cypher_name.clone());
             columns.push(col_name);
-            values.push(value.to_sql_literal());
+            values.push(value.to_sql_literal().map_err(EmbeddedError::Validation)?);
         }
 
         let sql = write_helpers::build_insert_sql(
@@ -182,10 +184,7 @@ impl<'db> Connection<'db> {
         );
         self.execute_sql(&sql)?;
 
-        match provided_id {
-            Some(id) => Ok(id),
-            None => Ok("(auto-generated)".to_string()),
-        }
+        Ok(node_id)
     }
 
     /// Create an edge between two nodes.
@@ -216,9 +215,17 @@ impl<'db> Connection<'db> {
         let from_col = from_id_cols.first().copied().unwrap_or("from_id");
         let to_col = to_id_cols.first().copied().unwrap_or("to_id");
         columns.push(from_col.to_string());
-        values.push(Value::String(from_id.to_string()).to_sql_literal());
+        values.push(
+            Value::String(from_id.to_string())
+                .to_sql_literal()
+                .map_err(EmbeddedError::Validation)?,
+        );
         columns.push(to_col.to_string());
-        values.push(Value::String(to_id.to_string()).to_sql_literal());
+        values.push(
+            Value::String(to_id.to_string())
+                .to_sql_literal()
+                .map_err(EmbeddedError::Validation)?,
+        );
 
         // Map properties to columns
         for (cypher_name, value) in &properties {
@@ -227,7 +234,7 @@ impl<'db> Connection<'db> {
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| cypher_name.clone());
             columns.push(col_name);
-            values.push(value.to_sql_literal());
+            values.push(value.to_sql_literal().map_err(EmbeddedError::Validation)?);
         }
 
         let sql = write_helpers::build_insert_sql(
@@ -331,31 +338,33 @@ impl<'db> Connection<'db> {
         let mut all_values_rows = Vec::new();
         let mut ids = Vec::new();
         for row_props in &batch {
-            let provided_id = row_props.get(id_key).and_then(|v| {
-                if let Value::String(s) = v {
-                    Some(s.clone())
-                } else {
-                    Some(v.to_sql_literal())
+            // Resolve ID: caller-provided or client-side UUID
+            let node_id = if let Some(v) = row_props.get(id_key) {
+                match v {
+                    Value::String(s) => s.clone(),
+                    other => other
+                        .to_sql_literal()
+                        .map_err(EmbeddedError::Validation)?
+                        .trim_matches('\'')
+                        .to_string(),
                 }
-            });
-            ids.push(
-                provided_id
-                    .clone()
-                    .unwrap_or_else(|| "(auto-generated)".to_string()),
-            );
+            } else {
+                uuid::Uuid::new_v4().to_string()
+            };
+            ids.push(node_id.clone());
 
             let mut row_values = Vec::new();
             for col in &all_columns {
                 if col == id_key {
-                    if let Some(ref id_val) = provided_id {
-                        row_values.push(Value::String(id_val.clone()).to_sql_literal());
-                    } else {
-                        row_values.push("DEFAULT".to_string());
-                    }
+                    row_values.push(
+                        Value::String(node_id.clone())
+                            .to_sql_literal()
+                            .map_err(EmbeddedError::Validation)?,
+                    );
                 } else {
                     let cypher_name = reverse_map.get(col).unwrap_or(col);
                     if let Some(val) = row_props.get(cypher_name) {
-                        row_values.push(val.to_sql_literal());
+                        row_values.push(val.to_sql_literal().map_err(EmbeddedError::Validation)?);
                     } else {
                         row_values.push("DEFAULT".to_string());
                     }
@@ -427,13 +436,17 @@ impl<'db> Connection<'db> {
         let mut all_values_rows = Vec::new();
         for (from_id, to_id, row_props) in &batch {
             let mut row_values = vec![
-                Value::String(from_id.clone()).to_sql_literal(),
-                Value::String(to_id.clone()).to_sql_literal(),
+                Value::String(from_id.clone())
+                    .to_sql_literal()
+                    .map_err(EmbeddedError::Validation)?,
+                Value::String(to_id.clone())
+                    .to_sql_literal()
+                    .map_err(EmbeddedError::Validation)?,
             ];
             for col in &prop_columns {
                 let cypher_name = reverse_map.get(col).unwrap_or(col);
                 if let Some(val) = row_props.get(cypher_name) {
-                    row_values.push(val.to_sql_literal());
+                    row_values.push(val.to_sql_literal().map_err(EmbeddedError::Validation)?);
                 } else {
                     row_values.push("DEFAULT".to_string());
                 }
@@ -1304,14 +1317,21 @@ graph_schema:
             "create_node should succeed: {:?}",
             result.err()
         );
-        assert_eq!(result.unwrap(), "(auto-generated)");
+        let id = result.unwrap();
+        // Client-side UUID should be a valid UUID (36 chars with hyphens)
+        assert_eq!(id.len(), 36, "auto-generated ID should be a UUID: {}", id);
+        assert!(id.contains('-'), "UUID should contain hyphens: {}", id);
 
         let sqls = captured.lock().unwrap();
         let sql = &sqls[0];
         assert!(sql.contains("full_name"), "should map name -> full_name");
         assert!(
-            !sql.contains("person_id"),
-            "should NOT include ID column when not provided"
+            sql.contains(&id),
+            "INSERT should contain the generated UUID"
+        );
+        assert!(
+            sql.contains("person_id"),
+            "should include ID column with auto-generated UUID"
         );
     }
 
