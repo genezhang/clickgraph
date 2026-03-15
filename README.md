@@ -15,18 +15,22 @@
 - View-based graph analytics offer the benefits of zero-ETL without the hassle of data migration and duplicate cost, yet better performance and scalability than most of the native graph analytics options.
 - Neo4j Bolt protocol support gives access to the tools available based on the Bolt protocol.
 ---
-## What's New Under Development
-
-- **🆕 Embedded mode** - Query Parquet/Iceberg/Delta/S3 directly — no ClickHouse server needed. Use as a Rust library (`clickgraph-embedded`) or run the server with `--embedded`.
-- **Golang and Python bindings** - for embedded ClickGraph in addition to Rust native interface.
-- **Export query result to external destinations** - export query results to common destinations, such as files and S3.
-
 ## What's New in v0.6.4-dev
 
-- **Denormalized & coupled schema support** - Full query support for schemas where node properties are embedded in edge tables (from/to_node_properties)
-- **OPTIONAL MATCH on denormalized schemas** - CTE + LEFT JOIN architecture for correct LEFT JOIN semantics
-- **VLP on denormalized/polymorphic schemas** - Fixed cycle prevention, exact-length VLP, and multi-type VLP
-- **1,588 unit tests** - Up from 1,277, with comprehensive cross-schema pattern matrix tests
+- **LDBC SNB benchmark: 36/37 queries (97%)** - Up from 14/37, near-complete Social Network Benchmark coverage. See [benchmark results](benchmarks/ldbc_snb/BENCHMARK_RESULTS.md) for performance data on sf0.003 and sf10 datasets.
+- **Embedded mode** - Query Parquet/Iceberg/Delta/S3 directly — no ClickHouse server needed. Use as a Rust library (`clickgraph-embedded`) or run the server with `--embedded`.
+- **Golang and Python bindings** - for embedded ClickGraph in addition to Rust native interface.
+- **Export query results** - `CALL apoc.export.{csv|json|parquet}.query()` exports to files, S3, GCS, Azure, and HTTP destinations.
+- **GraphRAG structured output** - `format: "Graph"` returns deduplicated nodes, edges, and stats for graph visualization and RAG pipelines.
+- **ClickHouse cluster load balancing** - `CLICKHOUSE_CLUSTER` env var auto-discovers and balances queries across cluster nodes.
+- **LLM-powered schema discovery** - `:discover` command generates YAML schema from ClickHouse table metadata using Anthropic or OpenAI.
+- **1,588 unit tests** - Up from 1,277, with comprehensive cross-schema pattern matrix tests.
+
+### Bug Fixes
+
+- **Denormalized & coupled schema fixes** - Corrected property mapping, ORDER BY resolution, UNION aggregates, and `id()` for schemas where node properties are embedded in edge tables.
+- **OPTIONAL MATCH on denormalized schemas** - Fixed OPTIONAL MATCH being silently dropped; now generates CTE + LEFT JOIN with correct column references.
+- **VLP on denormalized/polymorphic schemas** - Fixed cycle prevention crash for virtual nodes, enabling exact-length, range, and shortestPath VLP patterns.
 
 See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 
