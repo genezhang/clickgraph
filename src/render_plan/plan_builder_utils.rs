@@ -9955,6 +9955,67 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         );
                     }
 
+                    // Phase D: Ensure node ID column is present in CTE SELECT.
+                    // When RETURN references path variables (not specific node properties),
+                    // property requirements may be empty, causing the CTE to omit node
+                    // columns. But the VLP JOIN needs the node's ID column to join on.
+                    // Check each exported table alias and ensure its ID column exists.
+                    log::info!(
+                        "🔧 Phase D: checking {} exported_aliases: {:?}, CTE select has {} items: {:?}",
+                        exported_aliases.len(),
+                        exported_aliases,
+                        with_cte_render.select.items.len(),
+                        with_cte_render.select.items.iter().map(|i| i.col_alias.as_ref().map(|a| a.0.as_str()).unwrap_or("?")).collect::<Vec<_>>()
+                    );
+                    for ea in &exported_aliases {
+                        // Skip non-table aliases (scalar expressions like allNeighboursCount)
+                        let has_id_col = with_cte_render.select.items.iter().any(|item| {
+                            if let Some(ref ca) = item.col_alias {
+                                let prefix = format!("p{}_", ea.len());
+                                let id_suffix = "_id";
+                                ca.0.starts_with(&format!("{}{}_", prefix, ea))
+                                    && ca.0.ends_with(id_suffix)
+                            } else {
+                                false
+                            }
+                        });
+                        if !has_id_col {
+                            // Try to find the ID column from schema
+                            if let Ok(graph_schema) =
+                                crate::server::query_context::get_current_schema()
+                                    .ok_or(())
+                                    .and_then(|s| Ok(s))
+                            {
+                                // Look up table for this alias from plan_ctx
+                                let label = plan_ctx.and_then(|ctx| {
+                                    ctx.get_table_ctx(ea).ok().and_then(|tc| tc.get_label_opt())
+                                });
+                                if let Some(label) = label {
+                                    if let Ok(ns) = graph_schema.node_schema(&label) {
+                                        let id_col = ns.node_id.id.first_column().to_string();
+                                        let cte_col =
+                                            crate::utils::cte_column_naming::cte_column_name(
+                                                ea, &id_col,
+                                            );
+                                        log::info!(
+                                            "🔧 Phase D: Adding missing ID column '{}' to WITH CTE for alias '{}'",
+                                            cte_col, ea
+                                        );
+                                        with_cte_render.select.items.push(SelectItem {
+                                            expression: RenderExpr::PropertyAccessExp(
+                                                PropertyAccess {
+                                                    table_alias: TableAlias(ea.to_string()),
+                                                    column: PropertyValue::Column(id_col),
+                                                },
+                                            ),
+                                            col_alias: Some(ColumnAlias(cte_col)),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     log::info!(
                         "✅ Pattern comprehension CTEs applied for '{}': {} CTEs created",
                         with_alias,
