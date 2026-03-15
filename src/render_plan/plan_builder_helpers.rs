@@ -232,7 +232,14 @@ pub(super) fn rewrite_table_aliases_to_cte(
             if with_table_aliases.contains(&prop.table_alias.0) {
                 // 🔧 FIX: CTE columns use underscore naming (a_name), not dot notation (a.name)
                 // Rewrite a.name -> with_result."a_name" (not "a.name")
-                let col_name = cte_column_name(&prop.table_alias.0, prop.column.raw());
+                // Skip re-encoding if the column is already a CTE-encoded name (p{N}_...)
+                // to avoid double-encoding like p20_a_allNeighboursCount_p1_a_user_id
+                let raw_col = prop.column.raw();
+                let col_name = if crate::utils::cte_column_naming::is_cte_column(raw_col) {
+                    raw_col.to_string()
+                } else {
+                    cte_column_name(&prop.table_alias.0, raw_col)
+                };
                 RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(cte_name.to_string()),
                     column: PropertyValue::Column(col_name),

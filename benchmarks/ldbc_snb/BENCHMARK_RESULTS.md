@@ -1,6 +1,6 @@
 # LDBC SNB Benchmark Results
 
-**Updated**: March 2026 · ClickGraph v0.6.3-dev
+**Updated**: March 2026 · ClickGraph v0.6.4-dev
 
 ## Summary
 
