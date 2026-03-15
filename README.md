@@ -17,20 +17,18 @@
 ---
 ## What's New in v0.6.4-dev
 
-- **LDBC SNB benchmark: 36/37 queries (97%)** - Up from 14/37, near-complete Social Network Benchmark coverage. See [benchmark results](benchmarks/ldbc_snb/BENCHMARK_RESULTS.md) for performance data on sf0.003 and sf10 datasets.
 - **Embedded mode** - Query Parquet/Iceberg/Delta/S3 directly — no ClickHouse server needed. Use as a Rust library (`clickgraph-embedded`) or run the server with `--embedded`.
 - **Golang and Python bindings** - for embedded ClickGraph in addition to Rust native interface.
 - **Export query results** - `CALL apoc.export.{csv|json|parquet}.query()` exports to files, S3, GCS, Azure, and HTTP destinations.
+- **Denormalized & coupled schema fixes** - Corrected property mapping, OPTIONAL MATCH (was silently dropped), and VLP cycle prevention for schemas where node properties are embedded in edge tables.
+- **1,588 unit tests** - Up from 1,277, with comprehensive cross-schema pattern matrix tests.
+
+### Features
+
+- **LDBC SNB benchmark: 36/37 queries (97%)** - Near-complete Social Network Benchmark coverage. See [benchmark results](benchmarks/ldbc_snb/BENCHMARK_RESULTS.md) for performance data on sf0.003 and sf10 datasets.
 - **GraphRAG structured output** - `format: "Graph"` returns deduplicated nodes, edges, and stats for graph visualization and RAG pipelines.
 - **ClickHouse cluster load balancing** - `CLICKHOUSE_CLUSTER` env var auto-discovers and balances queries across cluster nodes.
 - **LLM-powered schema discovery** - `:discover` command generates YAML schema from ClickHouse table metadata using Anthropic or OpenAI.
-- **1,588 unit tests** - Up from 1,277, with comprehensive cross-schema pattern matrix tests.
-
-### Bug Fixes
-
-- **Denormalized & coupled schema fixes** - Corrected property mapping, ORDER BY resolution, UNION aggregates, and `id()` for schemas where node properties are embedded in edge tables.
-- **OPTIONAL MATCH on denormalized schemas** - Fixed OPTIONAL MATCH being silently dropped; now generates CTE + LEFT JOIN with correct column references.
-- **VLP on denormalized/polymorphic schemas** - Fixed cycle prevention crash for virtual nodes, enabling exact-length, range, and shortestPath VLP patterns.
 
 See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 
