@@ -636,6 +636,94 @@ async fn test_full_browser_sequence_expand() {
 }
 
 // ===========================================================================
+// Browser click-to-expand: WITH + pattern comprehension + path variable
+// Regression tests for PR #234 (CTE column double-encoding, missing ID column,
+// Column pruning). The browser sends this exact pattern when expanding nodes.
+// ===========================================================================
+
+/// Neo4j Browser expand: User node with WHERE filter + size(PC) + RETURN path
+/// Regression: CTE was missing node ID column when RETURN references path variable,
+/// causing "Identifier 'p1_a_user_id' cannot be resolved" on ClickHouse.
+#[tokio::test]
+async fn test_browser_expand_with_pc_and_path_user() {
+    let schema = create_standard_schema();
+    let cypher = "MATCH (a:User) WHERE a.user_id = 1 \
+                  WITH a, size([(a)--() | 1]) AS allNeighboursCount \
+                  MATCH path = (a)--(o) \
+                  RETURN path, allNeighboursCount \
+                  ORDER BY o.user_id LIMIT 97";
+    let sql = generate_expand_sql(&schema, cypher).await;
+    let sql_lower = sql.to_lowercase();
+
+    // CTE must include node ID column for VLP JOIN
+    assert!(
+        sql.contains("p1_a_user_id"),
+        "WITH CTE must include node ID column p1_a_user_id for VLP JOIN: got SQL:\n{sql}"
+    );
+    // Must have allNeighboursCount in output
+    assert!(
+        sql_lower.contains("allneighbourscount"),
+        "allNeighboursCount must appear in SQL: got SQL:\n{sql}"
+    );
+    // Must NOT have double-encoded CTE column names (p20_a_allNeighboursCount_p1_a_user_id)
+    assert!(
+        !sql.contains("p20_"),
+        "Must not double-encode CTE column names: got SQL:\n{sql}"
+    );
+}
+
+/// Neo4j Browser expand: Post node (to-side-only) with WHERE filter + size(PC) + RETURN path
+/// Regression: Post nodes only have incoming edges (AUTHORED, LIKED), making them
+/// "to-side-only". Combined with RETURN path, the CTE lost all node columns.
+#[tokio::test]
+async fn test_browser_expand_with_pc_and_path_post() {
+    let schema = create_standard_schema();
+    let cypher = "MATCH (a:Post) WHERE a.post_id = 19 \
+                  WITH a, size([(a)--() | 1]) AS allNeighboursCount \
+                  MATCH path = (a)--(o) \
+                  RETURN path, allNeighboursCount \
+                  ORDER BY o.user_id LIMIT 97";
+    let sql = generate_expand_sql(&schema, cypher).await;
+    let sql_lower = sql.to_lowercase();
+
+    // CTE must include node ID column for VLP JOIN
+    assert!(
+        sql.contains("p1_a_post_id"),
+        "WITH CTE must include node ID column p1_a_post_id for VLP JOIN: got SQL:\n{sql}"
+    );
+    assert!(
+        sql_lower.contains("allneighbourscount"),
+        "allNeighboursCount must appear in SQL: got SQL:\n{sql}"
+    );
+    assert!(
+        !sql.contains("p20_"),
+        "Must not double-encode CTE column names: got SQL:\n{sql}"
+    );
+}
+
+/// Neo4j Browser expand: RETURN a, o (property access) — should also work
+/// This is the simpler case that always worked, included as baseline regression.
+#[tokio::test]
+async fn test_browser_expand_with_pc_return_properties() {
+    let schema = create_standard_schema();
+    let cypher = "MATCH (a:User) WHERE a.user_id = 1 \
+                  WITH a, size([(a)--() | 1]) AS allNeighboursCount \
+                  MATCH (a)--(o) \
+                  RETURN a.user_id, allNeighboursCount \
+                  ORDER BY o.user_id LIMIT 97";
+    let sql = generate_expand_sql(&schema, cypher).await;
+
+    assert!(
+        sql.contains("p1_a_user_id"),
+        "WITH CTE must include user_id column: got SQL:\n{sql}"
+    );
+    assert!(
+        !sql.contains("p20_"),
+        "Must not double-encode CTE column names: got SQL:\n{sql}"
+    );
+}
+
+// ===========================================================================
 // NeoDash node right-click expansion query (startNode/endNode + WITH *)
 // ===========================================================================
 
