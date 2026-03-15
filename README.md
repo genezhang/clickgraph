@@ -15,18 +15,21 @@
 - View-based graph analytics offer the benefits of zero-ETL without the hassle of data migration and duplicate cost, yet better performance and scalability than most of the native graph analytics options.
 - Neo4j Bolt protocol support gives access to the tools available based on the Bolt protocol.
 ---
+## What's New Under Development
+
+- **Embedded write API for GraphRAG** - `create_node()`, `create_edge()`, `upsert_node()` with batch variants. AI agents can extract entities from documents, store them as graph data, and query with Cypher — all in-process. See [Embedded Mode Write API](docs/wiki/Embedded-Mode.md#write-api-embedded-mode-only).
+
 ## What's New in v0.6.4-dev
 
 - **Embedded mode** - Query Parquet/Iceberg/Delta/S3 directly — no ClickHouse server needed. Use as a Rust library (`clickgraph-embedded`) or run the server with `--embedded`. Use for agent's local tool.
 - **Golang and Python bindings** - for embedded ClickGraph in addition to Rust native interface.
 - **Export query results** - `CALL apoc.export.{csv|json|parquet}.query()` exports to files, S3, GCS, Azure, and HTTP destinations. Compatible commands with Kuzu and DuckDB are also provided.
 - **Denormalized & coupled schema fixes** - Corrected property mapping, OPTIONAL MATCH (was silently dropped), and VLP cycle prevention for schemas where node properties are embedded in edge tables.
-- **1,588 unit tests** - Up from 1,277, with comprehensive cross-schema pattern matrix tests.
+- **1,591 unit tests** - Up from 1,277, with comprehensive cross-schema pattern matrix tests.
 
 See [CHANGELOG.md](CHANGELOG.md) for complete release history.
+
 ---
-
-
 ## Features
 
 ### Core Capabilities
