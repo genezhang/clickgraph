@@ -17,6 +17,7 @@ This is similar to how [DuckDB](https://duckdb.org/) and [Kuzu](https://kuzudb.c
 | Embed graph queries in a Python application | **Embedded mode (Python library)** |
 | Embed graph queries in a Go application | **Embedded mode (Go library)** |
 | Edge / serverless deployment | **Embedded mode** |
+| AI agent building local knowledge graph (GraphRAG) | **Embedded mode (write API)** |
 | Development & prototyping without a database | **Embedded mode** |
 
 ---
@@ -507,6 +508,134 @@ let config = SystemConfig {
 };
 ```
 
+### Write API (Embedded Mode Only)
+
+The write API enables AI agents to build knowledge graphs incrementally — extract entities from documents, store them, then query with Cypher for GraphRAG context retrieval.
+
+**Requirements**: Schema entries for writable tables must NOT have a `source:` field. On startup, ClickGraph auto-creates `ReplacingMergeTree` tables for these entries.
+
+```yaml
+# Schema with both read-only and writable tables
+nodes:
+  - label: Document
+    source: "s3://bucket/documents.parquet"  # Read-only (VIEW)
+    # ...
+  - label: Entity
+    database: knowledge
+    table: entities          # Writable (no source: field)
+    node_id: entity_id
+    property_mappings:
+      name: name
+      type: entity_type
+
+edges:
+  - type: MENTIONS
+    database: knowledge
+    table: mentions           # Writable (no source: field)
+    from_id: doc_id
+    to_id: entity_id
+    from_node: Document
+    to_node: Entity
+```
+
+#### Creating Nodes and Edges
+
+```rust
+use std::collections::HashMap;
+use clickgraph_embedded::Value;
+
+let conn = Connection::new(&db)?;
+
+// Create a node — auto-generated UUID
+let props = HashMap::from([
+    ("name".to_string(), Value::String("Alice".into())),
+    ("type".to_string(), Value::String("Person".into())),
+]);
+let id = conn.create_node("Entity", props)?;
+println!("Created entity: {}", id);
+
+// Create a node with caller-provided ID (for deduplication)
+let props = HashMap::from([
+    ("entity_id".to_string(), Value::String("person:alice".into())),
+    ("name".to_string(), Value::String("Alice".into())),
+    ("type".to_string(), Value::String("Person".into())),
+]);
+let id = conn.create_node("Entity", props)?;
+
+// Create an edge
+let edge_props = HashMap::from([]);
+conn.create_edge("MENTIONS", "doc:123", "person:alice", edge_props)?;
+```
+
+#### Upsert (Deduplicate)
+
+Re-extracting the same entity from a different document? `upsert_node` inserts with `ReplacingMergeTree` dedup — latest version wins.
+
+```rust
+// Upsert — requires the ID property
+let props = HashMap::from([
+    ("entity_id".to_string(), Value::String("person:alice".into())),
+    ("name".to_string(), Value::String("Alice Johnson".into())),  // Updated name
+    ("type".to_string(), Value::String("Person".into())),
+]);
+conn.upsert_node("Entity", props)?;  // Replaces previous version
+```
+
+#### Batch Operations
+
+For bulk extraction, batch methods generate a single INSERT with multiple rows:
+
+```rust
+let batch = vec![
+    HashMap::from([
+        ("entity_id".into(), Value::String("person:alice".into())),
+        ("name".into(), Value::String("Alice".into())),
+        ("type".into(), Value::String("Person".into())),
+    ]),
+    HashMap::from([
+        ("entity_id".into(), Value::String("org:acme".into())),
+        ("name".into(), Value::String("Acme Corp".into())),
+        ("type".into(), Value::String("Organization".into())),
+    ]),
+];
+let ids = conn.create_nodes("Entity", batch)?;
+```
+
+#### Query After Write
+
+After writing, query the accumulated graph with Cypher as usual:
+
+```rust
+let result = conn.query("MATCH (e:Entity) WHERE e.type = 'Person' RETURN e.name")?;
+```
+
+#### Raw SQL (Tier 1)
+
+For advanced use cases, `execute_sql` passes raw SQL directly to chdb:
+
+```rust
+conn.execute_sql("INSERT INTO knowledge.entities (entity_id, name) VALUES ('x', 'Test')")?;
+```
+
+#### Python Example
+
+```python
+from clickgraph import Database, Connection, SystemConfig
+
+db = Database("schema.yaml", SystemConfig())
+conn = Connection(db)
+
+# Create nodes
+conn.create_node("Entity", {"entity_id": "person:alice", "name": "Alice", "type": "Person"})
+conn.create_node("Entity", {"entity_id": "org:acme", "name": "Acme Corp", "type": "Organization"})
+
+# Create edge
+conn.create_edge("MENTIONS", "doc:123", "person:alice", {})
+
+# Query
+result = conn.query("MATCH (d:Document)-[:MENTIONS]->(e:Entity) RETURN e.name")
+```
+
 ---
 
 ## Examples
@@ -625,7 +754,10 @@ let db = Database::new("schema.yaml", SystemConfig {
 
 ## Limitations
 
-- **Read-only**: Write operations (`CREATE`, `SET`, `DELETE`, `MERGE`) are not supported in any mode.
+- **Write support is embedded-only**: The typed write API (`create_node`, `create_edge`, etc.) is only available in embedded mode. Server mode remains read-only to protect production ClickHouse.
+- **Cypher write syntax not supported**: `CREATE`, `SET`, `DELETE`, `MERGE` Cypher statements are not parsed. Use the typed API or `execute_sql()` for writes.
+- **Standard schema only**: Writable tables use standard node/edge schemas. Denormalized, coupled, and polymorphic schemas remain read-only.
+- **No DELETE**: Row deletion is not supported. Use upsert to update existing records.
 - **Build size**: The `embedded` feature links the chdb native library (~100 MB).
 - **Schema admin endpoints** (`/schemas/load`, `/schemas/discover-prompt`) are not available in embedded server mode.
 - **`data_dir` and `max_threads`** in `SystemConfig` are reserved for future releases.
