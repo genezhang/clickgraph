@@ -213,7 +213,7 @@ pub fn transform_json_keys(
 /// Validate a file path for safety (no SQL injection via metacharacters).
 pub fn validate_file_path(path: &str) -> Result<(), EmbeddedError> {
     // Reject paths containing SQL metacharacters that could enable injection
-    let forbidden = [';', '\'', '"', '\\', '\0'];
+    let forbidden = [';', '\'', '"', '\\', '\0', '`', '\n', '\r', '$'];
     for ch in &forbidden {
         if path.contains(*ch) {
             return Err(EmbeddedError::Validation(format!(

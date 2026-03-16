@@ -57,6 +57,24 @@ impl<'db> Connection<'db> {
     }
 
     /// Export Cypher query results to a file.
+    ///
+    /// Translates the Cypher query to SQL, wraps it in
+    /// `INSERT INTO FUNCTION file(...)`, and executes via chdb.
+    /// The file is written directly by chdb — results are streamed to disk
+    /// without buffering the full result set in memory.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use clickgraph_embedded::{Database, Connection, SystemConfig, ExportOptions};
+    /// # let db = Database::new("schema.yaml", SystemConfig::default()).unwrap();
+    /// # let conn = Connection::new(&db).unwrap();
+    /// // Auto-detect format from extension
+    /// conn.export("MATCH (u:User) RETURN u.name", "users.parquet", ExportOptions::default()).unwrap();
+    ///
+    /// // CSV with explicit options
+    /// conn.export("MATCH (u:User) RETURN u.name", "users.csv", ExportOptions::default()).unwrap();
+    /// ```
     pub fn export(
         &self,
         cypher: &str,
@@ -379,11 +397,15 @@ impl<'db> Connection<'db> {
     }
 
     /// Delete nodes matching the given label and filter criteria.
+    ///
+    /// Uses `ALTER TABLE DELETE` which is a ClickHouse mutation — asynchronous
+    /// and resource-heavy. Not suitable for high-frequency use in tight loops.
+    /// For bulk cleanup, prefer fewer calls with broader filters.
     pub fn delete_nodes(
         &self,
         label: &str,
         filters: HashMap<String, Value>,
-    ) -> Result<u64, EmbeddedError> {
+    ) -> Result<(), EmbeddedError> {
         let node_schema = self.get_node_schema(label)?;
         write_helpers::check_writable(&node_schema.source, label)?;
         let id_columns = node_schema.node_id.id.columns();
@@ -399,15 +421,16 @@ impl<'db> Connection<'db> {
             &id_col_strs,
         )?;
         self.execute_sql(&sql)?;
-        Ok(0)
+        Ok(())
     }
 
     /// Delete edges matching the given type and filter criteria.
+    /// See [`delete_nodes`] for mutation performance caveats.
     pub fn delete_edges(
         &self,
         edge_type: &str,
         filters: HashMap<String, Value>,
-    ) -> Result<u64, EmbeddedError> {
+    ) -> Result<(), EmbeddedError> {
         let rel_schema = self.get_rel_schema(edge_type)?;
         write_helpers::check_writable(&rel_schema.source, edge_type)?;
         let from_id_cols = rel_schema.from_id.columns();
@@ -431,11 +454,11 @@ impl<'db> Connection<'db> {
             &id_col_strs,
         )?;
         self.execute_sql(&sql)?;
-        Ok(0)
+        Ok(())
     }
 
     /// Import nodes from inline newline-delimited JSON (JSONEachRow format).
-    pub fn import_json(&self, label: &str, json_lines: &str) -> Result<u64, EmbeddedError> {
+    pub fn import_json(&self, label: &str, json_lines: &str) -> Result<(), EmbeddedError> {
         let node_schema = self.get_node_schema(label)?;
         write_helpers::check_writable(&node_schema.source, label)?;
         let id_columns = node_schema.node_id.id.columns();
@@ -445,7 +468,7 @@ impl<'db> Connection<'db> {
         let (transformed_json, line_count) =
             write_helpers::transform_json_keys(json_lines, &property_mappings, &id_col_strs)?;
         if line_count == 0 {
-            return Ok(0);
+            return Ok(());
         }
         let sql = format!(
             "INSERT INTO `{}`.`{}` FORMAT JSONEachRow\n{}",
@@ -456,7 +479,7 @@ impl<'db> Connection<'db> {
     }
 
     /// Import nodes from a JSON file (JSONEachRow format).
-    pub fn import_json_file(&self, label: &str, file_path: &str) -> Result<u64, EmbeddedError> {
+    pub fn import_json_file(&self, label: &str, file_path: &str) -> Result<(), EmbeddedError> {
         if !std::path::Path::new(file_path).exists() {
             return Err(EmbeddedError::Io(format!("File not found: {}", file_path)));
         }
@@ -475,7 +498,7 @@ impl<'db> Connection<'db> {
             &id_col_strs,
         );
         self.execute_sql(&sql)?;
-        Ok(0)
+        Ok(())
     }
 
     fn get_node_schema(
@@ -535,6 +558,10 @@ impl<'db> Connection<'db> {
         .await
     }
 
+    /// Handle `CALL apoc.export.{csv|json|parquet}.query(...)` in embedded mode.
+    ///
+    /// Parses arguments, translates inner Cypher to SQL, builds export SQL, executes.
+    /// Returns a single-row result with export status.
     async fn handle_export_call(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
         use clickgraph::clickhouse_query_generator::cypher_to_sql;
         use clickgraph::open_cypher_parser;
@@ -603,6 +630,7 @@ impl<'db> Connection<'db> {
         .await
     }
 
+    /// Handle `COPY (<cypher>) TO '<destination>' [FORMAT <fmt>] [(options)]` in embedded mode.
     async fn handle_copy_to(
         &self,
         inner_cypher: &str,
@@ -657,6 +685,7 @@ impl<'db> Connection<'db> {
         .await
     }
 
+    /// Handle `CALL db.index.vector.queryNodes(...)` in embedded mode.
     async fn handle_vector_search_call(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
         use clickgraph::open_cypher_parser;
         use clickgraph::open_cypher_parser::ast::CypherStatement;
@@ -1112,7 +1141,7 @@ mod tests {
         let conn = Connection::new(&db).unwrap();
         let mut filters = HashMap::new();
         filters.insert("name".to_string(), Value::String("Alice".to_string()));
-        assert_eq!(conn.delete_nodes("Person", filters).unwrap(), 0);
+        assert!(conn.delete_nodes("Person", filters).is_ok());
         let sqls = captured.lock().unwrap();
         let sql = &sqls[0];
         assert!(sql.contains("ALTER TABLE") && sql.contains("DELETE WHERE"));

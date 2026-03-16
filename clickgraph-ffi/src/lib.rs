@@ -481,7 +481,7 @@ impl Connection {
         &self,
         label: String,
         filter: HashMap<String, Value>,
-    ) -> Result<u64, ClickGraphError> {
+    ) -> Result<(), ClickGraphError> {
         let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
         conn.delete_nodes(&label, to_rust_properties(filter))
             .map_err(ClickGraphError::from)
@@ -492,14 +492,14 @@ impl Connection {
         &self,
         edge_type: String,
         filter: HashMap<String, Value>,
-    ) -> Result<u64, ClickGraphError> {
+    ) -> Result<(), ClickGraphError> {
         let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
         conn.delete_edges(&edge_type, to_rust_properties(filter))
             .map_err(ClickGraphError::from)
     }
 
     /// Import nodes from inline newline-delimited JSON (JSONEachRow format).
-    pub fn import_json(&self, label: String, json_lines: String) -> Result<u64, ClickGraphError> {
+    pub fn import_json(&self, label: String, json_lines: String) -> Result<(), ClickGraphError> {
         let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
         conn.import_json(&label, &json_lines)
             .map_err(ClickGraphError::from)
@@ -510,7 +510,7 @@ impl Connection {
         &self,
         label: String,
         file_path: String,
-    ) -> Result<u64, ClickGraphError> {
+    ) -> Result<(), ClickGraphError> {
         let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
         conn.import_json_file(&label, &file_path)
             .map_err(ClickGraphError::from)
