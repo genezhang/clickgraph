@@ -37,6 +37,7 @@ mod tests {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
         nodes.insert("User".to_string(), node_schema);
 
@@ -70,6 +71,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
         relationships.insert("FOLLOWS::User::User".to_string(), rel_schema);
 

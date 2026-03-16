@@ -50,6 +50,7 @@ mod tests {
                 label_value: None,
                 node_id_types: None,
                 source: None,
+                property_types: HashMap::new(),
             },
         );
 
@@ -75,6 +76,7 @@ mod tests {
                 label_value: None,
                 node_id_types: None,
                 source: None,
+                property_types: HashMap::new(),
             },
         );
 
@@ -109,6 +111,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         relationships.insert("FOLLOWS::User::User".to_string(), follows_schema);
@@ -144,6 +147,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         relationships.insert("AUTHORED::User::Post".to_string(), authored_schema);

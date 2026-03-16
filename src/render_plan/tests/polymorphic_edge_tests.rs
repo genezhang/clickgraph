@@ -60,6 +60,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -99,6 +100,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -148,6 +150,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -190,6 +193,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -232,6 +236,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -397,6 +402,7 @@ fn test_non_polymorphic_relationship() {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -432,6 +438,7 @@ fn test_non_polymorphic_relationship() {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -494,6 +501,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -519,6 +527,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -561,6 +570,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 

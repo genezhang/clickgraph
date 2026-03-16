@@ -187,6 +187,7 @@ mod tests {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         }
     }
 

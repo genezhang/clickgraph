@@ -12,7 +12,7 @@
 //! (`database.table`), no changes are needed downstream — the VIEWs and tables
 //! make the data transparently accessible.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema};
@@ -143,38 +143,77 @@ pub fn create_writable_tables(
     Ok(count)
 }
 
-/// Generate CREATE TABLE DDL for a node schema entry.
+/// Build a reverse mapping from column name to Cypher property name.
 ///
-/// Template:
-/// ```sql
-/// CREATE TABLE IF NOT EXISTS `{db}`.`{table}` (
-///     {id_col} String DEFAULT generateUUIDv4(),
-///     {prop_cols...} String,
-///     _version UInt64 DEFAULT now64()
-/// ) ENGINE = ReplacingMergeTree(_version) ORDER BY ({id_col})
-/// ```
+/// Used by DDL generation to look up property_types by column name.
+fn build_column_to_property_map(
+    property_mappings: &HashMap<String, PropertyValue>,
+) -> HashMap<&str, &str> {
+    let mut map = HashMap::new();
+    for (cypher_name, prop_val) in property_mappings {
+        if let PropertyValue::Column(col) = prop_val {
+            map.insert(col.as_str(), cypher_name.as_str());
+        }
+    }
+    map
+}
+
+/// Resolve the ClickHouse type for a column, using property_types if available.
+///
+/// Looks up the column name in the reverse mapping to find the Cypher property name,
+/// then checks property_types for a SchemaType. Falls back to "String" if not found.
+fn resolve_column_type<'a>(
+    column_name: &str,
+    col_to_prop: &HashMap<&str, &str>,
+    property_types: &'a HashMap<String, crate::graph_catalog::schema_types::SchemaType>,
+) -> &'a str {
+    if let Some(cypher_name) = col_to_prop.get(column_name) {
+        if let Some(schema_type) = property_types.get(*cypher_name) {
+            return schema_type.to_clickhouse_type();
+        }
+    }
+    "String"
+}
+
 /// Build CREATE TABLE DDL for a writable node table.
 ///
-/// **V1 limitation**: All property columns use `String` type. The schema YAML
-/// doesn't carry column type information. Numeric comparisons and aggregations
-/// in Cypher will operate on string values. A future `column_types` or
-/// `type_hints` field in the schema could address this.
+/// Uses `property_types` to determine ClickHouse column types. Properties not
+/// in `property_types` default to String. ID columns use the node_id dtype
+/// (from the schema `type` field), falling back to String with UUID default.
 pub fn build_node_ddl(node_schema: &NodeSchema) -> String {
     let id_columns = node_schema.node_id.id.columns();
     let id_col_set: HashSet<&str> = id_columns.iter().copied().collect();
 
+    // Build reverse mapping: column_name -> cypher_property_name
+    let col_to_prop = build_column_to_property_map(&node_schema.property_mappings);
+
     let mut col_defs = Vec::new();
 
-    // ID column(s) with UUID default
-    for id_col in &id_columns {
-        col_defs.push(format!("{} String DEFAULT generateUUIDv4()", id_col));
+    // ID column(s): use explicit type field if provided, otherwise default to String with UUID
+    if let Some(ref id_types) = node_schema.node_id_types {
+        // Explicit type(s) from schema YAML type/types field
+        for (i, id_col) in id_columns.iter().enumerate() {
+            let schema_type = id_types.get(i).unwrap_or(&id_types[0]);
+            let ch_type = schema_type.to_clickhouse_type();
+            if ch_type == "String" {
+                col_defs.push(format!("{} String DEFAULT generateUUIDv4()", id_col));
+            } else {
+                col_defs.push(format!("{} {}", id_col, ch_type));
+            }
+        }
+    } else {
+        // No explicit type — default to String with UUID auto-generation
+        for id_col in &id_columns {
+            col_defs.push(format!("{} String DEFAULT generateUUIDv4()", id_col));
+        }
     }
 
     // Property columns (skip ID columns to avoid duplication)
     for (_, prop_val) in &node_schema.property_mappings {
         if let PropertyValue::Column(col) = prop_val {
             if !id_col_set.contains(col.as_str()) {
-                col_defs.push(format!("{} String", col));
+                let ch_type = resolve_column_type(col, &col_to_prop, &node_schema.property_types);
+                col_defs.push(format!("{} {}", col, ch_type));
             }
         }
     }
@@ -197,19 +236,11 @@ pub fn build_node_ddl(node_schema: &NodeSchema) -> String {
     )
 }
 
-/// Generate CREATE TABLE DDL for an edge/relationship schema entry.
-///
-/// Template:
-/// ```sql
-/// CREATE TABLE IF NOT EXISTS `{db}`.`{table}` (
-///     {from_id} String,
-///     {to_id} String,
-///     {prop_cols...} String,
-///     _version UInt64 DEFAULT now64()
-/// ) ENGINE = ReplacingMergeTree(_version) ORDER BY ({from_id}, {to_id})
-/// ```
 /// Build CREATE TABLE DDL for a writable edge table.
-/// See [`build_node_ddl`] for the String-column-type limitation.
+///
+/// Uses `property_types` to determine ClickHouse column types for edge properties.
+/// Properties not in `property_types` default to String.
+/// The `_version UInt64 DEFAULT now64()` column is unchanged.
 pub fn build_edge_ddl(rel_schema: &RelationshipSchema) -> String {
     let from_id_cols = rel_schema.from_id.columns();
     let to_id_cols = rel_schema.to_id.columns();
@@ -222,14 +253,17 @@ pub fn build_edge_ddl(rel_schema: &RelationshipSchema) -> String {
         id_col_set.insert(col);
     }
 
+    // Build reverse mapping: column_name -> cypher_property_name
+    let col_to_prop = build_column_to_property_map(&rel_schema.property_mappings);
+
     let mut col_defs = Vec::new();
 
-    // from_id column(s)
+    // from_id column(s) — default to String (FK columns match node ID types)
     for col in &from_id_cols {
         col_defs.push(format!("{} String", col));
     }
 
-    // to_id column(s)
+    // to_id column(s) — default to String
     for col in &to_id_cols {
         col_defs.push(format!("{} String", col));
     }
@@ -238,7 +272,8 @@ pub fn build_edge_ddl(rel_schema: &RelationshipSchema) -> String {
     for (_, prop_val) in &rel_schema.property_mappings {
         if let PropertyValue::Column(col) = prop_val {
             if !id_col_set.contains(col.as_str()) {
-                col_defs.push(format!("{} String", col));
+                let ch_type = resolve_column_type(col, &col_to_prop, &rel_schema.property_types);
+                col_defs.push(format!("{} {}", col, ch_type));
             }
         }
     }
@@ -424,5 +459,207 @@ graph_schema:
         // Only Person gets DDL
         let ddl = build_node_ddl(person_schema);
         assert!(ddl.contains("persons"), "DDL for Person");
+    }
+
+    #[test]
+    fn test_build_node_ddl_with_property_types() {
+        let schema = make_test_schema(
+            r#"
+name: test
+graph_schema:
+  nodes:
+    - label: Person
+      database: mydb
+      table: persons
+      node_id: person_id
+      property_mappings:
+        person_id: person_id
+        name: full_name
+        age: age_col
+        score: score_col
+        active: is_active
+        joined: join_date
+      property_types:
+        age: integer
+        score: float
+        active: boolean
+        joined: date
+"#,
+        );
+
+        let node_schema = schema.all_node_schemas().get("Person").unwrap();
+        let ddl = build_node_ddl(node_schema);
+
+        // ID column defaults to String with UUID (no explicit type field)
+        assert!(
+            ddl.contains("person_id String DEFAULT generateUUIDv4()"),
+            "ID column should be String with UUID default: {}",
+            ddl
+        );
+        // Typed properties
+        assert!(
+            ddl.contains("age_col Int64"),
+            "age should be Int64: {}",
+            ddl
+        );
+        assert!(
+            ddl.contains("score_col Float64"),
+            "score should be Float64: {}",
+            ddl
+        );
+        assert!(
+            ddl.contains("is_active UInt8"),
+            "active should be UInt8 (boolean): {}",
+            ddl
+        );
+        assert!(
+            ddl.contains("join_date Date32"),
+            "joined should be Date32: {}",
+            ddl
+        );
+        // Untyped property defaults to String
+        assert!(
+            ddl.contains("full_name String"),
+            "untyped name should be String: {}",
+            ddl
+        );
+        // _version column unchanged
+        assert!(
+            ddl.contains("_version UInt64 DEFAULT now64()"),
+            "_version should be unchanged: {}",
+            ddl
+        );
+    }
+
+    #[test]
+    fn test_build_node_ddl_without_property_types() {
+        // Backward compatibility: no property_types → all columns String
+        let schema = make_test_schema(
+            r#"
+name: test
+graph_schema:
+  nodes:
+    - label: Person
+      database: mydb
+      table: persons
+      node_id: person_id
+      property_mappings:
+        person_id: person_id
+        name: full_name
+        age: age_col
+"#,
+        );
+
+        let node_schema = schema.all_node_schemas().get("Person").unwrap();
+        let ddl = build_node_ddl(node_schema);
+
+        assert!(
+            ddl.contains("person_id String DEFAULT generateUUIDv4()"),
+            "ID should be String: {}",
+            ddl
+        );
+        assert!(
+            ddl.contains("full_name String"),
+            "name should be String: {}",
+            ddl
+        );
+        assert!(
+            ddl.contains("age_col String"),
+            "age should be String: {}",
+            ddl
+        );
+    }
+
+    #[test]
+    fn test_build_edge_ddl_with_property_types() {
+        let schema = make_test_schema(
+            r#"
+name: test
+graph_schema:
+  nodes:
+    - label: Person
+      database: mydb
+      table: persons
+      node_id: person_id
+      property_mappings:
+        person_id: person_id
+  edges:
+    - type: KNOWS
+      database: mydb
+      table: knows
+      from_node: Person
+      to_node: Person
+      from_id: from_person_id
+      to_id: to_person_id
+      property_mappings:
+        since: since_year
+        weight: weight_col
+      property_types:
+        since: integer
+        weight: float
+"#,
+        );
+
+        let rel_schema = schema.get_relationships_schemas().values().next().unwrap();
+        let ddl = build_edge_ddl(rel_schema);
+
+        // FK columns default to String
+        assert!(
+            ddl.contains("from_person_id String"),
+            "from_id should be String: {}",
+            ddl
+        );
+        assert!(
+            ddl.contains("to_person_id String"),
+            "to_id should be String: {}",
+            ddl
+        );
+        // Typed edge properties
+        assert!(
+            ddl.contains("since_year Int64"),
+            "since should be Int64: {}",
+            ddl
+        );
+        assert!(
+            ddl.contains("weight_col Float64"),
+            "weight should be Float64: {}",
+            ddl
+        );
+        // _version unchanged
+        assert!(
+            ddl.contains("_version UInt64 DEFAULT now64()"),
+            "_version should be unchanged: {}",
+            ddl
+        );
+    }
+
+    #[test]
+    fn test_build_node_ddl_with_id_type() {
+        // When type field is set on node, ID column uses that type
+        let schema = make_test_schema(
+            r#"
+name: test
+graph_schema:
+  nodes:
+    - label: Person
+      database: mydb
+      table: persons
+      node_id: person_id
+      type: integer
+      property_mappings:
+        person_id: person_id
+        name: full_name
+"#,
+        );
+
+        let node_schema = schema.all_node_schemas().get("Person").unwrap();
+        let ddl = build_node_ddl(node_schema);
+
+        // ID column should use Int64 (from type: integer), no UUID default
+        assert!(
+            ddl.contains("person_id Int64") && !ddl.contains("generateUUIDv4"),
+            "ID with type:integer should be Int64 without UUID: {}",
+            ddl
+        );
     }
 }

@@ -519,6 +519,7 @@ fn test_generate_scan() {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -576,6 +577,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
     nodes.insert(
@@ -599,6 +601,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
     nodes.insert(
@@ -622,6 +625,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -657,6 +661,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
     rels.insert(
@@ -690,6 +695,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
     rels.insert(
@@ -723,6 +729,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -748,6 +755,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
     nodes.insert(
@@ -771,6 +779,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
     nodes.insert(
@@ -794,6 +803,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
     nodes.insert(
@@ -817,6 +827,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
     nodes.insert(
@@ -840,6 +851,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -875,6 +887,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
     rels.insert(
@@ -908,6 +921,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
     rels.insert(
@@ -941,6 +955,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -973,6 +988,7 @@ fn create_single_relationship_schema() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -1008,6 +1024,7 @@ fn create_single_relationship_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -1246,6 +1263,7 @@ fn test_infer_relationship_type_too_many_matches_error() {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -1283,6 +1301,7 @@ fn test_infer_relationship_type_too_many_matches_error() {
                 constraints: None,
                 edge_id_types: None,
                 source: None,
+                property_types: HashMap::new(),
             },
         );
     }
@@ -1343,6 +1362,7 @@ fn create_single_node_schema() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -1379,6 +1399,7 @@ fn create_multi_node_schema() -> GraphSchema {
                 label_value: None,
                 node_id_types: None,
                 source: None,
+                property_types: HashMap::new(),
             },
         );
     }
@@ -1461,6 +1482,7 @@ fn test_infer_node_label_many_nodes_no_error() {
                 label_value: None,
                 node_id_types: None,
                 source: None,
+                property_types: HashMap::new(),
             },
         );
     }
@@ -1511,6 +1533,7 @@ fn test_infer_node_label_denormalized_single_node() {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -1551,6 +1574,7 @@ fn test_infer_relationship_type_polymorphic_edge() {
                 label_value: None,
                 node_id_types: None,
                 source: None,
+                property_types: HashMap::new(),
             },
         );
     }
@@ -1588,6 +1612,7 @@ fn test_infer_relationship_type_polymorphic_edge() {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 

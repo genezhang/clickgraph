@@ -93,6 +93,11 @@ pub struct NodeSchema {
     /// Used by the data loader to create a `CREATE VIEW` in the chdb session.
     #[serde(skip)]
     pub source: Option<String>,
+
+    /// Optional: Property types for DDL generation (Cypher property name -> SchemaType)
+    /// When present, DDL columns use the specified ClickHouse type instead of String
+    #[serde(skip)]
+    pub property_types: HashMap<String, SchemaType>,
 }
 
 impl NodeSchema {
@@ -181,6 +186,7 @@ impl NodeSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         }
     }
 }
@@ -310,6 +316,11 @@ pub struct RelationshipSchema {
     /// Optional: chdb data source URI (for embedded mode).
     #[serde(skip)]
     pub source: Option<String>,
+
+    /// Optional: Property types for DDL generation (Cypher property name -> SchemaType)
+    /// When present, DDL columns use the specified ClickHouse type instead of String
+    #[serde(skip)]
+    pub property_types: HashMap<String, SchemaType>,
 }
 
 impl RelationshipSchema {
@@ -1755,6 +1766,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         relationships.insert("FLIGHT::Airport::Airport".to_string(), flight_rel);
@@ -1823,6 +1835,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         relationships.insert("AUTHORED::User::Post".to_string(), authored_rel);
@@ -1872,6 +1885,7 @@ mod tests {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         let flight_edge = RelationshipSchema {
@@ -1903,6 +1917,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         // Test detection
@@ -1951,6 +1966,7 @@ mod tests {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         let flight_edge = RelationshipSchema {
@@ -1982,6 +1998,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         // Test detection
@@ -2023,6 +2040,7 @@ mod tests {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         let user = NodeSchema {
@@ -2055,6 +2073,7 @@ mod tests {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         let mut from_props = HashMap::new();
@@ -2090,6 +2109,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         // Test detection
@@ -2140,6 +2160,7 @@ mod tests {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         let mut to_props_post = HashMap::new();
@@ -2165,6 +2186,7 @@ mod tests {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         let mut to_props = HashMap::new();
@@ -2200,6 +2222,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         // Test detection
@@ -2254,6 +2277,7 @@ mod tests {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         let mut from_props = HashMap::new();
@@ -2292,6 +2316,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         // Should still be detected as denormalized (1-2 mappings allowed)
@@ -2326,6 +2351,7 @@ mod tests {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         let flight_edge = RelationshipSchema {
@@ -2357,6 +2383,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         // Should NOT be detected as denormalized (missing props)
@@ -2395,6 +2422,7 @@ mod tests {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         let mut from_props = HashMap::new();
@@ -2429,6 +2457,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         // Should NOT be detected (different databases)
@@ -2477,6 +2506,7 @@ mod tests {
             filter: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         let mut from_props = HashMap::new();
@@ -2511,6 +2541,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         // Should NOT be detected (too many property_mappings)
@@ -2556,6 +2587,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         // RESOLVED_TO: (Domain)-[:RESOLVED_TO]->(ResolvedIP)
@@ -2588,6 +2620,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         relationships.insert("REQUESTED::IP::Domain".to_string(), requested);
@@ -2643,6 +2676,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         let edge2 = RelationshipSchema {
@@ -2674,6 +2708,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         relationships.insert("REL1::A::B".to_string(), edge1);
@@ -2720,6 +2755,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         let edge2 = RelationshipSchema {
@@ -2751,6 +2787,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         relationships.insert("REL1::A::B".to_string(), edge1);
@@ -2833,6 +2870,7 @@ mod tests {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         // Person IS_LOCATED_IN City (uses Place table)

@@ -57,6 +57,7 @@ pub fn create_standard_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -100,6 +101,7 @@ pub fn create_standard_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -145,6 +147,7 @@ pub fn create_standard_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -179,6 +182,7 @@ pub fn create_standard_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -213,6 +217,7 @@ pub fn create_standard_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -260,6 +265,7 @@ pub fn create_fk_edge_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -295,6 +301,7 @@ pub fn create_fk_edge_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -334,6 +341,7 @@ pub fn create_fk_edge_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -374,6 +382,7 @@ pub fn create_denormalized_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -419,6 +428,7 @@ pub fn create_denormalized_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -473,6 +483,7 @@ pub fn create_composite_id_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -508,6 +519,7 @@ pub fn create_composite_id_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -547,6 +559,7 @@ pub fn create_composite_id_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -601,6 +614,7 @@ pub fn create_composite_id_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -653,6 +667,7 @@ pub fn create_polymorphic_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -696,6 +711,7 @@ pub fn create_polymorphic_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -749,6 +765,7 @@ pub fn create_polymorphic_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -784,6 +801,7 @@ pub fn create_polymorphic_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -819,6 +837,7 @@ pub fn create_polymorphic_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
