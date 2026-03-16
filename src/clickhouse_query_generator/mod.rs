@@ -82,3 +82,37 @@ pub fn cypher_to_sql(
 
     Ok(generate_sql(render_plan, max_cte_depth))
 }
+
+/// Convert a Cypher query string to ClickHouse SQL, also returning the
+/// LogicalPlan and PlanCtx for downstream metadata extraction (e.g., graph output).
+///
+/// This is used by `query_graph()` in the embedded crate, which needs the plan
+/// metadata to classify return items as nodes vs relationships vs scalars.
+pub fn cypher_to_sql_with_metadata(
+    cypher: &str,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+    max_cte_depth: u32,
+) -> Result<
+    (
+        String,
+        crate::query_planner::logical_plan::LogicalPlan,
+        crate::query_planner::plan_ctx::PlanCtx,
+    ),
+    String,
+> {
+    use crate::render_plan::plan_builder::RenderPlanBuilder;
+
+    let ast = crate::open_cypher_parser::parse_query(cypher)
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    let (logical_plan, plan_ctx) =
+        crate::query_planner::evaluate_read_query(ast, schema, None, None)
+            .map_err(|e| format!("Plan error: {}", e))?;
+
+    let render_plan = logical_plan
+        .to_render_plan_with_ctx(schema, Some(&plan_ctx), None)
+        .map_err(|e| format!("Render error: {}", e))?;
+
+    let sql = generate_sql(render_plan, max_cte_depth);
+    Ok((sql, logical_plan, plan_ctx))
+}

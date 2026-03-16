@@ -475,6 +475,46 @@ impl Connection {
         conn.create_edges(&edge_type, rust_batch)
             .map_err(ClickGraphError::from)
     }
+
+    /// Delete nodes matching the given label and filter criteria.
+    pub fn delete_nodes(
+        &self,
+        label: String,
+        filter: HashMap<String, Value>,
+    ) -> Result<u64, ClickGraphError> {
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        conn.delete_nodes(&label, to_rust_properties(filter))
+            .map_err(ClickGraphError::from)
+    }
+
+    /// Delete edges matching the given type and filter criteria.
+    pub fn delete_edges(
+        &self,
+        edge_type: String,
+        filter: HashMap<String, Value>,
+    ) -> Result<u64, ClickGraphError> {
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        conn.delete_edges(&edge_type, to_rust_properties(filter))
+            .map_err(ClickGraphError::from)
+    }
+
+    /// Import nodes from inline newline-delimited JSON (JSONEachRow format).
+    pub fn import_json(&self, label: String, json_lines: String) -> Result<u64, ClickGraphError> {
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        conn.import_json(&label, &json_lines)
+            .map_err(ClickGraphError::from)
+    }
+
+    /// Import nodes from a JSON file (JSONEachRow format).
+    pub fn import_json_file(
+        &self,
+        label: String,
+        file_path: String,
+    ) -> Result<u64, ClickGraphError> {
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        conn.import_json_file(&label, &file_path)
+            .map_err(ClickGraphError::from)
+    }
 }
 
 // ---------------------------------------------------------------------------
