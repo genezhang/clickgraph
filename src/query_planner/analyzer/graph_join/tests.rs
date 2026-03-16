@@ -54,6 +54,7 @@ fn create_test_graph_schema() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -79,6 +80,7 @@ fn create_test_graph_schema() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -118,6 +120,7 @@ fn create_test_graph_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -157,6 +160,7 @@ fn create_test_graph_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -935,6 +939,7 @@ fn create_self_referencing_fk_schema() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -971,6 +976,7 @@ fn create_self_referencing_fk_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -1020,6 +1026,7 @@ fn create_non_self_referencing_fk_schema() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -1056,6 +1063,7 @@ fn create_non_self_referencing_fk_schema() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -1092,6 +1100,7 @@ fn create_non_self_referencing_fk_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -1418,6 +1427,7 @@ fn create_composite_id_graph_schema() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -1449,6 +1459,7 @@ fn create_composite_id_graph_schema() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -1489,6 +1500,7 @@ fn create_composite_id_graph_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 

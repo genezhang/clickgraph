@@ -72,6 +72,7 @@ fn create_test_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -126,6 +127,7 @@ fn create_test_schema() -> GraphSchema {
             label_column: None,
             label_value: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -172,6 +174,7 @@ fn create_test_schema() -> GraphSchema {
             is_fk_edge: false,
             constraints: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -207,6 +210,7 @@ fn create_test_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -1620,6 +1624,7 @@ async fn test_expression_property_preserved_through_render_phase() {
             label_column: None,
             label_value: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 

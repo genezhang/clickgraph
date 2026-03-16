@@ -563,6 +563,13 @@ pub struct NodeDefinition {
     /// - `table_function:...` — raw chdb table function (escape hatch)
     #[serde(default)]
     pub source: Option<String>,
+
+    /// Optional: Property types for DDL generation
+    /// Keys are Cypher property names (same as property_mappings keys)
+    /// Values are SchemaType strings: "integer", "float", "string", "boolean", "datetime", "date", "uuid"
+    /// When absent, DDL columns default to String
+    #[serde(default)]
+    pub property_types: HashMap<String, String>,
 }
 
 fn default_naming_convention() -> String {
@@ -654,6 +661,12 @@ pub struct RelationshipDefinition {
     /// Optional: chdb/ClickHouse data source URI (see `NodeDefinition::source`).
     #[serde(default)]
     pub source: Option<String>,
+
+    /// Optional: Property types for DDL generation
+    /// Keys are Cypher property names (same as property_mappings keys)
+    /// Values are SchemaType strings: "integer", "float", "string", "boolean", "datetime", "date", "uuid"
+    #[serde(default)]
+    pub property_types: HashMap<String, String>,
 }
 
 /// Edge definition - supporting both standard and polymorphic patterns
@@ -751,6 +764,12 @@ pub struct StandardEdgeDefinition {
     /// Optional: chdb/ClickHouse data source URI (see `NodeDefinition::source`).
     #[serde(default)]
     pub source: Option<String>,
+
+    /// Optional: Property types for DDL generation
+    /// Keys are Cypher property names (same as property_mappings keys)
+    /// Values are SchemaType strings: "integer", "float", "string", "boolean", "datetime", "date", "uuid"
+    #[serde(default)]
+    pub property_types: HashMap<String, String>,
 }
 
 /// Polymorphic edge definition
@@ -882,6 +901,46 @@ fn apply_naming_convention(column_name: &str, convention: &str) -> String {
 
 /// Parse property mappings from HashMap<String, String> into HashMap<String, PropertyValue>
 /// Detects whether each value is a simple column name or an expression and parses accordingly
+/// Parse and validate property_types from config strings to SchemaType enum.
+///
+/// Validates that:
+/// 1. All keys in property_types exist in property_mappings
+/// 2. All type strings are valid SchemaType values
+fn parse_and_validate_property_types(
+    raw_types: &HashMap<String, String>,
+    property_mappings: &HashMap<String, PropertyValue>,
+    entity_name: &str,
+) -> Result<HashMap<String, SchemaType>, GraphSchemaError> {
+    let mut parsed = HashMap::new();
+
+    for (prop_name, type_str) in raw_types {
+        // Validate that the property exists in property_mappings
+        if !property_mappings.contains_key(prop_name) {
+            return Err(GraphSchemaError::InvalidConfig {
+                message: format!(
+                    "property_types key '{}' on '{}' does not exist in property_mappings.                      Valid keys: {:?}",
+                    prop_name,
+                    entity_name,
+                    property_mappings.keys().collect::<Vec<_>>()
+                ),
+            });
+        }
+
+        // Parse the type string
+        let schema_type =
+            SchemaType::from_str(type_str).map_err(|e| GraphSchemaError::InvalidConfig {
+                message: format!(
+                    "Invalid property type for '{}' on '{}': {}",
+                    prop_name, entity_name, e
+                ),
+            })?;
+
+        parsed.insert(prop_name.clone(), schema_type);
+    }
+
+    Ok(parsed)
+}
+
 fn parse_property_mappings(
     mappings: HashMap<String, String>,
 ) -> Result<HashMap<String, PropertyValue>, GraphSchemaError> {
@@ -1243,6 +1302,13 @@ fn build_node_schema(
         SchemaType::Integer
     };
 
+    // Parse and validate property_types
+    let property_types = parse_and_validate_property_types(
+        &node_def.property_types,
+        &property_mappings,
+        &node_def.label,
+    )?;
+
     Ok(NodeSchema {
         database: node_def.database.clone(),
         table_name: node_def.table.clone(),
@@ -1272,6 +1338,7 @@ fn build_node_schema(
         label_value: node_def.label_value.clone(),
         node_id_types,
         source: node_def.source.clone(),
+        property_types,
     })
 }
 
@@ -1386,6 +1453,13 @@ fn build_relationship_schema(
         &rel_def.type_name,
     )?;
 
+    // Parse and validate property_types
+    let property_types = parse_and_validate_property_types(
+        &rel_def.property_types,
+        &property_mappings,
+        &rel_def.type_name,
+    )?;
+
     Ok(RelationshipSchema {
         database: rel_def.database.clone(),
         table_name: rel_def.table.clone(),
@@ -1418,6 +1492,7 @@ fn build_relationship_schema(
         constraints: rel_def.constraints.clone(),
         edge_id_types,
         source: rel_def.source.clone(),
+        property_types,
     })
 }
 
@@ -1523,6 +1598,13 @@ fn build_standard_edge_schema(
         &std_edge.type_name,
     )?;
 
+    // Parse and validate property_types
+    let property_types = parse_and_validate_property_types(
+        &std_edge.property_types,
+        &property_mappings,
+        &std_edge.type_name,
+    )?;
+
     Ok(RelationshipSchema {
         database: std_edge.database.clone(),
         table_name: std_edge.table.clone(),
@@ -1555,6 +1637,7 @@ fn build_standard_edge_schema(
         constraints: std_edge.constraints.clone(),
         edge_id_types,
         source: std_edge.source.clone(),
+        property_types,
     })
 }
 
@@ -1628,6 +1711,7 @@ fn build_polymorphic_edge_schemas(
             constraints: poly_edge.constraints.clone(),
             edge_id_types: None,
             source: None, // Polymorphic edges don't currently support source: URI
+            property_types: HashMap::new(),
         };
         // Use simple key (just the type name) for polymorphic edges.
         // Composite keys like "AUTHORED::$any::$any" cause issues downstream because $any
@@ -2623,6 +2707,7 @@ graph_schema:
                     r#type: None,
                     types: None,
                     source: None,
+                    property_types: HashMap::new(),
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Standard(StandardEdgeDefinition {
@@ -2651,6 +2736,7 @@ graph_schema:
                     id_type: None,
                     id_types: None,
                     source: None,
+                    property_types: HashMap::new(),
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
@@ -2690,6 +2776,7 @@ graph_schema:
                     r#type: None,
                     types: None,
                     source: None,
+                    property_types: HashMap::new(),
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Standard(StandardEdgeDefinition {
@@ -2712,6 +2799,7 @@ graph_schema:
                     id_type: None,
                     id_types: None,
                     source: None,
+                    property_types: HashMap::new(),
                 })],
                 vector_indexes: Vec::new(),
                 fulltext_indexes: Vec::new(),
@@ -2751,6 +2839,7 @@ graph_schema:
                     r#type: None,
                     types: None,
                     source: None,
+                    property_types: HashMap::new(),
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Polymorphic(PolymorphicEdgeDefinition {
@@ -2812,6 +2901,7 @@ graph_schema:
                     r#type: None,
                     types: None,
                     source: None,
+                    property_types: HashMap::new(),
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Polymorphic(PolymorphicEdgeDefinition {
@@ -2875,6 +2965,7 @@ graph_schema:
                         r#type: None,
                         types: None,
                         source: None,
+                        property_types: HashMap::new(),
                     },
                     NodeDefinition {
                         label: "User".to_string(),
@@ -2895,6 +2986,7 @@ graph_schema:
                         r#type: None,
                         types: None,
                         source: None,
+                        property_types: HashMap::new(),
                     },
                 ],
                 relationships: vec![],
@@ -2961,6 +3053,7 @@ graph_schema:
                     r#type: None,
                     types: None,
                     source: None,
+                    property_types: HashMap::new(),
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Polymorphic(PolymorphicEdgeDefinition {
@@ -3028,6 +3121,7 @@ graph_schema:
                     r#type: None,
                     types: None,
                     source: None,
+                    property_types: HashMap::new(),
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Polymorphic(PolymorphicEdgeDefinition {
@@ -3084,6 +3178,191 @@ graph_schema:
         assert!(composite.is_composite());
         assert_eq!(composite.columns(), vec!["col1", "col2", "col3"]);
     }
+}
+
+// ===== property_types tests =====
+
+#[test]
+fn test_property_types_yaml_parsing() {
+    // Test that property_types field is correctly parsed from YAML
+    let yaml = r#"
+name: test_property_types
+graph_schema:
+  nodes:
+    - label: Person
+      database: mydb
+      table: persons
+      node_id: person_id
+      property_mappings:
+        person_id: person_id
+        name: full_name
+        age: age_col
+        score: score_col
+      property_types:
+        age: integer
+        score: float
+        name: string
+"#;
+    let config: GraphSchemaConfig = serde_yaml::from_str(yaml).expect("valid yaml");
+    let schema = config.to_graph_schema().expect("valid schema");
+    let node = schema.all_node_schemas().get("Person").unwrap();
+
+    assert_eq!(node.property_types.len(), 3);
+    assert_eq!(node.property_types.get("age"), Some(&SchemaType::Integer));
+    assert_eq!(node.property_types.get("score"), Some(&SchemaType::Float));
+    assert_eq!(node.property_types.get("name"), Some(&SchemaType::String));
+}
+
+#[test]
+fn test_property_types_unknown_key_rejected() {
+    // Keys in property_types must exist in property_mappings
+    let yaml = r#"
+name: test_invalid
+graph_schema:
+  nodes:
+    - label: Person
+      database: mydb
+      table: persons
+      node_id: person_id
+      property_mappings:
+        person_id: person_id
+        name: full_name
+      property_types:
+        nonexistent: integer
+"#;
+    let config: GraphSchemaConfig = serde_yaml::from_str(yaml).expect("valid yaml");
+    let result = config.to_graph_schema();
+    assert!(result.is_err(), "Should reject unknown property_types key");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("nonexistent") && err.contains("does not exist in property_mappings"),
+        "Error should mention the invalid key: {}",
+        err
+    );
+}
+
+#[test]
+fn test_property_types_invalid_type_rejected() {
+    // Invalid type strings should produce clear errors
+    let yaml = r#"
+name: test_invalid_type
+graph_schema:
+  nodes:
+    - label: Person
+      database: mydb
+      table: persons
+      node_id: person_id
+      property_mappings:
+        person_id: person_id
+        name: full_name
+      property_types:
+        name: vector
+"#;
+    let config: GraphSchemaConfig = serde_yaml::from_str(yaml).expect("valid yaml");
+    let result = config.to_graph_schema();
+    assert!(result.is_err(), "Should reject invalid type string");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("vector"),
+        "Error should mention the invalid type: {}",
+        err
+    );
+}
+
+#[test]
+fn test_property_types_missing_defaults_to_empty() {
+    // Schema without property_types should work (backward compatible)
+    let yaml = r#"
+name: test_no_property_types
+graph_schema:
+  nodes:
+    - label: Person
+      database: mydb
+      table: persons
+      node_id: person_id
+      property_mappings:
+        person_id: person_id
+        name: full_name
+"#;
+    let config: GraphSchemaConfig = serde_yaml::from_str(yaml).expect("valid yaml");
+    let schema = config.to_graph_schema().expect("valid schema");
+    let node = schema.all_node_schemas().get("Person").unwrap();
+    assert!(
+        node.property_types.is_empty(),
+        "Missing property_types should default to empty"
+    );
+}
+
+#[test]
+fn test_property_types_on_edge() {
+    // Test property_types on edge definitions
+    let yaml = r#"
+name: test_edge_types
+graph_schema:
+  nodes:
+    - label: Person
+      database: mydb
+      table: persons
+      node_id: person_id
+      property_mappings:
+        person_id: person_id
+  edges:
+    - type: KNOWS
+      database: mydb
+      table: knows
+      from_node: Person
+      to_node: Person
+      from_id: from_person_id
+      to_id: to_person_id
+      property_mappings:
+        since: since_year
+        weight: weight_col
+      property_types:
+        since: integer
+        weight: float
+"#;
+    let config: GraphSchemaConfig = serde_yaml::from_str(yaml).expect("valid yaml");
+    let schema = config.to_graph_schema().expect("valid schema");
+    let rel = schema.get_relationships_schemas().values().next().unwrap();
+    assert_eq!(rel.property_types.len(), 2);
+    assert_eq!(rel.property_types.get("since"), Some(&SchemaType::Integer));
+    assert_eq!(rel.property_types.get("weight"), Some(&SchemaType::Float));
+}
+
+#[test]
+fn test_property_types_on_relationship() {
+    // Test property_types on legacy relationship definitions
+    let yaml = r#"
+name: test_rel_types
+graph_schema:
+  nodes:
+    - label: Person
+      database: mydb
+      table: persons
+      node_id: person_id
+      property_mappings:
+        person_id: person_id
+  relationships:
+    - type: FOLLOWS
+      database: mydb
+      table: follows
+      from_node: Person
+      to_node: Person
+      from_id: follower_id
+      to_id: followee_id
+      property_mappings:
+        created_at: created_at_col
+      property_types:
+        created_at: datetime
+"#;
+    let config: GraphSchemaConfig = serde_yaml::from_str(yaml).expect("valid yaml");
+    let schema = config.to_graph_schema().expect("valid schema");
+    let rel = schema.get_relationships_schemas().values().next().unwrap();
+    assert_eq!(rel.property_types.len(), 1);
+    assert_eq!(
+        rel.property_types.get("created_at"),
+        Some(&SchemaType::DateTime)
+    );
 }
 
 #[cfg(test)]
@@ -3237,6 +3516,7 @@ mod node_id_identity_mapping_tests {
             r#type: None,
             types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         let discovery = TableDiscovery {
@@ -3291,6 +3571,7 @@ mod node_id_identity_mapping_tests {
             r#type: None,
             types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         let discovery = TableDiscovery {
@@ -3346,6 +3627,7 @@ mod node_id_identity_mapping_tests {
             r#type: None,
             types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         let discovery = TableDiscovery {
@@ -3482,6 +3764,7 @@ graph_schema:
                 label_value: None,
                 node_id_types: None,
                 source: None,
+                property_types: HashMap::new(),
             },
         );
         nodes
@@ -3625,6 +3908,7 @@ graph_schema:
                 label_value: None,
                 node_id_types: None,
                 source: None,
+                property_types: HashMap::new(),
             },
         );
         nodes

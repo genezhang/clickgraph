@@ -61,6 +61,7 @@ fn setup_denormalized_schema() -> GraphSchema {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -147,6 +148,7 @@ fn setup_denormalized_schema() -> GraphSchema {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -378,6 +380,7 @@ fn test_multiple_relationships_same_node() {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -469,6 +472,7 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
             label_value: None,
             node_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 
@@ -553,6 +557,7 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
             constraints: None,
             edge_id_types: None,
             source: None,
+            property_types: HashMap::new(),
         },
     );
 

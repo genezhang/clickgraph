@@ -168,6 +168,7 @@ property_mappings:
             r#type: Some("string".to_string()),
             types: None,
             source: None,
+            property_types: HashMap::new(),
         };
 
         // Serialize to YAML

@@ -529,6 +529,7 @@ mod tests {
                 label_value: None,
                 node_id_types: None,
                 source: None,
+                property_types: HashMap::new(),
             },
         );
         nodes.insert(
@@ -552,6 +553,7 @@ mod tests {
                 label_value: None,
                 node_id_types: None,
                 source: None,
+                property_types: HashMap::new(),
             },
         );
 
@@ -587,6 +589,7 @@ mod tests {
                 constraints: None,
                 edge_id_types: None,
                 source: None,
+                property_types: HashMap::new(),
             },
         );
         rels.insert(
@@ -620,6 +623,7 @@ mod tests {
                 constraints: None,
                 edge_id_types: None,
                 source: None,
+                property_types: HashMap::new(),
             },
         );
 
@@ -649,6 +653,7 @@ mod tests {
                 label_value: None,
                 node_id_types: None,
                 source: None,
+                property_types: HashMap::new(),
             },
         );
 
@@ -684,6 +689,7 @@ mod tests {
                 constraints: None,
                 edge_id_types: None,
                 source: None,
+                property_types: HashMap::new(),
             },
         );
 

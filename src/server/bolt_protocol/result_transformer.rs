@@ -2578,6 +2578,7 @@ mod tests {
                 constraints: None,
                 edge_id_types: None,
                 source: None,
+                property_types: HashMap::new(),
             },
         );
 

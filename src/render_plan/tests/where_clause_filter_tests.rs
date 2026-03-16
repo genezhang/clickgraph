@@ -119,6 +119,7 @@ fn setup_test_graph_schema() -> GraphSchema {
         label_value: None,
         node_id_types: None,
         source: None,
+        property_types: HashMap::new(),
     };
     nodes.insert("User".to_string(), user_node);
 
@@ -152,6 +153,7 @@ fn setup_test_graph_schema() -> GraphSchema {
         constraints: None,
         edge_id_types: None,
         source: None,
+        property_types: HashMap::new(),
     };
     relationships.insert("FOLLOWS::User::User".to_string(), follows_rel);
 
