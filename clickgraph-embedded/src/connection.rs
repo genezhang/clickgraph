@@ -17,6 +17,20 @@ use super::value::Value;
 use super::write_helpers;
 
 /// A connection to an embedded ClickGraph database.
+///
+/// # Example
+///
+/// ```no_run
+/// use clickgraph_embedded::{Database, Connection, SystemConfig};
+///
+/// let db = Database::new("schema.yaml", SystemConfig::default()).unwrap();
+/// let conn = Connection::new(&db).unwrap();
+///
+/// let mut result = conn.query("MATCH (u:User) RETURN u.name LIMIT 10").unwrap();
+/// for row in result {
+///     println!("{}", row[0]);
+/// }
+/// ```
 pub struct Connection<'db> {
     executor: Arc<dyn QueryExecutor>,
     schema: Arc<GraphSchema>,
@@ -34,11 +48,27 @@ impl<'db> Connection<'db> {
     }
 
     /// Execute a Cypher query and return an iterator over the result rows.
+    ///
+    /// This is synchronous — it blocks until the query completes.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use clickgraph_embedded::{Database, Connection, SystemConfig};
+    /// # let db = Database::new("schema.yaml", SystemConfig::default()).unwrap();
+    /// # let conn = Connection::new(&db).unwrap();
+    /// let mut result = conn.query("MATCH (u:User) RETURN u.name").unwrap();
+    /// while let Some(row) = result.next() {
+    ///     println!("{}", row[0]);
+    /// }
+    /// ```
     pub fn query(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
         self.db.runtime.block_on(self.query_async(cypher))
     }
 
     /// Execute a Cypher query and return the generated SQL without executing it.
+    ///
+    /// Useful for debugging and understanding what SQL ClickGraph generates.
     pub fn query_to_sql(&self, cypher: &str) -> Result<String, EmbeddedError> {
         use clickgraph::clickhouse_query_generator::cypher_to_sql;
         use clickgraph::server::query_context::{
@@ -475,7 +505,7 @@ impl<'db> Connection<'db> {
             node_schema.database, node_schema.table_name, transformed_json
         );
         self.execute_sql(&sql)?;
-        Ok(line_count as u64)
+        Ok(())
     }
 
     /// Import nodes from a JSON file (JSONEachRow format).
