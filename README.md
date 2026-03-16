@@ -28,9 +28,8 @@
 - **1,591 unit tests** - Up from 1,277, with comprehensive cross-schema pattern matrix tests.
 
 See [CHANGELOG.md](CHANGELOG.md) for complete release history.
+
 ---
-
-
 ## Features
 
 ### Core Capabilities
