@@ -17,6 +17,9 @@ use super::query_result::QueryResult;
 use super::value::Value;
 use super::write_helpers;
 
+/// Default maximum CTE recursion depth for Cypher→SQL translation.
+const DEFAULT_MAX_CTE_DEPTH: u32 = 100;
+
 /// A connection to an embedded ClickGraph database.
 ///
 /// # Example
@@ -177,6 +180,10 @@ impl<'db> Connection<'db> {
     ///
     /// Decomposes the graph into nodes grouped by label and edges grouped by
     /// type, then batch-inserts each group via `create_nodes()` / `create_edges()`.
+    ///
+    /// **Note**: Multi-labeled nodes are stored under their first label only.
+    /// This matches ClickGraph's schema model where each node belongs to exactly
+    /// one label (table).
     pub fn store_subgraph(&self, graph: &GraphResult) -> Result<StoreStats, EmbeddedError> {
         let mut nodes_stored = 0usize;
         let mut edges_stored = 0usize;
@@ -959,7 +966,8 @@ impl<'db> Connection<'db> {
         let cypher = cypher.to_string();
         with_query_context(QueryContext::new(None), async move {
             set_current_schema(Arc::clone(&schema));
-            let final_sql = cypher_to_sql(&cypher, &schema, 100).map_err(EmbeddedError::Query)?;
+            let final_sql = cypher_to_sql(&cypher, &schema, DEFAULT_MAX_CTE_DEPTH)
+                .map_err(EmbeddedError::Query)?;
             let json_rows = executor
                 .execute_json(&final_sql, None)
                 .await
@@ -1004,7 +1012,8 @@ impl<'db> Connection<'db> {
         with_query_context(QueryContext::new(None), async move {
             set_current_schema(Arc::clone(&schema));
             let (sql, logical_plan, plan_ctx) =
-                cypher_to_sql_with_metadata(&cypher, &schema, 100).map_err(EmbeddedError::Query)?;
+                cypher_to_sql_with_metadata(&cypher, &schema, DEFAULT_MAX_CTE_DEPTH)
+                    .map_err(EmbeddedError::Query)?;
             let json_rows = executor
                 .execute_json(&sql, None)
                 .await
@@ -1051,42 +1060,7 @@ impl<'db> Connection<'db> {
                 }
             }
         }
-        use clickgraph::clickhouse_query_generator::cypher_to_sql;
-        use clickgraph::server::query_context::{
-            set_current_schema, with_query_context, QueryContext,
-        };
-        let schema = Arc::clone(&self.schema);
-        let executor = Arc::clone(&self.executor);
-        let cypher = cypher.to_string();
-        with_query_context(QueryContext::new(None), async move {
-            set_current_schema(Arc::clone(&schema));
-            let final_sql = cypher_to_sql(&cypher, &schema, 100).map_err(EmbeddedError::Query)?;
-            let json_rows = executor
-                .execute_json(&final_sql, None)
-                .await
-                .map_err(EmbeddedError::from)?;
-            let mut column_names: Vec<String> = Vec::new();
-            let mut rows: Vec<Vec<Value>> = Vec::new();
-            for json_row in json_rows {
-                if let serde_json::Value::Object(obj) = json_row {
-                    if column_names.is_empty() {
-                        column_names = obj.keys().cloned().collect();
-                    }
-                    let row_vals: Vec<Value> = column_names
-                        .iter()
-                        .map(|col| {
-                            obj.get(col)
-                                .cloned()
-                                .map(Value::from)
-                                .unwrap_or(Value::Null)
-                        })
-                        .collect();
-                    rows.push(row_vals);
-                }
-            }
-            Ok(QueryResult::new(column_names, rows))
-        })
-        .await
+        self.query_with_executor_async(cypher, &self.executor).await
     }
 }
 
@@ -1445,6 +1419,7 @@ mod tests {
         let (db, captured) = make_capturing_db(build_writable_test_schema());
         let conn = Connection::new(&db).unwrap();
         let json_data = "{\"person_id\": \"p1\", \"name\": \"Alice\"}\n{\"person_id\": \"p2\", \"name\": \"Bob\"}";
+        // import_json returns () — verify it succeeds without error
         conn.import_json("Person", json_data).unwrap();
         let sqls = captured.lock().unwrap();
         assert!(sqls[0].contains("FORMAT JSONEachRow") && sqls[0].contains("full_name"));
