@@ -2,6 +2,8 @@
 
 ### 🚀 Features
 
+- **Hybrid remote query + local storage**: Execute Cypher queries against a remote ClickHouse cluster from embedded mode, then store results locally in chdb as a subgraph for fast re-querying. New `RemoteConfig` for `SystemConfig`, plus `Connection` methods: `query_remote()`, `query_remote_graph()`, `query_graph()`, `store_subgraph()`. New `GraphResult` structured output and `StoreStats` return type. Available in Rust, Python (UniFFI), and Go (UniFFI) bindings. `RoleConnectionPool::new_with_params()` enables programmatic pool creation without env vars.
+
 - **Denormalized & coupled schema support**: Full query support for schemas where node properties are embedded in edge tables via `from_node_properties`/`to_node_properties`. Includes property mapping, ORDER BY resolution, UNION aggregate column rewriting, and `id()` on virtual nodes (PRs #224-#228).
 
 - **OPTIONAL MATCH on denormalized schemas**: New CTE + LEFT JOIN architecture for correct LEFT JOIN semantics when MATCH produces a UNION standalone node scan. Includes UnionDistribution skip for optional patterns, column reference rewriting, and join preservation through the optimizer (PRs #229-#230).

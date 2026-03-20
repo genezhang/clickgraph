@@ -58,6 +58,22 @@ func OpenSQLOnly(schemaPath string) (*Database, error) {
 	return &Database{inner: db}, nil
 }
 
+// RemoteConfig holds connection details for a remote ClickHouse cluster.
+// When provided in [Config], enables [Connection.QueryRemote] and
+// [Connection.QueryRemoteGraph] for hybrid remote query + local storage.
+type RemoteConfig struct {
+	// ClickHouse HTTP endpoint URL (e.g., "http://ch-cluster:8123").
+	URL string
+	// ClickHouse username.
+	User string
+	// ClickHouse password.
+	Password string
+	// Database name (defaults to "default" if empty).
+	Database string
+	// Cluster name for multi-node round-robin (empty = single-node).
+	ClusterName string
+}
+
 // Config holds optional settings for the embedded database session.
 type Config struct {
 	// Directory for chdb session data (temp dir if empty).
@@ -82,6 +98,9 @@ type Config struct {
 	AzureStorageAccountName      string
 	AzureStorageAccountKey       string
 	AzureStorageConnectionString string
+
+	// Remote ClickHouse connection for hybrid query + local storage.
+	Remote *RemoteConfig
 }
 
 // OpenWithConfig creates a new Database with custom configuration.
@@ -100,6 +119,7 @@ func OpenWithConfig(schemaPath string, cfg Config) (*Database, error) {
 		AzureStorageAccountName:      strPtr(cfg.AzureStorageAccountName),
 		AzureStorageAccountKey:       strPtr(cfg.AzureStorageAccountKey),
 		AzureStorageConnectionString: strPtr(cfg.AzureStorageConnectionString),
+		Remote:                       toFfiRemoteConfig(cfg.Remote),
 	}
 	db, err := ffi.DatabaseOpenWithConfig(schemaPath, ffiCfg)
 	if err != nil {
@@ -207,6 +227,144 @@ func (c *Connection) ExportToSQL(cypher, outputPath string, opts *ExportOptions)
 		return "", fmt.Errorf("clickgraph: export_to_sql: %w", err)
 	}
 	return sql, nil
+}
+
+// GraphNode is a node in a [GraphResult].
+type GraphNode struct {
+	ID         string
+	Labels     []string
+	Properties map[string]interface{}
+}
+
+// GraphEdge is an edge in a [GraphResult].
+type GraphEdge struct {
+	ID         string
+	TypeName   string
+	FromID     string
+	ToID       string
+	Properties map[string]interface{}
+}
+
+// GraphResult is a structured graph result with deduplicated nodes and edges.
+// Returned by [Connection.QueryGraph] and [Connection.QueryRemoteGraph].
+// Can be passed to [Connection.StoreSubgraph] to persist locally.
+type GraphResult struct {
+	inner *ffi.GraphResult
+}
+
+// Close releases the graph result resources.
+func (g *GraphResult) Close() {
+	if g.inner != nil {
+		g.inner.Destroy()
+		g.inner = nil
+	}
+}
+
+// Nodes returns all nodes as [GraphNode] values.
+func (g *GraphResult) Nodes() []GraphNode {
+	ffiNodes := g.inner.Nodes()
+	nodes := make([]GraphNode, len(ffiNodes))
+	for i, n := range ffiNodes {
+		props := make(map[string]interface{}, len(n.Properties))
+		for k, v := range n.Properties {
+			props[k] = toGoValue(v)
+		}
+		nodes[i] = GraphNode{
+			ID:         n.Id,
+			Labels:     n.Labels,
+			Properties: props,
+		}
+	}
+	return nodes
+}
+
+// Edges returns all edges as [GraphEdge] values.
+func (g *GraphResult) Edges() []GraphEdge {
+	ffiEdges := g.inner.Edges()
+	edges := make([]GraphEdge, len(ffiEdges))
+	for i, e := range ffiEdges {
+		props := make(map[string]interface{}, len(e.Properties))
+		for k, v := range e.Properties {
+			props[k] = toGoValue(v)
+		}
+		edges[i] = GraphEdge{
+			ID:         e.Id,
+			TypeName:   e.TypeName,
+			FromID:     e.FromId,
+			ToID:       e.ToId,
+			Properties: props,
+		}
+	}
+	return edges
+}
+
+// NodeCount returns the number of nodes.
+func (g *GraphResult) NodeCount() uint64 {
+	return g.inner.NodeCount()
+}
+
+// EdgeCount returns the number of edges.
+func (g *GraphResult) EdgeCount() uint64 {
+	return g.inner.EdgeCount()
+}
+
+// StoreStats is the result of [Connection.StoreSubgraph].
+type StoreStats struct {
+	NodesStored uint64
+	EdgesStored uint64
+}
+
+// QueryRemote executes a Cypher query against the remote ClickHouse cluster.
+// Requires [RemoteConfig] to have been provided in [Config].
+func (c *Connection) QueryRemote(cypher string) (*Result, error) {
+	if c.inner == nil {
+		return nil, fmt.Errorf("clickgraph: query_remote: %w", errClosed)
+	}
+	qr, err := c.inner.QueryRemote(cypher)
+	if err != nil {
+		return nil, fmt.Errorf("clickgraph: query_remote: %w", err)
+	}
+	return &Result{inner: qr}, nil
+}
+
+// QueryGraph executes a Cypher query locally and returns a structured [GraphResult].
+func (c *Connection) QueryGraph(cypher string) (*GraphResult, error) {
+	if c.inner == nil {
+		return nil, fmt.Errorf("clickgraph: query_graph: %w", errClosed)
+	}
+	gr, err := c.inner.QueryGraph(cypher)
+	if err != nil {
+		return nil, fmt.Errorf("clickgraph: query_graph: %w", err)
+	}
+	return &GraphResult{inner: gr}, nil
+}
+
+// QueryRemoteGraph executes a Cypher query on the remote cluster and returns
+// a structured [GraphResult]. The result can be passed to [Connection.StoreSubgraph].
+func (c *Connection) QueryRemoteGraph(cypher string) (*GraphResult, error) {
+	if c.inner == nil {
+		return nil, fmt.Errorf("clickgraph: query_remote_graph: %w", errClosed)
+	}
+	gr, err := c.inner.QueryRemoteGraph(cypher)
+	if err != nil {
+		return nil, fmt.Errorf("clickgraph: query_remote_graph: %w", err)
+	}
+	return &GraphResult{inner: gr}, nil
+}
+
+// StoreSubgraph stores a [GraphResult] into local writable tables.
+func (c *Connection) StoreSubgraph(graph *GraphResult) (*StoreStats, error) {
+	if c.inner == nil {
+		return nil, fmt.Errorf("clickgraph: store_subgraph: %w", errClosed)
+	}
+	stats, err := c.inner.StoreSubgraph(graph.inner)
+	if err != nil {
+		return nil, fmt.Errorf("clickgraph: store_subgraph: %w", err)
+	}
+	return &StoreStats{
+		NodesStored: stats.NodesStored,
+		EdgesStored: stats.EdgesStored,
+	}, nil
 }
 
 // Result holds the rows returned by a Cypher query. Supports both cursor-style
@@ -347,4 +505,19 @@ func uint32Ptr(v uint32) *uint32 {
 		return nil
 	}
 	return &v
+}
+
+// toFfiRemoteConfig converts a Go RemoteConfig to an FFI RemoteConfig pointer.
+// Returns nil if rc is nil (no remote configured).
+func toFfiRemoteConfig(rc *RemoteConfig) *ffi.RemoteConfig {
+	if rc == nil {
+		return nil
+	}
+	return &ffi.RemoteConfig{
+		Url:         rc.URL,
+		User:        rc.User,
+		Password:    rc.Password,
+		Database:    strPtr(rc.Database),
+		ClusterName: strPtr(rc.ClusterName),
+	}
 }

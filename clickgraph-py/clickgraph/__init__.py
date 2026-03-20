@@ -39,14 +39,23 @@ from clickgraph._ffi import (
     Database as _FfiDatabase,
     Connection as _FfiConnection,
     QueryResult as _FfiQueryResult,
+    GraphResult as _FfiGraphResult,
     ExportOptions as _FfiExportOptions,
     SystemConfig as _FfiSystemConfig,
+    RemoteConfig as _FfiRemoteConfig,
     Value as _FfiValue,
     Row as _FfiRow,
     ClickGraphError,
 )
 
-__all__ = ["Database", "Connection", "QueryResult", "ClickGraphError"]
+__all__ = [
+    "Database",
+    "Connection",
+    "QueryResult",
+    "GraphResult",
+    "StoreStats",
+    "ClickGraphError",
+]
 __version__ = "0.1.0"
 
 
@@ -214,6 +223,75 @@ class QueryResult:
 
 
 # ---------------------------------------------------------------------------
+# GraphResult / StoreStats
+# ---------------------------------------------------------------------------
+
+
+class StoreStats:
+    """Statistics from :meth:`Connection.store_subgraph`."""
+
+    def __init__(self, nodes_stored: int, edges_stored: int):
+        self.nodes_stored = nodes_stored
+        self.edges_stored = edges_stored
+
+    def __repr__(self) -> str:
+        return f"StoreStats(nodes_stored={self.nodes_stored}, edges_stored={self.edges_stored})"
+
+
+class GraphResult:
+    """Structured graph result containing deduplicated nodes and edges.
+
+    Returned by :meth:`Connection.query_graph` and
+    :meth:`Connection.query_remote_graph`.  Can be passed to
+    :meth:`Connection.store_subgraph` to persist locally.
+    """
+
+    def __init__(self, ffi_result: _FfiGraphResult):
+        self._ffi = ffi_result
+
+    @property
+    def nodes(self) -> list[dict]:
+        """Nodes as dicts with ``id``, ``labels``, ``properties`` keys."""
+        return [
+            {
+                "id": n.id,
+                "labels": list(n.labels),
+                "properties": {
+                    k: _value_to_python(v) for k, v in n.properties.items()
+                },
+            }
+            for n in self._ffi.nodes()
+        ]
+
+    @property
+    def edges(self) -> list[dict]:
+        """Edges as dicts with ``id``, ``type_name``, ``from_id``, ``to_id``, ``properties``."""
+        return [
+            {
+                "id": e.id,
+                "type_name": e.type_name,
+                "from_id": e.from_id,
+                "to_id": e.to_id,
+                "properties": {
+                    k: _value_to_python(v) for k, v in e.properties.items()
+                },
+            }
+            for e in self._ffi.edges()
+        ]
+
+    @property
+    def node_count(self) -> int:
+        return self._ffi.node_count()
+
+    @property
+    def edge_count(self) -> int:
+        return self._ffi.edge_count()
+
+    def __repr__(self) -> str:
+        return f"<GraphResult nodes={self.node_count} edges={self.edge_count}>"
+
+
+# ---------------------------------------------------------------------------
 # Connection
 # ---------------------------------------------------------------------------
 
@@ -288,6 +366,45 @@ class Connection:
         )
         return self._ffi.export_to_sql(cypher, output_path, opts)
 
+    def query_remote(self, cypher: str) -> QueryResult:
+        """Execute a Cypher query against the remote ClickHouse cluster.
+
+        Requires ``remote_url``, ``remote_user``, ``remote_password`` to have
+        been provided when opening the ``Database``.
+        """
+        ffi_result = self._ffi.query_remote(cypher)
+        return QueryResult(ffi_result)
+
+    def query_graph(self, cypher: str) -> GraphResult:
+        """Execute a Cypher query locally and return a structured graph result.
+
+        >>> graph = conn.query_graph("MATCH (u:User)-[r:FOLLOWS]->(f:User) RETURN u, r, f")
+        >>> print(graph.node_count, graph.edge_count)
+        """
+        ffi_result = self._ffi.query_graph(cypher)
+        return GraphResult(ffi_result)
+
+    def query_remote_graph(self, cypher: str) -> GraphResult:
+        """Execute a Cypher query on the remote cluster and return a graph result.
+
+        The result can be passed to :meth:`store_subgraph` to persist locally.
+        """
+        ffi_result = self._ffi.query_remote_graph(cypher)
+        return GraphResult(ffi_result)
+
+    def store_subgraph(self, graph: GraphResult) -> StoreStats:
+        """Store a ``GraphResult`` into local writable tables.
+
+        >>> graph = conn.query_remote_graph("MATCH (u:User) RETURN u LIMIT 100")
+        >>> stats = conn.store_subgraph(graph)
+        >>> print(stats.nodes_stored)
+        """
+        ffi_stats = self._ffi.store_subgraph(graph._ffi)
+        return StoreStats(
+            nodes_stored=ffi_stats.nodes_stored,
+            edges_stored=ffi_stats.edges_stored,
+        )
+
     def __repr__(self) -> str:
         return "<Connection>"
 
@@ -321,8 +438,24 @@ class Database:
         azure_storage_account_name: str | None = None,
         azure_storage_account_key: str | None = None,
         azure_storage_connection_string: str | None = None,
+        remote_url: str | None = None,
+        remote_user: str | None = None,
+        remote_password: str | None = None,
+        remote_database: str | None = None,
+        remote_cluster_name: str | None = None,
     ):
-        has_config = any(v is not None for v in [
+        # Build remote config if any remote_* args are provided
+        remote_cfg = None
+        if remote_url is not None:
+            remote_cfg = _FfiRemoteConfig(
+                url=remote_url,
+                user=remote_user or "",
+                password=remote_password or "",
+                database=remote_database,
+                cluster_name=remote_cluster_name,
+            )
+
+        has_config = remote_cfg is not None or any(v is not None for v in [
             session_dir, data_dir, max_threads,
             s3_access_key_id, s3_secret_access_key, s3_region, s3_endpoint_url,
             s3_session_token, gcs_access_key_id, gcs_secret_access_key,
@@ -345,6 +478,7 @@ class Database:
                 azure_storage_account_name=azure_storage_account_name,
                 azure_storage_account_key=azure_storage_account_key,
                 azure_storage_connection_string=azure_storage_connection_string,
+                remote=remote_cfg,
             )
             self._ffi = _FfiDatabase.open_with_config(schema_path, config)
         else:

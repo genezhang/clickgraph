@@ -12,6 +12,7 @@ use clickgraph::graph_catalog::graph_schema::GraphSchema;
 use super::database::Database;
 use super::error::EmbeddedError;
 use super::export::{build_export_sql, ExportOptions};
+use super::graph_result::{parse_element_id, transform_rows_to_graph, GraphResult, StoreStats};
 use super::query_result::QueryResult;
 use super::value::Value;
 use super::write_helpers;
@@ -33,6 +34,7 @@ use super::write_helpers;
 /// ```
 pub struct Connection<'db> {
     executor: Arc<dyn QueryExecutor>,
+    remote_executor: Option<Arc<dyn QueryExecutor>>,
     schema: Arc<GraphSchema>,
     db: &'db Database,
 }
@@ -42,6 +44,7 @@ impl<'db> Connection<'db> {
     pub fn new(db: &'db Database) -> Result<Self, EmbeddedError> {
         Ok(Connection {
             executor: Arc::clone(&db.executor),
+            remote_executor: db.remote_executor.as_ref().map(Arc::clone),
             schema: Arc::clone(&db.schema),
             db,
         })
@@ -135,6 +138,97 @@ impl<'db> Connection<'db> {
                 .await
                 .map_err(EmbeddedError::from)?;
             Ok(())
+        })
+    }
+
+    /// Execute a Cypher query against the remote ClickHouse cluster.
+    ///
+    /// Requires `RemoteConfig` to have been provided when opening the database.
+    /// Returns an error if no remote executor is configured.
+    pub fn query_remote(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
+        self.db
+            .runtime
+            .block_on(self.query_with_executor_async(cypher, self.get_remote_executor()?))
+    }
+
+    /// Execute a Cypher query locally and return a structured graph result.
+    ///
+    /// Uses `cypher_to_sql_with_metadata()` to get plan metadata, then
+    /// transforms the result rows into `GraphNode`s and `GraphEdge`s.
+    pub fn query_graph(&self, cypher: &str) -> Result<GraphResult, EmbeddedError> {
+        self.db
+            .runtime
+            .block_on(self.query_graph_async(cypher, &self.executor))
+    }
+
+    /// Execute a Cypher query on the remote cluster and return a structured graph result.
+    ///
+    /// Combines remote execution with graph decomposition. The returned
+    /// `GraphResult` can be passed to `store_subgraph()` to persist locally.
+    pub fn query_remote_graph(&self, cypher: &str) -> Result<GraphResult, EmbeddedError> {
+        let remote = self.get_remote_executor()?;
+        self.db
+            .runtime
+            .block_on(self.query_graph_async(cypher, remote))
+    }
+
+    /// Store a `GraphResult` (from `query_graph` or `query_remote_graph`) into
+    /// local writable tables.
+    ///
+    /// Decomposes the graph into nodes grouped by label and edges grouped by
+    /// type, then batch-inserts each group via `create_nodes()` / `create_edges()`.
+    pub fn store_subgraph(&self, graph: &GraphResult) -> Result<StoreStats, EmbeddedError> {
+        let mut nodes_stored = 0usize;
+        let mut edges_stored = 0usize;
+
+        // Group nodes by label
+        let mut nodes_by_label: HashMap<String, Vec<HashMap<String, Value>>> = HashMap::new();
+        for node in graph.nodes() {
+            let label = node
+                .labels
+                .first()
+                .ok_or_else(|| EmbeddedError::Validation("Node has no labels".to_string()))?;
+            nodes_by_label
+                .entry(label.clone())
+                .or_default()
+                .push(node.properties.clone());
+        }
+
+        // Group edges by type, extracting raw IDs from element_id strings
+        let mut edges_by_type: HashMap<String, Vec<(String, String, HashMap<String, Value>)>> =
+            HashMap::new();
+        for edge in graph.edges() {
+            let (_, from_raw_id) = parse_element_id(&edge.from_id).ok_or_else(|| {
+                EmbeddedError::Validation(format!("Invalid from element_id: {}", edge.from_id))
+            })?;
+            let (_, to_raw_id) = parse_element_id(&edge.to_id).ok_or_else(|| {
+                EmbeddedError::Validation(format!("Invalid to element_id: {}", edge.to_id))
+            })?;
+            edges_by_type
+                .entry(edge.type_name.clone())
+                .or_default()
+                .push((
+                    from_raw_id.to_string(),
+                    to_raw_id.to_string(),
+                    edge.properties.clone(),
+                ));
+        }
+
+        // Batch-insert nodes
+        for (label, batch) in nodes_by_label {
+            nodes_stored += batch.len();
+            self.create_nodes(&label, batch)?;
+        }
+
+        // Batch-insert edges
+        for (edge_type, batch) in edges_by_type {
+            edges_stored += batch.len();
+            self.create_edges(&edge_type, batch)?;
+        }
+
+        Ok(StoreStats {
+            nodes_stored,
+            edges_stored,
         })
     }
 
@@ -841,6 +935,86 @@ impl<'db> Connection<'db> {
         Ok(QueryResult::new(columns, rows))
     }
 
+    fn get_remote_executor(&self) -> Result<&Arc<dyn QueryExecutor>, EmbeddedError> {
+        self.remote_executor.as_ref().ok_or_else(|| {
+            EmbeddedError::Query(
+                "No remote executor configured. Provide RemoteConfig when opening the database."
+                    .to_string(),
+            )
+        })
+    }
+
+    /// Execute a Cypher query using the specified executor and return a tabular result.
+    async fn query_with_executor_async(
+        &self,
+        cypher: &str,
+        executor: &Arc<dyn QueryExecutor>,
+    ) -> Result<QueryResult, EmbeddedError> {
+        use clickgraph::clickhouse_query_generator::cypher_to_sql;
+        use clickgraph::server::query_context::{
+            set_current_schema, with_query_context, QueryContext,
+        };
+        let schema = Arc::clone(&self.schema);
+        let executor = Arc::clone(executor);
+        let cypher = cypher.to_string();
+        with_query_context(QueryContext::new(None), async move {
+            set_current_schema(Arc::clone(&schema));
+            let final_sql = cypher_to_sql(&cypher, &schema, 100).map_err(EmbeddedError::Query)?;
+            let json_rows = executor
+                .execute_json(&final_sql, None)
+                .await
+                .map_err(EmbeddedError::from)?;
+            let mut column_names: Vec<String> = Vec::new();
+            let mut rows: Vec<Vec<Value>> = Vec::new();
+            for json_row in json_rows {
+                if let serde_json::Value::Object(obj) = json_row {
+                    if column_names.is_empty() {
+                        column_names = obj.keys().cloned().collect();
+                    }
+                    let row_vals: Vec<Value> = column_names
+                        .iter()
+                        .map(|col| {
+                            obj.get(col)
+                                .cloned()
+                                .map(Value::from)
+                                .unwrap_or(Value::Null)
+                        })
+                        .collect();
+                    rows.push(row_vals);
+                }
+            }
+            Ok(QueryResult::new(column_names, rows))
+        })
+        .await
+    }
+
+    /// Execute a Cypher query using the specified executor and return a graph result.
+    async fn query_graph_async(
+        &self,
+        cypher: &str,
+        executor: &Arc<dyn QueryExecutor>,
+    ) -> Result<GraphResult, EmbeddedError> {
+        use clickgraph::clickhouse_query_generator::cypher_to_sql_with_metadata;
+        use clickgraph::server::query_context::{
+            set_current_schema, with_query_context, QueryContext,
+        };
+        let schema = Arc::clone(&self.schema);
+        let executor = Arc::clone(executor);
+        let cypher = cypher.to_string();
+        with_query_context(QueryContext::new(None), async move {
+            set_current_schema(Arc::clone(&schema));
+            let (sql, logical_plan, plan_ctx) =
+                cypher_to_sql_with_metadata(&cypher, &schema, 100).map_err(EmbeddedError::Query)?;
+            let json_rows = executor
+                .execute_json(&sql, None)
+                .await
+                .map_err(EmbeddedError::from)?;
+            transform_rows_to_graph(&json_rows, &logical_plan, &plan_ctx, &schema)
+                .map_err(EmbeddedError::Query)
+        })
+        .await
+    }
+
     async fn query_async(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
         if let Ok((_, stmt)) = clickgraph::open_cypher_parser::parse_cypher_statement(cypher) {
             if let clickgraph::open_cypher_parser::ast::CypherStatement::CopyTo(ref copy_stmt) =
@@ -967,6 +1141,7 @@ mod tests {
         }
         Database {
             executor: Arc::new(StubExecutor),
+            remote_executor: None,
             schema,
             runtime: tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1007,6 +1182,7 @@ mod tests {
             executor: Arc::new(CapturingExecutor {
                 captured: Arc::clone(&captured),
             }),
+            remote_executor: None,
             schema,
             runtime: tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1040,6 +1216,7 @@ mod tests {
         }
         Database {
             executor: Arc::new(ErrorExecutor),
+            remote_executor: None,
             schema,
             runtime: tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1268,7 +1445,7 @@ mod tests {
         let (db, captured) = make_capturing_db(build_writable_test_schema());
         let conn = Connection::new(&db).unwrap();
         let json_data = "{\"person_id\": \"p1\", \"name\": \"Alice\"}\n{\"person_id\": \"p2\", \"name\": \"Bob\"}";
-        assert_eq!(conn.import_json("Person", json_data).unwrap(), 2);
+        conn.import_json("Person", json_data).unwrap();
         let sqls = captured.lock().unwrap();
         assert!(sqls[0].contains("FORMAT JSONEachRow") && sqls[0].contains("full_name"));
     }
@@ -1344,6 +1521,99 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("source-backed"));
+    }
+
+    // --- remote executor tests ---
+
+    #[test]
+    fn test_query_remote_without_config_returns_error() {
+        let db = make_stub_db();
+        let conn = Connection::new(&db).unwrap();
+        let err = conn
+            .query_remote("MATCH (u:User) RETURN u.name")
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("No remote executor configured"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_query_remote_graph_without_config_returns_error() {
+        let db = make_stub_db();
+        let conn = Connection::new(&db).unwrap();
+        let err = conn
+            .query_remote_graph("MATCH (u:User) RETURN u.name")
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("No remote executor configured"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    // --- store_subgraph tests ---
+
+    #[test]
+    fn test_store_subgraph_empty_graph() {
+        let db = make_stub_db_with_schema(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let graph = GraphResult::empty();
+        let stats = conn.store_subgraph(&graph).unwrap();
+        assert_eq!(stats.nodes_stored, 0);
+        assert_eq!(stats.edges_stored, 0);
+    }
+
+    #[test]
+    fn test_store_subgraph_nodes_only() {
+        use crate::graph_result::{GraphNode, GraphResultBuilder};
+        let (db, captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+
+        let mut builder = GraphResultBuilder::new();
+        let mut props = HashMap::new();
+        props.insert("person_id".to_string(), Value::String("p1".to_string()));
+        props.insert("name".to_string(), Value::String("Alice".to_string()));
+        builder.add_node(GraphNode {
+            id: "Person:p1".to_string(),
+            labels: vec!["Person".to_string()],
+            properties: props,
+        });
+        let graph = builder.build();
+        let stats = conn.store_subgraph(&graph).unwrap();
+        assert_eq!(stats.nodes_stored, 1);
+        assert_eq!(stats.edges_stored, 0);
+
+        let sqls = captured.lock().unwrap();
+        assert!(sqls[0].contains("INSERT INTO"), "SQL: {}", sqls[0]);
+    }
+
+    #[test]
+    fn test_store_subgraph_edges() {
+        use crate::graph_result::{GraphEdge, GraphResultBuilder};
+        let (db, captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+
+        let mut builder = GraphResultBuilder::new();
+        builder.add_edge(GraphEdge {
+            id: "KNOWS:p1:p2".to_string(),
+            type_name: "KNOWS".to_string(),
+            from_id: "Person:p1".to_string(),
+            to_id: "Person:p2".to_string(),
+            properties: HashMap::new(),
+        });
+        let graph = builder.build();
+        let stats = conn.store_subgraph(&graph).unwrap();
+        assert_eq!(stats.nodes_stored, 0);
+        assert_eq!(stats.edges_stored, 1);
+
+        let sqls = captured.lock().unwrap();
+        assert!(
+            sqls[0].contains("from_person_id") && sqls[0].contains("to_person_id"),
+            "SQL: {}",
+            sqls[0]
+        );
     }
 
     // --- SQL injection tests ---

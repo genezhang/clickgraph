@@ -20,6 +20,22 @@ use clickgraph::server::bolt_protocol::result_transformer::{
 
 use super::value::Value;
 
+/// Statistics returned by `Connection::store_subgraph()`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreStats {
+    /// Number of nodes written to local tables.
+    pub nodes_stored: usize,
+    /// Number of edges written to local tables.
+    pub edges_stored: usize,
+}
+
+/// Parse an element ID string like `"Label:raw_id"` into `("Label", "raw_id")`.
+///
+/// Returns `None` if the string does not contain a `:` separator.
+pub fn parse_element_id(element_id: &str) -> Option<(&str, &str)> {
+    element_id.split_once(':')
+}
+
 /// A graph node with an element ID, labels, and properties.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphNode {
@@ -73,10 +89,18 @@ impl GraphResult {
     pub fn edge_count(&self) -> usize {
         self.edges.len()
     }
+
+    /// Create an empty `GraphResult` with no nodes or edges.
+    pub fn empty() -> Self {
+        GraphResult {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        }
+    }
 }
 
 /// Builder for constructing a `GraphResult` with deduplication.
-pub(crate) struct GraphResultBuilder {
+pub struct GraphResultBuilder {
     nodes: Vec<GraphNode>,
     edges: Vec<GraphEdge>,
     seen_nodes: HashSet<String>,
@@ -84,7 +108,7 @@ pub(crate) struct GraphResultBuilder {
 }
 
 impl GraphResultBuilder {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
             edges: Vec::new(),
@@ -94,21 +118,21 @@ impl GraphResultBuilder {
     }
 
     /// Add a node, skipping if its element ID has already been seen.
-    pub(crate) fn add_node(&mut self, node: GraphNode) {
+    pub fn add_node(&mut self, node: GraphNode) {
         if self.seen_nodes.insert(node.id.clone()) {
             self.nodes.push(node);
         }
     }
 
     /// Add an edge, skipping if its element ID has already been seen.
-    pub(crate) fn add_edge(&mut self, edge: GraphEdge) {
+    pub fn add_edge(&mut self, edge: GraphEdge) {
         if self.seen_edges.insert(edge.id.clone()) {
             self.edges.push(edge);
         }
     }
 
     /// Consume the builder and produce the final `GraphResult`.
-    pub(crate) fn build(self) -> GraphResult {
+    pub fn build(self) -> GraphResult {
         GraphResult {
             nodes: self.nodes,
             edges: self.edges,
@@ -120,7 +144,7 @@ impl GraphResultBuilder {
 ///
 /// Uses `extract_return_metadata` from the core crate to classify return items
 /// as Node, Relationship, or Scalar, then extracts properties from each row.
-pub(crate) fn transform_rows_to_graph(
+pub fn transform_rows_to_graph(
     rows: &[JsonValue],
     logical_plan: &LogicalPlan,
     plan_ctx: &PlanCtx,
@@ -480,5 +504,39 @@ mod tests {
         assert_eq!(result.edge_count(), 0);
         assert!(result.nodes().is_empty());
         assert!(result.edges().is_empty());
+    }
+
+    #[test]
+    fn test_parse_element_id_node() {
+        let (label, id) = parse_element_id("User:42").unwrap();
+        assert_eq!(label, "User");
+        assert_eq!(id, "42");
+    }
+
+    #[test]
+    fn test_parse_element_id_string_id() {
+        let (label, id) = parse_element_id("Person:abc-def").unwrap();
+        assert_eq!(label, "Person");
+        assert_eq!(id, "abc-def");
+    }
+
+    #[test]
+    fn test_parse_element_id_no_colon() {
+        assert!(parse_element_id("nocolon").is_none());
+    }
+
+    #[test]
+    fn test_parse_element_id_empty() {
+        assert!(parse_element_id("").is_none());
+    }
+
+    #[test]
+    fn test_store_stats_default() {
+        let stats = StoreStats {
+            nodes_stored: 5,
+            edges_stored: 10,
+        };
+        assert_eq!(stats.nodes_stored, 5);
+        assert_eq!(stats.edges_stored, 10);
     }
 }

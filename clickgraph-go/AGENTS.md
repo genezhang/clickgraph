@@ -16,7 +16,7 @@ Go application code
 ## File Overview
 
 ```
-clickgraph.go           (350 lines)  ← Public Go API + UniFFI cgo bridge
+clickgraph.go           (520+ lines) ← Public Go API + UniFFI cgo bridge
 clickgraph_test.go      (224 lines)  ← Unit tests (no chdb)
 integration_test.go     (413 lines)  ← sql_only integration tests (32 tests)
 chdb_e2e_test.go        (423 lines)  ← Real chdb e2e tests (12 tests)
@@ -51,6 +51,21 @@ sql, err := conn.QueryToSQL("MATCH (u:User) RETURN u.name")
 // Export to file
 err = conn.Export("MATCH ...", "output.parquet", nil)
 err = conn.Export("MATCH ...", "output.csv", &clickgraph.ExportOptions{Format: "csv"})
+
+// Hybrid remote query + local storage
+db, err := clickgraph.OpenWithConfig("schema.yaml", clickgraph.Config{
+    Remote: &clickgraph.RemoteConfig{
+        URL: "http://ch-cluster:8123", User: "analyst", Password: "secret",
+    },
+})
+conn, _ := db.Connect()
+graph, err := conn.QueryRemoteGraph("MATCH (u:User)-[r:FOLLOWS]->(f:User) RETURN u, r, f LIMIT 1000")
+stats, err := conn.StoreSubgraph(graph)  // → StoreStats{NodesStored, EdgesStored}
+
+// Structured graph result (local)
+graph, err := conn.QueryGraph("MATCH (u:User) RETURN u LIMIT 10")
+nodes := graph.Nodes()  // []GraphNode{ID, Labels, Properties}
+edges := graph.Edges()  // []GraphEdge{ID, TypeName, FromID, ToID, Properties}
 ```
 
 ## Conventions

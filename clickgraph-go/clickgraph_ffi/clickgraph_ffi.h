@@ -388,6 +388,41 @@ void* uniffi_clickgraph_ffi_fn_clone_connection(void* ptr, RustCallStatus *out_s
 void uniffi_clickgraph_ffi_fn_free_connection(void* ptr, RustCallStatus *out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_CREATE_EDGE
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_CREATE_EDGE
+void uniffi_clickgraph_ffi_fn_method_connection_create_edge(void* ptr, RustBuffer edge_type, RustBuffer from_id, RustBuffer to_id, RustBuffer properties, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_CREATE_EDGES
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_CREATE_EDGES
+void uniffi_clickgraph_ffi_fn_method_connection_create_edges(void* ptr, RustBuffer edge_type, RustBuffer batch, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_CREATE_NODE
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_CREATE_NODE
+RustBuffer uniffi_clickgraph_ffi_fn_method_connection_create_node(void* ptr, RustBuffer label, RustBuffer properties, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_CREATE_NODES
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_CREATE_NODES
+RustBuffer uniffi_clickgraph_ffi_fn_method_connection_create_nodes(void* ptr, RustBuffer label, RustBuffer batch, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_DELETE_EDGES
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_DELETE_EDGES
+void uniffi_clickgraph_ffi_fn_method_connection_delete_edges(void* ptr, RustBuffer edge_type, RustBuffer filter, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_DELETE_NODES
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_DELETE_NODES
+void uniffi_clickgraph_ffi_fn_method_connection_delete_nodes(void* ptr, RustBuffer label, RustBuffer filter, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_EXECUTE_SQL
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_EXECUTE_SQL
+void uniffi_clickgraph_ffi_fn_method_connection_execute_sql(void* ptr, RustBuffer sql, RustCallStatus *out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_EXPORT
 #define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_EXPORT
 void uniffi_clickgraph_ffi_fn_method_connection_export(void* ptr, RustBuffer cypher, RustBuffer output_path, RustBuffer options, RustCallStatus *out_status
@@ -398,14 +433,54 @@ void uniffi_clickgraph_ffi_fn_method_connection_export(void* ptr, RustBuffer cyp
 RustBuffer uniffi_clickgraph_ffi_fn_method_connection_export_to_sql(void* ptr, RustBuffer cypher, RustBuffer output_path, RustBuffer options, RustCallStatus *out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_IMPORT_JSON
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_IMPORT_JSON
+void uniffi_clickgraph_ffi_fn_method_connection_import_json(void* ptr, RustBuffer label, RustBuffer json_lines, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_IMPORT_JSON_FILE
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_IMPORT_JSON_FILE
+void uniffi_clickgraph_ffi_fn_method_connection_import_json_file(void* ptr, RustBuffer label, RustBuffer file_path, RustCallStatus *out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_QUERY
 #define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_QUERY
 void* uniffi_clickgraph_ffi_fn_method_connection_query(void* ptr, RustBuffer cypher, RustCallStatus *out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_QUERY_GRAPH
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_QUERY_GRAPH
+void* uniffi_clickgraph_ffi_fn_method_connection_query_graph(void* ptr, RustBuffer cypher, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_QUERY_REMOTE
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_QUERY_REMOTE
+void* uniffi_clickgraph_ffi_fn_method_connection_query_remote(void* ptr, RustBuffer cypher, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_QUERY_REMOTE_GRAPH
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_QUERY_REMOTE_GRAPH
+void* uniffi_clickgraph_ffi_fn_method_connection_query_remote_graph(void* ptr, RustBuffer cypher, RustCallStatus *out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_QUERY_TO_SQL
 #define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_QUERY_TO_SQL
 RustBuffer uniffi_clickgraph_ffi_fn_method_connection_query_to_sql(void* ptr, RustBuffer cypher, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_STORE_SUBGRAPH
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_STORE_SUBGRAPH
+RustBuffer uniffi_clickgraph_ffi_fn_method_connection_store_subgraph(void* ptr, void* graph, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_UPSERT_EDGE
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_UPSERT_EDGE
+void uniffi_clickgraph_ffi_fn_method_connection_upsert_edge(void* ptr, RustBuffer edge_type, RustBuffer from_id, RustBuffer to_id, RustBuffer properties, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_UPSERT_NODE
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_UPSERT_NODE
+RustBuffer uniffi_clickgraph_ffi_fn_method_connection_upsert_node(void* ptr, RustBuffer label, RustBuffer properties, RustCallStatus *out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_CLONE_DATABASE
@@ -436,6 +511,36 @@ void* uniffi_clickgraph_ffi_fn_constructor_database_open_with_config(RustBuffer 
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_DATABASE_CONNECT
 #define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_DATABASE_CONNECT
 void* uniffi_clickgraph_ffi_fn_method_database_connect(void* ptr, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_CLONE_GRAPHRESULT
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_CLONE_GRAPHRESULT
+void* uniffi_clickgraph_ffi_fn_clone_graphresult(void* ptr, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_FREE_GRAPHRESULT
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_FREE_GRAPHRESULT
+void uniffi_clickgraph_ffi_fn_free_graphresult(void* ptr, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_GRAPHRESULT_EDGE_COUNT
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_GRAPHRESULT_EDGE_COUNT
+uint64_t uniffi_clickgraph_ffi_fn_method_graphresult_edge_count(void* ptr, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_GRAPHRESULT_EDGES
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_GRAPHRESULT_EDGES
+RustBuffer uniffi_clickgraph_ffi_fn_method_graphresult_edges(void* ptr, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_GRAPHRESULT_NODE_COUNT
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_GRAPHRESULT_NODE_COUNT
+uint64_t uniffi_clickgraph_ffi_fn_method_graphresult_node_count(void* ptr, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_GRAPHRESULT_NODES
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_GRAPHRESULT_NODES
+RustBuffer uniffi_clickgraph_ffi_fn_method_graphresult_nodes(void* ptr, RustCallStatus *out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_CLONE_QUERYRESULT
@@ -758,6 +863,48 @@ void ffi_clickgraph_ffi_rust_future_free_void(uint64_t handle
 void ffi_clickgraph_ffi_rust_future_complete_void(uint64_t handle, RustCallStatus *out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_CREATE_EDGE
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_CREATE_EDGE
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_create_edge(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_CREATE_EDGES
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_CREATE_EDGES
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_create_edges(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_CREATE_NODE
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_CREATE_NODE
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_create_node(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_CREATE_NODES
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_CREATE_NODES
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_create_nodes(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_DELETE_EDGES
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_DELETE_EDGES
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_delete_edges(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_DELETE_NODES
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_DELETE_NODES
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_delete_nodes(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_EXECUTE_SQL
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_EXECUTE_SQL
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_execute_sql(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_EXPORT
 #define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_EXPORT
 uint16_t uniffi_clickgraph_ffi_checksum_method_connection_export(void
@@ -770,9 +917,39 @@ uint16_t uniffi_clickgraph_ffi_checksum_method_connection_export_to_sql(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_IMPORT_JSON
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_IMPORT_JSON
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_import_json(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_IMPORT_JSON_FILE
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_IMPORT_JSON_FILE
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_import_json_file(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_QUERY
 #define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_QUERY
 uint16_t uniffi_clickgraph_ffi_checksum_method_connection_query(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_QUERY_GRAPH
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_QUERY_GRAPH
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_query_graph(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_QUERY_REMOTE
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_QUERY_REMOTE
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_query_remote(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_QUERY_REMOTE_GRAPH
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_QUERY_REMOTE_GRAPH
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_query_remote_graph(void
     
 );
 #endif
@@ -782,9 +959,51 @@ uint16_t uniffi_clickgraph_ffi_checksum_method_connection_query_to_sql(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_STORE_SUBGRAPH
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_STORE_SUBGRAPH
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_store_subgraph(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_UPSERT_EDGE
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_UPSERT_EDGE
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_upsert_edge(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_UPSERT_NODE
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_UPSERT_NODE
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_upsert_node(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_DATABASE_CONNECT
 #define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_DATABASE_CONNECT
 uint16_t uniffi_clickgraph_ffi_checksum_method_database_connect(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_GRAPHRESULT_EDGE_COUNT
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_GRAPHRESULT_EDGE_COUNT
+uint16_t uniffi_clickgraph_ffi_checksum_method_graphresult_edge_count(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_GRAPHRESULT_EDGES
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_GRAPHRESULT_EDGES
+uint16_t uniffi_clickgraph_ffi_checksum_method_graphresult_edges(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_GRAPHRESULT_NODE_COUNT
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_GRAPHRESULT_NODE_COUNT
+uint16_t uniffi_clickgraph_ffi_checksum_method_graphresult_node_count(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_GRAPHRESULT_NODES
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_GRAPHRESULT_NODES
+uint16_t uniffi_clickgraph_ffi_checksum_method_graphresult_nodes(void
     
 );
 #endif

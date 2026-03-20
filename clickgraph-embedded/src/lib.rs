@@ -45,9 +45,9 @@ pub mod value;
 pub(crate) mod write_helpers;
 
 pub use connection::Connection;
-pub use database::{Database, StorageCredentials, SystemConfig};
+pub use database::{Database, RemoteConfig, StorageCredentials, SystemConfig};
 pub use error::EmbeddedError;
 pub use export::{ExportFormat, ExportOptions};
-pub use graph_result::{GraphEdge, GraphNode, GraphResult};
+pub use graph_result::{GraphEdge, GraphNode, GraphResult, GraphResultBuilder, StoreStats};
 pub use query_result::{QueryResult, Row};
 pub use value::Value;

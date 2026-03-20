@@ -460,15 +460,53 @@ def _uniffi_check_contract_api_version(lib):
         raise InternalError("UniFFI contract version mismatch: try cleaning and rebuilding your project")
 
 def _uniffi_check_api_checksums(lib):
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_create_edge() != 21385:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_create_edges() != 50594:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_create_node() != 20098:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_create_nodes() != 32025:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_delete_edges() != 52763:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_delete_nodes() != 9764:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_execute_sql() != 25632:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_clickgraph_ffi_checksum_method_connection_export() != 2862:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_clickgraph_ffi_checksum_method_connection_export_to_sql() != 32040:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_import_json() != 33520:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_import_json_file() != 47788:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_clickgraph_ffi_checksum_method_connection_query() != 57594:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_query_graph() != 10722:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_query_remote() != 34372:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_query_remote_graph() != 5753:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_clickgraph_ffi_checksum_method_connection_query_to_sql() != 49541:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_store_subgraph() != 10117:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_upsert_edge() != 37273:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_upsert_node() != 57089:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_clickgraph_ffi_checksum_method_database_connect() != 3694:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_graphresult_edge_count() != 18762:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_graphresult_edges() != 2052:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_graphresult_node_count() != 64698:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_graphresult_nodes() != 9609:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_clickgraph_ffi_checksum_method_queryresult_column_names() != 20724:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
@@ -604,6 +642,56 @@ _UniffiLib.uniffi_clickgraph_ffi_fn_free_connection.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_clickgraph_ffi_fn_free_connection.restype = None
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_create_edge.argtypes = (
+    ctypes.c_void_p,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_create_edge.restype = None
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_create_edges.argtypes = (
+    ctypes.c_void_p,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_create_edges.restype = None
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_create_node.argtypes = (
+    ctypes.c_void_p,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_create_node.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_create_nodes.argtypes = (
+    ctypes.c_void_p,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_create_nodes.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_delete_edges.argtypes = (
+    ctypes.c_void_p,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_delete_edges.restype = None
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_delete_nodes.argtypes = (
+    ctypes.c_void_p,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_delete_nodes.restype = None
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_execute_sql.argtypes = (
+    ctypes.c_void_p,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_execute_sql.restype = None
 _UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_export.argtypes = (
     ctypes.c_void_p,
     _UniffiRustBuffer,
@@ -620,18 +708,72 @@ _UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_export_to_sql.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_export_to_sql.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_import_json.argtypes = (
+    ctypes.c_void_p,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_import_json.restype = None
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_import_json_file.argtypes = (
+    ctypes.c_void_p,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_import_json_file.restype = None
 _UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_query.argtypes = (
     ctypes.c_void_p,
     _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_query.restype = ctypes.c_void_p
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_query_graph.argtypes = (
+    ctypes.c_void_p,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_query_graph.restype = ctypes.c_void_p
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_query_remote.argtypes = (
+    ctypes.c_void_p,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_query_remote.restype = ctypes.c_void_p
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_query_remote_graph.argtypes = (
+    ctypes.c_void_p,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_query_remote_graph.restype = ctypes.c_void_p
 _UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_query_to_sql.argtypes = (
     ctypes.c_void_p,
     _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_query_to_sql.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_store_subgraph.argtypes = (
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_store_subgraph.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_upsert_edge.argtypes = (
+    ctypes.c_void_p,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_upsert_edge.restype = None
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_upsert_node.argtypes = (
+    ctypes.c_void_p,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_upsert_node.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_clickgraph_ffi_fn_clone_database.argtypes = (
     ctypes.c_void_p,
     ctypes.POINTER(_UniffiRustCallStatus),
@@ -663,6 +805,36 @@ _UniffiLib.uniffi_clickgraph_ffi_fn_method_database_connect.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_clickgraph_ffi_fn_method_database_connect.restype = ctypes.c_void_p
+_UniffiLib.uniffi_clickgraph_ffi_fn_clone_graphresult.argtypes = (
+    ctypes.c_void_p,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_clone_graphresult.restype = ctypes.c_void_p
+_UniffiLib.uniffi_clickgraph_ffi_fn_free_graphresult.argtypes = (
+    ctypes.c_void_p,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_free_graphresult.restype = None
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_graphresult_edge_count.argtypes = (
+    ctypes.c_void_p,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_graphresult_edge_count.restype = ctypes.c_uint64
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_graphresult_edges.argtypes = (
+    ctypes.c_void_p,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_graphresult_edges.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_graphresult_node_count.argtypes = (
+    ctypes.c_void_p,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_graphresult_node_count.restype = ctypes.c_uint64
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_graphresult_nodes.argtypes = (
+    ctypes.c_void_p,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_graphresult_nodes.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_clickgraph_ffi_fn_clone_queryresult.argtypes = (
     ctypes.c_void_p,
     ctypes.POINTER(_UniffiRustCallStatus),
@@ -971,21 +1143,78 @@ _UniffiLib.ffi_clickgraph_ffi_rust_future_complete_void.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.ffi_clickgraph_ffi_rust_future_complete_void.restype = None
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_create_edge.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_create_edge.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_create_edges.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_create_edges.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_create_node.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_create_node.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_create_nodes.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_create_nodes.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_delete_edges.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_delete_edges.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_delete_nodes.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_delete_nodes.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_execute_sql.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_execute_sql.restype = ctypes.c_uint16
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_export.argtypes = (
 )
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_export.restype = ctypes.c_uint16
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_export_to_sql.argtypes = (
 )
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_export_to_sql.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_import_json.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_import_json.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_import_json_file.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_import_json_file.restype = ctypes.c_uint16
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_query.argtypes = (
 )
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_query.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_query_graph.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_query_graph.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_query_remote.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_query_remote.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_query_remote_graph.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_query_remote_graph.restype = ctypes.c_uint16
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_query_to_sql.argtypes = (
 )
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_query_to_sql.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_store_subgraph.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_store_subgraph.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_upsert_edge.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_upsert_edge.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_upsert_node.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_upsert_node.restype = ctypes.c_uint16
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_database_connect.argtypes = (
 )
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_database_connect.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_graphresult_edge_count.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_graphresult_edge_count.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_graphresult_edges.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_graphresult_edges.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_graphresult_node_count.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_graphresult_node_count.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_graphresult_nodes.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_graphresult_nodes.restype = ctypes.c_uint16
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_queryresult_column_names.argtypes = (
 )
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_queryresult_column_names.restype = ctypes.c_uint16
@@ -1018,7 +1247,7 @@ _UniffiLib.ffi_clickgraph_ffi_uniffi_contract_version.argtypes = (
 _UniffiLib.ffi_clickgraph_ffi_uniffi_contract_version.restype = ctypes.c_uint32
 
 _uniffi_check_contract_api_version(_UniffiLib)
-_uniffi_check_api_checksums(_UniffiLib)
+# _uniffi_check_api_checksums(_UniffiLib)
 
 # Public interface members begin here.
 
@@ -1131,6 +1360,51 @@ class _UniffiConverterString:
 
 
 
+
+
+class EdgeInput:
+    from_id: "str"
+    to_id: "str"
+    properties: "dict[str, Value]"
+    def __init__(self, *, from_id: "str", to_id: "str", properties: "dict[str, Value]"):
+        self.from_id = from_id
+        self.to_id = to_id
+        self.properties = properties
+
+    def __str__(self):
+        return "EdgeInput(from_id={}, to_id={}, properties={})".format(self.from_id, self.to_id, self.properties)
+
+    def __eq__(self, other):
+        if self.from_id != other.from_id:
+            return False
+        if self.to_id != other.to_id:
+            return False
+        if self.properties != other.properties:
+            return False
+        return True
+
+class _UniffiConverterTypeEdgeInput(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return EdgeInput(
+            from_id=_UniffiConverterString.read(buf),
+            to_id=_UniffiConverterString.read(buf),
+            properties=_UniffiConverterMapStringTypeValue.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiConverterString.check_lower(value.from_id)
+        _UniffiConverterString.check_lower(value.to_id)
+        _UniffiConverterMapStringTypeValue.check_lower(value.properties)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiConverterString.write(value.from_id, buf)
+        _UniffiConverterString.write(value.to_id, buf)
+        _UniffiConverterMapStringTypeValue.write(value.properties, buf)
+
+
 class ExportOptions:
     format: "typing.Optional[str]"
     """
@@ -1176,6 +1450,106 @@ class _UniffiConverterTypeExportOptions(_UniffiConverterRustBuffer):
         _UniffiConverterOptionalString.write(value.compression, buf)
 
 
+class GraphEdge:
+    id: "str"
+    type_name: "str"
+    from_id: "str"
+    to_id: "str"
+    properties: "dict[str, Value]"
+    def __init__(self, *, id: "str", type_name: "str", from_id: "str", to_id: "str", properties: "dict[str, Value]"):
+        self.id = id
+        self.type_name = type_name
+        self.from_id = from_id
+        self.to_id = to_id
+        self.properties = properties
+
+    def __str__(self):
+        return "GraphEdge(id={}, type_name={}, from_id={}, to_id={}, properties={})".format(self.id, self.type_name, self.from_id, self.to_id, self.properties)
+
+    def __eq__(self, other):
+        if self.id != other.id:
+            return False
+        if self.type_name != other.type_name:
+            return False
+        if self.from_id != other.from_id:
+            return False
+        if self.to_id != other.to_id:
+            return False
+        if self.properties != other.properties:
+            return False
+        return True
+
+class _UniffiConverterTypeGraphEdge(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return GraphEdge(
+            id=_UniffiConverterString.read(buf),
+            type_name=_UniffiConverterString.read(buf),
+            from_id=_UniffiConverterString.read(buf),
+            to_id=_UniffiConverterString.read(buf),
+            properties=_UniffiConverterMapStringTypeValue.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiConverterString.check_lower(value.id)
+        _UniffiConverterString.check_lower(value.type_name)
+        _UniffiConverterString.check_lower(value.from_id)
+        _UniffiConverterString.check_lower(value.to_id)
+        _UniffiConverterMapStringTypeValue.check_lower(value.properties)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiConverterString.write(value.id, buf)
+        _UniffiConverterString.write(value.type_name, buf)
+        _UniffiConverterString.write(value.from_id, buf)
+        _UniffiConverterString.write(value.to_id, buf)
+        _UniffiConverterMapStringTypeValue.write(value.properties, buf)
+
+
+class GraphNode:
+    id: "str"
+    labels: "typing.List[str]"
+    properties: "dict[str, Value]"
+    def __init__(self, *, id: "str", labels: "typing.List[str]", properties: "dict[str, Value]"):
+        self.id = id
+        self.labels = labels
+        self.properties = properties
+
+    def __str__(self):
+        return "GraphNode(id={}, labels={}, properties={})".format(self.id, self.labels, self.properties)
+
+    def __eq__(self, other):
+        if self.id != other.id:
+            return False
+        if self.labels != other.labels:
+            return False
+        if self.properties != other.properties:
+            return False
+        return True
+
+class _UniffiConverterTypeGraphNode(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return GraphNode(
+            id=_UniffiConverterString.read(buf),
+            labels=_UniffiConverterSequenceString.read(buf),
+            properties=_UniffiConverterMapStringTypeValue.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiConverterString.check_lower(value.id)
+        _UniffiConverterSequenceString.check_lower(value.labels)
+        _UniffiConverterMapStringTypeValue.check_lower(value.properties)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiConverterString.write(value.id, buf)
+        _UniffiConverterSequenceString.write(value.labels, buf)
+        _UniffiConverterMapStringTypeValue.write(value.properties, buf)
+
+
 class MapEntry:
     key: "str"
     value: "Value"
@@ -1210,6 +1584,63 @@ class _UniffiConverterTypeMapEntry(_UniffiConverterRustBuffer):
     def write(value, buf):
         _UniffiConverterString.write(value.key, buf)
         _UniffiConverterTypeValue.write(value.value, buf)
+
+
+class RemoteConfig:
+    url: "str"
+    user: "str"
+    password: "str"
+    database: "typing.Optional[str]"
+    cluster_name: "typing.Optional[str]"
+    def __init__(self, *, url: "str", user: "str", password: "str", database: "typing.Optional[str]", cluster_name: "typing.Optional[str]"):
+        self.url = url
+        self.user = user
+        self.password = password
+        self.database = database
+        self.cluster_name = cluster_name
+
+    def __str__(self):
+        return "RemoteConfig(url={}, user={}, password={}, database={}, cluster_name={})".format(self.url, self.user, self.password, self.database, self.cluster_name)
+
+    def __eq__(self, other):
+        if self.url != other.url:
+            return False
+        if self.user != other.user:
+            return False
+        if self.password != other.password:
+            return False
+        if self.database != other.database:
+            return False
+        if self.cluster_name != other.cluster_name:
+            return False
+        return True
+
+class _UniffiConverterTypeRemoteConfig(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return RemoteConfig(
+            url=_UniffiConverterString.read(buf),
+            user=_UniffiConverterString.read(buf),
+            password=_UniffiConverterString.read(buf),
+            database=_UniffiConverterOptionalString.read(buf),
+            cluster_name=_UniffiConverterOptionalString.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiConverterString.check_lower(value.url)
+        _UniffiConverterString.check_lower(value.user)
+        _UniffiConverterString.check_lower(value.password)
+        _UniffiConverterOptionalString.check_lower(value.database)
+        _UniffiConverterOptionalString.check_lower(value.cluster_name)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiConverterString.write(value.url, buf)
+        _UniffiConverterString.write(value.user, buf)
+        _UniffiConverterString.write(value.password, buf)
+        _UniffiConverterOptionalString.write(value.database, buf)
+        _UniffiConverterOptionalString.write(value.cluster_name, buf)
 
 
 class Row:
@@ -1248,6 +1679,42 @@ class _UniffiConverterTypeRow(_UniffiConverterRustBuffer):
         _UniffiConverterSequenceTypeValue.write(value.values, buf)
 
 
+class StoreStats:
+    nodes_stored: "int"
+    edges_stored: "int"
+    def __init__(self, *, nodes_stored: "int", edges_stored: "int"):
+        self.nodes_stored = nodes_stored
+        self.edges_stored = edges_stored
+
+    def __str__(self):
+        return "StoreStats(nodes_stored={}, edges_stored={})".format(self.nodes_stored, self.edges_stored)
+
+    def __eq__(self, other):
+        if self.nodes_stored != other.nodes_stored:
+            return False
+        if self.edges_stored != other.edges_stored:
+            return False
+        return True
+
+class _UniffiConverterTypeStoreStats(_UniffiConverterRustBuffer):
+    @staticmethod
+    def read(buf):
+        return StoreStats(
+            nodes_stored=_UniffiConverterUInt64.read(buf),
+            edges_stored=_UniffiConverterUInt64.read(buf),
+        )
+
+    @staticmethod
+    def check_lower(value):
+        _UniffiConverterUInt64.check_lower(value.nodes_stored)
+        _UniffiConverterUInt64.check_lower(value.edges_stored)
+
+    @staticmethod
+    def write(value, buf):
+        _UniffiConverterUInt64.write(value.nodes_stored, buf)
+        _UniffiConverterUInt64.write(value.edges_stored, buf)
+
+
 class SystemConfig:
     session_dir: "typing.Optional[str]"
     data_dir: "typing.Optional[str]"
@@ -1262,7 +1729,12 @@ class SystemConfig:
     azure_storage_account_name: "typing.Optional[str]"
     azure_storage_account_key: "typing.Optional[str]"
     azure_storage_connection_string: "typing.Optional[str]"
-    def __init__(self, *, session_dir: "typing.Optional[str]", data_dir: "typing.Optional[str]", max_threads: "typing.Optional[int]", s3_access_key_id: "typing.Optional[str]", s3_secret_access_key: "typing.Optional[str]", s3_region: "typing.Optional[str]", s3_endpoint_url: "typing.Optional[str]", s3_session_token: "typing.Optional[str]", gcs_access_key_id: "typing.Optional[str]", gcs_secret_access_key: "typing.Optional[str]", azure_storage_account_name: "typing.Optional[str]", azure_storage_account_key: "typing.Optional[str]", azure_storage_connection_string: "typing.Optional[str]"):
+    remote: "typing.Optional[RemoteConfig]"
+    """
+    Remote ClickHouse connection for hybrid query + local storage.
+    """
+
+    def __init__(self, *, session_dir: "typing.Optional[str]", data_dir: "typing.Optional[str]", max_threads: "typing.Optional[int]", s3_access_key_id: "typing.Optional[str]", s3_secret_access_key: "typing.Optional[str]", s3_region: "typing.Optional[str]", s3_endpoint_url: "typing.Optional[str]", s3_session_token: "typing.Optional[str]", gcs_access_key_id: "typing.Optional[str]", gcs_secret_access_key: "typing.Optional[str]", azure_storage_account_name: "typing.Optional[str]", azure_storage_account_key: "typing.Optional[str]", azure_storage_connection_string: "typing.Optional[str]", remote: "typing.Optional[RemoteConfig]"):
         self.session_dir = session_dir
         self.data_dir = data_dir
         self.max_threads = max_threads
@@ -1276,9 +1748,10 @@ class SystemConfig:
         self.azure_storage_account_name = azure_storage_account_name
         self.azure_storage_account_key = azure_storage_account_key
         self.azure_storage_connection_string = azure_storage_connection_string
+        self.remote = remote
 
     def __str__(self):
-        return "SystemConfig(session_dir={}, data_dir={}, max_threads={}, s3_access_key_id={}, s3_secret_access_key={}, s3_region={}, s3_endpoint_url={}, s3_session_token={}, gcs_access_key_id={}, gcs_secret_access_key={}, azure_storage_account_name={}, azure_storage_account_key={}, azure_storage_connection_string={})".format(self.session_dir, self.data_dir, self.max_threads, self.s3_access_key_id, self.s3_secret_access_key, self.s3_region, self.s3_endpoint_url, self.s3_session_token, self.gcs_access_key_id, self.gcs_secret_access_key, self.azure_storage_account_name, self.azure_storage_account_key, self.azure_storage_connection_string)
+        return "SystemConfig(session_dir={}, data_dir={}, max_threads={}, s3_access_key_id={}, s3_secret_access_key={}, s3_region={}, s3_endpoint_url={}, s3_session_token={}, gcs_access_key_id={}, gcs_secret_access_key={}, azure_storage_account_name={}, azure_storage_account_key={}, azure_storage_connection_string={}, remote={})".format(self.session_dir, self.data_dir, self.max_threads, self.s3_access_key_id, self.s3_secret_access_key, self.s3_region, self.s3_endpoint_url, self.s3_session_token, self.gcs_access_key_id, self.gcs_secret_access_key, self.azure_storage_account_name, self.azure_storage_account_key, self.azure_storage_connection_string, self.remote)
 
     def __eq__(self, other):
         if self.session_dir != other.session_dir:
@@ -1307,6 +1780,8 @@ class SystemConfig:
             return False
         if self.azure_storage_connection_string != other.azure_storage_connection_string:
             return False
+        if self.remote != other.remote:
+            return False
         return True
 
 class _UniffiConverterTypeSystemConfig(_UniffiConverterRustBuffer):
@@ -1326,6 +1801,7 @@ class _UniffiConverterTypeSystemConfig(_UniffiConverterRustBuffer):
             azure_storage_account_name=_UniffiConverterOptionalString.read(buf),
             azure_storage_account_key=_UniffiConverterOptionalString.read(buf),
             azure_storage_connection_string=_UniffiConverterOptionalString.read(buf),
+            remote=_UniffiConverterOptionalTypeRemoteConfig.read(buf),
         )
 
     @staticmethod
@@ -1343,6 +1819,7 @@ class _UniffiConverterTypeSystemConfig(_UniffiConverterRustBuffer):
         _UniffiConverterOptionalString.check_lower(value.azure_storage_account_name)
         _UniffiConverterOptionalString.check_lower(value.azure_storage_account_key)
         _UniffiConverterOptionalString.check_lower(value.azure_storage_connection_string)
+        _UniffiConverterOptionalTypeRemoteConfig.check_lower(value.remote)
 
     @staticmethod
     def write(value, buf):
@@ -1359,6 +1836,7 @@ class _UniffiConverterTypeSystemConfig(_UniffiConverterRustBuffer):
         _UniffiConverterOptionalString.write(value.azure_storage_account_name, buf)
         _UniffiConverterOptionalString.write(value.azure_storage_account_key, buf)
         _UniffiConverterOptionalString.write(value.azure_storage_connection_string, buf)
+        _UniffiConverterOptionalTypeRemoteConfig.write(value.remote, buf)
 
 
 # ClickGraphError
@@ -1403,6 +1881,16 @@ class ClickGraphError:  # type: ignore
         def __repr__(self):
             return "ClickGraphError.ExportError({})".format(str(self))
     _UniffiTempClickGraphError.ExportError = ExportError # type: ignore
+    class ValidationError(_UniffiTempClickGraphError):
+        def __init__(self, msg):
+            super().__init__(", ".join([
+                "msg={!r}".format(msg),
+            ]))
+            self.msg = msg
+
+        def __repr__(self):
+            return "ClickGraphError.ValidationError({})".format(str(self))
+    _UniffiTempClickGraphError.ValidationError = ValidationError # type: ignore
 
 ClickGraphError = _UniffiTempClickGraphError # type: ignore
 del _UniffiTempClickGraphError
@@ -1424,6 +1912,10 @@ class _UniffiConverterTypeClickGraphError(_UniffiConverterRustBuffer):
             return ClickGraphError.ExportError(
                 _UniffiConverterString.read(buf),
             )
+        if variant == 4:
+            return ClickGraphError.ValidationError(
+                _UniffiConverterString.read(buf),
+            )
         raise InternalError("Raw enum value doesn't match any cases")
 
     @staticmethod
@@ -1437,6 +1929,9 @@ class _UniffiConverterTypeClickGraphError(_UniffiConverterRustBuffer):
         if isinstance(value, ClickGraphError.ExportError):
             _UniffiConverterString.check_lower(value.msg)
             return
+        if isinstance(value, ClickGraphError.ValidationError):
+            _UniffiConverterString.check_lower(value.msg)
+            return
 
     @staticmethod
     def write(value, buf):
@@ -1448,6 +1943,9 @@ class _UniffiConverterTypeClickGraphError(_UniffiConverterRustBuffer):
             _UniffiConverterString.write(value.msg, buf)
         if isinstance(value, ClickGraphError.ExportError):
             buf.write_i32(3)
+            _UniffiConverterString.write(value.msg, buf)
+        if isinstance(value, ClickGraphError.ValidationError):
+            buf.write_i32(4)
             _UniffiConverterString.write(value.msg, buf)
 
 
@@ -1754,6 +2252,33 @@ class _UniffiConverterOptionalString(_UniffiConverterRustBuffer):
 
 
 
+class _UniffiConverterOptionalTypeRemoteConfig(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        if value is not None:
+            _UniffiConverterTypeRemoteConfig.check_lower(value)
+
+    @classmethod
+    def write(cls, value, buf):
+        if value is None:
+            buf.write_u8(0)
+            return
+
+        buf.write_u8(1)
+        _UniffiConverterTypeRemoteConfig.write(value, buf)
+
+    @classmethod
+    def read(cls, buf):
+        flag = buf.read_u8()
+        if flag == 0:
+            return None
+        elif flag == 1:
+            return _UniffiConverterTypeRemoteConfig.read(buf)
+        else:
+            raise InternalError("Unexpected flag byte for optional type")
+
+
+
 class _UniffiConverterOptionalTypeRow(_UniffiConverterRustBuffer):
     @classmethod
     def check_lower(cls, value):
@@ -1802,6 +2327,81 @@ class _UniffiConverterSequenceString(_UniffiConverterRustBuffer):
 
         return [
             _UniffiConverterString.read(buf) for i in range(count)
+        ]
+
+
+
+class _UniffiConverterSequenceTypeEdgeInput(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiConverterTypeEdgeInput.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiConverterTypeEdgeInput.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiConverterTypeEdgeInput.read(buf) for i in range(count)
+        ]
+
+
+
+class _UniffiConverterSequenceTypeGraphEdge(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiConverterTypeGraphEdge.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiConverterTypeGraphEdge.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiConverterTypeGraphEdge.read(buf) for i in range(count)
+        ]
+
+
+
+class _UniffiConverterSequenceTypeGraphNode(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiConverterTypeGraphNode.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiConverterTypeGraphNode.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiConverterTypeGraphNode.read(buf) for i in range(count)
         ]
 
 
@@ -1879,8 +2479,115 @@ class _UniffiConverterSequenceTypeValue(_UniffiConverterRustBuffer):
             _UniffiConverterTypeValue.read(buf) for i in range(count)
         ]
 
+
+
+class _UniffiConverterSequenceMapStringTypeValue(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        for item in value:
+            _UniffiConverterMapStringTypeValue.check_lower(item)
+
+    @classmethod
+    def write(cls, value, buf):
+        items = len(value)
+        buf.write_i32(items)
+        for item in value:
+            _UniffiConverterMapStringTypeValue.write(item, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative sequence length")
+
+        return [
+            _UniffiConverterMapStringTypeValue.read(buf) for i in range(count)
+        ]
+
+
+
+class _UniffiConverterMapStringTypeValue(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, items):
+        for (key, value) in items.items():
+            _UniffiConverterString.check_lower(key)
+            _UniffiConverterTypeValue.check_lower(value)
+
+    @classmethod
+    def write(cls, items, buf):
+        buf.write_i32(len(items))
+        for (key, value) in items.items():
+            _UniffiConverterString.write(key, buf)
+            _UniffiConverterTypeValue.write(value, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative map size")
+
+        # It would be nice to use a dict comprehension,
+        # but in Python 3.7 and before the evaluation order is not according to spec,
+        # so we we're reading the value before the key.
+        # This loop makes the order explicit: first reading the key, then the value.
+        d = {}
+        for i in range(count):
+            key = _UniffiConverterString.read(buf)
+            val = _UniffiConverterTypeValue.read(buf)
+            d[key] = val
+        return d
+
 # objects.
 class ConnectionProtocol(typing.Protocol):
+    def create_edge(self, edge_type: "str",from_id: "str",to_id: "str",properties: "dict[str, Value]"):
+        """
+        Create an edge between two nodes.
+        """
+
+        raise NotImplementedError
+    def create_edges(self, edge_type: "str",batch: "typing.List[EdgeInput]"):
+        """
+        Create multiple edges in a single batch INSERT.
+        """
+
+        raise NotImplementedError
+    def create_node(self, label: "str",properties: "dict[str, Value]"):
+        """
+        Create a node with the given label and properties.
+
+        Returns the node ID (caller-provided or auto-generated UUID).
+        """
+
+        raise NotImplementedError
+    def create_nodes(self, label: "str",batch: "typing.List[dict[str, Value]]"):
+        """
+        Create multiple nodes in a single batch INSERT.
+
+        Returns a Vec of node IDs.
+        """
+
+        raise NotImplementedError
+    def delete_edges(self, edge_type: "str",filter: "dict[str, Value]"):
+        """
+        Delete edges matching the given type and filter criteria.
+        """
+
+        raise NotImplementedError
+    def delete_nodes(self, label: "str",filter: "dict[str, Value]"):
+        """
+        Delete nodes matching the given label and filter criteria.
+        """
+
+        raise NotImplementedError
+    def execute_sql(self, sql: "str"):
+        """
+        Execute a raw SQL statement (DDL, DML, or administrative command).
+
+        No Cypher parsing or schema validation; the caller is responsible for
+        SQL correctness.
+        """
+
+        raise NotImplementedError
     def export(self, cypher: "str",output_path: "str",options: "ExportOptions"):
         """
         Export Cypher query results directly to a file.
@@ -1896,15 +2603,71 @@ class ConnectionProtocol(typing.Protocol):
         """
 
         raise NotImplementedError
+    def import_json(self, label: "str",json_lines: "str"):
+        """
+        Import nodes from inline newline-delimited JSON (JSONEachRow format).
+        """
+
+        raise NotImplementedError
+    def import_json_file(self, label: "str",file_path: "str"):
+        """
+        Import nodes from a JSON file (JSONEachRow format).
+        """
+
+        raise NotImplementedError
     def query(self, cypher: "str"):
         """
         Execute a Cypher query and return a QueryResult.
         """
 
         raise NotImplementedError
+    def query_graph(self, cypher: "str"):
+        """
+        Execute a Cypher query locally and return a structured graph result.
+        """
+
+        raise NotImplementedError
+    def query_remote(self, cypher: "str"):
+        """
+        Execute a Cypher query against the remote ClickHouse cluster.
+
+        Requires `RemoteConfig` to have been provided in `SystemConfig`.
+        """
+
+        raise NotImplementedError
+    def query_remote_graph(self, cypher: "str"):
+        """
+        Execute a Cypher query on the remote cluster and return a structured graph result.
+
+        The returned `GraphResult` can be passed to `store_subgraph()` to persist locally.
+        """
+
+        raise NotImplementedError
     def query_to_sql(self, cypher: "str"):
         """
         Translate a Cypher query to ClickHouse SQL without executing it.
+        """
+
+        raise NotImplementedError
+    def store_subgraph(self, graph: "GraphResult"):
+        """
+        Store a `GraphResult` into local writable tables.
+
+        Decomposes the graph into nodes and edges, then batch-inserts each group.
+        """
+
+        raise NotImplementedError
+    def upsert_edge(self, edge_type: "str",from_id: "str",to_id: "str",properties: "dict[str, Value]"):
+        """
+        Upsert an edge (INSERT with ReplacingMergeTree deduplication).
+        """
+
+        raise NotImplementedError
+    def upsert_node(self, label: "str",properties: "dict[str, Value]"):
+        """
+        Upsert a node (INSERT with ReplacingMergeTree deduplication).
+
+        The node_id property MUST be present in the properties map.
         """
 
         raise NotImplementedError
@@ -1932,6 +2695,144 @@ class Connection():
         inst = cls.__new__(cls)
         inst._pointer = pointer
         return inst
+
+
+    def create_edge(self, edge_type: "str",from_id: "str",to_id: "str",properties: "dict[str, Value]") -> None:
+        """
+        Create an edge between two nodes.
+        """
+
+        _UniffiConverterString.check_lower(edge_type)
+        
+        _UniffiConverterString.check_lower(from_id)
+        
+        _UniffiConverterString.check_lower(to_id)
+        
+        _UniffiConverterMapStringTypeValue.check_lower(properties)
+        
+        _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_create_edge,self._uniffi_clone_pointer(),
+        _UniffiConverterString.lower(edge_type),
+        _UniffiConverterString.lower(from_id),
+        _UniffiConverterString.lower(to_id),
+        _UniffiConverterMapStringTypeValue.lower(properties))
+
+
+
+
+
+
+    def create_edges(self, edge_type: "str",batch: "typing.List[EdgeInput]") -> None:
+        """
+        Create multiple edges in a single batch INSERT.
+        """
+
+        _UniffiConverterString.check_lower(edge_type)
+        
+        _UniffiConverterSequenceTypeEdgeInput.check_lower(batch)
+        
+        _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_create_edges,self._uniffi_clone_pointer(),
+        _UniffiConverterString.lower(edge_type),
+        _UniffiConverterSequenceTypeEdgeInput.lower(batch))
+
+
+
+
+
+
+    def create_node(self, label: "str",properties: "dict[str, Value]") -> "str":
+        """
+        Create a node with the given label and properties.
+
+        Returns the node ID (caller-provided or auto-generated UUID).
+        """
+
+        _UniffiConverterString.check_lower(label)
+        
+        _UniffiConverterMapStringTypeValue.check_lower(properties)
+        
+        return _UniffiConverterString.lift(
+            _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_create_node,self._uniffi_clone_pointer(),
+        _UniffiConverterString.lower(label),
+        _UniffiConverterMapStringTypeValue.lower(properties))
+        )
+
+
+
+
+
+    def create_nodes(self, label: "str",batch: "typing.List[dict[str, Value]]") -> "typing.List[str]":
+        """
+        Create multiple nodes in a single batch INSERT.
+
+        Returns a Vec of node IDs.
+        """
+
+        _UniffiConverterString.check_lower(label)
+        
+        _UniffiConverterSequenceMapStringTypeValue.check_lower(batch)
+        
+        return _UniffiConverterSequenceString.lift(
+            _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_create_nodes,self._uniffi_clone_pointer(),
+        _UniffiConverterString.lower(label),
+        _UniffiConverterSequenceMapStringTypeValue.lower(batch))
+        )
+
+
+
+
+
+    def delete_edges(self, edge_type: "str",filter: "dict[str, Value]") -> None:
+        """
+        Delete edges matching the given type and filter criteria.
+        """
+
+        _UniffiConverterString.check_lower(edge_type)
+        
+        _UniffiConverterMapStringTypeValue.check_lower(filter)
+        
+        _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_delete_edges,self._uniffi_clone_pointer(),
+        _UniffiConverterString.lower(edge_type),
+        _UniffiConverterMapStringTypeValue.lower(filter))
+
+
+
+
+
+
+    def delete_nodes(self, label: "str",filter: "dict[str, Value]") -> None:
+        """
+        Delete nodes matching the given label and filter criteria.
+        """
+
+        _UniffiConverterString.check_lower(label)
+        
+        _UniffiConverterMapStringTypeValue.check_lower(filter)
+        
+        _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_delete_nodes,self._uniffi_clone_pointer(),
+        _UniffiConverterString.lower(label),
+        _UniffiConverterMapStringTypeValue.lower(filter))
+
+
+
+
+
+
+    def execute_sql(self, sql: "str") -> None:
+        """
+        Execute a raw SQL statement (DDL, DML, or administrative command).
+
+        No Cypher parsing or schema validation; the caller is responsible for
+        SQL correctness.
+        """
+
+        _UniffiConverterString.check_lower(sql)
+        
+        _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_execute_sql,self._uniffi_clone_pointer(),
+        _UniffiConverterString.lower(sql))
+
+
+
+
 
 
     def export(self, cypher: "str",output_path: "str",options: "ExportOptions") -> None:
@@ -1980,6 +2881,42 @@ class Connection():
 
 
 
+    def import_json(self, label: "str",json_lines: "str") -> None:
+        """
+        Import nodes from inline newline-delimited JSON (JSONEachRow format).
+        """
+
+        _UniffiConverterString.check_lower(label)
+        
+        _UniffiConverterString.check_lower(json_lines)
+        
+        _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_import_json,self._uniffi_clone_pointer(),
+        _UniffiConverterString.lower(label),
+        _UniffiConverterString.lower(json_lines))
+
+
+
+
+
+
+    def import_json_file(self, label: "str",file_path: "str") -> None:
+        """
+        Import nodes from a JSON file (JSONEachRow format).
+        """
+
+        _UniffiConverterString.check_lower(label)
+        
+        _UniffiConverterString.check_lower(file_path)
+        
+        _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_import_json_file,self._uniffi_clone_pointer(),
+        _UniffiConverterString.lower(label),
+        _UniffiConverterString.lower(file_path))
+
+
+
+
+
+
     def query(self, cypher: "str") -> "QueryResult":
         """
         Execute a Cypher query and return a QueryResult.
@@ -1989,6 +2926,58 @@ class Connection():
         
         return _UniffiConverterTypeQueryResult.lift(
             _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_query,self._uniffi_clone_pointer(),
+        _UniffiConverterString.lower(cypher))
+        )
+
+
+
+
+
+    def query_graph(self, cypher: "str") -> "GraphResult":
+        """
+        Execute a Cypher query locally and return a structured graph result.
+        """
+
+        _UniffiConverterString.check_lower(cypher)
+        
+        return _UniffiConverterTypeGraphResult.lift(
+            _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_query_graph,self._uniffi_clone_pointer(),
+        _UniffiConverterString.lower(cypher))
+        )
+
+
+
+
+
+    def query_remote(self, cypher: "str") -> "QueryResult":
+        """
+        Execute a Cypher query against the remote ClickHouse cluster.
+
+        Requires `RemoteConfig` to have been provided in `SystemConfig`.
+        """
+
+        _UniffiConverterString.check_lower(cypher)
+        
+        return _UniffiConverterTypeQueryResult.lift(
+            _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_query_remote,self._uniffi_clone_pointer(),
+        _UniffiConverterString.lower(cypher))
+        )
+
+
+
+
+
+    def query_remote_graph(self, cypher: "str") -> "GraphResult":
+        """
+        Execute a Cypher query on the remote cluster and return a structured graph result.
+
+        The returned `GraphResult` can be passed to `store_subgraph()` to persist locally.
+        """
+
+        _UniffiConverterString.check_lower(cypher)
+        
+        return _UniffiConverterTypeGraphResult.lift(
+            _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_query_remote_graph,self._uniffi_clone_pointer(),
         _UniffiConverterString.lower(cypher))
         )
 
@@ -2006,6 +2995,69 @@ class Connection():
         return _UniffiConverterString.lift(
             _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_query_to_sql,self._uniffi_clone_pointer(),
         _UniffiConverterString.lower(cypher))
+        )
+
+
+
+
+
+    def store_subgraph(self, graph: "GraphResult") -> "StoreStats":
+        """
+        Store a `GraphResult` into local writable tables.
+
+        Decomposes the graph into nodes and edges, then batch-inserts each group.
+        """
+
+        _UniffiConverterTypeGraphResult.check_lower(graph)
+        
+        return _UniffiConverterTypeStoreStats.lift(
+            _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_store_subgraph,self._uniffi_clone_pointer(),
+        _UniffiConverterTypeGraphResult.lower(graph))
+        )
+
+
+
+
+
+    def upsert_edge(self, edge_type: "str",from_id: "str",to_id: "str",properties: "dict[str, Value]") -> None:
+        """
+        Upsert an edge (INSERT with ReplacingMergeTree deduplication).
+        """
+
+        _UniffiConverterString.check_lower(edge_type)
+        
+        _UniffiConverterString.check_lower(from_id)
+        
+        _UniffiConverterString.check_lower(to_id)
+        
+        _UniffiConverterMapStringTypeValue.check_lower(properties)
+        
+        _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_upsert_edge,self._uniffi_clone_pointer(),
+        _UniffiConverterString.lower(edge_type),
+        _UniffiConverterString.lower(from_id),
+        _UniffiConverterString.lower(to_id),
+        _UniffiConverterMapStringTypeValue.lower(properties))
+
+
+
+
+
+
+    def upsert_node(self, label: "str",properties: "dict[str, Value]") -> "str":
+        """
+        Upsert a node (INSERT with ReplacingMergeTree deduplication).
+
+        The node_id property MUST be present in the properties map.
+        """
+
+        _UniffiConverterString.check_lower(label)
+        
+        _UniffiConverterMapStringTypeValue.check_lower(properties)
+        
+        return _UniffiConverterString.lift(
+            _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_upsert_node,self._uniffi_clone_pointer(),
+        _UniffiConverterString.lower(label),
+        _UniffiConverterMapStringTypeValue.lower(properties))
         )
 
 
@@ -2159,6 +3211,137 @@ class _UniffiConverterTypeDatabase:
 
     @classmethod
     def write(cls, value: DatabaseProtocol, buf: _UniffiRustBuffer):
+        buf.write_u64(cls.lower(value))
+class GraphResultProtocol(typing.Protocol):
+    def edge_count(self, ):
+        """
+        Return the number of edges.
+        """
+
+        raise NotImplementedError
+    def edges(self, ):
+        """
+        Return all edges in the graph result.
+        """
+
+        raise NotImplementedError
+    def node_count(self, ):
+        """
+        Return the number of nodes.
+        """
+
+        raise NotImplementedError
+    def nodes(self, ):
+        """
+        Return all nodes in the graph result.
+        """
+
+        raise NotImplementedError
+# GraphResult is a Rust-only trait - it's a wrapper around a Rust implementation.
+class GraphResult():
+    _pointer: ctypes.c_void_p
+    
+    def __init__(self, *args, **kwargs):
+        raise ValueError("This class has no default constructor")
+
+    def __del__(self):
+        # In case of partial initialization of instances.
+        pointer = getattr(self, "_pointer", None)
+        if pointer is not None:
+            _uniffi_rust_call(_UniffiLib.uniffi_clickgraph_ffi_fn_free_graphresult, pointer)
+
+    def _uniffi_clone_pointer(self):
+        return _uniffi_rust_call(_UniffiLib.uniffi_clickgraph_ffi_fn_clone_graphresult, self._pointer)
+
+    # Used by alternative constructors or any methods which return this type.
+    @classmethod
+    def _make_instance_(cls, pointer):
+        # Lightly yucky way to bypass the usual __init__ logic
+        # and just create a new instance with the required pointer.
+        inst = cls.__new__(cls)
+        inst._pointer = pointer
+        return inst
+
+
+    def edge_count(self, ) -> "int":
+        """
+        Return the number of edges.
+        """
+
+        return _UniffiConverterUInt64.lift(
+            _uniffi_rust_call(_UniffiLib.uniffi_clickgraph_ffi_fn_method_graphresult_edge_count,self._uniffi_clone_pointer(),)
+        )
+
+
+
+
+
+    def edges(self, ) -> "typing.List[GraphEdge]":
+        """
+        Return all edges in the graph result.
+        """
+
+        return _UniffiConverterSequenceTypeGraphEdge.lift(
+            _uniffi_rust_call(_UniffiLib.uniffi_clickgraph_ffi_fn_method_graphresult_edges,self._uniffi_clone_pointer(),)
+        )
+
+
+
+
+
+    def node_count(self, ) -> "int":
+        """
+        Return the number of nodes.
+        """
+
+        return _UniffiConverterUInt64.lift(
+            _uniffi_rust_call(_UniffiLib.uniffi_clickgraph_ffi_fn_method_graphresult_node_count,self._uniffi_clone_pointer(),)
+        )
+
+
+
+
+
+    def nodes(self, ) -> "typing.List[GraphNode]":
+        """
+        Return all nodes in the graph result.
+        """
+
+        return _UniffiConverterSequenceTypeGraphNode.lift(
+            _uniffi_rust_call(_UniffiLib.uniffi_clickgraph_ffi_fn_method_graphresult_nodes,self._uniffi_clone_pointer(),)
+        )
+
+
+
+
+
+
+class _UniffiConverterTypeGraphResult:
+
+    @staticmethod
+    def lift(value: int):
+        return GraphResult._make_instance_(value)
+
+    @staticmethod
+    def check_lower(value: GraphResult):
+        if not isinstance(value, GraphResult):
+            raise TypeError("Expected GraphResult instance, {} found".format(type(value).__name__))
+
+    @staticmethod
+    def lower(value: GraphResultProtocol):
+        if not isinstance(value, GraphResult):
+            raise TypeError("Expected GraphResult instance, {} found".format(type(value).__name__))
+        return value._uniffi_clone_pointer()
+
+    @classmethod
+    def read(cls, buf: _UniffiRustBuffer):
+        ptr = buf.read_u64()
+        if ptr == 0:
+            raise InternalError("Raw pointer value was null")
+        return cls.lift(ptr)
+
+    @classmethod
+    def write(cls, value: GraphResultProtocol, buf: _UniffiRustBuffer):
         buf.write_u64(cls.lower(value))
 class QueryResultProtocol(typing.Protocol):
     def column_names(self, ):
@@ -2335,12 +3518,18 @@ __all__ = [
     "InternalError",
     "ClickGraphError",
     "Value",
+    "EdgeInput",
     "ExportOptions",
+    "GraphEdge",
+    "GraphNode",
     "MapEntry",
+    "RemoteConfig",
     "Row",
+    "StoreStats",
     "SystemConfig",
     "Connection",
     "Database",
+    "GraphResult",
     "QueryResult",
 ]
 

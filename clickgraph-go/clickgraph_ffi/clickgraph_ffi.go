@@ -370,6 +370,69 @@ func uniffiCheckChecksums() {
 	}
 	{
 		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_method_connection_create_edge()
+		})
+		if checksum != 21385 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_create_edge: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_method_connection_create_edges()
+		})
+		if checksum != 50594 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_create_edges: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_method_connection_create_node()
+		})
+		if checksum != 20098 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_create_node: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_method_connection_create_nodes()
+		})
+		if checksum != 32025 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_create_nodes: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_method_connection_delete_edges()
+		})
+		if checksum != 52763 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_delete_edges: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_method_connection_delete_nodes()
+		})
+		if checksum != 9764 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_delete_nodes: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_method_connection_execute_sql()
+		})
+		if checksum != 25632 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_execute_sql: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
 			return C.uniffi_clickgraph_ffi_checksum_method_connection_export()
 		})
 		if checksum != 2862 {
@@ -388,11 +451,56 @@ func uniffiCheckChecksums() {
 	}
 	{
 		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_method_connection_import_json()
+		})
+		if checksum != 33520 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_import_json: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_method_connection_import_json_file()
+		})
+		if checksum != 47788 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_import_json_file: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
 			return C.uniffi_clickgraph_ffi_checksum_method_connection_query()
 		})
 		if checksum != 57594 {
 			// If this happens try cleaning and rebuilding your project
 			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_query: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_method_connection_query_graph()
+		})
+		if checksum != 10722 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_query_graph: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_method_connection_query_remote()
+		})
+		if checksum != 34372 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_query_remote: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_method_connection_query_remote_graph()
+		})
+		if checksum != 5753 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_query_remote_graph: UniFFI API checksum mismatch")
 		}
 	}
 	{
@@ -406,11 +514,74 @@ func uniffiCheckChecksums() {
 	}
 	{
 		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_method_connection_store_subgraph()
+		})
+		if checksum != 10117 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_store_subgraph: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_method_connection_upsert_edge()
+		})
+		if checksum != 37273 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_upsert_edge: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_method_connection_upsert_node()
+		})
+		if checksum != 57089 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_upsert_node: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
 			return C.uniffi_clickgraph_ffi_checksum_method_database_connect()
 		})
 		if checksum != 3694 {
 			// If this happens try cleaning and rebuilding your project
 			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_database_connect: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_method_graphresult_edge_count()
+		})
+		if checksum != 18762 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_graphresult_edge_count: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_method_graphresult_edges()
+		})
+		if checksum != 2052 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_graphresult_edges: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_method_graphresult_node_count()
+		})
+		if checksum != 64698 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_graphresult_node_count: UniFFI API checksum mismatch")
+		}
+	}
+	{
+		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+			return C.uniffi_clickgraph_ffi_checksum_method_graphresult_nodes()
+		})
+		if checksum != 9609 {
+			// If this happens try cleaning and rebuilding your project
+			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_graphresult_nodes: UniFFI API checksum mismatch")
 		}
 	}
 	{
@@ -741,6 +912,27 @@ func (ffiObject *FfiObject) freeRustArcPtr() {
 }
 
 type ConnectionInterface interface {
+	// Create an edge between two nodes.
+	CreateEdge(edgeType string, fromId string, toId string, properties map[string]Value) error
+	// Create multiple edges in a single batch INSERT.
+	CreateEdges(edgeType string, batch []EdgeInput) error
+	// Create a node with the given label and properties.
+	//
+	// Returns the node ID (caller-provided or auto-generated UUID).
+	CreateNode(label string, properties map[string]Value) (string, error)
+	// Create multiple nodes in a single batch INSERT.
+	//
+	// Returns a Vec of node IDs.
+	CreateNodes(label string, batch []map[string]Value) ([]string, error)
+	// Delete edges matching the given type and filter criteria.
+	DeleteEdges(edgeType string, filter map[string]Value) error
+	// Delete nodes matching the given label and filter criteria.
+	DeleteNodes(label string, filter map[string]Value) error
+	// Execute a raw SQL statement (DDL, DML, or administrative command).
+	//
+	// No Cypher parsing or schema validation; the caller is responsible for
+	// SQL correctness.
+	ExecuteSql(sql string) error
 	// Export Cypher query results directly to a file.
 	//
 	// Supported formats: parquet, csv, tsv, json, ndjson.
@@ -748,13 +940,140 @@ type ConnectionInterface interface {
 	Export(cypher string, outputPath string, options ExportOptions) error
 	// Generate the export SQL without executing it (for debugging).
 	ExportToSql(cypher string, outputPath string, options ExportOptions) (string, error)
+	// Import nodes from inline newline-delimited JSON (JSONEachRow format).
+	ImportJson(label string, jsonLines string) error
+	// Import nodes from a JSON file (JSONEachRow format).
+	ImportJsonFile(label string, filePath string) error
 	// Execute a Cypher query and return a QueryResult.
 	Query(cypher string) (*QueryResult, error)
+	// Execute a Cypher query locally and return a structured graph result.
+	QueryGraph(cypher string) (*GraphResult, error)
+	// Execute a Cypher query against the remote ClickHouse cluster.
+	//
+	// Requires `RemoteConfig` to have been provided in `SystemConfig`.
+	QueryRemote(cypher string) (*QueryResult, error)
+	// Execute a Cypher query on the remote cluster and return a structured graph result.
+	//
+	// The returned `GraphResult` can be passed to `store_subgraph()` to persist locally.
+	QueryRemoteGraph(cypher string) (*GraphResult, error)
 	// Translate a Cypher query to ClickHouse SQL without executing it.
 	QueryToSql(cypher string) (string, error)
+	// Store a `GraphResult` into local writable tables.
+	//
+	// Decomposes the graph into nodes and edges, then batch-inserts each group.
+	StoreSubgraph(graph *GraphResult) (StoreStats, error)
+	// Upsert an edge (INSERT with ReplacingMergeTree deduplication).
+	UpsertEdge(edgeType string, fromId string, toId string, properties map[string]Value) error
+	// Upsert a node (INSERT with ReplacingMergeTree deduplication).
+	//
+	// The node_id property MUST be present in the properties map.
+	UpsertNode(label string, properties map[string]Value) (string, error)
 }
 type Connection struct {
 	ffiObject FfiObject
+}
+
+// Create an edge between two nodes.
+func (_self *Connection) CreateEdge(edgeType string, fromId string, toId string, properties map[string]Value) error {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) bool {
+		C.uniffi_clickgraph_ffi_fn_method_connection_create_edge(
+			_pointer, FfiConverterStringINSTANCE.Lower(edgeType), FfiConverterStringINSTANCE.Lower(fromId), FfiConverterStringINSTANCE.Lower(toId), FfiConverterMapStringValueINSTANCE.Lower(properties), _uniffiStatus)
+		return false
+	})
+	return _uniffiErr.AsError()
+}
+
+// Create multiple edges in a single batch INSERT.
+func (_self *Connection) CreateEdges(edgeType string, batch []EdgeInput) error {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) bool {
+		C.uniffi_clickgraph_ffi_fn_method_connection_create_edges(
+			_pointer, FfiConverterStringINSTANCE.Lower(edgeType), FfiConverterSequenceEdgeInputINSTANCE.Lower(batch), _uniffiStatus)
+		return false
+	})
+	return _uniffiErr.AsError()
+}
+
+// Create a node with the given label and properties.
+//
+// Returns the node ID (caller-provided or auto-generated UUID).
+func (_self *Connection) CreateNode(label string, properties map[string]Value) (string, error) {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer{
+			inner: C.uniffi_clickgraph_ffi_fn_method_connection_create_node(
+				_pointer, FfiConverterStringINSTANCE.Lower(label), FfiConverterMapStringValueINSTANCE.Lower(properties), _uniffiStatus),
+		}
+	})
+	if _uniffiErr != nil {
+		var _uniffiDefaultValue string
+		return _uniffiDefaultValue, _uniffiErr
+	} else {
+		return FfiConverterStringINSTANCE.Lift(_uniffiRV), nil
+	}
+}
+
+// Create multiple nodes in a single batch INSERT.
+//
+// Returns a Vec of node IDs.
+func (_self *Connection) CreateNodes(label string, batch []map[string]Value) ([]string, error) {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer{
+			inner: C.uniffi_clickgraph_ffi_fn_method_connection_create_nodes(
+				_pointer, FfiConverterStringINSTANCE.Lower(label), FfiConverterSequenceMapStringValueINSTANCE.Lower(batch), _uniffiStatus),
+		}
+	})
+	if _uniffiErr != nil {
+		var _uniffiDefaultValue []string
+		return _uniffiDefaultValue, _uniffiErr
+	} else {
+		return FfiConverterSequenceStringINSTANCE.Lift(_uniffiRV), nil
+	}
+}
+
+// Delete edges matching the given type and filter criteria.
+func (_self *Connection) DeleteEdges(edgeType string, filter map[string]Value) error {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) bool {
+		C.uniffi_clickgraph_ffi_fn_method_connection_delete_edges(
+			_pointer, FfiConverterStringINSTANCE.Lower(edgeType), FfiConverterMapStringValueINSTANCE.Lower(filter), _uniffiStatus)
+		return false
+	})
+	return _uniffiErr.AsError()
+}
+
+// Delete nodes matching the given label and filter criteria.
+func (_self *Connection) DeleteNodes(label string, filter map[string]Value) error {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) bool {
+		C.uniffi_clickgraph_ffi_fn_method_connection_delete_nodes(
+			_pointer, FfiConverterStringINSTANCE.Lower(label), FfiConverterMapStringValueINSTANCE.Lower(filter), _uniffiStatus)
+		return false
+	})
+	return _uniffiErr.AsError()
+}
+
+// Execute a raw SQL statement (DDL, DML, or administrative command).
+//
+// No Cypher parsing or schema validation; the caller is responsible for
+// SQL correctness.
+func (_self *Connection) ExecuteSql(sql string) error {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) bool {
+		C.uniffi_clickgraph_ffi_fn_method_connection_execute_sql(
+			_pointer, FfiConverterStringINSTANCE.Lower(sql), _uniffiStatus)
+		return false
+	})
+	return _uniffiErr.AsError()
 }
 
 // Export Cypher query results directly to a file.
@@ -790,6 +1109,30 @@ func (_self *Connection) ExportToSql(cypher string, outputPath string, options E
 	}
 }
 
+// Import nodes from inline newline-delimited JSON (JSONEachRow format).
+func (_self *Connection) ImportJson(label string, jsonLines string) error {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) bool {
+		C.uniffi_clickgraph_ffi_fn_method_connection_import_json(
+			_pointer, FfiConverterStringINSTANCE.Lower(label), FfiConverterStringINSTANCE.Lower(jsonLines), _uniffiStatus)
+		return false
+	})
+	return _uniffiErr.AsError()
+}
+
+// Import nodes from a JSON file (JSONEachRow format).
+func (_self *Connection) ImportJsonFile(label string, filePath string) error {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) bool {
+		C.uniffi_clickgraph_ffi_fn_method_connection_import_json_file(
+			_pointer, FfiConverterStringINSTANCE.Lower(label), FfiConverterStringINSTANCE.Lower(filePath), _uniffiStatus)
+		return false
+	})
+	return _uniffiErr.AsError()
+}
+
 // Execute a Cypher query and return a QueryResult.
 func (_self *Connection) Query(cypher string) (*QueryResult, error) {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
@@ -806,6 +1149,58 @@ func (_self *Connection) Query(cypher string) (*QueryResult, error) {
 	}
 }
 
+// Execute a Cypher query locally and return a structured graph result.
+func (_self *Connection) QueryGraph(cypher string) (*GraphResult, error) {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
+		return C.uniffi_clickgraph_ffi_fn_method_connection_query_graph(
+			_pointer, FfiConverterStringINSTANCE.Lower(cypher), _uniffiStatus)
+	})
+	if _uniffiErr != nil {
+		var _uniffiDefaultValue *GraphResult
+		return _uniffiDefaultValue, _uniffiErr
+	} else {
+		return FfiConverterGraphResultINSTANCE.Lift(_uniffiRV), nil
+	}
+}
+
+// Execute a Cypher query against the remote ClickHouse cluster.
+//
+// Requires `RemoteConfig` to have been provided in `SystemConfig`.
+func (_self *Connection) QueryRemote(cypher string) (*QueryResult, error) {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
+		return C.uniffi_clickgraph_ffi_fn_method_connection_query_remote(
+			_pointer, FfiConverterStringINSTANCE.Lower(cypher), _uniffiStatus)
+	})
+	if _uniffiErr != nil {
+		var _uniffiDefaultValue *QueryResult
+		return _uniffiDefaultValue, _uniffiErr
+	} else {
+		return FfiConverterQueryResultINSTANCE.Lift(_uniffiRV), nil
+	}
+}
+
+// Execute a Cypher query on the remote cluster and return a structured graph result.
+//
+// The returned `GraphResult` can be passed to `store_subgraph()` to persist locally.
+func (_self *Connection) QueryRemoteGraph(cypher string) (*GraphResult, error) {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
+		return C.uniffi_clickgraph_ffi_fn_method_connection_query_remote_graph(
+			_pointer, FfiConverterStringINSTANCE.Lower(cypher), _uniffiStatus)
+	})
+	if _uniffiErr != nil {
+		var _uniffiDefaultValue *GraphResult
+		return _uniffiDefaultValue, _uniffiErr
+	} else {
+		return FfiConverterGraphResultINSTANCE.Lift(_uniffiRV), nil
+	}
+}
+
 // Translate a Cypher query to ClickHouse SQL without executing it.
 func (_self *Connection) QueryToSql(cypher string) (string, error) {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
@@ -814,6 +1209,58 @@ func (_self *Connection) QueryToSql(cypher string) (string, error) {
 		return GoRustBuffer{
 			inner: C.uniffi_clickgraph_ffi_fn_method_connection_query_to_sql(
 				_pointer, FfiConverterStringINSTANCE.Lower(cypher), _uniffiStatus),
+		}
+	})
+	if _uniffiErr != nil {
+		var _uniffiDefaultValue string
+		return _uniffiDefaultValue, _uniffiErr
+	} else {
+		return FfiConverterStringINSTANCE.Lift(_uniffiRV), nil
+	}
+}
+
+// Store a `GraphResult` into local writable tables.
+//
+// Decomposes the graph into nodes and edges, then batch-inserts each group.
+func (_self *Connection) StoreSubgraph(graph *GraphResult) (StoreStats, error) {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer{
+			inner: C.uniffi_clickgraph_ffi_fn_method_connection_store_subgraph(
+				_pointer, FfiConverterGraphResultINSTANCE.Lower(graph), _uniffiStatus),
+		}
+	})
+	if _uniffiErr != nil {
+		var _uniffiDefaultValue StoreStats
+		return _uniffiDefaultValue, _uniffiErr
+	} else {
+		return FfiConverterStoreStatsINSTANCE.Lift(_uniffiRV), nil
+	}
+}
+
+// Upsert an edge (INSERT with ReplacingMergeTree deduplication).
+func (_self *Connection) UpsertEdge(edgeType string, fromId string, toId string, properties map[string]Value) error {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) bool {
+		C.uniffi_clickgraph_ffi_fn_method_connection_upsert_edge(
+			_pointer, FfiConverterStringINSTANCE.Lower(edgeType), FfiConverterStringINSTANCE.Lower(fromId), FfiConverterStringINSTANCE.Lower(toId), FfiConverterMapStringValueINSTANCE.Lower(properties), _uniffiStatus)
+		return false
+	})
+	return _uniffiErr.AsError()
+}
+
+// Upsert a node (INSERT with ReplacingMergeTree deduplication).
+//
+// The node_id property MUST be present in the properties map.
+func (_self *Connection) UpsertNode(label string, properties map[string]Value) (string, error) {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer{
+			inner: C.uniffi_clickgraph_ffi_fn_method_connection_upsert_node(
+				_pointer, FfiConverterStringINSTANCE.Lower(label), FfiConverterMapStringValueINSTANCE.Lower(properties), _uniffiStatus),
 		}
 	})
 	if _uniffiErr != nil {
@@ -987,6 +1434,112 @@ func (_ FfiDestroyerDatabase) Destroy(value *Database) {
 	value.Destroy()
 }
 
+type GraphResultInterface interface {
+	// Return the number of edges.
+	EdgeCount() uint64
+	// Return all edges in the graph result.
+	Edges() []GraphEdge
+	// Return the number of nodes.
+	NodeCount() uint64
+	// Return all nodes in the graph result.
+	Nodes() []GraphNode
+}
+type GraphResult struct {
+	ffiObject FfiObject
+}
+
+// Return the number of edges.
+func (_self *GraphResult) EdgeCount() uint64 {
+	_pointer := _self.ffiObject.incrementPointer("*GraphResult")
+	defer _self.ffiObject.decrementPointer()
+	return FfiConverterUint64INSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint64_t {
+		return C.uniffi_clickgraph_ffi_fn_method_graphresult_edge_count(
+			_pointer, _uniffiStatus)
+	}))
+}
+
+// Return all edges in the graph result.
+func (_self *GraphResult) Edges() []GraphEdge {
+	_pointer := _self.ffiObject.incrementPointer("*GraphResult")
+	defer _self.ffiObject.decrementPointer()
+	return FfiConverterSequenceGraphEdgeINSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer{
+			inner: C.uniffi_clickgraph_ffi_fn_method_graphresult_edges(
+				_pointer, _uniffiStatus),
+		}
+	}))
+}
+
+// Return the number of nodes.
+func (_self *GraphResult) NodeCount() uint64 {
+	_pointer := _self.ffiObject.incrementPointer("*GraphResult")
+	defer _self.ffiObject.decrementPointer()
+	return FfiConverterUint64INSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint64_t {
+		return C.uniffi_clickgraph_ffi_fn_method_graphresult_node_count(
+			_pointer, _uniffiStatus)
+	}))
+}
+
+// Return all nodes in the graph result.
+func (_self *GraphResult) Nodes() []GraphNode {
+	_pointer := _self.ffiObject.incrementPointer("*GraphResult")
+	defer _self.ffiObject.decrementPointer()
+	return FfiConverterSequenceGraphNodeINSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer{
+			inner: C.uniffi_clickgraph_ffi_fn_method_graphresult_nodes(
+				_pointer, _uniffiStatus),
+		}
+	}))
+}
+func (object *GraphResult) Destroy() {
+	runtime.SetFinalizer(object, nil)
+	object.ffiObject.destroy()
+}
+
+type FfiConverterGraphResult struct{}
+
+var FfiConverterGraphResultINSTANCE = FfiConverterGraphResult{}
+
+func (c FfiConverterGraphResult) Lift(pointer unsafe.Pointer) *GraphResult {
+	result := &GraphResult{
+		newFfiObject(
+			pointer,
+			func(pointer unsafe.Pointer, status *C.RustCallStatus) unsafe.Pointer {
+				return C.uniffi_clickgraph_ffi_fn_clone_graphresult(pointer, status)
+			},
+			func(pointer unsafe.Pointer, status *C.RustCallStatus) {
+				C.uniffi_clickgraph_ffi_fn_free_graphresult(pointer, status)
+			},
+		),
+	}
+	runtime.SetFinalizer(result, (*GraphResult).Destroy)
+	return result
+}
+
+func (c FfiConverterGraphResult) Read(reader io.Reader) *GraphResult {
+	return c.Lift(unsafe.Pointer(uintptr(readUint64(reader))))
+}
+
+func (c FfiConverterGraphResult) Lower(value *GraphResult) unsafe.Pointer {
+	// TODO: this is bad - all synchronization from ObjectRuntime.go is discarded here,
+	// because the pointer will be decremented immediately after this function returns,
+	// and someone will be left holding onto a non-locked pointer.
+	pointer := value.ffiObject.incrementPointer("*GraphResult")
+	defer value.ffiObject.decrementPointer()
+	return pointer
+
+}
+
+func (c FfiConverterGraphResult) Write(writer io.Writer, value *GraphResult) {
+	writeUint64(writer, uint64(uintptr(c.Lower(value))))
+}
+
+type FfiDestroyerGraphResult struct{}
+
+func (_ FfiDestroyerGraphResult) Destroy(value *GraphResult) {
+	value.Destroy()
+}
+
 type QueryResultInterface interface {
 	// Column names in result order.
 	ColumnNames() []string
@@ -1120,6 +1673,54 @@ func (_ FfiDestroyerQueryResult) Destroy(value *QueryResult) {
 	value.Destroy()
 }
 
+type EdgeInput struct {
+	FromId     string
+	ToId       string
+	Properties map[string]Value
+}
+
+func (r *EdgeInput) Destroy() {
+	FfiDestroyerString{}.Destroy(r.FromId)
+	FfiDestroyerString{}.Destroy(r.ToId)
+	FfiDestroyerMapStringValue{}.Destroy(r.Properties)
+}
+
+type FfiConverterEdgeInput struct{}
+
+var FfiConverterEdgeInputINSTANCE = FfiConverterEdgeInput{}
+
+func (c FfiConverterEdgeInput) Lift(rb RustBufferI) EdgeInput {
+	return LiftFromRustBuffer[EdgeInput](c, rb)
+}
+
+func (c FfiConverterEdgeInput) Read(reader io.Reader) EdgeInput {
+	return EdgeInput{
+		FfiConverterStringINSTANCE.Read(reader),
+		FfiConverterStringINSTANCE.Read(reader),
+		FfiConverterMapStringValueINSTANCE.Read(reader),
+	}
+}
+
+func (c FfiConverterEdgeInput) Lower(value EdgeInput) C.RustBuffer {
+	return LowerIntoRustBuffer[EdgeInput](c, value)
+}
+
+func (c FfiConverterEdgeInput) LowerExternal(value EdgeInput) ExternalCRustBuffer {
+	return RustBufferFromC(LowerIntoRustBuffer[EdgeInput](c, value))
+}
+
+func (c FfiConverterEdgeInput) Write(writer io.Writer, value EdgeInput) {
+	FfiConverterStringINSTANCE.Write(writer, value.FromId)
+	FfiConverterStringINSTANCE.Write(writer, value.ToId)
+	FfiConverterMapStringValueINSTANCE.Write(writer, value.Properties)
+}
+
+type FfiDestroyerEdgeInput struct{}
+
+func (_ FfiDestroyerEdgeInput) Destroy(value EdgeInput) {
+	value.Destroy()
+}
+
 type ExportOptions struct {
 	// Format name: "parquet", "csv", "tsv", "json", "ndjson".
 	// If None, auto-detected from the file extension.
@@ -1167,6 +1768,110 @@ func (_ FfiDestroyerExportOptions) Destroy(value ExportOptions) {
 	value.Destroy()
 }
 
+type GraphEdge struct {
+	Id         string
+	TypeName   string
+	FromId     string
+	ToId       string
+	Properties map[string]Value
+}
+
+func (r *GraphEdge) Destroy() {
+	FfiDestroyerString{}.Destroy(r.Id)
+	FfiDestroyerString{}.Destroy(r.TypeName)
+	FfiDestroyerString{}.Destroy(r.FromId)
+	FfiDestroyerString{}.Destroy(r.ToId)
+	FfiDestroyerMapStringValue{}.Destroy(r.Properties)
+}
+
+type FfiConverterGraphEdge struct{}
+
+var FfiConverterGraphEdgeINSTANCE = FfiConverterGraphEdge{}
+
+func (c FfiConverterGraphEdge) Lift(rb RustBufferI) GraphEdge {
+	return LiftFromRustBuffer[GraphEdge](c, rb)
+}
+
+func (c FfiConverterGraphEdge) Read(reader io.Reader) GraphEdge {
+	return GraphEdge{
+		FfiConverterStringINSTANCE.Read(reader),
+		FfiConverterStringINSTANCE.Read(reader),
+		FfiConverterStringINSTANCE.Read(reader),
+		FfiConverterStringINSTANCE.Read(reader),
+		FfiConverterMapStringValueINSTANCE.Read(reader),
+	}
+}
+
+func (c FfiConverterGraphEdge) Lower(value GraphEdge) C.RustBuffer {
+	return LowerIntoRustBuffer[GraphEdge](c, value)
+}
+
+func (c FfiConverterGraphEdge) LowerExternal(value GraphEdge) ExternalCRustBuffer {
+	return RustBufferFromC(LowerIntoRustBuffer[GraphEdge](c, value))
+}
+
+func (c FfiConverterGraphEdge) Write(writer io.Writer, value GraphEdge) {
+	FfiConverterStringINSTANCE.Write(writer, value.Id)
+	FfiConverterStringINSTANCE.Write(writer, value.TypeName)
+	FfiConverterStringINSTANCE.Write(writer, value.FromId)
+	FfiConverterStringINSTANCE.Write(writer, value.ToId)
+	FfiConverterMapStringValueINSTANCE.Write(writer, value.Properties)
+}
+
+type FfiDestroyerGraphEdge struct{}
+
+func (_ FfiDestroyerGraphEdge) Destroy(value GraphEdge) {
+	value.Destroy()
+}
+
+type GraphNode struct {
+	Id         string
+	Labels     []string
+	Properties map[string]Value
+}
+
+func (r *GraphNode) Destroy() {
+	FfiDestroyerString{}.Destroy(r.Id)
+	FfiDestroyerSequenceString{}.Destroy(r.Labels)
+	FfiDestroyerMapStringValue{}.Destroy(r.Properties)
+}
+
+type FfiConverterGraphNode struct{}
+
+var FfiConverterGraphNodeINSTANCE = FfiConverterGraphNode{}
+
+func (c FfiConverterGraphNode) Lift(rb RustBufferI) GraphNode {
+	return LiftFromRustBuffer[GraphNode](c, rb)
+}
+
+func (c FfiConverterGraphNode) Read(reader io.Reader) GraphNode {
+	return GraphNode{
+		FfiConverterStringINSTANCE.Read(reader),
+		FfiConverterSequenceStringINSTANCE.Read(reader),
+		FfiConverterMapStringValueINSTANCE.Read(reader),
+	}
+}
+
+func (c FfiConverterGraphNode) Lower(value GraphNode) C.RustBuffer {
+	return LowerIntoRustBuffer[GraphNode](c, value)
+}
+
+func (c FfiConverterGraphNode) LowerExternal(value GraphNode) ExternalCRustBuffer {
+	return RustBufferFromC(LowerIntoRustBuffer[GraphNode](c, value))
+}
+
+func (c FfiConverterGraphNode) Write(writer io.Writer, value GraphNode) {
+	FfiConverterStringINSTANCE.Write(writer, value.Id)
+	FfiConverterSequenceStringINSTANCE.Write(writer, value.Labels)
+	FfiConverterMapStringValueINSTANCE.Write(writer, value.Properties)
+}
+
+type FfiDestroyerGraphNode struct{}
+
+func (_ FfiDestroyerGraphNode) Destroy(value GraphNode) {
+	value.Destroy()
+}
+
 type MapEntry struct {
 	Key   string
 	Value Value
@@ -1208,6 +1913,62 @@ func (c FfiConverterMapEntry) Write(writer io.Writer, value MapEntry) {
 type FfiDestroyerMapEntry struct{}
 
 func (_ FfiDestroyerMapEntry) Destroy(value MapEntry) {
+	value.Destroy()
+}
+
+type RemoteConfig struct {
+	Url         string
+	User        string
+	Password    string
+	Database    *string
+	ClusterName *string
+}
+
+func (r *RemoteConfig) Destroy() {
+	FfiDestroyerString{}.Destroy(r.Url)
+	FfiDestroyerString{}.Destroy(r.User)
+	FfiDestroyerString{}.Destroy(r.Password)
+	FfiDestroyerOptionalString{}.Destroy(r.Database)
+	FfiDestroyerOptionalString{}.Destroy(r.ClusterName)
+}
+
+type FfiConverterRemoteConfig struct{}
+
+var FfiConverterRemoteConfigINSTANCE = FfiConverterRemoteConfig{}
+
+func (c FfiConverterRemoteConfig) Lift(rb RustBufferI) RemoteConfig {
+	return LiftFromRustBuffer[RemoteConfig](c, rb)
+}
+
+func (c FfiConverterRemoteConfig) Read(reader io.Reader) RemoteConfig {
+	return RemoteConfig{
+		FfiConverterStringINSTANCE.Read(reader),
+		FfiConverterStringINSTANCE.Read(reader),
+		FfiConverterStringINSTANCE.Read(reader),
+		FfiConverterOptionalStringINSTANCE.Read(reader),
+		FfiConverterOptionalStringINSTANCE.Read(reader),
+	}
+}
+
+func (c FfiConverterRemoteConfig) Lower(value RemoteConfig) C.RustBuffer {
+	return LowerIntoRustBuffer[RemoteConfig](c, value)
+}
+
+func (c FfiConverterRemoteConfig) LowerExternal(value RemoteConfig) ExternalCRustBuffer {
+	return RustBufferFromC(LowerIntoRustBuffer[RemoteConfig](c, value))
+}
+
+func (c FfiConverterRemoteConfig) Write(writer io.Writer, value RemoteConfig) {
+	FfiConverterStringINSTANCE.Write(writer, value.Url)
+	FfiConverterStringINSTANCE.Write(writer, value.User)
+	FfiConverterStringINSTANCE.Write(writer, value.Password)
+	FfiConverterOptionalStringINSTANCE.Write(writer, value.Database)
+	FfiConverterOptionalStringINSTANCE.Write(writer, value.ClusterName)
+}
+
+type FfiDestroyerRemoteConfig struct{}
+
+func (_ FfiDestroyerRemoteConfig) Destroy(value RemoteConfig) {
 	value.Destroy()
 }
 
@@ -1255,6 +2016,50 @@ func (_ FfiDestroyerRow) Destroy(value Row) {
 	value.Destroy()
 }
 
+type StoreStats struct {
+	NodesStored uint64
+	EdgesStored uint64
+}
+
+func (r *StoreStats) Destroy() {
+	FfiDestroyerUint64{}.Destroy(r.NodesStored)
+	FfiDestroyerUint64{}.Destroy(r.EdgesStored)
+}
+
+type FfiConverterStoreStats struct{}
+
+var FfiConverterStoreStatsINSTANCE = FfiConverterStoreStats{}
+
+func (c FfiConverterStoreStats) Lift(rb RustBufferI) StoreStats {
+	return LiftFromRustBuffer[StoreStats](c, rb)
+}
+
+func (c FfiConverterStoreStats) Read(reader io.Reader) StoreStats {
+	return StoreStats{
+		FfiConverterUint64INSTANCE.Read(reader),
+		FfiConverterUint64INSTANCE.Read(reader),
+	}
+}
+
+func (c FfiConverterStoreStats) Lower(value StoreStats) C.RustBuffer {
+	return LowerIntoRustBuffer[StoreStats](c, value)
+}
+
+func (c FfiConverterStoreStats) LowerExternal(value StoreStats) ExternalCRustBuffer {
+	return RustBufferFromC(LowerIntoRustBuffer[StoreStats](c, value))
+}
+
+func (c FfiConverterStoreStats) Write(writer io.Writer, value StoreStats) {
+	FfiConverterUint64INSTANCE.Write(writer, value.NodesStored)
+	FfiConverterUint64INSTANCE.Write(writer, value.EdgesStored)
+}
+
+type FfiDestroyerStoreStats struct{}
+
+func (_ FfiDestroyerStoreStats) Destroy(value StoreStats) {
+	value.Destroy()
+}
+
 type SystemConfig struct {
 	SessionDir                   *string
 	DataDir                      *string
@@ -1269,6 +2074,8 @@ type SystemConfig struct {
 	AzureStorageAccountName      *string
 	AzureStorageAccountKey       *string
 	AzureStorageConnectionString *string
+	// Remote ClickHouse connection for hybrid query + local storage.
+	Remote *RemoteConfig
 }
 
 func (r *SystemConfig) Destroy() {
@@ -1285,6 +2092,7 @@ func (r *SystemConfig) Destroy() {
 	FfiDestroyerOptionalString{}.Destroy(r.AzureStorageAccountName)
 	FfiDestroyerOptionalString{}.Destroy(r.AzureStorageAccountKey)
 	FfiDestroyerOptionalString{}.Destroy(r.AzureStorageConnectionString)
+	FfiDestroyerOptionalRemoteConfig{}.Destroy(r.Remote)
 }
 
 type FfiConverterSystemConfig struct{}
@@ -1310,6 +2118,7 @@ func (c FfiConverterSystemConfig) Read(reader io.Reader) SystemConfig {
 		FfiConverterOptionalStringINSTANCE.Read(reader),
 		FfiConverterOptionalStringINSTANCE.Read(reader),
 		FfiConverterOptionalStringINSTANCE.Read(reader),
+		FfiConverterOptionalRemoteConfigINSTANCE.Read(reader),
 	}
 }
 
@@ -1335,6 +2144,7 @@ func (c FfiConverterSystemConfig) Write(writer io.Writer, value SystemConfig) {
 	FfiConverterOptionalStringINSTANCE.Write(writer, value.AzureStorageAccountName)
 	FfiConverterOptionalStringINSTANCE.Write(writer, value.AzureStorageAccountKey)
 	FfiConverterOptionalStringINSTANCE.Write(writer, value.AzureStorageConnectionString)
+	FfiConverterOptionalRemoteConfigINSTANCE.Write(writer, value.Remote)
 }
 
 type FfiDestroyerSystemConfig struct{}
@@ -1369,6 +2179,7 @@ func (err ClickGraphError) Unwrap() error {
 var ErrClickGraphErrorDatabaseError = fmt.Errorf("ClickGraphErrorDatabaseError")
 var ErrClickGraphErrorQueryError = fmt.Errorf("ClickGraphErrorQueryError")
 var ErrClickGraphErrorExportError = fmt.Errorf("ClickGraphErrorExportError")
+var ErrClickGraphErrorValidationError = fmt.Errorf("ClickGraphErrorValidationError")
 
 // Variant structs
 type ClickGraphErrorDatabaseError struct {
@@ -1455,6 +2266,34 @@ func (self ClickGraphErrorExportError) Is(target error) bool {
 	return target == ErrClickGraphErrorExportError
 }
 
+type ClickGraphErrorValidationError struct {
+	Msg string
+}
+
+func NewClickGraphErrorValidationError(
+	msg string,
+) *ClickGraphError {
+	return &ClickGraphError{err: &ClickGraphErrorValidationError{
+		Msg: msg}}
+}
+
+func (e ClickGraphErrorValidationError) destroy() {
+	FfiDestroyerString{}.Destroy(e.Msg)
+}
+
+func (err ClickGraphErrorValidationError) Error() string {
+	return fmt.Sprint("ValidationError",
+		": ",
+
+		"Msg=",
+		err.Msg,
+	)
+}
+
+func (self ClickGraphErrorValidationError) Is(target error) bool {
+	return target == ErrClickGraphErrorValidationError
+}
+
 type FfiConverterClickGraphError struct{}
 
 var FfiConverterClickGraphErrorINSTANCE = FfiConverterClickGraphError{}
@@ -1487,6 +2326,10 @@ func (c FfiConverterClickGraphError) Read(reader io.Reader) *ClickGraphError {
 		return &ClickGraphError{&ClickGraphErrorExportError{
 			Msg: FfiConverterStringINSTANCE.Read(reader),
 		}}
+	case 4:
+		return &ClickGraphError{&ClickGraphErrorValidationError{
+			Msg: FfiConverterStringINSTANCE.Read(reader),
+		}}
 	default:
 		panic(fmt.Sprintf("Unknown error code %d in FfiConverterClickGraphError.Read()", errorID))
 	}
@@ -1503,6 +2346,9 @@ func (c FfiConverterClickGraphError) Write(writer io.Writer, value *ClickGraphEr
 	case *ClickGraphErrorExportError:
 		writeInt32(writer, 3)
 		FfiConverterStringINSTANCE.Write(writer, variantValue.Msg)
+	case *ClickGraphErrorValidationError:
+		writeInt32(writer, 4)
+		FfiConverterStringINSTANCE.Write(writer, variantValue.Msg)
 	default:
 		_ = variantValue
 		panic(fmt.Sprintf("invalid error value `%v` in FfiConverterClickGraphError.Write", value))
@@ -1518,6 +2364,8 @@ func (_ FfiDestroyerClickGraphError) Destroy(value *ClickGraphError) {
 	case ClickGraphErrorQueryError:
 		variantValue.destroy()
 	case ClickGraphErrorExportError:
+		variantValue.destroy()
+	case ClickGraphErrorValidationError:
 		variantValue.destroy()
 	default:
 		_ = variantValue
@@ -1747,6 +2595,47 @@ func (_ FfiDestroyerOptionalString) Destroy(value *string) {
 	}
 }
 
+type FfiConverterOptionalRemoteConfig struct{}
+
+var FfiConverterOptionalRemoteConfigINSTANCE = FfiConverterOptionalRemoteConfig{}
+
+func (c FfiConverterOptionalRemoteConfig) Lift(rb RustBufferI) *RemoteConfig {
+	return LiftFromRustBuffer[*RemoteConfig](c, rb)
+}
+
+func (_ FfiConverterOptionalRemoteConfig) Read(reader io.Reader) *RemoteConfig {
+	if readInt8(reader) == 0 {
+		return nil
+	}
+	temp := FfiConverterRemoteConfigINSTANCE.Read(reader)
+	return &temp
+}
+
+func (c FfiConverterOptionalRemoteConfig) Lower(value *RemoteConfig) C.RustBuffer {
+	return LowerIntoRustBuffer[*RemoteConfig](c, value)
+}
+
+func (c FfiConverterOptionalRemoteConfig) LowerExternal(value *RemoteConfig) ExternalCRustBuffer {
+	return RustBufferFromC(LowerIntoRustBuffer[*RemoteConfig](c, value))
+}
+
+func (_ FfiConverterOptionalRemoteConfig) Write(writer io.Writer, value *RemoteConfig) {
+	if value == nil {
+		writeInt8(writer, 0)
+	} else {
+		writeInt8(writer, 1)
+		FfiConverterRemoteConfigINSTANCE.Write(writer, *value)
+	}
+}
+
+type FfiDestroyerOptionalRemoteConfig struct{}
+
+func (_ FfiDestroyerOptionalRemoteConfig) Destroy(value *RemoteConfig) {
+	if value != nil {
+		FfiDestroyerRemoteConfig{}.Destroy(*value)
+	}
+}
+
 type FfiConverterOptionalRow struct{}
 
 var FfiConverterOptionalRowINSTANCE = FfiConverterOptionalRow{}
@@ -1832,6 +2721,147 @@ type FfiDestroyerSequenceString struct{}
 func (FfiDestroyerSequenceString) Destroy(sequence []string) {
 	for _, value := range sequence {
 		FfiDestroyerString{}.Destroy(value)
+	}
+}
+
+type FfiConverterSequenceEdgeInput struct{}
+
+var FfiConverterSequenceEdgeInputINSTANCE = FfiConverterSequenceEdgeInput{}
+
+func (c FfiConverterSequenceEdgeInput) Lift(rb RustBufferI) []EdgeInput {
+	return LiftFromRustBuffer[[]EdgeInput](c, rb)
+}
+
+func (c FfiConverterSequenceEdgeInput) Read(reader io.Reader) []EdgeInput {
+	length := readInt32(reader)
+	if length == 0 {
+		return nil
+	}
+	result := make([]EdgeInput, 0, length)
+	for i := int32(0); i < length; i++ {
+		result = append(result, FfiConverterEdgeInputINSTANCE.Read(reader))
+	}
+	return result
+}
+
+func (c FfiConverterSequenceEdgeInput) Lower(value []EdgeInput) C.RustBuffer {
+	return LowerIntoRustBuffer[[]EdgeInput](c, value)
+}
+
+func (c FfiConverterSequenceEdgeInput) LowerExternal(value []EdgeInput) ExternalCRustBuffer {
+	return RustBufferFromC(LowerIntoRustBuffer[[]EdgeInput](c, value))
+}
+
+func (c FfiConverterSequenceEdgeInput) Write(writer io.Writer, value []EdgeInput) {
+	if len(value) > math.MaxInt32 {
+		panic("[]EdgeInput is too large to fit into Int32")
+	}
+
+	writeInt32(writer, int32(len(value)))
+	for _, item := range value {
+		FfiConverterEdgeInputINSTANCE.Write(writer, item)
+	}
+}
+
+type FfiDestroyerSequenceEdgeInput struct{}
+
+func (FfiDestroyerSequenceEdgeInput) Destroy(sequence []EdgeInput) {
+	for _, value := range sequence {
+		FfiDestroyerEdgeInput{}.Destroy(value)
+	}
+}
+
+type FfiConverterSequenceGraphEdge struct{}
+
+var FfiConverterSequenceGraphEdgeINSTANCE = FfiConverterSequenceGraphEdge{}
+
+func (c FfiConverterSequenceGraphEdge) Lift(rb RustBufferI) []GraphEdge {
+	return LiftFromRustBuffer[[]GraphEdge](c, rb)
+}
+
+func (c FfiConverterSequenceGraphEdge) Read(reader io.Reader) []GraphEdge {
+	length := readInt32(reader)
+	if length == 0 {
+		return nil
+	}
+	result := make([]GraphEdge, 0, length)
+	for i := int32(0); i < length; i++ {
+		result = append(result, FfiConverterGraphEdgeINSTANCE.Read(reader))
+	}
+	return result
+}
+
+func (c FfiConverterSequenceGraphEdge) Lower(value []GraphEdge) C.RustBuffer {
+	return LowerIntoRustBuffer[[]GraphEdge](c, value)
+}
+
+func (c FfiConverterSequenceGraphEdge) LowerExternal(value []GraphEdge) ExternalCRustBuffer {
+	return RustBufferFromC(LowerIntoRustBuffer[[]GraphEdge](c, value))
+}
+
+func (c FfiConverterSequenceGraphEdge) Write(writer io.Writer, value []GraphEdge) {
+	if len(value) > math.MaxInt32 {
+		panic("[]GraphEdge is too large to fit into Int32")
+	}
+
+	writeInt32(writer, int32(len(value)))
+	for _, item := range value {
+		FfiConverterGraphEdgeINSTANCE.Write(writer, item)
+	}
+}
+
+type FfiDestroyerSequenceGraphEdge struct{}
+
+func (FfiDestroyerSequenceGraphEdge) Destroy(sequence []GraphEdge) {
+	for _, value := range sequence {
+		FfiDestroyerGraphEdge{}.Destroy(value)
+	}
+}
+
+type FfiConverterSequenceGraphNode struct{}
+
+var FfiConverterSequenceGraphNodeINSTANCE = FfiConverterSequenceGraphNode{}
+
+func (c FfiConverterSequenceGraphNode) Lift(rb RustBufferI) []GraphNode {
+	return LiftFromRustBuffer[[]GraphNode](c, rb)
+}
+
+func (c FfiConverterSequenceGraphNode) Read(reader io.Reader) []GraphNode {
+	length := readInt32(reader)
+	if length == 0 {
+		return nil
+	}
+	result := make([]GraphNode, 0, length)
+	for i := int32(0); i < length; i++ {
+		result = append(result, FfiConverterGraphNodeINSTANCE.Read(reader))
+	}
+	return result
+}
+
+func (c FfiConverterSequenceGraphNode) Lower(value []GraphNode) C.RustBuffer {
+	return LowerIntoRustBuffer[[]GraphNode](c, value)
+}
+
+func (c FfiConverterSequenceGraphNode) LowerExternal(value []GraphNode) ExternalCRustBuffer {
+	return RustBufferFromC(LowerIntoRustBuffer[[]GraphNode](c, value))
+}
+
+func (c FfiConverterSequenceGraphNode) Write(writer io.Writer, value []GraphNode) {
+	if len(value) > math.MaxInt32 {
+		panic("[]GraphNode is too large to fit into Int32")
+	}
+
+	writeInt32(writer, int32(len(value)))
+	for _, item := range value {
+		FfiConverterGraphNodeINSTANCE.Write(writer, item)
+	}
+}
+
+type FfiDestroyerSequenceGraphNode struct{}
+
+func (FfiDestroyerSequenceGraphNode) Destroy(sequence []GraphNode) {
+	for _, value := range sequence {
+		FfiDestroyerGraphNode{}.Destroy(value)
 	}
 }
 
@@ -1972,6 +3002,101 @@ type FfiDestroyerSequenceValue struct{}
 
 func (FfiDestroyerSequenceValue) Destroy(sequence []Value) {
 	for _, value := range sequence {
+		FfiDestroyerValue{}.Destroy(value)
+	}
+}
+
+type FfiConverterSequenceMapStringValue struct{}
+
+var FfiConverterSequenceMapStringValueINSTANCE = FfiConverterSequenceMapStringValue{}
+
+func (c FfiConverterSequenceMapStringValue) Lift(rb RustBufferI) []map[string]Value {
+	return LiftFromRustBuffer[[]map[string]Value](c, rb)
+}
+
+func (c FfiConverterSequenceMapStringValue) Read(reader io.Reader) []map[string]Value {
+	length := readInt32(reader)
+	if length == 0 {
+		return nil
+	}
+	result := make([]map[string]Value, 0, length)
+	for i := int32(0); i < length; i++ {
+		result = append(result, FfiConverterMapStringValueINSTANCE.Read(reader))
+	}
+	return result
+}
+
+func (c FfiConverterSequenceMapStringValue) Lower(value []map[string]Value) C.RustBuffer {
+	return LowerIntoRustBuffer[[]map[string]Value](c, value)
+}
+
+func (c FfiConverterSequenceMapStringValue) LowerExternal(value []map[string]Value) ExternalCRustBuffer {
+	return RustBufferFromC(LowerIntoRustBuffer[[]map[string]Value](c, value))
+}
+
+func (c FfiConverterSequenceMapStringValue) Write(writer io.Writer, value []map[string]Value) {
+	if len(value) > math.MaxInt32 {
+		panic("[]map[string]Value is too large to fit into Int32")
+	}
+
+	writeInt32(writer, int32(len(value)))
+	for _, item := range value {
+		FfiConverterMapStringValueINSTANCE.Write(writer, item)
+	}
+}
+
+type FfiDestroyerSequenceMapStringValue struct{}
+
+func (FfiDestroyerSequenceMapStringValue) Destroy(sequence []map[string]Value) {
+	for _, value := range sequence {
+		FfiDestroyerMapStringValue{}.Destroy(value)
+	}
+}
+
+type FfiConverterMapStringValue struct{}
+
+var FfiConverterMapStringValueINSTANCE = FfiConverterMapStringValue{}
+
+func (c FfiConverterMapStringValue) Lift(rb RustBufferI) map[string]Value {
+	return LiftFromRustBuffer[map[string]Value](c, rb)
+}
+
+func (_ FfiConverterMapStringValue) Read(reader io.Reader) map[string]Value {
+	result := make(map[string]Value)
+	length := readInt32(reader)
+	for i := int32(0); i < length; i++ {
+		key := FfiConverterStringINSTANCE.Read(reader)
+		value := FfiConverterValueINSTANCE.Read(reader)
+		result[key] = value
+	}
+	return result
+}
+
+func (c FfiConverterMapStringValue) Lower(value map[string]Value) C.RustBuffer {
+	return LowerIntoRustBuffer[map[string]Value](c, value)
+}
+
+func (c FfiConverterMapStringValue) LowerExternal(value map[string]Value) ExternalCRustBuffer {
+	return RustBufferFromC(LowerIntoRustBuffer[map[string]Value](c, value))
+}
+
+func (_ FfiConverterMapStringValue) Write(writer io.Writer, mapValue map[string]Value) {
+	if len(mapValue) > math.MaxInt32 {
+		panic("map[string]Value is too large to fit into Int32")
+	}
+
+	writeInt32(writer, int32(len(mapValue)))
+	for key, value := range mapValue {
+		FfiConverterStringINSTANCE.Write(writer, key)
+		FfiConverterValueINSTANCE.Write(writer, value)
+	}
+}
+
+type FfiDestroyerMapStringValue struct{}
+
+func (_ FfiDestroyerMapStringValue) Destroy(mapValue map[string]Value) {
+	for key, value := range mapValue {
+		FfiDestroyerString{}.Destroy(key)
 		FfiDestroyerValue{}.Destroy(value)
 	}
 }

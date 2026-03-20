@@ -38,7 +38,13 @@ The API is identical to the PyO3 version:
 - `conn.query_to_sql(cypher)` → SQL string
 - `conn.export(cypher, path, format=, compression=)`
 - `conn.export_to_sql(cypher, path, format=, compression=)` → SQL string
+- `conn.query_remote(cypher)` → `QueryResult` (execute on remote CH cluster)
+- `conn.query_graph(cypher)` → `GraphResult` (structured nodes + edges)
+- `conn.query_remote_graph(cypher)` → `GraphResult` (remote → structured)
+- `conn.store_subgraph(graph)` → `StoreStats` (persist `GraphResult` locally)
 - `QueryResult` — iterable, indexable, `len()`, `has_next()`/`get_next()`, `as_dicts()`
+- `GraphResult` — `.nodes`, `.edges`, `.node_count`, `.edge_count`
+- `StoreStats` — `.nodes_stored`, `.edges_stored`
 
 ## Development
 
