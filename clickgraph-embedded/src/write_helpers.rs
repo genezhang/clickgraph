@@ -229,10 +229,14 @@ pub fn validate_file_path(path: &str) -> Result<(), EmbeddedError> {
 ///
 /// If all Cypher property names match ClickHouse column names (identity mapping),
 /// generates `SELECT * FROM file()`. Otherwise generates explicit column aliases.
+///
+/// `format` is the ClickHouse format name (e.g., `"JSONEachRow"`, `"CSVWithNames"`,
+/// `"Parquet"`).
 pub fn build_import_file_sql(
     db: &str,
     table: &str,
     file_path: &str,
+    format: &str,
     property_mappings: &HashMap<&str, &str>,
     id_columns: &[&str],
 ) -> String {
@@ -262,17 +266,32 @@ pub fn build_import_file_sql(
         }
 
         format!(
-            "INSERT INTO `{}`.`{}` SELECT {} FROM file('{}', 'JSONEachRow')",
+            "INSERT INTO `{}`.`{}` SELECT {} FROM file('{}', '{}')",
             db,
             table,
             select_parts.join(", "),
-            file_path
+            file_path,
+            format
         )
     } else {
         format!(
-            "INSERT INTO `{}`.`{}` SELECT * FROM file('{}', 'JSONEachRow')",
-            db, table, file_path
+            "INSERT INTO `{}`.`{}` SELECT * FROM file('{}', '{}')",
+            db, table, file_path, format
         )
+    }
+}
+
+/// Detect the ClickHouse import format name from a file extension.
+///
+/// Returns `None` for unrecognized extensions.
+pub fn import_format_from_extension(path: &str) -> Option<&'static str> {
+    let ext = path.rsplit('.').next()?.to_lowercase();
+    match ext.as_str() {
+        "parquet" | "pq" => Some("Parquet"),
+        "csv" => Some("CSVWithNames"),
+        "tsv" | "tab" => Some("TabSeparatedWithNames"),
+        "json" | "ndjson" | "jsonl" => Some("JSONEachRow"),
+        _ => None,
     }
 }
 
@@ -547,7 +566,14 @@ mod tests {
         mappings.insert("name", "name");
         mappings.insert("age", "age");
 
-        let sql = build_import_file_sql("mydb", "users", "/tmp/data.json", &mappings, &["id"]);
+        let sql = build_import_file_sql(
+            "mydb",
+            "users",
+            "/tmp/data.json",
+            "JSONEachRow",
+            &mappings,
+            &["id"],
+        );
         assert_eq!(
             sql,
             "INSERT INTO `mydb`.`users` SELECT * FROM file('/tmp/data.json', 'JSONEachRow')"
@@ -560,7 +586,14 @@ mod tests {
         mappings.insert("name", "full_name");
         mappings.insert("email", "email_address");
 
-        let sql = build_import_file_sql("mydb", "users", "/tmp/data.json", &mappings, &["id"]);
+        let sql = build_import_file_sql(
+            "mydb",
+            "users",
+            "/tmp/data.json",
+            "JSONEachRow",
+            &mappings,
+            &["id"],
+        );
         assert!(sql.contains("INSERT INTO `mydb`.`users`"));
         assert!(sql.contains("`email` AS `email_address`"));
         assert!(sql.contains("`name` AS `full_name`"));
@@ -572,8 +605,83 @@ mod tests {
         let mut mappings = HashMap::new();
         mappings.insert("name", "full_name");
 
-        let sql = build_import_file_sql("mydb", "users", "/tmp/data.json", &mappings, &["user_id"]);
+        let sql = build_import_file_sql(
+            "mydb",
+            "users",
+            "/tmp/data.json",
+            "JSONEachRow",
+            &mappings,
+            &["user_id"],
+        );
         assert!(sql.contains("`user_id`"));
         assert!(sql.contains("`name` AS `full_name`"));
+    }
+
+    #[test]
+    fn test_build_import_file_sql_parquet() {
+        let mut mappings = HashMap::new();
+        mappings.insert("name", "name");
+
+        let sql = build_import_file_sql(
+            "mydb",
+            "users",
+            "/tmp/data.parquet",
+            "Parquet",
+            &mappings,
+            &["id"],
+        );
+        assert_eq!(
+            sql,
+            "INSERT INTO `mydb`.`users` SELECT * FROM file('/tmp/data.parquet', 'Parquet')"
+        );
+    }
+
+    #[test]
+    fn test_build_import_file_sql_csv() {
+        let mut mappings = HashMap::new();
+        mappings.insert("name", "full_name");
+
+        let sql = build_import_file_sql(
+            "mydb",
+            "users",
+            "/tmp/data.csv",
+            "CSVWithNames",
+            &mappings,
+            &["id"],
+        );
+        assert!(sql.contains("FROM file('/tmp/data.csv', 'CSVWithNames')"));
+        assert!(sql.contains("`name` AS `full_name`"));
+    }
+
+    // --- import format detection tests ---
+
+    #[test]
+    fn test_import_format_from_extension() {
+        assert_eq!(
+            import_format_from_extension("data.parquet"),
+            Some("Parquet")
+        );
+        assert_eq!(import_format_from_extension("data.pq"), Some("Parquet"));
+        assert_eq!(
+            import_format_from_extension("data.csv"),
+            Some("CSVWithNames")
+        );
+        assert_eq!(
+            import_format_from_extension("data.tsv"),
+            Some("TabSeparatedWithNames")
+        );
+        assert_eq!(
+            import_format_from_extension("data.json"),
+            Some("JSONEachRow")
+        );
+        assert_eq!(
+            import_format_from_extension("data.ndjson"),
+            Some("JSONEachRow")
+        );
+        assert_eq!(
+            import_format_from_extension("data.jsonl"),
+            Some("JSONEachRow")
+        );
+        assert_eq!(import_format_from_extension("data.unknown"), None);
     }
 }
