@@ -25,9 +25,9 @@ result = conn.query(
 )
 
 # --- Query timing ---
-print(f"Compile time: {result._ffi.get_compiling_time():.2f}ms")
-print(f"Execution time: {result._ffi.get_execution_time():.2f}ms")
-print(f"Column types: {result._ffi.get_column_data_types()}")
+print(f"Compile time: {result.compiling_time:.2f}ms")
+print(f"Execution time: {result.execution_time:.2f}ms")
+print(f"Column types: {result.column_data_types}")
 print()
 
 # --- Pandas ---

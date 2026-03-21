@@ -113,9 +113,9 @@ pip install polars    # for get_as_pl()
 ```python
 result = conn.query("MATCH (u:User)-[:FOLLOWS]->(f:User) RETURN u.name, f.name")
 
-print(f"Compile: {result._ffi.get_compiling_time():.2f}ms")
-print(f"Execute: {result._ffi.get_execution_time():.2f}ms")
-print(f"Columns: {result._ffi.get_column_data_types()}")
+print(f"Compile: {result.compiling_time:.2f}ms")
+print(f"Execute: {result.execution_time:.2f}ms")
+print(f"Columns: {result.column_data_types}")
 # → ["String", "String"]
 ```
 
@@ -159,26 +159,24 @@ graph_schema:
 db = clickgraph.Database("schema.yaml")
 conn = db.connect()
 
-# Single node
-conn._ffi.create_node("Entity", {
-    "entity_id": Value.STRING(v="e1"),
-    "name": Value.STRING(v="ClickGraph"),
-    "type": Value.STRING(v="Software"),
+# Single node — plain Python dicts, auto-converted to FFI types
+conn.create_node("Entity", {
+    "entity_id": "e1",
+    "name": "ClickGraph",
+    "type": "Software",
 })
 
 # Batch nodes (single INSERT)
-conn._ffi.create_nodes("Entity", [
-    {"entity_id": Value.STRING(v="e2"), "name": Value.STRING(v="Rust"), ...},
-    {"entity_id": Value.STRING(v="e3"), "name": Value.STRING(v="ClickHouse"), ...},
+conn.create_nodes("Entity", [
+    {"entity_id": "e2", "name": "Rust", "type": "Language"},
+    {"entity_id": "e3", "name": "ClickHouse", "type": "Database"},
 ])
 
 # Create edge
-conn._ffi.create_edge("RELATES_TO", "e1", "e2", {
-    "relation": Value.STRING(v="written_in"),
-})
+conn.create_edge("RELATES_TO", "e1", "e2", {"relation": "written_in"})
 
 # Bulk import from file (CSV, Parquet, JSON auto-detected)
-conn._ffi.import_file("Entity", "/path/to/entities.csv")
+conn.import_file("Entity", "/path/to/entities.csv")
 ```
 
 ### Rust
@@ -321,9 +319,14 @@ sql = conn.export_to_sql("MATCH (u:User) RETURN u.name", "users.parquet")
 | `result.get_as_df()` | Convert to Pandas DataFrame |
 | `result.get_as_arrow()` | Convert to PyArrow Table |
 | `result.get_as_pl()` | Convert to Polars DataFrame |
-| `conn._ffi.create_node(label, props)` | Create a single node |
-| `conn._ffi.create_edge(type, from, to, props)` | Create a single edge |
-| `conn._ffi.import_file(label, path)` | Import from file (CSV/Parquet/JSON) |
+| `result.compiling_time` | Cypher→SQL translation time (ms) |
+| `result.execution_time` | SQL execution time (ms) |
+| `result.column_data_types` | Inferred column types |
+| `conn.create_node(label, props)` | Create a single node |
+| `conn.create_edge(type, from, to, props)` | Create a single edge |
+| `conn.create_nodes(label, batch)` | Batch create nodes |
+| `conn.import_file(label, path)` | Import from file (CSV/Parquet/JSON) |
+| `conn.execute_sql(sql)` | Execute raw SQL |
 
 ### Value Types
 
