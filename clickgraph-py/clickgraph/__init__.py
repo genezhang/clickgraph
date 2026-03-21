@@ -158,6 +158,9 @@ class QueryResult:
         self._column_names = ffi_result.column_names()
         self._rows = ffi_result.get_all_rows()
         self._position = 0
+        self._compiling_time = ffi_result.get_compiling_time()
+        self._execution_time = ffi_result.get_execution_time()
+        self._column_data_types = ffi_result.get_column_data_types()
 
     @property
     def column_names(self) -> list[str]:
@@ -168,6 +171,21 @@ class QueryResult:
     def num_rows(self) -> int:
         """Number of rows."""
         return len(self._rows)
+
+    @property
+    def compiling_time(self) -> float:
+        """Time spent translating Cypher to SQL (milliseconds)."""
+        return self._compiling_time
+
+    @property
+    def execution_time(self) -> float:
+        """Time spent executing the SQL query (milliseconds)."""
+        return self._execution_time
+
+    @property
+    def column_data_types(self) -> list[str]:
+        """Inferred column data types (e.g., ``["String", "Int64", "Date"]``)."""
+        return list(self._column_data_types)
 
     def has_next(self) -> bool:
         """Return True if there are more rows (Kuzu-compatible cursor)."""
@@ -472,8 +490,77 @@ class Connection:
             edges_stored=ffi_stats.edges_stored,
         )
 
+    # -- Write operations --
+
+    def create_node(self, label: str, properties: dict) -> str:
+        """Create a node with the given label and properties.
+
+        Returns the node ID (caller-provided or auto-generated UUID).
+
+        >>> node_id = conn.create_node("User", {"user_id": "u1", "name": "Alice", "age": 30})
+        """
+        return self._ffi.create_node(label, _python_to_ffi_props(properties))
+
+    def create_edge(
+        self, edge_type: str, from_id: str, to_id: str, properties: dict | None = None
+    ) -> None:
+        """Create an edge between two nodes.
+
+        >>> conn.create_edge("FOLLOWS", "u1", "u2", {"follow_date": "2024-01-15"})
+        """
+        self._ffi.create_edge(edge_type, from_id, to_id, _python_to_ffi_props(properties or {}))
+
+    def create_nodes(self, label: str, batch: list[dict]) -> list[str]:
+        """Create multiple nodes in a single batch INSERT.
+
+        >>> ids = conn.create_nodes("User", [{"user_id": "u1", ...}, {"user_id": "u2", ...}])
+        """
+        return self._ffi.create_nodes(label, [_python_to_ffi_props(p) for p in batch])
+
+    def import_file(self, label: str, file_path: str) -> None:
+        """Import nodes from a file (CSV, Parquet, JSON — auto-detected from extension).
+
+        >>> conn.import_file("User", "users.csv")
+        """
+        self._ffi.import_file(label, file_path)
+
+    def execute_sql(self, sql: str) -> None:
+        """Execute a raw SQL statement (DDL, DML, or administrative command).
+
+        >>> conn.execute_sql("OPTIMIZE TABLE default.users FINAL")
+        """
+        self._ffi.execute_sql(sql)
+
     def __repr__(self) -> str:
         return "<Connection>"
+
+
+def _python_to_ffi_value(v):
+    """Convert a Python value to an FFI Value enum variant."""
+    if v is None:
+        return _FfiValue.NULL()
+    if isinstance(v, bool):
+        return _FfiValue.BOOL(v=v)
+    if isinstance(v, int):
+        return _FfiValue.INT64(v=v)
+    if isinstance(v, float):
+        return _FfiValue.FLOAT64(v=v)
+    if isinstance(v, str):
+        return _FfiValue.STRING(v=v)
+    if isinstance(v, list):
+        return _FfiValue.LIST(items=[_python_to_ffi_value(i) for i in v])
+    if isinstance(v, dict):
+        from clickgraph._ffi import MapEntry as _FfiMapEntry
+        return _FfiValue.MAP(entries=[
+            _FfiMapEntry(key=str(k), value=_python_to_ffi_value(val))
+            for k, val in v.items()
+        ])
+    return _FfiValue.STRING(v=str(v))
+
+
+def _python_to_ffi_props(props: dict) -> dict:
+    """Convert a Python dict to an FFI-compatible property map."""
+    return {str(k): _python_to_ffi_value(v) for k, v in props.items()}
 
 
 # ---------------------------------------------------------------------------
