@@ -224,6 +224,67 @@ class QueryResult:
             raise IndexError(f"row index {index} out of range")
         return _row_to_dict(self._rows[idx])
 
+    def get_as_arrow(self):
+        """Convert to a PyArrow Table.
+
+        Requires ``pyarrow`` to be installed.
+        Call before iterating the result (rows are materialized eagerly,
+        but this avoids confusion with cursor-style access).
+
+        >>> table = result.get_as_arrow()
+        >>> table.to_pandas()
+        """
+        try:
+            import pyarrow as pa
+        except ImportError:
+            raise ImportError(
+                "pyarrow is required for get_as_arrow(). "
+                "Install it with: pip install pyarrow"
+            )
+        dicts = self.as_dicts()
+        columns = self._column_names
+        return pa.Table.from_pydict(
+            {col: [row.get(col) for row in dicts] for col in columns}
+        )
+
+    def get_as_df(self):
+        """Convert to a Pandas DataFrame.
+
+        Requires ``pandas`` to be installed.
+        Call before iterating the result (rows are materialized eagerly,
+        but this avoids confusion with cursor-style access).
+
+        >>> df = result.get_as_df()
+        >>> df.head()
+        """
+        try:
+            import pandas as pd
+        except ImportError:
+            raise ImportError(
+                "pandas is required for get_as_df(). "
+                "Install it with: pip install pandas"
+            )
+        return pd.DataFrame(self.as_dicts(), columns=self._column_names)
+
+    def get_as_pl(self):
+        """Convert to a Polars DataFrame.
+
+        Requires ``polars`` to be installed.
+        Call before iterating the result (rows are materialized eagerly,
+        but this avoids confusion with cursor-style access).
+
+        >>> df = result.get_as_pl()
+        >>> df.head()
+        """
+        try:
+            import polars as pl
+        except ImportError:
+            raise ImportError(
+                "polars is required for get_as_pl(). "
+                "Install it with: pip install polars"
+            )
+        return pl.from_dicts(self.as_dicts())
+
     def __repr__(self) -> str:
         return f"<QueryResult columns={self._column_names!r} rows={len(self._rows)}>"
 
