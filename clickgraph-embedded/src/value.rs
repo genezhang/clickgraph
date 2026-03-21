@@ -23,6 +23,15 @@ pub enum Value {
 }
 
 impl Value {
+    /// Create a `Value::String` without type detection.
+    ///
+    /// Use this when you explicitly want a string value regardless of content.
+    /// `Value::from(json!("2024-01-15"))` would auto-detect as `Value::Date`,
+    /// but `Value::string("2024-01-15")` always produces `Value::String`.
+    pub fn string(s: impl Into<String>) -> Self {
+        Value::String(s.into())
+    }
+
     /// Return the value as a `&str`, or `None` if not a string-like type.
     ///
     /// Returns the inner string for `String`, `Date`, `Timestamp`, and `UUID`.
@@ -103,9 +112,18 @@ impl Value {
                 let escaped = s.replace('\\', "\\\\").replace('\'', "''");
                 Ok(format!("'{}'", escaped))
             }
-            Value::Date(s) => Ok(format!("toDate('{}')", s)),
-            Value::Timestamp(s) => Ok(format!("toDateTime('{}')", s)),
-            Value::UUID(s) => Ok(format!("toUUID('{}')", s)),
+            Value::Date(s) => {
+                let escaped = s.replace('\\', "\\\\").replace('\'', "''");
+                Ok(format!("toDate('{}')", escaped))
+            }
+            Value::Timestamp(s) => {
+                let escaped = s.replace('\\', "\\\\").replace('\'', "''");
+                Ok(format!("toDateTime('{}')", escaped))
+            }
+            Value::UUID(s) => {
+                let escaped = s.replace('\\', "\\\\").replace('\'', "''");
+                Ok(format!("toUUID('{}')", escaped))
+            }
             Value::List(_) => Err("List values are not supported in INSERT statements".to_string()),
             Value::Map(_) => Err("Map values are not supported in INSERT statements".to_string()),
         }
@@ -131,11 +149,18 @@ fn is_timestamp_string(s: &str) -> bool {
     if s.len() < 19 {
         return false;
     }
-    // Check the date part and the space separator
+    let b = s.as_bytes();
+    // YYYY-MM-DD HH:MM:SS — validate date prefix, space, and full HH:MM:SS
     is_date_string(&s[..10])
-        && s.as_bytes()[10] == b' '
-        && s[11..13].bytes().all(|c| c.is_ascii_digit())
-        && s.as_bytes()[13] == b':'
+        && b[10] == b' '
+        && b[11].is_ascii_digit()
+        && b[12].is_ascii_digit()
+        && b[13] == b':'
+        && b[14].is_ascii_digit()
+        && b[15].is_ascii_digit()
+        && b[16] == b':'
+        && b[17].is_ascii_digit()
+        && b[18].is_ascii_digit()
 }
 
 /// Check if a string matches the UUID `8-4-4-4-12` hex format.
@@ -153,6 +178,12 @@ fn is_uuid_string(s: &str) -> bool {
             .all(|(i, c)| i == 8 || i == 13 || i == 18 || i == 23 || c.is_ascii_hexdigit())
 }
 
+/// Convert a `serde_json::Value` to an embedded `Value`.
+///
+/// **Type detection**: JSON strings are automatically classified as
+/// `Date`, `Timestamp`, or `UUID` when they match the expected format
+/// from ClickHouse's `JSONEachRow` output. Use `Value::string()` to
+/// bypass detection when you need a plain `Value::String`.
 impl From<JsonValue> for Value {
     fn from(v: JsonValue) -> Self {
         match v {
@@ -254,6 +285,28 @@ mod tests {
         );
         assert_eq!(v.type_name(), "UUID");
         assert_eq!(v.as_str(), Some("550e8400-e29b-41d4-a716-446655440000"));
+    }
+
+    #[test]
+    fn test_value_string_bypasses_detection() {
+        // Value::string() always produces String, even for date-like input
+        assert_eq!(
+            Value::string("2024-01-15"),
+            Value::String("2024-01-15".to_string())
+        );
+        assert_eq!(
+            Value::string("550e8400-e29b-41d4-a716-446655440000"),
+            Value::String("550e8400-e29b-41d4-a716-446655440000".to_string())
+        );
+    }
+
+    #[test]
+    fn test_timestamp_partial_time_not_detected() {
+        // Only digits + colon at position 13, but rest is garbage
+        assert_eq!(
+            Value::from(json!("2024-01-15 12:XXXXX")),
+            Value::String("2024-01-15 12:XXXXX".to_string())
+        );
     }
 
     #[test]
