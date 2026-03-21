@@ -105,6 +105,12 @@ def _value_to_python(v):
         return v.v
     if isinstance(v, _FfiValue.STRING):
         return v.v
+    if isinstance(v, _FfiValue.DATE):
+        return v.v  # "YYYY-MM-DD" string
+    if isinstance(v, _FfiValue.TIMESTAMP):
+        return v.v  # "YYYY-MM-DD HH:MM:SS" string
+    if isinstance(v, _FfiValue.UUID):
+        return v.v  # UUID hex string
     if isinstance(v, _FfiValue.LIST):
         return [_value_to_python(item) for item in v.items]
     if isinstance(v, _FfiValue.MAP):

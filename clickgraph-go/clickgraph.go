@@ -474,6 +474,12 @@ func toGoValue(v ffi.Value) interface{} {
 		return val.V
 	case ffi.ValueString:
 		return val.V
+	case ffi.ValueDate:
+		return val.V // "YYYY-MM-DD" string
+	case ffi.ValueTimestamp:
+		return val.V // "YYYY-MM-DD HH:MM:SS" string
+	case ffi.ValueUuid:
+		return val.V // UUID hex string
 	case ffi.ValueList:
 		items := make([]interface{}, len(val.Items))
 		for i, item := range val.Items {

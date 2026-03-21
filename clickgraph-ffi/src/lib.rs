@@ -74,6 +74,9 @@ pub enum Value {
     Int64 { v: i64 },
     Float64 { v: f64 },
     String { v: String },
+    Date { v: String },
+    Timestamp { v: String },
+    Uuid { v: String },
     List { items: Vec<Value> },
     Map { entries: Vec<MapEntry> },
 }
@@ -92,6 +95,9 @@ impl From<RustValue> for Value {
             RustValue::Int64(n) => Value::Int64 { v: n },
             RustValue::Float64(f) => Value::Float64 { v: f },
             RustValue::String(s) => Value::String { v: s },
+            RustValue::Date(s) => Value::Date { v: s },
+            RustValue::Timestamp(s) => Value::Timestamp { v: s },
+            RustValue::UUID(s) => Value::Uuid { v: s },
             RustValue::List(items) => Value::List {
                 items: items.into_iter().map(Value::from).collect(),
             },
@@ -116,6 +122,9 @@ fn to_rust_value(v: Value) -> RustValue {
         Value::Int64 { v } => RustValue::Int64(v),
         Value::Float64 { v } => RustValue::Float64(v),
         Value::String { v } => RustValue::String(v),
+        Value::Date { v } => RustValue::Date(v),
+        Value::Timestamp { v } => RustValue::Timestamp(v),
+        Value::Uuid { v } => RustValue::UUID(v),
         Value::List { items } => RustValue::List(items.into_iter().map(to_rust_value).collect()),
         Value::Map { entries } => RustValue::Map(
             entries
