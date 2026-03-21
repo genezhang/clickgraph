@@ -361,16 +361,20 @@ fn extract_edge_from_row(
     let from_id_cols = rel_schema.from_id.columns();
     let to_id_cols = rel_schema.to_id.columns();
 
-    // Extract from/to ID values from properties
+    // Extract from/to ID values from properties.
+    // The SQL generator may normalize FK columns to `from_id`/`to_id` aliases,
+    // so we also try those as fallbacks if the schema column names don't match.
     let from_id = from_id_cols
         .iter()
         .filter_map(|col| properties.get(*col).and_then(json_value_to_string))
-        .next()?;
+        .next()
+        .or_else(|| properties.get("from_id").and_then(json_value_to_string))?;
 
     let to_id = to_id_cols
         .iter()
         .filter_map(|col| properties.get(*col).and_then(json_value_to_string))
-        .next()?;
+        .next()
+        .or_else(|| properties.get("to_id").and_then(json_value_to_string))?;
 
     // Determine from/to labels for element IDs
     let from_label_str = from_label
@@ -389,6 +393,11 @@ fn extract_edge_from_row(
     for col in from_id_cols.iter().chain(to_id_cols.iter()) {
         properties.remove(*col);
     }
+    // Also remove the normalized aliases if present.
+    // Note: this assumes `from_id`/`to_id` are structural FK aliases, not user
+    // properties. Graph data rarely has properties with these exact names.
+    properties.remove("from_id");
+    properties.remove("to_id");
 
     let embedded_properties: HashMap<String, Value> = properties
         .into_iter()
