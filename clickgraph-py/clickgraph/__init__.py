@@ -228,6 +228,8 @@ class QueryResult:
         """Convert to a PyArrow Table.
 
         Requires ``pyarrow`` to be installed.
+        Call before iterating the result (rows are materialized eagerly,
+        but this avoids confusion with cursor-style access).
 
         >>> table = result.get_as_arrow()
         >>> table.to_pandas()
@@ -239,23 +241,18 @@ class QueryResult:
                 "pyarrow is required for get_as_arrow(). "
                 "Install it with: pip install pyarrow"
             )
+        dicts = self.as_dicts()
         columns = self._column_names
-        # Build column-oriented data (list of lists)
-        col_data = {col: [] for col in columns}
-        for row in self._rows:
-            row_dict = _row_to_dict(row)
-            for col in columns:
-                col_data[col].append(row_dict.get(col))
-        arrays = []
-        for col in columns:
-            values = col_data[col]
-            arrays.append(pa.array(values, from_pandas=True))
-        return pa.table(dict(zip(columns, arrays)))
+        return pa.Table.from_pydict(
+            {col: [row.get(col) for row in dicts] for col in columns}
+        )
 
     def get_as_df(self):
         """Convert to a Pandas DataFrame.
 
         Requires ``pandas`` to be installed.
+        Call before iterating the result (rows are materialized eagerly,
+        but this avoids confusion with cursor-style access).
 
         >>> df = result.get_as_df()
         >>> df.head()
@@ -273,6 +270,8 @@ class QueryResult:
         """Convert to a Polars DataFrame.
 
         Requires ``polars`` to be installed.
+        Call before iterating the result (rows are materialized eagerly,
+        but this avoids confusion with cursor-style access).
 
         >>> df = result.get_as_pl()
         >>> df.head()
@@ -284,7 +283,7 @@ class QueryResult:
                 "polars is required for get_as_pl(). "
                 "Install it with: pip install polars"
             )
-        return pl.DataFrame(self.as_dicts(), orient="row")
+        return pl.from_dicts(self.as_dicts())
 
     def __repr__(self) -> str:
         return f"<QueryResult columns={self._column_names!r} rows={len(self._rows)}>"
