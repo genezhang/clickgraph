@@ -648,6 +648,13 @@ impl<'db> Connection<'db> {
     ///
     /// Supported extensions: `.parquet`/`.pq`, `.csv`, `.tsv`/`.tab`,
     /// `.json`/`.ndjson`/`.jsonl`.
+    ///
+    /// **Column mapping**: File columns should use Cypher property names (mapped
+    /// automatically via the schema's `property_mappings`) or ClickHouse column
+    /// names directly (used as-is when no mapping applies).
+    ///
+    /// **Note**: This imports nodes only. For edge import from files, use
+    /// `execute_sql()` with a manual `INSERT INTO ... SELECT ... FROM file()`.
     pub fn import_file(&self, label: &str, file_path: &str) -> Result<(), EmbeddedError> {
         let format = write_helpers::import_format_from_extension(file_path).ok_or_else(|| {
             EmbeddedError::Validation(format!(
