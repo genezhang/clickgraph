@@ -261,6 +261,8 @@ pub struct QueryResult {
     columns: Vec<String>,
     rows: Vec<Vec<RustValue>>,
     position: AtomicUsize,
+    compile_time_ms: f64,
+    execution_time_ms: f64,
 }
 
 #[uniffi::export]
@@ -309,6 +311,36 @@ impl QueryResult {
     /// Reset the cursor to the beginning.
     pub fn reset(&self) {
         self.position.store(0, Ordering::Relaxed);
+    }
+
+    /// Time spent translating Cypher to SQL (milliseconds).
+    pub fn get_compiling_time(&self) -> f64 {
+        self.compile_time_ms
+    }
+
+    /// Time spent executing the SQL query (milliseconds).
+    pub fn get_execution_time(&self) -> f64 {
+        self.execution_time_ms
+    }
+
+    /// Infer column data types from the first row of results.
+    pub fn get_column_data_types(&self) -> Vec<String> {
+        if self.rows.is_empty() {
+            return self.columns.iter().map(|_| "Null".to_string()).collect();
+        }
+        self.rows[0]
+            .iter()
+            .map(|v| match v {
+                RustValue::Null => "Null",
+                RustValue::Bool(_) => "Bool",
+                RustValue::Int64(_) => "Int64",
+                RustValue::Float64(_) => "Float64",
+                RustValue::String(_) => "String",
+                RustValue::List(_) => "List",
+                RustValue::Map(_) => "Map",
+            })
+            .map(|s| s.to_string())
+            .collect()
     }
 }
 
@@ -420,6 +452,44 @@ impl Database {
         }))
     }
 
+    /// Open an in-memory database (auto-cleaned temp session directory).
+    #[uniffi::constructor]
+    pub fn open_in_memory(
+        schema_path: String,
+        config: SystemConfig,
+    ) -> Result<Arc<Self>, ClickGraphError> {
+        let mut rust_config = RustSystemConfig {
+            session_dir: None, // force in-memory
+            data_dir: config.data_dir.map(std::path::PathBuf::from),
+            max_threads: config.max_threads.map(|t| t as usize),
+            credentials: StorageCredentials {
+                s3_access_key_id: config.s3_access_key_id,
+                s3_secret_access_key: config.s3_secret_access_key,
+                s3_region: config.s3_region,
+                s3_endpoint_url: config.s3_endpoint_url,
+                s3_session_token: config.s3_session_token,
+                gcs_access_key_id: config.gcs_access_key_id,
+                gcs_secret_access_key: config.gcs_secret_access_key,
+                azure_storage_account_name: config.azure_storage_account_name,
+                azure_storage_account_key: config.azure_storage_account_key,
+                azure_storage_connection_string: config.azure_storage_connection_string,
+            },
+            remote: config.remote.map(|r| RustRemoteConfig {
+                url: r.url,
+                user: r.user,
+                password: r.password,
+                database: r.database,
+                cluster_name: r.cluster_name,
+            }),
+        };
+        rust_config.session_dir = None;
+        let db = RustDatabase::new(&schema_path, rust_config)
+            .map_err(|e| ClickGraphError::DatabaseError { msg: e.to_string() })?;
+        Ok(Arc::new(Database {
+            inner: Arc::new(db),
+        }))
+    }
+
     /// Create a connection to this database.
     pub fn connect(&self) -> Result<Arc<Connection>, ClickGraphError> {
         Ok(Arc::new(Connection {
@@ -444,6 +514,8 @@ impl Connection {
         let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
         let result = conn.query(&cypher).map_err(ClickGraphError::from)?;
 
+        let compile_time_ms = result.get_compiling_time();
+        let execution_time_ms = result.get_execution_time();
         let columns = result.get_column_names().to_vec();
         let rows: Vec<Vec<RustValue>> = result.map(|row| row.values().to_vec()).collect();
 
@@ -451,6 +523,8 @@ impl Connection {
             columns,
             rows,
             position: AtomicUsize::new(0),
+            compile_time_ms,
+            execution_time_ms,
         }))
     }
 
@@ -633,6 +707,8 @@ impl Connection {
         let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
         let result = conn.query_remote(&cypher).map_err(ClickGraphError::from)?;
 
+        let compile_time_ms = result.get_compiling_time();
+        let execution_time_ms = result.get_execution_time();
         let columns = result.get_column_names().to_vec();
         let rows: Vec<Vec<RustValue>> = result.map(|row| row.values().to_vec()).collect();
 
@@ -640,6 +716,8 @@ impl Connection {
             columns,
             rows,
             position: AtomicUsize::new(0),
+            compile_time_ms,
+            execution_time_ms,
         }))
     }
 

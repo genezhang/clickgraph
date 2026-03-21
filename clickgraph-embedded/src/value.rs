@@ -41,6 +41,14 @@ impl Value {
         }
     }
 
+    /// Return the value as a `bool`, or `None` if not a boolean.
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Value::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
     /// Return true if this value is `Null`.
     pub fn is_null(&self) -> bool {
         matches!(self, Value::Null)
@@ -108,6 +116,9 @@ mod tests {
     fn test_bool_conversion() {
         assert_eq!(Value::from(json!(true)), Value::Bool(true));
         assert_eq!(Value::from(json!(false)), Value::Bool(false));
+        assert_eq!(Value::Bool(true).as_bool(), Some(true));
+        assert_eq!(Value::Bool(false).as_bool(), Some(false));
+        assert_eq!(Value::Int64(1).as_bool(), None);
     }
 
     #[test]

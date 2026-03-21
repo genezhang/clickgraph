@@ -14,6 +14,10 @@ pub struct QueryResult {
     column_names: Vec<String>,
     rows: Vec<Vec<Value>>,
     position: usize,
+    /// Time spent translating Cypher to SQL (milliseconds).
+    compile_time_ms: f64,
+    /// Time spent executing the SQL query (milliseconds).
+    execution_time_ms: f64,
 }
 
 impl QueryResult {
@@ -22,6 +26,23 @@ impl QueryResult {
             column_names,
             rows,
             position: 0,
+            compile_time_ms: 0.0,
+            execution_time_ms: 0.0,
+        }
+    }
+
+    pub(crate) fn with_timing(
+        column_names: Vec<String>,
+        rows: Vec<Vec<Value>>,
+        compile_time_ms: f64,
+        execution_time_ms: f64,
+    ) -> Self {
+        Self {
+            column_names,
+            rows,
+            position: 0,
+            compile_time_ms,
+            execution_time_ms,
         }
     }
 
@@ -38,6 +59,50 @@ impl QueryResult {
     /// Return true if there are no rows.
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty()
+    }
+
+    /// Time spent translating Cypher to SQL (milliseconds).
+    ///
+    /// Mirrors `kuzu::QueryResult::get_compiling_time()`.
+    pub fn get_compiling_time(&self) -> f64 {
+        self.compile_time_ms
+    }
+
+    /// Time spent executing the SQL query (milliseconds).
+    ///
+    /// Mirrors `kuzu::QueryResult::get_execution_time()`.
+    pub fn get_execution_time(&self) -> f64 {
+        self.execution_time_ms
+    }
+
+    /// Infer column data types from the first row of results.
+    ///
+    /// Returns a type name string per column: `"Null"`, `"Bool"`, `"Int64"`,
+    /// `"Float64"`, `"String"`, `"List"`, or `"Map"`. Returns `"Null"` for
+    /// empty results or columns where the first row has a null value.
+    ///
+    /// Mirrors `kuzu::QueryResult::get_column_data_types()`.
+    pub fn get_column_data_types(&self) -> Vec<String> {
+        if self.rows.is_empty() {
+            return self
+                .column_names
+                .iter()
+                .map(|_| "Null".to_string())
+                .collect();
+        }
+        self.rows[0]
+            .iter()
+            .map(|v| match v {
+                Value::Null => "Null",
+                Value::Bool(_) => "Bool",
+                Value::Int64(_) => "Int64",
+                Value::Float64(_) => "Float64",
+                Value::String(_) => "String",
+                Value::List(_) => "List",
+                Value::Map(_) => "Map",
+            })
+            .map(|s| s.to_string())
+            .collect()
     }
 }
 
@@ -149,6 +214,40 @@ mod tests {
         assert_eq!(row.get("name"), Some(&Value::String("Alice".to_string())));
         assert_eq!(row.get("age"), Some(&Value::Int64(30)));
         assert_eq!(row.get("missing"), None);
+    }
+
+    #[test]
+    fn test_timing_defaults() {
+        let r = make_result();
+        assert_eq!(r.get_compiling_time(), 0.0);
+        assert_eq!(r.get_execution_time(), 0.0);
+    }
+
+    #[test]
+    fn test_timing_with_values() {
+        let r =
+            QueryResult::with_timing(vec!["x".to_string()], vec![vec![Value::Int64(1)]], 1.5, 2.5);
+        assert_eq!(r.get_compiling_time(), 1.5);
+        assert_eq!(r.get_execution_time(), 2.5);
+    }
+
+    #[test]
+    fn test_column_data_types() {
+        let r = QueryResult::new(
+            vec!["name".to_string(), "age".to_string(), "active".to_string()],
+            vec![vec![
+                Value::String("Alice".to_string()),
+                Value::Int64(30),
+                Value::Bool(true),
+            ]],
+        );
+        assert_eq!(r.get_column_data_types(), vec!["String", "Int64", "Bool"]);
+    }
+
+    #[test]
+    fn test_column_data_types_empty() {
+        let r = QueryResult::new(vec!["a".to_string(), "b".to_string()], vec![]);
+        assert_eq!(r.get_column_data_types(), vec!["Null", "Null"]);
     }
 
     #[test]
