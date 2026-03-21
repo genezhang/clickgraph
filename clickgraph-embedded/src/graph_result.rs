@@ -393,7 +393,9 @@ fn extract_edge_from_row(
     for col in from_id_cols.iter().chain(to_id_cols.iter()) {
         properties.remove(*col);
     }
-    // Also remove the normalized aliases if present
+    // Also remove the normalized aliases if present.
+    // Note: this assumes `from_id`/`to_id` are structural FK aliases, not user
+    // properties. Graph data rarely has properties with these exact names.
     properties.remove("from_id");
     properties.remove("to_id");
 

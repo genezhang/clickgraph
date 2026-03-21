@@ -14,6 +14,7 @@ use std::process::Command;
 use std::sync::LazyLock;
 
 use clickgraph_embedded::{Connection, Database, RemoteConfig, SystemConfig};
+use serial_test::serial;
 
 /// Return true if hybrid e2e tests are enabled via the environment.
 fn hybrid_tests_enabled() -> bool {
@@ -224,7 +225,7 @@ fn hybrid_query_remote_graph_with_edges() {
         .unwrap();
 
     // Alice follows Bob and Charlie → 3 unique nodes, 2 edges
-    assert!(graph.node_count() >= 2, "At least Alice + targets");
+    assert_eq!(graph.node_count(), 3, "Alice + Bob + Charlie");
     assert_eq!(graph.edge_count(), 2, "Alice has 2 FOLLOWS edges");
 
     for edge in graph.edges() {
@@ -237,6 +238,7 @@ fn hybrid_query_remote_graph_with_edges() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[serial]
 fn hybrid_full_round_trip() {
     let Some(conn) = conn() else { return };
 
@@ -280,6 +282,7 @@ fn hybrid_full_round_trip() {
 }
 
 #[test]
+#[serial]
 fn hybrid_store_subgraph_stats() {
     let Some(conn) = conn() else { return };
 
@@ -300,6 +303,7 @@ fn hybrid_store_subgraph_stats() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[serial]
 fn hybrid_query_graph_local() {
     let Some(conn) = conn() else { return };
 
