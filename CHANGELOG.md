@@ -1,8 +1,39 @@
-## [0.6.4-dev] - 2026-03-14
+## [0.6.5-dev] - 2026-03-21
 
 ### 🚀 Features
 
-- **Hybrid remote query + local storage**: Execute Cypher queries against a remote ClickHouse cluster from embedded mode, then store results locally in chdb as a subgraph for fast re-querying. New `RemoteConfig` for `SystemConfig`, plus `Connection` methods: `query_remote()`, `query_remote_graph()`, `query_graph()`, `store_subgraph()`. New `GraphResult` structured output and `StoreStats` return type. Available in Rust, Python (UniFFI), and Go (UniFFI) bindings. `RoleConnectionPool::new_with_params()` enables programmatic pool creation without env vars.
+- **Hybrid remote query + local storage** (PR #240): Execute Cypher queries against a remote ClickHouse cluster from embedded mode, then store results locally in chdb as a subgraph for fast re-querying. New `RemoteConfig` for `SystemConfig`, plus `Connection` methods: `query_remote()`, `query_remote_graph()`, `query_graph()`, `store_subgraph()`. New `GraphResult` structured output and `StoreStats` return type. Available in Rust, Python (UniFFI), and Go (UniFFI) bindings.
+
+- **Embedded write API** (PR #236): `create_node()`, `create_edge()`, `upsert_node()`, `upsert_edge()` with batch variants (`create_nodes()`, `create_edges()`). `delete_nodes()`, `delete_edges()` for cleanup. `import_json()` and `import_json_file()` for bulk JSON import. Schema entries without `source:` get auto-created as `ReplacingMergeTree` tables. `property_types` field for type-aware DDL (PR #238).
+
+- **Multi-format file import** (PR #243): `import_csv_file()`, `import_parquet_file()`, `import_file()` (auto-detect from extension). Supports CSV, Parquet, TSV, JSON/NDJSON/JSONL formats.
+
+- **Richer Value types** (PR #244): `Value::Date("YYYY-MM-DD")`, `Value::Timestamp("YYYY-MM-DD HH:MM:SS")`, `Value::UUID("8-4-4-4-12")` auto-detected from ClickHouse JSON output. `to_sql_literal()` generates `toDate()`/`toDateTime()`/`toUUID()` wrappers. `Value::string()` constructor bypasses detection.
+
+- **Kuzu API parity** (PR #242): `Value::as_bool()`, query timing (`get_compiling_time()`/`get_execution_time()`), `Database::in_memory()`, `Connection::set_query_timeout()`, `QueryResult::get_column_data_types()`.
+
+- **DataFrame output** (PR #245): Python `QueryResult.get_as_df()` (Pandas), `get_as_arrow()` (PyArrow), `get_as_pl()` (Polars) with lazy imports.
+
+- **Python wrapper improvements** (PR #246): `result.compiling_time`/`execution_time`/`column_data_types` properties. `conn.create_node()`/`create_edge()`/`create_nodes()`/`import_file()`/`execute_sql()` accept plain Python dicts with auto-conversion to FFI Value types.
+
+### 📚 Documentation
+
+- **Tutorials and examples** (PR #246): 5 runnable Python scripts (`examples/embedded/`) covering quick start, DataFrames, write API, GraphRAG hybrid workflow, and export formats. Wiki tutorial page (`docs/wiki/Embedded-Tutorials.md`) with Python + Rust code, architecture diagrams, and API quick reference.
+
+### 🐛 Bug Fixes
+
+- **Edge extraction fallback** (PR #241): `extract_edge_from_row` falls back to `from_id`/`to_id` aliases when schema FK column names don't match SQL-generated column names.
+- **Security dep updates**: `lz4_flex` 0.11.5→0.11.6 (RUSTSEC-2026-0041), `rustls-webpki` 0.103.8→0.103.10 (RUSTSEC-2026-0049).
+
+### 🧹 Infrastructure
+
+- **CI**: `cargo audit` ignores unmaintained `rustls-pemfile` warning (transitive dep via chdb-rust).
+
+---
+
+## [0.6.4-dev] - 2026-03-14
+
+### 🚀 Features
 
 - **Denormalized & coupled schema support**: Full query support for schemas where node properties are embedded in edge tables via `from_node_properties`/`to_node_properties`. Includes property mapping, ORDER BY resolution, UNION aggregate column rewriting, and `id()` on virtual nodes (PRs #224-#228).
 

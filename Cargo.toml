@@ -7,7 +7,7 @@ members = [
 
 [package]
 name = "clickgraph"
-version = "0.6.4-dev"
+version = "0.6.5-dev"
 edition = "2021"
 rust-version = "1.85"
 

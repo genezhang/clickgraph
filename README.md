@@ -15,18 +15,14 @@
 - View-based graph analytics offer the benefits of zero-ETL without the hassle of data migration and duplicate cost, yet better performance and scalability than most of the native graph analytics options.
 - Neo4j Bolt protocol support gives access to the tools available based on the Bolt protocol.
 ---
-## What's New Under Development
+## What's New in v0.6.5-dev
 
 - **Hybrid remote query + local storage** — Execute Cypher queries against a remote ClickHouse cluster from embedded mode, then store results locally in chdb as a subgraph for fast re-querying. `query_remote()`, `query_remote_graph()`, `store_subgraph()` — ideal for GraphRAG context enrichment. Available in Rust, Python, and Go. See [Embedded Mode](docs/wiki/Embedded-Mode.md#hybrid-remote-query--local-storage).
-- **Embedded write API for GraphRAG** - `create_node()`, `create_edge()`, `upsert_node()` with batch variants. AI agents can extract entities from documents, store them as graph data, and query with Cypher — all in-process. See [Embedded Mode Write API](docs/wiki/Embedded-Mode.md#write-api-embedded-mode-only).
-
-## What's New in v0.6.4-dev
-
-- **Embedded mode** - Query Parquet/Iceberg/Delta/S3 directly — no ClickHouse server needed. Use as a Rust library (`clickgraph-embedded`) or run the server with `--embedded`. Use for agent's local tool.
-- **Golang and Python bindings** - for embedded ClickGraph in addition to Rust native interface.
-- **Export query results** - `CALL apoc.export.{csv|json|parquet}.query()` exports to files, S3, GCS, Azure, and HTTP destinations. Compatible commands with Kuzu and DuckDB are also provided.
-- **Denormalized & coupled schema fixes** - Corrected property mapping, OPTIONAL MATCH (was silently dropped), and VLP cycle prevention for schemas where node properties are embedded in edge tables.
-- **1,591 unit tests** - Up from 1,277, with comprehensive cross-schema pattern matrix tests.
+- **Embedded write API for GraphRAG** — `create_node()`, `create_edge()`, `upsert_node()` with batch variants. AI agents can extract entities from documents, store them as graph data, and query with Cypher — all in-process. See [Embedded Mode Write API](docs/wiki/Embedded-Mode.md#write-api-embedded-mode-only).
+- **Kuzu API parity** — `Value::Date/Timestamp/UUID` types, query timing (`compiling_time`/`execution_time`), `Database::in_memory()`, `Connection::set_query_timeout()`, column type metadata, multi-format file import (CSV/Parquet/JSON).
+- **DataFrame output** — `result.get_as_df()` (Pandas), `result.get_as_arrow()` (PyArrow), `result.get_as_pl()` (Polars) for Python data science workflows.
+- **Tutorials and examples** — 5 runnable Python examples covering quick start, DataFrames, write API, GraphRAG hybrid workflow, and export formats. See [`examples/embedded/`](examples/embedded/).
+- **1,599 unit tests** — Up from 1,591, with hybrid E2E tests and comprehensive Value type coverage.
 
 See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 
@@ -226,7 +222,7 @@ RETURN friend.name
 
 ## Development Status
 
-**Current Version**: v0.6.4-dev
+**Current Version**: v0.6.5-dev
 
 ### Test Coverage
 - **Rust Unit Tests**: 1,588 passing (100%)
