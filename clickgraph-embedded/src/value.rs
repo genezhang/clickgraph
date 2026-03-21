@@ -54,6 +54,19 @@ impl Value {
         matches!(self, Value::Null)
     }
 
+    /// Return the type name of this value as a static string.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Value::Null => "Null",
+            Value::Bool(_) => "Bool",
+            Value::Int64(_) => "Int64",
+            Value::Float64(_) => "Float64",
+            Value::String(_) => "String",
+            Value::List(_) => "List",
+            Value::Map(_) => "Map",
+        }
+    }
+
     /// Render this value as a SQL literal for use in INSERT statements.
     ///
     /// - `String` values are single-quoted with backslashes and quotes escaped.

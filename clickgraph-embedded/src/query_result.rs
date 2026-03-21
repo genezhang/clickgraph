@@ -92,16 +92,7 @@ impl QueryResult {
         }
         self.rows[0]
             .iter()
-            .map(|v| match v {
-                Value::Null => "Null",
-                Value::Bool(_) => "Bool",
-                Value::Int64(_) => "Int64",
-                Value::Float64(_) => "Float64",
-                Value::String(_) => "String",
-                Value::List(_) => "List",
-                Value::Map(_) => "Map",
-            })
-            .map(|s| s.to_string())
+            .map(|v| v.type_name().to_string())
             .collect()
     }
 }

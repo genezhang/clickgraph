@@ -330,16 +330,7 @@ impl QueryResult {
         }
         self.rows[0]
             .iter()
-            .map(|v| match v {
-                RustValue::Null => "Null",
-                RustValue::Bool(_) => "Bool",
-                RustValue::Int64(_) => "Int64",
-                RustValue::Float64(_) => "Float64",
-                RustValue::String(_) => "String",
-                RustValue::List(_) => "List",
-                RustValue::Map(_) => "Map",
-            })
-            .map(|s| s.to_string())
+            .map(|v| v.type_name().to_string())
             .collect()
     }
 }
@@ -407,30 +398,7 @@ impl Database {
         schema_path: String,
         config: SystemConfig,
     ) -> Result<Arc<Self>, ClickGraphError> {
-        let rust_config = RustSystemConfig {
-            session_dir: config.session_dir.map(std::path::PathBuf::from),
-            data_dir: config.data_dir.map(std::path::PathBuf::from),
-            max_threads: config.max_threads.map(|t| t as usize),
-            credentials: StorageCredentials {
-                s3_access_key_id: config.s3_access_key_id,
-                s3_secret_access_key: config.s3_secret_access_key,
-                s3_region: config.s3_region,
-                s3_endpoint_url: config.s3_endpoint_url,
-                s3_session_token: config.s3_session_token,
-                gcs_access_key_id: config.gcs_access_key_id,
-                gcs_secret_access_key: config.gcs_secret_access_key,
-                azure_storage_account_name: config.azure_storage_account_name,
-                azure_storage_account_key: config.azure_storage_account_key,
-                azure_storage_connection_string: config.azure_storage_connection_string,
-            },
-            remote: config.remote.map(|r| RustRemoteConfig {
-                url: r.url,
-                user: r.user,
-                password: r.password,
-                database: r.database,
-                cluster_name: r.cluster_name,
-            }),
-        };
+        let rust_config = to_rust_system_config(config);
         let db = RustDatabase::new(&schema_path, rust_config)
             .map_err(|e| ClickGraphError::DatabaseError { msg: e.to_string() })?;
         Ok(Arc::new(Database {
@@ -458,31 +426,8 @@ impl Database {
         schema_path: String,
         config: SystemConfig,
     ) -> Result<Arc<Self>, ClickGraphError> {
-        let mut rust_config = RustSystemConfig {
-            session_dir: None, // force in-memory
-            data_dir: config.data_dir.map(std::path::PathBuf::from),
-            max_threads: config.max_threads.map(|t| t as usize),
-            credentials: StorageCredentials {
-                s3_access_key_id: config.s3_access_key_id,
-                s3_secret_access_key: config.s3_secret_access_key,
-                s3_region: config.s3_region,
-                s3_endpoint_url: config.s3_endpoint_url,
-                s3_session_token: config.s3_session_token,
-                gcs_access_key_id: config.gcs_access_key_id,
-                gcs_secret_access_key: config.gcs_secret_access_key,
-                azure_storage_account_name: config.azure_storage_account_name,
-                azure_storage_account_key: config.azure_storage_account_key,
-                azure_storage_connection_string: config.azure_storage_connection_string,
-            },
-            remote: config.remote.map(|r| RustRemoteConfig {
-                url: r.url,
-                user: r.user,
-                password: r.password,
-                database: r.database,
-                cluster_name: r.cluster_name,
-            }),
-        };
-        rust_config.session_dir = None;
+        let mut rust_config = to_rust_system_config(config);
+        rust_config.session_dir = None; // force in-memory
         let db = RustDatabase::new(&schema_path, rust_config)
             .map_err(|e| ClickGraphError::DatabaseError { msg: e.to_string() })?;
         Ok(Arc::new(Database {
@@ -494,6 +439,7 @@ impl Database {
     pub fn connect(&self) -> Result<Arc<Connection>, ClickGraphError> {
         Ok(Arc::new(Connection {
             db: Arc::clone(&self.inner),
+            query_timeout_ms: std::sync::atomic::AtomicU64::new(0),
         }))
     }
 }
@@ -505,13 +451,31 @@ impl Database {
 #[derive(uniffi::Object)]
 pub struct Connection {
     db: Arc<RustDatabase>,
+    /// Query timeout in milliseconds (0 = no timeout). Persists across calls.
+    query_timeout_ms: std::sync::atomic::AtomicU64,
 }
 
 #[uniffi::export]
 impl Connection {
+    /// Set the query timeout in milliseconds. 0 = no timeout (default).
+    ///
+    /// Persists across calls on this connection.
+    pub fn set_query_timeout(&self, timeout_ms: u64) {
+        self.query_timeout_ms
+            .store(timeout_ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Get the current query timeout in milliseconds. 0 = no timeout.
+    pub fn get_query_timeout(&self) -> u64 {
+        self.query_timeout_ms
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Execute a Cypher query and return a QueryResult.
     pub fn query(&self, cypher: String) -> Result<Arc<QueryResult>, ClickGraphError> {
-        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        let mut conn =
+            clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        self.apply_timeout(&mut conn);
         let result = conn.query(&cypher).map_err(ClickGraphError::from)?;
 
         let compile_time_ms = result.get_compiling_time();
@@ -704,7 +668,9 @@ impl Connection {
     ///
     /// Requires `RemoteConfig` to have been provided in `SystemConfig`.
     pub fn query_remote(&self, cypher: String) -> Result<Arc<QueryResult>, ClickGraphError> {
-        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        let mut conn =
+            clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        self.apply_timeout(&mut conn);
         let result = conn.query_remote(&cypher).map_err(ClickGraphError::from)?;
 
         let compile_time_ms = result.get_compiling_time();
@@ -723,7 +689,9 @@ impl Connection {
 
     /// Execute a Cypher query locally and return a structured graph result.
     pub fn query_graph(&self, cypher: String) -> Result<Arc<GraphResult>, ClickGraphError> {
-        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        let mut conn =
+            clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        self.apply_timeout(&mut conn);
         let result = conn.query_graph(&cypher).map_err(ClickGraphError::from)?;
         Ok(Arc::new(GraphResult { inner: result }))
     }
@@ -732,7 +700,9 @@ impl Connection {
     ///
     /// The returned `GraphResult` can be passed to `store_subgraph()` to persist locally.
     pub fn query_remote_graph(&self, cypher: String) -> Result<Arc<GraphResult>, ClickGraphError> {
-        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        let mut conn =
+            clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        self.apply_timeout(&mut conn);
         let result = conn
             .query_remote_graph(&cypher)
             .map_err(ClickGraphError::from)?;
@@ -754,9 +724,49 @@ impl Connection {
     }
 }
 
+impl Connection {
+    /// Apply the stored timeout to a new embedded Connection.
+    fn apply_timeout(&self, conn: &mut clickgraph_embedded::Connection<'_>) {
+        let timeout_ms = self
+            .query_timeout_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if timeout_ms > 0 {
+            conn.set_query_timeout(timeout_ms);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Convert an FFI `SystemConfig` to a Rust `SystemConfig`.
+fn to_rust_system_config(config: SystemConfig) -> RustSystemConfig {
+    RustSystemConfig {
+        session_dir: config.session_dir.map(std::path::PathBuf::from),
+        data_dir: config.data_dir.map(std::path::PathBuf::from),
+        max_threads: config.max_threads.map(|t| t as usize),
+        credentials: StorageCredentials {
+            s3_access_key_id: config.s3_access_key_id,
+            s3_secret_access_key: config.s3_secret_access_key,
+            s3_region: config.s3_region,
+            s3_endpoint_url: config.s3_endpoint_url,
+            s3_session_token: config.s3_session_token,
+            gcs_access_key_id: config.gcs_access_key_id,
+            gcs_secret_access_key: config.gcs_secret_access_key,
+            azure_storage_account_name: config.azure_storage_account_name,
+            azure_storage_account_key: config.azure_storage_account_key,
+            azure_storage_connection_string: config.azure_storage_connection_string,
+        },
+        remote: config.remote.map(|r| RustRemoteConfig {
+            url: r.url,
+            user: r.user,
+            password: r.password,
+            database: r.database,
+            cluster_name: r.cluster_name,
+        }),
+    }
+}
 
 fn parse_format(name: &str) -> Result<RustExportFormat, ClickGraphError> {
     match name.to_lowercase().as_str() {
