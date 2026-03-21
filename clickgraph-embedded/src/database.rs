@@ -123,6 +123,23 @@ impl Database {
         Self::from_schema(Arc::new(graph_schema), config)
     }
 
+    /// Open an in-memory database using a YAML schema file.
+    ///
+    /// Equivalent to `new()` with a temporary session directory that is
+    /// automatically cleaned up when the `Database` is dropped. Mirrors
+    /// Kuzu's `Database::new(":memory:", config)` pattern.
+    pub fn in_memory(
+        schema_path: impl AsRef<Path>,
+        config: SystemConfig,
+    ) -> Result<Self, EmbeddedError> {
+        // Force session_dir to None so from_schema uses an auto-cleaned temp dir
+        let config = SystemConfig {
+            session_dir: None,
+            ..config
+        };
+        Self::new(schema_path, config)
+    }
+
     /// Open a database with an already-built `GraphSchema`.
     ///
     /// Useful when you have already loaded and validated a schema.

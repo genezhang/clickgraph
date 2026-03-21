@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use clickgraph::executor::QueryExecutor;
 use clickgraph::graph_catalog::graph_schema::GraphSchema;
@@ -40,6 +41,8 @@ pub struct Connection<'db> {
     remote_executor: Option<Arc<dyn QueryExecutor>>,
     schema: Arc<GraphSchema>,
     db: &'db Database,
+    /// Query timeout in milliseconds. 0 = no timeout (default).
+    query_timeout_ms: u64,
 }
 
 impl<'db> Connection<'db> {
@@ -50,7 +53,21 @@ impl<'db> Connection<'db> {
             remote_executor: db.remote_executor.as_ref().map(Arc::clone),
             schema: Arc::clone(&db.schema),
             db,
+            query_timeout_ms: 0,
         })
+    }
+
+    /// Set the query timeout in milliseconds. 0 = no timeout (default).
+    ///
+    /// Mirrors `kuzu::Connection::set_query_timeout()`. Applies to
+    /// `query()`, `query_remote()`, `query_graph()`, and `query_remote_graph()`.
+    pub fn set_query_timeout(&mut self, timeout_ms: u64) {
+        self.query_timeout_ms = timeout_ms;
+    }
+
+    /// Get the current query timeout in milliseconds. 0 = no timeout.
+    pub fn get_query_timeout(&self) -> u64 {
+        self.query_timeout_ms
     }
 
     /// Execute a Cypher query and return an iterator over the result rows.
@@ -69,7 +86,9 @@ impl<'db> Connection<'db> {
     /// }
     /// ```
     pub fn query(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
-        self.db.runtime.block_on(self.query_async(cypher))
+        self.db
+            .runtime
+            .block_on(self.with_timeout(self.query_async(cypher)))
     }
 
     /// Execute a Cypher query and return the generated SQL without executing it.
@@ -149,9 +168,10 @@ impl<'db> Connection<'db> {
     /// Requires `RemoteConfig` to have been provided when opening the database.
     /// Returns an error if no remote executor is configured.
     pub fn query_remote(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
+        let remote = self.get_remote_executor()?;
         self.db
             .runtime
-            .block_on(self.query_with_executor_async(cypher, self.get_remote_executor()?))
+            .block_on(self.with_timeout(self.query_with_executor_async(cypher, remote)))
     }
 
     /// Execute a Cypher query locally and return a structured graph result.
@@ -161,7 +181,7 @@ impl<'db> Connection<'db> {
     pub fn query_graph(&self, cypher: &str) -> Result<GraphResult, EmbeddedError> {
         self.db
             .runtime
-            .block_on(self.query_graph_async(cypher, &self.executor))
+            .block_on(self.with_timeout(self.query_graph_async(cypher, &self.executor)))
     }
 
     /// Execute a Cypher query on the remote cluster and return a structured graph result.
@@ -172,7 +192,7 @@ impl<'db> Connection<'db> {
         let remote = self.get_remote_executor()?;
         self.db
             .runtime
-            .block_on(self.query_graph_async(cypher, remote))
+            .block_on(self.with_timeout(self.query_graph_async(cypher, remote)))
     }
 
     /// Store a `GraphResult` (from `query_graph` or `query_remote_graph`) into
@@ -942,6 +962,25 @@ impl<'db> Connection<'db> {
         Ok(QueryResult::new(columns, rows))
     }
 
+    /// Wrap a future with the configured query timeout (if any).
+    async fn with_timeout<T>(
+        &self,
+        fut: impl std::future::Future<Output = Result<T, EmbeddedError>>,
+    ) -> Result<T, EmbeddedError> {
+        if self.query_timeout_ms > 0 {
+            tokio::time::timeout(std::time::Duration::from_millis(self.query_timeout_ms), fut)
+                .await
+                .map_err(|_| {
+                    EmbeddedError::Query(format!(
+                        "Query timed out after {}ms",
+                        self.query_timeout_ms
+                    ))
+                })?
+        } else {
+            fut.await
+        }
+    }
+
     fn get_remote_executor(&self) -> Result<&Arc<dyn QueryExecutor>, EmbeddedError> {
         self.remote_executor.as_ref().ok_or_else(|| {
             EmbeddedError::Query(
@@ -966,12 +1005,16 @@ impl<'db> Connection<'db> {
         let cypher = cypher.to_string();
         with_query_context(QueryContext::new(None), async move {
             set_current_schema(Arc::clone(&schema));
+            let compile_start = Instant::now();
             let final_sql = cypher_to_sql(&cypher, &schema, DEFAULT_MAX_CTE_DEPTH)
                 .map_err(EmbeddedError::Query)?;
+            let compile_time_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
+            let exec_start = Instant::now();
             let json_rows = executor
                 .execute_json(&final_sql, None)
                 .await
                 .map_err(EmbeddedError::from)?;
+            let execution_time_ms = exec_start.elapsed().as_secs_f64() * 1000.0;
             let mut column_names: Vec<String> = Vec::new();
             let mut rows: Vec<Vec<Value>> = Vec::new();
             for json_row in json_rows {
@@ -991,7 +1034,12 @@ impl<'db> Connection<'db> {
                     rows.push(row_vals);
                 }
             }
-            Ok(QueryResult::new(column_names, rows))
+            Ok(QueryResult::with_timing(
+                column_names,
+                rows,
+                compile_time_ms,
+                execution_time_ms,
+            ))
         })
         .await
     }

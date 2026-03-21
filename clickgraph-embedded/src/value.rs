@@ -41,9 +41,30 @@ impl Value {
         }
     }
 
+    /// Return the value as a `bool`, or `None` if not a boolean.
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Value::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
     /// Return true if this value is `Null`.
     pub fn is_null(&self) -> bool {
         matches!(self, Value::Null)
+    }
+
+    /// Return the type name of this value as a static string.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Value::Null => "Null",
+            Value::Bool(_) => "Bool",
+            Value::Int64(_) => "Int64",
+            Value::Float64(_) => "Float64",
+            Value::String(_) => "String",
+            Value::List(_) => "List",
+            Value::Map(_) => "Map",
+        }
     }
 
     /// Render this value as a SQL literal for use in INSERT statements.
@@ -108,6 +129,9 @@ mod tests {
     fn test_bool_conversion() {
         assert_eq!(Value::from(json!(true)), Value::Bool(true));
         assert_eq!(Value::from(json!(false)), Value::Bool(false));
+        assert_eq!(Value::Bool(true).as_bool(), Some(true));
+        assert_eq!(Value::Bool(false).as_bool(), Some(false));
+        assert_eq!(Value::Int64(1).as_bool(), None);
     }
 
     #[test]
