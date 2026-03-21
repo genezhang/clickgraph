@@ -1,0 +1,55 @@
+# Example schema for ClickGraph embedded mode tutorials.
+#
+# Nodes with `source:` read from CSV files (read-only).
+# Nodes without `source:` become writable ReplacingMergeTree tables
+# (used by store_subgraph and write API examples).
+
+name: embedded_tutorial
+
+graph_schema:
+  nodes:
+    - label: User
+      database: default
+      table: users
+      node_id: user_id
+      source: "table_function:file('__DATA_DIR__/users.csv', 'CSVWithNames')"
+      property_mappings:
+        user_id: user_id
+        name: full_name
+        age: age
+        country: country
+        email: email_address
+        registration_date: registration_date
+
+    - label: Topic
+      database: default
+      table: topics
+      node_id: topic_id
+      source: "table_function:file('__DATA_DIR__/topics.csv', 'CSVWithNames')"
+      property_mappings:
+        topic_id: topic_id
+        name: name
+        category: category
+
+  edges:
+    - type: FOLLOWS
+      database: default
+      table: follows
+      from_node: User
+      to_node: User
+      from_id: follower_id
+      to_id: followed_id
+      source: "table_function:file('__DATA_DIR__/follows.csv', 'CSVWithNames')"
+      property_mappings:
+        follow_date: follow_date
+
+    - type: INTERESTED_IN
+      database: default
+      table: interested_in
+      from_node: User
+      to_node: Topic
+      from_id: user_id
+      to_id: topic_id
+      source: "table_function:file('__DATA_DIR__/interested_in.csv', 'CSVWithNames')"
+      property_mappings:
+        since: since

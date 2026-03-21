@@ -1,0 +1,29 @@
+# Writable schema — no `source:` fields.
+#
+# ClickGraph auto-creates ReplacingMergeTree tables on startup.
+# Used by store_subgraph() and write API examples.
+
+name: writable_tutorial
+
+graph_schema:
+  nodes:
+    - label: User
+      database: default
+      table: users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: full_name
+        age: age
+        country: country
+
+  edges:
+    - type: FOLLOWS
+      database: default
+      table: follows
+      from_node: User
+      to_node: User
+      from_id: follower_id
+      to_id: followed_id
+      property_mappings:
+        follow_date: follow_date
