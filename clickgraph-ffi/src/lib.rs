@@ -664,6 +664,33 @@ impl Connection {
             .map_err(ClickGraphError::from)
     }
 
+    /// Import nodes from a CSV file (first row must be a header).
+    pub fn import_csv_file(&self, label: String, file_path: String) -> Result<(), ClickGraphError> {
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        conn.import_csv_file(&label, &file_path)
+            .map_err(ClickGraphError::from)
+    }
+
+    /// Import nodes from a Parquet file.
+    pub fn import_parquet_file(
+        &self,
+        label: String,
+        file_path: String,
+    ) -> Result<(), ClickGraphError> {
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        conn.import_parquet_file(&label, &file_path)
+            .map_err(ClickGraphError::from)
+    }
+
+    /// Import nodes from a file, auto-detecting format from the extension.
+    ///
+    /// Supported: `.parquet`, `.csv`, `.tsv`, `.json`, `.ndjson`, `.jsonl`.
+    pub fn import_file(&self, label: String, file_path: String) -> Result<(), ClickGraphError> {
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        conn.import_file(&label, &file_path)
+            .map_err(ClickGraphError::from)
+    }
+
     /// Execute a Cypher query against the remote ClickHouse cluster.
     ///
     /// Requires `RemoteConfig` to have been provided in `SystemConfig`.

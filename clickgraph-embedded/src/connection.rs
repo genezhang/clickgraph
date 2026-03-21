@@ -631,6 +631,41 @@ impl<'db> Connection<'db> {
 
     /// Import nodes from a JSON file (JSONEachRow format).
     pub fn import_json_file(&self, label: &str, file_path: &str) -> Result<(), EmbeddedError> {
+        self.import_file_with_format(label, file_path, "JSONEachRow")
+    }
+
+    /// Import nodes from a CSV file (CSVWithNames format — first row is header).
+    pub fn import_csv_file(&self, label: &str, file_path: &str) -> Result<(), EmbeddedError> {
+        self.import_file_with_format(label, file_path, "CSVWithNames")
+    }
+
+    /// Import nodes from a Parquet file.
+    pub fn import_parquet_file(&self, label: &str, file_path: &str) -> Result<(), EmbeddedError> {
+        self.import_file_with_format(label, file_path, "Parquet")
+    }
+
+    /// Import nodes from a file, auto-detecting the format from the extension.
+    ///
+    /// Supported extensions: `.parquet`/`.pq`, `.csv`, `.tsv`/`.tab`,
+    /// `.json`/`.ndjson`/`.jsonl`.
+    pub fn import_file(&self, label: &str, file_path: &str) -> Result<(), EmbeddedError> {
+        let format = write_helpers::import_format_from_extension(file_path).ok_or_else(|| {
+            EmbeddedError::Validation(format!(
+                "Cannot determine import format from '{}'. \
+                 Use import_csv_file(), import_parquet_file(), or import_json_file() instead.",
+                file_path
+            ))
+        })?;
+        self.import_file_with_format(label, file_path, format)
+    }
+
+    /// Internal: import nodes from a file with an explicit ClickHouse format name.
+    fn import_file_with_format(
+        &self,
+        label: &str,
+        file_path: &str,
+        format: &str,
+    ) -> Result<(), EmbeddedError> {
         if !std::path::Path::new(file_path).exists() {
             return Err(EmbeddedError::Io(format!("File not found: {}", file_path)));
         }
@@ -645,6 +680,7 @@ impl<'db> Connection<'db> {
             &node_schema.database,
             &node_schema.table_name,
             file_path,
+            format,
             &property_mappings,
             &id_col_strs,
         );
@@ -1544,6 +1580,81 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("source-backed"));
+    }
+
+    // --- import_csv_file / import_parquet_file / import_file tests ---
+
+    #[test]
+    fn test_import_csv_file_generates_sql() {
+        let (db, captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let tmp = tempfile::Builder::new().suffix(".csv").tempfile().unwrap();
+        conn.import_csv_file("Person", tmp.path().to_str().unwrap())
+            .unwrap();
+        let sqls = captured.lock().unwrap();
+        assert!(
+            sqls[0].contains("INSERT INTO") && sqls[0].contains("CSVWithNames"),
+            "SQL: {}",
+            sqls[0]
+        );
+    }
+
+    #[test]
+    fn test_import_parquet_file_generates_sql() {
+        let (db, captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let tmp = tempfile::Builder::new()
+            .suffix(".parquet")
+            .tempfile()
+            .unwrap();
+        conn.import_parquet_file("Person", tmp.path().to_str().unwrap())
+            .unwrap();
+        let sqls = captured.lock().unwrap();
+        assert!(
+            sqls[0].contains("INSERT INTO") && sqls[0].contains("Parquet"),
+            "SQL: {}",
+            sqls[0]
+        );
+    }
+
+    #[test]
+    fn test_import_file_auto_detect_csv() {
+        let (db, captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let tmp = tempfile::Builder::new().suffix(".csv").tempfile().unwrap();
+        conn.import_file("Person", tmp.path().to_str().unwrap())
+            .unwrap();
+        let sqls = captured.lock().unwrap();
+        assert!(sqls[0].contains("CSVWithNames"), "SQL: {}", sqls[0]);
+    }
+
+    #[test]
+    fn test_import_file_auto_detect_parquet() {
+        let (db, captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let tmp = tempfile::Builder::new()
+            .suffix(".parquet")
+            .tempfile()
+            .unwrap();
+        conn.import_file("Person", tmp.path().to_str().unwrap())
+            .unwrap();
+        let sqls = captured.lock().unwrap();
+        assert!(sqls[0].contains("Parquet"), "SQL: {}", sqls[0]);
+    }
+
+    #[test]
+    fn test_import_file_unknown_extension() {
+        let db = make_stub_db_with_schema(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let tmp = tempfile::Builder::new().suffix(".xyz").tempfile().unwrap();
+        let err = conn
+            .import_file("Person", tmp.path().to_str().unwrap())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Cannot determine import format"),
+            "Error: {}",
+            err
+        );
     }
 
     // --- remote executor tests ---
