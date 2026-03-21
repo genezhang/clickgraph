@@ -71,6 +71,48 @@ err = conn.Export("MATCH (u:User) RETURN u.name", "users.csv", &clickgraph.Expor
     Format:      "csv",
     Compression: "gzip",
 })
+
+// Structured graph result
+graph, err := conn.QueryGraph("MATCH (u:User)-[r:FOLLOWS]->(f:User) RETURN u, r, f LIMIT 100")
+defer graph.Close()
+for _, node := range graph.Nodes() {
+    fmt.Printf("Node %s: %v\n", node.ID, node.Properties)
+}
+
+// Hybrid remote query + local storage (requires RemoteConfig)
+stats, err := conn.StoreSubgraph(graph)
+fmt.Printf("Stored %d nodes, %d edges\n", stats.NodesStored, stats.EdgesStored)
+```
+
+### Hybrid Remote Query + Local Storage
+
+Query a remote ClickHouse cluster and store results locally for fast re-querying:
+
+```go
+db, err := clickgraph.OpenWithConfig("schema.yaml", clickgraph.Config{
+    SessionDir: "/tmp/local-graphrag",
+    Remote: &clickgraph.RemoteConfig{
+        URL:      "http://ch-cluster:8123",
+        User:     "analyst",
+        Password: "secret",
+        Database: "analytics",
+    },
+})
+defer db.Close()
+
+conn, _ := db.Connect()
+defer conn.Close()
+
+// Query remote cluster → structured graph result
+graph, _ := conn.QueryRemoteGraph("MATCH (u:User)-[r:FOLLOWS]->(f:User) RETURN u, r, f LIMIT 10000")
+defer graph.Close()
+
+// Store subgraph locally
+stats, _ := conn.StoreSubgraph(graph)
+// stats.NodesStored, stats.EdgesStored
+
+// Query local subgraph
+result, _ := conn.Query("MATCH (u:User)-[:FOLLOWS*1..3]->(f:User) RETURN u.name, f.name")
 ```
 
 ### Result

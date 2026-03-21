@@ -19,9 +19,10 @@ clickgraph-embedded (Rust API)
 
 ```
 src/
-└── lib.rs  (366 lines)  ← Entire FFI surface: Database, Connection,
-                            QueryResult, Row, Value, ExportOptions,
-                            SystemConfig, ClickGraphError
+└── lib.rs  (680+ lines) ← Entire FFI surface: Database, Connection,
+                            QueryResult, GraphResult, Row, Value,
+                            GraphNode, GraphEdge, StoreStats, RemoteConfig,
+                            ExportOptions, SystemConfig, ClickGraphError
 Cargo.toml               ← UniFFI dependency + cdylib crate type
 ```
 
@@ -41,11 +42,19 @@ The crate uses `#[uniffi::export]` proc macros on impl blocks. UniFFI generates:
 Export format names (`parquet`, `csv`, `ndjson`, etc.) are parsed in `parse_format()`
 within this crate, not in the language wrappers. This centralizes format validation.
 
+### Graph Result Types
+`GraphResult` is a UniFFI-exported object wrapping the embedded `GraphResult`.
+It exposes `nodes() → Vec<GraphNode>`, `edges() → Vec<GraphEdge>`,
+`node_count()`, `edge_count()`. `GraphNode` and `GraphEdge` are UniFFI records.
+`StoreStats` is a record with `nodes_stored` and `edges_stored` counts.
+`RemoteConfig` is a record for configuring remote ClickHouse connections.
+
 ### Error Mapping
 `ClickGraphError` is a UniFFI-exported enum with variants:
 - `DatabaseError` — schema loading, chdb session issues
 - `QueryError` — Cypher parsing, SQL generation failures
 - `ExportError` — file output failures
+- `ValidationError` — property/schema validation errors
 
 All map from `EmbeddedError` via `From` impl.
 

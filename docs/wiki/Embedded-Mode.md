@@ -18,6 +18,7 @@ This is similar to how [DuckDB](https://duckdb.org/) and [Kuzu](https://kuzudb.c
 | Embed graph queries in a Go application | **Embedded mode (Go library)** |
 | Edge / serverless deployment | **Embedded mode** |
 | AI agent building local knowledge graph (GraphRAG) | **Embedded mode (write API)** |
+| Query remote CH cluster + store results locally | **Embedded mode (hybrid)** |
 | Development & prototyping without a database | **Embedded mode** |
 
 ---
@@ -446,6 +447,14 @@ conn.export("MATCH (u:User) RETURN u.name", "users.parquet", ExportOptions {
 // Debug: inspect the export SQL without executing
 let sql = conn.export_to_sql("MATCH (u:User) RETURN u.name", "users.parquet", ExportOptions::default())?;
 // → INSERT INTO FUNCTION file('users.parquet', 'Parquet') SELECT ...
+
+// Structured graph result (nodes + edges)
+let graph = conn.query_graph("MATCH (u:User)-[r:FOLLOWS]->(f:User) RETURN u, r, f LIMIT 100")?;
+println!("{} nodes, {} edges", graph.node_count(), graph.edge_count());
+
+// Remote query (requires RemoteConfig in SystemConfig)
+let graph = conn.query_remote_graph("MATCH (u:User) RETURN u LIMIT 1000")?;
+let stats = conn.store_subgraph(&graph)?;
 ```
 
 ### `QueryResult` and `Row`
@@ -501,6 +510,15 @@ let config = SystemConfig {
 
     // Storage credentials (see above)
     credentials: StorageCredentials::default(),
+
+    // Optional remote ClickHouse connection (hybrid mode):
+    remote: Some(RemoteConfig {
+        url: "http://ch-cluster:8123".to_string(),
+        user: "analyst".to_string(),
+        password: "secret".to_string(),
+        database: Some("analytics".to_string()),
+        cluster_name: None,
+    }),
 
     // Reserved for future use:
     data_dir:    None,   // base dir for relative source: paths (coming soon)
@@ -751,6 +769,103 @@ let db = Database::new("schema.yaml", SystemConfig {
 | Performance at scale | ✅ Full ClickHouse cluster | ✅ Single-node chdb |
 | Schema admin endpoints | ✅ | ⚠️ Unavailable (no ClickHouse) |
 | Cargo feature flag | (default) | `--features embedded` |
+
+---
+
+## Hybrid Remote Query + Local Storage
+
+Execute Cypher queries against a remote ClickHouse cluster from embedded mode, then store results locally in chdb for fast re-querying. No separate ClickGraph server needed — embedded mode handles Cypher→SQL translation and the remote executor is cleanly separated from server code.
+
+### Setup
+
+Provide a `RemoteConfig` when opening the database:
+
+```rust
+use clickgraph_embedded::{Database, SystemConfig, RemoteConfig};
+
+let db = Database::new("schema.yaml", SystemConfig {
+    session_dir: Some("/tmp/local-graphrag".into()),
+    remote: Some(RemoteConfig {
+        url: "http://ch-cluster:8123".to_string(),
+        user: "analyst".to_string(),
+        password: "secret".to_string(),
+        database: Some("analytics".to_string()),
+        cluster_name: None,
+    }),
+    ..Default::default()
+})?;
+```
+
+### Workflow
+
+```rust
+let conn = Connection::new(&db)?;
+
+// 1. Query remote cluster → structured graph result
+let graph = conn.query_remote_graph(
+    "MATCH (u:User)-[r:FOLLOWS]->(f:User) WHERE u.country = 'US' RETURN u, r, f LIMIT 10000"
+)?;
+// graph.nodes(): [GraphNode { id: "User:42", labels: ["User"], properties: {...} }, ...]
+// graph.edges(): [GraphEdge { id: "FOLLOWS:42:99", type_name: "FOLLOWS", ... }, ...]
+
+// 2. Store subgraph locally in chdb
+let stats = conn.store_subgraph(&graph)?;
+// stats.nodes_stored, stats.edges_stored
+
+// 3. Query local subgraph for GraphRAG context
+let result = conn.query("MATCH (u:User)-[:FOLLOWS*1..3]->(f:User) RETURN u.name, f.name")?;
+```
+
+### Available Methods
+
+| Method | Description |
+|--------|-------------|
+| `query_remote(cypher)` | Execute on remote cluster, return tabular `QueryResult` |
+| `query_remote_graph(cypher)` | Execute on remote cluster, return structured `GraphResult` |
+| `query_graph(cypher)` | Execute locally, return structured `GraphResult` |
+| `store_subgraph(graph)` | Decompose `GraphResult` into nodes/edges, batch-INSERT locally |
+
+### Python Example
+
+```python
+db = clickgraph.Database("schema.yaml",
+    session_dir="/tmp/local-graphrag",
+    remote_url="http://ch-cluster:8123",
+    remote_user="analyst",
+    remote_password="secret",
+    remote_database="analytics")
+conn = db.connect()
+
+graph = conn.query_remote_graph(
+    "MATCH (u:User)-[r:FOLLOWS]->(f:User) RETURN u, r, f LIMIT 10000")
+stats = conn.store_subgraph(graph)
+print(f"Stored {stats.nodes_stored} nodes, {stats.edges_stored} edges")
+
+result = conn.query("MATCH (u:User)-[:FOLLOWS*1..3]->(f:User) RETURN u.name, f.name")
+```
+
+### Go Example
+
+```go
+db, _ := clickgraph.OpenWithConfig("schema.yaml", clickgraph.Config{
+    SessionDir: "/tmp/local-graphrag",
+    Remote: &clickgraph.RemoteConfig{
+        URL: "http://ch-cluster:8123", User: "analyst", Password: "secret",
+        Database: "analytics",
+    },
+})
+defer db.Close()
+
+conn, _ := db.Connect()
+defer conn.Close()
+
+graph, _ := conn.QueryRemoteGraph(
+    "MATCH (u:User)-[r:FOLLOWS]->(f:User) RETURN u, r, f LIMIT 10000")
+defer graph.Close()
+
+stats, _ := conn.StoreSubgraph(graph)
+fmt.Printf("Stored %d nodes, %d edges\n", stats.NodesStored, stats.EdgesStored)
+```
 
 ---
 

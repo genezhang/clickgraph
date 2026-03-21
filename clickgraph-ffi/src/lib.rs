@@ -9,10 +9,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use clickgraph_embedded::database::{
-    Database as RustDatabase, StorageCredentials, SystemConfig as RustSystemConfig,
+    Database as RustDatabase, RemoteConfig as RustRemoteConfig, StorageCredentials,
+    SystemConfig as RustSystemConfig,
 };
 use clickgraph_embedded::export::{
     ExportFormat as RustExportFormat, ExportOptions as RustExportOptions,
+};
+use clickgraph_embedded::graph_result::{
+    GraphResult as RustGraphResult, StoreStats as RustStoreStats,
 };
 use clickgraph_embedded::value::Value as RustValue;
 
@@ -131,6 +135,103 @@ fn to_rust_properties(props: HashMap<String, Value>) -> HashMap<String, RustValu
 }
 
 // ---------------------------------------------------------------------------
+// RemoteConfig — connection details for a remote ClickHouse cluster
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct RemoteConfig {
+    pub url: String,
+    pub user: String,
+    pub password: String,
+    pub database: Option<String>,
+    pub cluster_name: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// GraphNode / GraphEdge / GraphResult — structured graph output
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct GraphNode {
+    pub id: String,
+    pub labels: Vec<String>,
+    pub properties: HashMap<String, Value>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct GraphEdge {
+    pub id: String,
+    pub type_name: String,
+    pub from_id: String,
+    pub to_id: String,
+    pub properties: HashMap<String, Value>,
+}
+
+#[derive(uniffi::Object)]
+pub struct GraphResult {
+    inner: RustGraphResult,
+}
+
+#[uniffi::export]
+impl GraphResult {
+    /// Return all nodes in the graph result.
+    pub fn nodes(&self) -> Vec<GraphNode> {
+        self.inner
+            .nodes()
+            .iter()
+            .map(|n| GraphNode {
+                id: n.id.clone(),
+                labels: n.labels.clone(),
+                properties: n
+                    .properties
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Value::from(v.clone())))
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// Return all edges in the graph result.
+    pub fn edges(&self) -> Vec<GraphEdge> {
+        self.inner
+            .edges()
+            .iter()
+            .map(|e| GraphEdge {
+                id: e.id.clone(),
+                type_name: e.type_name.clone(),
+                from_id: e.from_id.clone(),
+                to_id: e.to_id.clone(),
+                properties: e
+                    .properties
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Value::from(v.clone())))
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// Return the number of nodes.
+    pub fn node_count(&self) -> u64 {
+        self.inner.node_count() as u64
+    }
+
+    /// Return the number of edges.
+    pub fn edge_count(&self) -> u64 {
+        self.inner.edge_count() as u64
+    }
+}
+
+// ---------------------------------------------------------------------------
+// StoreStats — result of store_subgraph()
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct StoreStats {
+    pub nodes_stored: u64,
+    pub edges_stored: u64,
+}
+
+// ---------------------------------------------------------------------------
 // EdgeInput — FFI-friendly record for batch edge creation
 // ---------------------------------------------------------------------------
 
@@ -230,6 +331,8 @@ pub struct SystemConfig {
     pub azure_storage_account_name: Option<String>,
     pub azure_storage_account_key: Option<String>,
     pub azure_storage_connection_string: Option<String>,
+    /// Remote ClickHouse connection for hybrid query + local storage.
+    pub remote: Option<RemoteConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +391,13 @@ impl Database {
                 azure_storage_account_key: config.azure_storage_account_key,
                 azure_storage_connection_string: config.azure_storage_connection_string,
             },
+            remote: config.remote.map(|r| RustRemoteConfig {
+                url: r.url,
+                user: r.user,
+                password: r.password,
+                database: r.database,
+                cluster_name: r.cluster_name,
+            }),
         };
         let db = RustDatabase::new(&schema_path, rust_config)
             .map_err(|e| ClickGraphError::DatabaseError { msg: e.to_string() })?;
@@ -514,6 +624,55 @@ impl Connection {
         let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
         conn.import_json_file(&label, &file_path)
             .map_err(ClickGraphError::from)
+    }
+
+    /// Execute a Cypher query against the remote ClickHouse cluster.
+    ///
+    /// Requires `RemoteConfig` to have been provided in `SystemConfig`.
+    pub fn query_remote(&self, cypher: String) -> Result<Arc<QueryResult>, ClickGraphError> {
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        let result = conn.query_remote(&cypher).map_err(ClickGraphError::from)?;
+
+        let columns = result.get_column_names().to_vec();
+        let rows: Vec<Vec<RustValue>> = result.map(|row| row.values().to_vec()).collect();
+
+        Ok(Arc::new(QueryResult {
+            columns,
+            rows,
+            position: AtomicUsize::new(0),
+        }))
+    }
+
+    /// Execute a Cypher query locally and return a structured graph result.
+    pub fn query_graph(&self, cypher: String) -> Result<Arc<GraphResult>, ClickGraphError> {
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        let result = conn.query_graph(&cypher).map_err(ClickGraphError::from)?;
+        Ok(Arc::new(GraphResult { inner: result }))
+    }
+
+    /// Execute a Cypher query on the remote cluster and return a structured graph result.
+    ///
+    /// The returned `GraphResult` can be passed to `store_subgraph()` to persist locally.
+    pub fn query_remote_graph(&self, cypher: String) -> Result<Arc<GraphResult>, ClickGraphError> {
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        let result = conn
+            .query_remote_graph(&cypher)
+            .map_err(ClickGraphError::from)?;
+        Ok(Arc::new(GraphResult { inner: result }))
+    }
+
+    /// Store a `GraphResult` into local writable tables.
+    ///
+    /// Decomposes the graph into nodes and edges, then batch-inserts each group.
+    pub fn store_subgraph(&self, graph: &GraphResult) -> Result<StoreStats, ClickGraphError> {
+        let conn = clickgraph_embedded::Connection::new(&self.db).map_err(ClickGraphError::from)?;
+        let stats = conn
+            .store_subgraph(&graph.inner)
+            .map_err(ClickGraphError::from)?;
+        Ok(StoreStats {
+            nodes_stored: stats.nodes_stored as u64,
+            edges_stored: stats.edges_stored as u64,
+        })
     }
 }
 

@@ -17,6 +17,7 @@
 ---
 ## What's New Under Development
 
+- **Hybrid remote query + local storage** — Execute Cypher queries against a remote ClickHouse cluster from embedded mode, then store results locally in chdb as a subgraph for fast re-querying. `query_remote()`, `query_remote_graph()`, `store_subgraph()` — ideal for GraphRAG context enrichment. Available in Rust, Python, and Go. See [Embedded Mode](docs/wiki/Embedded-Mode.md#hybrid-remote-query--local-storage).
 - **Embedded write API for GraphRAG** - `create_node()`, `create_edge()`, `upsert_node()` with batch variants. AI agents can extract entities from documents, store them as graph data, and query with Cypher — all in-process. See [Embedded Mode Write API](docs/wiki/Embedded-Mode.md#write-api-embedded-mode-only).
 
 ## What's New in v0.6.4-dev

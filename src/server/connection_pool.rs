@@ -48,6 +48,39 @@ impl RoleConnectionPool {
             config.discover_cluster_nodes().await;
         }
 
+        Self::from_config(config)
+    }
+
+    /// Create a new role-based connection pool with explicit connection parameters.
+    ///
+    /// Unlike `new()`, this does not read from environment variables — all
+    /// connection details are provided directly by the caller.
+    pub async fn new_with_params(
+        url: &str,
+        user: &str,
+        password: &str,
+        database: Option<&str>,
+        cluster_name: Option<&str>,
+        max_cte_depth: u32,
+    ) -> Result<Self, String> {
+        let mut config = ConnectionConfig {
+            urls: vec![url.to_string()],
+            cluster_name: cluster_name.map(|s| s.to_string()),
+            user: user.to_string(),
+            password: password.to_string(),
+            database: database.unwrap_or("default").to_string(),
+            max_cte_depth,
+        };
+
+        if config.cluster_name.is_some() {
+            config.discover_cluster_nodes().await;
+        }
+
+        Self::from_config(config)
+    }
+
+    /// Build a pool from a fully-resolved `ConnectionConfig`.
+    fn from_config(config: ConnectionConfig) -> Result<Self, String> {
         let default_clients: Vec<Client> = config
             .urls
             .iter()
@@ -358,6 +391,41 @@ mod tests {
         unsafe {
             env::remove_var("CLICKHOUSE_CLUSTER");
         }
+    }
+
+    #[tokio::test]
+    async fn test_new_with_params_single_node() {
+        let pool = RoleConnectionPool::new_with_params(
+            "http://localhost:8123",
+            "test_user",
+            "test_pass",
+            Some("my_db"),
+            None,
+            100,
+        )
+        .await
+        .unwrap();
+
+        let stats = pool.stats().await;
+        assert_eq!(stats.node_count, 1);
+        assert!(stats.cluster_name.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_new_with_params_default_database() {
+        let pool = RoleConnectionPool::new_with_params(
+            "http://localhost:8123",
+            "test_user",
+            "test_pass",
+            None, // should default to "default"
+            None,
+            100,
+        )
+        .await
+        .unwrap();
+
+        let stats = pool.stats().await;
+        assert_eq!(stats.node_count, 1);
     }
 
     #[tokio::test]

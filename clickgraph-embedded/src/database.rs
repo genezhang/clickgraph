@@ -9,11 +9,47 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use clickgraph::executor::chdb_embedded::ChdbExecutor;
 pub use clickgraph::executor::chdb_embedded::StorageCredentials;
+use clickgraph::executor::remote::RemoteClickHouseExecutor;
 use clickgraph::executor::{ExecutorError, QueryExecutor};
 use clickgraph::graph_catalog::config::GraphSchemaConfig;
 use clickgraph::graph_catalog::graph_schema::GraphSchema;
+use clickgraph::server::connection_pool::RoleConnectionPool;
 
 use super::error::EmbeddedError;
+
+/// Default maximum CTE recursion depth for remote ClickHouse queries.
+const DEFAULT_REMOTE_MAX_CTE_DEPTH: u32 = 100;
+
+/// Configuration for connecting to a remote ClickHouse cluster.
+///
+/// When provided in `SystemConfig`, enables `Connection::query_remote()` and
+/// `Connection::query_remote_graph()` to execute Cypher queries against a
+/// remote ClickHouse instance while storing results locally via chdb.
+#[derive(Clone)]
+pub struct RemoteConfig {
+    /// ClickHouse HTTP endpoint URL (e.g., `"http://ch-cluster:8123"`).
+    pub url: String,
+    /// ClickHouse username.
+    pub user: String,
+    /// ClickHouse password.
+    pub password: String,
+    /// Database name. Defaults to `"default"` if `None`.
+    pub database: Option<String>,
+    /// Cluster name for multi-node round-robin. If `None`, single-node mode.
+    pub cluster_name: Option<String>,
+}
+
+impl std::fmt::Debug for RemoteConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RemoteConfig")
+            .field("url", &self.url)
+            .field("user", &self.user)
+            .field("password", &"********")
+            .field("database", &self.database)
+            .field("cluster_name", &self.cluster_name)
+            .finish()
+    }
+}
 
 /// Configuration for an embedded database session.
 ///
@@ -43,6 +79,13 @@ pub struct SystemConfig {
     /// If all fields are `None` (the default), chdb falls back to environment
     /// variables (`AWS_ACCESS_KEY_ID`, etc.) or instance-profile credentials.
     pub credentials: StorageCredentials,
+
+    /// Optional remote ClickHouse connection for hybrid query + local storage.
+    ///
+    /// When set, `Connection::query_remote()` and `query_remote_graph()` execute
+    /// Cypher queries on the remote cluster. Results can then be stored locally
+    /// via `store_subgraph()` for fast re-querying.
+    pub remote: Option<RemoteConfig>,
 }
 
 /// An embedded ClickGraph database.
@@ -56,6 +99,8 @@ pub struct SystemConfig {
 /// ```
 pub struct Database {
     pub(crate) executor: Arc<dyn QueryExecutor>,
+    /// Optional remote ClickHouse executor for hybrid query + local storage.
+    pub(crate) remote_executor: Option<Arc<dyn QueryExecutor>>,
     pub(crate) schema: Arc<GraphSchema>,
     /// Shared Tokio runtime for blocking `Connection::query()` calls.
     /// Created once, reused by all connections -- avoids per-call overhead.
@@ -85,6 +130,9 @@ impl Database {
         schema: Arc<GraphSchema>,
         config: SystemConfig,
     ) -> Result<Self, EmbeddedError> {
+        // Build the Tokio runtime first — needed for async remote pool init
+        let runtime = build_runtime()?;
+
         // Determine chdb session directory
         let (session_dir, auto_cleanup) = match config.session_dir {
             Some(dir) => (dir, false),
@@ -123,10 +171,29 @@ impl Database {
             );
         }
 
+        // Create remote executor if remote config is provided
+        let remote_executor = if let Some(ref remote) = config.remote {
+            let pool = runtime
+                .block_on(RoleConnectionPool::new_with_params(
+                    &remote.url,
+                    &remote.user,
+                    &remote.password,
+                    remote.database.as_deref(),
+                    remote.cluster_name.as_deref(),
+                    DEFAULT_REMOTE_MAX_CTE_DEPTH,
+                ))
+                .map_err(EmbeddedError::Executor)?;
+            log::info!("Remote ClickHouse executor initialized: {}", remote.url);
+            Some(Arc::new(RemoteClickHouseExecutor::new(Arc::new(pool))) as Arc<dyn QueryExecutor>)
+        } else {
+            None
+        };
+
         Ok(Database {
             executor: Arc::new(executor),
+            remote_executor,
             schema,
-            runtime: build_runtime()?,
+            runtime,
         })
     }
 
@@ -145,6 +212,7 @@ impl Database {
     ) -> Result<Self, EmbeddedError> {
         Ok(Database {
             executor,
+            remote_executor: None,
             schema,
             runtime: build_runtime()?,
         })

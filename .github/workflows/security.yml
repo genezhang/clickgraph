@@ -24,7 +24,9 @@ jobs:
         run: cargo install cargo-audit --locked --version 0.22.0
 
       - name: Run cargo audit
-        run: cargo audit
+        # Ignore non-vulnerability warnings for transitive deps we can't control:
+        # - RUSTSEC-2025-0134: rustls-pemfile unmaintained (via chdb-rust → reqwest 0.11)
+        run: cargo audit --ignore RUSTSEC-2025-0134
 
   deny:
     name: cargo deny

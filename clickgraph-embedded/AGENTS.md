@@ -7,11 +7,15 @@
 ## Architecture
 
 ```
-Database (schema loading + chdb session)
+Database (schema loading + chdb session + optional remote executor)
   └── Connection (query execution)
-        ├── query()        → QueryResult (rows of Value)
-        ├── query_to_sql() → String (Cypher→SQL only, no chdb)
-        └── export()       → file (Parquet/CSV/JSON/NDJSON)
+        ├── query()              → QueryResult (rows of Value)
+        ├── query_to_sql()       → String (Cypher→SQL only, no chdb)
+        ├── export()             → file (Parquet/CSV/JSON/NDJSON)
+        ├── query_remote()       → QueryResult (via remote ClickHouse)
+        ├── query_graph()        → GraphResult (structured nodes + edges)
+        ├── query_remote_graph() → GraphResult (remote → structured)
+        └── store_subgraph()     → StoreStats (GraphResult → local tables)
 ```
 
 This crate is the **foundation** consumed by all language bindings:
@@ -23,8 +27,8 @@ This crate is the **foundation** consumed by all language bindings:
 ```
 src/
 ├── lib.rs           (50 lines)   ← Crate root, re-exports
-├── database.rs      (212 lines)  ← Database: schema loading, chdb session, sql_only mode
-├── connection.rs    (776 lines)  ← Connection: query execution, SQL generation pipeline
+├── database.rs      (260 lines)  ← Database: schema loading, chdb session, remote executor, sql_only mode
+├── connection.rs    (900+ lines) ← Connection: query execution, remote queries, graph results, store_subgraph
 ├── query_result.rs  (162 lines)  ← QueryResult: row iteration, column access
 ├── value.rs         (175 lines)  ← Value enum: typed values from chdb JSON results
 ├── export.rs        (297 lines)  ← Export: file output (Parquet, CSV, TSV, JSON, NDJSON)
@@ -56,6 +60,14 @@ during `Database::new()` → `load_schema_sources()`.
 `Database::sql_only()` creates a database that can translate Cypher→SQL without
 a chdb session. Used for testing and SQL preview. Calling `query()` on an
 sql_only connection will fail; use `query_to_sql()` instead.
+
+### Hybrid Remote Query + Local Storage
+When `SystemConfig.remote` is set to a `RemoteConfig`, `Database::from_schema()`
+creates a `RemoteClickHouseExecutor` backed by `RoleConnectionPool::new_with_params()`.
+This enables `query_remote()` and `query_remote_graph()` to execute Cypher against
+a remote ClickHouse cluster. Results can be stored locally via `store_subgraph()`,
+which decomposes a `GraphResult` into nodes and edges and batch-inserts them using
+the existing `create_nodes()` / `create_edges()` write API.
 
 ### load_graph_schema() Helper
 Shared by both `Database::new()` and `Database::sql_only()` to avoid duplication.

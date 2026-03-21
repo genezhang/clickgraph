@@ -329,6 +329,12 @@ ecommerce_simple.yaml            → schemas/examples/
 - Flexible server binding and port configuration
 - Protocol enabling/disabling capabilities
 
+**Embedded Mode + Language Bindings**
+- `clickgraph-embedded` crate: in-process Cypher queries via chdb (Kuzu-compatible API)
+- `clickgraph-ffi` UniFFI crate: single source of truth for Go and Python bindings
+- Hybrid remote query + local storage: `RemoteConfig` enables `query_remote()`, `query_remote_graph()`, `store_subgraph()` for querying a remote ClickHouse cluster and storing results locally
+- Write API: `create_node()`, `create_edge()`, `upsert_node()`, `store_subgraph()` with batch variants
+
 ### Development Workflow
 
 **📋 See `DEVELOPMENT_PROCESS.md` for the complete 5-phase iterative development process.**
