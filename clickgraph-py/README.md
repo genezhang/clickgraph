@@ -43,6 +43,9 @@ The API is identical to the PyO3 version:
 - `conn.query_remote_graph(cypher)` → `GraphResult` (remote → structured)
 - `conn.store_subgraph(graph)` → `StoreStats` (persist `GraphResult` locally)
 - `QueryResult` — iterable, indexable, `len()`, `has_next()`/`get_next()`, `as_dicts()`
+- `result.get_as_arrow()` → PyArrow Table (requires `pyarrow`)
+- `result.get_as_df()` → Pandas DataFrame (requires `pandas`)
+- `result.get_as_pl()` → Polars DataFrame (requires `polars`)
 - `GraphResult` — `.nodes`, `.edges`, `.node_count`, `.edge_count`
 - `StoreStats` — `.nodes_stored`, `.edges_stored`
 

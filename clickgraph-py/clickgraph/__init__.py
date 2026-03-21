@@ -224,6 +224,68 @@ class QueryResult:
             raise IndexError(f"row index {index} out of range")
         return _row_to_dict(self._rows[idx])
 
+    def get_as_arrow(self):
+        """Convert to a PyArrow Table.
+
+        Requires ``pyarrow`` to be installed.
+
+        >>> table = result.get_as_arrow()
+        >>> table.to_pandas()
+        """
+        try:
+            import pyarrow as pa
+        except ImportError:
+            raise ImportError(
+                "pyarrow is required for get_as_arrow(). "
+                "Install it with: pip install pyarrow"
+            )
+        columns = self._column_names
+        # Build column-oriented data (list of lists)
+        col_data = {col: [] for col in columns}
+        for row in self._rows:
+            row_dict = _row_to_dict(row)
+            for col in columns:
+                col_data[col].append(row_dict.get(col))
+        arrays = []
+        for col in columns:
+            values = col_data[col]
+            arrays.append(pa.array(values, from_pandas=True))
+        return pa.table(dict(zip(columns, arrays)))
+
+    def get_as_df(self):
+        """Convert to a Pandas DataFrame.
+
+        Requires ``pandas`` to be installed.
+
+        >>> df = result.get_as_df()
+        >>> df.head()
+        """
+        try:
+            import pandas as pd
+        except ImportError:
+            raise ImportError(
+                "pandas is required for get_as_df(). "
+                "Install it with: pip install pandas"
+            )
+        return pd.DataFrame(self.as_dicts(), columns=self._column_names)
+
+    def get_as_pl(self):
+        """Convert to a Polars DataFrame.
+
+        Requires ``polars`` to be installed.
+
+        >>> df = result.get_as_pl()
+        >>> df.head()
+        """
+        try:
+            import polars as pl
+        except ImportError:
+            raise ImportError(
+                "polars is required for get_as_pl(). "
+                "Install it with: pip install polars"
+            )
+        return pl.DataFrame(self.as_dicts(), orient="row")
+
     def __repr__(self) -> str:
         return f"<QueryResult columns={self._column_names!r} rows={len(self._rows)}>"
 
