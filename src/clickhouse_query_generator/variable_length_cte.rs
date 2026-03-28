@@ -935,7 +935,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             Some(Identifier::Single(_)) => {
                 // For single column, we don't know the type - assume UInt64 for now
                 // TODO: Get actual column type from schema
-                "Array(UInt64)".to_string()
+                "Array(Int64)".to_string()
             }
             Some(Identifier::Composite(cols)) => {
                 // For composite keys, build tuple type
@@ -945,7 +945,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             }
             None => {
                 // Default (from_id, to_id) - assume both are UInt64
-                "Array(Tuple(UInt64, UInt64))".to_string()
+                "Array(Tuple(Int64, Int64))".to_string()
             }
         }
     }
@@ -1197,7 +1197,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                  THEN minIf(toUInt16(hop), node_id = {target})\n            \
                  ELSE NULL END AS hop_count,\n        \
                  CAST([] AS Array(String)) AS path_relationships,\n        \
-                 CAST([] AS Array(UInt64)) AS path_nodes\n    \
+                 CAST([] AS Array(Int64)) AS path_nodes\n    \
                  FROM {bfs_cte}\n)",
                 name = self.cte_name,
                 start_id = start_id,
@@ -1212,7 +1212,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                  node_id AS end_id,\n        \
                  min(toUInt16(hop)) AS hop_count,\n        \
                  CAST([] AS Array(String)) AS path_relationships,\n        \
-                 CAST([] AS Array(UInt64)) AS path_nodes\n    \
+                 CAST([] AS Array(Int64)) AS path_nodes\n    \
                  FROM {bfs_cte}\n    \
                  WHERE node_id != {start_id}\n    \
                  GROUP BY node_id\n)",
@@ -1270,14 +1270,14 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // CTE 1: BFS — lightweight frontier with global dedup
         let bfs_sql = format!(
             "{bfs_cte} AS (\n    \
-             SELECT CAST({start_id} AS UInt64) AS node_id, toUInt16(0) AS hop\n    \
+             SELECT CAST({start_id} AS Int64) AS node_id, toUInt16(0) AS hop\n    \
              UNION ALL\n    \
              SELECT DISTINCT ew.{target_col} AS node_id, b.hop + 1 AS hop\n    \
              FROM {bfs_cte} b\n    \
              JOIN {weight_cte} ew ON ew.{source} = b.node_id\n    \
              WHERE b.hop < {max_hops}\n      \
              AND ew.{target_col} NOT IN (SELECT node_id FROM {bfs_cte})\n      \
-             AND b.node_id != CAST({target_id} AS UInt64)\n)"
+             AND b.node_id != CAST({target_id} AS Int64)\n)"
         );
 
         // CTE 2: Backward reconstruction — walk from target to source
@@ -1286,12 +1286,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // to hang (CTE inlining re-evaluates the entire recursion chain).
         let recon_sql = format!(
             "{recon_cte} AS (\n    \
-             SELECT CAST({target_id} AS UInt64) AS node_id,\n           \
+             SELECT CAST({target_id} AS Int64) AS node_id,\n           \
              bfs_target.hop AS remaining,\n           \
-             CAST([{target_id}] AS Array(UInt64)) AS path_nodes,\n           \
+             CAST([{target_id}] AS Array(Int64)) AS path_nodes,\n           \
              toFloat64(0) AS total_weight\n    \
              FROM {bfs_cte} AS bfs_target\n    \
-             WHERE bfs_target.node_id = CAST({target_id} AS UInt64)\n    \
+             WHERE bfs_target.node_id = CAST({target_id} AS Int64)\n    \
              UNION ALL\n    \
              SELECT ew.{source} AS node_id, pr.remaining - 1 AS remaining,\n           \
              arrayConcat([ew.{source}], pr.path_nodes) AS path_nodes,\n           \
@@ -1721,7 +1721,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 {end_table}.{end_id} as end_id,\n\
                 r.depth + 1 as hop_count,\n\
                 CAST([] AS Array(String)) as path_relationships,\n\
-                CAST([] AS Array(UInt64)) as path_nodes{props_clause}\n\
+                CAST([] AS Array(Int64)) as path_nodes{props_clause}\n\
             FROM {reachable_cte} r\n\
             JOIN {rel_table} {rel} ON r.node_id = {rel}.{from_col}\n\
             JOIN {end_table} {end} ON {rel}.{to_col} = {end}.{end_id}\n\

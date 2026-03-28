@@ -340,6 +340,31 @@ async fn ldbc_complex_12_official() {
                     );
                 }
             }
+
+            // Regression test for #258: inner UNION branch SELECT must not have
+            // duplicate bare column aliases. Multiple nodes sharing property names
+            // (e.g., comment.creationDate, friend.creationDate) must produce
+            // table-qualified aliases ("comment.creationDate", "friend.creationDate").
+            let mut aliases: Vec<String> = Vec::new();
+            for line in inner_select.lines() {
+                let trimmed = line.trim().trim_end_matches(',');
+                if let Some(pos) = trimmed.rfind(" AS \"") {
+                    let alias = &trimmed[pos + 5..];
+                    if let Some(alias) = alias.strip_suffix('"') {
+                        aliases.push(alias.to_string());
+                    }
+                }
+            }
+            let mut seen = std::collections::HashSet::new();
+            let dups: Vec<&String> = aliases
+                .iter()
+                .filter(|a| !seen.insert(a.as_str()))
+                .collect();
+            assert!(
+                dups.is_empty(),
+                "Duplicate column aliases in inner UNION SELECT (issue #258): {:?}",
+                dups
+            );
         }
     }
 }

@@ -1251,9 +1251,21 @@ impl SelectBuilder for LogicalPlan {
                                 table_alias: RenderTableAlias(graph_node.alias.clone()),
                                 column:
                                     crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                        col_name,
+                                        col_name.clone(),
                                     ),
                             });
+                            // Also qualify the alias to prevent duplicate bare
+                            // aliases when multiple nodes share property names
+                            // (e.g., "friend.creationDate" instead of bare
+                            // "creationDate").
+                            if let Some(ref alias) = item.col_alias {
+                                if alias.0 == col_name {
+                                    item.col_alias = Some(ColumnAlias(format!(
+                                        "{}.{}",
+                                        graph_node.alias, col_name
+                                    )));
+                                }
+                            }
                         }
                     }
                 }
