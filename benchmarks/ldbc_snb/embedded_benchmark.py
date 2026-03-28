@@ -296,8 +296,14 @@ def run_benchmark(args):
                 t_start = time.time()
                 qr = conn.query(cypher_resolved)
                 t_end = time.time()
-                result.compile_time_ms = qr.compiling_time
-                result.exec_time_ms = qr.execution_time
+                wall_ms = (t_end - t_start) * 1000
+                # Try native timing; fall back to wall clock if bindings are stale
+                try:
+                    result.compile_time_ms = qr.compiling_time
+                    result.exec_time_ms = qr.execution_time
+                except AttributeError:
+                    result.compile_time_ms = wall_ms
+                    result.exec_time_ms = 0.0
                 result.row_count = qr.num_rows
                 result.status = "PASS"
                 if args.verbose and qr.num_rows > 0:
