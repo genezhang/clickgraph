@@ -120,7 +120,8 @@ def load_data_into_tables(conn, data_dir: str) -> int:
         except Exception as e:
             print(f"  Warning: failed to load {table}: {e}")
 
-    # FK-edge tables derived from node Parquet files
+    # FK-edge tables derived from node Parquet files.
+    # Column aliases MUST match the schema's from_id/to_id expectations exactly.
     fk_edges = {
         "Person_isLocatedIn_Place": (
             "Person",
@@ -128,19 +129,19 @@ def load_data_into_tables(conn, data_dir: str) -> int:
         ),
         "Post_hasCreator_Person": (
             "Post",
-            "SELECT id AS PostId, CreatorPersonId AS PersonId FROM default.Post WHERE CreatorPersonId IS NOT NULL AND CreatorPersonId != 0",
+            "SELECT id AS PostId, CreatorPersonId AS PersonId, creationDate FROM default.Post WHERE CreatorPersonId IS NOT NULL AND CreatorPersonId != 0",
         ),
         "Comment_hasCreator_Person": (
             "Comment",
-            "SELECT id AS CommentId, CreatorPersonId AS PersonId FROM default.Comment WHERE CreatorPersonId IS NOT NULL AND CreatorPersonId != 0",
+            "SELECT id AS CommentId, CreatorPersonId AS PersonId, creationDate FROM default.Comment WHERE CreatorPersonId IS NOT NULL AND CreatorPersonId != 0",
         ),
         "Post_isLocatedIn_Place": (
             "Post",
-            "SELECT id AS PostId, LocationCountryId AS CountryId FROM default.Post WHERE LocationCountryId IS NOT NULL AND LocationCountryId != 0",
+            "SELECT id AS PostId, LocationCountryId AS PlaceId FROM default.Post WHERE LocationCountryId IS NOT NULL AND LocationCountryId != 0",
         ),
         "Comment_isLocatedIn_Place": (
             "Comment",
-            "SELECT id AS CommentId, LocationCountryId AS CountryId FROM default.Comment WHERE LocationCountryId IS NOT NULL AND LocationCountryId != 0",
+            "SELECT id AS CommentId, LocationCountryId AS PlaceId FROM default.Comment WHERE LocationCountryId IS NOT NULL AND LocationCountryId != 0",
         ),
         "Forum_hasModerator_Person": (
             "Forum",
@@ -152,11 +153,11 @@ def load_data_into_tables(conn, data_dir: str) -> int:
         ),
         "Comment_replyOf_Post": (
             "Comment",
-            "SELECT id AS CommentId, ParentPostId AS PostId FROM default.Comment WHERE ParentPostId IS NOT NULL AND ParentPostId != 0",
+            "SELECT id AS CommentId, ParentPostId AS PostId, creationDate FROM default.Comment WHERE ParentPostId IS NOT NULL AND ParentPostId != 0",
         ),
         "Comment_replyOf_Comment": (
             "Comment",
-            "SELECT id AS CommentId, ParentCommentId AS ParentCommentId FROM default.Comment WHERE ParentCommentId IS NOT NULL AND ParentCommentId != 0",
+            "SELECT id AS Comment1Id, ParentCommentId AS Comment2Id, creationDate FROM default.Comment WHERE ParentCommentId IS NOT NULL AND ParentCommentId != 0",
         ),
         "Tag_hasType_TagClass": (
             "Tag",
@@ -173,6 +174,14 @@ def load_data_into_tables(conn, data_dir: str) -> int:
         "Place_isPartOf_Place": (
             "Place",
             "SELECT id AS Place1Id, PartOfPlaceId AS Place2Id FROM default.Place WHERE PartOfPlaceId IS NOT NULL AND PartOfPlaceId != 0",
+        ),
+        "Person_studyAt_Organisation": (
+            "Person_studyAt_University",
+            "SELECT PersonId, UniversityId, classYear FROM default.Person_studyAt_University",
+        ),
+        "Person_workAt_Organisation": (
+            "Person_workAt_Company",
+            "SELECT PersonId, CompanyId, workFrom FROM default.Person_workAt_Company",
         ),
     }
 
@@ -215,12 +224,17 @@ def load_data_into_tables(conn, data_dir: str) -> int:
         "Comment_replyOf_Message": (
             "SELECT CommentId, PostId AS MessageId FROM default.Comment_replyOf_Post "
             "UNION ALL "
-            "SELECT CommentId, ParentCommentId AS MessageId FROM default.Comment_replyOf_Comment"
+            "SELECT Comment1Id AS CommentId, Comment2Id AS MessageId FROM default.Comment_replyOf_Comment"
+        ),
+        "Message_replyOf_Message": (
+            "SELECT CommentId AS MessageId, PostId AS TargetMessageId FROM default.Comment_replyOf_Post "
+            "UNION ALL "
+            "SELECT Comment1Id AS MessageId, Comment2Id AS TargetMessageId FROM default.Comment_replyOf_Comment"
         ),
         "Message_isLocatedIn_Place": (
-            "SELECT PostId AS MessageId, CountryId AS PlaceId FROM default.Post_isLocatedIn_Place "
+            "SELECT PostId AS MessageId, PlaceId FROM default.Post_isLocatedIn_Place "
             "UNION ALL "
-            "SELECT CommentId AS MessageId, CountryId AS PlaceId FROM default.Comment_isLocatedIn_Place"
+            "SELECT CommentId AS MessageId, PlaceId FROM default.Comment_isLocatedIn_Place"
         ),
     }
 
