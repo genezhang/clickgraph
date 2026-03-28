@@ -13,13 +13,14 @@ Gated: skips all tests if the clickgraph module cannot be imported
 (e.g. when libclickgraph_ffi.so is not built or not on LD_LIBRARY_PATH).
 """
 
-import json
 import os
-import re
 import tempfile
 from pathlib import Path
 
 import pytest
+
+# Import shared helpers from the benchmark runner (avoid duplication)
+from embedded_benchmark import substitute_params, load_query
 
 # ---------------------------------------------------------------------------
 # Skip entire module if clickgraph is not importable
@@ -31,19 +32,14 @@ try:
 except (ImportError, OSError):
     CLICKGRAPH_AVAILABLE = False
 
+# Module-level skip: only for clickgraph availability.
+# chdb gating is applied per-class (TestSqlOnly runs without chdb).
 pytestmark = pytest.mark.skipif(
     not CLICKGRAPH_AVAILABLE,
     reason="clickgraph module not available (build FFI library and set LD_LIBRARY_PATH)",
 )
 
-# Also skip if CLICKGRAPH_CHDB_TESTS is not set (matches Rust gating convention)
-pytestmark = [
-    pytestmark,
-    pytest.mark.skipif(
-        os.environ.get("CLICKGRAPH_CHDB_TESTS", "0") not in ("1", "true", "True"),
-        reason="chdb tests disabled (set CLICKGRAPH_CHDB_TESTS=1 to enable)",
-    ),
-]
+CHDB_ENABLED = os.environ.get("CLICKGRAPH_CHDB_TESTS", "0") in ("1", "true", "True")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -95,39 +91,19 @@ def connection():
 
 
 def _load_and_prepare(query_id: str) -> str:
-    """Load a query file, substitute parameters, return ready-to-execute Cypher."""
-    cypher_file = QUERIES_DIR / f"{query_id}.cypher"
-    params_file = QUERIES_DIR / f"{query_id}.params.json"
+    """Load a query file, substitute parameters, return ready-to-execute Cypher.
 
-    cypher = cypher_file.read_text()
-    params = json.loads(params_file.read_text()) if params_file.exists() else {}
-
-    # Remove comment blocks and line comments
-    cypher = re.sub(r"/\*.*?\*/", "", cypher, flags=re.DOTALL).strip()
-    cypher = re.sub(r"//[^\n]*\n", "\n", cypher).strip()
-
-    # Substitute parameters
-    for key, value in params.items():
-        if isinstance(value, str):
-            cypher = cypher.replace(f"${key}", f"'{value}'")
-        elif isinstance(value, list):
-            formatted_items = []
-            for item in value:
-                if isinstance(item, str):
-                    formatted_items.append(f"'{item}'")
-                else:
-                    formatted_items.append(str(item))
-            cypher = cypher.replace(f"${key}", "[" + ", ".join(formatted_items) + "]")
-        else:
-            cypher = cypher.replace(f"${key}", str(value))
-
-    return cypher
+    Uses shared helpers from embedded_benchmark.py to avoid duplication.
+    """
+    cypher, params, _source = load_query(query_id)
+    return substitute_params(cypher, params)
 
 
 # ---------------------------------------------------------------------------
 # Tests: Interactive Short queries
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(not CHDB_ENABLED, reason="chdb tests disabled (set CLICKGRAPH_CHDB_TESTS=1)")
 class TestInteractiveShort:
     """Test the 7 Interactive Short queries (simplest LDBC queries)."""
 

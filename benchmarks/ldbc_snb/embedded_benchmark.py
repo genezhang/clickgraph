@@ -13,14 +13,12 @@ Options:
     --sql-only      Translate Cypher to SQL without executing (no chdb needed)
     --filter PATTERN  Only run queries matching PATTERN (e.g. "short", "complex-1")
     --verbose       Print generated SQL and full error messages
-    --timeout SECS  Per-query timeout in seconds (default: 120)
 """
 
 import argparse
 import json
 import os
 import re
-import signal
 import sys
 import tempfile
 import time
@@ -403,12 +401,6 @@ def main():
         "--verbose",
         action="store_true",
         help="Print generated SQL and full error messages",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=int,
-        default=120,
-        help="Per-query timeout in seconds (default: 120)",
     )
     args = parser.parse_args()
     sys.exit(run_benchmark(args))

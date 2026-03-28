@@ -603,6 +603,9 @@ graph_schema:
 
     # -------------------------------------------------------------------------
     # Organisation IS_LOCATED_IN Place (FK-edge from Organisation.LocationPlaceId)
+    # NOTE: The three IS_LOCATED_IN entries below share the same table name
+    # (Organisation_isLocatedIn_Place) but differ in from_node/to_node.
+    # This is intentional — ClickGraph resolves by composite key TYPE::From::To.
     # -------------------------------------------------------------------------
     - type: IS_LOCATED_IN
       database: default
