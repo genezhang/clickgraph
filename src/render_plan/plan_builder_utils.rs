@@ -9980,6 +9980,36 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             }
                         });
                         if !has_id_col {
+                            // Skip aliases that are ARRAY JOIN scalars (from UNWIND).
+                            // After UNWIND, the alias IS the value (e.g., a PersonId), not
+                            // a table with columns. Adding `alias.id AS "pN_alias_id"` would
+                            // produce invalid SQL because `alias` is a scalar, not a table.
+                            //
+                            // Detection: the CTE SELECT already has a column whose alias
+                            // exactly matches the exported alias (e.g., `... AS "person"`).
+                            // Normal node aliases produce pN-prefixed columns (e.g.,
+                            // `p6_person_id`), never a bare alias match.
+                            // Additionally verify via upstream CTE metadata: if alias_to_id
+                            // maps the alias to itself, the scalar IS the ID value.
+                            let is_bare_scalar_column =
+                                with_cte_render.select.items.iter().any(|item| {
+                                    item.col_alias.as_ref().map(|ca| ca.0.as_str())
+                                        == Some(ea.as_str())
+                                });
+                            let is_self_id_in_upstream_cte = cte_schemas.values().any(|meta| {
+                                meta.alias_to_id.get(ea.as_str()).map(|id| id == ea) == Some(true)
+                            });
+                            let is_array_join_scalar =
+                                is_bare_scalar_column && is_self_id_in_upstream_cte;
+
+                            if is_array_join_scalar {
+                                log::info!(
+                                    "🔧 Phase D: Skipping ARRAY JOIN scalar alias '{}' — the scalar value IS the ID",
+                                    ea
+                                );
+                                continue;
+                            }
+
                             // Try to find the ID column from schema
                             if let Ok(graph_schema) =
                                 crate::server::query_context::get_current_schema()
@@ -17416,13 +17446,38 @@ fn find_pc_cte_join_column(
         }
     }
 
-    // Augment with correlation variable CTE column names
+    // Augment with correlation variable CTE column names.
+    // If the FROM ViewScan has a bare column matching the variable name (e.g.,
+    // UNWIND scalar `person` — the scalar IS the ID), prefer `from_alias."person"`
+    // over generating `from_alias.p6_person_id` which wouldn't exist.
     if let FromTableItem(Some(ref from)) = with_cte_render.from {
         if let Some(ref from_alias) = from.alias {
             let key = (var_name.to_string(), "id".to_string());
             if !col_map.contains_key(&key) {
-                let cte_col = crate::utils::cte_column_naming::cte_column_name(var_name, "id");
-                col_map.insert(key, format!("{}.{}", from_alias, cte_col));
+                // Check if the FROM ViewScan has a bare column matching var_name.
+                // This happens for UNWIND scalars where the alias IS the value.
+                let has_bare_column = if let LogicalPlan::ViewScan(ref scan) = from.source.as_ref()
+                {
+                    scan.property_mapping.values().any(|pv| {
+                        if let crate::graph_catalog::expression_parser::PropertyValue::Column(
+                            ref col,
+                        ) = pv
+                        {
+                            col == var_name
+                        } else {
+                            false
+                        }
+                    })
+                } else {
+                    false
+                };
+                if has_bare_column {
+                    // UNWIND scalar: the column name IS the alias
+                    col_map.insert(key, format!("{}.\"{}\"", from_alias, var_name));
+                } else {
+                    let cte_col = crate::utils::cte_column_naming::cte_column_name(var_name, "id");
+                    col_map.insert(key, format!("{}.{}", from_alias, cte_col));
+                }
             }
         }
     }

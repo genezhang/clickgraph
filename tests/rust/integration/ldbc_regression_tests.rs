@@ -447,19 +447,27 @@ async fn ldbc_bi_8() {
     let schema = load_ldbc_schema();
     let sql = generate_sql(
         &schema,
-        "benchmarks/ldbc_snb/queries/adapted/bi-8-workaround.cypher",
+        "benchmarks/ldbc_snb/queries/official/bi/bi-8.cypher",
     )
     .await;
     assert!(!sql.is_empty());
     assert!(sql.contains("SELECT"));
-    // Verify 2 CTEs are generated (person scores + friend scores)
+    // Verify ARRAY JOIN is present (UNWIND persons AS person)
     assert!(
-        sql.contains("with_person_score_cte"),
-        "bi-8 should generate person score CTE"
+        sql.contains("ARRAY JOIN"),
+        "bi-8 should use ARRAY JOIN for UNWIND"
     );
+    // Verify pattern comprehension pre-aggregated CTEs are generated
     assert!(
-        sql.contains("with_friend_friendScore_person_score_cte"),
-        "bi-8 should generate friend score CTE"
+        sql.contains("pc_person_score_tag_0"),
+        "bi-8 should generate PC CTE for person score"
+    );
+    // Regression: person from ARRAY JOIN is a scalar value, NOT a table.
+    // The SQL must NOT contain `person.id AS "p6_person_id"` because after
+    // UNWIND, `person` IS the PersonId value — `person.id` would be invalid.
+    assert!(
+        !sql.contains("person.id AS \"p6_person_id\""),
+        "bi-8 must not treat ARRAY JOIN scalar 'person' as a table (person.id is invalid)"
     );
 }
 
