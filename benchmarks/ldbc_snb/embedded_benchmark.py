@@ -121,8 +121,8 @@ def substitute_params(cypher: str, params: dict) -> str:
     """Remove comment blocks and substitute $paramName with actual values."""
     # Remove /* :params ... */ comment blocks
     cypher = re.sub(r"/\*.*?\*/", "", cypher, flags=re.DOTALL).strip()
-    # Remove // line comments
-    cypher = re.sub(r"//[^\n]*\n", "\n", cypher).strip()
+    # Remove // line comments (including at EOF without trailing newline)
+    cypher = re.sub(r"//[^\n]*(\n|$)", "\n", cypher).strip()
 
     for key, value in params.items():
         if isinstance(value, str):
