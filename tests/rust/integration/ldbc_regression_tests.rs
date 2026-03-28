@@ -469,6 +469,13 @@ async fn ldbc_bi_8() {
         !sql.contains("person.id AS \"p6_person_id\""),
         "bi-8 must not treat ARRAY JOIN scalar 'person' as a table (person.id is invalid)"
     );
+    // After fix: ARRAY JOIN scalar should produce proper CTE column via FROM alias.
+    // The CTE body should reference the scalar through the upstream CTE's FROM alias
+    // (e.g., person_tag.person) and name it with standard CTE column naming (p6_person_id).
+    assert!(
+        sql.contains("person_tag.person AS \"p6_person_id\""),
+        "bi-8: ARRAY JOIN scalar 'person' should be exported as person_tag.person AS p6_person_id"
+    );
 }
 
 #[tokio::test]
