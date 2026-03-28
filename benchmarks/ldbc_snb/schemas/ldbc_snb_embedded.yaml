@@ -1,0 +1,676 @@
+# LDBC SNB Interactive v1 Schema for ClickGraph Embedded Mode (chdb)
+#
+# Adapted from ldbc_snb_complete.yaml for use with chdb embedded engine.
+# All tables use `source:` fields pointing to Parquet files via table_function:file().
+#
+# The placeholder __DATA_DIR__ must be replaced with the absolute path to:
+#   benchmarks/ldbc_snb/data/sf0.003/graphs/parquet/raw/composite-merged-fk/
+#
+# The composite-merged-fk format embeds FK columns directly into node Parquet files.
+# Edge tables that exist only as FK columns in node files are expressed as
+# table_function subqueries that SELECT the relevant columns.
+#
+# The polymorphic Message node and its associated views are created using
+# UNION ALL subqueries over Post and Comment Parquet files.
+
+name: ldbc_snb
+
+graph_schema:
+  # ===========================================================================
+  # NODES
+  # ===========================================================================
+  nodes:
+    # -------------------------------------------------------------------------
+    # Person - central node type in the social network
+    # Parquet columns: creationDate, deletionDate, explicitlyDeleted, id,
+    #   firstName, lastName, gender, birthday, locationIP, browserUsed,
+    #   LocationCityId, language, email
+    # -------------------------------------------------------------------------
+    - label: Person
+      database: default
+      table: Person
+      node_id: id
+      source: "table_function:file('__DATA_DIR__/dynamic/Person/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        id: id
+        firstName: firstName
+        lastName: lastName
+        gender: gender
+        birthday: birthday
+        creationDate: creationDate
+        locationIP: locationIP
+        browserUsed: browserUsed
+        email: email
+        speaks: language
+
+    # -------------------------------------------------------------------------
+    # Post - content created by a Person in a Forum
+    # Parquet columns: creationDate, deletionDate, explicitlyDeleted, id,
+    #   imageFile, locationIP, browserUsed, language, content, length,
+    #   CreatorPersonId, ContainerForumId, LocationCountryId
+    # -------------------------------------------------------------------------
+    - label: Post
+      database: default
+      table: Post
+      node_id: id
+      source: "table_function:file('__DATA_DIR__/dynamic/Post/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        id: id
+        imageFile: imageFile
+        creationDate: creationDate
+        locationIP: locationIP
+        browserUsed: browserUsed
+        language: language
+        content: content
+        length: length
+
+    # -------------------------------------------------------------------------
+    # Comment - reply to a Post or another Comment
+    # Parquet columns: creationDate, deletionDate, explicitlyDeleted, id,
+    #   locationIP, browserUsed, content, length, CreatorPersonId,
+    #   LocationCountryId, ParentPostId, ParentCommentId
+    # -------------------------------------------------------------------------
+    - label: Comment
+      database: default
+      table: Comment
+      node_id: id
+      source: "table_function:file('__DATA_DIR__/dynamic/Comment/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        id: id
+        creationDate: creationDate
+        locationIP: locationIP
+        browserUsed: browserUsed
+        content: content
+        length: length
+
+    # -------------------------------------------------------------------------
+    # Message - unified view of Post and Comment (virtual label)
+    # Uses UNION ALL of Post and Comment Parquet files with a 'type' column.
+    # -------------------------------------------------------------------------
+    - label: Message
+      database: default
+      table: Message
+      node_id: id
+      source: "table_function:(SELECT id, creationDate, locationIP, browserUsed, content, length, imageFile, language, 'Post' AS type FROM file('__DATA_DIR__/dynamic/Post/part_0_0.snappy.parquet', 'Parquet') UNION ALL SELECT id, creationDate, locationIP, browserUsed, content, length, '' AS imageFile, '' AS language, 'Comment' AS type FROM file('__DATA_DIR__/dynamic/Comment/part_0_0.snappy.parquet', 'Parquet'))"
+      label_column: type
+      label_value: "Post|Comment"
+      property_mappings:
+        id: id
+        creationDate: creationDate
+        locationIP: locationIP
+        browserUsed: browserUsed
+        content: content
+        length: length
+        imageFile: imageFile
+        language: language
+        type: type
+
+    # -------------------------------------------------------------------------
+    # Forum - container for Posts
+    # Parquet columns: creationDate, deletionDate, explicitlyDeleted, id,
+    #   title, ModeratorPersonId
+    # -------------------------------------------------------------------------
+    - label: Forum
+      database: default
+      table: Forum
+      node_id: id
+      source: "table_function:file('__DATA_DIR__/dynamic/Forum/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        id: id
+        title: title
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Tag - categorization for content
+    # Parquet columns: id, name, url, TypeTagClassId
+    # -------------------------------------------------------------------------
+    - label: Tag
+      database: default
+      table: Tag
+      node_id: id
+      source: "table_function:file('__DATA_DIR__/static/Tag/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        id: id
+        name: name
+        url: url
+
+    # -------------------------------------------------------------------------
+    # TagClass - hierarchical classification of Tags
+    # Parquet columns: id, name, url, SubclassOfTagClassId
+    # -------------------------------------------------------------------------
+    - label: TagClass
+      database: default
+      table: TagClass
+      node_id: id
+      source: "table_function:file('__DATA_DIR__/static/TagClass/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        id: id
+        name: name
+        url: url
+
+    # -------------------------------------------------------------------------
+    # Place - geographic location (City, Country, Continent)
+    # Parquet columns: id, name, url, type, PartOfPlaceId
+    # -------------------------------------------------------------------------
+    - label: Place
+      database: default
+      table: Place
+      node_id: id
+      source: "table_function:file('__DATA_DIR__/static/Place/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        id: id
+        name: name
+        url: url
+        type: type
+
+    # Specific place types (using same table with type filter)
+    - label: City
+      database: default
+      table: Place
+      node_id: id
+      filter: "type = 'City'"
+      source: "table_function:file('__DATA_DIR__/static/Place/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        id: id
+        name: name
+        url: url
+
+    - label: Country
+      database: default
+      table: Place
+      node_id: id
+      filter: "type = 'Country'"
+      source: "table_function:file('__DATA_DIR__/static/Place/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        id: id
+        name: name
+        url: url
+
+    - label: Continent
+      database: default
+      table: Place
+      node_id: id
+      filter: "type = 'Continent'"
+      source: "table_function:file('__DATA_DIR__/static/Place/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        id: id
+        name: name
+        url: url
+
+    # -------------------------------------------------------------------------
+    # Organisation - University or Company
+    # Parquet columns: id, type, name, url, LocationPlaceId
+    # -------------------------------------------------------------------------
+    - label: Organisation
+      database: default
+      table: Organisation
+      node_id: id
+      source: "table_function:file('__DATA_DIR__/static/Organisation/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        id: id
+        name: name
+        url: url
+        type: type
+
+    - label: University
+      database: default
+      table: Organisation
+      node_id: id
+      filter: "type = 'University'"
+      source: "table_function:file('__DATA_DIR__/static/Organisation/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        id: id
+        name: name
+        url: url
+
+    - label: Company
+      database: default
+      table: Organisation
+      node_id: id
+      filter: "type = 'Company'"
+      source: "table_function:file('__DATA_DIR__/static/Organisation/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        id: id
+        name: name
+        url: url
+
+  # ===========================================================================
+  # RELATIONSHIPS
+  # ===========================================================================
+  edges:
+    # -------------------------------------------------------------------------
+    # Person KNOWS Person (friendship, bidirectional)
+    # Parquet: dynamic/Person_knows_Person — Person1Id, Person2Id, creationDate
+    # -------------------------------------------------------------------------
+    - type: KNOWS
+      database: default
+      table: Person_knows_Person
+      from_id: Person1Id
+      to_id: Person2Id
+      from_node: Person
+      to_node: Person
+      source: "table_function:file('__DATA_DIR__/dynamic/Person_knows_Person/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Person IS_LOCATED_IN Place (city where person lives)
+    # FK-edge: Person Parquet has LocationCityId column
+    # -------------------------------------------------------------------------
+    - type: IS_LOCATED_IN
+      database: default
+      table: Person_isLocatedIn_Place
+      from_id: PersonId
+      to_id: CityId
+      from_node: Person
+      to_node: City
+      source: "table_function:(SELECT id AS PersonId, LocationCityId AS CityId, creationDate FROM file('__DATA_DIR__/dynamic/Person/part_0_0.snappy.parquet', 'Parquet'))"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Person HAS_INTEREST Tag
+    # Parquet: dynamic/Person_hasInterest_Tag — PersonId, TagId
+    # -------------------------------------------------------------------------
+    - type: HAS_INTEREST
+      database: default
+      table: Person_hasInterest_Tag
+      from_id: PersonId
+      to_id: TagId
+      from_node: Person
+      to_node: Tag
+      source: "table_function:file('__DATA_DIR__/dynamic/Person_hasInterest_Tag/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Person STUDY_AT Organisation (university)
+    # Parquet: dynamic/Person_studyAt_University — PersonId, UniversityId, classYear
+    # -------------------------------------------------------------------------
+    - type: STUDY_AT
+      database: default
+      table: Person_studyAt_Organisation
+      from_id: PersonId
+      to_id: UniversityId
+      from_node: Person
+      to_node: University
+      source: "table_function:file('__DATA_DIR__/dynamic/Person_studyAt_University/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        classYear: classYear
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Person WORK_AT Organisation (company)
+    # Parquet: dynamic/Person_workAt_Company — PersonId, CompanyId, workFrom
+    # -------------------------------------------------------------------------
+    - type: WORK_AT
+      database: default
+      table: Person_workAt_Organisation
+      from_id: PersonId
+      to_id: CompanyId
+      from_node: Person
+      to_node: Company
+      source: "table_function:file('__DATA_DIR__/dynamic/Person_workAt_Company/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        workFrom: workFrom
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Person LIKES Post
+    # Parquet: dynamic/Person_likes_Post — PersonId, PostId, creationDate
+    # -------------------------------------------------------------------------
+    - type: LIKES
+      database: default
+      table: Person_likes_Post
+      from_id: PersonId
+      to_id: PostId
+      from_node: Person
+      to_node: Post
+      source: "table_function:file('__DATA_DIR__/dynamic/Person_likes_Post/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Person LIKES Comment
+    # Parquet: dynamic/Person_likes_Comment — PersonId, CommentId, creationDate
+    # -------------------------------------------------------------------------
+    - type: LIKES
+      database: default
+      table: Person_likes_Comment
+      from_id: PersonId
+      to_id: CommentId
+      from_node: Person
+      to_node: Comment
+      source: "table_function:file('__DATA_DIR__/dynamic/Person_likes_Comment/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Person LIKES Message (unified view)
+    # UNION ALL of Person_likes_Post and Person_likes_Comment
+    # -------------------------------------------------------------------------
+    - type: LIKES
+      database: default
+      table: Person_likes_Message
+      from_id: PersonId
+      to_id: MessageId
+      from_node: Person
+      to_node: Message
+      source: "table_function:(SELECT PersonId, PostId AS MessageId, creationDate FROM file('__DATA_DIR__/dynamic/Person_likes_Post/part_0_0.snappy.parquet', 'Parquet') UNION ALL SELECT PersonId, CommentId AS MessageId, creationDate FROM file('__DATA_DIR__/dynamic/Person_likes_Comment/part_0_0.snappy.parquet', 'Parquet'))"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Post HAS_CREATOR Person (FK-edge from Post.CreatorPersonId)
+    # -------------------------------------------------------------------------
+    - type: HAS_CREATOR
+      database: default
+      table: Post_hasCreator_Person
+      from_id: PostId
+      to_id: PersonId
+      from_node: Post
+      to_node: Person
+      source: "table_function:(SELECT id AS PostId, CreatorPersonId AS PersonId, creationDate FROM file('__DATA_DIR__/dynamic/Post/part_0_0.snappy.parquet', 'Parquet'))"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Comment HAS_CREATOR Person (FK-edge from Comment.CreatorPersonId)
+    # -------------------------------------------------------------------------
+    - type: HAS_CREATOR
+      database: default
+      table: Comment_hasCreator_Person
+      from_id: CommentId
+      to_id: PersonId
+      from_node: Comment
+      to_node: Person
+      source: "table_function:(SELECT id AS CommentId, CreatorPersonId AS PersonId, creationDate FROM file('__DATA_DIR__/dynamic/Comment/part_0_0.snappy.parquet', 'Parquet'))"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Message HAS_CREATOR Person (unified view)
+    # UNION ALL of Post and Comment creator FKs
+    # -------------------------------------------------------------------------
+    - type: HAS_CREATOR
+      database: default
+      table: Message_hasCreator_Person
+      from_id: MessageId
+      to_id: PersonId
+      from_node: Message
+      to_node: Person
+      source: "table_function:(SELECT id AS MessageId, CreatorPersonId AS PersonId, creationDate FROM file('__DATA_DIR__/dynamic/Post/part_0_0.snappy.parquet', 'Parquet') UNION ALL SELECT id AS MessageId, CreatorPersonId AS PersonId, creationDate FROM file('__DATA_DIR__/dynamic/Comment/part_0_0.snappy.parquet', 'Parquet'))"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Comment REPLY_OF Post (FK-edge from Comment.ParentPostId)
+    # Only rows where ParentPostId IS NOT NULL
+    # -------------------------------------------------------------------------
+    - type: REPLY_OF
+      database: default
+      table: Comment_replyOf_Post
+      from_id: CommentId
+      to_id: PostId
+      from_node: Comment
+      to_node: Post
+      source: "table_function:(SELECT id AS CommentId, ParentPostId AS PostId, creationDate FROM file('__DATA_DIR__/dynamic/Comment/part_0_0.snappy.parquet', 'Parquet') WHERE ParentPostId IS NOT NULL AND ParentPostId != 0)"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Comment REPLY_OF Comment (FK-edge from Comment.ParentCommentId)
+    # Only rows where ParentCommentId IS NOT NULL
+    # -------------------------------------------------------------------------
+    - type: REPLY_OF
+      database: default
+      table: Comment_replyOf_Comment
+      from_id: Comment1Id
+      to_id: Comment2Id
+      from_node: Comment
+      to_node: Comment
+      source: "table_function:(SELECT id AS Comment1Id, ParentCommentId AS Comment2Id, creationDate FROM file('__DATA_DIR__/dynamic/Comment/part_0_0.snappy.parquet', 'Parquet') WHERE ParentCommentId IS NOT NULL AND ParentCommentId != 0)"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Comment REPLY_OF Message (unified view for polymorphic Message queries)
+    # UNION ALL of Comment->Post and Comment->Comment reply FKs
+    # -------------------------------------------------------------------------
+    - type: REPLY_OF
+      database: default
+      table: Comment_replyOf_Message
+      from_id: CommentId
+      to_id: MessageId
+      from_node: Comment
+      to_node: Message
+      source: "table_function:(SELECT id AS CommentId, ParentPostId AS MessageId, creationDate FROM file('__DATA_DIR__/dynamic/Comment/part_0_0.snappy.parquet', 'Parquet') WHERE ParentPostId IS NOT NULL AND ParentPostId != 0 UNION ALL SELECT id AS CommentId, ParentCommentId AS MessageId, creationDate FROM file('__DATA_DIR__/dynamic/Comment/part_0_0.snappy.parquet', 'Parquet') WHERE ParentCommentId IS NOT NULL AND ParentCommentId != 0)"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Message REPLY_OF Message (unified view for VLP queries)
+    # UNION ALL: Comment->Post, Comment->Comment (all treated as Message->Message)
+    # -------------------------------------------------------------------------
+    - type: REPLY_OF
+      database: default
+      table: Message_replyOf_Message
+      from_id: MessageId
+      to_id: TargetMessageId
+      from_node: Message
+      to_node: Message
+      source: "table_function:(SELECT id AS MessageId, ParentPostId AS TargetMessageId, creationDate FROM file('__DATA_DIR__/dynamic/Comment/part_0_0.snappy.parquet', 'Parquet') WHERE ParentPostId IS NOT NULL AND ParentPostId != 0 UNION ALL SELECT id AS MessageId, ParentCommentId AS TargetMessageId, creationDate FROM file('__DATA_DIR__/dynamic/Comment/part_0_0.snappy.parquet', 'Parquet') WHERE ParentCommentId IS NOT NULL AND ParentCommentId != 0)"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Forum CONTAINER_OF Post (FK-edge from Post.ContainerForumId)
+    # -------------------------------------------------------------------------
+    - type: CONTAINER_OF
+      database: default
+      table: Forum_containerOf_Post
+      from_id: ForumId
+      to_id: PostId
+      from_node: Forum
+      to_node: Post
+      source: "table_function:(SELECT ContainerForumId AS ForumId, id AS PostId, creationDate FROM file('__DATA_DIR__/dynamic/Post/part_0_0.snappy.parquet', 'Parquet'))"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Forum HAS_MODERATOR Person (FK-edge from Forum.ModeratorPersonId)
+    # -------------------------------------------------------------------------
+    - type: HAS_MODERATOR
+      database: default
+      table: Forum_hasModerator_Person
+      from_id: ForumId
+      to_id: PersonId
+      from_node: Forum
+      to_node: Person
+      source: "table_function:(SELECT id AS ForumId, ModeratorPersonId AS PersonId, creationDate FROM file('__DATA_DIR__/dynamic/Forum/part_0_0.snappy.parquet', 'Parquet'))"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Forum HAS_MEMBER Person
+    # Parquet: dynamic/Forum_hasMember_Person — ForumId, PersonId, creationDate
+    # -------------------------------------------------------------------------
+    - type: HAS_MEMBER
+      database: default
+      table: Forum_hasMember_Person
+      from_id: ForumId
+      to_id: PersonId
+      from_node: Forum
+      to_node: Person
+      source: "table_function:file('__DATA_DIR__/dynamic/Forum_hasMember_Person/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Message HAS_TAG Tag (unified view of Post + Comment tag edges)
+    # -------------------------------------------------------------------------
+    - type: HAS_TAG
+      database: default
+      table: Message_hasTag_Tag
+      from_id: MessageId
+      to_id: TagId
+      from_node: Message
+      to_node: Tag
+      source: "table_function:(SELECT PostId AS MessageId, TagId, creationDate FROM file('__DATA_DIR__/dynamic/Post_hasTag_Tag/part_0_0.snappy.parquet', 'Parquet') UNION ALL SELECT CommentId AS MessageId, TagId, creationDate FROM file('__DATA_DIR__/dynamic/Comment_hasTag_Tag/part_0_0.snappy.parquet', 'Parquet'))"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Forum HAS_TAG Tag
+    # Parquet: dynamic/Forum_hasTag_Tag — ForumId, TagId
+    # -------------------------------------------------------------------------
+    - type: HAS_TAG
+      database: default
+      table: Forum_hasTag_Tag
+      from_id: ForumId
+      to_id: TagId
+      from_node: Forum
+      to_node: Tag
+      source: "table_function:file('__DATA_DIR__/dynamic/Forum_hasTag_Tag/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Post HAS_TAG Tag
+    # Parquet: dynamic/Post_hasTag_Tag — PostId, TagId
+    # -------------------------------------------------------------------------
+    - type: HAS_TAG
+      database: default
+      table: Post_hasTag_Tag
+      from_id: PostId
+      to_id: TagId
+      from_node: Post
+      to_node: Tag
+      source: "table_function:file('__DATA_DIR__/dynamic/Post_hasTag_Tag/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Comment HAS_TAG Tag
+    # Parquet: dynamic/Comment_hasTag_Tag — CommentId, TagId
+    # -------------------------------------------------------------------------
+    - type: HAS_TAG
+      database: default
+      table: Comment_hasTag_Tag
+      from_id: CommentId
+      to_id: TagId
+      from_node: Comment
+      to_node: Tag
+      source: "table_function:file('__DATA_DIR__/dynamic/Comment_hasTag_Tag/part_0_0.snappy.parquet', 'Parquet')"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Tag HAS_TYPE TagClass (FK-edge from Tag.TypeTagClassId)
+    # -------------------------------------------------------------------------
+    - type: HAS_TYPE
+      database: default
+      table: Tag_hasType_TagClass
+      from_id: TagId
+      to_id: TagClassId
+      from_node: Tag
+      to_node: TagClass
+      source: "table_function:(SELECT id AS TagId, TypeTagClassId AS TagClassId FROM file('__DATA_DIR__/static/Tag/part_0_0.snappy.parquet', 'Parquet'))"
+
+    # -------------------------------------------------------------------------
+    # TagClass IS_SUBCLASS_OF TagClass (FK-edge from TagClass.SubclassOfTagClassId)
+    # -------------------------------------------------------------------------
+    - type: IS_SUBCLASS_OF
+      database: default
+      table: TagClass_isSubclassOf_TagClass
+      from_id: TagClass1Id
+      to_id: TagClass2Id
+      from_node: TagClass
+      to_node: TagClass
+      source: "table_function:(SELECT id AS TagClass1Id, SubclassOfTagClassId AS TagClass2Id FROM file('__DATA_DIR__/static/TagClass/part_0_0.snappy.parquet', 'Parquet') WHERE SubclassOfTagClassId IS NOT NULL AND SubclassOfTagClassId != 0)"
+
+    # -------------------------------------------------------------------------
+    # Place IS_PART_OF Place (FK-edge from Place.PartOfPlaceId)
+    # -------------------------------------------------------------------------
+    - type: IS_PART_OF
+      database: default
+      table: Place_isPartOf_Place
+      from_id: Place1Id
+      to_id: Place2Id
+      from_node: Place
+      to_node: Place
+      source: "table_function:(SELECT id AS Place1Id, PartOfPlaceId AS Place2Id FROM file('__DATA_DIR__/static/Place/part_0_0.snappy.parquet', 'Parquet') WHERE PartOfPlaceId IS NOT NULL AND PartOfPlaceId != 0)"
+
+    # -------------------------------------------------------------------------
+    # Organisation IS_LOCATED_IN Place (FK-edge from Organisation.LocationPlaceId)
+    # -------------------------------------------------------------------------
+    - type: IS_LOCATED_IN
+      database: default
+      table: Organisation_isLocatedIn_Place
+      from_id: OrganisationId
+      to_id: PlaceId
+      from_node: Organisation
+      to_node: Place
+      source: "table_function:(SELECT id AS OrganisationId, LocationPlaceId AS PlaceId FROM file('__DATA_DIR__/static/Organisation/part_0_0.snappy.parquet', 'Parquet'))"
+
+    # Company IS_LOCATED_IN Country
+    - type: IS_LOCATED_IN
+      database: default
+      table: Organisation_isLocatedIn_Place
+      from_id: OrganisationId
+      to_id: PlaceId
+      from_node: Company
+      to_node: Country
+      source: "table_function:(SELECT id AS OrganisationId, LocationPlaceId AS PlaceId FROM file('__DATA_DIR__/static/Organisation/part_0_0.snappy.parquet', 'Parquet'))"
+
+    # University IS_LOCATED_IN City
+    - type: IS_LOCATED_IN
+      database: default
+      table: Organisation_isLocatedIn_Place
+      from_id: OrganisationId
+      to_id: PlaceId
+      from_node: University
+      to_node: City
+      source: "table_function:(SELECT id AS OrganisationId, LocationPlaceId AS PlaceId FROM file('__DATA_DIR__/static/Organisation/part_0_0.snappy.parquet', 'Parquet'))"
+
+    # -------------------------------------------------------------------------
+    # Post IS_LOCATED_IN Country (FK-edge from Post.LocationCountryId)
+    # -------------------------------------------------------------------------
+    - type: IS_LOCATED_IN
+      database: default
+      table: Post_isLocatedIn_Place
+      from_id: PostId
+      to_id: PlaceId
+      from_node: Post
+      to_node: Country
+      source: "table_function:(SELECT id AS PostId, LocationCountryId AS PlaceId, creationDate FROM file('__DATA_DIR__/dynamic/Post/part_0_0.snappy.parquet', 'Parquet'))"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Comment IS_LOCATED_IN Country (FK-edge from Comment.LocationCountryId)
+    # -------------------------------------------------------------------------
+    - type: IS_LOCATED_IN
+      database: default
+      table: Comment_isLocatedIn_Place
+      from_id: CommentId
+      to_id: PlaceId
+      from_node: Comment
+      to_node: Country
+      source: "table_function:(SELECT id AS CommentId, LocationCountryId AS PlaceId, creationDate FROM file('__DATA_DIR__/dynamic/Comment/part_0_0.snappy.parquet', 'Parquet'))"
+      property_mappings:
+        creationDate: creationDate
+
+    # -------------------------------------------------------------------------
+    # Message IS_LOCATED_IN Country (union view of Post + Comment location FKs)
+    # -------------------------------------------------------------------------
+    - type: IS_LOCATED_IN
+      database: default
+      table: Message_isLocatedIn_Place
+      from_id: MessageId
+      to_id: CountryId
+      from_node: Message
+      to_node: Country
+      source: "table_function:(SELECT id AS MessageId, LocationCountryId AS CountryId, creationDate FROM file('__DATA_DIR__/dynamic/Post/part_0_0.snappy.parquet', 'Parquet') UNION ALL SELECT id AS MessageId, LocationCountryId AS CountryId, creationDate FROM file('__DATA_DIR__/dynamic/Comment/part_0_0.snappy.parquet', 'Parquet'))"
+      property_mappings:
+        creationDate: creationDate
