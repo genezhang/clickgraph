@@ -17447,15 +17447,24 @@ fn find_pc_cte_join_column(
     }
 
     // Augment with correlation variable CTE column names.
-    // If the FROM ViewScan has a bare column matching the variable name (e.g.,
-    // UNWIND scalar `person` — the scalar IS the ID), prefer `from_alias."person"`
-    // over generating `from_alias.p6_person_id` which wouldn't exist.
+    // If the CTE has a bare column matching the variable name (UNWIND scalar —
+    // the alias IS the ID value), prefer `from_alias."person"` over generating
+    // `from_alias.p6_person_id` which wouldn't exist.
+    // Uses dual-condition guard (same as Phase D) for robustness:
+    //   1. CTE SELECT has a column with bare alias match (not pN_ prefixed)
+    //   2. FROM ViewScan has a bare property column matching var_name
     if let FromTableItem(Some(ref from)) = with_cte_render.from {
         if let Some(ref from_alias) = from.alias {
             let key = (var_name.to_string(), "id".to_string());
             if !col_map.contains_key(&key) {
-                // Check if the FROM ViewScan has a bare column matching var_name.
-                // This happens for UNWIND scalars where the alias IS the value.
+                // Condition 1: CTE SELECT has a bare alias matching var_name
+                let cte_has_bare_alias = with_cte_render
+                    .select
+                    .items
+                    .iter()
+                    .any(|item| item.col_alias.as_ref().map_or(false, |ca| ca.0 == var_name));
+
+                // Condition 2: FROM ViewScan has a bare column matching var_name
                 let has_bare_column = if let LogicalPlan::ViewScan(ref scan) = from.source.as_ref()
                 {
                     scan.property_mapping.values().any(|pv| {
@@ -17471,7 +17480,7 @@ fn find_pc_cte_join_column(
                 } else {
                     false
                 };
-                if has_bare_column {
+                if cte_has_bare_alias && has_bare_column {
                     // UNWIND scalar: the column name IS the alias
                     col_map.insert(key, format!("{}.\"{}\"", from_alias, var_name));
                 } else {
