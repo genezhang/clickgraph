@@ -1237,7 +1237,27 @@ impl SelectBuilder for LogicalPlan {
                 items
             }
             LogicalPlan::GraphNode(graph_node) => {
-                graph_node.input.extract_select_items(plan_ctx)?
+                let mut items = graph_node.input.extract_select_items(plan_ctx)?;
+                // Qualify bare Column expressions with the node's alias.
+                // ViewScan returns unqualified Column("name") which the SQL generator
+                // would resolve via heuristic (defaulting to "t"). By qualifying here
+                // with the correct Cypher alias (e.g., "friend", "tag"), the SQL
+                // generator emits correct table-qualified references.
+                if !graph_node.alias.is_empty() {
+                    for item in &mut items {
+                        if let RenderExpr::Column(Column(ref prop_val)) = item.expression {
+                            let col_name = prop_val.raw().to_string();
+                            item.expression = RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: RenderTableAlias(graph_node.alias.clone()),
+                                column:
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        col_name,
+                                    ),
+                            });
+                        }
+                    }
+                }
+                items
             }
             LogicalPlan::WithClause(wc) => {
                 log::trace!("🔍 WithClause.extract_select_items: calling extract on input");
