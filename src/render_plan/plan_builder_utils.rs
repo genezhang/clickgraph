@@ -10003,10 +10003,35 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 is_bare_scalar_column && is_self_id_in_upstream_cte;
 
                             if is_array_join_scalar {
-                                log::info!(
-                                    "🔧 Phase D: Skipping ARRAY JOIN scalar alias '{}' — the scalar value IS the ID",
-                                    ea
-                                );
+                                // The scalar value IS the ID. Instead of skipping,
+                                // emit `from_alias.scalar_col AS "pN_alias_id"` so
+                                // downstream CTEs can resolve `alias.id` through the
+                                // standard CTE column naming convention.
+                                let from_alias_str = with_cte_render
+                                    .from
+                                    .0
+                                    .as_ref()
+                                    .and_then(|f| f.alias.as_deref());
+                                if let Some(from_alias_str) = from_alias_str {
+                                    let cte_col =
+                                        crate::utils::cte_column_naming::cte_column_name(ea, "id");
+                                    log::info!(
+                                        "🔧 Phase D: ARRAY JOIN scalar '{}' — emitting {}.{} AS \"{}\"",
+                                        ea, from_alias_str, ea, cte_col
+                                    );
+                                    with_cte_render.select.items.push(SelectItem {
+                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(from_alias_str.to_string()),
+                                            column: PropertyValue::Column(ea.to_string()),
+                                        }),
+                                        col_alias: Some(ColumnAlias(cte_col)),
+                                    });
+                                } else {
+                                    log::info!(
+                                        "🔧 Phase D: ARRAY JOIN scalar '{}' — no FROM alias, skipping",
+                                        ea
+                                    );
+                                }
                                 continue;
                             }
 
@@ -11225,6 +11250,40 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         id_col_name
                     );
                     alias_to_id_column.insert(alias.clone(), id_col_name.clone());
+                    continue;
+                }
+
+                // Priority 3: ARRAY JOIN scalar detection.
+                // If the plan has an Unwind node producing this alias (e.g., UNWIND ... AS person),
+                // the alias IS the ID value (a scalar from ARRAY JOIN).
+                fn find_unwind_aliases(plan: &LogicalPlan, out: &mut Vec<String>) {
+                    match plan {
+                        LogicalPlan::Unwind(u) => {
+                            out.push(u.alias.clone());
+                            find_unwind_aliases(&u.input, out);
+                        }
+                        LogicalPlan::Filter(f) => find_unwind_aliases(&f.input, out),
+                        LogicalPlan::Projection(p) => find_unwind_aliases(&p.input, out),
+                        LogicalPlan::OrderBy(ob) => find_unwind_aliases(&ob.input, out),
+                        LogicalPlan::Limit(lim) => find_unwind_aliases(&lim.input, out),
+                        LogicalPlan::Skip(s) => find_unwind_aliases(&s.input, out),
+                        LogicalPlan::GroupBy(gb) => find_unwind_aliases(&gb.input, out),
+                        LogicalPlan::WithClause(wc) => find_unwind_aliases(&wc.input, out),
+                        _ => {}
+                    }
+                }
+                let mut unwind_aliases = Vec::new();
+                // Check all plans that contributed to this CTE
+                for ip in &inner_plans_for_id {
+                    find_unwind_aliases(ip, &mut unwind_aliases);
+                }
+                find_unwind_aliases(&current_plan, &mut unwind_aliases);
+                if unwind_aliases.contains(alias) {
+                    log::info!(
+                        "📊 WITH CTE '{}': ID for alias '{}' -> '{}' (ARRAY JOIN scalar — bare column IS the ID)",
+                        cte_name, alias, alias
+                    );
+                    alias_to_id_column.insert(alias.clone(), alias.clone());
                 }
             }
 
