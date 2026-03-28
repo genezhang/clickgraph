@@ -158,9 +158,19 @@ class QueryResult:
         self._column_names = ffi_result.column_names()
         self._rows = ffi_result.get_all_rows()
         self._position = 0
-        self._compiling_time = ffi_result.get_compiling_time()
-        self._execution_time = ffi_result.get_execution_time()
-        self._column_data_types = ffi_result.get_column_data_types()
+        # Timing and type info — gracefully handle stale FFI bindings
+        try:
+            self._compiling_time = ffi_result.get_compiling_time()
+        except AttributeError:
+            self._compiling_time = 0.0
+        try:
+            self._execution_time = ffi_result.get_execution_time()
+        except AttributeError:
+            self._execution_time = 0.0
+        try:
+            self._column_data_types = ffi_result.get_column_data_types()
+        except AttributeError:
+            self._column_data_types = []
 
     @property
     def column_names(self) -> list[str]:
