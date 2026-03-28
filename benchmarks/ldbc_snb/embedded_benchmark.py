@@ -75,6 +75,182 @@ def prepare_schema(data_dir: str) -> str:
     return tmp.name
 
 
+def load_data_into_tables(conn, data_dir: str) -> int:
+    """Load Parquet data into real chdb tables, replacing VIEWs.
+
+    VIEWs over file() functions trigger chdb 'Context has expired' errors
+    in complex multi-JOIN queries. Loading into Memory engine tables avoids
+    this while providing faster query execution for benchmarks.
+    """
+    parquet_tables = {
+        # Node tables: (table_name, parquet_relative_path)
+        "Person": "dynamic/Person/part_0_0.snappy.parquet",
+        "Post": "dynamic/Post/part_0_0.snappy.parquet",
+        "Comment": "dynamic/Comment/part_0_0.snappy.parquet",
+        "Forum": "dynamic/Forum/part_0_0.snappy.parquet",
+        "Tag": "static/Tag/part_0_0.snappy.parquet",
+        "TagClass": "static/TagClass/part_0_0.snappy.parquet",
+        "Place": "static/Place/part_0_0.snappy.parquet",
+        "Organisation": "static/Organisation/part_0_0.snappy.parquet",
+        # Direct edge tables:
+        "Person_knows_Person": "dynamic/Person_knows_Person/part_0_0.snappy.parquet",
+        "Person_hasInterest_Tag": "dynamic/Person_hasInterest_Tag/part_0_0.snappy.parquet",
+        "Person_likes_Comment": "dynamic/Person_likes_Comment/part_0_0.snappy.parquet",
+        "Person_likes_Post": "dynamic/Person_likes_Post/part_0_0.snappy.parquet",
+        "Person_studyAt_University": "dynamic/Person_studyAt_University/part_0_0.snappy.parquet",
+        "Person_workAt_Company": "dynamic/Person_workAt_Company/part_0_0.snappy.parquet",
+        "Forum_hasMember_Person": "dynamic/Forum_hasMember_Person/part_0_0.snappy.parquet",
+        "Forum_hasTag_Tag": "dynamic/Forum_hasTag_Tag/part_0_0.snappy.parquet",
+        "Post_hasTag_Tag": "dynamic/Post_hasTag_Tag/part_0_0.snappy.parquet",
+        "Comment_hasTag_Tag": "dynamic/Comment_hasTag_Tag/part_0_0.snappy.parquet",
+    }
+
+    count = 0
+    for table, parquet_path in parquet_tables.items():
+        full_path = os.path.join(data_dir, parquet_path)
+        if not os.path.exists(full_path):
+            continue
+        try:
+            conn.execute_sql(f"DROP TABLE IF EXISTS default.{table}")
+            conn.execute_sql(
+                f"CREATE TABLE default.{table} ENGINE = Memory "
+                f"AS SELECT * FROM file('{full_path}', 'Parquet')"
+            )
+            count += 1
+        except Exception as e:
+            print(f"  Warning: failed to load {table}: {e}")
+
+    # FK-edge tables derived from node Parquet files.
+    # Column aliases MUST match the schema's from_id/to_id expectations exactly.
+    fk_edges = {
+        "Person_isLocatedIn_Place": (
+            "Person",
+            "SELECT id AS PersonId, LocationCityId AS CityId FROM default.Person",
+        ),
+        "Post_hasCreator_Person": (
+            "Post",
+            "SELECT id AS PostId, CreatorPersonId AS PersonId, creationDate FROM default.Post WHERE CreatorPersonId IS NOT NULL AND CreatorPersonId != 0",
+        ),
+        "Comment_hasCreator_Person": (
+            "Comment",
+            "SELECT id AS CommentId, CreatorPersonId AS PersonId, creationDate FROM default.Comment WHERE CreatorPersonId IS NOT NULL AND CreatorPersonId != 0",
+        ),
+        "Post_isLocatedIn_Place": (
+            "Post",
+            "SELECT id AS PostId, LocationCountryId AS PlaceId FROM default.Post WHERE LocationCountryId IS NOT NULL AND LocationCountryId != 0",
+        ),
+        "Comment_isLocatedIn_Place": (
+            "Comment",
+            "SELECT id AS CommentId, LocationCountryId AS PlaceId FROM default.Comment WHERE LocationCountryId IS NOT NULL AND LocationCountryId != 0",
+        ),
+        "Forum_hasModerator_Person": (
+            "Forum",
+            "SELECT id AS ForumId, ModeratorPersonId AS PersonId FROM default.Forum WHERE ModeratorPersonId IS NOT NULL AND ModeratorPersonId != 0",
+        ),
+        "Forum_containerOf_Post": (
+            "Post",
+            "SELECT ContainerForumId AS ForumId, id AS PostId FROM default.Post WHERE ContainerForumId IS NOT NULL AND ContainerForumId != 0",
+        ),
+        "Comment_replyOf_Post": (
+            "Comment",
+            "SELECT id AS CommentId, ParentPostId AS PostId, creationDate FROM default.Comment WHERE ParentPostId IS NOT NULL AND ParentPostId != 0",
+        ),
+        "Comment_replyOf_Comment": (
+            "Comment",
+            "SELECT id AS Comment1Id, ParentCommentId AS Comment2Id, creationDate FROM default.Comment WHERE ParentCommentId IS NOT NULL AND ParentCommentId != 0",
+        ),
+        "Tag_hasType_TagClass": (
+            "Tag",
+            "SELECT id AS TagId, TypeTagClassId AS TagClassId FROM default.Tag",
+        ),
+        "TagClass_isSubclassOf_TagClass": (
+            "TagClass",
+            "SELECT id AS TagClass1Id, SubclassOfTagClassId AS TagClass2Id FROM default.TagClass WHERE SubclassOfTagClassId IS NOT NULL AND SubclassOfTagClassId != 0",
+        ),
+        "Organisation_isLocatedIn_Place": (
+            "Organisation",
+            "SELECT id AS OrganisationId, LocationPlaceId AS PlaceId FROM default.Organisation",
+        ),
+        "Place_isPartOf_Place": (
+            "Place",
+            "SELECT id AS Place1Id, PartOfPlaceId AS Place2Id FROM default.Place WHERE PartOfPlaceId IS NOT NULL AND PartOfPlaceId != 0",
+        ),
+        "Person_studyAt_Organisation": (
+            "Person_studyAt_University",
+            "SELECT PersonId, UniversityId, classYear FROM default.Person_studyAt_University",
+        ),
+        "Person_workAt_Organisation": (
+            "Person_workAt_Company",
+            "SELECT PersonId, CompanyId, workFrom FROM default.Person_workAt_Company",
+        ),
+    }
+
+    for table, (_, query) in fk_edges.items():
+        try:
+            conn.execute_sql(f"DROP TABLE IF EXISTS default.{table}")
+            conn.execute_sql(
+                f"CREATE TABLE default.{table} ENGINE = Memory AS {query}"
+            )
+            count += 1
+        except Exception as e:
+            print(f"  Warning: failed to create FK-edge {table}: {e}")
+
+    # Polymorphic views: Message = Post UNION Comment, and associated edge views
+    union_views = {
+        "Message": (
+            "SELECT id, creationDate, locationIP, browserUsed, content, length, "
+            "imageFile, language, CreatorPersonId, LocationCountryId, ContainerForumId, "
+            "'Post' AS type FROM default.Post "
+            "UNION ALL "
+            "SELECT id, creationDate, locationIP, browserUsed, content, length, "
+            "NULL AS imageFile, NULL AS language, CreatorPersonId, LocationCountryId, "
+            "NULL AS ContainerForumId, 'Comment' AS type FROM default.Comment"
+        ),
+        "Message_hasTag_Tag": (
+            "SELECT PostId AS MessageId, TagId FROM default.Post_hasTag_Tag "
+            "UNION ALL "
+            "SELECT CommentId AS MessageId, TagId FROM default.Comment_hasTag_Tag"
+        ),
+        "Message_hasCreator_Person": (
+            "SELECT PostId AS MessageId, PersonId FROM default.Post_hasCreator_Person "
+            "UNION ALL "
+            "SELECT CommentId AS MessageId, PersonId FROM default.Comment_hasCreator_Person"
+        ),
+        "Person_likes_Message": (
+            "SELECT PersonId, PostId AS MessageId, creationDate FROM default.Person_likes_Post "
+            "UNION ALL "
+            "SELECT PersonId, CommentId AS MessageId, creationDate FROM default.Person_likes_Comment"
+        ),
+        "Comment_replyOf_Message": (
+            "SELECT CommentId, PostId AS MessageId FROM default.Comment_replyOf_Post "
+            "UNION ALL "
+            "SELECT Comment1Id AS CommentId, Comment2Id AS MessageId FROM default.Comment_replyOf_Comment"
+        ),
+        "Message_replyOf_Message": (
+            "SELECT CommentId AS MessageId, PostId AS TargetMessageId FROM default.Comment_replyOf_Post "
+            "UNION ALL "
+            "SELECT Comment1Id AS MessageId, Comment2Id AS TargetMessageId FROM default.Comment_replyOf_Comment"
+        ),
+        "Message_isLocatedIn_Place": (
+            "SELECT PostId AS MessageId, PlaceId FROM default.Post_isLocatedIn_Place "
+            "UNION ALL "
+            "SELECT CommentId AS MessageId, PlaceId FROM default.Comment_isLocatedIn_Place"
+        ),
+    }
+
+    for table, query in union_views.items():
+        try:
+            conn.execute_sql(f"DROP TABLE IF EXISTS default.{table}")
+            conn.execute_sql(
+                f"CREATE TABLE default.{table} ENGINE = Memory AS {query}"
+            )
+            count += 1
+        except Exception as e:
+            print(f"  Warning: failed to create view table {table}: {e}")
+
+    return count
+
+
 def load_query(query_id: str) -> tuple:
     """Load a query file and its parameters.
 
@@ -229,6 +405,14 @@ def run_benchmark(args):
         sys.exit(1)
     init_time = time.time() - t0
     print(f"Database initialized in {init_time:.2f}s")
+
+    # Load Parquet data into real tables (avoids chdb VIEW+file() context bugs)
+    if not args.sql_only:
+        print("Loading data into tables...")
+        t0 = time.time()
+        tables_loaded = load_data_into_tables(conn, data_dir_str)
+        load_time = time.time() - t0
+        print(f"Loaded {tables_loaded} tables in {load_time:.2f}s")
     print()
 
     # Collect and filter queries
