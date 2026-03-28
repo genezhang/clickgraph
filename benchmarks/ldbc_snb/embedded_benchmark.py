@@ -304,8 +304,11 @@ def run_benchmark(args):
                 except AttributeError:
                     result.compile_time_ms = wall_ms
                     result.exec_time_ms = 0.0
-                result.row_count = len(list(qr))
+                result.row_count = qr.num_rows
                 result.status = "PASS"
+                if args.verbose and qr.num_rows > 0:
+                    print(f"\n--- {query_id} (first row) ---")
+                    print(qr[0])
         except Exception as e:
             result.status = "FAIL"
             result.error_message = str(e)
