@@ -1254,18 +1254,11 @@ impl SelectBuilder for LogicalPlan {
                                         col_name.clone(),
                                     ),
                             });
-                            // Also qualify the alias to prevent duplicate bare
-                            // aliases when multiple nodes share property names
-                            // (e.g., "friend.creationDate" instead of bare
-                            // "creationDate").
-                            if let Some(ref alias) = item.col_alias {
-                                if alias.0 == col_name {
-                                    item.col_alias = Some(ColumnAlias(format!(
-                                        "{}.{}",
-                                        graph_node.alias, col_name
-                                    )));
-                                }
-                            }
+                            // Note: we do NOT qualify the col_alias here.
+                            // The alias becomes a column name in UNION subqueries,
+                            // and the outer SELECT references it. Changing the alias
+                            // would break outer references. Duplicate aliases
+                            // (complex-12) are a known chdb limitation (#258).
                         }
                     }
                 }
