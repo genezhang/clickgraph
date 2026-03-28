@@ -312,6 +312,39 @@ async fn ldbc_complex_12() {
 }
 
 #[tokio::test]
+async fn ldbc_complex_12_official() {
+    let schema = load_ldbc_schema();
+    let sql = generate_sql(
+        &schema,
+        "benchmarks/ldbc_snb/queries/official/interactive/complex-12.cypher",
+    )
+    .await;
+    assert!(!sql.is_empty());
+    assert!(sql.contains("SELECT"));
+    // Verify VLP CTE internal alias 't' does not leak into outer UNION branch SELECT.
+    // The inner SELECT should use correct node aliases (comment.*, friend.*, tag.*, etc.)
+    // not the VLP CTE's internal "t" alias.
+    // Extract the inner SELECT (after "FROM (" and before first "FROM ldbc.")
+    if let Some(inner_start) = sql.find("FROM (\nSELECT") {
+        let inner_sql = &sql[inner_start..];
+        if let Some(from_pos) = inner_sql.find("\nFROM ldbc.") {
+            let inner_select = &inner_sql[..from_pos];
+            // Should NOT have bare "t." references (VLP CTE alias leak)
+            // But "t2.", "t3." etc. are fine (auto-generated aliases for anonymous nodes)
+            for line in inner_select.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("t.") {
+                    panic!(
+                        "VLP CTE alias 't' leaked into outer UNION branch SELECT: {}",
+                        trimmed
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn ldbc_complex_13() {
     let schema = load_ldbc_schema();
     let sql = generate_sql(
