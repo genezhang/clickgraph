@@ -363,12 +363,15 @@ async fn ldbc_complex_12_official() {
             // Known limitation (#258): complex-12 has duplicate aliases
             // (multiple nodes share creationDate, id, etc.) which ClickHouse
             // accepts (CTE inlining) but chdb rejects.
-            if !dups.is_empty() {
-                log::warn!(
-                    "Known: duplicate column aliases in inner UNION SELECT (#258): {:?}",
-                    dups
-                );
-            }
+            // Pin the expected count so new duplicates are caught in CI.
+            let expected_dup_count = 21;
+            assert_eq!(
+                dups.len(),
+                expected_dup_count,
+                "Duplicate alias count changed (was {expected_dup_count}). \
+                 If reduced, update expected count. If increased, investigate. \
+                 Current dups: {dups:?}"
+            );
         }
     }
 }
