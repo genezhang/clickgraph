@@ -212,9 +212,9 @@ def load_data_into_tables(conn, data_dir: str) -> int:
             "SELECT CommentId AS MessageId, TagId FROM default.Comment_hasTag_Tag"
         ),
         "Message_hasCreator_Person": (
-            "SELECT PostId AS MessageId, PersonId FROM default.Post_hasCreator_Person "
+            "SELECT PostId AS MessageId, PersonId, creationDate FROM default.Post_hasCreator_Person "
             "UNION ALL "
-            "SELECT CommentId AS MessageId, PersonId FROM default.Comment_hasCreator_Person"
+            "SELECT CommentId AS MessageId, PersonId, creationDate FROM default.Comment_hasCreator_Person"
         ),
         "Person_likes_Message": (
             "SELECT PersonId, PostId AS MessageId, creationDate FROM default.Person_likes_Post "
@@ -232,9 +232,9 @@ def load_data_into_tables(conn, data_dir: str) -> int:
             "SELECT Comment1Id AS MessageId, Comment2Id AS TargetMessageId FROM default.Comment_replyOf_Comment"
         ),
         "Message_isLocatedIn_Place": (
-            "SELECT PostId AS MessageId, PlaceId FROM default.Post_isLocatedIn_Place "
+            "SELECT PostId AS MessageId, PlaceId AS CountryId FROM default.Post_isLocatedIn_Place "
             "UNION ALL "
-            "SELECT CommentId AS MessageId, PlaceId FROM default.Comment_isLocatedIn_Place"
+            "SELECT CommentId AS MessageId, PlaceId AS CountryId FROM default.Comment_isLocatedIn_Place"
         ),
     }
 
