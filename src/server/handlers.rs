@@ -171,7 +171,6 @@ pub async fn health_check() -> impl IntoResponse {
 
 /// Simple test endpoint
 pub async fn simple_test_handler() -> impl IntoResponse {
-    println!("DEBUG: simple_test_handler called!");
     "Hello from simple test"
 }
 

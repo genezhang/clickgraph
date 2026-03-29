@@ -1821,11 +1821,11 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
             }
         }
         LogicalPlan::Filter(filter) => {
-            println!(
+            log::debug!(
                 "DEBUG: extract_filters - Found Filter node with predicate: {:?}",
                 filter.predicate
             );
-            println!(
+            log::debug!(
                 "DEBUG: extract_filters - Filter input type: {:?}",
                 std::mem::discriminant(&*filter.input)
             );
@@ -1954,13 +1954,13 @@ pub fn extract_from(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<FromTa
         LogicalPlan::GraphNode(graph_node) => {
             // For GraphNode, extract FROM from the input but use this GraphNode's alias
             // CROSS JOINs for multiple standalone nodes are handled in extract_joins
-            println!(
+            log::debug!(
                 "DEBUG: GraphNode.extract_from() - alias: {}, input: {:?}",
                 graph_node.alias, graph_node.input
             );
             match &*graph_node.input {
                 LogicalPlan::ViewScan(scan) => {
-                    println!(
+                    log::debug!(
                         "DEBUG: GraphNode.extract_from() - matched ViewScan, table: {}",
                         scan.source_table
                     );
@@ -1982,14 +1982,14 @@ pub fn extract_from(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<FromTa
                     let mut view_ref =
                         ViewTableRef::new_table(scan.as_ref().clone(), table_or_cte_name);
                     view_ref.alias = Some(graph_node.alias.clone());
-                    println!(
+                    log::debug!(
                         "DEBUG: GraphNode.extract_from() - created ViewTableRef: {:?}",
                         view_ref
                     );
                     Some(view_ref)
                 }
                 _ => {
-                    println!(
+                    log::debug!(
                         "DEBUG: GraphNode.extract_from() - not a ViewScan, input type: {:?}",
                         graph_node.input
                     );
@@ -2129,7 +2129,7 @@ pub fn extract_from(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<FromTa
             //   - FROM should be `a` (the required one), but the pattern structure has `b` on left
             //   - This case needs special handling: find which connection is NOT optional
 
-            println!("DEBUG: graph_rel.is_optional = {:?}", graph_rel.is_optional);
+            log::debug!("DEBUG: graph_rel.is_optional = {:?}", graph_rel.is_optional);
 
             // Use left as primary, right as fallback
             let (primary_from, fallback_from) = (

@@ -424,7 +424,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                 graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Projection(proj) => {
-                println!("FilterIntoGraphRel: ENTERED Projection handler");
+                log::trace!("FilterIntoGraphRel: ENTERED Projection handler");
 
                 // First optimize the child
                 let child_tf = self.optimize(proj.input.clone(), plan_ctx)?;
@@ -436,14 +436,14 @@ impl OptimizerPass for FilterIntoGraphRel {
 
                 // Check if child is a ViewScan that needs filters injected
                 if let LogicalPlan::ViewScan(view_scan) = child_plan.as_ref() {
-                    println!(
+                    log::trace!(
                         "FilterIntoGraphRel: Projection has ViewScan child, source_table='{}'",
                         view_scan.source_table
                     );
 
                     // Skip if ViewScan already has filters (they were injected by GraphNode case above)
                     if view_scan.view_filter.is_some() {
-                        println!("FilterIntoGraphRel: ViewScan already has view_filter, skipping (filters already injected by GraphNode case)");
+                        log::trace!("FilterIntoGraphRel: ViewScan already has view_filter, skipping (filters already injected by GraphNode case)");
                         // Rebuild with the optimized child
                         return Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(
                             Projection {
@@ -456,7 +456,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                     }
 
                     // Look for filters in plan_ctx that match this ViewScan
-                    println!(
+                    log::trace!(
                         "FilterIntoGraphRel: Looking for filters in plan_ctx (has {} aliases)",
                         plan_ctx.get_alias_table_ctx_map().len()
                     );
@@ -465,12 +465,12 @@ impl OptimizerPass for FilterIntoGraphRel {
 
                     // Get schema from plan_ctx for label-to-table mapping
                     let schema = plan_ctx.schema();
-                    println!("FilterIntoGraphRel: Successfully got schema from plan_ctx");
+                    log::trace!("FilterIntoGraphRel: Successfully got schema from plan_ctx");
 
                     // Iterate through all table contexts to find filters that match this ViewScan
                     for (alias, table_ctx) in plan_ctx.get_alias_table_ctx_map() {
                         let filters = table_ctx.get_filters();
-                        println!(
+                        log::trace!(
                             "FilterIntoGraphRel: Checking alias '{}': label={:?}, {} filters",
                             alias,
                             table_ctx.get_label_opt(),
@@ -496,25 +496,25 @@ impl OptimizerPass for FilterIntoGraphRel {
 
                             if let Some(table) = table_name {
                                 let matches = table == view_scan.source_table.as_str();
-                                println!(
+                                log::trace!(
                                     "FilterIntoGraphRel: Label '{}' maps to table '{}', ViewScan table is '{}', match={}",
                                     label, table, view_scan.source_table, matches
                                 );
                                 matches
                             } else {
-                                println!(
+                                log::trace!(
                                     "FilterIntoGraphRel: No schema found for label '{}'",
                                     label
                                 );
                                 false
                             }
                         } else {
-                            println!("FilterIntoGraphRel: Alias '{}' has no label", alias);
+                            log::trace!("FilterIntoGraphRel: Alias '{}' has no label", alias);
                             false
                         };
 
                         if matches_viewscan {
-                            println!(
+                            log::trace!(
                                 "FilterIntoGraphRel: Found {} matching filters for alias '{}': {:?}",
                                 filters.len(),
                                 alias,
@@ -529,7 +529,7 @@ impl OptimizerPass for FilterIntoGraphRel {
 
                     // If we found filters, inject them into ViewScan
                     if !filters_to_apply.is_empty() {
-                        println!(
+                        log::trace!(
                             "FilterIntoGraphRel: Injecting {} filters into ViewScan.view_filter",
                             filters_to_apply.len()
                         );
@@ -546,7 +546,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             });
 
                         if let Some(predicate) = combined_predicate {
-                            println!("FilterIntoGraphRel: Combined predicate: {:?}", predicate);
+                            log::trace!("FilterIntoGraphRel: Combined predicate: {:?}", predicate);
 
                             // Create new ViewScan with the filter
                             let new_view_scan = Arc::new(LogicalPlan::ViewScan(Arc::new(
@@ -583,13 +583,13 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 pattern_comprehensions: proj.pattern_comprehensions.clone(),
                             }));
 
-                            println!(
+                            log::trace!(
                                 "FilterIntoGraphRel: Successfully created Projection with filtered ViewScan"
                             );
                             return Ok(Transformed::Yes(new_proj));
                         }
                     } else {
-                        println!(
+                        log::trace!(
                             "FilterIntoGraphRel: No matching filters found for ViewScan table '{}'",
                             view_scan.source_table
                         );
@@ -599,18 +599,18 @@ impl OptimizerPass for FilterIntoGraphRel {
                 // Check if child is a GraphNode containing a ViewScan that needs filters injected
                 if let LogicalPlan::GraphNode(graph_node) = child_plan.as_ref() {
                     if let LogicalPlan::ViewScan(view_scan) = graph_node.input.as_ref() {
-                        println!(
+                        log::trace!(
                             "FilterIntoGraphRel: Projection has GraphNode('{}') → ViewScan child, source_table='{}'",
                             graph_node.alias, view_scan.source_table
                         );
 
                         // Skip if ViewScan already has filters
                         if view_scan.view_filter.is_some() {
-                            println!("FilterIntoGraphRel: GraphNode's ViewScan already has view_filter, skipping");
+                            log::trace!("FilterIntoGraphRel: GraphNode's ViewScan already has view_filter, skipping");
                         } else {
                             // Skip if this is an optional alias - filters should be JOIN conditions, not WHERE
                             if plan_ctx.get_optional_aliases().contains(&graph_node.alias) {
-                                println!("FilterIntoGraphRel: Skipping filter injection for optional GraphNode alias '{}'", graph_node.alias);
+                                log::trace!("FilterIntoGraphRel: Skipping filter injection for optional GraphNode alias '{}'", graph_node.alias);
                             } else {
                                 // Look for filters in plan_ctx for the GraphNode's alias
                                 let mut filters_to_apply: Vec<LogicalExpr> = Vec::new();
@@ -620,7 +620,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 {
                                     let filters = table_ctx.get_filters();
                                     if !filters.is_empty() {
-                                        println!(
+                                        log::trace!(
                                         "FilterIntoGraphRel: Found {} filters for GraphNode alias '{}': {:?}",
                                         filters.len(),
                                         graph_node.alias,
@@ -632,7 +632,7 @@ impl OptimizerPass for FilterIntoGraphRel {
 
                                 // If we found filters, inject them into ViewScan
                                 if !filters_to_apply.is_empty() {
-                                    println!(
+                                    log::trace!(
                                     "FilterIntoGraphRel: Injecting {} filters into GraphNode's ViewScan.view_filter",
                                     filters_to_apply.len()
                                 );
@@ -653,7 +653,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                         });
 
                                     if let Some(predicate) = combined_predicate {
-                                        println!("FilterIntoGraphRel: Combined predicate for GraphNode: {:?}", predicate);
+                                        log::trace!("FilterIntoGraphRel: Combined predicate for GraphNode: {:?}", predicate);
 
                                         // Create new ViewScan with the filter
                                         let new_view_scan =
@@ -720,13 +720,13 @@ impl OptimizerPass for FilterIntoGraphRel {
                                                     .clone(),
                                             }));
 
-                                        println!(
+                                        log::trace!(
                                         "FilterIntoGraphRel: Successfully created Projection with filtered GraphNode → ViewScan"
                                     );
                                         return Ok(Transformed::Yes(new_proj));
                                     }
                                 } else {
-                                    println!(
+                                    log::trace!(
                                     "FilterIntoGraphRel: No matching filters found for GraphNode alias '{}'",
                                     graph_node.alias
                                 );
@@ -750,7 +750,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                 }
             }
             LogicalPlan::GraphRel(graph_rel) => {
-                println!(
+                log::trace!(
                     "FilterIntoGraphRel: Processing GraphRel with left_connection='{}', right_connection='{}'",
                     graph_rel.left_connection, graph_rel.right_connection
                 );
@@ -820,12 +820,12 @@ impl OptimizerPass for FilterIntoGraphRel {
                     {
                         let filters = table_ctx.get_filters().clone();
                         if !filters.is_empty() {
-                            println!(
+                            log::trace!(
                                 "FilterIntoGraphRel: Found {} filters for right connection alias '{}' in GraphRel",
                                 filters.len(),
                                 graph_rel.right_connection
                             );
-                            println!("FilterIntoGraphRel: Right alias filters: {:?}", filters);
+                            log::trace!("FilterIntoGraphRel: Right alias filters: {:?}", filters);
                             // Qualify filters with the right alias
                             let qualified_filters: Vec<LogicalExpr> = filters
                                 .into_iter()
@@ -849,12 +849,12 @@ impl OptimizerPass for FilterIntoGraphRel {
                     {
                         let filters = table_ctx.get_filters().clone();
                         if !filters.is_empty() {
-                            println!(
+                            log::trace!(
                                 "FilterIntoGraphRel: Found {} filters for edge alias '{}' in GraphRel",
                                 filters.len(),
                                 graph_rel.alias
                             );
-                            println!("FilterIntoGraphRel: Edge alias filters: {:?}", filters);
+                            log::trace!("FilterIntoGraphRel: Edge alias filters: {:?}", filters);
                             // Qualify filters with the edge alias
                             let qualified_filters: Vec<LogicalExpr> = filters
                                 .into_iter()
@@ -884,10 +884,10 @@ impl OptimizerPass for FilterIntoGraphRel {
                     });
 
                     if let Some(predicate) = combined_predicate {
-                        println!(
+                        log::trace!(
                             "FilterIntoGraphRel: Injecting combined filter into GraphRel.where_predicate"
                         );
-                        println!("FilterIntoGraphRel: Combined predicate: {:?}", predicate);
+                        log::trace!("FilterIntoGraphRel: Combined predicate: {:?}", predicate);
 
                         // Still need to process children for nested GraphRel nodes
                         let left_tf = self.optimize(graph_rel.left.clone(), plan_ctx)?;

@@ -123,33 +123,10 @@ pub fn evaluate_read_statement(
     let logical_plan =
         analyzer::intermediate_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;
 
-    // DEBUG: Check cte_references after intermediate_analyzing
-    fn count_cte_refs(plan: &LogicalPlan) -> usize {
-        match plan {
-            LogicalPlan::WithClause(wc) => wc.cte_references.len() + count_cte_refs(&wc.input),
-            LogicalPlan::Projection(p) => count_cte_refs(&p.input),
-            LogicalPlan::Limit(l) => count_cte_refs(&l.input),
-            LogicalPlan::GraphJoins(gj) => count_cte_refs(&gj.input), // ADDED
-            _ => 0,
-        }
-    }
-    eprintln!(
-        "🔬 After intermediate_analyzing: {} cte_references total",
-        count_cte_refs(&logical_plan)
-    );
-
     let logical_plan = optimizer::final_optimization(logical_plan, &mut plan_ctx)?;
-    eprintln!(
-        "🔬 After final_optimization: {} cte_references total",
-        count_cte_refs(&logical_plan)
-    );
 
     let logical_plan =
         analyzer::final_analyzing(logical_plan, &mut plan_ctx, current_graph_schema)?;
-    eprintln!(
-        "🔬 After final_analyzing: {} cte_references total",
-        count_cte_refs(&logical_plan)
-    );
 
     let logical_plan =
         Arc::into_inner(logical_plan).ok_or(QueryPlannerError::LogicalPlanExtractor)?;

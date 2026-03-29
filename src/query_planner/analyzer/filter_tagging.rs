@@ -48,11 +48,11 @@ impl AnalyzerPass for FilterTagging {
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
-        println!(
+        log::trace!(
             "FilterTagging: analyze_with_graph_schema called with plan: {:?}",
             logical_plan
         );
-        println!(
+        log::trace!(
             "FilterTagging: analyze_with_graph_schema called with plan type: {:?}",
             std::mem::discriminant(&*logical_plan)
         );
@@ -75,7 +75,7 @@ impl AnalyzerPass for FilterTagging {
             LogicalPlan::CartesianProduct(_) => "CartesianProduct",
             LogicalPlan::WithClause(_) => "WithClause",
         };
-        println!("FilterTagging: About to match on variant: {}", variant_name);
+        log::trace!("FilterTagging: About to match on variant: {}", variant_name);
         Ok(match logical_plan.as_ref() {
             LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
             LogicalPlan::GraphNode(graph_node) => {
@@ -117,8 +117,8 @@ impl AnalyzerPass for FilterTagging {
                 graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Filter(filter) => {
-                println!("FilterTagging: ENTERING Filter case - processing Filter node");
-                println!(
+                log::trace!("FilterTagging: ENTERING Filter case - processing Filter node");
+                log::trace!(
                     "FilterTagging: Processing Filter node with predicate: {:?}",
                     filter.predicate
                 );
@@ -175,18 +175,18 @@ impl AnalyzerPass for FilterTagging {
                     graph_schema,
                     Some(child_plan_ref),
                 )?;
-                println!("FilterTagging: Mapped predicate: {:?}", mapped_predicate);
+                log::trace!("FilterTagging: Mapped predicate: {:?}", mapped_predicate);
 
                 // Check if this filter references projection aliases (HAVING clause)
                 if Self::references_projection_alias(&mapped_predicate, plan_ctx) {
-                    println!(
+                    log::trace!(
                         "FilterTagging: Filter references projection alias - converting to HAVING clause"
                     );
                     // This filter should become a HAVING clause on the child GroupBy
                     match &child_tf {
                         Transformed::Yes(plan) | Transformed::No(plan) => {
                             if let LogicalPlan::GroupBy(group_by) = plan.as_ref() {
-                                println!(
+                                log::trace!(
                                     "FilterTagging: Child is GroupBy, attaching filter as HAVING clause"
                                 );
                                 let new_group_by = LogicalPlan::GroupBy(GroupBy {
@@ -204,7 +204,7 @@ impl AnalyzerPass for FilterTagging {
                                 // CartesianProduct in its descendants. This is a cross-table join condition
                                 // that should be preserved in the plan for CartesianJoinExtraction to handle.
                                 // Do NOT extract it - keep it as a Filter node with property-mapped predicate.
-                                println!(
+                                log::trace!(
                                     "FilterTagging: Preserving cross-table join condition (has CartesianProduct descendant)"
                                 );
                                 return Ok(Transformed::Yes(Arc::new(LogicalPlan::Filter(
@@ -214,7 +214,7 @@ impl AnalyzerPass for FilterTagging {
                                     },
                                 ))));
                             } else {
-                                println!(
+                                log::trace!(
                                     "FilterTagging: WARNING - projection alias reference but child is not GroupBy!"
                                 );
                             }
@@ -244,7 +244,7 @@ impl AnalyzerPass for FilterTagging {
                 );
 
                 if is_leaf_node {
-                    println!("FilterTagging: Child is leaf node - PRESERVING Filter in plan (may be inside WITH clause)");
+                    log::trace!("FilterTagging: Child is leaf node - PRESERVING Filter in plan (may be inside WITH clause)");
                     return Ok(Transformed::Yes(Arc::new(LogicalPlan::Filter(Filter {
                         input: child_tf.get_plan().clone(),
                         predicate: mapped_predicate,
@@ -253,7 +253,7 @@ impl AnalyzerPass for FilterTagging {
 
                 // call filter tagging and get new filter
                 let final_filter_opt = self.extract_filters(mapped_predicate, plan_ctx)?;
-                println!("FilterTagging: Final filter option: {:?}", final_filter_opt);
+                log::trace!("FilterTagging: Final filter option: {:?}", final_filter_opt);
                 // if final filter has some predicate left then create new filter else remove the filter node and return the child input
                 if let Some(final_filter) = final_filter_opt {
                     Transformed::Yes(Arc::new(LogicalPlan::Filter(Filter {
@@ -269,12 +269,12 @@ impl AnalyzerPass for FilterTagging {
                     "🔍 FilterTagging: BEFORE processing Projection - distinct={}",
                     projection.distinct
                 );
-                println!("FilterTagging: Processing Projection, analyzing child input");
-                println!(
+                log::trace!("FilterTagging: Processing Projection, analyzing child input");
+                log::trace!(
                     "FilterTagging: Projection input type: {:?}",
                     std::mem::discriminant(&*projection.input)
                 );
-                println!(
+                log::trace!(
                     "FilterTagging: About to call analyze_with_graph_schema on child input: {:?}",
                     projection.input
                 );
@@ -283,11 +283,11 @@ impl AnalyzerPass for FilterTagging {
                     plan_ctx,
                     graph_schema,
                 )?;
-                println!(
+                log::trace!(
                     "FilterTagging: Finished analyzing child input, result: {:?}",
                     child_tf
                 );
-                println!(
+                log::trace!(
                     "FilterTagging: Projection child processed, applying property mapping to projection items"
                 );
                 // Get a reference to the child plan without moving
@@ -313,7 +313,7 @@ impl AnalyzerPass for FilterTagging {
                     // If this projection item has an alias (e.g., COUNT(b) as follows),
                     // register it so filters can reference it
                     if let Some(col_alias) = &item.col_alias {
-                        println!(
+                        log::trace!(
                             "FilterTagging: Registering projection alias: {} -> {:?}",
                             col_alias.0, mapped_expr
                         );
@@ -478,7 +478,7 @@ impl AnalyzerPass for FilterTagging {
 
                     // Register WITH clause aliases as projection aliases
                     if let Some(col_alias) = &item.col_alias {
-                        println!(
+                        log::trace!(
                             "FilterTagging: Registering WITH clause alias: {} -> {:?}",
                             col_alias.0, mapped_expr
                         );
@@ -831,7 +831,7 @@ impl FilterTagging {
     ) -> AnalyzerResult<LogicalExpr> {
         match expr {
             LogicalExpr::PropertyAccessExp(property_access) => {
-                println!(
+                log::trace!(
                     "FilterTagging: apply_property_mapping for alias '{}', property '{}'",
                     property_access.table_alias.0,
                     property_access.column.raw()
@@ -881,7 +881,7 @@ impl FilterTagging {
                     }
                 };
 
-                println!(
+                log::trace!(
                     "FilterTagging: Found table_ctx, is_relation={}, label={:?}",
                     table_ctx.is_relation(),
                     table_ctx.get_label_opt()
@@ -1030,20 +1030,20 @@ impl FilterTagging {
 
                     let is_embedded = strategy_embedded || schema_embedded;
 
-                    println!(
+                    log::trace!(
                         "FilterTagging: Checking EmbeddedInEdge for alias='{}' - from_strategy={}, from_edge={:?}",
                         property_access.table_alias.0, is_embedded, edge_info
                     );
                     (is_embedded, edge_info)
                 } else {
-                    println!(
+                    log::trace!(
                         "FilterTagging: No plan context provided for alias='{}'",
                         property_access.table_alias.0
                     );
                     (false, None)
                 };
 
-                println!(
+                log::trace!(
                     "FilterTagging: is_embedded_in_edge={} for alias='{}', property='{}'",
                     is_embedded_in_edge,
                     property_access.table_alias.0,
@@ -1070,7 +1070,7 @@ impl FilterTagging {
                                 *is_from_node,
                                 plan_ctx,
                             ) {
-                                println!(
+                                log::trace!(
                                     "FilterTagging: Found property '{}' in owning edge '{}' ViewScan -> '{}'",
                                     property_access.column.raw(), edge_alias, column
                                 );
@@ -1084,7 +1084,7 @@ impl FilterTagging {
                                     &property_access.table_alias.0,
                                     property_access.column.raw(),
                                 ) {
-                                    println!(
+                                    log::trace!(
                                         "FilterTagging: Found property '{}' via fallback in ViewScan -> '{}'",
                                         property_access.column.raw(), column
                                     );
@@ -1120,7 +1120,7 @@ impl FilterTagging {
                                 &property_access.table_alias.0,
                                 property_access.column.raw(),
                             ) {
-                                println!(
+                                log::trace!(
                                     "FilterTagging: Found property '{}' in standalone ViewScan -> '{}'",
                                     property_access.column.raw(), column
                                 );
@@ -1150,7 +1150,7 @@ impl FilterTagging {
                         crate::query_planner::analyzer::view_resolver::ViewResolver::from_schema(
                             graph_schema,
                         );
-                    println!(
+                    log::trace!(
                         "FilterTagging: About to call resolve_node_property, is_relation={}, label={}, property={}",
                         table_ctx.is_relation(),
                         label,
@@ -1166,7 +1166,7 @@ impl FilterTagging {
                             from_node,
                             to_node,
                         );
-                        println!(
+                        log::trace!(
                             "FilterTagging: resolve_relationship_property result: {:?}",
                             result
                         );
@@ -1174,12 +1174,12 @@ impl FilterTagging {
                     } else {
                         let result = view_resolver
                             .resolve_node_property(&label, property_access.column.raw());
-                        println!("FilterTagging: resolve_node_property result: {:?}", result);
+                        log::trace!("FilterTagging: resolve_node_property result: {:?}", result);
                         result?
                     }
                 };
 
-                println!(
+                log::trace!(
                     "FilterTagging: Successfully mapped property '{}' to column '{}' (keeping original table alias '{}')",
                     property_access.column.raw(), mapped_column.raw(), property_access.table_alias.0
                 );
@@ -1323,7 +1323,7 @@ impl FilterTagging {
                                 };
 
                                 if let Some(column) = id_column {
-                                    println!(
+                                    log::trace!(
                                         "FilterTagging: Resolved id({}) to PropertyAccess with column '{}'",
                                         alias_str, column
                                     );
@@ -1346,7 +1346,7 @@ impl FilterTagging {
                         }
                     }
                     // If we couldn't resolve id(), fall through to pass it unchanged
-                    println!(
+                    log::trace!(
                         "FilterTagging: Could not resolve id() function, passing through unchanged"
                     );
                 }
@@ -1501,7 +1501,7 @@ impl FilterTagging {
                             if let Ok(node_schema) = graph_schema.node_schema(first_label) {
                                 if let Some(label_col) = &node_schema.label_column {
                                     // Polymorphic table - generate runtime check: label_column = 'check_label'
-                                    println!(
+                                    log::trace!(
                                         "FilterTagging: LabelExpression {}:{} - polymorphic table with label_column='{}', generating runtime check",
                                         variable, check_label, label_col
                                     );
@@ -1526,7 +1526,7 @@ impl FilterTagging {
                         let matches = known_labels
                             .iter()
                             .any(|l| l.eq_ignore_ascii_case(&check_label));
-                        println!(
+                        log::trace!(
                             "FilterTagging: LabelExpression {} has labels {:?}, checking for '{}' -> {}",
                             variable, known_labels, check_label, matches
                         );
@@ -1537,7 +1537,7 @@ impl FilterTagging {
                 }
                 // If we can't determine the label statically, keep the expression as-is
                 // This will need to be handled at SQL generation time
-                println!(
+                log::trace!(
                     "FilterTagging: LabelExpression {}:{} - cannot determine label statically",
                     variable, check_label
                 );
@@ -1561,7 +1561,7 @@ impl FilterTagging {
         filter_predicate: LogicalExpr,
         plan_ctx: &mut PlanCtx,
     ) -> AnalyzerResult<Option<LogicalExpr>> {
-        println!(
+        log::trace!(
             "FilterTagging: extract_filters called with predicate: {:?}",
             filter_predicate
         );
@@ -1575,7 +1575,7 @@ impl FilterTagging {
             false,
         );
 
-        println!(
+        log::trace!(
             "FilterTagging: Extracted {} filters, {} projections, remaining: {:?}",
             extracted_filters.len(),
             extracted_projections.len(),
@@ -1589,7 +1589,7 @@ impl FilterTagging {
                 true,
             )
             .unwrap_or_default();
-            println!(
+            log::trace!(
                 "FilterTagging: Extracted filter for table alias: '{}'",
                 table_alias
             );
@@ -2327,7 +2327,7 @@ impl FilterTagging {
                                 crate::graph_catalog::expression_parser::PropertyValue::Column(col),
                             ) = from_props.get(property)
                             {
-                                println!("FilterTagging: find_property_in_viewscan - found '{}' in from_node_properties -> '{}'", property, col);
+                                log::trace!("FilterTagging: find_property_in_viewscan - found '{}' in from_node_properties -> '{}'", property, col);
                                 return Some(col.clone());
                             }
                         }
@@ -2339,7 +2339,7 @@ impl FilterTagging {
                                 crate::graph_catalog::expression_parser::PropertyValue::Column(col),
                             ) = to_props.get(property)
                             {
-                                println!("FilterTagging: find_property_in_viewscan - found '{}' in to_node_properties -> '{}'", property, col);
+                                log::trace!("FilterTagging: find_property_in_viewscan - found '{}' in to_node_properties -> '{}'", property, col);
                                 return Some(col.clone());
                             }
                         }
