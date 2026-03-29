@@ -2001,12 +2001,29 @@ fn build_union_inner_select(select: &SelectItems) -> (String, Vec<String>) {
     agg_arg_cols.sort();
     agg_arg_cols.dedup();
 
-    // Remove any that are already covered by non_agg_items (via their expression SQL)
-    let existing_exprs: std::collections::HashSet<String> = non_agg_items
+    // Remove agg_arg_cols that are already covered by non_agg_items —
+    // but only if the existing item's alias matches what the outer SELECT
+    // will reference. The outer uses `tag.name` (dotted) as the alias,
+    // so an existing item with alias "name" (bare) doesn't satisfy the
+    // outer reference. Keep the agg_arg_col in that case.
+    let existing_with_matching_alias: std::collections::HashSet<String> = non_agg_items
         .iter()
-        .map(|item| item.expression.to_sql())
+        .filter_map(|item| {
+            let expr_sql = item.expression.to_sql();
+            // Item covers the agg_arg_col if BOTH expression matches AND
+            // alias matches the dotted form (or no alias = expression IS the alias)
+            if let Some(ref alias) = item.col_alias {
+                if alias.0 == expr_sql {
+                    Some(expr_sql) // alias matches expression (e.g., tag.name AS "tag.name")
+                } else {
+                    None // alias differs (e.g., tag.name AS "name") — not covered
+                }
+            } else {
+                Some(expr_sql) // no alias — expression is the column name
+            }
+        })
         .collect();
-    agg_arg_cols.retain(|col| !existing_exprs.contains(col));
+    agg_arg_cols.retain(|col| !existing_with_matching_alias.contains(col));
 
     if non_agg_items.is_empty() && agg_arg_cols.is_empty() {
         return ("SELECT 1 AS __dummy\n".to_string(), vec![]);
@@ -2887,8 +2904,37 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
 
                         if branch_has_own_select {
                             // Build inner SELECT from branch's own items (correctly mapped)
-                            // Filter out aggregate items and add agg arg columns
-                            let (branch_inner, _) = build_union_inner_select(&union_branch.select);
+                            // Filter out aggregate items and add agg arg columns.
+                            // Also include outer plan's non-aggregate aliased columns
+                            // (RETURN aliases like personId → friend.id) that aren't
+                            // already in the branch SELECT — the outer SELECT references
+                            // these by alias through the __union subquery.
+                            let mut merged_select = union_branch.select.clone();
+                            let branch_aliases: std::collections::HashSet<String> = merged_select
+                                .items
+                                .iter()
+                                .filter_map(|i| i.col_alias.as_ref().map(|a| a.0.clone()))
+                                .collect();
+                            for outer_item in &plan.select.items {
+                                if !render_expr_contains_aggregate(&outer_item.expression) {
+                                    if let Some(ref alias) = outer_item.col_alias {
+                                        if !branch_aliases.contains(&alias.0) {
+                                            merged_select.items.push(outer_item.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            // Also add aggregate items from outer plan so their
+                            // argument columns get extracted by build_union_inner_select.
+                            // These aggregates won't appear in the inner SELECT (filtered),
+                            // but their args (tag.name, comment.id) will be added with
+                            // dotted aliases (tag.name AS "tag.name").
+                            for outer_item in &plan.select.items {
+                                if render_expr_contains_aggregate(&outer_item.expression) {
+                                    merged_select.items.push(outer_item.clone());
+                                }
+                            }
+                            let (branch_inner, _) = build_union_inner_select(&merged_select);
                             branch_sql.push_str(&branch_inner);
                         } else if needs_swap {
                             // Swap t.start_id ↔ t.end_id and start_* ↔ end_* in SELECT
