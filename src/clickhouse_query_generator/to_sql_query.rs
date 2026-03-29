@@ -2644,6 +2644,33 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
         crate::server::query_context::set_current_variable_registry(registry.clone());
     }
 
+    // Disambiguate duplicate SELECT aliases. When multiple nodes share property
+    // names (creationDate, id), the inner SELECT has duplicate aliases which
+    // chdb rejects (Code 179). Suffix duplicates with _2, _3, etc.
+    // The outer SELECT references specific named aliases (personId, etc.)
+    // which are never duplicated — only the node property expansions collide.
+    {
+        fn disambiguate_select_aliases(items: &mut Vec<crate::render_plan::SelectItem>) {
+            let mut counts: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+            for item in items.iter_mut() {
+                if let Some(ref mut alias) = item.col_alias {
+                    let count = counts.entry(alias.0.clone()).or_insert(0);
+                    *count += 1;
+                    if *count > 1 {
+                        alias.0 = format!("{}_{}", alias.0, count);
+                    }
+                }
+            }
+        }
+        disambiguate_select_aliases(&mut plan.select.items);
+        if let Some(ref mut union) = plan.union.0 {
+            for branch in &mut union.input {
+                disambiguate_select_aliases(&mut branch.select.items);
+            }
+        }
+    }
+
     let mut sql = String::new();
 
     // If there's a Union, wrap it in a subquery for correct ClickHouse behavior.
