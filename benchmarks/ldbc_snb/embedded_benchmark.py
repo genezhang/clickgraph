@@ -38,6 +38,7 @@ ADAPTED_QUERIES_DIR = SCRIPT_DIR / "queries" / "adapted"
 # Queries that have adapted versions (filename mapping).
 # The adapted directory uses different naming conventions.
 ADAPTED_QUERIES = {
+    "bi-4": "bi-4-workaround.cypher",
     "bi-17": "bi-17.cypher",
     "complex-14": "interactive-complex-14.cypher",
 }

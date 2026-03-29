@@ -69,11 +69,13 @@ pub fn cypher_to_sql(
 ) -> Result<String, String> {
     use crate::render_plan::plan_builder::RenderPlanBuilder;
 
-    let ast = crate::open_cypher_parser::parse_query(cypher)
-        .map_err(|e| format!("Parse error: {}", e))?;
+    let cleaned = crate::open_cypher_parser::strip_comments(cypher);
+    let (_remaining, statement) =
+        crate::open_cypher_parser::parse_cypher_statement(&cleaned)
+            .map_err(|e| format!("Parse error: {:?}", e))?;
 
     let (logical_plan, plan_ctx) =
-        crate::query_planner::evaluate_read_query(ast, schema, None, None)
+        crate::query_planner::evaluate_read_statement(statement, schema, None, None, None)
             .map_err(|e| format!("Plan error: {}", e))?;
 
     let render_plan = logical_plan
@@ -102,11 +104,13 @@ pub fn cypher_to_sql_with_metadata(
 > {
     use crate::render_plan::plan_builder::RenderPlanBuilder;
 
-    let ast = crate::open_cypher_parser::parse_query(cypher)
-        .map_err(|e| format!("Parse error: {}", e))?;
+    let cleaned = crate::open_cypher_parser::strip_comments(cypher);
+    let (_remaining, statement) =
+        crate::open_cypher_parser::parse_cypher_statement(&cleaned)
+            .map_err(|e| format!("Parse error: {:?}", e))?;
 
     let (logical_plan, plan_ctx) =
-        crate::query_planner::evaluate_read_query(ast, schema, None, None)
+        crate::query_planner::evaluate_read_statement(statement, schema, None, None, None)
             .map_err(|e| format!("Plan error: {}", e))?;
 
     let render_plan = logical_plan
