@@ -103,7 +103,7 @@ impl AnalyzerPass for GroupByBuilding {
                     .collect();
 
                 let agg_count = projection.items.len() - non_agg_projections.len();
-                println!(
+                log::trace!(
                     "GroupByBuilding: Found {} aggregations, {} non-aggregations",
                     agg_count,
                     non_agg_projections.len()
@@ -122,7 +122,7 @@ impl AnalyzerPass for GroupByBuilding {
                     // RETURN has aggregations AND its child is a GroupBy (from WITH)
                     // In this case, we need to wrap the GroupBy in a CTE structure
                     if let LogicalPlan::GroupBy(_inner_group_by) = analyzed_child.as_ref() {
-                        println!(
+                        log::trace!(
                                 "GroupByBuilding: Two-level aggregation detected - RETURN aggregates over WITH GroupBy"
                             );
 
@@ -154,7 +154,7 @@ impl AnalyzerPass for GroupByBuilding {
                             pattern_comprehensions: projection.pattern_comprehensions.clone(),
                         }));
 
-                        println!(
+                        log::trace!(
                             "GroupByBuilding: Creating GroupBy node with {} grouping expressions",
                             non_agg_projections.len()
                         );
@@ -171,7 +171,7 @@ impl AnalyzerPass for GroupByBuilding {
                     }
                 } else {
                     // No aggregations in RETURN - recurse into child first, then check for optimization
-                    println!(
+                    log::trace!(
                         "GroupByBuilding: No aggregations in this Projection, recursing into child"
                     );
                     let child_tf = self.analyze(projection.input.clone(), _plan_ctx)?;
@@ -182,7 +182,7 @@ impl AnalyzerPass for GroupByBuilding {
                     // OPTIMIZATION: Check if the TRANSFORMED child is now a GroupBy
                     // and if RETURN just passes through WITH aliases unchanged
                     if let LogicalPlan::GroupBy(group_by) = transformed_child.as_ref() {
-                        println!(
+                        log::trace!(
                                 "GroupByBuilding: Transformed child is GroupBy, checking for pass-through optimization"
                             );
 
@@ -209,7 +209,7 @@ impl AnalyzerPass for GroupByBuilding {
                             });
 
                             if all_pass_through && projection.items.len() == with_aliases.len() {
-                                println!(
+                                log::trace!(
                                         "GroupByBuilding: OPTIMIZATION - RETURN passes through all WITH aliases unchanged, eliminating outer Projection"
                                     );
                                 // Just return the GroupBy directly, skipping the outer Projection
@@ -248,28 +248,28 @@ impl AnalyzerPass for GroupByBuilding {
                 graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Filter(filter) => {
-                println!("GroupByBuilding: Processing Filter node");
+                log::trace!("GroupByBuilding: Processing Filter node");
 
                 // First, analyze the child to potentially create GroupBy nodes
                 let child_tf = self.analyze(filter.input.clone(), _plan_ctx)?;
 
-                println!("GroupByBuilding: Filter child analyzed, checking if it's GroupBy");
+                log::trace!("GroupByBuilding: Filter child analyzed, checking if it's GroupBy");
                 // Check if child became a GroupBy and if filter references projection aliases
                 match child_tf {
                     Transformed::Yes(ref plan) | Transformed::No(ref plan) => {
                         if let LogicalPlan::GroupBy(group_by) = plan.as_ref() {
-                            println!(
+                            log::trace!(
                                 "GroupByBuilding: Filter child IS GroupBy, checking for projection alias references"
                             );
                             // Check if the filter predicate references projection aliases
                             let refs_proj_alias =
                                 Self::references_projection_alias(&filter.predicate, _plan_ctx);
-                            println!(
+                            log::trace!(
                                 "GroupByBuilding: Filter references projection alias: {}",
                                 refs_proj_alias
                             );
                             if refs_proj_alias {
-                                println!("GroupByBuilding: Converting Filter to HAVING clause");
+                                log::trace!("GroupByBuilding: Converting Filter to HAVING clause");
                                 // Move the filter into the GroupBy as HAVING clause
                                 return Ok(Transformed::Yes(Arc::new(LogicalPlan::GroupBy(
                                     GroupBy {
@@ -282,12 +282,12 @@ impl AnalyzerPass for GroupByBuilding {
                                     },
                                 ))));
                             } else {
-                                println!(
+                                log::trace!(
                                     "GroupByBuilding: Filter does NOT reference projection alias, keeping as WHERE"
                                 );
                             }
                         } else {
-                            println!(
+                            log::trace!(
                                 "GroupByBuilding: Filter child is NOT GroupBy (it's {:?})",
                                 std::mem::discriminant(plan.as_ref())
                             );

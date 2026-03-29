@@ -6,22 +6,19 @@
 //! - Query planning and optimization
 //! - SQL generation
 
-/// Debug print macro that only compiles in debug builds.
-/// In release builds, this expands to nothing, so there's zero runtime cost.
+/// Debug print macro — delegates to log::debug! (respects RUST_LOG level).
 #[macro_export]
 macro_rules! debug_print {
     ($($arg:tt)*) => {
-        #[cfg(debug_assertions)]
-        eprintln!($($arg)*);
+        log::debug!($($arg)*);
     };
 }
 
-/// Debug print macro for println-style output (only in debug builds)
+/// Debug print macro for println-style output — delegates to log::debug! (respects RUST_LOG level).
 #[macro_export]
 macro_rules! debug_println {
     ($($arg:tt)*) => {
-        #[cfg(debug_assertions)]
-        println!($($arg)*);
+        log::debug!($($arg)*);
     };
 }
 

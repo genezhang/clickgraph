@@ -4,13 +4,15 @@
 
 ## Summary
 
-| Scale | Pass | OOM | Timeout | Language Gap | Total |
-|-------|------|-----|---------|-------------|-------|
-| **sf0.003** (mini) | 36 | 0 | 0 | 1 | 36/37 |
-| **sf1** | 36 | 0 | 0 | 1 | 36/37 |
-| **sf10** | 29 | 4 | 2 | 1 | 29/36* |
+| Mode | Scale | Pass | OOM | Timeout | Language Gap | Total |
+|------|-------|------|-----|---------|-------------|-------|
+| Server | **sf0.003** (mini) | 36 | 0 | 0 | 1 | 36/37 |
+| Server | **sf1** | 36 | 0 | 0 | 1 | 36/37 |
+| Server | **sf10** | 29 | 4 | 2 | 1 | 29/36* |
+| Embedded | **sf0.003** (mini) | 36 | 0 | 0 | 0 | 36/36** |
 
 \* sf10 uses 36-query test suite (bi-10, bi-15, bi-19, bi-20 excluded — no official Cypher queries).
+\*\* Embedded skips bi-10, bi-15, bi-16, bi-19, bi-20 (5 queries). bi-4 uses adapted query (CALL→UNION ALL).
 
 All failures at sf10 are ClickHouse resource limits. The only ClickGraph language gap is bi-16 (CALL subquery).
 
@@ -96,10 +98,11 @@ These queries exhaust ClickHouse's ~70GB server memory limit due to recursive CT
 
 ## Adapted Queries
 
-Two queries use adapted Cypher (equivalent semantics, different syntax):
+Three queries use adapted Cypher (equivalent semantics, different syntax):
 
 | Query | Reason |
 |-------|--------|
+| bi-4 | Official uses `CALL { ... }` subquery — adapted to top-level UNION ALL |
 | complex-14 | Official uses GDS `gds.shortestPath.dijkstra` — adapted to `cost(path)` weighted VLP |
 | bi-17 | Official uses `CALL` subquery — adapted to multi-VLP chained WITH pattern |
 
@@ -128,6 +131,27 @@ Two queries use adapted Cypher (equivalent semantics, different syntax):
 - **CTE-based pattern comprehension** (Feb 2026): Pre-aggregated CTEs + LEFT JOINs instead of correlated subqueries. Enabled bi-8 to use official query.
 - **Weighted VLP** (Mar 2026): `cost(path)` function support for weighted shortest path traversal (complex-14).
 
+## Embedded Mode (chdb) — sf0.003
+
+All 36 non-skipped queries pass via the embedded benchmark (`embedded_benchmark.py`),
+which loads sf0.003 Parquet data into chdb Memory engine tables.
+
+```
+Query          Status   Rows  Source
+--------------------------------------
+short-1..7     PASS     0-3   official
+complex-1..13  PASS     0-20  official
+complex-14     PASS     0     adapted
+bi-1..9        PASS     0-77  official  (bi-4: adapted)
+bi-11..14      PASS     0-41  official
+bi-17          PASS     0     adapted
+bi-18          PASS     0     official
+
+Result: 36/36 passed (5 skipped)
+```
+
+Skipped: bi-10, bi-15, bi-16, bi-19, bi-20 (unsupported language features / no official Cypher).
+
 ## Reproduction
 
 ```bash
@@ -140,11 +164,15 @@ bash benchmarks/ldbc_snb/schemas/sf1_load_data.sh
 # sf10 (~25M messages) — apply column name normalization
 curl 'http://localhost:18123/?user=test_user&password=test_pass' \
   --data-binary @benchmarks/ldbc_snb/schemas/sf10_normalize.sql
+
+# Embedded mode (sf0.003, requires chdb)
+LD_LIBRARY_PATH=target/release PYTHONPATH=clickgraph-py \
+  python3 benchmarks/ldbc_snb/embedded_benchmark.py
 ```
 
-Benchmark measurements were run using custom driver scripts (not shipped in this
-repository) that iterate over the 37 LDBC queries, send each to ClickGraph's
-`/query` endpoint, and collect execution times and errors. To replicate:
+Server-mode benchmark measurements were run using custom driver scripts that
+iterate over the 37 LDBC queries, send each to ClickGraph's `/query` endpoint,
+and collect execution times and errors. To replicate:
 
 1. Start ClickGraph pointing at the loaded ClickHouse instance
 2. For each query in `benchmarks/ldbc_snb/queries/official/`, POST to `/query`

@@ -2943,7 +2943,7 @@ pub fn extract_ctes_with_context(
                     // 🚀 OPTIMIZATION: Fixed-length, non-shortest-path → NO CTE!
                     // Generate inline JOINs instead of recursive CTE
                     let exact_hops = spec.exact_hop_count().unwrap();
-                    println!(
+                    log::debug!(
                         "CTE BRANCH: Fixed-length pattern (*{}) detected - generating inline JOINs",
                         exact_hops
                     );
@@ -2963,9 +2963,10 @@ pub fn extract_ctes_with_context(
                             joins,
                         );
 
-                        println!(
+                        log::debug!(
                             "CTE BRANCH: Stored fixed-length JOINs for {}-{} pattern",
-                            vlp_ctx.start_alias, vlp_ctx.end_alias
+                            vlp_ctx.start_alias,
+                            vlp_ctx.end_alias
                         );
                     } else {
                         log::debug!(
@@ -2993,7 +2994,7 @@ pub fn extract_ctes_with_context(
                     return Ok(child_ctes);
                 } else {
                     // ✅ Truly variable-length or shortest path → Check if multi-type
-                    println!("CTE BRANCH: Variable-length pattern detected");
+                    log::debug!("CTE BRANCH: Variable-length pattern detected");
                     log::info!("🔍 VLP: Variable-length or shortest path detected (not using chained JOINs)");
 
                     // 🎯 CHECK FOR MULTI-TYPE VLP (Part 1D implementation)
@@ -3486,7 +3487,7 @@ pub fn extract_ctes_with_context(
                     }
 
                     // Single-type VLP: Use traditional recursive CTE
-                    println!("CTE BRANCH: Single-type VLP - using recursive CTE");
+                    log::debug!("CTE BRANCH: Single-type VLP - using recursive CTE");
 
                     // ✨ PHASE 2 REFACTORING: Use PatternSchemaContext instead of scattered is_denormalized checks
                     // Recreate the pattern schema context to determine JOIN strategy and node access patterns
@@ -4498,7 +4499,7 @@ pub fn extract_ctes_with_context(
             Ok(ctes)
         }
         LogicalPlan::WithClause(wc) => {
-            println!(
+            log::debug!(
                 "DEBUG CTE Extraction: Processing WithClause with {} exported aliases",
                 wc.exported_aliases.len()
             );
@@ -6420,9 +6421,11 @@ pub fn expand_fixed_length_joins(
 
     let mut joins = Vec::new();
 
-    println!(
+    log::debug!(
         "expand_fixed_length_joins: Generating {} hops from {} to {}",
-        exact_hops, start_alias, end_alias
+        exact_hops,
+        start_alias,
+        end_alias
     );
 
     for hop in 1..=exact_hops {
@@ -6495,7 +6498,7 @@ pub fn expand_fixed_length_joins(
         graph_rel: None,
     });
 
-    println!(
+    log::debug!(
         "expand_fixed_length_joins: Generated {} JOINs (no intermediate nodes)",
         joins.len()
     );
@@ -6534,9 +6537,12 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
         .as_ref()
         .unwrap_or(&ctx.rel_table);
 
-    println!(
+    log::debug!(
         "expand_fixed_length_joins_with_context: schema_type={:?}, {} hops from {} to {}",
-        ctx.schema_type, exact_hops, ctx.start_alias, ctx.end_alias
+        ctx.schema_type,
+        exact_hops,
+        ctx.start_alias,
+        ctx.end_alias
     );
     log::debug!(
         "expand_fixed_length_joins_with_context: start_table='{}', end_table='{}', rel_table='{}'",
@@ -6585,7 +6591,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                 });
             }
 
-            println!(
+            log::debug!(
                 "expand_fixed_length_joins_with_context [DENORMALIZED]: FROM {} AS {}, {} JOINs",
                 from_table,
                 from_alias,
@@ -6662,7 +6668,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                 graph_rel: None,
             });
 
-            println!(
+            log::debug!(
                 "expand_fixed_length_joins_with_context [NORMAL/POLYMORPHIC]: FROM {} AS {}, {} JOINs",
                 from_table, from_alias, joins.len()
             );
@@ -6724,7 +6730,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                 });
             }
 
-            println!(
+            log::debug!(
                 "expand_fixed_length_joins_with_context [FK-EDGE]: FROM {} AS {}, {} JOINs",
                 from_table,
                 from_alias,

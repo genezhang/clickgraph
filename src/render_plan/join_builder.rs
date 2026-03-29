@@ -421,7 +421,7 @@ impl JoinBuilder for LogicalPlan {
     }
 
     fn extract_joins(&self, schema: &GraphSchema) -> RenderPlanBuilderResult<Vec<Join>> {
-        println!(
+        log::debug!(
             "🔧 DEBUG: extract_joins called on plan type: {:?}",
             std::mem::discriminant(self)
         );
@@ -1289,9 +1289,10 @@ impl JoinBuilder for LogicalPlan {
                     }
 
                     if vlp_ctx.is_fixed_length && exact_hops > 0 {
-                        println!(
+                        log::debug!(
                             "DEBUG: extract_joins - Fixed-length VLP (*{}) with {:?} schema",
-                            exact_hops, vlp_ctx.schema_type
+                            exact_hops,
+                            vlp_ctx.schema_type
                         );
 
                         // Use the consolidated function that handles all schema types
@@ -1389,9 +1390,10 @@ impl JoinBuilder for LogicalPlan {
                 let left_is_denormalized = is_node_denormalized(&graph_rel.left);
                 let right_is_denormalized = is_node_denormalized(&graph_rel.right);
 
-                println!(
+                log::debug!(
                     "DEBUG: extract_joins - left_is_denormalized={}, right_is_denormalized={}",
-                    left_is_denormalized, right_is_denormalized
+                    left_is_denormalized,
+                    right_is_denormalized
                 );
 
                 // For denormalized patterns, handle specially
@@ -1412,9 +1414,10 @@ impl JoinBuilder for LogicalPlan {
 
                     // Check if this is a chained hop (left side is another GraphRel)
                     if let LogicalPlan::GraphRel(left_rel) = graph_rel.left.as_ref() {
-                        println!(
+                        log::debug!(
                             "DEBUG: DENORMALIZED multi-hop - chaining {} -> {}",
-                            left_rel.alias, graph_rel.alias
+                            left_rel.alias,
+                            graph_rel.alias
                         );
 
                         // First, recursively get joins from the left GraphRel
@@ -1453,7 +1456,7 @@ impl JoinBuilder for LogicalPlan {
                                 if let Some(coupling_info) =
                                     schema.get_coupled_edge_info(&left_type, &curr_type)
                                 {
-                                    println!(
+                                    log::debug!(
                                         "DEBUG: COUPLED EDGES DETECTED! {} and {} share coupling node {} in table {}",
                                         left_type, curr_type, coupling_info.coupling_node, coupling_info.table_name
                                     );
@@ -1494,20 +1497,20 @@ impl JoinBuilder for LogicalPlan {
                 // STANDARD (non-denormalized) multi-hop handling
                 // MULTI-HOP FIX: Check BOTH left and right sides for nested GraphRel patterns
                 if let LogicalPlan::GraphRel(_) = graph_rel.left.as_ref() {
-                    println!(
+                    log::debug!(
                         "🔍 DEBUG: Multi-hop pattern detected on LEFT side - recursively extracting left GraphRel joins (alias={})",
                         graph_rel.alias
                     );
                     let mut left_joins =
                         <LogicalPlan as JoinBuilder>::extract_joins(&graph_rel.left, schema)?;
-                    println!("  ↳ Got {} joins from left GraphRel", left_joins.len());
+                    log::debug!("  ↳ Got {} joins from left GraphRel", left_joins.len());
                     joins.append(&mut left_joins);
                 }
 
                 // Also check right side for nested GraphRel (e.g., (a)-[r1]->(b)-[r2]->(c))
                 // In this case, right side contains (b)-[r2]->(c) which needs its own joins
                 if let LogicalPlan::GraphRel(inner_rel) = graph_rel.right.as_ref() {
-                    println!(
+                    log::debug!(
                         "🔍 DEBUG: Multi-hop pattern detected on RIGHT side - recursively extracting right GraphRel joins (alias={})",
                         graph_rel.alias
                     );
@@ -1536,7 +1539,7 @@ impl JoinBuilder for LogicalPlan {
                     let shared_is_inner_left = inner_left_alias == shared_node_alias;
                     let shared_is_inner_right = inner_right_alias == shared_node_alias;
 
-                    println!("🔍 DEBUG: Nested pattern - shared='{}', inner_left='{}', inner_right='{}', shared_is_left={}, shared_is_right={}",
+                    log::debug!("🔍 DEBUG: Nested pattern - shared='{}', inner_left='{}', inner_right='{}', shared_is_left={}, shared_is_right={}",
                              shared_node_alias, inner_left_alias, inner_right_alias, shared_is_inner_left, shared_is_inner_right);
 
                     if shared_is_inner_right {
@@ -1592,7 +1595,7 @@ impl JoinBuilder for LogicalPlan {
                         // p.id = t1.from_id (since p = left_connection → from_id)
                         if let LogicalPlan::GraphRel(deeper_rel) = inner_rel.left.as_ref() {
                             // DEEP NESTING FIX: inner_rel.left is another GraphRel
-                            println!(
+                            log::debug!(
                                 "🔍 DEBUG: Deep nesting detected (right shared) - inner_rel.left is GraphRel (alias={})",
                                 deeper_rel.alias
                             );
@@ -1652,7 +1655,7 @@ impl JoinBuilder for LogicalPlan {
                             } else {
                                 // Non-shared node is buried deep in the chain.
                                 // Look up the correct table from the inner relationship's schema.
-                                println!(
+                                log::debug!(
                                     "🔍 DEBUG: Non-shared '{}' buried deep (not at immediate level of {})",
                                     non_shared_alias, deeper_rel.alias
                                 );
@@ -1665,7 +1668,7 @@ impl JoinBuilder for LogicalPlan {
                                                     // Non-shared is from_node (left_connection = from side)
                                                     let table = format!("{}.{}", rs.database, rs.from_node_table);
                                                     let from_label = rs.from_node.clone();
-                                                    println!("  ↳ Schema lookup: rel='{}', from_node='{}', table='{}'", rel_type, from_label, table);
+                                                    log::debug!("  ↳ Schema lookup: rel='{}', from_node='{}', table='{}'", rel_type, from_label, table);
                                                     (table, from_label)
                                                 })
                                             })
@@ -1701,7 +1704,7 @@ impl JoinBuilder for LogicalPlan {
                                 &inner_rel.left,
                                 schema,
                             )?;
-                            println!(
+                            log::debug!(
                                 "  ↳ Got {} deeper joins from recursive extraction",
                                 deeper_joins.len()
                             );
@@ -1737,9 +1740,10 @@ impl JoinBuilder for LogicalPlan {
                             });
                         }
 
-                        println!(
+                        log::debug!(
                             "  ✅ Built nested pattern JOINs: {} → {}",
-                            inner_rel.alias, non_shared_alias
+                            inner_rel.alias,
+                            non_shared_alias
                         );
                     } else if shared_is_inner_left {
                         // Shared node is inner's left_connection
@@ -1792,7 +1796,7 @@ impl JoinBuilder for LogicalPlan {
                         // p.id = t1.to_id (since p = right_connection → to_id)
                         if let LogicalPlan::GraphRel(deeper_rel) = inner_rel.right.as_ref() {
                             // DEEP NESTING FIX: inner_rel.right is another GraphRel
-                            println!(
+                            log::debug!(
                                 "🔍 DEBUG: Deep nesting detected (left shared) - inner_rel.right is GraphRel (alias={})",
                                 deeper_rel.alias
                             );
@@ -1850,7 +1854,7 @@ impl JoinBuilder for LogicalPlan {
                                 }
                             } else {
                                 // Non-shared node is buried deep in the chain
-                                println!(
+                                log::debug!(
                                     "🔍 DEBUG: Non-shared '{}' buried deep (not at immediate level of {})",
                                     non_shared_alias, deeper_rel.alias
                                 );
@@ -1863,7 +1867,7 @@ impl JoinBuilder for LogicalPlan {
                                                     // Non-shared is to_node (right_connection = to side)
                                                     let table = format!("{}.{}", rs.database, rs.to_node_table);
                                                     let to_label = rs.to_node.clone();
-                                                    println!("  ↳ Schema lookup: rel='{}', to_node='{}', table='{}'", rel_type, to_label, table);
+                                                    log::debug!("  ↳ Schema lookup: rel='{}', to_node='{}', table='{}'", rel_type, to_label, table);
                                                     (table, to_label)
                                                 })
                                             })
@@ -1899,7 +1903,7 @@ impl JoinBuilder for LogicalPlan {
                                 &inner_rel.right,
                                 schema,
                             )?;
-                            println!(
+                            log::debug!(
                                 "  ↳ Got {} deeper joins from recursive extraction",
                                 deeper_joins.len()
                             );
@@ -1937,13 +1941,14 @@ impl JoinBuilder for LogicalPlan {
                             });
                         }
 
-                        println!(
+                        log::debug!(
                             "  ✅ Built nested pattern JOINs (left shared): {} → {}",
-                            inner_rel.alias, non_shared_alias
+                            inner_rel.alias,
+                            non_shared_alias
                         );
                     } else {
                         // Shared node doesn't match either inner connection - fallback to old behavior
-                        println!("⚠️ DEBUG: Shared node '{}' doesn't match inner connections - using fallback", shared_node_alias);
+                        log::debug!("⚠️ DEBUG: Shared node '{}' doesn't match inner connections - using fallback", shared_node_alias);
                         let mut right_joins =
                             <LogicalPlan as JoinBuilder>::extract_joins(&graph_rel.right, schema)?;
                         joins.append(&mut right_joins);
@@ -1954,7 +1959,7 @@ impl JoinBuilder for LogicalPlan {
                 // use those instead of generating new joins. This handles chained WITH clauses
                 // where the right node is a CTE reference.
                 if let LogicalPlan::GraphJoins(right_joins) = graph_rel.right.as_ref() {
-                    println!(
+                    log::debug!(
                         "DEBUG: GraphRel.right is GraphJoins with {} pre-computed joins - using them",
                         right_joins.joins.len()
                     );
@@ -1966,11 +1971,11 @@ impl JoinBuilder for LogicalPlan {
                     // Use extract_parameterized_table_ref to handle parameterized views correctly
                     let rel_table = extract_parameterized_table_ref(&graph_rel.center)
                         .unwrap_or_else(|| {
-                            println!("WARNING: extract_parameterized_table_ref returned None for relationship alias '{}', falling back to alias", graph_rel.alias);
+                            log::debug!("WARNING: extract_parameterized_table_ref returned None for relationship alias '{}', falling back to alias", graph_rel.alias);
                             graph_rel.alias.clone()
                         });
 
-                    println!("DEBUG extract_joins GraphRel: alias='{}', rel_table from extract_parameterized_table_ref='{}'", graph_rel.alias, rel_table);
+                    log::debug!("DEBUG extract_joins GraphRel: alias='{}', rel_table from extract_parameterized_table_ref='{}'", graph_rel.alias, rel_table);
 
                     let rel_cols = extract_relationship_columns(&graph_rel.center).unwrap_or(
                         RelationshipColumns {
@@ -2220,9 +2225,10 @@ impl JoinBuilder for LogicalPlan {
                         .unwrap_or_else(|| graph_rel.alias.clone())
                 };
 
-                println!(
+                log::debug!(
                     "DEBUG: GraphRel extract_joins - rel_table='{}' for alias='{}'",
-                    rel_table, graph_rel.alias
+                    rel_table,
+                    graph_rel.alias
                 );
 
                 // MULTI-HOP FIX: For ID columns, use proper extraction based on plan structure
@@ -2233,7 +2239,7 @@ impl JoinBuilder for LogicalPlan {
                     // Multi-hop: left side is another GraphRel
                     // The shared node is left_connection, which is the inner GraphRel's right node
                     // Use extract_end_node_id_column to get ID from the inner GraphRel's right side
-                    println!(
+                    log::debug!(
                         "DEBUG: Multi-hop - left_connection={}, extracting ID from inner GraphRel's right node",
                         graph_rel.left_connection
                     );
@@ -2768,9 +2774,10 @@ impl JoinBuilder for LogicalPlan {
                     wrap_conditions_and(conditions)
                 };
 
-                println!(
+                log::debug!(
                     "🔧 DEBUG: About to push JOIN 1 (relationship): {} AS {}",
-                    rel_table, graph_rel.alias
+                    rel_table,
+                    graph_rel.alias
                 );
 
                 // Compile edge constraints if present
@@ -2886,7 +2893,7 @@ impl JoinBuilder for LogicalPlan {
                     matches!(graph_rel.right.as_ref(), LogicalPlan::GraphRel(_));
 
                 if right_is_nested_graph_rel {
-                    println!(
+                    log::debug!(
                         "🔍 DEBUG: Nested GraphRel detected for {} - adding shared node JOIN",
                         graph_rel.alias
                     );
@@ -2977,7 +2984,7 @@ impl JoinBuilder for LogicalPlan {
                                     graph_rel: None,
                                 });
 
-                                println!(
+                                log::debug!(
                                     "  ✅ Added JOIN for shared node '{}' connecting to outer rel '{}'",
                                     shared_alias, graph_rel.alias
                                 );
@@ -2985,7 +2992,7 @@ impl JoinBuilder for LogicalPlan {
                         }
                     }
 
-                    println!(
+                    log::debug!(
                         "📤 DEBUG: GraphRel (alias={}) returning {} total joins (nested pattern)",
                         graph_rel.alias,
                         joins.len()
@@ -3127,9 +3134,10 @@ impl JoinBuilder for LogicalPlan {
                     wrap_conditions_and(conditions)
                 };
 
-                println!(
+                log::debug!(
                     "🔧 DEBUG: About to push JOIN 2 (end node): {} AS {}",
-                    end_table, graph_rel.right_connection
+                    end_table,
+                    graph_rel.right_connection
                 );
 
                 // DENORMALIZED EDGE CHECK: Handle denormalized relationships where end node table == relationship table
@@ -3138,7 +3146,7 @@ impl JoinBuilder for LogicalPlan {
                 // Example: AUTHORED relationship uses posts_bench for both relationship and Post node
                 // - Relationship join: posts_bench AS r2 ON r2.author_id = a.user_id
                 // - End node join: posts_bench AS d ON d.post_id = r2.post_id
-                println!(
+                log::debug!(
                     "🔧 DEBUG: Checking denormalized: end_table='{}', rel_table='{}', equal={}",
                     end_table,
                     rel_table,
@@ -3160,7 +3168,7 @@ impl JoinBuilder for LogicalPlan {
                     // Denormalized case: end_table == rel_table (same physical table)
                     // Still need JOIN 2 as a self-join on the relationship table
                     // The end node gets its own alias pointing to the same table
-                    println!("🔧 DEBUG: Adding denormalized end node JOIN: {} AS {} (same table as relationship {})",
+                    log::debug!("🔧 DEBUG: Adding denormalized end node JOIN: {} AS {} (same table as relationship {})",
                              rel_table, graph_rel.right_connection, graph_rel.alias);
                     joins.push(Join {
                         table_name: rel_table.clone(), // Same table as relationship
@@ -3172,7 +3180,7 @@ impl JoinBuilder for LogicalPlan {
                         to_id_column: None,
                         graph_rel: None,
                     });
-                    println!(
+                    log::debug!(
                         "✓ Denormalized relationship: added self-join for end node {} on table '{}'",
                         graph_rel.right_connection, rel_table
                     );
@@ -3182,7 +3190,7 @@ impl JoinBuilder for LogicalPlan {
                     );
                 }
 
-                println!(
+                log::debug!(
                     "📤 DEBUG: GraphRel (alias={}) returning {} total joins",
                     graph_rel.alias,
                     joins.len()
