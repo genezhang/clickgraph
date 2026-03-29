@@ -70,9 +70,8 @@ pub fn cypher_to_sql(
     use crate::render_plan::plan_builder::RenderPlanBuilder;
 
     let cleaned = crate::open_cypher_parser::strip_comments(cypher);
-    let (_remaining, statement) =
-        crate::open_cypher_parser::parse_cypher_statement(&cleaned)
-            .map_err(|e| format!("Parse error: {:?}", e))?;
+    let (_remaining, statement) = crate::open_cypher_parser::parse_cypher_statement(&cleaned)
+        .map_err(|e| format!("Parse error: {:?}", e))?;
 
     let (logical_plan, plan_ctx) =
         crate::query_planner::evaluate_read_statement(statement, schema, None, None, None)
@@ -105,9 +104,8 @@ pub fn cypher_to_sql_with_metadata(
     use crate::render_plan::plan_builder::RenderPlanBuilder;
 
     let cleaned = crate::open_cypher_parser::strip_comments(cypher);
-    let (_remaining, statement) =
-        crate::open_cypher_parser::parse_cypher_statement(&cleaned)
-            .map_err(|e| format!("Parse error: {:?}", e))?;
+    let (_remaining, statement) = crate::open_cypher_parser::parse_cypher_statement(&cleaned)
+        .map_err(|e| format!("Parse error: {:?}", e))?;
 
     let (logical_plan, plan_ctx) =
         crate::query_planner::evaluate_read_statement(statement, schema, None, None, None)

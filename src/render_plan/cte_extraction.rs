@@ -2965,7 +2965,8 @@ pub fn extract_ctes_with_context(
 
                         log::debug!(
                             "CTE BRANCH: Stored fixed-length JOINs for {}-{} pattern",
-                            vlp_ctx.start_alias, vlp_ctx.end_alias
+                            vlp_ctx.start_alias,
+                            vlp_ctx.end_alias
                         );
                     } else {
                         log::debug!(
@@ -6422,7 +6423,9 @@ pub fn expand_fixed_length_joins(
 
     log::debug!(
         "expand_fixed_length_joins: Generating {} hops from {} to {}",
-        exact_hops, start_alias, end_alias
+        exact_hops,
+        start_alias,
+        end_alias
     );
 
     for hop in 1..=exact_hops {
@@ -6536,7 +6539,10 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
 
     log::debug!(
         "expand_fixed_length_joins_with_context: schema_type={:?}, {} hops from {} to {}",
-        ctx.schema_type, exact_hops, ctx.start_alias, ctx.end_alias
+        ctx.schema_type,
+        exact_hops,
+        ctx.start_alias,
+        ctx.end_alias
     );
     log::debug!(
         "expand_fixed_length_joins_with_context: start_table='{}', end_table='{}', rel_table='{}'",

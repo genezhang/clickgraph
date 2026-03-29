@@ -315,7 +315,8 @@ impl AnalyzerPass for FilterTagging {
                     if let Some(col_alias) = &item.col_alias {
                         log::trace!(
                             "FilterTagging: Registering projection alias: {} -> {:?}",
-                            col_alias.0, mapped_expr
+                            col_alias.0,
+                            mapped_expr
                         );
                         plan_ctx.register_projection_alias(col_alias.0.clone(), mapped_expr);
                     }
@@ -480,7 +481,8 @@ impl AnalyzerPass for FilterTagging {
                     if let Some(col_alias) = &item.col_alias {
                         log::trace!(
                             "FilterTagging: Registering WITH clause alias: {} -> {:?}",
-                            col_alias.0, mapped_expr
+                            col_alias.0,
+                            mapped_expr
                         );
                         plan_ctx.register_projection_alias(col_alias.0.clone(), mapped_expr);
                     }
@@ -1539,7 +1541,8 @@ impl FilterTagging {
                 // This will need to be handled at SQL generation time
                 log::trace!(
                     "FilterTagging: LabelExpression {}:{} - cannot determine label statically",
-                    variable, check_label
+                    variable,
+                    check_label
                 );
                 Ok(LogicalExpr::LabelExpression {
                     variable,

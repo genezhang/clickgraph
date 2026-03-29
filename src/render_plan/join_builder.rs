@@ -1291,7 +1291,8 @@ impl JoinBuilder for LogicalPlan {
                     if vlp_ctx.is_fixed_length && exact_hops > 0 {
                         log::debug!(
                             "DEBUG: extract_joins - Fixed-length VLP (*{}) with {:?} schema",
-                            exact_hops, vlp_ctx.schema_type
+                            exact_hops,
+                            vlp_ctx.schema_type
                         );
 
                         // Use the consolidated function that handles all schema types
@@ -1391,7 +1392,8 @@ impl JoinBuilder for LogicalPlan {
 
                 log::debug!(
                     "DEBUG: extract_joins - left_is_denormalized={}, right_is_denormalized={}",
-                    left_is_denormalized, right_is_denormalized
+                    left_is_denormalized,
+                    right_is_denormalized
                 );
 
                 // For denormalized patterns, handle specially
@@ -1414,7 +1416,8 @@ impl JoinBuilder for LogicalPlan {
                     if let LogicalPlan::GraphRel(left_rel) = graph_rel.left.as_ref() {
                         log::debug!(
                             "DEBUG: DENORMALIZED multi-hop - chaining {} -> {}",
-                            left_rel.alias, graph_rel.alias
+                            left_rel.alias,
+                            graph_rel.alias
                         );
 
                         // First, recursively get joins from the left GraphRel
@@ -1739,7 +1742,8 @@ impl JoinBuilder for LogicalPlan {
 
                         log::debug!(
                             "  ✅ Built nested pattern JOINs: {} → {}",
-                            inner_rel.alias, non_shared_alias
+                            inner_rel.alias,
+                            non_shared_alias
                         );
                     } else if shared_is_inner_left {
                         // Shared node is inner's left_connection
@@ -1939,7 +1943,8 @@ impl JoinBuilder for LogicalPlan {
 
                         log::debug!(
                             "  ✅ Built nested pattern JOINs (left shared): {} → {}",
-                            inner_rel.alias, non_shared_alias
+                            inner_rel.alias,
+                            non_shared_alias
                         );
                     } else {
                         // Shared node doesn't match either inner connection - fallback to old behavior
@@ -2222,7 +2227,8 @@ impl JoinBuilder for LogicalPlan {
 
                 log::debug!(
                     "DEBUG: GraphRel extract_joins - rel_table='{}' for alias='{}'",
-                    rel_table, graph_rel.alias
+                    rel_table,
+                    graph_rel.alias
                 );
 
                 // MULTI-HOP FIX: For ID columns, use proper extraction based on plan structure
@@ -2770,7 +2776,8 @@ impl JoinBuilder for LogicalPlan {
 
                 log::debug!(
                     "🔧 DEBUG: About to push JOIN 1 (relationship): {} AS {}",
-                    rel_table, graph_rel.alias
+                    rel_table,
+                    graph_rel.alias
                 );
 
                 // Compile edge constraints if present
@@ -3129,7 +3136,8 @@ impl JoinBuilder for LogicalPlan {
 
                 log::debug!(
                     "🔧 DEBUG: About to push JOIN 2 (end node): {} AS {}",
-                    end_table, graph_rel.right_connection
+                    end_table,
+                    graph_rel.right_connection
                 );
 
                 // DENORMALIZED EDGE CHECK: Handle denormalized relationships where end node table == relationship table

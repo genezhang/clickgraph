@@ -1956,7 +1956,8 @@ pub fn extract_from(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<FromTa
             // CROSS JOINs for multiple standalone nodes are handled in extract_joins
             log::debug!(
                 "DEBUG: GraphNode.extract_from() - alias: {}, input: {:?}",
-                graph_node.alias, graph_node.input
+                graph_node.alias,
+                graph_node.input
             );
             match &*graph_node.input {
                 LogicalPlan::ViewScan(scan) => {
