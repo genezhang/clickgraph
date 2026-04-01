@@ -1268,31 +1268,6 @@ impl AnalyzerPass for VariableResolver {
             );
         }
 
-        // DEBUG: Check result cte_references
-        fn count_cte_refs(plan: &LogicalPlan) -> usize {
-            match plan {
-                LogicalPlan::WithClause(wc) => {
-                    eprintln!(
-                        "🔬 VariableResolver RESULT: WithClause has {} cte_references: {:?}",
-                        wc.cte_references.len(),
-                        wc.cte_references
-                    );
-                    wc.cte_references.len() + count_cte_refs(&wc.input)
-                }
-                LogicalPlan::Projection(p) => count_cte_refs(&p.input),
-                LogicalPlan::Limit(l) => count_cte_refs(&l.input),
-                _ => 0,
-            }
-        }
-        let result_plan = match &result {
-            Transformed::Yes(p) | Transformed::No(p) => p.as_ref(),
-        };
-        let total_refs = count_cte_refs(result_plan);
-        eprintln!(
-            "🔬 VariableResolver: RETURNING plan with {} total cte_references",
-            total_refs
-        );
-
         log::info!(
             "🔍 VariableResolver: Completed - transformed: {}",
             result.is_yes()

@@ -670,6 +670,10 @@ pub(crate) fn extract_node_labels(plan: &LogicalPlan) -> Option<Vec<String>> {
                 None
             }
         }
+        // For chained patterns like (n)-->(a)-->(b), the outer GraphRel's left child
+        // is the inner GraphRel(n→a). The shared variable `a` is the right endpoint
+        // of that inner GraphRel — recurse into it to find the correct start labels.
+        LogicalPlan::GraphRel(rel) => extract_node_labels(&rel.right),
         LogicalPlan::Filter(filter) => extract_node_labels(&filter.input),
         LogicalPlan::Projection(proj) => extract_node_labels(&proj.input),
         LogicalPlan::WithClause(wc) => extract_node_labels(&wc.input),
@@ -3028,7 +3032,7 @@ pub fn extract_ctes_with_context(
                         let is_undirected_pattern = graph_rel.was_undirected.unwrap_or(false);
 
                         // Extract start labels from graph pattern
-                        let start_labels =
+                        let mut start_labels =
                             extract_node_labels(&graph_rel.left).unwrap_or_else(|| {
                                 // Fallback 1: extract from ViewScan
                                 if let Some(label) = extract_node_label_from_viewscan_with_schema(
@@ -3052,7 +3056,6 @@ pub fn extract_ctes_with_context(
                                     }
                                 }
                                 // Fallback 3: derive from schema relationships
-                                // Use ALL variants (not just first) to get all possible from types
                                 let mut from_types: Vec<String> = rel_types
                                     .iter()
                                     .flat_map(|rt| {
@@ -3072,6 +3075,36 @@ pub fn extract_ctes_with_context(
                                 }
                                 vec!["UnknownStartType".to_string()]
                             });
+
+                        // If start_labels only contains __Unlabeled and the left child is a
+                        // chained GraphRel (i.e., this is the second+ hop of a chained pattern
+                        // like (n)-->(a)-->(b)), supplement with from_node types from the outer
+                        // relationship schemas. This handles cases like FRIEND: B→C where type
+                        // inference constrains `a` to __Unlabeled from the first hop, causing
+                        // FRIEND branches to be missed. We only apply this for chained patterns
+                        // to avoid incorrect expansions in simple single-hop anonymous patterns.
+                        if start_labels.iter().all(|l| l == "__Unlabeled")
+                            && matches!(&*graph_rel.left, LogicalPlan::GraphRel(_)) {
+                            let mut extra: Vec<String> = rel_types
+                                .iter()
+                                .flat_map(|rt| {
+                                    schema
+                                        .get_all_rel_schemas_for_type(rt)
+                                        .into_iter()
+                                        .map(|rs| rs.from_node.clone())
+                                })
+                                .filter(|ft| ft != "__Unlabeled" && !start_labels.contains(ft))
+                                .collect();
+                            extra.sort();
+                            extra.dedup();
+                            if !extra.is_empty() {
+                                log::info!(
+                                    "🔧 VLP: Supplementing start_labels with schema from_nodes {:?} for untyped start '{}'",
+                                    extra, graph_rel.left_connection
+                                );
+                                start_labels.extend(extra);
+                            }
+                        }
 
                         // For multi-type VLP, we need ALL possible end types from the relationship schema
                         // The GraphNode label might only have one type (from type inference),

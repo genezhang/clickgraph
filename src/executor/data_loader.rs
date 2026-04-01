@@ -208,11 +208,20 @@ pub fn build_node_ddl(node_schema: &NodeSchema) -> String {
         }
     }
 
-    // Property columns (skip ID columns to avoid duplication)
+    // Property columns (skip ID columns to avoid duplication).
+    // Use Nullable(T) so that nodes without a given property return NULL
+    // rather than a default value (e.g., 0 or ""). This matches Cypher
+    // semantics where accessing a missing property returns null.
     for (_, prop_val) in &node_schema.property_mappings {
         if let PropertyValue::Column(col) = prop_val {
             if !id_col_set.contains(col.as_str()) {
-                let ch_type = resolve_column_type(col, &col_to_prop, &node_schema.property_types);
+                let base_type = resolve_column_type(col, &col_to_prop, &node_schema.property_types);
+                // Wrap in Nullable unless it's already Nullable or UUID
+                let ch_type = if base_type.starts_with("Nullable") || base_type == "UUID" {
+                    base_type.to_string()
+                } else {
+                    format!("Nullable({})", base_type)
+                };
                 col_defs.push(format!("{} {}", col, ch_type));
             }
         }
@@ -268,11 +277,16 @@ pub fn build_edge_ddl(rel_schema: &RelationshipSchema) -> String {
         col_defs.push(format!("{} String", col));
     }
 
-    // Property columns (skip from_id/to_id)
+    // Property columns (skip from_id/to_id). Use Nullable for Cypher null semantics.
     for (_, prop_val) in &rel_schema.property_mappings {
         if let PropertyValue::Column(col) = prop_val {
             if !id_col_set.contains(col.as_str()) {
-                let ch_type = resolve_column_type(col, &col_to_prop, &rel_schema.property_types);
+                let base_type = resolve_column_type(col, &col_to_prop, &rel_schema.property_types);
+                let ch_type = if base_type.starts_with("Nullable") || base_type == "UUID" {
+                    base_type.to_string()
+                } else {
+                    format!("Nullable({})", base_type)
+                };
                 col_defs.push(format!("{} {}", col, ch_type));
             }
         }

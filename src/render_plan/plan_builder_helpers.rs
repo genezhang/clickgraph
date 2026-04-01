@@ -2678,8 +2678,8 @@ pub(super) fn normalize_union_branches(
         })
         .collect();
 
-    println!(
-        "DEBUG: normalize_union_branches - {} branches, {} total unique aliases: {:?}",
+    log::debug!(
+        "normalize_union_branches - {} branches, {} total unique aliases: {:?}",
         union_plans.len(),
         all_aliases.len(),
         all_aliases
@@ -2892,12 +2892,37 @@ pub(super) fn add_label_column_to_union_branches(
         .into_iter()
         .zip(logical_branches.iter())
         .map(|(mut plan, logical_branch)| {
-            // Check if __label__ already exists - skip if so
+            // Infer the node variable prefix from existing SELECT column aliases.
+            // Columns like "n._tck_id", "n.name" → prefix "n".
+            // Columns like "n.__label__" → already qualified, use that prefix.
+            let node_prefix = plan.select.items.iter()
+                .filter_map(|item| item.col_alias.as_ref())
+                .find_map(|alias| {
+                    let a = &alias.0;
+                    if let Some(dot) = a.find('.') {
+                        Some(a[..dot].to_string())
+                    } else {
+                        None
+                    }
+                });
+
+            // Build the qualified label column alias: "n.__label__" or "__label__"
+            let label_alias = if let Some(ref prefix) = node_prefix {
+                format!("{prefix}.__label__")
+            } else {
+                "__label__".to_string()
+            };
+
+            // Check if __label__ already exists (qualified or unqualified) - skip if so
             let has_label = plan
                 .select
                 .items
                 .iter()
-                .any(|item| item.col_alias.as_ref().is_some_and(|a| a.0 == "__label__"));
+                .any(|item| {
+                    item.col_alias.as_ref().is_some_and(|a| {
+                        a.0 == "__label__" || a.0.ends_with(".__label__")
+                    })
+                });
 
             if has_label {
                 log::debug!(
@@ -2908,10 +2933,13 @@ pub(super) fn add_label_column_to_union_branches(
 
             // Extract label from the logical plan's ViewScan
             let full_label = extract_node_label_from_viewscan_with_schema(logical_branch, schema)
-                .unwrap_or_else(|| "Unknown".to_string());
+                .unwrap_or_default();
 
             // Extract just the base label (e.g., "User" from "brahmand::users_bench::User")
-            let base_label = if full_label.contains("::") {
+            // Use empty string for the synthetic unlabeled bucket.
+            let base_label = if full_label == "__Unlabeled" {
+                String::new()
+            } else if full_label.contains("::") {
                 full_label
                     .split("::")
                     .last()
@@ -2922,14 +2950,15 @@ pub(super) fn add_label_column_to_union_branches(
             };
 
             log::debug!(
-                "add_label_column_to_union_branches: branch has label {:?}",
-                base_label
+                "add_label_column_to_union_branches: branch has label {:?}, alias {:?}",
+                base_label,
+                label_alias
             );
 
-            // Add __label__ as the first column
+            // Add the label column with the qualified alias (e.g. "n.__label__")
             let label_item = SelectItem {
                 expression: RenderExpr::Literal(Literal::String(base_label)),
-                col_alias: Some(ColumnAlias("__label__".to_string())),
+                col_alias: Some(ColumnAlias(label_alias)),
             };
 
             // Prepend __label__ to existing SELECT items

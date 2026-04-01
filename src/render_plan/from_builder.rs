@@ -1016,6 +1016,9 @@ impl LogicalPlan {
                 LogicalPlan::GroupBy(group_by) => find_graph_rel(&group_by.input),
                 LogicalPlan::Unwind(u) => find_graph_rel(&u.input),
                 LogicalPlan::GraphJoins(gj) => find_graph_rel(&gj.input),
+                // For multi-hop patterns: CartesianProduct(GraphRel(r1), GraphRel(r2))
+                // Traverse left to find the first (FROM anchor) GraphRel
+                LogicalPlan::CartesianProduct(cp) => find_graph_rel(&cp.left),
                 _ => None,
             }
         }

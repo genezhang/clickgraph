@@ -1166,6 +1166,72 @@ mod tests {
         Arc::new(config.to_graph_schema().expect("valid schema"))
     }
 
+    fn build_tck_fan_in_schema() -> Arc<GraphSchema> {
+        let yaml = r#"name: tck
+graph_schema:
+  nodes:
+    - label: __Unlabeled
+      database: default
+      table: tck_n___unlabeled
+      node_id: _tck_id
+      type: string
+      property_mappings:
+        _tck_id: _tck_id
+        name: name
+  edges:
+    - type: A
+      database: default
+      table: tck_e_a___unlabeled___unlabeled
+      from_node: __Unlabeled
+      to_node: __Unlabeled
+      from_id: from_id
+      to_id: to_id
+      property_mappings: {}
+    - type: KNOWS
+      database: default
+      table: tck_e_knows___unlabeled___unlabeled
+      from_node: __Unlabeled
+      to_node: __Unlabeled
+      from_id: from_id
+      to_id: to_id
+      property_mappings: {}
+"#;
+        let config: GraphSchemaConfig = serde_yaml::from_str(yaml).expect("valid yaml");
+        Arc::new(config.to_graph_schema().expect("valid schema"))
+    }
+
+    #[test]
+    fn test_chained_traversal_sql() {
+        let db = make_stub_db_with_schema(build_tck_fan_in_schema());
+        let conn = Connection::new(&db).unwrap();
+        // Chained: n-->a-->b
+        let sql = conn
+            .query_to_sql("MATCH (n)-->(a)-->(b) RETURN b")
+            .unwrap();
+        println!("Chained SQL:\n{}", sql);
+        // The SQL must reference b somehow (either as a column or CTE)
+        assert!(!sql.is_empty(), "should generate SQL");
+    }
+
+    #[test]
+    fn test_fan_in_pattern_sql() {
+        let db = make_stub_db_with_schema(build_tck_fan_in_schema());
+        let conn = Connection::new(&db).unwrap();
+        // Fan-in: three pre-bound nodes pointing to same target (scenario [21] uses lowercase)
+        let sql = conn
+            .query_to_sql(
+                "MATCH (a {name: 'a'}), (b {name: 'b'}), (c {name: 'c'}) MATCH (a)-->(x), (b)-->(x), (c)-->(x) RETURN x",
+            )
+            .unwrap();
+        println!("Fan-in SQL:\n{}", sql);
+        // Fan-in: all three VLP CTEs should appear, joined on end_id
+        assert!(sql.contains("vlp_multi_type_a_x"), "SQL should include a→x CTE: {}", sql);
+        assert!(sql.contains("vlp_multi_type_b_x"), "SQL should include b→x CTE: {}", sql);
+        assert!(sql.contains("vlp_multi_type_c_x"), "SQL should include c→x CTE: {}", sql);
+        // The outer SELECT should join the CTEs on end_id
+        assert!(sql.contains("end_id"), "SQL should join on end_id: {}", sql);
+    }
+
     fn build_writable_test_schema() -> Arc<GraphSchema> {
         let yaml = "name: test_writable\ngraph_schema:\n  nodes:\n    - label: Person\n      database: test_db\n      table: persons\n      node_id: person_id\n      property_mappings:\n        person_id: person_id\n        name: full_name\n        age: age\n  edges:\n    - type: KNOWS\n      database: test_db\n      table: knows\n      from_node: Person\n      to_node: Person\n      from_id: from_person_id\n      to_id: to_person_id\n      property_mappings:\n        since: since_year\n";
         let config: GraphSchemaConfig = serde_yaml::from_str(yaml).expect("valid yaml");

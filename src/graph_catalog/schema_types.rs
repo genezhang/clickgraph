@@ -97,6 +97,12 @@ impl SchemaType {
         }
     }
 
+    /// Return the Nullable ClickHouse type string (e.g., "Nullable(Int64)").
+    /// Used for TCK schemas where missing properties must return NULL.
+    pub fn to_nullable_clickhouse_type(&self) -> String {
+        format!("Nullable({})", self.to_clickhouse_type())
+    }
+
     /// Convert a string value to a SQL literal with correct type
     ///
     /// This is used to generate performant SQL predicates from elementId values.
@@ -205,15 +211,17 @@ impl SchemaType {
     /// Get a default/placeholder value for this type
     ///
     /// Used for generating empty CTE placeholders that maintain type compatibility.
+    /// Returns NULL for all types since property columns are Nullable(T) in writable
+    /// schemas, matching Cypher semantics where missing properties return null.
     pub fn default_value(&self) -> &'static str {
         match self {
-            SchemaType::Integer => "0",
-            SchemaType::Float => "0.0",
-            SchemaType::String => "''",
-            SchemaType::Boolean => "0",
-            SchemaType::DateTime => "'1970-01-01 00:00:00'",
-            SchemaType::Date => "'1970-01-01'",
-            SchemaType::Uuid => "'00000000-0000-0000-0000-000000000000'",
+            SchemaType::Integer => "NULL",
+            SchemaType::Float => "NULL",
+            SchemaType::String => "NULL",
+            SchemaType::Boolean => "NULL",
+            SchemaType::DateTime => "NULL",
+            SchemaType::Date => "NULL",
+            SchemaType::Uuid => "NULL",
         }
     }
 }

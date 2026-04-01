@@ -98,7 +98,29 @@ fn find_graph_rel(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_p
         LogicalPlan::OrderBy(order_by) => find_graph_rel(&order_by.input),
         LogicalPlan::Limit(limit) => find_graph_rel(&limit.input),
         LogicalPlan::Skip(skip) => find_graph_rel(&skip.input),
+        // For multi-hop patterns: CartesianProduct(GraphRel(r1), GraphRel(r2))
+        // Traverse left branch to find the first (anchor) GraphRel
+        LogicalPlan::CartesianProduct(cp) => find_graph_rel(&cp.left),
         _ => None,
+    }
+}
+
+/// Collect all GraphRels with pattern_combinations from a CartesianProduct chain,
+/// in left-to-right order. Used to generate chained JOINs for multi-hop anonymous patterns.
+fn collect_pattern_union_chain(
+    plan: &LogicalPlan,
+) -> Vec<&crate::query_planner::logical_plan::GraphRel> {
+    use crate::query_planner::logical_plan::*;
+    match plan {
+        LogicalPlan::GraphRel(gr) if gr.pattern_combinations.is_some() => vec![gr],
+        LogicalPlan::CartesianProduct(cp) => {
+            let mut result = collect_pattern_union_chain(&cp.left);
+            result.extend(collect_pattern_union_chain(&cp.right));
+            result
+        }
+        LogicalPlan::Projection(proj) => collect_pattern_union_chain(&proj.input),
+        LogicalPlan::Filter(filter) => collect_pattern_union_chain(&filter.input),
+        _ => vec![],
     }
 }
 
@@ -590,10 +612,123 @@ impl JoinBuilder for LogicalPlan {
             }
             LogicalPlan::GraphJoins(graph_joins) => {
                 // === PATTERNRESOLVER 2.0: Check for pattern_combinations FIRST ===
-                // Pattern combinations create a self-contained CTE with all JOINs already done
-                // The CTE is used as FROM, and NO additional JOINs should be generated
+                // Pattern combinations create a self-contained CTE with all JOINs already done.
+                // Single-hop: CTE is FROM, no JOINs needed.
+                // Multi-pattern: chain of CTEs connected by shared node JOINs.
+                // For each subsequent CTE, look up which endpoint (start/end) it shares with
+                // an already-seen node alias to generate the correct JOIN condition.
                 if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
                     if graph_rel.pattern_combinations.is_some() {
+                        let chain = collect_pattern_union_chain(&graph_joins.input);
+                        if chain.len() > 1 {
+                            // Multi-pattern: generate JOINs between CTEs using shared nodes.
+                            // Track: node_alias → (cte_alias, "start_id" or "end_id")
+                            let mut node_to_cte: std::collections::HashMap<
+                                &str,
+                                (&str, &'static str),
+                            > = std::collections::HashMap::new();
+                            let first = chain[0];
+                            node_to_cte.insert(
+                                first.left_connection.as_str(),
+                                (first.alias.as_str(), "start_id"),
+                            );
+                            node_to_cte.insert(
+                                first.right_connection.as_str(),
+                                (first.alias.as_str(), "end_id"),
+                            );
+
+                            let mut joins = Vec::new();
+                            for curr in &chain[1..] {
+                                let cte_name = format!("pattern_union_{}", curr.alias);
+                                // Determine join condition by finding shared node alias
+                                let joining_on = if let Some((ref_alias, ref_col)) =
+                                    node_to_cte.get(curr.left_connection.as_str())
+                                {
+                                    // curr.start_id (left_connection) is shared
+                                    vec![OperatorApplication {
+                                        operator: Operator::Equal,
+                                        operands: vec![
+                                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: TableAlias(curr.alias.clone()),
+                                                column: PropertyValue::Column(
+                                                    "start_id".to_string(),
+                                                ),
+                                            }),
+                                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: TableAlias(ref_alias.to_string()),
+                                                column: PropertyValue::Column(
+                                                    ref_col.to_string(),
+                                                ),
+                                            }),
+                                        ],
+                                    }]
+                                } else if let Some((ref_alias, ref_col)) =
+                                    node_to_cte.get(curr.right_connection.as_str())
+                                {
+                                    // curr.end_id (right_connection) is shared
+                                    vec![OperatorApplication {
+                                        operator: Operator::Equal,
+                                        operands: vec![
+                                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: TableAlias(curr.alias.clone()),
+                                                column: PropertyValue::Column("end_id".to_string()),
+                                            }),
+                                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: TableAlias(ref_alias.to_string()),
+                                                column: PropertyValue::Column(
+                                                    ref_col.to_string(),
+                                                ),
+                                            }),
+                                        ],
+                                    }]
+                                } else {
+                                    // No shared node: cross join
+                                    vec![OperatorApplication {
+                                        operator: Operator::Equal,
+                                        operands: vec![
+                                            RenderExpr::Literal(
+                                                crate::render_plan::render_expr::Literal::Integer(
+                                                    1,
+                                                ),
+                                            ),
+                                            RenderExpr::Literal(
+                                                crate::render_plan::render_expr::Literal::Integer(
+                                                    1,
+                                                ),
+                                            ),
+                                        ],
+                                    }]
+                                };
+
+                                let join = Join {
+                                    join_type: super::JoinType::Join,
+                                    table_name: cte_name,
+                                    table_alias: curr.alias.clone(),
+                                    joining_on,
+                                    pre_filter: None,
+                                    from_id_column: None,
+                                    to_id_column: None,
+                                    graph_rel: None,
+                                };
+                                joins.push(join);
+
+                                // Register this CTE's endpoints for future CTEs to reference
+                                node_to_cte.insert(
+                                    curr.left_connection.as_str(),
+                                    (curr.alias.as_str(), "start_id"),
+                                );
+                                node_to_cte.insert(
+                                    curr.right_connection.as_str(),
+                                    (curr.alias.as_str(), "end_id"),
+                                );
+                            }
+                            log::info!(
+                                "✓ PATTERNRESOLVER 2.0: multi-pattern ({} CTEs) - generated {} JOINs",
+                                chain.len(),
+                                joins.len()
+                            );
+                            return Ok(joins);
+                        }
                         log::info!(
                             "✓ PATTERNRESOLVER 2.0: pattern_combinations detected - returning empty joins (CTE is self-contained)"
                         );

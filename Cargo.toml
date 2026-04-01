@@ -3,6 +3,7 @@ members = [
     "clickgraph-client",
     "clickgraph-embedded",
     "clickgraph-ffi",
+    "clickgraph-tck",
 ]
 
 [package]

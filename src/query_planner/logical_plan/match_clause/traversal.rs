@@ -328,6 +328,25 @@ fn traverse_connected_pattern_with_mode<'a>(
             return Ok(Arc::new(LogicalPlan::Empty));
         }
 
+        // Compute rel_properties early (needed by both multi-type and regular paths)
+        let rel_properties_early = rel
+            .properties
+            .clone()
+            .map(|props| {
+                props
+                    .into_iter()
+                    .map(Property::try_from)
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()
+            .map_err(|e| {
+                LogicalPlanError::QueryPlanningError(format!(
+                    "Failed to convert relationship property: {}",
+                    e
+                ))
+            })?
+            .unwrap_or_default();
+
         // === FULLY UNTYPED MULTI-TYPE PATTERN - DEFERRED UNION ===
         // **NEW (Feb 2026 - PatternResolver 2.0)**: Instead of creating Union immediately,
         // store type combinations in GraphRel and defer UNION to CTE generation.
@@ -346,7 +365,16 @@ fn traverse_connected_pattern_with_mode<'a>(
             end_node_label,
             rel_labels
         );
-        if start_node_label.is_none() && end_node_label.is_none() {
+        // Only take the pattern_combinations (deferred UNION) path when NEITHER endpoint
+        // is already registered in plan_ctx.  If either node is known (e.g. pre-bound by an
+        // earlier MATCH clause or a prior pattern in the same clause), fall through to the
+        // regular "start in ctx" / "end in ctx" branches so the fan-in / extension joins are
+        // generated correctly within the existing plan.
+        let start_already_in_ctx = plan_ctx.get_table_ctx(&start_node_alias).is_ok();
+        let end_already_in_ctx = plan_ctx.get_table_ctx(&end_node_alias).is_ok();
+        if start_node_label.is_none() && end_node_label.is_none()
+            && !start_already_in_ctx && !end_already_in_ctx
+        {
             if let Some(ref types) = rel_labels {
                 log::debug!(
                     "  ✓ Both nodes untyped, rel_labels has {} types",
@@ -725,6 +753,22 @@ fn traverse_connected_pattern_with_mode<'a>(
                         plan_ctx,
                     )?;
 
+                    // Build where_predicate from inline relationship properties (e.g., -[r {name:'x'}]->)
+                    let rel_where_predicate = if !rel_properties_early.is_empty() {
+                        use crate::query_planner::logical_expr::{Operator, OperatorApplication};
+                        match convert_properties(rel_properties_early.clone(), &rel_alias) {
+                            Ok(filters) => filters.into_iter().reduce(|acc, f| {
+                                LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                                    operator: Operator::And,
+                                    operands: vec![acc, f],
+                                })
+                            }),
+                            Err(_) => None,
+                        }
+                    } else {
+                        None
+                    };
+
                     // Create GraphRel with pattern_combinations
                     let graph_rel_node = GraphRel {
                         left: Arc::new(LogicalPlan::GraphNode(start_graph_node)),
@@ -738,7 +782,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                         variable_length: None, // Single-hop pattern
                         shortest_path_mode: shortest_path_mode.clone(),
                         path_variable: path_variable.map(|s| s.to_string()),
-                        where_predicate: None,
+                        where_predicate: rel_where_predicate,
                         labels: rel_labels_for_scan,
                         is_optional: if is_optional { Some(true) } else { None },
                         anchor_connection: None,
@@ -800,9 +844,9 @@ fn traverse_connected_pattern_with_mode<'a>(
                         crate::query_planner::plan_ctx::TableCtx::build(
                             rel_alias.clone(),
                             Some(all_rel_types),
-                            vec![],
+                            rel_properties_early.clone(),
                             true,
-                            false,
+                            rel.name.is_some(),
                         ),
                     );
 

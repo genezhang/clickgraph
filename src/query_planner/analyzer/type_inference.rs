@@ -111,7 +111,7 @@ use crate::{
         analyzer::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
             errors::AnalyzerError,
-            pattern_resolver_config::get_max_combinations,
+            pattern_resolver_config::{get_max_combinations, MAX_RAW_COMBINATIONS},
         },
         logical_expr::{Direction, Literal, LogicalExpr},
         logical_plan::{GraphNode, GraphRel, LogicalPlan, Union, UnionType, ViewScan},
@@ -590,7 +590,12 @@ impl TypeInference {
                         is_optional: rel.is_optional,
                         anchor_connection: rel.anchor_connection.clone(),
                         cte_references: rel.cte_references.clone(),
-                        pattern_combinations: None, // TODO(future): Will be set by group optimization
+                        // Preserve pattern_combinations so that multi-type anonymous edge
+                        // patterns (e.g. `(n)-->(a)`) still generate a UNION CTE even after
+                        // TypeInference rebuilds the GraphRel with inferred node ViewScans.
+                        // Only clear it when edge_types narrowed to a single specific type —
+                        // in that case a single-table scan is sufficient.
+                        pattern_combinations: rel.pattern_combinations.clone(),
                         was_undirected: rel.was_undirected,
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphRel(new_rel))))
@@ -1616,12 +1621,15 @@ impl TypeInference {
             typed_nodes.len()
         );
 
-        // Generate type combinations (cartesian product)
+        // Generate type combinations (cartesian product).
+        // Use MAX_RAW_COMBINATIONS as the generation cap — high enough that the full
+        // cartesian product for typical schemas fits before validity filtering.
+        // max_combinations (configurable) is then applied POST-filter to cap Union branches.
         let max_combinations = get_max_combinations();
-        let combinations = generate_type_combinations(&untyped_vars, max_combinations);
+        let combinations = generate_type_combinations(&untyped_vars, MAX_RAW_COMBINATIONS);
 
         log::info!(
-            "🔍 Generated {} type combinations (max: {})",
+            "🔍 Generated {} raw type combinations (branch limit: {})",
             combinations.len(),
             max_combinations
         );
@@ -1697,7 +1705,8 @@ impl TypeInference {
             // Split plan into aggregation wrapper + scan part.
             // Clone only scan parts per combination, then re-wrap.
             for combo in valid_combinations {
-                let scan_branch = clone_plan_with_labels(&extract_scan_part(&plan), &combo);
+                let scan_branch =
+                    clone_plan_with_labels(&extract_scan_part(&plan), &combo, &all_labels_per_var);
                 log::debug!("✅ Generated scan branch for combination: {:?}", combo);
                 union_branches.push(Arc::new(scan_branch));
             }
@@ -1711,8 +1720,26 @@ impl TypeInference {
             // Re-wrap with the aggregation layers from the original plan
             Ok(rewrap_aggregation(&plan, union_arc))
         } else {
+            // If the plan has outermost pagination wrappers (Skip/OrderBy/Limit), strip
+            // them before cloning per-branch, then re-wrap around the Union.
+            // This prevents ORDER BY / LIMIT from being applied once per branch AND once
+            // on the outer query (double-SKIP/ORDER-BY bug).
+            // When there are no pagination wrappers, clone the plan as-is (original behavior)
+            // so each branch retains its Projection for correct per-label SELECT resolution.
+            let has_pagination = matches!(
+                plan.as_ref(),
+                LogicalPlan::Skip(_) | LogicalPlan::OrderBy(_) | LogicalPlan::Limit(_)
+            );
+
+            let inner_plan = if has_pagination {
+                extract_pagination_wrappers(&plan)
+            } else {
+                &plan
+            };
+
             for combo in valid_combinations {
-                let branch_plan = clone_plan_with_labels(&plan, &combo);
+                let branch_plan =
+                    clone_plan_with_labels(inner_plan, &combo, &all_labels_per_var);
                 log::debug!("✅ Generated UNION branch for combination: {:?}", combo);
                 union_branches.push(Arc::new(branch_plan));
             }
@@ -1721,8 +1748,14 @@ impl TypeInference {
                 inputs: union_branches,
                 union_type: UnionType::All,
             };
+            let union_arc = Arc::new(LogicalPlan::Union(union_plan));
 
-            Ok(Arc::new(LogicalPlan::Union(union_plan)))
+            if has_pagination {
+                // Re-wrap the Union with the stripped pagination layers
+                Ok(rewrap_pagination_wrappers(&plan, union_arc))
+            } else {
+                Ok(union_arc)
+            }
         }
     }
 
@@ -4420,6 +4453,56 @@ fn plan_has_aggregation(plan: &LogicalPlan) -> bool {
     }
 }
 
+/// Strip outermost pagination wrappers (Skip/OrderBy/Limit) from a plan, returning a
+/// reference to the inner plan. The Projection and everything below it is preserved.
+/// Used to prevent per-branch pagination in UNION plans (double-SKIP bug).
+fn extract_pagination_wrappers(plan: &LogicalPlan) -> &LogicalPlan {
+    match plan {
+        LogicalPlan::Skip(s) => extract_pagination_wrappers(&s.input),
+        LogicalPlan::OrderBy(o) => extract_pagination_wrappers(&o.input),
+        LogicalPlan::Limit(l) => extract_pagination_wrappers(&l.input),
+        other => other,
+    }
+}
+
+/// Re-wrap a new inner plan with the outermost Skip/OrderBy/Limit wrappers from `original`.
+/// Stops at non-pagination nodes (Projection, GraphJoins, etc.) and returns `new_input`.
+fn rewrap_pagination_wrappers(
+    original: &LogicalPlan,
+    new_input: Arc<LogicalPlan>,
+) -> Arc<LogicalPlan> {
+    match original {
+        LogicalPlan::Skip(s) => {
+            let inner = rewrap_pagination_wrappers(&s.input, new_input);
+            Arc::new(LogicalPlan::Skip(
+                crate::query_planner::logical_plan::Skip {
+                    input: inner,
+                    count: s.count,
+                },
+            ))
+        }
+        LogicalPlan::OrderBy(o) => {
+            let inner = rewrap_pagination_wrappers(&o.input, new_input);
+            Arc::new(LogicalPlan::OrderBy(
+                crate::query_planner::logical_plan::OrderBy {
+                    input: inner,
+                    items: o.items.clone(),
+                },
+            ))
+        }
+        LogicalPlan::Limit(l) => {
+            let inner = rewrap_pagination_wrappers(&l.input, new_input);
+            Arc::new(LogicalPlan::Limit(
+                crate::query_planner::logical_plan::Limit {
+                    input: inner,
+                    count: l.count,
+                },
+            ))
+        }
+        _ => new_input,
+    }
+}
+
 /// Extract the scan part of a plan (everything below aggregation layers).
 /// For `Projection(count(n), GroupBy(GJ(GraphNode)))`, returns `GJ(GraphNode)`.
 /// For `Projection(count(n), GJ(GraphNode))`, returns `GJ(GraphNode)`.
@@ -4538,7 +4621,15 @@ fn rewrap_aggregation(original: &LogicalPlan, new_input: Arc<LogicalPlan>) -> Ar
 /// - If already typed, it just recurses
 ///
 /// Used by generate_union_for_untyped_nodes to create properly typed plan branches.
-fn clone_plan_with_labels(plan: &LogicalPlan, combo: &HashMap<String, String>) -> LogicalPlan {
+/// `all_candidates` maps each variable name to ALL its valid type candidates across all
+/// Union arms. When a Phase 2 arm assigns a specific label to an untyped node, we also
+/// set `node_types` to all candidates so that VLP CTE generation starts from ALL types
+/// (not just this arm's specific type), ensuring comprehensive path coverage.
+fn clone_plan_with_labels(
+    plan: &LogicalPlan,
+    combo: &HashMap<String, String>,
+    all_candidates: &HashMap<String, Vec<String>>,
+) -> LogicalPlan {
     match plan {
         LogicalPlan::GraphNode(node) => {
             // If this node variable is in our combination, add the label
@@ -4547,46 +4638,60 @@ fn clone_plan_with_labels(plan: &LogicalPlan, combo: &HashMap<String, String>) -
                     // Untyped node - add the label from combination
                     let mut cloned = node.clone();
                     cloned.label = Some(label.clone());
+                    // Set node_types to ALL candidates for this variable so VLP CTE
+                    // generation uses ALL type tables as start labels (not just this arm's
+                    // specific type). This ensures paths through any node type are found.
+                    if let Some(candidates) = all_candidates.get(&node.alias) {
+                        if candidates.len() > 1 {
+                            cloned.node_types = Some(candidates.clone());
+                        }
+                    }
                     // Prune Union input to the ViewScan matching this label
-                    cloned.input = Arc::new(prune_union_for_label(&node.input, label, combo));
+                    cloned.input =
+                        Arc::new(prune_union_for_label(&node.input, label, combo, all_candidates));
                     LogicalPlan::GraphNode(cloned)
                 } else {
                     // Already typed - just recurse
                     let mut cloned = node.clone();
-                    cloned.input = Arc::new(clone_plan_with_labels(&node.input, combo));
+                    cloned.input =
+                        Arc::new(clone_plan_with_labels(&node.input, combo, all_candidates));
                     LogicalPlan::GraphNode(cloned)
                 }
             } else {
                 // Not in combination - just recurse
                 let mut cloned = node.clone();
-                cloned.input = Arc::new(clone_plan_with_labels(&node.input, combo));
+                cloned.input =
+                    Arc::new(clone_plan_with_labels(&node.input, combo, all_candidates));
                 LogicalPlan::GraphNode(cloned)
             }
         }
 
         LogicalPlan::GraphRel(graph_rel) => {
             let mut cloned = graph_rel.clone();
-            cloned.left = Arc::new(clone_plan_with_labels(&graph_rel.left, combo));
-            cloned.center = Arc::new(clone_plan_with_labels(&graph_rel.center, combo));
-            cloned.right = Arc::new(clone_plan_with_labels(&graph_rel.right, combo));
+            cloned.left = Arc::new(clone_plan_with_labels(&graph_rel.left, combo, all_candidates));
+            cloned.center =
+                Arc::new(clone_plan_with_labels(&graph_rel.center, combo, all_candidates));
+            cloned.right =
+                Arc::new(clone_plan_with_labels(&graph_rel.right, combo, all_candidates));
             LogicalPlan::GraphRel(cloned)
         }
 
         LogicalPlan::Filter(filter) => {
             let mut cloned = filter.clone();
-            cloned.input = Arc::new(clone_plan_with_labels(&filter.input, combo));
+            cloned.input =
+                Arc::new(clone_plan_with_labels(&filter.input, combo, all_candidates));
             LogicalPlan::Filter(cloned)
         }
 
         LogicalPlan::Projection(proj) => {
             let mut cloned = proj.clone();
-            cloned.input = Arc::new(clone_plan_with_labels(&proj.input, combo));
+            cloned.input = Arc::new(clone_plan_with_labels(&proj.input, combo, all_candidates));
             LogicalPlan::Projection(cloned)
         }
 
         LogicalPlan::GraphJoins(joins) => {
             let mut cloned = joins.clone();
-            cloned.input = Arc::new(clone_plan_with_labels(&joins.input, combo));
+            cloned.input = Arc::new(clone_plan_with_labels(&joins.input, combo, all_candidates));
             LogicalPlan::GraphJoins(cloned)
         }
 
@@ -4595,57 +4700,64 @@ fn clone_plan_with_labels(plan: &LogicalPlan, combo: &HashMap<String, String>) -
             cloned.inputs = union_plan
                 .inputs
                 .iter()
-                .map(|input| Arc::new(clone_plan_with_labels(input, combo)))
+                .map(|input| Arc::new(clone_plan_with_labels(input, combo, all_candidates)))
                 .collect();
             LogicalPlan::Union(cloned)
         }
 
         LogicalPlan::GroupBy(group_by) => {
             let mut cloned = group_by.clone();
-            cloned.input = Arc::new(clone_plan_with_labels(&group_by.input, combo));
+            cloned.input =
+                Arc::new(clone_plan_with_labels(&group_by.input, combo, all_candidates));
             LogicalPlan::GroupBy(cloned)
         }
 
         LogicalPlan::OrderBy(order_by) => {
             let mut cloned = order_by.clone();
-            cloned.input = Arc::new(clone_plan_with_labels(&order_by.input, combo));
+            cloned.input =
+                Arc::new(clone_plan_with_labels(&order_by.input, combo, all_candidates));
             LogicalPlan::OrderBy(cloned)
         }
 
         LogicalPlan::Limit(limit) => {
             let mut cloned = limit.clone();
-            cloned.input = Arc::new(clone_plan_with_labels(&limit.input, combo));
+            cloned.input =
+                Arc::new(clone_plan_with_labels(&limit.input, combo, all_candidates));
             LogicalPlan::Limit(cloned)
         }
 
         LogicalPlan::Skip(skip) => {
             let mut cloned = skip.clone();
-            cloned.input = Arc::new(clone_plan_with_labels(&skip.input, combo));
+            cloned.input = Arc::new(clone_plan_with_labels(&skip.input, combo, all_candidates));
             LogicalPlan::Skip(cloned)
         }
 
         LogicalPlan::WithClause(with_clause) => {
             let mut cloned = with_clause.clone();
-            cloned.input = Arc::new(clone_plan_with_labels(&with_clause.input, combo));
+            cloned.input =
+                Arc::new(clone_plan_with_labels(&with_clause.input, combo, all_candidates));
             LogicalPlan::WithClause(cloned)
         }
 
         LogicalPlan::Unwind(unwind) => {
             let mut cloned = unwind.clone();
-            cloned.input = Arc::new(clone_plan_with_labels(&unwind.input, combo));
+            cloned.input =
+                Arc::new(clone_plan_with_labels(&unwind.input, combo, all_candidates));
             LogicalPlan::Unwind(cloned)
         }
 
         LogicalPlan::CartesianProduct(cart) => {
             let mut cloned = cart.clone();
-            cloned.left = Arc::new(clone_plan_with_labels(&cart.left, combo));
-            cloned.right = Arc::new(clone_plan_with_labels(&cart.right, combo));
+            cloned.left =
+                Arc::new(clone_plan_with_labels(&cart.left, combo, all_candidates));
+            cloned.right =
+                Arc::new(clone_plan_with_labels(&cart.right, combo, all_candidates));
             LogicalPlan::CartesianProduct(cloned)
         }
 
         LogicalPlan::Cte(cte) => {
             let mut cloned = cte.clone();
-            cloned.input = Arc::new(clone_plan_with_labels(&cte.input, combo));
+            cloned.input = Arc::new(clone_plan_with_labels(&cte.input, combo, all_candidates));
             LogicalPlan::Cte(cloned)
         }
 
@@ -4670,6 +4782,7 @@ fn prune_union_for_label(
     input: &LogicalPlan,
     label: &str,
     combo: &HashMap<String, String>,
+    all_candidates: &HashMap<String, Vec<String>>,
 ) -> LogicalPlan {
     if let LogicalPlan::Union(union_plan) = input {
         // Look up the target table for this label
@@ -4697,9 +4810,9 @@ fn prune_union_for_label(
                 "prune_union_for_label: could not resolve table for label '{}', falling back to first ViewScan",
                 label
             );
-            return clone_plan_with_labels(first, combo);
+            return clone_plan_with_labels(first, combo, all_candidates);
         }
     }
     // Not a Union — just recurse
-    clone_plan_with_labels(input, combo)
+    clone_plan_with_labels(input, combo, all_candidates)
 }

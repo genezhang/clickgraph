@@ -6,6 +6,7 @@ use crate::{
             self, AggregateFnCall, Column, ColumnAlias, InSubquery, Literal, Operator,
             OperatorApplication, PropertyAccess, RenderCase, RenderExpr, ScalarFnCall, TableAlias,
         },
+        ViewTableRef,
         {
             ArrayJoinItem, Cte, CteContent, CteItems, FilterItems, FromTableItem,
             GroupByExpressions, Join, JoinItems, JoinType, OrderByItems, OrderByOrder, RenderPlan,
@@ -58,6 +59,173 @@ fn contains_string_literal(expr: &RenderExpr) -> bool {
 /// Check if any operand in the expression contains a string
 fn has_string_operand(operands: &[RenderExpr]) -> bool {
     operands.iter().any(contains_string_literal)
+}
+
+/// Ternary result for Cypher literal equality evaluation.
+#[derive(Debug, PartialEq)]
+enum CypherTriBool {
+    True,
+    False,
+    Null, // unknown
+}
+
+impl CypherTriBool {
+    fn negate(self) -> Self {
+        match self {
+            Self::True => Self::False,
+            Self::False => Self::True,
+            Self::Null => Self::Null,
+        }
+    }
+    fn sql_str(&self) -> &'static str {
+        match self {
+            Self::True => "true",
+            Self::False => "false",
+            Self::Null => "NULL",
+        }
+    }
+}
+
+/// If expr is `toString(inner)`, return `inner`; otherwise return `expr` unchanged.
+/// Used to look through the toString() wrapping that mixed-type ClickHouse arrays add.
+fn unwrap_tostring(expr: &RenderExpr) -> &RenderExpr {
+    if let RenderExpr::ScalarFnCall(fn_call) = expr {
+        if fn_call.name.eq_ignore_ascii_case("toString") && fn_call.args.len() == 1 {
+            return &fn_call.args[0];
+        }
+    }
+    expr
+}
+
+/// Statically evaluate Cypher equality between two literal RenderExpr values.
+///
+/// Implements Cypher's three-valued logic:
+/// - Different types: false (no coercion)
+/// - Either side is null: null (unknown)
+/// - List/map with null element: null if no definite mismatch, false if definite mismatch
+/// - Returns None when the result cannot be determined statically.
+fn cypher_literal_eq(lhs: &RenderExpr, rhs: &RenderExpr) -> Option<CypherTriBool> {
+    match (lhs, rhs) {
+        // null = anything → NULL (unknown)
+        (RenderExpr::Literal(Literal::Null), _) | (_, RenderExpr::Literal(Literal::Null)) => {
+            Some(CypherTriBool::Null)
+        }
+
+        // Cross-type literal comparisons → false (no type coercion in Cypher)
+        (
+            RenderExpr::Literal(Literal::String(_)),
+            RenderExpr::Literal(Literal::Integer(_) | Literal::Float(_) | Literal::Boolean(_)),
+        )
+        | (
+            RenderExpr::Literal(Literal::Integer(_) | Literal::Float(_) | Literal::Boolean(_)),
+            RenderExpr::Literal(Literal::String(_)),
+        )
+        | (
+            RenderExpr::Literal(Literal::Boolean(_)),
+            RenderExpr::Literal(Literal::Integer(_) | Literal::Float(_)),
+        )
+        | (
+            RenderExpr::Literal(Literal::Integer(_) | Literal::Float(_)),
+            RenderExpr::Literal(Literal::Boolean(_)),
+        ) => Some(CypherTriBool::False),
+
+        // Same scalar types: evaluate directly (needed for null propagation in collections)
+        (RenderExpr::Literal(Literal::Integer(a)), RenderExpr::Literal(Literal::Integer(b))) => {
+            Some(if a == b {
+                CypherTriBool::True
+            } else {
+                CypherTriBool::False
+            })
+        }
+        (RenderExpr::Literal(Literal::Float(a)), RenderExpr::Literal(Literal::Float(b))) => {
+            // NaN != NaN (IEEE 754), consistent with Cypher scenario [8]
+            Some(if a == b {
+                CypherTriBool::True
+            } else {
+                CypherTriBool::False
+            })
+        }
+        // Integer ↔ Float: Cypher treats 1 = 1.0 as true
+        (RenderExpr::Literal(Literal::Integer(a)), RenderExpr::Literal(Literal::Float(b))) => {
+            Some(if (*a as f64) == *b {
+                CypherTriBool::True
+            } else {
+                CypherTriBool::False
+            })
+        }
+        (RenderExpr::Literal(Literal::Float(a)), RenderExpr::Literal(Literal::Integer(b))) => {
+            Some(if *a == (*b as f64) {
+                CypherTriBool::True
+            } else {
+                CypherTriBool::False
+            })
+        }
+        (RenderExpr::Literal(Literal::String(a)), RenderExpr::Literal(Literal::String(b))) => {
+            Some(if a == b {
+                CypherTriBool::True
+            } else {
+                CypherTriBool::False
+            })
+        }
+        (RenderExpr::Literal(Literal::Boolean(a)), RenderExpr::Literal(Literal::Boolean(b))) => {
+            Some(if a == b {
+                CypherTriBool::True
+            } else {
+                CypherTriBool::False
+            })
+        }
+
+        // List comparison
+        (RenderExpr::List(lhs_items), RenderExpr::List(rhs_items)) => {
+            if lhs_items.len() != rhs_items.len() {
+                return Some(CypherTriBool::False);
+            }
+            let mut has_null = false;
+            for (l, r) in lhs_items.iter().zip(rhs_items.iter()) {
+                // Unwrap toString() wrapping added for mixed-type ClickHouse arrays.
+                // e.g. [[1],[2]] becomes [toString([1]), toString([2])] at render time.
+                let l_inner = unwrap_tostring(l);
+                let r_inner = unwrap_tostring(r);
+                match cypher_literal_eq(l_inner, r_inner) {
+                    Some(CypherTriBool::False) => return Some(CypherTriBool::False),
+                    Some(CypherTriBool::Null) => has_null = true,
+                    Some(CypherTriBool::True) => {}
+                    None => return None, // Can't determine statically
+                }
+            }
+            Some(if has_null {
+                CypherTriBool::Null
+            } else {
+                CypherTriBool::True
+            })
+        }
+
+        // Map comparison
+        (RenderExpr::MapLiteral(lhs_entries), RenderExpr::MapLiteral(rhs_entries)) => {
+            if lhs_entries.len() != rhs_entries.len() {
+                return Some(CypherTriBool::False);
+            }
+            let mut has_null = false;
+            for (lkey, lval) in lhs_entries {
+                match rhs_entries.iter().find(|(k, _)| k == lkey) {
+                    None => return Some(CypherTriBool::False), // key not in rhs
+                    Some((_, rv)) => match cypher_literal_eq(lval, rv) {
+                        Some(CypherTriBool::False) => return Some(CypherTriBool::False),
+                        Some(CypherTriBool::Null) => has_null = true,
+                        Some(CypherTriBool::True) => {}
+                        None => return None,
+                    },
+                }
+            }
+            Some(if has_null {
+                CypherTriBool::Null
+            } else {
+                CypherTriBool::True
+            })
+        }
+
+        _ => None, // Non-literal or mixed: can't determine statically
+    }
 }
 
 /// Flatten nested + operations into a list of operands for concat()
@@ -386,6 +554,89 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                 "🔧 VLP: FROM uses WITH CTE '{}' - skipping VLP SELECT rewriting",
                 from_ref.name
             );
+            return plan;
+        }
+    }
+
+    // ── Fan-in detection ────────────────────────────────────────────────────
+    // When multiple VLP CTEs share the same vlp_cypher_end_alias (e.g. "x"),
+    // each CTE represents one "inbound edge" fan-in constraint
+    //   (a)-->(x), (b)-->(x), (c)-->(x)
+    // The generated plan picks the outermost CTE as FROM and ignores the rest.
+    // Fix: use the first CTE as FROM, JOIN the others on end_id.
+    {
+        // Collect VLP CTEs grouped by end_alias
+        let fan_in_ctes: Vec<&Cte> = plan
+            .ctes
+            .0
+            .iter()
+            .filter(|c| c.vlp_cypher_start_alias.is_some() && c.vlp_cypher_end_alias.is_some())
+            .collect();
+
+        // Group by end_alias; fan-in only when all share the same end
+        let first_end = fan_in_ctes.first().and_then(|c| c.vlp_cypher_end_alias.as_deref());
+        let all_same_end = first_end.is_some()
+            && fan_in_ctes
+                .iter()
+                .all(|c| c.vlp_cypher_end_alias.as_deref() == first_end);
+
+        if fan_in_ctes.len() > 1 && all_same_end {
+            log::info!(
+                "🔀 Fan-in VLP detected: {} CTEs all targeting '{}'",
+                fan_in_ctes.len(),
+                first_end.unwrap_or("")
+            );
+
+            let first = fan_in_ctes[0];
+
+            // Set FROM to the first VLP CTE with the standard alias "t"
+            plan.from = FromTableItem(Some(ViewTableRef {
+                source: std::sync::Arc::new(LogicalPlan::Empty),
+                name: first.cte_name.clone(),
+                alias: Some(VLP_CTE_FROM_ALIAS.to_string()),
+                use_final: false,
+            }));
+
+            // Add INNER JOINs for the remaining CTEs, joining on end_id
+            for (i, other) in fan_in_ctes[1..].iter().enumerate() {
+                let other_alias = format!("t_fi_{}", i);
+                let join = Join {
+                    table_name: other.cte_name.clone(),
+                    table_alias: other_alias.clone(),
+                    joining_on: vec![OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(other_alias),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                    VLP_END_ID_COLUMN.to_string(),
+                                ),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(VLP_CTE_FROM_ALIAS.to_string()),
+                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                    VLP_END_ID_COLUMN.to_string(),
+                                ),
+                            }),
+                        ],
+                    }],
+                    join_type: JoinType::Inner,
+                    pre_filter: None,
+                    from_id_column: None,
+                    to_id_column: None,
+                    graph_rel: None,
+                };
+                plan.joins.0.push(join);
+            }
+
+            // Each VLP CTE already has its own start-node filter (WHERE c_1.name = '...').
+            // The outer WHERE referencing start aliases (e.g. t.start_name = 'C') is
+            // redundant and incorrect after FROM is changed. Clear it.
+            plan.filters = FilterItems(None);
+
+            // The SELECT already references t.end_* (from the old outermost CTE).
+            // Since we now use the first CTE as FROM with the same alias "t", no
+            // SELECT rewriting is needed — return immediately.
             return plan;
         }
     }
@@ -2147,33 +2398,12 @@ fn build_outer_aggregate_select(select: &SelectItems, agg_arg_cols: &[String]) -
                     }
                 }
                 // Handle agg_arg_cols: columns that aggregates reference.
-                // For UNION queries, the inner SELECT might alias these differently
-                // (e.g., n.answers exposed as "n.resolved_ip"). Match by table alias
-                // prefix to find the correct UNION output column name.
+                // Items in agg_arg_cols are projected verbatim as `col_ref AS "col_ref"`
+                // by the inner SELECT, so they are always available under their own name.
+                // Just backtick-wrap them for the outer aggregate reference.
                 for col_ref in agg_arg_cols {
                     if agg_sql.contains(col_ref.as_str()) {
-                        // Check if a non-agg SELECT item covers this column
-                        // via same table alias prefix (e.g., "n." matches both
-                        // "n.answers" and "n.resolved_ip")
-                        let prefix = col_ref.split('.').next().unwrap_or("");
-                        let mut replaced = false;
-                        if !prefix.is_empty() {
-                            let prefix_dot = format!("{}.", prefix);
-                            for (_, alias) in &expr_to_alias {
-                                if alias.starts_with(&prefix_dot) && alias != col_ref {
-                                    log::info!(
-                                        "UNION aggregate: rewriting {} → `{}` (matched by prefix '{}')",
-                                        col_ref, alias, prefix
-                                    );
-                                    agg_sql = agg_sql.replace(col_ref, &format!("`{}`", alias));
-                                    replaced = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if !replaced {
-                            agg_sql = agg_sql.replace(col_ref, &format!("`{}`", col_ref));
-                        }
+                        agg_sql = agg_sql.replace(col_ref, &format!("`{}`", col_ref));
                     }
                 }
                 format!("{} AS \"{}\"", agg_sql, alias_str)
@@ -2779,11 +3009,21 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
 
                     sql.push_str(&build_outer_aggregate_select(&plan.select, &agg_arg_cols));
                 } else {
-                    // Without aggregation: select column aliases from the subquery
+                    // Without aggregation: select column aliases from the subquery.
+                    // Exclude ORDER BY helper columns (__order_col_N) from the outer
+                    // SELECT — they exist in the __union subquery for ORDER BY use,
+                    // but must not appear as result columns.
                     let alias_select = plan
                         .select
                         .items
                         .iter()
+                        .filter(|item| {
+                            if let Some(alias) = &item.col_alias {
+                                !alias.0.starts_with("__order_col_")
+                            } else {
+                                true
+                            }
+                        })
                         .map(|item| {
                             if let Some(col_alias) = &item.col_alias {
                                 format!("`{}` AS `{}`", col_alias.0, col_alias.0)
@@ -4202,31 +4442,40 @@ impl RenderExpr {
                 // Resolve "id" pseudo-property (from id() function transform) to actual
                 // schema id column. This handles composite ID schemas where the table
                 // doesn't have a column literally named "id".
+                // Skip this rewrite if any node schema has "id" as a real property mapping —
+                // in that case filter_tagging already resolved p.id → Column("id") correctly.
                 if col_name == "id" {
                     use crate::server::query_context::get_current_schema;
                     if let Some(schema) = get_current_schema() {
-                        // Try each node schema to find one whose source_table matches
-                        // the alias's table. We check by looking at the FROM clause context.
-                        // As a heuristic, try all schemas and use the first single-column ID.
-                        for ns in schema.all_node_schemas().values() {
-                            let cols = ns.node_id.columns();
-                            if cols.len() == 1 {
-                                if let Some(first_col) = cols.first() {
-                                    log::info!(
-                                        "🔧 Resolved {}.id → {}.{} (schema id column)",
-                                        table_alias.0,
-                                        table_alias.0,
-                                        first_col
-                                    );
-                                    return format!("{}.{}", table_alias.0, first_col);
+                        // If any schema has "id" as an explicit property mapping, "id" is a
+                        // real column, not a pseudo-property residue from id() transforms.
+                        let has_id_as_property = schema
+                            .all_node_schemas()
+                            .values()
+                            .any(|ns| ns.property_mappings.contains_key("id"));
+                        if !has_id_as_property {
+                            // No schema treats "id" as a real property — this must be an id()
+                            // function residue. Rewrite to the actual node_id column.
+                            for ns in schema.all_node_schemas().values() {
+                                let cols = ns.node_id.columns();
+                                if cols.len() == 1 {
+                                    if let Some(first_col) = cols.first() {
+                                        log::info!(
+                                            "🔧 Resolved {}.id → {}.{} (schema id column)",
+                                            table_alias.0,
+                                            table_alias.0,
+                                            first_col
+                                        );
+                                        return format!("{}.{}", table_alias.0, first_col);
+                                    }
                                 }
                             }
+                            // For composite IDs, fall through to render as-is (may error)
+                            log::warn!(
+                                "⚠️  {}.id could not be resolved (composite/unknown ID)",
+                                table_alias.0
+                            );
                         }
-                        // For composite IDs, fall through to render as-is (may error)
-                        log::warn!(
-                            "⚠️  {}.id could not be resolved (composite/unknown ID)",
-                            table_alias.0
-                        );
                     }
                 }
 
@@ -4381,6 +4630,23 @@ impl RenderExpr {
                         let lhs = op.operands[0].to_sql();
                         let rhs = op.operands[1].to_sql();
                         return format!("{}.id {} {}.id", lhs, op_str, rhs);
+                    }
+                }
+
+                // Cypher literal equality: implement three-valued logic before rendering.
+                // ClickHouse has different semantics for type coercion (e.g. '1'=1 → true)
+                // and NULL propagation in collections (e.g. [null]=[1] → 0 not NULL).
+                if matches!(op.operator, Operator::Equal | Operator::NotEqual)
+                    && op.operands.len() == 2
+                {
+                    let tri_result = cypher_literal_eq(&op.operands[0], &op.operands[1]);
+                    if let Some(tri) = tri_result {
+                        let result = if op.operator == Operator::NotEqual {
+                            tri.negate()
+                        } else {
+                            tri
+                        };
+                        return result.sql_str().to_string();
                     }
                 }
 
