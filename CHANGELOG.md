@@ -1,6 +1,8 @@
-## [0.6.5-dev] - 2026-03-21
+## [0.6.5-dev] - 2026-03-29
 
 ### 🚀 Features
+
+- **openCypher TCK runner** (`clickgraph-tck/`): Cucumber-based compatibility test suite running 402 openCypher TCK scenarios in embedded (chdb) mode. Results: **383/402 passed (95.3%), 0 failures, 19 skipped**. Enabled with `CLICKGRAPH_CHDB_TESTS=1 cargo test -p clickgraph-tck --test tck`. Covers MATCH, RETURN, WITH, ORDER BY, SKIP/LIMIT, aggregations, list/null/comparison/boolean/string expressions, and multi-hop graph traversal.
 
 - **Hybrid remote query + local storage** (PR #240): Execute Cypher queries against a remote ClickHouse cluster from embedded mode, then store results locally in chdb as a subgraph for fast re-querying. New `RemoteConfig` for `SystemConfig`, plus `Connection` methods: `query_remote()`, `query_remote_graph()`, `query_graph()`, `store_subgraph()`. New `GraphResult` structured output and `StoreStats` return type. Available in Rust, Python (UniFFI), and Go (UniFFI) bindings.
 
@@ -16,11 +18,21 @@
 
 - **Python wrapper improvements** (PR #246): `result.compiling_time`/`execution_time`/`column_data_types` properties. `conn.create_node()`/`create_edge()`/`create_nodes()`/`import_file()`/`execute_sql()` accept plain Python dicts with auto-conversion to FFI Value types.
 
+### 🐛 Bug Fixes (from TCK work)
+
+- **Cypher three-valued equality**: Added `cypher_literal_eq()` in SQL generator implementing Cypher's null-propagating equality — `null = anything → null`, cross-type comparisons → `false`, list element-wise null propagation. Fixes 8 comparison test failures. (`to_sql_query.rs`)
+
+- **VLP chained-pattern start labels**: Multi-hop patterns like `MATCH (n)-->(a)-->(b) RETURN b` now correctly derive start labels for the second hop by recursing into the chained inner `GraphRel`. Supplements `__Unlabeled` start labels with schema `from_node` types for chained patterns. Fixes empty results on 2-hop traversals with labeled data. (`cte_extraction.rs`)
+
+- **List-of-lists comparison**: Extended `is_literal_like()` to recognise pure-literal nested lists, enabling native ClickHouse `Array(Array(T))` comparison (element-by-element, matching Cypher's `[2,1] > [2]` semantics). Removed unnecessary `has_type_mismatch` helpers; all-literal arrays now render as-is. (`render_expr.rs`)
+
+- **Type inference performance regression**: Reverted `max_combos` from `MAX_RAW_COMBINATIONS` (200,000) to `get_max_combinations()` (500) — the raw-cap constant was accidentally used where the post-filter limit should be, causing 400× overhead in pattern combination generation. (`type_inference.rs`)
+
 ### 📚 Documentation
 
 - **Tutorials and examples** (PR #246): 5 runnable Python scripts (`examples/embedded/`) covering quick start, DataFrames, write API, GraphRAG hybrid workflow, and export formats. Wiki tutorial page (`docs/wiki/Embedded-Tutorials.md`) with Python + Rust code, architecture diagrams, and API quick reference.
 
-### 🐛 Bug Fixes
+### 🐛 Other Bug Fixes
 
 - **Edge extraction fallback** (PR #241): `extract_edge_from_row` falls back to `from_id`/`to_id` aliases when schema FK column names don't match SQL-generated column names.
 - **Security dep updates**: `lz4_flex` 0.11.5→0.11.6 (RUSTSEC-2026-0041), `rustls-webpki` 0.103.8→0.103.10 (RUSTSEC-2026-0049).
