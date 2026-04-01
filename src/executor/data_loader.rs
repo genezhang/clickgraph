@@ -342,8 +342,8 @@ graph_schema:
         assert!(ddl.starts_with("CREATE TABLE IF NOT EXISTS"));
         assert!(ddl.contains("`mydb`.`persons`"));
         assert!(ddl.contains("person_id String DEFAULT generateUUIDv4()"));
-        assert!(ddl.contains("full_name String"));
-        assert!(ddl.contains("age String"));
+        assert!(ddl.contains("full_name Nullable(String)"));
+        assert!(ddl.contains("age Nullable(String)"));
         assert!(ddl.contains("_version UInt64 DEFAULT now64()"));
         assert!(ddl.contains("ReplacingMergeTree(_version)"));
         assert!(ddl.contains("ORDER BY (person_id)"));
@@ -389,7 +389,7 @@ graph_schema:
         assert!(ddl.contains("`mydb`.`knows`"));
         assert!(ddl.contains("from_person_id String"));
         assert!(ddl.contains("to_person_id String"));
-        assert!(ddl.contains("since_year String"));
+        assert!(ddl.contains("since_year Nullable(String)"));
         assert!(ddl.contains("_version UInt64 DEFAULT now64()"));
         assert!(ddl.contains("ReplacingMergeTree(_version)"));
         assert!(ddl.contains("ORDER BY (from_person_id, to_person_id)"));
@@ -512,29 +512,29 @@ graph_schema:
         );
         // Typed properties
         assert!(
-            ddl.contains("age_col Int64"),
-            "age should be Int64: {}",
+            ddl.contains("age_col Nullable(Int64)"),
+            "age should be Nullable(Int64): {}",
             ddl
         );
         assert!(
-            ddl.contains("score_col Float64"),
-            "score should be Float64: {}",
+            ddl.contains("score_col Nullable(Float64)"),
+            "score should be Nullable(Float64): {}",
             ddl
         );
         assert!(
-            ddl.contains("is_active UInt8"),
-            "active should be UInt8 (boolean): {}",
+            ddl.contains("is_active Nullable(UInt8)"),
+            "active should be Nullable(UInt8) (boolean): {}",
             ddl
         );
         assert!(
-            ddl.contains("join_date Date32"),
-            "joined should be Date32: {}",
+            ddl.contains("join_date Nullable(Date32)"),
+            "joined should be Nullable(Date32): {}",
             ddl
         );
-        // Untyped property defaults to String
+        // Untyped property defaults to Nullable(String)
         assert!(
-            ddl.contains("full_name String"),
-            "untyped name should be String: {}",
+            ddl.contains("full_name Nullable(String)"),
+            "untyped name should be Nullable(String): {}",
             ddl
         );
         // _version column unchanged
@@ -573,13 +573,13 @@ graph_schema:
             ddl
         );
         assert!(
-            ddl.contains("full_name String"),
-            "name should be String: {}",
+            ddl.contains("full_name Nullable(String)"),
+            "name should be Nullable(String): {}",
             ddl
         );
         assert!(
-            ddl.contains("age_col String"),
-            "age should be String: {}",
+            ddl.contains("age_col Nullable(String)"),
+            "age should be Nullable(String): {}",
             ddl
         );
     }
@@ -630,13 +630,13 @@ graph_schema:
         );
         // Typed edge properties
         assert!(
-            ddl.contains("since_year Int64"),
-            "since should be Int64: {}",
+            ddl.contains("since_year Nullable(Int64)"),
+            "since should be Nullable(Int64): {}",
             ddl
         );
         assert!(
-            ddl.contains("weight_col Float64"),
-            "weight should be Float64: {}",
+            ddl.contains("weight_col Nullable(Float64)"),
+            "weight should be Nullable(Float64): {}",
             ddl
         );
         // _version unchanged
