@@ -2252,11 +2252,14 @@ fn build_union_inner_select(select: &SelectItems) -> (String, Vec<String>) {
     agg_arg_cols.sort();
     agg_arg_cols.dedup();
 
-    // Remove agg_arg_cols that are already covered by non_agg_items —
-    // but only if the existing item's alias matches what the outer SELECT
-    // will reference. The outer uses `tag.name` (dotted) as the alias,
-    // so an existing item with alias "name" (bare) doesn't satisfy the
-    // outer reference. Keep the agg_arg_col in that case.
+    // Remove agg_arg_cols that are already covered by non_agg_items.
+    // Two coverage forms:
+    // 1. Expression-matches-alias: e.g., `tag.name AS "tag.name"` — alias == expression SQL.
+    //    The outer aggregate uses the alias, which equals the original expression.
+    // 2. Alias-matches-col: e.g., `n.Origin AS "n.code"` covers agg_arg_col "n.code".
+    //    The non-agg item already exposes the value under the exact alias the outer
+    //    aggregate references, so no redundant `n.code AS "n.code"` should be added
+    //    (which would fail if n.code doesn't exist as a DB column).
     let existing_with_matching_alias: std::collections::HashSet<String> = non_agg_items
         .iter()
         .filter_map(|item| {
@@ -2267,14 +2270,22 @@ fn build_union_inner_select(select: &SelectItems) -> (String, Vec<String>) {
                 if alias.0 == expr_sql {
                     Some(expr_sql) // alias matches expression (e.g., tag.name AS "tag.name")
                 } else {
-                    None // alias differs (e.g., tag.name AS "name") — not covered
+                    None // alias differs — check by alias below
                 }
             } else {
                 Some(expr_sql) // no alias — expression is the column name
             }
         })
         .collect();
-    agg_arg_cols.retain(|col| !existing_with_matching_alias.contains(col));
+    // Collect aliases from non-agg items to cover mapped-property cases like
+    // `n.Origin AS "n.code"` which exposes "n.code" under the correct alias.
+    let existing_by_alias: std::collections::HashSet<String> = non_agg_items
+        .iter()
+        .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
+        .collect();
+    agg_arg_cols.retain(|col| {
+        !existing_with_matching_alias.contains(col) && !existing_by_alias.contains(col)
+    });
 
     if non_agg_items.is_empty() && agg_arg_cols.is_empty() {
         return ("SELECT 1 AS __dummy\n".to_string(), vec![]);
@@ -2302,9 +2313,28 @@ fn build_union_inner_select(select: &SelectItems) -> (String, Vec<String>) {
         sql.push('\n');
     }
 
-    // Add aggregate argument columns with their SQL as alias
+    // Add aggregate argument columns with their SQL as alias.
+    // For qualified refs like "n.code" where the property part ("code") already
+    // has a non-agg item with that unqualified alias (e.g., n.Origin AS "code"),
+    // use the mapped DB column expression instead of the Cypher property name.
+    // This fixes denormalized schemas where DB column ≠ Cypher property name
+    // (e.g., Airport.code → flights.Origin/Dest).
     for col_sql in &agg_arg_cols {
-        sql.push_str(&format!("      {} AS \"{}\"", col_sql, col_sql));
+        let expr_sql = if let Some(dot_pos) = col_sql.rfind('.') {
+            let property_part = &col_sql[dot_pos + 1..];
+            non_agg_items
+                .iter()
+                .find(|i| {
+                    i.col_alias
+                        .as_ref()
+                        .map_or(false, |a| a.0 == property_part)
+                })
+                .map(|item| item.expression.to_sql())
+                .unwrap_or_else(|| col_sql.clone())
+        } else {
+            col_sql.clone()
+        };
+        sql.push_str(&format!("      {} AS \"{}\"", expr_sql, col_sql));
         idx += 1;
         if idx < total_items {
             sql.push(',');
@@ -2979,7 +3009,6 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
             plan.select.items.len(),
             agg_arg_cols
         );
-
         // Check if we need the subquery wrapper (when there's ORDER BY, LIMIT, GROUP BY, or aggregation)
         let needs_subquery = !plan.order_by.0.is_empty()
             || plan.limit.0.is_some()
