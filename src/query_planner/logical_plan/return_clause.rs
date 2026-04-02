@@ -683,9 +683,6 @@ fn build_union_with_aggregation(
         "DEBUG: Collected {} unique properties for inner SELECT",
         all_properties.len()
     );
-    for prop in &all_properties {
-        println!("  - {}.{}", prop.table_alias.0, prop.column.raw());
-    }
 
     // Step 2: Build inner projection items for each Union branch
     // If no properties needed (e.g., COUNT(*) only), use constant 1
