@@ -839,13 +839,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 let mut context = super::cte_generation::CteGenerationContext::new();
                 // Store root plan for BFS mode detection (shortestPath length-only optimization)
                 context.root_plan = Some(std::sync::Arc::new(self.clone()));
-                let ctes_vec = extract_ctes_with_context(
-                    &gj.input,
-                    "",
-                    &mut context,
-                    schema,
-                    None,
-                )?;
+                let ctes_vec =
+                    extract_ctes_with_context(&gj.input, "", &mut context, schema, None)?;
                 let ctes = CteItems(ctes_vec);
 
                 // NOW extract FROM with context so multi-type VLP can look up registered CTE names
@@ -3324,7 +3319,9 @@ impl RenderPlanBuilder for LogicalPlan {
                             // Check that branches have _tck_id but no __label__ column
                             let has_node_id_no_label = renders.iter().any(|r| {
                                 let has_tck_id = r.select.items.iter().any(|item| {
-                                    item.col_alias.as_ref().is_some_and(|a| a.0.ends_with("._tck_id"))
+                                    item.col_alias
+                                        .as_ref()
+                                        .is_some_and(|a| a.0.ends_with("._tck_id"))
                                 });
                                 let has_label = r.select.items.iter().any(|item| {
                                     item.col_alias.as_ref().is_some_and(|a| {
@@ -3841,13 +3838,8 @@ impl RenderPlanBuilder for LogicalPlan {
             };
 
             let mut context = super::cte_generation::CteGenerationContext::new();
-            let ctes_vec3 = extract_ctes_with_context(
-                cte_input,
-                "",
-                &mut context,
-                schema,
-                plan_ctx,
-            )?;
+            let ctes_vec3 =
+                extract_ctes_with_context(cte_input, "", &mut context, schema, plan_ctx)?;
             let ctes = CteItems(ctes_vec3);
 
             let mut render_plan = RenderPlan {

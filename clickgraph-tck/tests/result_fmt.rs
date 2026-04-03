@@ -56,7 +56,11 @@ fn normalize_float_cell(cell: &str) -> String {
     // Must end with ".0" and have no other decimal places
     if let Some(prefix) = cell.strip_suffix(".0") {
         // prefix should be an integer (possibly negative)
-        let digits = if let Some(p) = prefix.strip_prefix('-') { p } else { prefix };
+        let digits = if let Some(p) = prefix.strip_prefix('-') {
+            p
+        } else {
+            prefix
+        };
         if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
             return prefix.to_string();
         }
@@ -79,7 +83,9 @@ pub fn format_value(val: &Value) -> String {
             // If the string looks like a JSON array, parse and format as a Cypher list.
             // This handles cases where ClickHouse returns arrays as string representations.
             if s.starts_with('[') {
-                if let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(s) {
+                if let Ok(serde_json::Value::Array(items)) =
+                    serde_json::from_str::<serde_json::Value>(s)
+                {
                     let parts: Vec<String> = items.iter().map(format_json_value).collect();
                     return format!("[{}]", parts.join(", "));
                 }
@@ -135,14 +141,28 @@ fn format_map_value(val: &Value) -> String {
 
 /// Format a packed ClickGraph node value: `{__label__: "A", properties: "{...}"}`.
 fn format_packed_node_value(m: &[(String, Value)]) -> String {
-    let label = m.iter()
+    let label = m
+        .iter()
         .find(|(k, _)| k == "__label__")
-        .and_then(|(_, v)| if let Value::String(s) = v { Some(s.as_str()) } else { None })
+        .and_then(|(_, v)| {
+            if let Value::String(s) = v {
+                Some(s.as_str())
+            } else {
+                None
+            }
+        })
         .unwrap_or("");
 
-    let props = m.iter()
+    let props = m
+        .iter()
         .find(|(k, _)| k == "properties")
-        .and_then(|(_, v)| if let Value::String(s) = v { Some(s.as_str()) } else { None })
+        .and_then(|(_, v)| {
+            if let Value::String(s) = v {
+                Some(s.as_str())
+            } else {
+                None
+            }
+        })
         .unwrap_or("{}");
 
     format_packed_node(label, props)
@@ -150,11 +170,19 @@ fn format_packed_node_value(m: &[(String, Value)]) -> String {
 
 /// Format a packed ClickGraph edge value: `{type: ["T"], start_id: ..., end_id: ..., properties: [...]}`.
 fn format_packed_edge_value(m: &[(String, Value)]) -> String {
-    let rel_type = m.iter()
+    let rel_type = m
+        .iter()
         .find(|(k, _)| k == "type")
         .map(|(_, v)| match v {
-            Value::List(items) => items.first()
-                .and_then(|i| if let Value::String(s) = i { Some(s.as_str()) } else { None })
+            Value::List(items) => items
+                .first()
+                .and_then(|i| {
+                    if let Value::String(s) = i {
+                        Some(s.as_str())
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or(""),
             Value::String(s) => s.as_str(),
             _ => "",
@@ -162,15 +190,31 @@ fn format_packed_edge_value(m: &[(String, Value)]) -> String {
         .unwrap_or("");
 
     // Edge properties
-    let props_list = m.iter()
+    let props_list = m
+        .iter()
         .find(|(k, _)| k == "properties")
-        .and_then(|(_, v)| if let Value::List(items) = v { Some(items) } else { None });
+        .and_then(|(_, v)| {
+            if let Value::List(items) = v {
+                Some(items)
+            } else {
+                None
+            }
+        });
 
     let prop_str = if let Some(items) = props_list {
-        items.first()
-            .and_then(|i| if let Value::String(s) = i { Some(s.as_str()) } else { None })
+        items
+            .first()
+            .and_then(|i| {
+                if let Value::String(s) = i {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            })
             .unwrap_or("{}")
-    } else { "{}" };
+    } else {
+        "{}"
+    };
 
     format_packed_rel(rel_type, prop_str)
 }
@@ -181,14 +225,20 @@ fn format_packed_node(label: &str, properties_json: &str) -> String {
     let label = if label == "__Unlabeled" { "" } else { label };
     let props = parse_props_json(properties_json, Some(label));
 
-    let visible_props: Vec<_> = props.iter()
+    let visible_props: Vec<_> = props
+        .iter()
         .filter(|(k, v)| is_visible_prop(k, v))
         .collect();
 
     if visible_props.is_empty() {
-        if label.is_empty() { "()".to_string() } else { format!("(:{label})") }
+        if label.is_empty() {
+            "()".to_string()
+        } else {
+            format!("(:{label})")
+        }
     } else {
-        let prop_str = visible_props.iter()
+        let prop_str = visible_props
+            .iter()
             .map(|(k, v)| format!("{k}: {v}"))
             .collect::<Vec<_>>()
             .join(", ");
@@ -203,14 +253,16 @@ fn format_packed_node(label: &str, properties_json: &str) -> String {
 /// Parse a JSON properties blob for a relationship and build a TCK rel string.
 fn format_packed_rel(rel_type: &str, properties_json: &str) -> String {
     let props = parse_props_json(properties_json, None);
-    let visible_props: Vec<_> = props.iter()
+    let visible_props: Vec<_> = props
+        .iter()
         .filter(|(k, v)| is_visible_prop(k, v))
         .collect();
 
     if visible_props.is_empty() {
         format!("[:{rel_type}]")
     } else {
-        let prop_str = visible_props.iter()
+        let prop_str = visible_props
+            .iter()
             .map(|(k, v)| format!("{k}: {v}"))
             .collect::<Vec<_>>()
             .join(", ");
@@ -222,14 +274,22 @@ fn format_packed_rel(rel_type: &str, properties_json: &str) -> String {
 /// Note: "id" is intentionally NOT listed here — it is a user-defined property in TCK tests
 /// (the internal node ID column is "_tck_id", not "id").
 const INTERNAL_FIELDS: &[&str] = &[
-    "_tck_id", "_version", "from_id", "to_id", "__label__",
-    "start_id", "end_id",
+    "_tck_id",
+    "_version",
+    "from_id",
+    "to_id",
+    "__label__",
+    "start_id",
+    "end_id",
 ];
 
 /// Return true if a property should appear in TCK output.
 /// Hides internal fields and null/empty values (explicit 0/false are shown).
 fn is_visible_prop(key: &str, val: &str) -> bool {
-    if INTERNAL_FIELDS.iter().any(|f| key == *f || key.ends_with(&format!(".{f}"))) {
+    if INTERNAL_FIELDS
+        .iter()
+        .any(|f| key == *f || key.ends_with(&format!(".{f}")))
+    {
         return false;
     }
     is_visible_prop_str(val)
@@ -258,7 +318,8 @@ fn parse_props_json(json: &str, node_label: Option<&str>) -> Vec<(String, String
 
     // Use serde_json to parse
     if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(json) {
-        let mut result: Vec<(String, String)> = map.iter()
+        let mut result: Vec<(String, String)> = map
+            .iter()
             .map(|(k, v)| {
                 let clean_key = strip_table_prefix(k, node_label);
                 let formatted = format_json_value(v);
@@ -291,14 +352,20 @@ fn format_json_value(v: &serde_json::Value) -> String {
         serde_json::Value::Null => "null".to_string(),
         serde_json::Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
         serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() { i.to_string() }
-            else if let Some(f) = n.as_f64() { format_float(f) }
-            else { n.to_string() }
+            if let Some(i) = n.as_i64() {
+                i.to_string()
+            } else if let Some(f) = n.as_f64() {
+                format_float(f)
+            } else {
+                n.to_string()
+            }
         }
         serde_json::Value::String(s) => {
             // If the string looks like a JSON array, parse and format as a Cypher list.
             if s.starts_with('[') {
-                if let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(s) {
+                if let Ok(serde_json::Value::Array(items)) =
+                    serde_json::from_str::<serde_json::Value>(s)
+                {
                     let parts: Vec<String> = items.iter().map(format_json_value).collect();
                     return format!("[{}]", parts.join(", "));
                 }
@@ -312,7 +379,8 @@ fn format_json_value(v: &serde_json::Value) -> String {
         serde_json::Value::Object(m) => {
             let mut pairs: Vec<_> = m.iter().collect();
             pairs.sort_by_key(|(k, _)| k.clone());
-            let s: Vec<String> = pairs.iter()
+            let s: Vec<String> = pairs
+                .iter()
                 .map(|(k, v)| format!("{k}: {}", format_json_value(v)))
                 .collect();
             format!("{{{}}}", s.join(", "))
@@ -347,39 +415,58 @@ fn format_float(f: f64) -> String {
 /// `col_values` contains only columns for this variable (already extracted).
 /// `label` is the node label looked up from the query's MATCH clause.
 /// The `_tck_id` column is excluded from the output.
-pub fn format_node_from_cols(
-    cols_and_vals: &[(String, Value)],
-    label: Option<&str>,
-) -> String {
+pub fn format_node_from_cols(cols_and_vals: &[(String, Value)], label: Option<&str>) -> String {
     // Detect packed format: {__label__: "A", properties: "{json}", id: UUID}
     let has_packed = cols_and_vals.iter().any(|(k, _)| k == "__label__");
     let has_props_col = cols_and_vals.iter().any(|(k, _)| k == "properties");
     if has_packed && has_props_col {
-        let packed_label = cols_and_vals.iter()
+        let packed_label = cols_and_vals
+            .iter()
             .find(|(k, _)| k == "__label__")
-            .and_then(|(_, v)| if let Value::String(s) = v { Some(s.as_str()) } else { None })
+            .and_then(|(_, v)| {
+                if let Value::String(s) = v {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            })
             .unwrap_or("");
-        let props_json = cols_and_vals.iter()
+        let props_json = cols_and_vals
+            .iter()
             .find(|(k, _)| k == "properties")
-            .and_then(|(_, v)| if let Value::String(s) = v { Some(s.as_str()) } else { None })
+            .and_then(|(_, v)| {
+                if let Value::String(s) = v {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            })
             .unwrap_or("{}");
-        let effective_label = if packed_label.is_empty() { label.unwrap_or("") } else { packed_label };
+        let effective_label = if packed_label.is_empty() {
+            label.unwrap_or("")
+        } else {
+            packed_label
+        };
         return format_packed_node(effective_label, props_json);
     }
 
     // Try to get label from __label__ column if present (non-packed format)
-    let col_label = cols_and_vals.iter()
+    let col_label = cols_and_vals
+        .iter()
         .find(|(k, _)| k == "__label__")
-        .and_then(|(_, v)| if let Value::String(s) = v { Some(s.as_str()) } else { None })
+        .and_then(|(_, v)| {
+            if let Value::String(s) = v {
+                Some(s.as_str())
+            } else {
+                None
+            }
+        })
         .filter(|l| !l.is_empty() && *l != "__Unlabeled");
     let label_str = col_label.or(label).unwrap_or("");
 
     let mut props: Vec<(String, String)> = cols_and_vals
         .iter()
-        .filter(|(col, val)| {
-            !INTERNAL_FIELDS.iter().any(|f| *col == *f)
-                && !is_default_value(val)
-        })
+        .filter(|(col, val)| !INTERNAL_FIELDS.iter().any(|f| *col == *f) && !is_default_value(val))
         .map(|(col, val)| (col.clone(), format_map_value(val)))
         .collect();
     props.sort_by_key(|(k, _)| k.clone());
@@ -415,21 +502,37 @@ pub fn format_rel_from_cols(cols_and_vals: &[(String, Value)], rel_type: &str) -
     if type_col.is_some() && props_col.is_some() {
         // Extract rel type from List
         let effective_type = if rel_type.is_empty() {
-            type_col.and_then(|(_, v)| match v {
-                Value::List(items) => items.first()
-                    .and_then(|i| if let Value::String(s) = i { Some(s.as_str()) } else { None }),
-                Value::String(s) => Some(s.as_str()),
-                _ => None,
-            }).unwrap_or("")
-        } else { rel_type };
+            type_col
+                .and_then(|(_, v)| match v {
+                    Value::List(items) => items.first().and_then(|i| {
+                        if let Value::String(s) = i {
+                            Some(s.as_str())
+                        } else {
+                            None
+                        }
+                    }),
+                    Value::String(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("")
+        } else {
+            rel_type
+        };
 
         // Extract properties JSON from List
-        let props_json = props_col.and_then(|(_, v)| match v {
-            Value::List(items) => items.first()
-                .and_then(|i| if let Value::String(s) = i { Some(s.as_str()) } else { None }),
-            Value::String(s) => Some(s.as_str()),
-            _ => None,
-        }).unwrap_or("{}");
+        let props_json = props_col
+            .and_then(|(_, v)| match v {
+                Value::List(items) => items.first().and_then(|i| {
+                    if let Value::String(s) = i {
+                        Some(s.as_str())
+                    } else {
+                        None
+                    }
+                }),
+                Value::String(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .unwrap_or("{}");
 
         return format_packed_rel(effective_type, props_json);
     }
@@ -547,7 +650,9 @@ pub fn format_row(
 
                 // Detect relationship by column structure: has "type" + ("start_id" or "end_id")
                 let is_rel = prop_vals.iter().any(|(k, _)| k == "type")
-                    && prop_vals.iter().any(|(k, _)| k == "start_id" || k == "end_id");
+                    && prop_vals
+                        .iter()
+                        .any(|(k, _)| k == "start_id" || k == "end_id");
 
                 // Detect whether this is a node return (RETURN n) or individual property
                 // accesses (RETURN n.name, n.age). A node return always includes at least
@@ -555,9 +660,10 @@ pub fn format_row(
                 // end_id). If no such column is present, the columns are explicit property
                 // projections and should be formatted as individual scalars.
                 let has_structural = prop_vals.iter().any(|(k, _)| {
-                    matches!(k.as_str(),
-                        "_tck_id" | "__label__" | "properties" | "start_id" | "end_id"
-                        | "*")
+                    matches!(
+                        k.as_str(),
+                        "_tck_id" | "__label__" | "properties" | "start_id" | "end_id" | "*"
+                    )
                 });
 
                 if let Some(rel_type) = var_rel_types.get(prefix.as_str()) {
@@ -569,7 +675,8 @@ pub fn format_row(
                     format_node_from_cols(&prop_vals, label)
                 } else {
                     // Explicit property projections: format each as a scalar value.
-                    prop_vals.iter()
+                    prop_vals
+                        .iter()
                         .map(|(_, v)| format_value(v))
                         .collect::<Vec<_>>()
                         .join(COL_SEP)
@@ -647,7 +754,9 @@ pub fn extract_var_labels(query: &str) -> HashMap<String, String> {
         if chars[pos] == '(' {
             pos += 1;
             // Skip whitespace
-            while pos < len && chars[pos].is_whitespace() { pos += 1; }
+            while pos < len && chars[pos].is_whitespace() {
+                pos += 1;
+            }
             // Try to read variable name
             let var_start = pos;
             while pos < len && (chars[pos].is_ascii_alphanumeric() || chars[pos] == '_') {
@@ -655,11 +764,15 @@ pub fn extract_var_labels(query: &str) -> HashMap<String, String> {
             }
             let var_name = chars[var_start..pos].iter().collect::<String>();
             // Skip whitespace
-            while pos < len && chars[pos].is_whitespace() { pos += 1; }
+            while pos < len && chars[pos].is_whitespace() {
+                pos += 1;
+            }
             // Check for label
             if pos < len && chars[pos] == ':' {
                 pos += 1;
-                while pos < len && chars[pos].is_whitespace() { pos += 1; }
+                while pos < len && chars[pos].is_whitespace() {
+                    pos += 1;
+                }
                 let lbl_start = pos;
                 while pos < len && (chars[pos].is_ascii_alphanumeric() || chars[pos] == '_') {
                     pos += 1;
@@ -688,16 +801,22 @@ pub fn extract_var_rel_types(query: &str) -> HashMap<String, String> {
     while pos < len {
         if chars[pos] == '[' {
             pos += 1;
-            while pos < len && chars[pos].is_whitespace() { pos += 1; }
+            while pos < len && chars[pos].is_whitespace() {
+                pos += 1;
+            }
             let var_start = pos;
             while pos < len && (chars[pos].is_ascii_alphanumeric() || chars[pos] == '_') {
                 pos += 1;
             }
             let var_name = chars[var_start..pos].iter().collect::<String>();
-            while pos < len && chars[pos].is_whitespace() { pos += 1; }
+            while pos < len && chars[pos].is_whitespace() {
+                pos += 1;
+            }
             if pos < len && chars[pos] == ':' {
                 pos += 1;
-                while pos < len && chars[pos].is_whitespace() { pos += 1; }
+                while pos < len && chars[pos].is_whitespace() {
+                    pos += 1;
+                }
                 let type_start = pos;
                 while pos < len && (chars[pos].is_ascii_alphanumeric() || chars[pos] == '_') {
                     pos += 1;

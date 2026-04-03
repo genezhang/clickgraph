@@ -962,9 +962,7 @@ impl TryFrom<LogicalExpr> for RenderExpr {
 
     fn try_from(expr: LogicalExpr) -> Result<Self, Self::Error> {
         let expression = match expr {
-            LogicalExpr::Literal(lit) => {
-                RenderExpr::Literal(lit.try_into()?)
-            }
+            LogicalExpr::Literal(lit) => RenderExpr::Literal(lit.try_into()?),
             LogicalExpr::Raw(raw) => RenderExpr::Raw(raw),
             LogicalExpr::Star => RenderExpr::Star,
             LogicalExpr::TableAlias(alias) => RenderExpr::TableAlias(alias.try_into()?),

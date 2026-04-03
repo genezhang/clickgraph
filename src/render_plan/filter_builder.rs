@@ -615,8 +615,12 @@ fn rewrite_single_predicate_for_cte(
                     if alias == cte_alias {
                         // Relationship property access: the CTE exposes these as direct columns
                         let prop_name = match &prop.column {
-                            crate::graph_catalog::expression_parser::PropertyValue::Column(c) => c.clone(),
-                            crate::graph_catalog::expression_parser::PropertyValue::Expression(e) => e.clone(),
+                            crate::graph_catalog::expression_parser::PropertyValue::Column(c) => {
+                                c.clone()
+                            }
+                            crate::graph_catalog::expression_parser::PropertyValue::Expression(
+                                e,
+                            ) => e.clone(),
                         };
                         let cte_col = format!("{}.{}", cte_alias, prop_name);
                         let rhs_sql = render_rhs_to_sql(rhs, true);

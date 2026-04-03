@@ -1205,9 +1205,7 @@ graph_schema:
         let db = make_stub_db_with_schema(build_tck_fan_in_schema());
         let conn = Connection::new(&db).unwrap();
         // Chained: n-->a-->b
-        let sql = conn
-            .query_to_sql("MATCH (n)-->(a)-->(b) RETURN b")
-            .unwrap();
+        let sql = conn.query_to_sql("MATCH (n)-->(a)-->(b) RETURN b").unwrap();
         println!("Chained SQL:\n{}", sql);
         // The SQL must reference b somehow (either as a column or CTE)
         assert!(!sql.is_empty(), "should generate SQL");
@@ -1225,9 +1223,21 @@ graph_schema:
             .unwrap();
         println!("Fan-in SQL:\n{}", sql);
         // Fan-in: all three VLP CTEs should appear, joined on end_id
-        assert!(sql.contains("vlp_multi_type_a_x"), "SQL should include a→x CTE: {}", sql);
-        assert!(sql.contains("vlp_multi_type_b_x"), "SQL should include b→x CTE: {}", sql);
-        assert!(sql.contains("vlp_multi_type_c_x"), "SQL should include c→x CTE: {}", sql);
+        assert!(
+            sql.contains("vlp_multi_type_a_x"),
+            "SQL should include a→x CTE: {}",
+            sql
+        );
+        assert!(
+            sql.contains("vlp_multi_type_b_x"),
+            "SQL should include b→x CTE: {}",
+            sql
+        );
+        assert!(
+            sql.contains("vlp_multi_type_c_x"),
+            "SQL should include c→x CTE: {}",
+            sql
+        );
         // The outer SELECT should join the CTEs on end_id
         assert!(sql.contains("end_id"), "SQL should join on end_id: {}", sql);
     }

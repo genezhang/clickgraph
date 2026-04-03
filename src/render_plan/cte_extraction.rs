@@ -3084,7 +3084,8 @@ pub fn extract_ctes_with_context(
                         // FRIEND branches to be missed. We only apply this for chained patterns
                         // to avoid incorrect expansions in simple single-hop anonymous patterns.
                         if start_labels.iter().all(|l| l == "__Unlabeled")
-                            && matches!(&*graph_rel.left, LogicalPlan::GraphRel(_)) {
+                            && matches!(&*graph_rel.left, LogicalPlan::GraphRel(_))
+                        {
                             let mut extra: Vec<String> = rel_types
                                 .iter()
                                 .flat_map(|rt| {
