@@ -20,10 +20,10 @@
 - **`cg` CLI tool** — Agent/script-oriented CLI (`clickgraph-tool` crate). Translate and execute Cypher without a running server: `cg sql`, `cg validate`, `cg query`, `cg nl` (NL→Cypher via LLM), `cg schema show/validate/discover/diff`. Config via `~/.config/cg/config.toml`. Designed for agentic callers, CI pipelines, and scripting.
 - **`embedded` feature now opt-in** — `clickgraph-embedded` compiles without chdb by default. New `Database::new_remote(schema, RemoteConfig)` constructor executes Cypher against external ClickHouse with no chdb dependency — useful for lightweight tooling and the `cg` CLI.
 - **Agent skills** — Three publishable skills for any agentic framework (Claude Code, LangChain, AutoGen, CrewAI, OpenAI function calling): `/cypher` (NL→Cypher→execute), `/graph-schema` (show schema), `/schema-discover` (generate schema YAML from ClickHouse via LLM). See [skills/README.md](skills/README.md).
+- **openCypher TCK** — 383/402 openCypher Technology Compatibility Kit scenarios passing (95.3%), 0 failures. The 19 skipped scenarios cover Cypher write clauses (`CREATE`, `SET`, `DELETE`, `MERGE`) — not yet supported as Cypher syntax. Note: a programmatic write API (`create_node()`, `create_edge()`, `upsert_node()`) is already available in embedded mode; Cypher write syntax support is planned.
 
 ## What's New in v0.6.5-dev
 
-- **openCypher TCK** — 383/402 openCypher Technology Compatibility Kit scenarios passing (95.3%), 0 failures. The 19 skipped scenarios are write operations (`CREATE`, `SET`, `DELETE`, `MERGE`) — intentionally unsupported; ClickGraph is a read-only engine by design.
 - **Hybrid remote query + local storage** — Execute Cypher against a remote ClickHouse cluster from embedded mode, store results locally in chdb for fast re-querying. `query_remote()`, `query_remote_graph()`, `store_subgraph()` — ideal for GraphRAG context enrichment. Available in Rust, Python, and Go.
 - **Embedded write API for GraphRAG** — `create_node()`, `create_edge()`, `upsert_node()` with batch variants. AI agents can extract entities from documents, store them as an in-process graph, and query with Cypher — all without a server.
 - **Kuzu API parity** — `Value::Date/Timestamp/UUID` types, query timing (`compiling_time`/`execution_time`), `Database::in_memory()`, `Connection::set_query_timeout()`, column type metadata, multi-format file import (CSV/Parquet/JSON).
@@ -50,7 +50,7 @@ See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 - **Hybrid remote + local** - Query remote ClickHouse, store subgraph locally in chdb for fast re-querying
 - **Query Metrics** - Phase-by-phase timing via HTTP headers and structured logging
 - **ClickHouse cluster load balancing** - `CLICKHOUSE_CLUSTER` env var auto-discovers and balances queries across cluster nodes
-- **openCypher TCK: 383/402 passing (95.3%)** - 0 failures; 19 skipped = write operations (`CREATE`, `SET`, `DELETE`, `MERGE`), unsupported by design
+- **openCypher TCK: 383/402 passing (95.3%)** - 0 failures; 19 skipped = Cypher write clauses (`CREATE`, `SET`, `DELETE`, `MERGE`) not yet implemented as Cypher syntax (programmatic write API available in embedded mode)
 - **LDBC SNB benchmark: 36/37 queries (97%)** - Near-complete Social Network Benchmark coverage. See [benchmark results](benchmarks/ldbc_snb/BENCHMARK_RESULTS.md) for performance data on sf0.003, sf1 and sf10 datasets
 
 ### Neo4j Ecosystem Compatibility
@@ -292,7 +292,7 @@ RETURN friend.name
 - **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)
 
 ### Known Limitations
-- **Read-Only Engine**: Write operations not supported by design
+- **Cypher write syntax**: `CREATE`, `SET`, `DELETE`, `MERGE` not yet supported as Cypher queries. Programmatic write API (`create_node()`, `create_edge()`, `upsert_node()`) is available in embedded mode; full Cypher write support is planned.
 - **Anonymous Nodes**: Use named nodes for better SQL generation
 
 See [STATUS.md](STATUS.md) and [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for details.
