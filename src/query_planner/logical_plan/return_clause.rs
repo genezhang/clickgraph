@@ -17,6 +17,7 @@
 //! added to GROUP BY (ClickHouse requires explicit grouping).
 
 use crate::{
+    graph_catalog::expression_parser::PropertyValue,
     open_cypher_parser::ast::{Expression, ReturnClause, ReturnItem},
     query_planner::logical_expr::{
         AggregateFnCall, ColumnAlias, LogicalExpr, PropertyAccess, TableAlias,
@@ -24,7 +25,7 @@ use crate::{
     query_planner::logical_plan::{LogicalPlan, Projection, ProjectionItem, Union, UnionType},
     query_planner::plan_ctx::PlanCtx,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Type alias for pattern comprehension tuple to reduce complexity
 type PatternComprehension<'a> = (
@@ -167,17 +168,39 @@ fn find_node_id_in_plan(alias: &str, plan: &Arc<LogicalPlan>) -> Option<String> 
     match plan.as_ref() {
         LogicalPlan::GraphNode(gn) => {
             if gn.alias == alias {
-                // Found the node - get first property from from_node_properties or to_node_properties
                 if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
-                    // The first property in from/to_node_properties is typically the ID
-                    // Look for a property that matches a common ID pattern or just return the first one
+                    // For denormalized nodes, vs.id_column is the DB column name (e.g. "Origin").
+                    // We reverse-lookup the Cypher property name by finding which key in
+                    // from_node_properties / to_node_properties maps to that DB column.
+                    let find_prop_name = |props: &HashMap<String, PropertyValue>| {
+                        props
+                            .iter()
+                            .find(|(_, v)| match v {
+                                PropertyValue::Column(col) => col == &vs.id_column,
+                                _ => false,
+                            })
+                            .map(|(k, _)| k.clone())
+                            // Fallback: id_column may already be the property name (non-denorm)
+                            .or_else(|| {
+                                if props.contains_key(&vs.id_column) {
+                                    Some(vs.id_column.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                    };
                     if let Some(ref props) = vs.from_node_properties {
-                        // Return the first property name (which is the graph property, e.g., "ip")
-                        return props.keys().next().cloned();
+                        if let Some(name) = find_prop_name(props) {
+                            return Some(name);
+                        }
                     }
                     if let Some(ref props) = vs.to_node_properties {
-                        return props.keys().next().cloned();
+                        if let Some(name) = find_prop_name(props) {
+                            return Some(name);
+                        }
                     }
+                    // Last resort: use id_column directly (non-denorm case has no from/to props)
+                    return Some(vs.id_column.clone());
                 }
             }
             // Recurse into input
@@ -650,7 +673,7 @@ fn build_union_with_aggregation(
                 seen_keys.insert(key);
                 all_properties.push(PropertyAccess {
                     table_alias: TableAlias(alias.clone()),
-                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_prop),
+                    column: PropertyValue::Column(id_prop),
                 });
             }
         }
@@ -660,9 +683,6 @@ fn build_union_with_aggregation(
         "DEBUG: Collected {} unique properties for inner SELECT",
         all_properties.len()
     );
-    for prop in &all_properties {
-        println!("  - {}.{}", prop.table_alias.0, prop.column.raw());
-    }
 
     // Step 2: Build inner projection items for each Union branch
     // If no properties needed (e.g., COUNT(*) only), use constant 1

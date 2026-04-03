@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: March 21, 2026*
+*Updated: March 29, 2026*
 
 ## Current Version: v0.6.5-dev
 
@@ -11,6 +11,7 @@ Supports both remote ClickHouse and embedded (in-process) mode via chdb.
 **Integration Tests**: 183 passing (100%)
 **Embedded Tests**: 152 passing (unit + integration + e2e)
 **Go Binding Tests**: 14 passing (100%)
+**openCypher TCK**: 383/402 scenarios passing (95.3%), 0 failures, 19 skipped — see `clickgraph-tck/`
 **LDBC SNB**: 36/37 queries passing at sf0.003 and sf1 (97%) — bi-16 blocked by CALL subquery
 **Benchmark**: 14/14 queries (100%)
 **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)

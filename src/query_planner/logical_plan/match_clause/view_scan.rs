@@ -319,12 +319,34 @@ pub fn try_generate_view_scan(
                 })
                 .unwrap_or_default();
 
+            // Compute the DB column name for the node_id property in each position.
+            // node_schema.node_id.columns().first() is the Cypher property name (e.g. "ip_address").
+            // from_properties/to_properties map Cypher name → DB column (e.g. "id.orig_h").
+            let id_prop_name = node_schema
+                .node_id
+                .columns()
+                .first()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "id".to_string());
+            let from_id_column = node_schema
+                .from_properties
+                .as_ref()
+                .and_then(|props| props.get(&id_prop_name))
+                .cloned()
+                .unwrap_or_else(|| id_prop_name.clone());
+            let to_id_column = node_schema
+                .to_properties
+                .as_ref()
+                .and_then(|props| props.get(&id_prop_name))
+                .cloned()
+                .unwrap_or_else(|| id_prop_name.clone());
+
             // Create FROM position ViewScan
             let mut from_scan = ViewScan::new(
                 full_table_name.clone(),
                 None,
                 from_property_mapping, // Use FROM properties as property_mapping
-                String::new(),
+                from_id_column,
                 vec![],
                 vec![],
             );
@@ -344,7 +366,7 @@ pub fn try_generate_view_scan(
                 full_table_name,
                 None,
                 to_property_mapping, // Use TO properties as property_mapping
-                String::new(),
+                to_id_column,
                 vec![],
                 vec![],
             );
@@ -376,11 +398,30 @@ pub fn try_generate_view_scan(
         }
 
         // Case 1 or 2: Only one position - single ViewScan
+        // Compute id_column from whichever position's properties are available.
+        let id_prop_name = node_schema
+            .node_id
+            .columns()
+            .first()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "id".to_string());
+        let single_id_column = node_schema
+            .from_properties
+            .as_ref()
+            .and_then(|props| props.get(&id_prop_name))
+            .or_else(|| {
+                node_schema
+                    .to_properties
+                    .as_ref()
+                    .and_then(|props| props.get(&id_prop_name))
+            })
+            .cloned()
+            .unwrap_or_else(|| id_prop_name.clone());
         let mut view_scan = ViewScan::new(
             full_table_name,
             None,
             HashMap::new(),
-            String::new(),
+            single_id_column,
             vec![],
             vec![],
         );

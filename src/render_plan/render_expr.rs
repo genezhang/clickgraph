@@ -942,6 +942,10 @@ pub struct AggregateFnCall {
 fn is_literal_like(expr: &RenderExpr) -> bool {
     match expr {
         RenderExpr::Literal(_) | RenderExpr::Parameter(_) => true,
+        // Pure-literal nested lists: [[1,2], [3,4]] — all items must also be literal-like.
+        // This allows ClickHouse to keep native Array types for list-of-lists patterns,
+        // enabling correct element-by-element comparison (e.g., [2,1] > [2]).
+        RenderExpr::List(items) => items.iter().all(is_literal_like),
         // Unary minus: parser generates `0 - x` for `-x`
         RenderExpr::OperatorApplicationExp(op)
             if op.operator == Operator::Subtraction && op.operands.len() == 2 =>
@@ -957,15 +961,8 @@ impl TryFrom<LogicalExpr> for RenderExpr {
     type Error = RenderBuildError;
 
     fn try_from(expr: LogicalExpr) -> Result<Self, Self::Error> {
-        println!(
-            "DEBUG TryFrom RenderExpr: Converting LogicalExpr discriminant={:?}",
-            std::mem::discriminant(&expr)
-        );
         let expression = match expr {
-            LogicalExpr::Literal(lit) => {
-                crate::debug_println!("DEBUG TryFrom: Converting Literal variant");
-                RenderExpr::Literal(lit.try_into()?)
-            }
+            LogicalExpr::Literal(lit) => RenderExpr::Literal(lit.try_into()?),
             LogicalExpr::Raw(raw) => RenderExpr::Raw(raw),
             LogicalExpr::Star => RenderExpr::Star,
             LogicalExpr::TableAlias(alias) => RenderExpr::TableAlias(alias.try_into()?),
@@ -978,29 +975,20 @@ impl TryFrom<LogicalExpr> for RenderExpr {
                     .map(RenderExpr::try_from)
                     .collect::<Result<Vec<RenderExpr>, RenderBuildError>>()?;
 
-                // Cypher lists can mix types, but ClickHouse arrays must be homogeneous.
-                // When a list contains non-literal elements (property accesses, columns),
-                // we can't determine types at render time, so wrap all elements in toString()
-                // to ensure Array(String) compatibility, even for single-element lists.
+                // Cypher lists can mix types, but ClickHouse arrays require homogeneous types.
                 //
-                // Note: Parameters are treated as "literals" for this decision. Mixed
-                // parameter lists like [$stringParam, $intParam] will not get toString()
-                // wrapping here. This is acceptable because:
-                //   1) Parameters in lists are typically used for IN clauses or UNWIND,
-                //      where they should already be homogeneous.
-                //   2) The caller fully controls parameter types and can ensure they are
-                //      consistent (or convert them before passing).
+                // For literal-only lists, we always render the values as-is:
+                //   - Homogeneous scalars [1, 2, 3] or ['a', 'b'] → native Array(T)
+                //   - Homogeneous nested lists [[1,2], [3,4]] → native Array(Array(T)),
+                //     enabling correct element-by-element comparison ([2,1] > [2]).
+                //   - Heterogeneous literals [1, 'a', [1,2]] → rendered as-is; ClickHouse
+                //     will reject incompatible types. Cross-type operations (e.g. max over
+                //     mixed-type arrays) are outside ClickHouse's type system anyway.
                 //
-                // Tradeoffs of toString() wrapping:
-                //   - Type information is lost: integers, dates, booleans become strings.
-                //   - Comparison/sorting semantics become string-based (e.g., "10" < "9").
-                //   - Downstream operations expecting specific types must CAST back.
-                // This is acceptable for display-oriented use cases (e.g., LDBC complex-1
-                // collecting university/company info), but may surprise if arrays are used
-                // in calculations or type-sensitive predicates.
-                //
-                // Pure literal lists (e.g., [1, 2, 3] for IN clauses, UNWIND) are left as-is
-                // so they preserve their literal element types.
+                // For lists containing non-literal elements (property accesses, function
+                // results), we must toString() everything to create a valid Array(String),
+                // UNLESS all non-literal elements are bare node/relationship aliases that
+                // will be resolved later by rewrite_bare_variables.
                 let has_non_literal = items.iter().any(|e| !is_literal_like(e));
 
                 // Skip toString() wrapping when all non-literal elements are bare aliases
@@ -1088,14 +1076,17 @@ impl TryFrom<LogicalExpr> for RenderExpr {
                 RenderExpr::MapLiteral(converted_entries?)
             }
             LogicalExpr::LabelExpression { variable, label } => {
-                // LabelExpression should have been resolved at analysis time
-                // If it reaches here, return false (unknown label)
-                log::warn!(
-                    "LabelExpression {}:{} reached RenderExpr conversion - returning false",
-                    variable,
-                    label
-                );
-                RenderExpr::Literal(Literal::Boolean(false))
+                // Generate: variable.__label__ = 'label'
+                RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::Equal,
+                    operands: vec![
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(variable.clone()),
+                            column: PropertyValue::Column("__label__".to_string()),
+                        }),
+                        RenderExpr::Literal(Literal::String(label.clone())),
+                    ],
+                })
             }
             LogicalExpr::PatternCount(pc) => {
                 // Generate the pattern count SQL (correlated COUNT(*) subquery)
@@ -1132,7 +1123,23 @@ impl TryFrom<LogicalExpr> for RenderExpr {
                     columns: cte_ref.columns,
                 })
             }
-            // PathPattern is not present in RenderExpr
+            // PathPattern in expression context: (n:Foo) → n.__label__ = 'Foo'
+            LogicalExpr::PathPattern(PathPattern::Node(node)) => {
+                if let (Some(name), Some(label)) = (&node.name, &node.label) {
+                    RenderExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(name.clone()),
+                                column: PropertyValue::Column("__label__".to_string()),
+                            }),
+                            RenderExpr::Literal(Literal::String(label.clone())),
+                        ],
+                    })
+                } else {
+                    unimplemented!("PathPattern::Node without name or label is not supported in expression context")
+                }
+            }
             _ => unimplemented!("Conversion for this LogicalExpr variant is not implemented"),
         };
         println!(

@@ -208,11 +208,20 @@ pub fn build_node_ddl(node_schema: &NodeSchema) -> String {
         }
     }
 
-    // Property columns (skip ID columns to avoid duplication)
+    // Property columns (skip ID columns to avoid duplication).
+    // Use Nullable(T) so that nodes without a given property return NULL
+    // rather than a default value (e.g., 0 or ""). This matches Cypher
+    // semantics where accessing a missing property returns null.
     for (_, prop_val) in &node_schema.property_mappings {
         if let PropertyValue::Column(col) = prop_val {
             if !id_col_set.contains(col.as_str()) {
-                let ch_type = resolve_column_type(col, &col_to_prop, &node_schema.property_types);
+                let base_type = resolve_column_type(col, &col_to_prop, &node_schema.property_types);
+                // Wrap in Nullable unless it's already Nullable or UUID
+                let ch_type = if base_type.starts_with("Nullable") || base_type == "UUID" {
+                    base_type.to_string()
+                } else {
+                    format!("Nullable({})", base_type)
+                };
                 col_defs.push(format!("{} {}", col, ch_type));
             }
         }
@@ -268,11 +277,16 @@ pub fn build_edge_ddl(rel_schema: &RelationshipSchema) -> String {
         col_defs.push(format!("{} String", col));
     }
 
-    // Property columns (skip from_id/to_id)
+    // Property columns (skip from_id/to_id). Use Nullable for Cypher null semantics.
     for (_, prop_val) in &rel_schema.property_mappings {
         if let PropertyValue::Column(col) = prop_val {
             if !id_col_set.contains(col.as_str()) {
-                let ch_type = resolve_column_type(col, &col_to_prop, &rel_schema.property_types);
+                let base_type = resolve_column_type(col, &col_to_prop, &rel_schema.property_types);
+                let ch_type = if base_type.starts_with("Nullable") || base_type == "UUID" {
+                    base_type.to_string()
+                } else {
+                    format!("Nullable({})", base_type)
+                };
                 col_defs.push(format!("{} {}", col, ch_type));
             }
         }
@@ -328,8 +342,8 @@ graph_schema:
         assert!(ddl.starts_with("CREATE TABLE IF NOT EXISTS"));
         assert!(ddl.contains("`mydb`.`persons`"));
         assert!(ddl.contains("person_id String DEFAULT generateUUIDv4()"));
-        assert!(ddl.contains("full_name String"));
-        assert!(ddl.contains("age String"));
+        assert!(ddl.contains("full_name Nullable(String)"));
+        assert!(ddl.contains("age Nullable(String)"));
         assert!(ddl.contains("_version UInt64 DEFAULT now64()"));
         assert!(ddl.contains("ReplacingMergeTree(_version)"));
         assert!(ddl.contains("ORDER BY (person_id)"));
@@ -375,7 +389,7 @@ graph_schema:
         assert!(ddl.contains("`mydb`.`knows`"));
         assert!(ddl.contains("from_person_id String"));
         assert!(ddl.contains("to_person_id String"));
-        assert!(ddl.contains("since_year String"));
+        assert!(ddl.contains("since_year Nullable(String)"));
         assert!(ddl.contains("_version UInt64 DEFAULT now64()"));
         assert!(ddl.contains("ReplacingMergeTree(_version)"));
         assert!(ddl.contains("ORDER BY (from_person_id, to_person_id)"));
@@ -498,29 +512,29 @@ graph_schema:
         );
         // Typed properties
         assert!(
-            ddl.contains("age_col Int64"),
-            "age should be Int64: {}",
+            ddl.contains("age_col Nullable(Int64)"),
+            "age should be Nullable(Int64): {}",
             ddl
         );
         assert!(
-            ddl.contains("score_col Float64"),
-            "score should be Float64: {}",
+            ddl.contains("score_col Nullable(Float64)"),
+            "score should be Nullable(Float64): {}",
             ddl
         );
         assert!(
-            ddl.contains("is_active UInt8"),
-            "active should be UInt8 (boolean): {}",
+            ddl.contains("is_active Nullable(UInt8)"),
+            "active should be Nullable(UInt8) (boolean): {}",
             ddl
         );
         assert!(
-            ddl.contains("join_date Date32"),
-            "joined should be Date32: {}",
+            ddl.contains("join_date Nullable(Date32)"),
+            "joined should be Nullable(Date32): {}",
             ddl
         );
-        // Untyped property defaults to String
+        // Untyped property defaults to Nullable(String)
         assert!(
-            ddl.contains("full_name String"),
-            "untyped name should be String: {}",
+            ddl.contains("full_name Nullable(String)"),
+            "untyped name should be Nullable(String): {}",
             ddl
         );
         // _version column unchanged
@@ -559,13 +573,13 @@ graph_schema:
             ddl
         );
         assert!(
-            ddl.contains("full_name String"),
-            "name should be String: {}",
+            ddl.contains("full_name Nullable(String)"),
+            "name should be Nullable(String): {}",
             ddl
         );
         assert!(
-            ddl.contains("age_col String"),
-            "age should be String: {}",
+            ddl.contains("age_col Nullable(String)"),
+            "age should be Nullable(String): {}",
             ddl
         );
     }
@@ -616,13 +630,13 @@ graph_schema:
         );
         // Typed edge properties
         assert!(
-            ddl.contains("since_year Int64"),
-            "since should be Int64: {}",
+            ddl.contains("since_year Nullable(Int64)"),
+            "since should be Nullable(Int64): {}",
             ddl
         );
         assert!(
-            ddl.contains("weight_col Float64"),
-            "weight should be Float64: {}",
+            ddl.contains("weight_col Nullable(Float64)"),
+            "weight should be Nullable(Float64): {}",
             ddl
         );
         // _version unchanged

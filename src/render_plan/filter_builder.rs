@@ -609,8 +609,24 @@ fn rewrite_single_predicate_for_cte(
 
                 // Case 2: PropertyAccess — optimizer-resolved id(a) becomes a.customer_id
                 // Map any property on a node alias to start_id/end_id (click-to-expand uses ID)
+                // For the relationship alias itself, map directly to the CTE column (r.name → r.name)
                 if let LogicalExpr::PropertyAccessExp(prop) = lhs {
                     let alias = &prop.table_alias.0;
+                    if alias == cte_alias {
+                        // Relationship property access: the CTE exposes these as direct columns
+                        let prop_name = match &prop.column {
+                            crate::graph_catalog::expression_parser::PropertyValue::Column(c) => {
+                                c.clone()
+                            }
+                            crate::graph_catalog::expression_parser::PropertyValue::Expression(
+                                e,
+                            ) => e.clone(),
+                        };
+                        let cte_col = format!("{}.{}", cte_alias, prop_name);
+                        let rhs_sql = render_rhs_to_sql(rhs, true);
+                        let op_str = render_operator(&op_app.operator);
+                        return Some(format!("{} {} {}", cte_col, op_str, rhs_sql));
+                    }
                     let position = if alias == left_alias {
                         "start"
                     } else if alias == right_alias {

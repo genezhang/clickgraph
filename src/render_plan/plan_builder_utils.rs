@@ -8867,6 +8867,22 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 };
                             } // end is_denorm_union else
 
+                            // FIX: When the input plan was Empty (no MATCH before WITH),
+                            // the rendered plan has FROM=None and filters=WHERE false.
+                            // After overwriting SELECT with WITH items (pure constants like map literals),
+                            // the WHERE false is spurious — clear it so the CTE returns one row.
+                            if rendered.from.0.is_none()
+                                && rendered.joins.0.is_empty()
+                                && matches!(
+                                    &rendered.filters.0,
+                                    Some(RenderExpr::Literal(
+                                        super::render_expr::Literal::Boolean(false)
+                                    ))
+                                )
+                            {
+                                rendered.filters = FilterItems(None);
+                            }
+
                             // If there's aggregation, add GROUP BY for non-aggregate expressions
                             // PERFORMANCE: Only GROUP BY the ID column(s) for TableAlias items
                             // (non-ID columns are wrapped with ANY() above, so they don't need to be grouped)

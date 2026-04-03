@@ -4,8 +4,10 @@ FROM rust:1.85 as builder
 WORKDIR /build
 COPY . .
 
-# Build release binary
-RUN cargo build --release --bin clickgraph
+# Build release binary (--locked ensures Cargo.lock versions are used,
+# preventing transitive dep updates from pulling in crates that require
+# a newer rustc than the image provides)
+RUN cargo build --release --locked --bin clickgraph
 
 # Runtime stage
 FROM debian:bookworm-slim

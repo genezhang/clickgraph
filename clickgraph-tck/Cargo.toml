@@ -1,0 +1,24 @@
+[package]
+name = "clickgraph-tck"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "openCypher TCK (Technology Compatibility Kit) runner for ClickGraph"
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+
+[[test]]
+name = "tck"
+path = "tests/tck.rs"
+harness = false
+
+[dev-dependencies]
+clickgraph-embedded = { path = "../clickgraph-embedded" }
+cucumber = "0.21"
+futures = "0.3"
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
+regex = "1"
+serde_json = "1"

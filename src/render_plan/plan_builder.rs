@@ -839,13 +839,9 @@ impl RenderPlanBuilder for LogicalPlan {
                 let mut context = super::cte_generation::CteGenerationContext::new();
                 // Store root plan for BFS mode detection (shortestPath length-only optimization)
                 context.root_plan = Some(std::sync::Arc::new(self.clone()));
-                let ctes = CteItems(extract_ctes_with_context(
-                    &gj.input,
-                    "",
-                    &mut context,
-                    schema,
-                    None,
-                )?);
+                let ctes_vec =
+                    extract_ctes_with_context(&gj.input, "", &mut context, schema, None)?;
+                let ctes = CteItems(ctes_vec);
 
                 // NOW extract FROM with context so multi-type VLP can look up registered CTE names
                 use crate::render_plan::from_builder::FromBuilder;
@@ -1281,13 +1277,14 @@ impl RenderPlanBuilder for LogicalPlan {
                     let mut context = super::cte_generation::CteGenerationContext::new();
                     // Store root plan for BFS mode detection (shortestPath length-only optimization)
                     context.root_plan = Some(std::sync::Arc::new(self.clone()));
-                    let ctes = CteItems(extract_ctes_with_context(
+                    let ctes_vec2 = extract_ctes_with_context(
                         self,
                         &gr.right_connection,
                         &mut context,
                         schema,
                         None,
-                    )?);
+                    )?;
+                    let ctes = CteItems(ctes_vec2);
 
                     // Create temporary render plan to populate CTE registry
                     let _temp_render_plan = RenderPlan {
@@ -2812,12 +2809,6 @@ impl RenderPlanBuilder for LogicalPlan {
         };
 
         let has_with_clause = has_with_clause_in_graph_rel(self);
-        log::debug!(
-            "to_render_plan_with_ctx: has_with_clause={}, plan_ctx available: {}, plan discriminant: {:?}",
-            has_with_clause,
-            plan_ctx.is_some(),
-            std::mem::discriminant(self)
-        );
 
         if has_with_clause {
             return build_chained_with_match_cte_plan(self, schema, plan_ctx, scope);
@@ -2852,10 +2843,10 @@ impl RenderPlanBuilder for LogicalPlan {
                 LogicalPlan::Projection(p) => core_is_empty(&p.input),
                 LogicalPlan::GraphJoins(gj) => core_is_empty(&gj.input),
                 LogicalPlan::Unwind(u) => core_is_empty(&u.input),
-                LogicalPlan::GraphNode(gn) => {
-                    log::debug!("core_is_empty: GraphNode, checking input");
-                    core_is_empty(&gn.input)
-                }
+                // GraphNode always represents a real table scan — even with Empty input
+                // (which just means "no JOIN predecessors", not "no data"). Never treat
+                // a GraphNode as core-empty.
+                LogicalPlan::GraphNode(_) => false,
                 _ => {
                     log::debug!(
                         "core_is_empty: unhandled variant {:?}",
@@ -3285,6 +3276,14 @@ impl RenderPlanBuilder for LogicalPlan {
                         // Check if the RETURN clause returns whole nodes/relationships
                         // (bare variable like `RETURN n`) vs specific properties
                         // (`RETURN n.name`). __label__ is only needed for whole-node returns.
+                        //
+                        // There are two cases:
+                        // 1. Labeled MATCH with RETURN n: inner branches have
+                        //    `Projection(TableAlias("n"), input=GraphJoins(...))`.
+                        // 2. Schema-level MATCH (n) RETURN n: outer Projection(TableAlias)
+                        //    is ABOVE the Union; branches are bare `GraphJoins(GraphNode)`.
+                        //    For this case, detect packed node format by checking if
+                        //    rendered branches include a `properties` column.
                         fn returns_whole_entity(plan: &LogicalPlan) -> bool {
                             match plan {
                                 LogicalPlan::Projection(p) => p.items.iter().any(|item| {
@@ -3305,6 +3304,45 @@ impl RenderPlanBuilder for LogicalPlan {
                             }
                         }
 
+                        // For schema-level MATCH (n) RETURN n, branches don't have Projection
+                        // inside — the outer Projection is above the Union. Branches have
+                        // `n._tck_id` (internal node ID) but no `n.__label__`. Detect this
+                        // by checking rendered branches. Only trigger when at least one
+                        // branch has a detectable, non-empty label (i.e. at least one labeled
+                        // node type exists) — avoids adding spurious labels to all-unlabeled
+                        // queries where the expected output never shows a label.
+                        fn branches_need_label_column(
+                            renders: &[super::RenderPlan],
+                            logical_branches: &[std::sync::Arc<LogicalPlan>],
+                            schema: &crate::graph_catalog::graph_schema::GraphSchema,
+                        ) -> bool {
+                            // Check that branches have _tck_id but no __label__ column
+                            let has_node_id_no_label = renders.iter().any(|r| {
+                                let has_tck_id = r.select.items.iter().any(|item| {
+                                    item.col_alias
+                                        .as_ref()
+                                        .is_some_and(|a| a.0.ends_with("._tck_id"))
+                                });
+                                let has_label = r.select.items.iter().any(|item| {
+                                    item.col_alias.as_ref().is_some_and(|a| {
+                                        a.0 == "__label__" || a.0.ends_with(".__label__")
+                                    })
+                                });
+                                has_tck_id && !has_label
+                            });
+                            if !has_node_id_no_label {
+                                return false;
+                            }
+                            // Only add labels if at least one branch has a real (non-Unlabeled) label.
+                            // This avoids adding "Unknown" labels to all-unlabeled MATCH queries.
+                            logical_branches.iter().any(|branch| {
+                                matches!(
+                                    super::cte_extraction::extract_node_label_from_viewscan_with_schema(branch, schema),
+                                    Some(ref lbl) if !lbl.is_empty() && lbl != "__Unlabeled"
+                                )
+                            })
+                        }
+
                         let rel_count = union
                             .inputs
                             .iter()
@@ -3315,10 +3353,12 @@ impl RenderPlanBuilder for LogicalPlan {
                         let has_whole_entity_return = union
                             .inputs
                             .iter()
-                            .any(|input| returns_whole_entity(input.as_ref()));
+                            .any(|input| returns_whole_entity(input.as_ref()))
+                            // Schema-level MATCH (n) RETURN n with mixed labels: branches have
+                            // _tck_id but no __label__, and at least one real label exists.
+                            || (none_have_rels && branches_need_label_column(&branch_renders, &union.inputs, schema));
                         log::debug!(
-                            "🔀 Label decision: none_have_rels={}, all_have_rels={}, has_whole_entity_return={}",
-                            none_have_rels, all_have_rels, has_whole_entity_return
+                            "🔀 Label decision: none_have_rels={none_have_rels}, all_have_rels={all_have_rels}, has_whole_entity_return={has_whole_entity_return}"
                         );
 
                         // Add label columns only when:
@@ -3518,6 +3558,13 @@ impl RenderPlanBuilder for LogicalPlan {
                     let any_complex = all_renders
                         .iter()
                         .any(|r| r.union.0.is_some() || r.limit.0.is_some());
+
+                    if all_renders.is_empty() {
+                        log::warn!("⚠️ UNION: all branches deduped away — returning empty plan");
+                        return Err(super::errors::RenderBuildError::InvalidRenderPlan(
+                            "All UNION branches were deduplicated away".to_string(),
+                        ));
+                    }
 
                     let mut base_render = all_renders.remove(0);
                     base_render.ctes.0 = all_ctes;
@@ -3791,13 +3838,9 @@ impl RenderPlanBuilder for LogicalPlan {
             };
 
             let mut context = super::cte_generation::CteGenerationContext::new();
-            let ctes = CteItems(extract_ctes_with_context(
-                cte_input,
-                "",
-                &mut context,
-                schema,
-                plan_ctx,
-            )?);
+            let ctes_vec3 =
+                extract_ctes_with_context(cte_input, "", &mut context, schema, plan_ctx)?;
+            let ctes = CteItems(ctes_vec3);
 
             let mut render_plan = RenderPlan {
                 ctes,
