@@ -71,6 +71,7 @@ curl -X POST http://localhost:8080/query \
 - **[Quick Start Guide](Quick-Start-Guide.md)** - 5-minute Docker setup (includes pre-built binary option)
 - **[Embedded Mode](Embedded-Mode.md)** - In-process graph queries over Parquet/Iceberg/Delta (no ClickHouse needed)
 - **[Language Bindings](Language-Bindings.md)** - Rust, Python, and Go library APIs
+- **[Agent Skills](Agent-Skills.md)** - `/cypher` and `/graph-schema` skills for Claude Code and any agent framework (backed by `cg` CLI, no MCP needed)
 - **[AI Assistant Integration (MCP)](AI-Assistant-Integration-MCP.md)** - Use ClickGraph with Claude via MCP; `cg` CLI for agent/script NL→Cypher
 - **[Schema Discovery](Schema-Discovery.md)** - LLM-powered schema generation (server or `cg schema discover`)
 - **[Your First Graph](Your-First-Graph.md)** - Build a simple social network graph
@@ -100,7 +101,8 @@ curl -X POST http://localhost:8080/query \
 - **[Performance Tuning](Performance-Query-Optimization.md)** - Query and schema optimization
 
 ### Integrations
-- **[AI Assistant Integration (MCP)](AI-Assistant-Integration-MCP.md)** - 🤖 Use ClickGraph with Claude and other AI assistants via Model Context Protocol
+- **[Agent Skills](Agent-Skills.md)** - `/cypher` and `/graph-schema` skills for Claude Code, LangChain, AutoGen, CrewAI, and OpenAI function calling
+- **[AI Assistant Integration (MCP)](AI-Assistant-Integration-MCP.md)** - Use ClickGraph with Claude and other AI assistants via Model Context Protocol
 - **[Neo4j Tools Integration](Neo4j-Tools-Integration.md)** - Connect Neo4j Browser, Neodash, and cypher-shell
 - **[Graph-Notebook Compatibility](Graph-Notebook-Compatibility.md)** - 📊 Jupyter notebook visualization with AWS graph-notebook
 

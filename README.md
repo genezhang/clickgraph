@@ -176,9 +176,26 @@ cd demos/neo4j-browser && bash setup.sh
 Then open http://localhost:7474 and connect to `bolt://localhost:7687`.
 See [demos/neo4j-browser/README.md](https://github.com/genezhang/clickgraph/blob/main/demos/neo4j-browser/README.md) for details.
 
-### AI Assistant Integration (MCP)
+### AI Assistant Integration
 
-ClickGraph implements `apoc.meta.schema()` and Neo4j-compatible schema procedures, enabling AI assistants (Claude, etc.) to discover your graph structure via MCP servers like [`@anthropic-ai/mcp-server-neo4j`](https://www.npmjs.com/package/@anthropic-ai/mcp-server-neo4j) and [`@neo4j/mcp-neo4j`](https://www.npmjs.com/package/@neo4j/mcp-neo4j).
+**Agent skills** — drop-in skills for Claude Code and other agentic frameworks, backed by the `cg` CLI (no MCP server needed):
+
+```bash
+# Install for Claude Code
+mkdir -p .claude/commands
+curl -L https://raw.githubusercontent.com/genezhang/clickgraph/main/skills/cypher.md \
+  -o .claude/commands/cypher.md
+curl -L https://raw.githubusercontent.com/genezhang/clickgraph/main/skills/graph-schema.md \
+  -o .claude/commands/graph-schema.md
+
+# Then in Claude Code:
+# /cypher find users with more than 10 followers
+# /graph-schema
+```
+
+See **[skills/README.md](skills/README.md)** for installation across Claude Code, LangChain, AutoGen, CrewAI, and OpenAI function calling.
+
+**MCP server** — for frameworks requiring the MCP protocol, ClickGraph implements `apoc.meta.schema()` and Neo4j-compatible schema procedures, compatible with [`@anthropic-ai/mcp-server-neo4j`](https://www.npmjs.com/package/@anthropic-ai/mcp-server-neo4j) and [`@neo4j/mcp-neo4j`](https://www.npmjs.com/package/@neo4j/mcp-neo4j).
 
 See the **[MCP Setup Guide](https://github.com/genezhang/clickgraph/blob/main/docs/wiki/AI-Assistant-Integration-MCP.md)** for configuration details.
 
