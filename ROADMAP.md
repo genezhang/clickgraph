@@ -1,7 +1,7 @@
 # ClickGraph Roadmap
 
-**Last Updated**: March 21, 2026
-**Current Version**: v0.6.5-dev (Phase 3 Complete, Phase 4 In Progress)
+**Last Updated**: April 3, 2026
+**Current Version**: v0.6.6-dev (Phase 3 Complete, Phase 4 In Progress)
 
 This document outlines delivered features, current status, and planned enhancements for ClickGraph.
 

@@ -12,6 +12,31 @@ The Model Context Protocol (MCP) enables AI assistants to connect to external da
 - 🚀 **Instant Setup**: 2-minute configuration
 - 💬 **Natural Language**: Query graphs conversationally
 
+## Two Integration Paths
+
+| Path | When to use |
+|------|-------------|
+| **MCP server** (this page) | AI assistants that support MCP (Claude Desktop, Cursor, etc.) |
+| **`cg` CLI tool** | Agentic code / scripts that call ClickGraph directly without a UI |
+
+### Using `cg` for Agent/Script Use
+
+For AI agents that generate and execute code, the `cg` CLI provides direct NL→Cypher→execution without an MCP server:
+
+```bash
+# Translate natural language to Cypher (requires ANTHROPIC_API_KEY or OPENAI_API_KEY)
+cg --schema schema.yaml nl "find users with more than 10 followers"
+
+# Execute the generated Cypher against ClickHouse
+cg --schema schema.yaml --clickhouse http://localhost:8123 \
+  nl --execute "find users with more than 10 followers"
+
+# Show schema in compact LLM-friendly format
+cg --schema schema.yaml schema show
+```
+
+Configure once in `~/.config/cg/config.toml` and `cg` handles credentials, schema loading, and LLM calls — ideal for Claude Code skills, CI pipelines, and agentic workflows.
+
 ## Quick Start
 
 ### Prerequisites

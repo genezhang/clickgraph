@@ -48,7 +48,9 @@ pub(crate) mod write_helpers;
 
 pub use connection::Connection;
 pub use cypher_loader::LoadStats;
-pub use database::{Database, RemoteConfig, StorageCredentials, SystemConfig};
+pub use database::{Database, RemoteConfig, SystemConfig};
+#[cfg(feature = "embedded")]
+pub use database::StorageCredentials;
 pub use error::EmbeddedError;
 pub use export::{ExportFormat, ExportOptions};
 pub use graph_result::{GraphEdge, GraphNode, GraphResult, GraphResultBuilder, StoreStats};

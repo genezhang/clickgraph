@@ -330,8 +330,12 @@ ecommerce_simple.yaml            → schemas/examples/
 - Protocol enabling/disabling capabilities
 
 **Embedded Mode + Language Bindings**
-- `clickgraph-embedded` crate: in-process Cypher queries via chdb (Kuzu-compatible API)
-- `clickgraph-ffi` UniFFI crate: single source of truth for Go and Python bindings
+- `clickgraph-embedded` crate: Kuzu-compatible sync API. Three constructors:
+  - `Database::sql_only(path)` — Cypher→SQL only, no executor (always available)
+  - `Database::new_remote(path, RemoteConfig)` — execute against external ClickHouse (no chdb)
+  - `Database::new(path, SystemConfig)` — in-process chdb execution (`embedded` feature, opt-in)
+- `clickgraph-ffi` UniFFI crate: single source of truth for Go and Python bindings (always uses `embedded` feature)
+- `clickgraph-tool` crate: `cg` CLI binary for agents/scripts — `sql`, `validate`, `query`, `nl`, `schema show/validate/discover/diff`
 - Hybrid remote query + local storage: `RemoteConfig` enables `query_remote()`, `query_remote_graph()`, `store_subgraph()` for querying a remote ClickHouse cluster and storing results locally
 - Write API: `create_node()`, `create_edge()`, `upsert_node()`, `store_subgraph()` with batch variants
 

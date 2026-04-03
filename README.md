@@ -15,14 +15,15 @@
 - View-based graph analytics offer the benefits of zero-ETL without the hassle of data migration and duplicate cost, yet better performance and scalability than most of the native graph analytics options.
 - Neo4j Bolt protocol support gives access to the tools available based on the Bolt protocol.
 ---
-## What's New in v0.6.5-dev
+## What's New in v0.6.6-dev
 
+- **`cg` CLI tool** — Agent/script-oriented CLI (`clickgraph-tool` crate). Translate and execute Cypher without a running server: `cg sql`, `cg validate`, `cg query`, `cg nl` (NL→Cypher via LLM), `cg schema show/validate/discover/diff`. Config via `~/.config/cg/config.toml`. Designed for agentic callers, CI pipelines, and scripting.
+- **`embedded` feature now opt-in** — `clickgraph-embedded` compiles without chdb by default. New `Database::new_remote(schema, RemoteConfig)` constructor executes Cypher against external ClickHouse with no chdb dependency — useful for lightweight tooling and the `cg` CLI.
 - **Hybrid remote query + local storage** — Execute Cypher queries against a remote ClickHouse cluster from embedded mode, then store results locally in chdb as a subgraph for fast re-querying. `query_remote()`, `query_remote_graph()`, `store_subgraph()` — ideal for GraphRAG context enrichment. Available in Rust, Python, and Go. See [Embedded Mode](docs/wiki/Embedded-Mode.md#hybrid-remote-query--local-storage).
 - **Embedded write API for GraphRAG** — `create_node()`, `create_edge()`, `upsert_node()` with batch variants. AI agents can extract entities from documents, store them as graph data, and query with Cypher — all in-process. See [Embedded Mode Write API](docs/wiki/Embedded-Mode.md#write-api-embedded-mode-only).
 - **Kuzu API parity** — `Value::Date/Timestamp/UUID` types, query timing (`compiling_time`/`execution_time`), `Database::in_memory()`, `Connection::set_query_timeout()`, column type metadata, multi-format file import (CSV/Parquet/JSON).
 - **DataFrame output** — `result.get_as_df()` (Pandas), `result.get_as_arrow()` (PyArrow), `result.get_as_pl()` (Polars) for Python data science workflows.
-- **Tutorials and examples** — 5 runnable Python examples covering quick start, DataFrames, write API, GraphRAG hybrid workflow, and export formats. See [`examples/embedded/`](examples/embedded/).
-- **1,599 unit tests** — Up from 1,591, with hybrid E2E tests and comprehensive Value type coverage.
+- **1,601 unit tests** — Up from 1,591, with hybrid E2E tests and comprehensive Value type coverage.
 
 See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 
@@ -87,6 +88,20 @@ flowchart LR
 ## Quick Start
 
 **New to ClickGraph?** See the **[Getting Started Guide](docs/getting-started.md)** for a complete walkthrough.
+
+### Option 0: Pre-built Binaries
+
+Download the latest release from [GitHub Releases](https://github.com/genezhang/clickgraph/releases/latest):
+
+```bash
+# ClickGraph server
+curl -L https://github.com/genezhang/clickgraph/releases/latest/download/clickgraph-linux-x86_64 \
+  -o clickgraph && chmod +x clickgraph
+
+# cg CLI tool (agent/scripting use)
+curl -L https://github.com/genezhang/clickgraph/releases/latest/download/cg-linux-x86_64 \
+  -o cg && chmod +x cg
+```
 
 ### Option 1: Docker (Recommended)
 
@@ -167,8 +182,21 @@ ClickGraph implements `apoc.meta.schema()` and Neo4j-compatible schema procedure
 
 See the **[MCP Setup Guide](https://github.com/genezhang/clickgraph/blob/main/docs/wiki/AI-Assistant-Integration-MCP.md)** for configuration details.
 
-### CLI Client
+### CLI Tools
 
+**`cg` — agent/script CLI** (no server needed):
+```bash
+cargo build --release -p clickgraph-tool
+# Translate Cypher → SQL
+./target/release/cg --schema schema.yaml sql "MATCH (u:User) RETURN u.name LIMIT 5"
+# Execute against ClickHouse
+./target/release/cg --schema schema.yaml --clickhouse http://localhost:8123 \
+  query "MATCH (u:User)-[:FOLLOWS]->(f) RETURN f.name LIMIT 5"
+# NL → Cypher (requires ANTHROPIC_API_KEY or OPENAI_API_KEY)
+./target/release/cg --schema schema.yaml nl "find users with more than 10 followers"
+```
+
+**`clickgraph-client` — interactive REPL** (connects to a running server):
 ```bash
 cargo build --release -p clickgraph-client
 ./target/release/clickgraph-client  # connects to http://localhost:8080
@@ -222,11 +250,12 @@ RETURN friend.name
 
 ## Development Status
 
-**Current Version**: v0.6.5-dev
+**Current Version**: v0.6.6-dev
 
 ### Test Coverage
-- **Rust Unit Tests**: 1,588 passing (100%)
+- **Rust Unit Tests**: 1,601 passing (100%)
 - **Integration Tests**: 3,068 passing (108 environment-dependent)
+- **openCypher TCK**: 383/402 scenarios passing (95.3%), 0 failures, 19 skipped
 - **LDBC SNB**: 36/37 queries passing (97%)
 - **Benchmarks**: 14/14 passing (100%)
 - **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)

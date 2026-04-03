@@ -1,3 +1,17 @@
+## [0.6.6-dev] - 2026-04-03
+
+### 🚀 Features
+
+- **`cg` CLI tool** (`clickgraph-tool` crate): Agent/script-oriented CLI for Cypher translation and execution without a running server. Commands: `cg sql` (Cypher→SQL), `cg validate` (parse + plan check), `cg query` (execute via remote ClickHouse), `cg nl` (NL→Cypher via LLM), `cg schema show/validate/discover/diff`. Config via `~/.config/cg/config.toml`. Supports Anthropic (default) and any OpenAI-compatible API.
+
+- **`embedded` feature now opt-in** in `clickgraph-embedded`: chdb is no longer compiled by default. New `Database::new_remote(schema, RemoteConfig)` constructor executes Cypher against external ClickHouse with no chdb dependency — the backend used by `cg query`. `Database::sql_only(schema)` and `Connection::query_to_sql()` are always available for translation-only use.
+
+### 🐛 Bug Fixes
+
+- **Debug println removed**: Eliminated leftover `println!("DEBUG TryFrom RenderExpr: ...")` in `render_plan/render_expr.rs` that was polluting stdout during query translation.
+
+---
+
 ## [0.6.5-dev] - 2026-03-29
 
 ### 🚀 Features

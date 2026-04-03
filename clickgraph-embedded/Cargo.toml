@@ -7,8 +7,12 @@ description = "Embedded graph query engine (ClickGraph with in-process chdb)"
 repository = "https://github.com/your-org/clickgraph"
 license = "Apache-2.0"
 
+[features]
+default = []
+embedded = ["clickgraph/embedded"]
+
 [dependencies]
-clickgraph = { path = "..", features = ["embedded"] }
+clickgraph = { path = "..", default-features = false }
 thiserror = "2.0"
 serde_json = { version = "1.0", features = ["preserve_order"] }
 serde_yaml = "0.9"

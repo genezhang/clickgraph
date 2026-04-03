@@ -9,6 +9,7 @@ ClickGraph is a **read-only graph query engine** for ClickHouse, written in Rust
 **Modes of operation:**
 - **Server mode** — HTTP (axum) + Bolt v5.8 protocol servers, querying a remote ClickHouse instance
 - **Embedded mode** — In-process serverless execution via chdb (ClickHouse embedded). Query Parquet, S3, Iceberg, Delta Lake directly without a running server
+- **Remote mode** — Cypher translated locally, executed against an external ClickHouse (no chdb needed)
 - **SQL-only mode** — Translate Cypher to SQL without executing (for debugging, testing, or external execution)
 
 **Ground rules**: (1) Never change query semantics — honestly return what is asked, no more, no less. (2) No shortcuts — fully understand the processing flow before making changes. Quality over speed.
@@ -21,10 +22,11 @@ clickgraph-embedded/         # Embedded Rust API (Database/Connection/QueryResul
 clickgraph-ffi/              # UniFFI FFI layer (cdylib — single source of truth for all bindings)
 clickgraph-go/               # Idiomatic Go bindings via cgo + UniFFI-generated C bridge
 clickgraph-py/               # Pythonic wrapper over UniFFI-generated ctypes bridge
-clickgraph-client/           # CLI client for querying ClickGraph servers
+clickgraph-client/           # Interactive REPL client for querying ClickGraph servers (human use)
+clickgraph-tool/             # cg CLI — agent/script-oriented tool (sql, validate, query, nl, schema)
 ```
 
-**Workspace members** (in `Cargo.toml`): `clickgraph-client`, `clickgraph-embedded`, `clickgraph-ffi`
+**Workspace members** (in `Cargo.toml`): `clickgraph-client`, `clickgraph-embedded`, `clickgraph-ffi`, `clickgraph-tool`
 
 Go and Python bindings are not Cargo workspace members — they consume `libclickgraph_ffi.so`.
 
@@ -42,7 +44,7 @@ cargo fmt --all
 # Lint
 cargo clippy --all-targets
 
-# Rust tests (~1,560 tests across workspace)
+# Rust tests (~1,600 tests across workspace)
 cargo test                         # All Rust tests
 cargo test <test_name>             # Single test
 cargo test -- --nocapture          # With output
@@ -71,6 +73,17 @@ cargo run --bin clickgraph
 curl -X POST http://localhost:8080/query \
   -H "Content-Type: application/json" \
   -d '{"query":"MATCH (n) RETURN n","sql_only":true}'
+
+# cg CLI — agent/script-oriented tool (no server needed)
+cg --schema schema.yaml sql "MATCH (n:Person) RETURN n.name"   # translate only
+cg --schema schema.yaml validate "MATCH (n:Person) RETURN n"   # parse + plan check
+cg --schema schema.yaml \
+   --clickhouse http://localhost:8123 \
+   query "MATCH (n:Person) RETURN n.name LIMIT 10"             # execute via remote CH
+cg --schema schema.yaml nl "find people with more than 5 friends"  # NL → Cypher
+cg --schema schema.yaml schema show                             # agent-friendly schema view
+cg schema discover --clickhouse http://localhost:8123 \
+   --database mydb --out schema.yaml                            # LLM-assisted discovery
 ```
 
 ## Architecture — Query Pipeline
@@ -103,31 +116,31 @@ Cypher Query → Parse → Plan → Optimize → Render → Generate SQL → Exe
 ## Ecosystem Architecture
 
 ```
-                  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-                  │   Go App     │  │  Python App  │  │   Rust App   │
-                  │  (cgo)       │  │  (ctypes)    │  │  (direct)    │
-                  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
-                         │                 │                 │
-                  clickgraph-go     clickgraph-py    clickgraph-embedded
-                         │                 │                 │
-                         └────────┬────────┘                 │
-                                  │                          │
-                        ┌─────────▼──────────┐               │
-                        │  clickgraph-ffi    │               │
-                        │ (libclickgraph_ffi │               │
-                        │    .so / UniFFI)   │               │
-                        └─────────┬──────────┘               │
-                                  └──────────┬───────────────┘
-                                             │
-                                  ┌──────────▼──────────┐
-                                  │  clickgraph (core)   │
-                                  │  Parser + Planner +  │
-                                  │  SQL Generator       │
-                                  └──────────┬──────────┘
-                                             │
-                                  ┌──────────▼──────────┐
-                                  │ ClickHouse / chdb    │
-                                  └─────────────────────┘
+   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+   │   Go App     │  │  Python App  │  │   Rust App   │  │  Agent/Script│
+   │  (cgo)       │  │  (ctypes)    │  │  (direct)    │  │  (cg CLI)    │
+   └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+          │                 │                 │                 │
+   clickgraph-go     clickgraph-py    clickgraph-embedded  clickgraph-tool
+          │                 │           (sql_only/remote)       │
+          └────────┬────────┘          (chdb: +embedded feat)   │
+                   │                          │                 │
+         ┌─────────▼──────────┐               └────────┬────────┘
+         │  clickgraph-ffi    │                        │
+         │ (libclickgraph_ffi │                        │
+         │  .so / UniFFI)     │                        │
+         └─────────┬──────────┘                        │
+                   └──────────────────┬────────────────┘
+                                      │
+                           ┌──────────▼──────────┐
+                           │  clickgraph (core)   │
+                           │  Parser + Planner +  │
+                           │  SQL Generator       │
+                           └──────────┬──────────┘
+                                      │
+                           ┌──────────▼──────────┐
+                           │ ClickHouse / chdb    │
+                           └─────────────────────┘
 ```
 
 ### FFI Layer (`clickgraph-ffi/`)
@@ -148,7 +161,15 @@ uniffi-bindgen-go --library target/debug/libclickgraph_ffi.so --out-dir clickgra
 
 ### Embedded Mode (`clickgraph-embedded/`)
 
-Core Rust crate with Kuzu-compatible sync API (`Database` → `Connection` → `QueryResult`). Backend is chdb (ClickHouse embedded), enabled via `embedded` feature flag. Supports `sql_only` mode without chdb.
+Core Rust crate with Kuzu-compatible sync API (`Database` → `Connection` → `QueryResult`). Three constructors:
+
+| Constructor | Needs chdb? | Use case |
+|---|---|---|
+| `Database::sql_only(schema)` | No | Translate Cypher → SQL only |
+| `Database::new_remote(schema, RemoteConfig)` | No | Execute against external ClickHouse |
+| `Database::new(schema, SystemConfig)` | **Yes** (`embedded` feature) | In-process chdb execution |
+
+The `embedded` feature flag is **opt-in** (default off). `clickgraph-ffi` and `clickgraph-tck` enable it; `clickgraph-tool` does not.
 
 Schema `source:` field supports: local files, `s3://`, `iceberg+s3://`, `delta+s3://`, `table_function:...`.
 
@@ -218,6 +239,11 @@ Five schema variations exist: Standard, FK-edge, Denormalized, Polymorphic, Comp
 | `CLICKGRAPH_CHDB_TESTS` | Set to `1` to enable chdb e2e tests |
 | `CLICKGRAPH_LLM_PROVIDER` | LLM provider for schema discovery (`anthropic` or `openai`) |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | API keys for LLM schema discovery |
+| `CG_SCHEMA` | Default schema file path for `cg` CLI |
+| `CG_CLICKHOUSE_URL` | ClickHouse URL for `cg query` |
+| `CG_CLICKHOUSE_USER` / `CG_CLICKHOUSE_PASSWORD` | Credentials for `cg query` |
+| `CG_LLM_PROVIDER` | LLM provider for `cg nl` and `cg schema discover` |
+| `CG_LLM_MODEL` / `CG_LLM_API_KEY` / `CG_LLM_BASE_URL` | LLM config for `cg` |
 
 ## Key Documentation Files
 
@@ -226,5 +252,5 @@ Five schema variations exist: Standard, FK-edge, Denormalized, Polymorphic, Comp
 - **`DEV_QUICK_START.md`** — Essential developer workflow
 - **`DEVELOPMENT_PROCESS.md`** — Detailed 6-phase development process
 - **`.github/copilot-instructions.md`** — Comprehensive architecture guide
-- **`*/AGENTS.md`** — Module-level architecture guides (in `src/`, `src/render_plan/`, `src/server/`, `clickgraph-ffi/`, `clickgraph-embedded/`, `clickgraph-go/`, `clickgraph-py/`, etc.)
+- **`*/AGENTS.md`** — Module-level architecture guides (in `src/`, `src/render_plan/`, `src/server/`, `clickgraph-ffi/`, `clickgraph-embedded/`, `clickgraph-tool/`, `clickgraph-go/`, `clickgraph-py/`, etc.)
 - **`docs/wiki/cypher-language-reference.md`** — Primary feature documentation (must be updated for every feature)

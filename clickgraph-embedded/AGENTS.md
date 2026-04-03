@@ -1,21 +1,25 @@
 # clickgraph-embedded — Agent Guide
 
 > **Purpose**: Core embedded engine crate. Provides `Database`, `Connection`,
-> `QueryResult`, and `Value` types that wrap ClickGraph's Cypher→SQL pipeline
-> with a chdb (embedded ClickHouse) backend for serverless execution.
+> `QueryResult`, and `Value` types that wrap ClickGraph's Cypher→SQL pipeline.
+> Supports three execution backends: chdb in-process, remote ClickHouse, or
+> SQL-only (translate without executing).
 
 ## Architecture
 
 ```
-Database (schema loading + chdb session + optional remote executor)
-  └── Connection (query execution)
-        ├── query()              → QueryResult (rows of Value)
-        ├── query_to_sql()       → String (Cypher→SQL only, no chdb)
-        ├── export()             → file (Parquet/CSV/JSON/NDJSON)
-        ├── query_remote()       → QueryResult (via remote ClickHouse)
-        ├── query_graph()        → GraphResult (structured nodes + edges)
-        ├── query_remote_graph() → GraphResult (remote → structured)
-        └── store_subgraph()     → StoreStats (GraphResult → local tables)
+Database (schema loading + executor)
+  ├── Database::sql_only(path)          → NullExecutor (translate only)
+  ├── Database::new_remote(path, cfg)   → RemoteClickHouseExecutor (no chdb)
+  └── Database::new(path, cfg)          → ChdbExecutor  [embedded feature]
+        └── Connection (query execution)
+              ├── query()              → QueryResult (rows of Value)  [embedded only]
+              ├── query_to_sql()       → String (Cypher→SQL, always available)
+              ├── export()             → file (Parquet/CSV/JSON/NDJSON)
+              ├── query_remote()       → QueryResult (via remote ClickHouse)
+              ├── query_graph()        → GraphResult (structured nodes + edges)
+              ├── query_remote_graph() → GraphResult (remote → structured)
+              └── store_subgraph()     → StoreStats (GraphResult → local tables)
 ```
 
 This crate is the **foundation** consumed by all language bindings:
@@ -56,21 +60,34 @@ The `source` field in schema YAML supports multiple URI schemes:
 Resolution happens in `src/executor/source_resolver.rs` (main crate), called
 during `Database::new()` → `load_schema_sources()`.
 
+### `embedded` Feature Flag (opt-in)
+The `embedded` feature gates all chdb-dependent code:
+- `Database::new()`, `in_memory()`, `from_schema()` — require `embedded`
+- `StorageCredentials` re-export — requires `embedded`
+- `SystemConfig.credentials` field — requires `embedded`
+
+Without the feature, only `sql_only` and `new_remote` constructors are available.
+**`clickgraph-ffi`** and **`clickgraph-tck`** enable the feature; **`clickgraph-tool`** does not.
+
 ### sql_only Mode
 `Database::sql_only()` creates a database that can translate Cypher→SQL without
-a chdb session. Used for testing and SQL preview. Calling `query()` on an
-sql_only connection will fail; use `query_to_sql()` instead.
+a chdb session. Used for testing, SQL preview, and lightweight tooling. Calling
+`query()` on an sql_only connection will fail; use `query_to_sql()` instead.
+
+### Remote Mode (no chdb)
+`Database::new_remote(schema_path, RemoteConfig)` connects to an external ClickHouse
+cluster without starting a chdb session. Cypher is translated locally and executed
+remotely via `RoleConnectionPool`. Use `Connection::query_remote()` to execute queries.
+This is the execution backend used by the `cg` CLI tool.
 
 ### Hybrid Remote Query + Local Storage
-When `SystemConfig.remote` is set to a `RemoteConfig`, `Database::from_schema()`
-creates a `RemoteClickHouseExecutor` backed by `RoleConnectionPool::new_with_params()`.
-This enables `query_remote()` and `query_remote_graph()` to execute Cypher against
-a remote ClickHouse cluster. Results can be stored locally via `store_subgraph()`,
-which decomposes a `GraphResult` into nodes and edges and batch-inserts them using
-the existing `create_nodes()` / `create_edges()` write API.
+When `SystemConfig.remote` is set to a `RemoteConfig` (used alongside the `embedded`
+feature), `Database::from_schema()` creates both a `ChdbExecutor` (local) and a
+`RemoteClickHouseExecutor`. This enables `query_remote()` and `query_remote_graph()`
+to execute Cypher against a remote cluster, then store results locally via `store_subgraph()`.
 
 ### load_graph_schema() Helper
-Shared by both `Database::new()` and `Database::sql_only()` to avoid duplication.
+Shared by `Database::new()`, `sql_only()`, and `new_remote()` to avoid duplication.
 Reads YAML → `GraphSchemaConfig` → `GraphSchema`.
 
 ## Conventions

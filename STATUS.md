@@ -1,13 +1,14 @@
 # ClickGraph Status
 
-*Updated: March 29, 2026*
+*Updated: April 3, 2026*
 
-## Current Version: v0.6.5-dev
+## Current Version: v0.6.6-dev
 
 Read-only Cypher-to-ClickHouse SQL query engine with Neo4j Browser compatibility.
-Supports both remote ClickHouse and embedded (in-process) mode via chdb.
+Supports server mode, embedded (in-process chdb), remote ClickHouse, and SQL-only translation.
+New: `cg` CLI tool for agent/script-oriented use (`clickgraph-tool` workspace crate).
 
-**Unit Tests**: 1,599 passing (100%)
+**Unit Tests**: 1,601 passing (100%)
 **Integration Tests**: 183 passing (100%)
 **Embedded Tests**: 152 passing (unit + integration + e2e)
 **Go Binding Tests**: 14 passing (100%)
@@ -56,8 +57,10 @@ Supports both remote ClickHouse and embedded (in-process) mode via chdb.
 - **LLM-powered schema discovery**: Interactive schema generation from natural language via Anthropic/OpenAI
 - **GraphRAG structured output**: `format: "Graph"` returns deduplicated nodes, edges, and stats
 - **ClickHouse cluster load balancing**: `CLICKHOUSE_CLUSTER` for auto-discovery and load balancing
-- **Embedded mode** (`--features embedded`): `QueryExecutor` trait + `ChdbExecutor` + `clickgraph-embedded` crate — run Cypher queries in-process over Parquet/Iceberg/Delta/S3 without a ClickHouse server. Kuzu-compatible Rust API (`Database`, `Connection`, `QueryResult`). `source:` URI field in YAML schema. S3/GCS/Azure credential support via `StorageCredentials`.
+- **Embedded mode** (`--features embedded`): `QueryExecutor` trait + `ChdbExecutor` + `clickgraph-embedded` crate — run Cypher queries in-process over Parquet/Iceberg/Delta/S3 without a ClickHouse server. Kuzu-compatible Rust API (`Database`, `Connection`, `QueryResult`). `source:` URI field in YAML schema. S3/GCS/Azure credential support via `StorageCredentials`. The `embedded` feature is **opt-in** (default off) so dependent crates can use sql_only/remote modes without pulling in chdb.
+- **Remote mode** (`Database::new_remote()`): Cypher translated locally, executed against external ClickHouse. No chdb required. Available without any feature flags.
 - **Hybrid remote query + local storage**: `RemoteConfig` in `SystemConfig` enables embedded mode to query a remote ClickHouse cluster via `query_remote()` / `query_remote_graph()`, decompose results into `GraphResult` (nodes + edges), and store subgraphs locally via `store_subgraph()` for fast re-querying. `query_graph()` returns structured graph results for local queries. Available in Rust, Python, and Go.
+- **`cg` CLI tool** (`clickgraph-tool`): Agent/script-oriented CLI. `cg sql` (Cypher→SQL), `cg validate` (parse+plan), `cg query` (execute via remote CH), `cg nl` (NL→Cypher via LLM), `cg schema show/validate/discover/diff`. Config via `~/.config/cg/config.toml` or `CG_*` env vars. LLM: Anthropic default, any OpenAI-compatible endpoint. Does not require chdb or a running ClickGraph server.
 - **APOC Export Procedures**: Neo4j-compatible `CALL apoc.export.{csv|json|parquet}.query(cypher, destination, config)` — translates inner Cypher to SQL, resolves destination URI (local file, S3, GCS, Azure, HTTP), wraps in `INSERT INTO FUNCTION`. Works in server mode (HTTP + Bolt) and embedded mode.
 - **COPY TO Export Syntax**: Kuzu/DuckDB-compatible `COPY (MATCH ...) TO 'path' WITH (format='csv')` — alternative to APOC procedures for exporting query results. Supports CSV, JSON, Parquet, NDJSON. Works in server mode and embedded mode.
 - **Vector Search Procedure**: Neo4j-compatible `CALL db.index.vector.queryNodes('index-name', k, [embedding...]) YIELD node, score` — translates to ClickHouse's `cosineDistance()` / `L2Distance()`. Configured via `vector_indexes` section in schema YAML. Supports dimension validation and USE clause schema selection.

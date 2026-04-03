@@ -6,15 +6,62 @@ ClickGraph can automatically generate a graph schema YAML from your ClickHouse d
 
 Schema discovery works in three steps:
 
-1. **Introspect** -- the server reads table metadata (columns, types, PKs, sample rows) from ClickHouse
+1. **Introspect** -- reads table metadata (columns, types, PKs, sample rows) from ClickHouse
 2. **Generate** -- an LLM analyzes the metadata and produces a graph schema YAML
-3. **Load** -- the generated YAML is loaded into the server for querying
+3. **Load** -- the generated YAML is loaded for querying
 
-The server formats the prompt (it owns the schema format spec + introspection data). The client makes the LLM call (it owns the API key and is user-facing).
+Two paths are available — **no running ClickGraph server is required for either**:
+
+| Path | When to use |
+|------|-------------|
+| `cg schema discover` (CLI) | Agent/script use, CI pipelines, no server needed |
+| `clickgraph-client :discover` (REPL) | Interactive human use, connected to running server |
 
 ## Quick Start
 
-### Using the REPL client
+### Option A: `cg schema discover` (no server needed)
+
+The `cg` CLI talks directly to ClickHouse — no running ClickGraph server required:
+
+```bash
+# Set your Anthropic API key
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# Discover schema directly from ClickHouse
+cg schema discover \
+  --clickhouse http://localhost:8123 \
+  --ch-user your_user \
+  --ch-password your_pass \
+  --database mydb \
+  --out mydb_schema.yaml
+
+# Preview the schema in Cypher-native format (LLM-friendly)
+cg schema show --schema mydb_schema.yaml
+
+# Validate the generated schema
+cg schema validate mydb_schema.yaml
+```
+
+Or configure credentials once in `~/.config/cg/config.toml`:
+
+```toml
+[clickhouse]
+url = "http://localhost:8123"
+user = "your_user"
+password = "your_pass"
+
+[llm]
+provider = "anthropic"
+model = "claude-sonnet-4-6"
+```
+
+Then just:
+
+```bash
+cg schema discover --database mydb --out mydb_schema.yaml
+```
+
+### Option B: REPL client (interactive, connects to running server)
 
 ```bash
 # Set your Anthropic API key
@@ -59,12 +106,27 @@ export OPENAI_API_KEY="sk-..."
 
 ### All Variables
 
+**For `cg` CLI** (`CG_LLM_*` takes precedence; `CLICKGRAPH_LLM_*` also accepted for compatibility):
+
+| Variable | Default | Description |
+|---------------------|---------|-------------|
+| `CG_LLM_PROVIDER` | `anthropic` | `anthropic` or `openai` |
+| `CG_LLM_MODEL` | `claude-sonnet-4-6` | Model ID override |
+| `CG_LLM_API_KEY` | *(falls back to `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`)* | API key |
+| `CG_LLM_BASE_URL` | Provider-specific | Endpoint override (OpenRouter, Groq, Ollama, etc.) |
+| `CG_LLM_MAX_TOKENS` | `8192` | Maximum response tokens |
+| `CG_CLICKHOUSE_URL` | | ClickHouse URL for discover |
+| `CG_CLICKHOUSE_USER` / `CG_CLICKHOUSE_PASSWORD` | | ClickHouse credentials |
+| `CG_CLICKHOUSE_DATABASE` | | Target database |
+
+**For `clickgraph-client` / server**:
+
 | Variable | Default | Description |
 |---------------------|---------|-------------|
 | `CLICKGRAPH_LLM_PROVIDER` | `anthropic` | `anthropic` or `openai` — controls API format and auth |
 | `ANTHROPIC_API_KEY` | *(required if anthropic)* | Anthropic API key |
 | `OPENAI_API_KEY` | *(required if openai)* | OpenAI or compatible API key |
-| `CLICKGRAPH_LLM_MODEL` | `claude-sonnet-4-20250514` / `gpt-4o` | Model ID (default depends on provider) |
+| `CLICKGRAPH_LLM_MODEL` | `claude-sonnet-4-6` / `gpt-4o` | Model ID (default depends on provider) |
 | `CLICKGRAPH_LLM_API_URL` | Provider-specific | API endpoint (override for proxy/local models) |
 | `CLICKGRAPH_LLM_MAX_TOKENS` | `8192` | Maximum response tokens |
 

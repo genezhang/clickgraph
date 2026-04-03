@@ -68,10 +68,11 @@ curl -X POST http://localhost:8080/query \
 ## 📚 Documentation
 
 ### Getting Started
-- **[Quick Start Guide](Quick-Start-Guide.md)** - 5-minute Docker setup
-- **[Embedded Mode](Embedded-Mode.md)** - 🆕 In-process graph queries over Parquet/Iceberg/Delta (no ClickHouse needed)
-- **[Language Bindings](Language-Bindings.md)** - 🆕 Rust, Python, and Go library APIs
-- **[Installation Guide](Installation-Guide.md)** - Detailed installation options
+- **[Quick Start Guide](Quick-Start-Guide.md)** - 5-minute Docker setup (includes pre-built binary option)
+- **[Embedded Mode](Embedded-Mode.md)** - In-process graph queries over Parquet/Iceberg/Delta (no ClickHouse needed)
+- **[Language Bindings](Language-Bindings.md)** - Rust, Python, and Go library APIs
+- **[AI Assistant Integration (MCP)](AI-Assistant-Integration-MCP.md)** - Use ClickGraph with Claude via MCP; `cg` CLI for agent/script NL→Cypher
+- **[Schema Discovery](Schema-Discovery.md)** - LLM-powered schema generation (server or `cg schema discover`)
 - **[Your First Graph](Your-First-Graph.md)** - Build a simple social network graph
 
 ### Learning Cypher
@@ -223,28 +224,29 @@ Key performance features:
 
 ## 🚦 Current Status
 
-**Version**: v0.5.4 (December 2025)
+**Version**: v0.6.6-dev (April 2026)
 
 **Production-Ready Features**:
-- ✅ Core Cypher queries (MATCH, WHERE, RETURN, WITH)
-- ✅ Variable-length paths (`*`, `*1..3`, `*..5`)
-- ✅ Shortest path algorithms
+- ✅ Core Cypher queries (MATCH, WHERE, RETURN, WITH, OPTIONAL MATCH, UNION ALL, UNWIND)
+- ✅ Variable-length paths (`*`, `*1..3`, `*..5`), shortest path, multi-hop traversals
 - ✅ OPTIONAL MATCH (LEFT JOIN semantics)
 - ✅ Multiple relationship types (`[:TYPE1|TYPE2]`)
 - ✅ Undirected relationships
 - ✅ Neo4j Bolt protocol v5.8
 - ✅ Query caching (10-100x speedup)
 - ✅ 25+ Neo4j function mappings
-- ✅ Multi-tenancy with parameterized views
-- ✅ RBAC with SET ROLE support
-- ✅ Cross-table query correlation (v0.5.4)
-- ✅ Smart type inference for anonymous patterns (v0.5.4)
-- ✅ FK-Edge patterns for hierarchies (v0.5.4)
-- ✅ String predicates: STARTS WITH, ENDS WITH, CONTAINS (v0.5.4)
-- ✅ UNWIND for array expansion (v0.5.2+)
+- ✅ Multi-tenancy with parameterized views + RBAC
+- ✅ Embedded mode (in-process, no ClickHouse server)
+- ✅ Remote mode (`new_remote()` — Cypher→SQL executed against external CH)
+- ✅ `cg` CLI for agent/script use (NL→Cypher via LLM, schema discover)
+- ✅ GraphRAG write API (create_node, create_edge, upsert_node)
+- ✅ Hybrid remote query + local storage
+- ✅ Python (Pandas/PyArrow/Polars), Go, Rust language bindings
+- ✅ LDBC SNB: 36/37 queries passing (97%)
+- ✅ openCypher TCK: 383/402 scenarios (95.3%)
 
-**Test Coverage**: 596 Rust unit tests (100%) + 782 Python integration tests (100%)  
-**Total**: 1,378 tests passing
+**Test Coverage**: 1,601 Rust unit tests + 3,068 integration tests + 383/402 TCK scenarios  
+**Total**: 4,052+ tests passing
 
 **Read-Only Focus**: ClickGraph is optimized for analytical queries. Write operations (`CREATE`, `SET`, `DELETE`, `MERGE`) are not supported.
 
