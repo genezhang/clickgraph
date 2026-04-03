@@ -75,11 +75,19 @@ Use the skill file content as a system prompt or tool description. The `cg` CLI 
 import subprocess
 
 def nl_to_cypher(query: str, schema: str, ch_url: str = None) -> dict:
-    cmd = ["cg", "--schema", schema, "nl", query]
-    if ch_url:
-        cmd = ["cg", "--schema", schema, "--clickhouse", ch_url,
-               "query", query]  # use cg nl first, then query
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    if not ch_url:
+        # Translation only: NL → Cypher (no execution)
+        result = subprocess.run(
+            ["cg", "--schema", schema, "nl", query],
+            capture_output=True, text=True
+        )
+    else:
+        # NL → Cypher → execute in one shot via cg nl --execute
+        result = subprocess.run(
+            ["cg", "--schema", schema, "--clickhouse", ch_url,
+             "nl", "--execute", query],
+            capture_output=True, text=True
+        )
     return {"output": result.stdout, "error": result.stderr}
 ```
 

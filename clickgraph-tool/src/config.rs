@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Deserialize;
 
 /// Runtime configuration for cg, resolved from (priority order):
@@ -61,8 +61,8 @@ impl CgConfig {
     pub fn load(
         schema: &Option<String>,
         clickhouse: &Option<String>,
-        ch_user: &str,
-        ch_password: &str,
+        ch_user: Option<&str>,
+        ch_password: Option<&str>,
         ch_database: &Option<String>,
     ) -> Result<Self> {
         let file_cfg = load_file_config();
@@ -75,22 +75,17 @@ impl CgConfig {
             .clone()
             .or_else(|| file_cfg.clickhouse.url.clone());
 
-        // ClickHouse user: CLI flag > env > config file > "default"
-        let ch_user = if ch_user != "default" {
-            ch_user.to_string()
-        } else {
-            file_cfg
-                .clickhouse
-                .user
-                .clone()
-                .unwrap_or_else(|| "default".to_string())
-        };
+        // ClickHouse user: explicit CLI/env > config file > "default"
+        let ch_user = ch_user
+            .or_else(|| file_cfg.clickhouse.user.as_deref())
+            .unwrap_or("default")
+            .to_string();
 
-        let ch_password = if !ch_password.is_empty() {
-            ch_password.to_string()
-        } else {
-            file_cfg.clickhouse.password.clone().unwrap_or_default()
-        };
+        // ClickHouse password: explicit CLI/env > config file > ""
+        let ch_password = ch_password
+            .or_else(|| file_cfg.clickhouse.password.as_deref())
+            .unwrap_or("")
+            .to_string();
 
         let ch_database = ch_database
             .clone()

@@ -24,22 +24,12 @@ struct Cli {
     clickhouse: Option<String>,
 
     /// ClickHouse user
-    #[arg(
-        long,
-        env = "CG_CLICKHOUSE_USER",
-        global = true,
-        default_value = "default"
-    )]
-    ch_user: String,
+    #[arg(long, env = "CG_CLICKHOUSE_USER", global = true)]
+    ch_user: Option<String>,
 
     /// ClickHouse password
-    #[arg(
-        long,
-        env = "CG_CLICKHOUSE_PASSWORD",
-        global = true,
-        default_value = ""
-    )]
-    ch_password: String,
+    #[arg(long, env = "CG_CLICKHOUSE_PASSWORD", global = true)]
+    ch_password: Option<String>,
 
     /// ClickHouse database to query
     #[arg(long, env = "CG_CLICKHOUSE_DATABASE", global = true)]
@@ -152,8 +142,8 @@ async fn main() -> Result<()> {
     let cfg = CgConfig::load(
         &cli.schema,
         &cli.clickhouse,
-        &cli.ch_user,
-        &cli.ch_password,
+        cli.ch_user.as_deref(),
+        cli.ch_password.as_deref(),
         &cli.ch_database,
     )?;
 

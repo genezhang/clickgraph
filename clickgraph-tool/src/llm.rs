@@ -40,7 +40,6 @@ impl LlmClient {
         let provider_str = cfg
             .provider
             .as_deref()
-            .or_else(|| None)
             .unwrap_or("anthropic")
             .to_lowercase();
 

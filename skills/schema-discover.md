@@ -26,8 +26,8 @@ If the ClickHouse URL or database name are missing, ask the user before proceedi
 ```bash
 cg schema discover \
   --clickhouse "$CG_CLICKHOUSE_URL" \
-  --ch-user "$CG_CLICKHOUSE_USER" \
-  --ch-password "$CG_CLICKHOUSE_PASSWORD" \
+  --user "$CG_CLICKHOUSE_USER" \
+  --password "$CG_CLICKHOUSE_PASSWORD" \
   --database <database> \
   --out <output_file>
 ```

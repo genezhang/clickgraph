@@ -146,12 +146,23 @@ fn print_json_pretty(cols: &[String], rows: &[Vec<Value>]) -> Result<()> {
 
 fn value_str(v: &Value) -> String {
     match v {
-        Value::String(s) => s.clone(),
         Value::Null => "NULL".to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Int64(n) => n.to_string(),
         Value::Float64(f) => f.to_string(),
-        other => format!("{:?}", other),
+        Value::String(s) | Value::Date(s) | Value::Timestamp(s) | Value::UUID(s) => s.clone(),
+        Value::List(items) => format!(
+            "[{}]",
+            items.iter().map(value_str).collect::<Vec<_>>().join(", ")
+        ),
+        Value::Map(pairs) => format!(
+            "{{{}}}",
+            pairs
+                .iter()
+                .map(|(k, v)| format!("{}: {}", k, value_str(v)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 
@@ -161,7 +172,17 @@ fn value_to_json(v: &Value) -> serde_json::Value {
         Value::Bool(b) => serde_json::Value::Bool(*b),
         Value::Int64(n) => serde_json::Value::Number((*n).into()),
         Value::Float64(f) => serde_json::json!(f),
-        Value::String(s) => serde_json::Value::String(s.clone()),
-        other => serde_json::Value::String(format!("{:?}", other)),
+        Value::String(s) | Value::Date(s) | Value::Timestamp(s) | Value::UUID(s) => {
+            serde_json::Value::String(s.clone())
+        }
+        Value::List(items) => {
+            serde_json::Value::Array(items.iter().map(value_to_json).collect())
+        }
+        Value::Map(pairs) => serde_json::Value::Object(
+            pairs
+                .iter()
+                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .collect(),
+        ),
     }
 }
