@@ -1,10 +1,6 @@
 use anyhow::{anyhow, Result};
-use clickgraph::{
-    graph_catalog::{
-        config::GraphSchemaConfig,
-        llm_prompt,
-        schema_discovery::SchemaDiscovery,
-    },
+use clickgraph::graph_catalog::{
+    config::GraphSchemaConfig, llm_prompt, schema_discovery::SchemaDiscovery,
 };
 
 use crate::{
@@ -133,10 +129,18 @@ pub fn run_diff(old_path: &str, new_path: &str) -> Result<()> {
     let new_cfg = GraphSchemaConfig::from_yaml_file(new_path)
         .map_err(|e| anyhow!("Failed to load '{}': {}", new_path, e))?;
 
-    let old_nodes: std::collections::BTreeSet<String> =
-        old_cfg.graph_schema.nodes.iter().map(|n| n.label.clone()).collect();
-    let new_nodes: std::collections::BTreeSet<String> =
-        new_cfg.graph_schema.nodes.iter().map(|n| n.label.clone()).collect();
+    let old_nodes: std::collections::BTreeSet<String> = old_cfg
+        .graph_schema
+        .nodes
+        .iter()
+        .map(|n| n.label.clone())
+        .collect();
+    let new_nodes: std::collections::BTreeSet<String> = new_cfg
+        .graph_schema
+        .nodes
+        .iter()
+        .map(|n| n.label.clone())
+        .collect();
 
     let old_rels: std::collections::BTreeSet<String> = old_cfg
         .graph_schema
@@ -174,8 +178,16 @@ pub fn run_diff(old_path: &str, new_path: &str) -> Result<()> {
 
     // Property-level diff for nodes present in both
     for label in old_nodes.intersection(&new_nodes) {
-        let old_node = old_cfg.graph_schema.nodes.iter().find(|n| &n.label == label);
-        let new_node = new_cfg.graph_schema.nodes.iter().find(|n| &n.label == label);
+        let old_node = old_cfg
+            .graph_schema
+            .nodes
+            .iter()
+            .find(|n| &n.label == label);
+        let new_node = new_cfg
+            .graph_schema
+            .nodes
+            .iter()
+            .find(|n| &n.label == label);
         if let (Some(old), Some(new)) = (old_node, new_node) {
             let old_props: std::collections::BTreeSet<String> =
                 old.properties.keys().cloned().collect();
@@ -208,7 +220,10 @@ fn merge_batch_yaml(base: &str, continuation: &str) -> String {
     let mut result = base.trim_end().to_string();
 
     if !cont_nodes.is_empty() {
-        if let Some(pos) = result.find("\n  edges:").or_else(|| result.find("\nedges:")) {
+        if let Some(pos) = result
+            .find("\n  edges:")
+            .or_else(|| result.find("\nedges:"))
+        {
             result.insert_str(pos, &format!("\n{}", cont_nodes));
         } else {
             result.push('\n');

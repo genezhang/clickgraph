@@ -163,14 +163,20 @@ impl Database {
         let view_count = clickgraph::executor::data_loader::load_schema_sources(&executor, &schema)
             .map_err(|e| EmbeddedError::Executor(e.to_string()))?;
         if view_count > 0 {
-            log::info!("Created {} chdb VIEW(s) from schema source: entries", view_count);
+            log::info!(
+                "Created {} chdb VIEW(s) from schema source: entries",
+                view_count
+            );
         }
 
         let table_count =
             clickgraph::executor::data_loader::create_writable_tables(&executor, &schema)
                 .map_err(|e| EmbeddedError::Executor(e.to_string()))?;
         if table_count > 0 {
-            log::info!("Created {} writable ReplacingMergeTree table(s)", table_count);
+            log::info!(
+                "Created {} writable ReplacingMergeTree table(s)",
+                table_count
+            );
         }
 
         let remote_executor = Self::build_remote_executor(&runtime, config.remote.as_ref())?;
@@ -194,8 +200,9 @@ impl Database {
         let graph_schema = load_graph_schema(schema_path.as_ref())?;
         let runtime = build_runtime()?;
         let remote_executor =
-            Self::build_remote_executor(&runtime, Some(&remote))?
-                .ok_or_else(|| EmbeddedError::Executor("Failed to connect to remote ClickHouse".to_string()))?;
+            Self::build_remote_executor(&runtime, Some(&remote))?.ok_or_else(|| {
+                EmbeddedError::Executor("Failed to connect to remote ClickHouse".to_string())
+            })?;
         Ok(Database {
             executor: Arc::new(NullExecutor),
             remote_executor: Some(remote_executor),
@@ -223,7 +230,9 @@ impl Database {
             ))
             .map_err(EmbeddedError::Executor)?;
         log::info!("Remote ClickHouse executor initialized: {}", remote.url);
-        Ok(Some(Arc::new(RemoteClickHouseExecutor::new(Arc::new(pool))) as Arc<dyn QueryExecutor>))
+        Ok(Some(
+            Arc::new(RemoteClickHouseExecutor::new(Arc::new(pool))) as Arc<dyn QueryExecutor>,
+        ))
     }
 
     /// Return a reference to the graph schema.

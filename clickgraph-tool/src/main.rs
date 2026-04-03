@@ -24,11 +24,21 @@ struct Cli {
     clickhouse: Option<String>,
 
     /// ClickHouse user
-    #[arg(long, env = "CG_CLICKHOUSE_USER", global = true, default_value = "default")]
+    #[arg(
+        long,
+        env = "CG_CLICKHOUSE_USER",
+        global = true,
+        default_value = "default"
+    )]
     ch_user: String,
 
     /// ClickHouse password
-    #[arg(long, env = "CG_CLICKHOUSE_PASSWORD", global = true, default_value = "")]
+    #[arg(
+        long,
+        env = "CG_CLICKHOUSE_PASSWORD",
+        global = true,
+        default_value = ""
+    )]
     ch_password: String,
 
     /// ClickHouse database to query
@@ -139,7 +149,13 @@ enum SchemaCommands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let cfg = CgConfig::load(&cli.schema, &cli.clickhouse, &cli.ch_user, &cli.ch_password, &cli.ch_database)?;
+    let cfg = CgConfig::load(
+        &cli.schema,
+        &cli.clickhouse,
+        &cli.ch_user,
+        &cli.ch_password,
+        &cli.ch_database,
+    )?;
 
     match cli.command {
         Commands::Sql { query } => {
@@ -150,11 +166,19 @@ async fn main() -> Result<()> {
             commands::query::run_validate(&query, &cfg)?;
         }
 
-        Commands::Query { query, sql_only, format } => {
+        Commands::Query {
+            query,
+            sql_only,
+            format,
+        } => {
             commands::query::run_query(&query, sql_only, &format, &cfg).await?;
         }
 
-        Commands::Nl { description, execute, format } => {
+        Commands::Nl {
+            description,
+            execute,
+            format,
+        } => {
             commands::nl::run_nl(&description, execute, &format, &cfg).await?;
         }
 
@@ -163,16 +187,34 @@ async fn main() -> Result<()> {
                 commands::schema::run_show(&format, &cfg)?;
             }
             SchemaCommands::Validate { file } => {
-                let path = file
-                    .or_else(|| cfg.schema_path.clone())
-                    .ok_or_else(|| anyhow::anyhow!("No schema file specified. Use --schema or provide a file argument."))?;
+                let path = file.or_else(|| cfg.schema_path.clone()).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "No schema file specified. Use --schema or provide a file argument."
+                    )
+                })?;
                 commands::schema::run_validate_schema(&path)?;
             }
-            SchemaCommands::Discover { database, clickhouse, user, password, out } => {
+            SchemaCommands::Discover {
+                database,
+                clickhouse,
+                user,
+                password,
+                out,
+            } => {
                 let ch_url = clickhouse
                     .or_else(|| cfg.clickhouse_url.clone())
-                    .ok_or_else(|| anyhow::anyhow!("No ClickHouse URL. Use --clickhouse or CG_CLICKHOUSE_URL."))?;
-                commands::schema::run_discover(&database, &ch_url, &user, &password, out.as_deref(), &cfg).await?;
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("No ClickHouse URL. Use --clickhouse or CG_CLICKHOUSE_URL.")
+                    })?;
+                commands::schema::run_discover(
+                    &database,
+                    &ch_url,
+                    &user,
+                    &password,
+                    out.as_deref(),
+                    &cfg,
+                )
+                .await?;
             }
             SchemaCommands::Diff { old, new } => {
                 commands::schema::run_diff(&old, &new)?;

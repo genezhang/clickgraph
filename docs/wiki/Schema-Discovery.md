@@ -10,12 +10,13 @@ Schema discovery works in three steps:
 2. **Generate** -- an LLM analyzes the metadata and produces a graph schema YAML
 3. **Load** -- the generated YAML is loaded for querying
 
-Two paths are available — **no running ClickGraph server is required for either**:
+Three paths are available — **no running ClickGraph server is required for any of them**:
 
 | Path | When to use |
 |------|-------------|
-| `cg schema discover` (CLI) | Agent/script use, CI pipelines, no server needed |
-| `clickgraph-client :discover` (REPL) | Interactive human use, connected to running server |
+| `/schema-discover` skill | AI-assistant use — ask your agent to discover the schema conversationally |
+| `cg schema discover` (CLI) | Script/CI use, called directly from a terminal or pipeline |
+| `clickgraph-client :discover` (REPL) | Interactive human use, connected to a running server |
 
 ## Quick Start
 

@@ -50,7 +50,12 @@ pub fn format_text(schema: &GraphSchema) -> String {
         if props.is_empty() {
             out.push_str(&format!("  {:12} {{}}{}  \n", label, note_str));
         } else {
-            out.push_str(&format!("  {:12} {{{}}}{}  \n", label, props.join(", "), note_str));
+            out.push_str(&format!(
+                "  {:12} {{{}}}{}  \n",
+                label,
+                props.join(", "),
+                note_str
+            ));
         }
     }
 
@@ -65,10 +70,11 @@ pub fn format_text(schema: &GraphSchema) -> String {
     for (rel_key, rel) in schema.get_relationships_schemas() {
         let base_type = rel_key.split("::").next().unwrap_or(rel_key.as_str());
         let is_undirected = is_undirected(rel_key, schema);
-        rel_groups
-            .entry(base_type.to_string())
-            .or_default()
-            .push((&rel.from_node, &rel.to_node, is_undirected));
+        rel_groups.entry(base_type.to_string()).or_default().push((
+            &rel.from_node,
+            &rel.to_node,
+            is_undirected,
+        ));
     }
 
     for (rel_type, variants) in &rel_groups {
@@ -165,9 +171,7 @@ pub fn format_json(schema: &GraphSchema) -> Value {
 
     let relationships: Vec<Value> = rel_groups
         .into_iter()
-        .map(|(rel_type, variants)| {
-            json!({ "type": rel_type, "variants": variants })
-        })
+        .map(|(rel_type, variants)| json!({ "type": rel_type, "variants": variants }))
         .collect();
 
     json!({

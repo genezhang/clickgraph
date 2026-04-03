@@ -87,17 +87,33 @@ fn print_table(cols: &[String], rows: &[Vec<Value>]) {
         }
     }
 
-    let sep: String = widths.iter().map(|w| "-".repeat(w + 2)).collect::<Vec<_>>().join("+");
+    let sep: String = widths
+        .iter()
+        .map(|w| "-".repeat(w + 2))
+        .collect::<Vec<_>>()
+        .join("+");
     println!("+{}+", sep);
-    let header: Vec<String> = cols.iter().zip(&widths).map(|(c, w)| format!(" {:w$} ", c, w = w)).collect();
+    let header: Vec<String> = cols
+        .iter()
+        .zip(&widths)
+        .map(|(c, w)| format!(" {:w$} ", c, w = w))
+        .collect();
     println!("|{}|", header.join("|"));
     println!("+{}+", sep);
     for row in rows {
-        let cells: Vec<String> = row.iter().zip(&widths).map(|(v, w)| format!(" {:w$} ", value_str(v), w = w)).collect();
+        let cells: Vec<String> = row
+            .iter()
+            .zip(&widths)
+            .map(|(v, w)| format!(" {:w$} ", value_str(v), w = w))
+            .collect();
         println!("|{}|", cells.join("|"));
     }
     println!("+{}+", sep);
-    println!("({} row{})", rows.len(), if rows.len() == 1 { "" } else { "s" });
+    println!(
+        "({} row{})",
+        rows.len(),
+        if rows.len() == 1 { "" } else { "s" }
+    );
 }
 
 fn print_json(cols: &[String], rows: &[Vec<Value>]) -> Result<()> {

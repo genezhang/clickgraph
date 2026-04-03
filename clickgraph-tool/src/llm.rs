@@ -64,7 +64,9 @@ impl LlmClient {
                     .api_key
                     .clone()
                     .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
-                    .ok_or_else(|| anyhow!("No API key found. Set CG_LLM_API_KEY or ANTHROPIC_API_KEY."))?;
+                    .ok_or_else(|| {
+                        anyhow!("No API key found. Set CG_LLM_API_KEY or ANTHROPIC_API_KEY.")
+                    })?;
                 (
                     LlmProvider::Anthropic,
                     key,
@@ -78,11 +80,16 @@ impl LlmClient {
         let api_url = cfg.base_url.clone().unwrap_or(default_url);
         let max_tokens = cfg.max_tokens.unwrap_or(8192);
 
-        let client = Client::builder()
-            .timeout(LLM_REQUEST_TIMEOUT)
-            .build()?;
+        let client = Client::builder().timeout(LLM_REQUEST_TIMEOUT).build()?;
 
-        Ok(LlmClient { api_key, model, api_url, max_tokens, provider, client })
+        Ok(LlmClient {
+            api_key,
+            model,
+            api_url,
+            max_tokens,
+            provider,
+            client,
+        })
     }
 
     /// Call the LLM with a system prompt and user message, return the text response.
@@ -119,10 +126,14 @@ impl LlmClient {
             model: &self.model,
             max_tokens: self.max_tokens,
             system: system_prompt,
-            messages: vec![Msg { role: "user", content: user_prompt }],
+            messages: vec![Msg {
+                role: "user",
+                content: user_prompt,
+            }],
         };
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(&self.api_url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
@@ -172,12 +183,19 @@ impl LlmClient {
             model: &self.model,
             max_tokens: self.max_tokens,
             messages: vec![
-                Msg { role: "system", content: system_prompt },
-                Msg { role: "user", content: user_prompt },
+                Msg {
+                    role: "system",
+                    content: system_prompt,
+                },
+                Msg {
+                    role: "user",
+                    content: user_prompt,
+                },
             ],
         };
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(&self.api_url)
             .bearer_auth(&self.api_key)
             .json(&body)

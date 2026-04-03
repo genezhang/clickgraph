@@ -68,9 +68,7 @@ impl CgConfig {
         let file_cfg = load_file_config();
 
         // Schema path: CLI flag > env (already handled by clap) > config file
-        let schema_path = schema
-            .clone()
-            .or_else(|| file_cfg.schema.path.clone());
+        let schema_path = schema.clone().or_else(|| file_cfg.schema.path.clone());
 
         // ClickHouse URL: CLI flag > env > config file
         let clickhouse_url = clickhouse
@@ -81,7 +79,11 @@ impl CgConfig {
         let ch_user = if ch_user != "default" {
             ch_user.to_string()
         } else {
-            file_cfg.clickhouse.user.clone().unwrap_or_else(|| "default".to_string())
+            file_cfg
+                .clickhouse
+                .user
+                .clone()
+                .unwrap_or_else(|| "default".to_string())
         };
 
         let ch_password = if !ch_password.is_empty() {
@@ -129,9 +131,11 @@ impl CgConfig {
 
     /// Resolve the schema path, returning an error if not set
     pub fn require_schema(&self) -> Result<&str> {
-        self.schema_path
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("No schema file specified. Use --schema <file> or set CG_SCHEMA env var."))
+        self.schema_path.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "No schema file specified. Use --schema <file> or set CG_SCHEMA env var."
+            )
+        })
     }
 }
 

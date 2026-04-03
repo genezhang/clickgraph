@@ -30,7 +30,10 @@ pub async fn run_nl(description: &str, execute: bool, format: &str, cfg: &CgConf
         "No schema loaded. Generate a general Cypher query.".to_string()
     };
 
-    let user_prompt = format!("{}\n\nNatural language query: {}", schema_context, description);
+    let user_prompt = format!(
+        "{}\n\nNatural language query: {}",
+        schema_context, description
+    );
 
     eprintln!("Calling {} ({})...", llm.model, provider_name(&llm));
     let response = llm.call(NL_SYSTEM_PROMPT, &user_prompt).await?;
