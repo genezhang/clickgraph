@@ -1,7 +1,7 @@
 # Rust/Cargo build artifacts
 target/
 **/target/
-Cargo.lock
+# Cargo.lock must be included so `cargo build --locked` works in Docker
 
 # Cargo-Chef recipe (caching layers)
 recipe.json
