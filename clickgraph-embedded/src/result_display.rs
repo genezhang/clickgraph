@@ -36,6 +36,11 @@ use crate::Value;
 
 /// ClickGraph-internal column names that are never shown in formatted output.
 /// These are structural columns added by the query engine, not user-defined properties.
+///
+/// `_tck_id` is the node ID column name used by the openCypher TCK test schema
+/// (via `node_id: _tck_id` in the YAML schema). For non-TCK schemas this entry
+/// is a no-op — it is retained here so that embedded users who follow the same
+/// convention get sensible display behaviour automatically.
 pub const INTERNAL_FIELDS: &[&str] = &[
     "_tck_id",
     "_version",
@@ -314,14 +319,11 @@ fn parse_props_json(json: &str, node_label: Option<&str>) -> Vec<(String, String
     }
 }
 
-/// Strip ClickHouse table prefix from a property key.
-/// e.g. `tck_n_a.num` → `num`, `num` → `num`
+/// Strip ClickHouse table/alias prefix from a property key.
+/// e.g. `tck_n_a.num` → `num`, `alias.prop` → `prop`, `prop` → `prop`
 fn strip_table_prefix(key: &str, _node_label: Option<&str>) -> String {
     if let Some(dot) = key.find('.') {
-        let prefix = &key[..dot];
-        if prefix.starts_with("tck_") {
-            return key[dot + 1..].to_string();
-        }
+        return key[dot + 1..].to_string();
     }
     key.to_string()
 }
@@ -498,7 +500,7 @@ pub fn format_rel_from_cols(cols_and_vals: &[(String, Value)], rel_type: &str) -
 
     let mut props: Vec<(String, String)> = cols_and_vals
         .iter()
-        .filter(|(col, _)| col != "from_id" && col != "to_id" && col != "_tck_id")
+        .filter(|(col, _)| !INTERNAL_FIELDS.iter().any(|f| col.as_str() == *f))
         .map(|(col, val)| (col.clone(), format_value(val)))
         .filter(|(_, v)| is_visible_prop_str(v))
         .collect();

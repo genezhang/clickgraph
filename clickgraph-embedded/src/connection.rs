@@ -368,6 +368,12 @@ impl<'db> Connection<'db> {
     ///
     /// Returns [`LoadStats`] with counts of nodes and edges inserted.
     ///
+    /// # Notes
+    ///
+    /// Edges whose endpoint variables are not defined in the same CREATE block
+    /// are silently skipped (no error is returned). Ensure all referenced node
+    /// variables appear earlier in the same block.
+    ///
     /// # Example
     ///
     /// ```no_run

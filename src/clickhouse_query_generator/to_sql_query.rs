@@ -81,7 +81,7 @@ impl CypherTriBool {
         match self {
             Self::True => "true",
             Self::False => "false",
-            Self::Null => "NULL",
+            Self::Null => "null",
         }
     }
 }

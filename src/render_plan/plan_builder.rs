@@ -1139,7 +1139,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             ],
                         }
                     } else {
-                        log::info!(
+                        log::debug!(
                             "OPTIONAL MATCH: anchor node has no property mapping to edge from_id '{}' — \
                              generating impossible join condition (always-NULL OPTIONAL MATCH)",
                             from_id_col
