@@ -839,27 +839,6 @@ impl FilterTagging {
                     property_access.column.raw()
                 );
 
-                // DEBUG: Always write to file to see what properties we're processing
-                if property_access.table_alias.0 == "person"
-                    || property_access.table_alias.0 == "post"
-                {
-                    use std::io::Write;
-                    if let Ok(mut file) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open("/tmp/clickgraph_debug_labels.txt")
-                    {
-                        writeln!(
-                            file,
-                            "\n=== FilterTagging processing {}.{} ===",
-                            property_access.table_alias.0,
-                            property_access.column.raw()
-                        )
-                        .ok();
-                        writeln!(file, "About to call get_table_ctx...").ok();
-                    }
-                }
-
                 // NOTE: We used to convert temporal property names (year, month, day) to function
                 // calls here, but that was wrong. In Cypher, `r.year` is only a temporal accessor
                 // if `r` is a date/datetime type. Since we don't have type information at this
