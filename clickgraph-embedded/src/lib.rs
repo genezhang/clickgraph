@@ -36,15 +36,18 @@
 //! - **Synchronous API**: chdb FFI is blocking; async wrappers are in the server.
 
 pub mod connection;
+pub mod cypher_loader;
 pub mod database;
 pub mod error;
 pub mod export;
 pub mod graph_result;
 pub mod query_result;
+pub mod result_display;
 pub mod value;
 pub(crate) mod write_helpers;
 
 pub use connection::Connection;
+pub use cypher_loader::LoadStats;
 pub use database::{Database, RemoteConfig, StorageCredentials, SystemConfig};
 pub use error::EmbeddedError;
 pub use export::{ExportFormat, ExportOptions};
