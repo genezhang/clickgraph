@@ -276,7 +276,12 @@ impl ConnectionConfig {
             .with_option(
                 "max_recursive_cte_evaluation_depth",
                 self.max_cte_depth.to_string(),
-            );
+            )
+            // VLP queries with polymorphic schemas generate large SQL due to UNION ALL expansion.
+            // The default 262144 bytes (256KB) is too small for multi-type VLP queries.
+            .with_option("max_query_size", "10485760") // 10MB query size limit
+            // Large VLP SQL also creates large ASTs; default 50000 is too small.
+            .with_option("max_ast_elements", "1000000"); // 1M AST elements
 
         // Set role for this connection pool via ClickHouse option
         // This adds the role parameter to all HTTP requests from this client

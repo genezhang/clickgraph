@@ -38,7 +38,12 @@ pub fn try_get_client() -> Option<Client> {
             .with_option("max_execution_time", "60") // 60 second query timeout
             .with_option("max_result_rows", "1000000") // Max 1M rows per query
             .with_option("max_result_bytes", "1073741824") // Max 1GB result size
-            .with_option("result_overflow_mode", "throw"), // Throw error instead of truncating
+            .with_option("result_overflow_mode", "throw") // Throw error instead of truncating
+            // VLP queries with polymorphic schemas generate large SQL due to UNION ALL expansion.
+            // The default 262144 bytes (256KB) is too small for multi-type VLP queries.
+            .with_option("max_query_size", "10485760") // 10MB query size limit
+            // Large VLP SQL also creates large ASTs; default 50000 is too small.
+            .with_option("max_ast_elements", "1000000"), // 1M AST elements
     )
 }
 
