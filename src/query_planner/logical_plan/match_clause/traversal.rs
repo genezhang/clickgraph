@@ -372,8 +372,10 @@ fn traverse_connected_pattern_with_mode<'a>(
         // generated correctly within the existing plan.
         let start_already_in_ctx = plan_ctx.get_table_ctx(&start_node_alias).is_ok();
         let end_already_in_ctx = plan_ctx.get_table_ctx(&end_node_alias).is_ok();
-        if start_node_label.is_none() && end_node_label.is_none()
-            && !start_already_in_ctx && !end_already_in_ctx
+        if start_node_label.is_none()
+            && end_node_label.is_none()
+            && !start_already_in_ctx
+            && !end_already_in_ctx
         {
             if let Some(ref types) = rel_labels {
                 log::debug!(

@@ -758,7 +758,9 @@ fn cypher_list_to_json(raw: &str) -> String {
                 i += 1;
             }
             out.push('"');
-            if i < len { i += 1; } // skip closing quote
+            if i < len {
+                i += 1;
+            } // skip closing quote
         } else {
             out.push(chars[i]);
             i += 1;
@@ -834,10 +836,7 @@ mod tests {
     #[test]
     fn test_labeled_chain() {
         let mut vm = empty_map();
-        let result = parse_create_block(
-            "CREATE (a:A {n: 1})-[:KNOWS]->(b:B {n: 2})",
-            &mut vm,
-        );
+        let result = parse_create_block("CREATE (a:A {n: 1})-[:KNOWS]->(b:B {n: 2})", &mut vm);
         assert_eq!(result.nodes.len(), 2);
         assert_eq!(result.edges.len(), 1);
         assert_eq!(result.edges[0].rel_type, "KNOWS");
@@ -847,10 +846,7 @@ mod tests {
     #[test]
     fn test_multi_statement() {
         let mut vm = empty_map();
-        let result = parse_create_block(
-            "CREATE (a:A), (b:B)\nCREATE (a)-[:REL]->(b)",
-            &mut vm,
-        );
+        let result = parse_create_block("CREATE (a:A), (b:B)\nCREATE (a)-[:REL]->(b)", &mut vm);
         assert_eq!(result.nodes.len(), 2);
         assert_eq!(result.edges.len(), 1);
         assert_eq!(result.edges[0].rel_type, "REL");
@@ -859,10 +855,8 @@ mod tests {
     #[test]
     fn test_comma_separated_chains() {
         let mut vm = empty_map();
-        let result = parse_create_block(
-            "CREATE (:A)-[:T1]->(:B),\n       (:B)-[:T2]->(:A)",
-            &mut vm,
-        );
+        let result =
+            parse_create_block("CREATE (:A)-[:T1]->(:B),\n       (:B)-[:T2]->(:A)", &mut vm);
         assert_eq!(result.nodes.len(), 4);
         assert_eq!(result.edges.len(), 2);
     }

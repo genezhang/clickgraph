@@ -1331,8 +1331,7 @@ impl DenormalizedCteStrategy {
         // Generate CTE name using vlp_{start}_{end} to match from_builder.rs expectation
         let cte_name = format!(
             "vlp_{}_{}",
-            self.pattern_ctx.left_node_alias,
-            self.pattern_ctx.right_node_alias
+            self.pattern_ctx.left_node_alias, self.pattern_ctx.right_node_alias
         );
 
         // Build the recursive CTE SQL for denormalized schema
@@ -1543,8 +1542,8 @@ impl DenormalizedCteStrategy {
             if let Some(ref end_filter) = filters.end_sql {
                 // filters.end_sql uses the relationship table alias (e.g., "f.Dest = 'ATL'")
                 // In the outer CTE, replace "f.COLUMN" → "end_COLUMN"
-                let rewritten = end_filter
-                    .replace(&format!("{}.", self.pattern_ctx.rel_alias), "end_");
+                let rewritten =
+                    end_filter.replace(&format!("{}.", self.pattern_ctx.rel_alias), "end_");
                 where_conditions.push(rewritten);
             }
 

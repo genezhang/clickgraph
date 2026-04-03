@@ -680,9 +680,7 @@ impl JoinBuilder for LogicalPlan {
                                             }),
                                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                                 table_alias: TableAlias(ref_alias.to_string()),
-                                                column: PropertyValue::Column(
-                                                    ref_col.to_string(),
-                                                ),
+                                                column: PropertyValue::Column(ref_col.to_string()),
                                             }),
                                         ],
                                     }]
@@ -699,9 +697,7 @@ impl JoinBuilder for LogicalPlan {
                                             }),
                                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                                 table_alias: TableAlias(ref_alias.to_string()),
-                                                column: PropertyValue::Column(
-                                                    ref_col.to_string(),
-                                                ),
+                                                column: PropertyValue::Column(ref_col.to_string()),
                                             }),
                                         ],
                                     }]

@@ -1699,8 +1699,7 @@ impl TypeInference {
             };
 
             for combo in valid_combinations {
-                let branch_plan =
-                    clone_plan_with_labels(inner_plan, &combo, &all_labels_per_var);
+                let branch_plan = clone_plan_with_labels(inner_plan, &combo, &all_labels_per_var);
                 log::debug!("✅ Generated UNION branch for combination: {:?}", combo);
                 union_branches.push(Arc::new(branch_plan));
             }
@@ -4623,8 +4622,12 @@ fn clone_plan_with_labels(
                         }
                     }
                     // Prune Union input to the ViewScan matching this label
-                    cloned.input =
-                        Arc::new(prune_union_for_label(&node.input, label, combo, all_candidates));
+                    cloned.input = Arc::new(prune_union_for_label(
+                        &node.input,
+                        label,
+                        combo,
+                        all_candidates,
+                    ));
                     LogicalPlan::GraphNode(cloned)
                 } else {
                     // Already typed - just recurse
@@ -4636,26 +4639,34 @@ fn clone_plan_with_labels(
             } else {
                 // Not in combination - just recurse
                 let mut cloned = node.clone();
-                cloned.input =
-                    Arc::new(clone_plan_with_labels(&node.input, combo, all_candidates));
+                cloned.input = Arc::new(clone_plan_with_labels(&node.input, combo, all_candidates));
                 LogicalPlan::GraphNode(cloned)
             }
         }
 
         LogicalPlan::GraphRel(graph_rel) => {
             let mut cloned = graph_rel.clone();
-            cloned.left = Arc::new(clone_plan_with_labels(&graph_rel.left, combo, all_candidates));
-            cloned.center =
-                Arc::new(clone_plan_with_labels(&graph_rel.center, combo, all_candidates));
-            cloned.right =
-                Arc::new(clone_plan_with_labels(&graph_rel.right, combo, all_candidates));
+            cloned.left = Arc::new(clone_plan_with_labels(
+                &graph_rel.left,
+                combo,
+                all_candidates,
+            ));
+            cloned.center = Arc::new(clone_plan_with_labels(
+                &graph_rel.center,
+                combo,
+                all_candidates,
+            ));
+            cloned.right = Arc::new(clone_plan_with_labels(
+                &graph_rel.right,
+                combo,
+                all_candidates,
+            ));
             LogicalPlan::GraphRel(cloned)
         }
 
         LogicalPlan::Filter(filter) => {
             let mut cloned = filter.clone();
-            cloned.input =
-                Arc::new(clone_plan_with_labels(&filter.input, combo, all_candidates));
+            cloned.input = Arc::new(clone_plan_with_labels(&filter.input, combo, all_candidates));
             LogicalPlan::Filter(cloned)
         }
 
@@ -4683,22 +4694,27 @@ fn clone_plan_with_labels(
 
         LogicalPlan::GroupBy(group_by) => {
             let mut cloned = group_by.clone();
-            cloned.input =
-                Arc::new(clone_plan_with_labels(&group_by.input, combo, all_candidates));
+            cloned.input = Arc::new(clone_plan_with_labels(
+                &group_by.input,
+                combo,
+                all_candidates,
+            ));
             LogicalPlan::GroupBy(cloned)
         }
 
         LogicalPlan::OrderBy(order_by) => {
             let mut cloned = order_by.clone();
-            cloned.input =
-                Arc::new(clone_plan_with_labels(&order_by.input, combo, all_candidates));
+            cloned.input = Arc::new(clone_plan_with_labels(
+                &order_by.input,
+                combo,
+                all_candidates,
+            ));
             LogicalPlan::OrderBy(cloned)
         }
 
         LogicalPlan::Limit(limit) => {
             let mut cloned = limit.clone();
-            cloned.input =
-                Arc::new(clone_plan_with_labels(&limit.input, combo, all_candidates));
+            cloned.input = Arc::new(clone_plan_with_labels(&limit.input, combo, all_candidates));
             LogicalPlan::Limit(cloned)
         }
 
@@ -4710,24 +4726,24 @@ fn clone_plan_with_labels(
 
         LogicalPlan::WithClause(with_clause) => {
             let mut cloned = with_clause.clone();
-            cloned.input =
-                Arc::new(clone_plan_with_labels(&with_clause.input, combo, all_candidates));
+            cloned.input = Arc::new(clone_plan_with_labels(
+                &with_clause.input,
+                combo,
+                all_candidates,
+            ));
             LogicalPlan::WithClause(cloned)
         }
 
         LogicalPlan::Unwind(unwind) => {
             let mut cloned = unwind.clone();
-            cloned.input =
-                Arc::new(clone_plan_with_labels(&unwind.input, combo, all_candidates));
+            cloned.input = Arc::new(clone_plan_with_labels(&unwind.input, combo, all_candidates));
             LogicalPlan::Unwind(cloned)
         }
 
         LogicalPlan::CartesianProduct(cart) => {
             let mut cloned = cart.clone();
-            cloned.left =
-                Arc::new(clone_plan_with_labels(&cart.left, combo, all_candidates));
-            cloned.right =
-                Arc::new(clone_plan_with_labels(&cart.right, combo, all_candidates));
+            cloned.left = Arc::new(clone_plan_with_labels(&cart.left, combo, all_candidates));
+            cloned.right = Arc::new(clone_plan_with_labels(&cart.right, combo, all_candidates));
             LogicalPlan::CartesianProduct(cloned)
         }
 

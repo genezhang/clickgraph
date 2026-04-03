@@ -2942,8 +2942,7 @@ pub fn extract_ctes_with_context(
                 // Denormalized VLP: both nodes are virtual (same table as relationship).
                 // Chained JOINs produce mismatched aliases (r1/r2 vs t1) and break SELECT.
                 // Always use recursive CTE for denormalized schemas.
-                let is_denormalized_vlp =
-                    matches!(graph_rel.left.as_ref(), LogicalPlan::GraphNode(n) if n.is_denormalized)
+                let is_denormalized_vlp = matches!(graph_rel.left.as_ref(), LogicalPlan::GraphNode(n) if n.is_denormalized)
                     && matches!(graph_rel.right.as_ref(), LogicalPlan::GraphNode(n) if n.is_denormalized);
 
                 let use_chained_join = spec.exact_hop_count().is_some()
@@ -3092,7 +3091,8 @@ pub fn extract_ctes_with_context(
                         // FRIEND branches to be missed. We only apply this for chained patterns
                         // to avoid incorrect expansions in simple single-hop anonymous patterns.
                         if start_labels.iter().all(|l| l == "__Unlabeled")
-                            && matches!(&*graph_rel.left, LogicalPlan::GraphRel(_)) {
+                            && matches!(&*graph_rel.left, LogicalPlan::GraphRel(_))
+                        {
                             let mut extra: Vec<String> = rel_types
                                 .iter()
                                 .flat_map(|rt| {

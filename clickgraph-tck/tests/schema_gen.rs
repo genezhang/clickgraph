@@ -88,9 +88,7 @@ impl SchemaCatalog {
             let entry = self.nodes.entry(label).or_default();
             for (prop, val) in &node.props {
                 let hint = val.type_hint();
-                let typ = entry
-                    .entry(prop.clone())
-                    .or_insert(type_from_hint(hint));
+                let typ = entry.entry(prop.clone()).or_insert(type_from_hint(hint));
                 *typ = typ.merge(hint);
             }
         }
@@ -109,9 +107,7 @@ impl SchemaCatalog {
             let entry = self.edges.entry(key).or_default();
             for (prop, val) in &edge.props {
                 let hint = val.type_hint();
-                let typ = entry
-                    .entry(prop.clone())
-                    .or_insert(type_from_hint(hint));
+                let typ = entry.entry(prop.clone()).or_insert(type_from_hint(hint));
                 *typ = typ.merge(hint);
             }
         }
@@ -119,11 +115,7 @@ impl SchemaCatalog {
 
     /// Return all ClickHouse table names managed by this schema.
     pub fn all_table_names(&self) -> Vec<String> {
-        let mut tables: Vec<String> = self
-            .nodes
-            .keys()
-            .map(|l| node_table_name(l))
-            .collect();
+        let mut tables: Vec<String> = self.nodes.keys().map(|l| node_table_name(l)).collect();
         for (key, _) in &self.edges {
             tables.push(edge_table_name(&key.0, &key.1, &key.2));
         }
@@ -159,10 +151,7 @@ pub fn scan_features(features_dir: &str) -> SchemaCatalog {
 
     // Always ensure we have at least a dummy label so the schema is non-empty.
     // Some feature files only use unlabeled nodes.
-    catalog
-        .nodes
-        .entry("__Unlabeled".to_string())
-        .or_default();
+    catalog.nodes.entry("__Unlabeled".to_string()).or_default();
 
     catalog
 }
@@ -203,8 +192,7 @@ fn scan_feature_content(content: &str, catalog: &mut SchemaCatalog) {
                 // End of docstring — check if it contains CREATE
                 if docstring_buf.to_uppercase().contains("CREATE") {
                     let mut dummy_var_map = std::collections::HashMap::new();
-                    let parsed =
-                        parse_create_block(&docstring_buf, &mut dummy_var_map);
+                    let parsed = parse_create_block(&docstring_buf, &mut dummy_var_map);
                     catalog.ingest_parsed(&parsed.nodes, &parsed.edges);
                 }
                 docstring_buf.clear();
@@ -303,7 +291,13 @@ pub fn generate_yaml(catalog: &SchemaCatalog) -> String {
 pub fn node_table_name(label: &str) -> String {
     let sanitized = label
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect::<String>();
     format!("tck_n_{sanitized}")
 }
@@ -313,15 +307,33 @@ pub fn node_table_name(label: &str) -> String {
 pub fn edge_table_name(rel_type: &str, from_label: &str, to_label: &str) -> String {
     let rt = rel_type
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect::<String>();
     let fl = from_label
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect::<String>();
     let tl = to_label
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect::<String>();
     format!("tck_e_{rt}_{fl}_{tl}")
 }
@@ -329,7 +341,13 @@ pub fn edge_table_name(rel_type: &str, from_label: &str, to_label: &str) -> Stri
 /// Make a property name safe as a ClickHouse column name.
 fn sanitize_col(prop: &str) -> String {
     prop.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -345,10 +363,7 @@ mod tests {
 
     #[test]
     fn test_edge_table_name() {
-        assert_eq!(
-            edge_table_name("KNOWS", "A", "B"),
-            "tck_e_knows_a_b"
-        );
+        assert_eq!(edge_table_name("KNOWS", "A", "B"), "tck_e_knows_a_b");
     }
 
     #[test]
@@ -363,12 +378,17 @@ mod tests {
     fn test_thelabel_schema() {
         let catalog = scan_features("tests/features");
         let yaml = generate_yaml(&catalog);
-        let thelabel_section: String = yaml.lines()
+        let thelabel_section: String = yaml
+            .lines()
             .skip_while(|l| !l.contains("label: TheLabel"))
             .take(20)
             .collect::<Vec<_>>()
             .join("\n");
         eprintln!("TheLabel schema:\n{}", thelabel_section);
-        assert!(thelabel_section.contains("id: id"), "Expected 'id: id' mapping in TheLabel schema, got:\n{}", thelabel_section);
+        assert!(
+            thelabel_section.contains("id: id"),
+            "Expected 'id: id' mapping in TheLabel schema, got:\n{}",
+            thelabel_section
+        );
     }
 }

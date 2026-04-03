@@ -318,7 +318,6 @@ pub(crate) trait RenderPlanBuilder {
 /// plan.select with the outer projection. This helper moves the first branch.
 fn move_first_branch_into_union(plan: RenderPlan) -> Option<Union> {
     if let Some(mut union) = plan.union.0 {
-
         if plan.from.0.is_some() {
             let first_branch = RenderPlan {
                 ctes: CteItems(vec![]),
@@ -338,7 +337,6 @@ fn move_first_branch_into_union(plan: RenderPlan) -> Option<Union> {
                 variable_registry: None,
             };
             union.input.insert(0, first_branch);
-
         }
         Some(union)
     } else {
@@ -841,13 +839,8 @@ impl RenderPlanBuilder for LogicalPlan {
                 let mut context = super::cte_generation::CteGenerationContext::new();
                 // Store root plan for BFS mode detection (shortestPath length-only optimization)
                 context.root_plan = Some(std::sync::Arc::new(self.clone()));
-                let ctes_vec = extract_ctes_with_context(
-                    &gj.input,
-                    "",
-                    &mut context,
-                    schema,
-                    None,
-                )?;
+                let ctes_vec =
+                    extract_ctes_with_context(&gj.input, "", &mut context, schema, None)?;
                 let ctes = CteItems(ctes_vec);
 
                 // NOW extract FROM with context so multi-type VLP can look up registered CTE names
@@ -1074,20 +1067,17 @@ impl RenderPlanBuilder for LogicalPlan {
                             crate::graph_catalog::expression_parser::PropertyValue,
                         >,
                     > = if let LogicalPlan::Union(union) = gr.left.as_ref() {
-                        union
-                            .inputs
-                            .first()
-                            .and_then(|input| {
-                                if let LogicalPlan::GraphNode(gn) = input.as_ref() {
-                                    if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
-                                        vs.from_node_properties.clone()
-                                    } else {
-                                        None
-                                    }
+                        union.inputs.first().and_then(|input| {
+                            if let LogicalPlan::GraphNode(gn) = input.as_ref() {
+                                if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                                    vs.from_node_properties.clone()
                                 } else {
                                     None
                                 }
-                            })
+                            } else {
+                                None
+                            }
+                        })
                     } else {
                         None
                     };
@@ -1105,17 +1095,15 @@ impl RenderPlanBuilder for LogicalPlan {
                             // When the anchor node type doesn't match the edge's declared from_node
                             // (e.g., IP anchor for RESOLVED_TO which expects Domain), no mapping
                             // will be found and we'll generate an impossible join condition.
-                            let node_id = anchor_from_node_properties
-                                .as_ref()
-                                .and_then(|props| {
-                                    props.iter().find_map(|(prop_name, prop_val)| {
-                                        if prop_val.raw() == from_id {
-                                            Some(prop_name.clone())
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                });
+                            let node_id = anchor_from_node_properties.as_ref().and_then(|props| {
+                                props.iter().find_map(|(prop_name, prop_val)| {
+                                    if prop_val.raw() == from_id {
+                                        Some(prop_name.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            });
                             (
                                 edge_vs.source_table.clone(),
                                 gr.alias.clone(),
@@ -3377,7 +3365,9 @@ impl RenderPlanBuilder for LogicalPlan {
                             // Check that branches have _tck_id but no __label__ column
                             let has_node_id_no_label = renders.iter().any(|r| {
                                 let has_tck_id = r.select.items.iter().any(|item| {
-                                    item.col_alias.as_ref().is_some_and(|a| a.0.ends_with("._tck_id"))
+                                    item.col_alias
+                                        .as_ref()
+                                        .is_some_and(|a| a.0.ends_with("._tck_id"))
                                 });
                                 let has_label = r.select.items.iter().any(|item| {
                                     item.col_alias.as_ref().is_some_and(|a| {
@@ -3918,13 +3908,8 @@ impl RenderPlanBuilder for LogicalPlan {
             };
 
             let mut context = super::cte_generation::CteGenerationContext::new();
-            let ctes_vec3 = extract_ctes_with_context(
-                cte_input,
-                "",
-                &mut context,
-                schema,
-                plan_ctx,
-            )?;
+            let ctes_vec3 =
+                extract_ctes_with_context(cte_input, "", &mut context, schema, plan_ctx)?;
             let ctes = CteItems(ctes_vec3);
 
             let mut render_plan = RenderPlan {

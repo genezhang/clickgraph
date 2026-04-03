@@ -574,7 +574,9 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
             .collect();
 
         // Group by end_alias; fan-in only when all share the same end
-        let first_end = fan_in_ctes.first().and_then(|c| c.vlp_cypher_end_alias.as_deref());
+        let first_end = fan_in_ctes
+            .first()
+            .and_then(|c| c.vlp_cypher_end_alias.as_deref());
         let all_same_end = first_end.is_some()
             && fan_in_ctes
                 .iter()
@@ -608,15 +610,17 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                         operands: vec![
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(other_alias),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                    VLP_END_ID_COLUMN.to_string(),
-                                ),
+                                column:
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        VLP_END_ID_COLUMN.to_string(),
+                                    ),
                             }),
                             RenderExpr::PropertyAccessExp(PropertyAccess {
                                 table_alias: TableAlias(VLP_CTE_FROM_ALIAS.to_string()),
-                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                    VLP_END_ID_COLUMN.to_string(),
-                                ),
+                                column:
+                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                        VLP_END_ID_COLUMN.to_string(),
+                                    ),
                             }),
                         ],
                     }],
@@ -2324,11 +2328,7 @@ fn build_union_inner_select(select: &SelectItems) -> (String, Vec<String>) {
             let property_part = &col_sql[dot_pos + 1..];
             non_agg_items
                 .iter()
-                .find(|i| {
-                    i.col_alias
-                        .as_ref()
-                        .map_or(false, |a| a.0 == property_part)
-                })
+                .find(|i| i.col_alias.as_ref().map_or(false, |a| a.0 == property_part))
                 .map(|item| item.expression.to_sql())
                 .unwrap_or_else(|| col_sql.clone())
         } else {

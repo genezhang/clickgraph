@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use clickgraph_embedded::{Connection, Database, SystemConfig, Value};
-use cucumber::{World, gherkin::Step, given, then, when};
+use cucumber::{gherkin::Step, given, then, when, World};
 use result_fmt::{
     extract_var_labels, extract_var_rel_types, format_row, format_value, parse_expected_table,
     COL_SEP,
@@ -48,8 +48,8 @@ static SHARED: LazyLock<&'static TckDatabase> = LazyLock::new(|| {
     let schema_path = std::env::temp_dir().join("clickgraph_tck_schema.yaml");
     std::fs::write(&schema_path, &yaml).expect("write TCK schema YAML");
 
-    let db = Database::in_memory(&schema_path, SystemConfig::default())
-        .expect("create TCK database");
+    let db =
+        Database::in_memory(&schema_path, SystemConfig::default()).expect("create TCK database");
 
     // Leak intentionally: chdb SIGABRT on Drop; same pattern as chdb_e2e.rs
     Box::leak(Box::new(TckDatabase { db, tables }))
@@ -69,9 +69,7 @@ fn truncate_all_tables() {
     if let Ok(conn) = Connection::new(db) {
         let _ = conn.execute_sql("SET mutations_sync=2");
         for table in all_tables() {
-            let r = conn.execute_sql(&format!(
-                "TRUNCATE TABLE IF EXISTS `default`.`{table}`"
-            ));
+            let r = conn.execute_sql(&format!("TRUNCATE TABLE IF EXISTS `default`.`{table}`"));
             if let Err(ref e) = r {
                 eprintln!("TRUNCATE ERROR for {table}: {e}");
             }
@@ -268,10 +266,13 @@ async fn then_result_any_order(world: &mut TckWorld, step: &Step) {
 
     // Normalize boolean/null representations before comparison.
     // ClickHouse returns boolean expressions as UInt8 (0/1); TCK expects true/false.
-    let mut actual: Vec<String> = world.result_rows.iter()
+    let mut actual: Vec<String> = world
+        .result_rows
+        .iter()
         .map(|r| result_fmt::normalize_row(r))
         .collect();
-    let mut expected: Vec<String> = expected_rows.iter()
+    let mut expected: Vec<String> = expected_rows
+        .iter()
         .map(|r| result_fmt::normalize_row(r))
         .collect();
     actual.sort();
@@ -280,16 +281,22 @@ async fn then_result_any_order(world: &mut TckWorld, step: &Step) {
     if let Some(ref sql) = world.last_sql {
         use std::io::Write;
         let label = if actual != expected { "FAIL" } else { "PASS" };
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tck_failing_sql.txt") {
-            let _ = writeln!(f, "=== {} EXPECTED: {:?} ACTUAL: {:?} ===\n{}\n", label, expected_rows, world.result_rows, sql);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/tck_failing_sql.txt")
+        {
+            let _ = writeln!(
+                f,
+                "=== {} EXPECTED: {:?} ACTUAL: {:?} ===\n{}\n",
+                label, expected_rows, world.result_rows, sql
+            );
         }
     }
     assert_eq!(
-        actual,
-        expected,
+        actual, expected,
         "\nResult mismatch (any order)\nActual  : {:?}\nExpected: {:?}",
-        world.result_rows,
-        expected_rows
+        world.result_rows, expected_rows
     );
 }
 
@@ -308,19 +315,20 @@ async fn then_result_in_order(world: &mut TckWorld, step: &Step) {
     };
     let (_headers, expected_rows) = parse_expected_table(table);
 
-    let actual: Vec<String> = world.result_rows.iter()
+    let actual: Vec<String> = world
+        .result_rows
+        .iter()
         .map(|r| result_fmt::normalize_row(r))
         .collect();
-    let expected: Vec<String> = expected_rows.iter()
+    let expected: Vec<String> = expected_rows
+        .iter()
         .map(|r| result_fmt::normalize_row(r))
         .collect();
 
     assert_eq!(
-        actual,
-        expected,
+        actual, expected,
         "\nResult mismatch (in order)\nActual  : {:?}\nExpected: {:?}",
-        world.result_rows,
-        expected_rows
+        world.result_rows, expected_rows
     );
 }
 
@@ -390,8 +398,11 @@ fn execute_setup_create(world: &mut TckWorld, cypher: &str) {
 
         let var = node.var.as_deref().unwrap_or("").to_string();
 
-        let props: HashMap<String, Value> =
-            node.props.iter().map(|(k, v)| (k.clone(), prop_to_value(v))).collect();
+        let props: HashMap<String, Value> = node
+            .props
+            .iter()
+            .map(|(k, v)| (k.clone(), prop_to_value(v)))
+            .collect();
 
         match conn.create_node(&label, props) {
             Ok(node_id) => {
@@ -420,10 +431,16 @@ fn execute_setup_create(world: &mut TckWorld, cypher: &str) {
             None => continue,
         };
 
-        let from_label = world.node_label_map.get(&edge.from_var)
-            .cloned().unwrap_or_else(|| "__Unlabeled".to_string());
-        let to_label = world.node_label_map.get(&edge.to_var)
-            .cloned().unwrap_or_else(|| "__Unlabeled".to_string());
+        let from_label = world
+            .node_label_map
+            .get(&edge.from_var)
+            .cloned()
+            .unwrap_or_else(|| "__Unlabeled".to_string());
+        let to_label = world
+            .node_label_map
+            .get(&edge.to_var)
+            .cloned()
+            .unwrap_or_else(|| "__Unlabeled".to_string());
 
         let table = schema_gen::edge_table_name(&edge.rel_type, &from_label, &to_label);
 
@@ -435,7 +452,9 @@ fn execute_setup_create(world: &mut TckWorld, cypher: &str) {
         ];
         for (k, v) in &edge.props {
             cols.push(k.clone());
-            let lit = prop_to_value(v).to_sql_literal().unwrap_or_else(|_| "NULL".to_string());
+            let lit = prop_to_value(v)
+                .to_sql_literal()
+                .unwrap_or_else(|_| "NULL".to_string());
             vals.push(lit);
         }
         let sql = format!(
@@ -514,11 +533,8 @@ fn load_binary_tree(world: &mut TckWorld, depth: u32) {
         for child in [2 * i, 2 * i + 1] {
             if child <= count {
                 if let (Some(from_id), Some(to_id)) = (id_map.get(&i), id_map.get(&child)) {
-                    if let Err(e) =
-                        conn.create_edge("CHILD", from_id, to_id, HashMap::new())
-                    {
-                        world.skip_reason =
-                            Some(format!("create_edge (binary tree) failed: {e}"));
+                    if let Err(e) = conn.create_edge("CHILD", from_id, to_id, HashMap::new()) {
+                        world.skip_reason = Some(format!("create_edge (binary tree) failed: {e}"));
                         return;
                     }
                 }

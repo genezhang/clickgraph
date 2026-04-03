@@ -2895,7 +2895,10 @@ pub(super) fn add_label_column_to_union_branches(
             // Infer the node variable prefix from existing SELECT column aliases.
             // Columns like "n._tck_id", "n.name" → prefix "n".
             // Columns like "n.__label__" → already qualified, use that prefix.
-            let node_prefix = plan.select.items.iter()
+            let node_prefix = plan
+                .select
+                .items
+                .iter()
                 .filter_map(|item| item.col_alias.as_ref())
                 .find_map(|alias| {
                     let a = &alias.0;
@@ -2914,15 +2917,11 @@ pub(super) fn add_label_column_to_union_branches(
             };
 
             // Check if __label__ already exists (qualified or unqualified) - skip if so
-            let has_label = plan
-                .select
-                .items
-                .iter()
-                .any(|item| {
-                    item.col_alias.as_ref().is_some_and(|a| {
-                        a.0 == "__label__" || a.0.ends_with(".__label__")
-                    })
-                });
+            let has_label = plan.select.items.iter().any(|item| {
+                item.col_alias
+                    .as_ref()
+                    .is_some_and(|a| a.0 == "__label__" || a.0.ends_with(".__label__"))
+            });
 
             if has_label {
                 log::debug!(
