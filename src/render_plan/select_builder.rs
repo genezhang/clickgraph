@@ -952,23 +952,14 @@ impl SelectBuilder for LogicalPlan {
                             // VLP endpoint nodes and WITH clause variables are CTE-sourced
                             // For CTE variables, properties should reference the CTE alias directly,
                             // NOT use denormalized property table resolution
-                            log::error!(
-                                "🔍🔍🔍 TRACING: Checking TypedVariable for alias '{}'",
-                                cypher_alias
-                            );
                             if let Some(ctx) = plan_ctx {
                                 if let Some(typed_var) = ctx.lookup_variable(cypher_alias) {
-                                    log::error!(
-                                        "🔍🔍🔍 TRACING: Found typed_var for '{}', source={:?}",
-                                        cypher_alias,
-                                        typed_var.source()
-                                    );
                                     if matches!(
                                         typed_var.source(),
                                         crate::query_planner::typed_variable::VariableSource::Cte { .. }
                                     ) {
-                                        log::error!(
-                                            "🔍🔍🔍 TRACING: Variable '{}' is CTE-sourced - skipping get_properties_with_table_alias",
+                                        log::debug!(
+                                            "Variable '{}' is CTE-sourced - skipping get_properties_with_table_alias",
                                             cypher_alias
                                         );
                                         // Pass through as-is - will use CTE alias from PropertyAccessExp
@@ -981,17 +972,8 @@ impl SelectBuilder for LogicalPlan {
                                                 .transpose()?,
                                         });
                                         continue;
-                                    } else {
-                                        log::error!(
-                                            "🔍🔍🔍 TRACING: Variable '{}' is NOT CTE-sourced (source={:?}) - will call get_properties_with_table_alias",
-                                            cypher_alias, typed_var.source()
-                                        );
                                     }
-                                } else {
-                                    log::error!("🔍🔍🔍 TRACING: Variable '{}' NOT found in TypedVariable registry", cypher_alias);
                                 }
-                            } else {
-                                log::error!("🔍🔍🔍 TRACING: No plan_ctx available for TypedVariable lookup");
                             }
 
                             log::debug!("   → trying get_properties_with_table_alias...");
@@ -1119,11 +1101,12 @@ impl SelectBuilder for LogicalPlan {
 
                                         if let Some(id_col) = id_column {
                                             // For denormalized nodes, resolve alias and column
-                                            // through from/to_node_properties (e.g., a.code → r.Origin)
+                                            // through from/to_node_properties (e.g., a.code → r.Origin).
+                                            // edge_alias is Some for coupled edge nodes, None for standalone.
                                             let (resolved_alias, resolved_col) = match self
                                                 .get_properties_with_table_alias(&alias.0)
                                             {
-                                                Ok((props, Some(edge_alias)))
+                                                Ok((props, edge_alias_opt))
                                                     if !props.is_empty() =>
                                                 {
                                                     // Find the mapped column for this id property
@@ -1132,12 +1115,16 @@ impl SelectBuilder for LogicalPlan {
                                                         .find(|(prop_name, _)| *prop_name == id_col)
                                                         .map(|(_, col)| col.clone())
                                                         .unwrap_or_else(|| id_col.clone());
-                                                    (edge_alias, mapped)
+                                                    // For standalone denormalized nodes, edge_alias is None;
+                                                    // fall back to the original node alias.
+                                                    let resolved_alias = edge_alias_opt
+                                                        .unwrap_or_else(|| alias.0.clone());
+                                                    (resolved_alias, mapped)
                                                 }
                                                 _ => (alias.0.clone(), id_col),
                                             };
 
-                                            log::info!(
+                                            log::debug!(
                                                 "🔍 SelectBuilder: id({}) -> {}.{}",
                                                 alias.0,
                                                 resolved_alias,

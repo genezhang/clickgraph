@@ -50,7 +50,15 @@ fn vlp_cte_alias_for(cte_name: &str) -> String {
 /// that uses inline chained JOINs instead of a recursive CTE.
 pub(super) fn is_fixed_length_vlp(graph_rel: &GraphRel) -> bool {
     graph_rel.variable_length.as_ref().is_some_and(|spec| {
-        spec.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none()
+        // Denormalized VLPs use recursive CTE (not chained JOINs), even for exact hops.
+        let is_denorm = matches!(
+            graph_rel.left.as_ref(),
+            LogicalPlan::GraphNode(n) if n.is_denormalized
+        ) && matches!(
+            graph_rel.right.as_ref(),
+            LogicalPlan::GraphNode(n) if n.is_denormalized
+        );
+        spec.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none() && !is_denorm
     })
 }
 
