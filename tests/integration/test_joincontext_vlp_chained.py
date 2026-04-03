@@ -21,11 +21,12 @@ Test dependencies:
 - test_integration.users_test and test_integration.posts_test tables populated
 """
 
+import os
 import pytest
 import requests
 
 # Test configuration
-CLICKGRAPH_URL = "http://localhost:8080/query"
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080") + "/query"
 TIMEOUT = 30
 
 def query_api(cypher: str, sql_only: bool = False) -> dict:
