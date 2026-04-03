@@ -109,11 +109,13 @@ class TestCountRelationships:
         """
         Verify error messages for relationship types not in the schema.
         """
+        import os
         import requests
         
+        _base = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
         # Test relationship with non-existent type
         response = requests.post(
-            "http://localhost:8080/query",
+            f"{_base}/query",
             json={"query": "USE test_fixtures\nMATCH ()-[r:NONEXISTENT]->()\nRETURN count(r)"}
         )
         assert response.status_code == 400, f"Expected 400, got {response.status_code}: {response.text}"

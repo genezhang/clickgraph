@@ -1057,28 +1057,53 @@ impl RenderPlanBuilder for LogicalPlan {
                         use_final: false,
                     }));
 
+                    // Extract the anchor node's from_node_properties from the Union's first branch.
+                    // These are the actual properties of the anchor node (e.g., IP's {ip_address: "id.orig_h"}),
+                    // not the edge's from_node_properties (which belong to the edge's declared from_node type,
+                    // e.g., Domain's {domain_name: "query"} for RESOLVED_TO).
+                    let anchor_from_node_properties: Option<
+                        std::collections::HashMap<
+                            String,
+                            crate::graph_catalog::expression_parser::PropertyValue,
+                        >,
+                    > = if let LogicalPlan::Union(union) = gr.left.as_ref() {
+                        union.inputs.first().and_then(|input| {
+                            if let LogicalPlan::GraphNode(gn) = input.as_ref() {
+                                if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                                    vs.from_node_properties.clone()
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        })
+                    } else {
+                        None
+                    };
+
                     // 3. Extract edge info for LEFT JOIN
-                    let (edge_table, edge_alias, from_id_col, node_id_col) =
+                    let (edge_table, edge_alias, from_id_col, node_id_col_opt) =
                         if let LogicalPlan::ViewScan(edge_vs) = gr.center.as_ref() {
                             let from_id = edge_vs
                                 .from_id
                                 .as_ref()
                                 .map(|id| id.first_column().to_string())
                                 .unwrap_or_else(|| edge_vs.id_column.clone());
-                            // Find the Cypher property name that maps to the from_id DB column
-                            let node_id = edge_vs
-                                .from_node_properties
-                                .as_ref()
-                                .and_then(|props| {
-                                    props.iter().find_map(|(prop_name, prop_val)| {
-                                        if prop_val.raw() == from_id {
-                                            Some(prop_name.clone())
-                                        } else {
-                                            None
-                                        }
-                                    })
+                            // Find the Cypher property name that maps to the from_id DB column.
+                            // Use the ANCHOR NODE's from_node_properties, not the edge's.
+                            // When the anchor node type doesn't match the edge's declared from_node
+                            // (e.g., IP anchor for RESOLVED_TO which expects Domain), no mapping
+                            // will be found and we'll generate an impossible join condition.
+                            let node_id = anchor_from_node_properties.as_ref().and_then(|props| {
+                                props.iter().find_map(|(prop_name, prop_val)| {
+                                    if prop_val.raw() == from_id {
+                                        Some(prop_name.clone())
+                                    } else {
+                                        None
+                                    }
                                 })
-                                .unwrap_or_else(|| from_id.clone());
+                            });
                             (
                                 edge_vs.source_table.clone(),
                                 gr.alias.clone(),
@@ -1091,25 +1116,46 @@ impl RenderPlanBuilder for LogicalPlan {
                             ));
                         };
 
-                    // Build LEFT JOIN condition: CTE.node_id_col = edge.from_id_col
-                    let join_condition = OperatorApplication {
-                        operator: Operator::Equal,
-                        operands: vec![
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(node_alias.clone()),
-                                column:
-                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                    // Build LEFT JOIN condition: CTE.node_id_col = edge.from_id_col.
+                    // If no valid anchor property maps to the edge's from_id (type mismatch,
+                    // e.g., IP node for RESOLVED_TO which expects Domain), generate an
+                    // impossible condition so the OPTIONAL MATCH always returns NULL.
+                    let join_condition = if let Some(node_id_col) = node_id_col_opt {
+                        OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(node_alias.clone()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
                                         node_id_col,
                                     ),
-                            }),
-                            RenderExpr::PropertyAccessExp(PropertyAccess {
-                                table_alias: TableAlias(edge_alias.clone()),
-                                column:
-                                    crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                }),
+                                RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    table_alias: TableAlias(edge_alias.clone()),
+                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
                                         from_id_col.clone(),
                                     ),
-                            }),
-                        ],
+                                }),
+                            ],
+                        }
+                    } else {
+                        log::debug!(
+                            "OPTIONAL MATCH: anchor node has no property mapping to edge from_id '{}' — \
+                             generating impossible join condition (always-NULL OPTIONAL MATCH)",
+                            from_id_col
+                        );
+                        // 1 = 0: impossible condition, LEFT JOIN always yields NULL
+                        OperatorApplication {
+                            operator: Operator::Equal,
+                            operands: vec![
+                                RenderExpr::Literal(
+                                    crate::render_plan::render_expr::Literal::Integer(1),
+                                ),
+                                RenderExpr::Literal(
+                                    crate::render_plan::render_expr::Literal::Integer(0),
+                                ),
+                            ],
+                        }
                     };
 
                     let edge_join = Join {
@@ -3708,10 +3754,34 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                     apply_wrappers(self, &mut base_render, plan_ctx)?;
 
-                    // When GROUP BY is present (aggregation), the SQL generator's UNION
-                    // aggregation path only iterates union.input[], not the base render.
-                    // Move the first branch into union.input and make base a shell.
-                    if !base_render.group_by.0.is_empty() {
+                    // When GROUP BY is present OR outer select has aggregation (e.g., RETURN count(n)),
+                    // the SQL generator's UNION aggregation path only iterates union.input[], not the
+                    // base render. Move the first branch into union.input and make base a shell.
+                    // This covers both:
+                    //   - RETURN n.state, count(n): GROUP BY present → base_render.group_by non-empty
+                    //   - RETURN count(n): no GROUP BY but outer select has aggregate function
+                    fn select_items_have_aggregation(items: &[super::SelectItem]) -> bool {
+                        fn has_agg(expr: &super::render_expr::RenderExpr) -> bool {
+                            match expr {
+                                super::render_expr::RenderExpr::AggregateFnCall(_) => true,
+                                super::render_expr::RenderExpr::ScalarFnCall(f) => {
+                                    f.args.iter().any(has_agg)
+                                }
+                                super::render_expr::RenderExpr::OperatorApplicationExp(op) => {
+                                    op.operands.iter().any(has_agg)
+                                }
+                                _ => false,
+                            }
+                        }
+                        items.iter().any(|item| has_agg(&item.expression))
+                    }
+
+                    let has_outer_aggregation =
+                        select_items_have_aggregation(&base_render.select.items);
+                    let should_move_first_branch = !base_render.group_by.0.is_empty()
+                        || (has_outer_aggregation && base_render.union.0.is_some());
+
+                    if should_move_first_branch {
                         if let Some(ref mut union_data) = base_render.union.0 {
                             // Extract the first branch's render components.
                             // Use saved original SELECT (with correct property mappings)
@@ -3745,7 +3815,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             };
                             union_data.input.insert(0, first_branch);
                             log::info!(
-                                "🔀 Direct Union + GROUP BY: moved first branch into union.input ({} total branches)",
+                                "🔀 Direct Union + aggregation: moved first branch into union.input ({} total branches)",
                                 union_data.input.len()
                             );
                         }

@@ -285,11 +285,14 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         let start_id_sql = if start_id_needs_string {
             "CAST('', 'String')".to_string()
         } else {
-            format!(
-                "CAST({}, '{}')",
-                start_id_type.default_value(),
-                start_id_type.to_clickhouse_type()
-            )
+            // Use Nullable(T) when default_value is NULL so ClickHouse accepts the CAST
+            let default = start_id_type.default_value();
+            let ch_type = if default == "NULL" {
+                start_id_type.to_nullable_clickhouse_type()
+            } else {
+                start_id_type.to_clickhouse_type().to_string()
+            };
+            format!("CAST({}, '{}')", default, ch_type)
         };
 
         // End ID needs String if heterogeneous types OR composite IDs
@@ -298,18 +301,21 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         let end_id_sql = if end_id_needs_string {
             "CAST('', 'String')".to_string()
         } else {
-            format!(
-                "CAST({}, '{}')",
-                end_id_type.default_value(),
-                end_id_type.to_clickhouse_type()
-            )
+            let default = end_id_type.default_value();
+            let ch_type = if default == "NULL" {
+                end_id_type.to_nullable_clickhouse_type()
+            } else {
+                end_id_type.to_clickhouse_type().to_string()
+            };
+            format!("CAST({}, '{}')", default, ch_type)
         };
 
         format!(
             "SELECT '' AS end_type, {} AS end_id, {} AS start_id, '' AS start_type, \
              '{{}}' AS end_properties, '{{}}' AS start_properties, \
              0 AS hop_count, CAST([], 'Array(String)') AS path_relationships, \
-             CAST([], 'Array(String)') AS rel_properties WHERE 0 = 1",
+             CAST([], 'Array(String)') AS rel_properties, \
+             CAST([], 'Array(String)') AS path_nodes WHERE 0 = 1",
             end_id_sql, start_id_sql
         )
     }
@@ -633,9 +639,21 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
 
         // hop_count = 0
         items.push("0 AS hop_count".to_string());
-        // empty path
+        // empty path arrays
         items.push("CAST([], 'Array(String)') AS path_relationships".to_string());
         items.push("CAST([], 'Array(String)') AS rel_properties".to_string());
+        // path_nodes = [start_id] for zero-hop path
+        let path_node_id_sql = if let Ok(id) = self.get_node_id_column(start_type) {
+            let id_sql = id.to_sql_native(&start_alias_sql);
+            if id_sql.starts_with("toString(") {
+                id_sql
+            } else {
+                format!("toString({})", id_sql)
+            }
+        } else {
+            format!("toString({}.id)", start_alias_sql)
+        };
+        items.push(format!("[{}] AS path_nodes", path_node_id_sql));
 
         let mut sql = format!(
             "SELECT {}\nFROM {} {}",
@@ -694,6 +712,9 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         let mut current_alias = start_alias_sql.clone();
         let mut end_node_alias = String::new();
         let mut end_node_type = String::new();
+        // Collect (alias, node_type) for all nodes in the path (start + each hop target)
+        let mut path_node_aliases: Vec<(String, String)> =
+            vec![(start_alias_sql.clone(), start_type.clone())];
 
         for (hop_idx, hop) in hops.iter().enumerate() {
             let hop_num = hop_idx + 1;
@@ -823,6 +844,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
 
             // Update current_alias for next hop
             current_alias = end_node_alias.clone();
+            path_node_aliases.push((end_node_alias.clone(), hop.to_node_type.clone()));
         }
 
         // Add start filters — apply after hop loop so end_node alias is available
@@ -875,6 +897,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             &start_alias_sql,
             hop_count,
             &path.hops,
+            &path_node_aliases,
         );
 
         // Assemble final SQL
@@ -908,6 +931,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         start_alias_sql: &str,
         hop_count: usize,
         hops: &[crate::query_planner::analyzer::multi_type_vlp_expansion::PathHop],
+        path_node_aliases: &[(String, String)],
     ) -> Vec<String> {
         log::debug!(
             "generate_select_items for node_type='{}', node_alias='{}'",
@@ -1065,6 +1089,25 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                     self.end_alias,
                     properties.len()
                 );
+
+                // 🔧 FIX: Always generate end_properties JSON blob for single-type end nodes.
+                // The outer SELECT uses JSON_VALUE(t.end_properties, '$.prop') via the
+                // is_multi_type_vlp_alias_from_context check in to_sql_query.rs, even when
+                // Individual mode is selected. Without end_properties the outer SELECT fails.
+                if self.end_labels.len() == 1 {
+                    if let Some(node_schema) = self.schema.all_node_schemas().get(node_type) {
+                        use crate::clickhouse_query_generator::json_builder::generate_json_properties_from_schema_without_aliases;
+                        if !node_schema.property_mappings.is_empty() {
+                            let json_sql = generate_json_properties_from_schema_without_aliases(
+                                node_schema,
+                                node_alias,
+                            );
+                            items.push(format!("{} AS end_properties", json_sql));
+                        } else {
+                            items.push("'{}' AS end_properties".to_string());
+                        }
+                    }
+                }
 
                 for prop_info in properties {
                     // Quote column name if it contains dots or special characters
@@ -1360,6 +1403,27 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             })
             .collect();
         items.push(format!("[{}] AS rel_properties", rel_props.join(", ")));
+
+        // Add path_nodes for nodes(p) function support
+        // Build array of all node IDs in the path: [start_id, intermediate..., end_id]
+        let path_node_exprs: Vec<String> = path_node_aliases
+            .iter()
+            .map(|(alias, ntype)| {
+                match self.get_node_id_column(ntype) {
+                    Ok(id) => {
+                        let id_sql = id.to_sql_native(alias);
+                        // Ensure uniform String array — wrap in toString if not already
+                        if id_sql.starts_with("toString(") {
+                            id_sql
+                        } else {
+                            format!("toString({})", id_sql)
+                        }
+                    }
+                    Err(_) => format!("toString({}.id)", alias),
+                }
+            })
+            .collect();
+        items.push(format!("[{}] AS path_nodes", path_node_exprs.join(", ")));
 
         items
     }

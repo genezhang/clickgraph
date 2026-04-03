@@ -14,11 +14,12 @@ Example query:
 Before fix: JOIN used u2.user_id (wrong - u2 doesn't exist in CTE)
 After fix: JOIN uses t.end_id (correct - references VLP CTE column)
 """
+import os
 import pytest
 import requests
 import re
 
-CLICKGRAPH_URL = "http://localhost:8080"
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 SCHEMA_NAME = "social_integration"
 
 

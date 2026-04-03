@@ -2939,9 +2939,16 @@ pub fn extract_ctes_with_context(
                 let rel_types: Vec<String> = graph_rel.labels.clone().unwrap_or_default();
                 let is_multi_type = should_use_join_expansion(graph_rel, &rel_types, schema);
 
+                // Denormalized VLP: both nodes are virtual (same table as relationship).
+                // Chained JOINs produce mismatched aliases (r1/r2 vs t1) and break SELECT.
+                // Always use recursive CTE for denormalized schemas.
+                let is_denormalized_vlp = matches!(graph_rel.left.as_ref(), LogicalPlan::GraphNode(n) if n.is_denormalized)
+                    && matches!(graph_rel.right.as_ref(), LogicalPlan::GraphNode(n) if n.is_denormalized);
+
                 let use_chained_join = spec.exact_hop_count().is_some()
                     && graph_rel.shortest_path_mode.is_none()
-                    && !is_multi_type; // Don't use chained JOINs for multi-type VLP
+                    && !is_multi_type // Don't use chained JOINs for multi-type VLP
+                    && !is_denormalized_vlp; // Don't use chained JOINs for denormalized VLP
 
                 if use_chained_join {
                     // 🚀 OPTIMIZATION: Fixed-length, non-shortest-path → NO CTE!

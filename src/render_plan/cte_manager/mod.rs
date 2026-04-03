@@ -1328,11 +1328,10 @@ impl DenormalizedCteStrategy {
         properties: &[NodeProperty],
         filters: &CategorizedFilters,
     ) -> Result<CteGenerationResult, CteError> {
-        // Generate CTE name
+        // Generate CTE name using vlp_{start}_{end} to match from_builder.rs expectation
         let cte_name = format!(
             "vlp_{}_{}",
-            self.pattern_ctx.left_node_alias,
-            context.spec.effective_min_hops()
+            self.pattern_ctx.left_node_alias, self.pattern_ctx.right_node_alias
         );
 
         // Build the recursive CTE SQL for denormalized schema
@@ -1501,7 +1500,9 @@ impl DenormalizedCteStrategy {
         // in base case would only find direct connections. Instead:
         // 1. Inner CTE: Apply start filter, traverse all paths
         // 2. Outer CTE: Filter by end node after traversal completes
-        let (recursive_cte_name, needs_wrapper) = if filters.end_sql.is_some() {
+        // Wrapper is needed for end-node filters OR when min_hops > 1 (to filter out
+        // shorter paths from the recursive CTE output).
+        let (recursive_cte_name, needs_wrapper) = if filters.end_sql.is_some() || min_hops > 1 {
             (format!("{}_inner", cte_name), true)
         } else {
             (cte_name.clone(), false)
@@ -1510,8 +1511,10 @@ impl DenormalizedCteStrategy {
         // Generate base case (1-hop)
         let base_case = self.generate_base_case_sql(context, properties, filters)?;
 
-        // Generate recursive case if needed
-        let needs_recursion = max_hops.is_none_or(|max| max > min_hops);
+        // Generate recursive case if needed.
+        // Note: needs_recursion depends on max_hops > 1 (not > min_hops) because the
+        // base case always starts at hop_count=1, so we need recursion whenever max > 1.
+        let needs_recursion = max_hops.is_none_or(|max| max > 1);
         let recursive_case = if needs_recursion {
             format!(
                 "\n    UNION ALL\n{}",
@@ -1527,25 +1530,28 @@ impl DenormalizedCteStrategy {
         };
 
         if needs_wrapper {
-            let end_filter = filters.end_sql.as_ref().unwrap();
-
-            // ⚠️ FIX: Rewrite filter for CTE columns
-            // filters.end_sql uses the relationship table alias (e.g., "f.Dest = 'ATL'")
-            // But in the outer CTE, we select from the inner CTE which has columns like "end_Dest"
-            // Replace: "f.COLUMN" → "end_COLUMN" (where f is the rel_alias)
-            let rewritten_filter =
-                end_filter.replace(&format!("{}.", self.pattern_ctx.rel_alias), "end_");
-
             let inner_cte = format!(
                 "{} AS (\n{}{}\n)",
                 recursive_cte_name, base_case, recursive_case
             );
 
             // Build WHERE clause for outer CTE
-            let mut where_conditions = vec![rewritten_filter];
+            let mut where_conditions = Vec::new();
+
+            // End-node filter (e.g., b.code = 'ATL') rewritten for CTE columns
+            if let Some(ref end_filter) = filters.end_sql {
+                // filters.end_sql uses the relationship table alias (e.g., "f.Dest = 'ATL'")
+                // In the outer CTE, replace "f.COLUMN" → "end_COLUMN"
+                let rewritten =
+                    end_filter.replace(&format!("{}.", self.pattern_ctx.rel_alias), "end_");
+                where_conditions.push(rewritten);
+            }
+
+            // Min-hops filter: exclude paths shorter than requested minimum
             if min_hops > 1 {
                 where_conditions.push(format!("hop_count >= {}", min_hops));
             }
+
             let where_clause = where_conditions.join(" AND ");
 
             // Return TWO CTEs without WITH RECURSIVE prefix (added by Ctes::to_sql())
@@ -1757,10 +1763,8 @@ impl DenormalizedCteStrategy {
         }
 
         // Add hop count constraints
-        let min_hops = context.spec.effective_min_hops();
-        if min_hops > 1 {
-            conditions.push(format!("hop_count >= {}", min_hops));
-        }
+        // Only max_hops limit in base case — the base case always produces hop_count=1 rows.
+        // The min_hops >= N filter is applied in the outer wrapper CTE, not here.
         if let Some(max_hops) = context.spec.max_hops {
             conditions.push(format!("hop_count <= {}", max_hops));
         }

@@ -29,7 +29,7 @@ use std::sync::Arc;
 use crate::query_planner::join_context::VLP_CTE_FROM_ALIAS;
 use crate::render_plan::cte_extraction::{
     build_vlp_context, expand_fixed_length_joins_with_context, extract_node_label_from_viewscan,
-    extract_relationship_columns, table_to_id_column,
+    extract_relationship_columns, table_to_id_column, VlpSchemaType,
 };
 use crate::render_plan::plan_builder_helpers::{
     combine_optional_filters_with_and, extract_end_node_id_column, extract_end_node_table_name,
@@ -169,6 +169,30 @@ fn vlp_overrides_from(plan: &LogicalPlan) -> bool {
     } else {
         false
     }
+}
+
+/// Check if the VLP in the plan tree is a denormalized VLP (both endpoints are denormalized nodes).
+/// For denormalized VLP, the anchor table is embedded inside the VLP CTE and must not be
+/// emitted as an additional JOIN.
+fn vlp_is_denormalized(plan: &LogicalPlan) -> bool {
+    use crate::query_planner::logical_plan::*;
+    fn find_vlp(plan: &LogicalPlan) -> Option<&GraphRel> {
+        match plan {
+            LogicalPlan::GraphRel(gr) if gr.variable_length.is_some() => Some(gr),
+            LogicalPlan::GraphRel(gr) => find_vlp(&gr.left).or_else(|| find_vlp(&gr.right)),
+            LogicalPlan::Projection(proj) => find_vlp(&proj.input),
+            LogicalPlan::Filter(filter) => find_vlp(&filter.input),
+            LogicalPlan::GroupBy(group_by) => find_vlp(&group_by.input),
+            LogicalPlan::Unwind(u) => find_vlp(&u.input),
+            LogicalPlan::GraphJoins(gj) => find_vlp(&gj.input),
+            LogicalPlan::GraphNode(gn) => find_vlp(&gn.input),
+            _ => None,
+        }
+    }
+    find_vlp(plan).is_some_and(|gr| {
+        matches!(gr.left.as_ref(), LogicalPlan::GraphNode(n) if n.is_denormalized)
+            && matches!(gr.right.as_ref(), LogicalPlan::GraphNode(n) if n.is_denormalized)
+    })
 }
 
 /// Build JOIN equality condition(s) for an Identifier pair.
@@ -780,14 +804,14 @@ impl JoinBuilder for LogicalPlan {
                 // Call expand_fixed_length_joins_with_context instead of generic GraphRel fallback.
                 if let Some(graph_rel) = find_graph_rel(&graph_joins.input) {
                     if let Some(vlp_ctx) = build_vlp_context(graph_rel, schema) {
-                        if vlp_ctx.is_fixed_length {
+                        // Denormalized VLP uses recursive CTE (not chained JOINs).
+                        // The CTE handles aliasing and hop-count filtering internally.
+                        if vlp_ctx.is_fixed_length
+                            && vlp_ctx.schema_type != VlpSchemaType::Denormalized
+                        {
                             let exact_hops = vlp_ctx.exact_hops.unwrap_or(1);
                             if exact_hops > 1 {
-                                log::info!(
-                                    "✓ Fixed-length VLP *{} - expanding joins directly",
-                                    exact_hops
-                                );
-                                let (_from_table, _from_alias, joins) =
+                                let (_, _, joins) =
                                     expand_fixed_length_joins_with_context(&vlp_ctx);
                                 return Ok(joins);
                             }
@@ -864,11 +888,6 @@ impl JoinBuilder for LogicalPlan {
                 let mut joins: Vec<Join> = Vec::new();
                 let mut skipped_first = false;
                 let from_alias = graph_joins.anchor_table.as_ref().cloned();
-                log::info!(
-                    "🔧 GraphJoins extract_joins: from_alias={:?}, num_joins={}",
-                    from_alias,
-                    graph_joins.joins.len()
-                );
 
                 // Import logical JoinType for comparison
                 use crate::query_planner::logical_plan::JoinType as LogicalJoinType;
@@ -894,6 +913,15 @@ impl JoinBuilder for LogicalPlan {
                             continue;
                         }
                         if is_from_table && vlp_is_from {
+                            // For denormalized VLP, the anchor table is the same underlying table
+                            // already embedded inside the VLP CTE — skip it entirely.
+                            if vlp_is_denormalized(&graph_joins.input) {
+                                log::debug!(
+                                    "🔧 Denormalized VLP is FROM: dropping anchor '{}' (already in CTE)",
+                                    logical_join.table_alias
+                                );
+                                continue;
+                            }
                             log::info!(
                                 "🔧 VLP is FROM: converting original anchor '{}' to JOIN ON 1=1",
                                 logical_join.table_alias

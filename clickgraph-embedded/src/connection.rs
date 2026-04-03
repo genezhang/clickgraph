@@ -359,6 +359,83 @@ impl<'db> Connection<'db> {
         self.execute_sql(&sql)
     }
 
+    /// Parse and load graph data from a Cypher CREATE block.
+    ///
+    /// Handles the subset of CREATE syntax used in test fixtures and data loading:
+    /// - Labeled nodes with properties: `(n:Person {name: 'Alice', age: 30})`
+    /// - Directed edges: `(n)-[:KNOWS {since: 2020}]->(m)`
+    /// - Multi-statement blocks (multiple CREATE statements in one string)
+    ///
+    /// Returns [`LoadStats`] with counts of nodes and edges inserted.
+    ///
+    /// # Notes
+    ///
+    /// Edges whose endpoint variables are not defined in the same CREATE block
+    /// are silently skipped (no error is returned). Ensure all referenced node
+    /// variables appear earlier in the same block.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use clickgraph_embedded::{Database, Connection, SystemConfig};
+    /// # let db = Database::new("schema.yaml", SystemConfig::default()).unwrap();
+    /// # let conn = Connection::new(&db).unwrap();
+    /// let stats = conn.load_cypher_create(
+    ///     "CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})"
+    /// ).unwrap();
+    /// assert_eq!(stats.nodes_loaded, 2);
+    /// assert_eq!(stats.edges_loaded, 1);
+    /// ```
+    pub fn load_cypher_create(
+        &self,
+        cypher: &str,
+    ) -> Result<crate::cypher_loader::LoadStats, EmbeddedError> {
+        use crate::cypher_loader::{parse_create_block, LoadStats};
+        let mut var_map = std::collections::HashMap::new();
+        let parsed = parse_create_block(cypher, &mut var_map);
+
+        let mut stats = LoadStats::default();
+
+        // Insert nodes; track var → assigned ID for edge resolution.
+        let mut node_ids: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for node in &parsed.nodes {
+            let label = node.label.as_deref().unwrap_or("__Unlabeled");
+            let var = node.var.as_deref().unwrap_or("").to_string();
+            let props: HashMap<String, Value> = node
+                .props
+                .iter()
+                .map(|(k, v)| (k.clone(), v.to_value()))
+                .collect();
+            let node_id = self.create_node(label, props)?;
+            if !var.is_empty() {
+                node_ids.insert(var, node_id);
+            }
+            stats.nodes_loaded += 1;
+        }
+
+        // Insert edges using the resolved node IDs.
+        for edge in &parsed.edges {
+            let from_id = match node_ids.get(&edge.from_var) {
+                Some(id) => id.clone(),
+                None => continue, // unresolved variable — skip
+            };
+            let to_id = match node_ids.get(&edge.to_var) {
+                Some(id) => id.clone(),
+                None => continue,
+            };
+            let props: HashMap<String, Value> = edge
+                .props
+                .iter()
+                .map(|(k, v)| (k.clone(), v.to_value()))
+                .collect();
+            self.create_edge(&edge.rel_type, &from_id, &to_id, props)?;
+            stats.edges_loaded += 1;
+        }
+
+        Ok(stats)
+    }
+
     /// Upsert a node (INSERT with ReplacingMergeTree deduplication).
     pub fn upsert_node(
         &self,

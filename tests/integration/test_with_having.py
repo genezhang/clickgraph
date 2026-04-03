@@ -4,10 +4,11 @@ Test script for WITH + WHERE → GROUP BY + HAVING
 Tests the new With logical plan node implementation
 """
 
+import os
 import requests
 import json
 
-SERVER_URL = "http://localhost:8080"
+SERVER_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 
 def execute_test_query(description, query, expected_keywords=None):
     """Test a Cypher query and check for expected SQL keywords"""

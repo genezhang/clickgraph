@@ -858,62 +858,16 @@ impl TypeInference {
                             );
                             plan_ctx.insert_table_ctx(node.alias.clone(), table_ctx);
 
-                            // Use first label for ViewScan (backward compatibility)
-                            let first_label = &all_labels[0];
-                            if let Ok(node_schema) = graph_schema.node_schema(first_label) {
-                                let full_table_name =
-                                    format!("{}.{}", node_schema.database, node_schema.table_name);
-                                let id_column = node_schema
-                                    .node_id
-                                    .columns()
-                                    .first()
-                                    .ok_or_else(|| {
-                                        AnalyzerError::SchemaNotFound(format!(
-                                            "Node schema for label '{}' has no ID columns defined",
-                                            first_label
-                                        ))
-                                    })?
-                                    .to_string();
-
-                                let mut view_scan = ViewScan::new(
-                                    full_table_name,
-                                    None,
-                                    node_schema.property_mappings.clone(),
-                                    id_column,
-                                    vec!["id".to_string()],
-                                    vec![],
-                                );
-
-                                // Copy denormalization metadata
-                                view_scan.is_denormalized = node_schema.is_denormalized;
-                                view_scan.from_node_properties = node_schema.from_properties.as_ref().map(|props| {
-                                    props.iter().map(|(k, v)| {
-                                        (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone()))
-                                    }).collect()
-                                });
-                                view_scan.to_node_properties = node_schema.to_properties.as_ref().map(|props| {
-                                    props.iter().map(|(k, v)| {
-                                        (k.clone(), crate::graph_catalog::expression_parser::PropertyValue::Column(v.clone()))
-                                    }).collect()
-                                });
-
-                                let new_node = GraphNode {
-                                    input: Arc::new(LogicalPlan::ViewScan(Arc::new(view_scan))),
-                                    alias: node.alias.clone(),
-                                    label: Some(first_label.clone()),
-                                    is_denormalized: node_schema.is_denormalized,
-                                    projected_columns: None,
-                                    node_types: Some(all_labels.clone()), // Store all inferred types
-                                };
-
-                                return Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(
-                                    new_node,
-                                ))));
-                            }
+                            // Don't eagerly create ViewScan here — Phase 2
+                            // (generate_union_for_untyped_nodes) applies property and
+                            // relationship constraints to pick valid types. Creating a ViewScan
+                            // now would preempt Phase 2 and prevent it from filtering out
+                            // nodes whose only accessed properties don't exist in any schema
+                            // (which should yield an empty result, not a scan of the first type).
                         }
                     }
                 }
-                // No changes needed
+                // No changes needed — Phase 2 will resolve this untyped node with constraints
                 Ok(Transformed::No(plan))
             }
 
@@ -1543,8 +1497,15 @@ impl TypeInference {
             }
 
             if candidates.is_empty() {
-                log::warn!("🔍 No valid types for '{}' after constraints", var_name);
-                continue;
+                log::warn!(
+                    "🔍 No valid types for '{}' after constraints — query returns empty result",
+                    var_name
+                );
+                // No type satisfies the constraints for this variable, so the entire
+                // query pattern produces no rows. Return Empty immediately so that
+                // downstream passes (FilterTagging, rendering) produce a correct
+                // zero-row plan (SELECT 1 AS "_empty" WHERE false).
+                return Ok(Arc::new(LogicalPlan::Empty));
             }
 
             // Collapse polymorphic parent types: if type A's properties are a
@@ -3060,6 +3021,21 @@ impl TypeInference {
                                 "TypeInference Phase 3: Skipping ViewScan for denormalized node '{}' (label '{}') — render phase handles direction",
                                 graph_node.alias, label
                             );
+                            // Mark the node as denormalized so render-phase code
+                            // (e.g. build_vlp_context / detect_vlp_schema_type) can
+                            // pick the right strategy for exact-hop VLP.
+                            if !graph_node.is_denormalized {
+                                return Ok(Arc::new(LogicalPlan::GraphNode(
+                                    crate::query_planner::logical_plan::GraphNode {
+                                        input: graph_node.input.clone(),
+                                        alias: graph_node.alias.clone(),
+                                        label: Some(label.clone()),
+                                        is_denormalized: true,
+                                        projected_columns: graph_node.projected_columns.clone(),
+                                        node_types: None,
+                                    },
+                                )));
+                            }
                         } else {
                             log::info!(
                             "TypeInference Phase 3: Resolving Empty → ViewScan for node '{}' with label '{}'",

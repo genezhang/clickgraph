@@ -137,9 +137,20 @@ impl FilterBuilder for LogicalPlan {
                 if graph_rel.variable_length.is_some() || graph_rel.shortest_path_mode.is_some() {
                     // Check if this uses chained JOINs (fixed-length, no CTE)
                     let uses_cte = if let Some(ref spec) = graph_rel.variable_length {
-                        // Fixed-length without shortest path uses chained JOINs
+                        // Fixed-length without shortest path uses chained JOINs...
+                        // EXCEPT: denormalized schemas always use recursive CTE.
+                        let is_denorm_vlp = matches!(
+                            graph_rel.left.as_ref(),
+                            crate::query_planner::logical_plan::LogicalPlan::GraphNode(n)
+                                if n.is_denormalized
+                        ) && matches!(
+                            graph_rel.right.as_ref(),
+                            crate::query_planner::logical_plan::LogicalPlan::GraphNode(n)
+                                if n.is_denormalized
+                        );
                         let is_fixed_length = spec.exact_hop_count().is_some()
-                            && graph_rel.shortest_path_mode.is_none();
+                            && graph_rel.shortest_path_mode.is_none()
+                            && !is_denorm_vlp;
                         !is_fixed_length // CTE used if NOT fixed-length
                     } else {
                         // Shortest path always uses CTE

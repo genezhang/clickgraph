@@ -499,6 +499,24 @@ async fn test_relationship_return() {
 // ===========================================================================
 
 #[tokio::test]
+async fn test_nonexistent_property_returns_empty() {
+    // MATCH (n) WHERE n.nonexistent_property = 123 RETURN n
+    // No node type has `nonexistent_xyz_999`, so all candidates are filtered.
+    // Should generate a query that returns 0 rows (ideally `SELECT 1 AS "_empty" WHERE false`).
+    let schema = create_standard_schema();
+    let sql = generate_sql(
+        &schema,
+        "MATCH (n) WHERE n.nonexistent_xyz_999 = 123 RETURN n",
+    )
+    .await;
+    assert!(
+        sql.contains("false") || sql.contains("_empty"),
+        "Expected empty/false query for nonexistent property, got: {}",
+        sql
+    );
+}
+
+#[tokio::test]
 async fn test_nonexistent_label() {
     let schema = create_standard_schema();
     let result = try_generate_sql(&schema, "MATCH (n:NonExistent) RETURN n").await;

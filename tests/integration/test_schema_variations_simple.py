@@ -6,11 +6,11 @@ Focus on testing label inference and direction validation with available social 
 These tests ensure SchemaInference → TypeInference consolidation doesn't break core functionality.
 """
 
+import os
 import pytest
 import requests
 
-
-CLICKGRAPH_URL = "http://localhost:8080"
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 SCHEMA = "social_integration"
 
 

@@ -28,6 +28,7 @@ Query Variations from Issue #12:
 - Predicate correlation: WHERE srcip1.ip = srcip2.ip
 """
 
+import os
 import pytest
 import requests
 import json
@@ -36,7 +37,7 @@ from pathlib import Path
 # Data loaded by scripts/test/setup_all_test_data.sh
 
 # Server endpoint
-CLICKGRAPH_URL = "http://localhost:8080"
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 SCHEMA_PATH = Path(__file__).parent / "fixtures" / "schemas" / "zeek_merged_test.yaml"
 
 

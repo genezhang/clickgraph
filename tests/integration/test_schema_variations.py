@@ -14,11 +14,12 @@ All tests use sql_only mode since the schema-variation databases
 (db_standard, db_fk_edge, etc.) may not exist in the test ClickHouse.
 """
 
+import os
 import pytest
 import requests
 from typing import Dict, Any
 
-CLICKGRAPH_URL = "http://localhost:8080"
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 
 
 class SchemaTestConfig:

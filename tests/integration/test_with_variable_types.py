@@ -9,11 +9,12 @@ WITH clause boundaries.
 Reference: docs/development/variable-type-system-design.md Section 7.3
 """
 
+import os
 import requests
 import json
 import sys
 
-SERVER_URL = "http://localhost:8080"
+SERVER_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
 SCHEMA_NAME = "social_integration"  # Uses schemas/test/social_integration.yaml
 
 # Test results tracking
