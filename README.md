@@ -15,14 +15,19 @@
 - View-based graph analytics offer the benefits of zero-ETL without the hassle of data migration and duplicate cost, yet better performance and scalability than most of the native graph analytics options.
 - Neo4j Bolt protocol support gives access to the tools available based on the Bolt protocol.
 ---
+## What's New in v0.6.6-dev
+
+- **`cg` CLI tool** — Agent/script-oriented CLI (`clickgraph-tool` crate). Translate and execute Cypher without a running server: `cg sql`, `cg validate`, `cg query`, `cg nl` (NL→Cypher via LLM), `cg schema show/validate/discover/diff`. Config via `~/.config/cg/config.toml`. Designed for agentic callers, CI pipelines, and scripting.
+- **`embedded` feature now opt-in** — `clickgraph-embedded` compiles without chdb by default. New `Database::new_remote(schema, RemoteConfig)` constructor executes Cypher against external ClickHouse with no chdb dependency — useful for lightweight tooling and the `cg` CLI.
+- **Agent skills** — Three publishable skills for any agentic framework (Claude Code, LangChain, AutoGen, CrewAI, OpenAI function calling): `/cypher` (NL→Cypher→execute), `/graph-schema` (show schema), `/schema-discover` (generate schema YAML from ClickHouse via LLM). See [skills/README.md](skills/README.md).
+- **openCypher TCK** — 383/402 openCypher Technology Compatibility Kit scenarios passing (95.3%), 0 failures. The 19 skipped scenarios cover Cypher write clauses (`CREATE`, `SET`, `DELETE`, `MERGE`) — not yet supported as Cypher syntax. Note: a programmatic write API (`create_node()`, `create_edge()`, `upsert_node()`) is already available in embedded mode; Cypher write syntax support is planned.
+
 ## What's New in v0.6.5-dev
 
-- **Hybrid remote query + local storage** — Execute Cypher queries against a remote ClickHouse cluster from embedded mode, then store results locally in chdb as a subgraph for fast re-querying. `query_remote()`, `query_remote_graph()`, `store_subgraph()` — ideal for GraphRAG context enrichment. Available in Rust, Python, and Go. See [Embedded Mode](docs/wiki/Embedded-Mode.md#hybrid-remote-query--local-storage).
-- **Embedded write API for GraphRAG** — `create_node()`, `create_edge()`, `upsert_node()` with batch variants. AI agents can extract entities from documents, store them as graph data, and query with Cypher — all in-process. See [Embedded Mode Write API](docs/wiki/Embedded-Mode.md#write-api-embedded-mode-only).
+- **Hybrid remote query + local storage** — Execute Cypher against a remote ClickHouse cluster from embedded mode, store results locally in chdb for fast re-querying. `query_remote()`, `query_remote_graph()`, `store_subgraph()` — ideal for GraphRAG context enrichment. Available in Rust, Python, and Go.
+- **Embedded write API for GraphRAG** — `create_node()`, `create_edge()`, `upsert_node()` with batch variants. AI agents can extract entities from documents, store them as an in-process graph, and query with Cypher — all without a server.
 - **Kuzu API parity** — `Value::Date/Timestamp/UUID` types, query timing (`compiling_time`/`execution_time`), `Database::in_memory()`, `Connection::set_query_timeout()`, column type metadata, multi-format file import (CSV/Parquet/JSON).
 - **DataFrame output** — `result.get_as_df()` (Pandas), `result.get_as_arrow()` (PyArrow), `result.get_as_pl()` (Polars) for Python data science workflows.
-- **Tutorials and examples** — 5 runnable Python examples covering quick start, DataFrames, write API, GraphRAG hybrid workflow, and export formats. See [`examples/embedded/`](examples/embedded/).
-- **1,599 unit tests** — Up from 1,591, with hybrid E2E tests and comprehensive Value type coverage.
 
 See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 
@@ -33,22 +38,32 @@ See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 - **Cypher-to-SQL Translation** - Industry-standard Cypher read syntax translated to optimized ClickHouse SQL
 - **Stateless Architecture** - Offloads all query execution to ClickHouse; no extra datastore required
 - **Embedded Mode** - In-process graph queries over Parquet/Iceberg/Delta/S3 via chdb; no ClickHouse server needed (`--features embedded`)
-- **LLM-powered schema discovery** - `:discover` command generates YAML schema from ClickHouse table metadata using Anthropic or OpenAI.
+- **Remote Mode** - Cypher translated locally, executed against external ClickHouse — no chdb required (`Database::new_remote`)
+- **LLM-powered schema discovery** - `cg schema discover` or `:discover` generates YAML schema from ClickHouse table metadata using Anthropic or OpenAI — no server needed
 - **Variable-Length Paths** - Recursive traversals with `*1..3` syntax using ClickHouse `WITH RECURSIVE` CTEs
 - **Path Functions** - `length(p)`, `nodes(p)`, `relationships(p)` for path analysis
 - **Parameterized Queries** - Neo4j-compatible `$param` syntax for SQL injection prevention
 - **Query Cache** - LRU caching with 10-100x speedup for repeated translations
 - **ClickHouse Functions** - Pass-through via `ch.function_name()` and `chagg.aggregate()` prefixes
-- **GraphRAG structured output** - `format: "Graph"` returns deduplicated nodes, edges, and stats for graph visualization and RAG pipelines.
+- **GraphRAG structured output** - `format: "Graph"` returns deduplicated nodes, edges, and stats for graph visualization and RAG pipelines
+- **GraphRAG write API** - `create_node()`, `create_edge()`, `upsert_node()` for in-process graph building (embedded mode)
+- **Hybrid remote + local** - Query remote ClickHouse, store subgraph locally in chdb for fast re-querying
 - **Query Metrics** - Phase-by-phase timing via HTTP headers and structured logging
-- **ClickHouse cluster load balancing** - `CLICKHOUSE_CLUSTER` env var auto-discovers and balances queries across cluster nodes.
-- **Complex queries like LDBC SNB benchmark: 36/37 queries (97%)** - Near-complete Social Network Benchmark coverage. See [benchmark results](benchmarks/ldbc_snb/BENCHMARK_RESULTS.md) for performance data on sf0.003, sf1 and sf10 datasets.
+- **ClickHouse cluster load balancing** - `CLICKHOUSE_CLUSTER` env var auto-discovers and balances queries across cluster nodes
+- **openCypher TCK: 383/402 passing (95.3%)** - 0 failures; 19 skipped = Cypher write clauses (`CREATE`, `SET`, `DELETE`, `MERGE`) not yet implemented as Cypher syntax (programmatic write API available in embedded mode)
+- **LDBC SNB benchmark: 36/37 queries (97%)** - Near-complete Social Network Benchmark coverage. See [benchmark results](benchmarks/ldbc_snb/BENCHMARK_RESULTS.md) for performance data on sf0.003, sf1 and sf10 datasets
 
 ### Neo4j Ecosystem Compatibility
 - **Bolt Protocol v5.8** - Full Neo4j driver compatibility (cypher-shell, Neo4j Browser, graph-notebook)
 - **HTTP REST API** - Complete query execution with parameters and aggregations
 - **Multi-Schema Support** - Per-request schema selection via `USE` clause, session parameter, or default
 - **Authentication** - Multiple auth schemes including basic auth
+
+### Agentic & AI Integration
+- **Agent skills** - `/cypher`, `/graph-schema`, `/schema-discover` for Claude Code, LangChain, AutoGen, CrewAI, and OpenAI function calling (see [skills/README.md](skills/README.md))
+- **`cg` CLI** - Subprocess-friendly CLI for agentic callers; outputs clean text/JSON, no interactive prompts
+- **MCP compatibility** - `apoc.meta.schema()` and Neo4j schema procedures for MCP-based AI assistants
+- **DataFrame output** - `get_as_df()` (Pandas), `get_as_arrow()` (PyArrow), `get_as_pl()` (Polars) for Python data science
 
 ### View-Based Graph Model
 - **Zero Migration** - Map existing tables to graph format through YAML configuration
@@ -87,6 +102,20 @@ flowchart LR
 ## Quick Start
 
 **New to ClickGraph?** See the **[Getting Started Guide](docs/getting-started.md)** for a complete walkthrough.
+
+### Option 0: Pre-built Binaries
+
+Download the latest release from [GitHub Releases](https://github.com/genezhang/clickgraph/releases/latest):
+
+```bash
+# ClickGraph server
+curl -L https://github.com/genezhang/clickgraph/releases/latest/download/clickgraph-linux-x86_64 \
+  -o clickgraph && chmod +x clickgraph
+
+# cg CLI tool (agent/scripting use)
+curl -L https://github.com/genezhang/clickgraph/releases/latest/download/cg-linux-x86_64 \
+  -o cg && chmod +x cg
+```
 
 ### Option 1: Docker (Recommended)
 
@@ -161,14 +190,44 @@ cd demos/neo4j-browser && bash setup.sh
 Then open http://localhost:7474 and connect to `bolt://localhost:7687`.
 See [demos/neo4j-browser/README.md](https://github.com/genezhang/clickgraph/blob/main/demos/neo4j-browser/README.md) for details.
 
-### AI Assistant Integration (MCP)
+### AI Assistant Integration
 
-ClickGraph implements `apoc.meta.schema()` and Neo4j-compatible schema procedures, enabling AI assistants (Claude, etc.) to discover your graph structure via MCP servers like [`@anthropic-ai/mcp-server-neo4j`](https://www.npmjs.com/package/@anthropic-ai/mcp-server-neo4j) and [`@neo4j/mcp-neo4j`](https://www.npmjs.com/package/@neo4j/mcp-neo4j).
+**Agent skills** — drop-in skills for Claude Code and other agentic frameworks, backed by the `cg` CLI (no MCP server needed):
+
+```bash
+# Install for Claude Code
+mkdir -p .claude/commands
+curl -L https://raw.githubusercontent.com/genezhang/clickgraph/main/skills/cypher.md \
+  -o .claude/commands/cypher.md
+curl -L https://raw.githubusercontent.com/genezhang/clickgraph/main/skills/graph-schema.md \
+  -o .claude/commands/graph-schema.md
+
+# Then in Claude Code:
+# /cypher find users with more than 10 followers
+# /graph-schema
+```
+
+See **[skills/README.md](skills/README.md)** for installation across Claude Code, LangChain, AutoGen, CrewAI, and OpenAI function calling.
+
+**MCP server** — for frameworks requiring the MCP protocol, ClickGraph implements `apoc.meta.schema()` and Neo4j-compatible schema procedures, compatible with [`@anthropic-ai/mcp-server-neo4j`](https://www.npmjs.com/package/@anthropic-ai/mcp-server-neo4j) and [`@neo4j/mcp-neo4j`](https://www.npmjs.com/package/@neo4j/mcp-neo4j).
 
 See the **[MCP Setup Guide](https://github.com/genezhang/clickgraph/blob/main/docs/wiki/AI-Assistant-Integration-MCP.md)** for configuration details.
 
-### CLI Client
+### CLI Tools
 
+**`cg` — agent/script CLI** (no server needed):
+```bash
+cargo build --release -p clickgraph-tool
+# Translate Cypher → SQL
+./target/release/cg --schema schema.yaml sql "MATCH (u:User) RETURN u.name LIMIT 5"
+# Execute against ClickHouse
+./target/release/cg --schema schema.yaml --clickhouse http://localhost:8123 \
+  query "MATCH (u:User)-[:FOLLOWS]->(f) RETURN f.name LIMIT 5"
+# NL → Cypher (requires ANTHROPIC_API_KEY or OPENAI_API_KEY)
+./target/release/cg --schema schema.yaml nl "find users with more than 10 followers"
+```
+
+**`clickgraph-client` — interactive REPL** (connects to a running server):
 ```bash
 cargo build --release -p clickgraph-client
 ./target/release/clickgraph-client  # connects to http://localhost:8080
@@ -222,17 +281,18 @@ RETURN friend.name
 
 ## Development Status
 
-**Current Version**: v0.6.5-dev
+**Current Version**: v0.6.6-dev
 
 ### Test Coverage
-- **Rust Unit Tests**: 1,588 passing (100%)
+- **Rust Unit Tests**: 1,601 passing (100%)
 - **Integration Tests**: 3,068 passing (108 environment-dependent)
+- **openCypher TCK**: 383/402 scenarios passing (95.3%), 0 failures, 19 skipped
 - **LDBC SNB**: 36/37 queries passing (97%)
 - **Benchmarks**: 14/14 passing (100%)
 - **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)
 
 ### Known Limitations
-- **Read-Only Engine**: Write operations not supported by design
+- **Cypher write syntax**: `CREATE`, `SET`, `DELETE`, `MERGE` not yet supported as Cypher queries. Programmatic write API (`create_node()`, `create_edge()`, `upsert_node()`) is available in embedded mode; full Cypher write support is planned.
 - **Anonymous Nodes**: Use named nodes for better SQL generation
 
 See [STATUS.md](STATUS.md) and [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for details.

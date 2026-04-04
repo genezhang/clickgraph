@@ -1,25 +1,34 @@
 # Embedded Mode — In-Process Graph Queries
 
-ClickGraph can run entirely **in-process** without an external ClickHouse server, using [chdb](https://github.com/chdb-io/chdb) — ClickHouse's embeddable engine. Query Parquet, Iceberg, Delta Lake, and CSV files directly from your application or from a standalone server binary.
+`clickgraph-embedded` provides three execution backends depending on your use case:
 
-This is similar to how [DuckDB](https://duckdb.org/) and [Kuzu](https://kuzudb.com/) work — a fully self-contained analytical engine that requires no separate database process.
+| Constructor | Requires chdb? | Description |
+|-------------|---------------|-------------|
+| `Database::new(schema, config)` | Yes (`embedded` feature) | Full in-process execution via chdb — query Parquet, S3, Iceberg, Delta Lake |
+| `Database::new_remote(schema, remote)` | No | Translate Cypher locally, execute against a remote ClickHouse cluster |
+| `Database::sql_only(schema)` | No | Cypher→SQL translation only, no execution |
+
+The **`embedded` feature** (chdb) is **opt-in** — it is not compiled by default. This keeps compile times fast and removes the native library dependency for tools that only need translation or remote execution (e.g., the `cg` CLI).
+
+When `embedded` is enabled, ClickGraph becomes similar to [DuckDB](https://duckdb.org/) and [Kuzu](https://kuzudb.com/) — a fully self-contained analytical engine that requires no separate database process.
 
 ---
 
-## When to Use Embedded Mode
+## When to Use Which Mode
 
 | Scenario | Recommendation |
 |----------|----------------|
-| Existing ClickHouse cluster | Standard mode (default) |
-| Query local Parquet / CSV files | **Embedded mode** |
+| Existing ClickHouse cluster | Remote mode (`new_remote`) or standard server mode |
+| Query local Parquet / CSV files | **Embedded mode** (`new` with `embedded` feature) |
 | Query S3 / Iceberg / Delta Lake without a server | **Embedded mode** |
+| Translate Cypher to SQL without executing | **SQL-only mode** (`sql_only`) |
 | Embed graph queries in a Rust application | **Embedded mode (Rust library)** |
 | Embed graph queries in a Python application | **Embedded mode (Python library)** |
 | Embed graph queries in a Go application | **Embedded mode (Go library)** |
 | Edge / serverless deployment | **Embedded mode** |
 | AI agent building local knowledge graph (GraphRAG) | **Embedded mode (write API)** |
-| Query remote CH cluster + store results locally | **Embedded mode (hybrid)** |
-| Development & prototyping without a database | **Embedded mode** |
+| Query remote CH cluster + store results locally | **Hybrid remote mode** |
+| Development & debugging (inspect SQL) | **SQL-only or remote mode** |
 
 ---
 
@@ -48,16 +57,22 @@ Everything works as in standard mode: HTTP REST API on port 8080, Bolt on port 7
 Embed ClickGraph directly in your Rust application. The API mirrors [Kuzu's Rust API](https://docs.kuzudb.com/client-apis/rust/):
 
 ```toml
-# Cargo.toml
+# Cargo.toml — full embedded mode (chdb in-process)
+[dependencies]
+clickgraph-embedded = { version = "0.6", features = ["embedded"] }
+
+# Cargo.toml — remote / sql-only (no chdb dependency)
 [dependencies]
 clickgraph-embedded = "0.6"
 ```
+
+**Full embedded mode (chdb):**
 
 ```rust
 use clickgraph_embedded::{Connection, Database, SystemConfig};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let db = Database::new("schema.yaml", SystemConfig::default())?;
+    let db = Database::new("schema.yaml", SystemConfig::default())?;  // requires `embedded` feature
     let conn = Connection::new(&db)?;
 
     let mut result = conn.query(
@@ -69,6 +84,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     Ok(())
 }
+```
+
+**Remote mode (no chdb — executes against external ClickHouse):**
+
+```rust
+use clickgraph_embedded::{Connection, Database, RemoteConfig};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let remote = RemoteConfig {
+        url: "http://localhost:8123".to_string(),
+        user: "default".to_string(),
+        password: String::new(),
+        database: None,
+        cluster_name: None,
+    };
+    let db = Database::new_remote("schema.yaml", remote)?;
+    let conn = Connection::new(&db)?;
+    let result = conn.query_remote("MATCH (u:User) RETURN u.name LIMIT 5")?;
+    for row in result { println!("{:?}", row); }
+    Ok(())
+}
+```
+
+**SQL-only mode (translate without executing):**
+
+```rust
+let db = Database::sql_only("schema.yaml")?;
+let conn = Connection::new(&db)?;
+let sql = conn.query_to_sql("MATCH (u:User)-[:FOLLOWS]->(f) RETURN f.name LIMIT 5")?;
+println!("{}", sql);
 ```
 
 ### Option C — Python Library

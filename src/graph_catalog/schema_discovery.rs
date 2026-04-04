@@ -448,6 +448,65 @@ curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/j
     }
 }
 
+/// Merge LLM-generated YAML batches into a single schema document.
+///
+/// When a database has many tables the LLM may produce multiple YAML
+/// fragments. This function appends nodes/edges from `continuation` into
+/// the running `base` accumulator, keeping the header from `base`.
+pub fn merge_batch_yaml(base: &str, continuation: &str) -> String {
+    let cont_nodes = extract_yaml_list_items(continuation, "nodes:");
+    let cont_edges = extract_yaml_list_items(continuation, "edges:");
+
+    let mut result = base.trim_end().to_string();
+
+    if !cont_nodes.is_empty() {
+        if let Some(pos) = result
+            .find("\n  edges:")
+            .or_else(|| result.find("\nedges:"))
+        {
+            result.insert_str(pos, &format!("\n{}", cont_nodes));
+        } else {
+            result.push('\n');
+            result.push_str(&cont_nodes);
+        }
+    }
+
+    if !cont_edges.is_empty() {
+        result.push('\n');
+        result.push_str(&cont_edges);
+    }
+
+    result.push('\n');
+    result
+}
+
+/// Extract the indented list items under a `nodes:` or `edges:` section.
+pub fn extract_yaml_list_items(yaml: &str, section: &str) -> String {
+    let mut in_section = false;
+    let mut items = String::new();
+
+    for line in yaml.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("nodes:") || trimmed.starts_with("edges:") {
+            in_section = trimmed.starts_with(section.trim());
+            continue;
+        }
+        // Stop if we hit another top-level key
+        if !line.starts_with(' ') && !line.is_empty() && !line.starts_with('#') {
+            if in_section {
+                break;
+            }
+            continue;
+        }
+        if in_section {
+            items.push_str(line);
+            items.push('\n');
+        }
+    }
+
+    items.trim_end().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

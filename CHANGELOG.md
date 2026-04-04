@@ -1,8 +1,24 @@
-## [0.6.5-dev] - 2026-03-29
+## [0.6.6-dev] - 2026-04-03
 
 ### 🚀 Features
 
-- **openCypher TCK runner** (`clickgraph-tck/`): Cucumber-based compatibility test suite running 402 openCypher TCK scenarios in embedded (chdb) mode. Results: **383/402 passed (95.3%), 0 failures, 19 skipped**. Enabled with `CLICKGRAPH_CHDB_TESTS=1 cargo test -p clickgraph-tck --test tck`. Covers MATCH, RETURN, WITH, ORDER BY, SKIP/LIMIT, aggregations, list/null/comparison/boolean/string expressions, and multi-hop graph traversal.
+- **`cg` CLI tool** (`clickgraph-tool` crate): Agent/script-oriented CLI for Cypher translation and execution without a running server. Commands: `cg sql` (Cypher→SQL), `cg validate` (parse + plan check), `cg query` (execute via remote ClickHouse), `cg nl` (NL→Cypher via LLM), `cg schema show/validate/discover/diff`. Config via `~/.config/cg/config.toml`. Supports Anthropic (default) and any OpenAI-compatible API.
+
+- **`embedded` feature now opt-in** in `clickgraph-embedded`: chdb is no longer compiled by default. New `Database::new_remote(schema, RemoteConfig)` constructor executes Cypher against external ClickHouse with no chdb dependency — the backend used by `cg query`. `Database::sql_only(schema)` and `Connection::query_to_sql()` are always available for translation-only use.
+
+- **Agent skills** (`skills/`): Three publishable agent skills for Claude Code, LangChain, AutoGen, CrewAI, and OpenAI function calling — `/cypher` (NL→Cypher→SQL→execute), `/graph-schema` (show + validate schema), `/schema-discover` (generate schema YAML from ClickHouse via LLM). See `skills/README.md` for installation across frameworks.
+
+- **openCypher TCK runner** (`clickgraph-tck/`): Cucumber-based compatibility test suite running 402 openCypher TCK scenarios in embedded (chdb) mode. Results: **383/402 passed (95.3%), 0 failures, 19 skipped**. The 19 skipped scenarios cover Cypher write clauses (`CREATE`, `SET`, `DELETE`, `MERGE`) — not yet supported as Cypher syntax; programmatic write API (`create_node()`, `create_edge()`, `upsert_node()`) is already available in embedded mode. Enabled with `CLICKGRAPH_CHDB_TESTS=1 cargo test -p clickgraph-tck --test tck`.
+
+### 🐛 Bug Fixes
+
+- **Debug println removed**: Eliminated leftover `println!("DEBUG TryFrom RenderExpr: ...")` in `render_plan/render_expr.rs` that was polluting stdout during query translation.
+
+---
+
+## [0.6.5-dev] - 2026-03-29
+
+### 🚀 Features
 
 - **Hybrid remote query + local storage** (PR #240): Execute Cypher queries against a remote ClickHouse cluster from embedded mode, then store results locally in chdb as a subgraph for fast re-querying. New `RemoteConfig` for `SystemConfig`, plus `Connection` methods: `query_remote()`, `query_remote_graph()`, `query_graph()`, `store_subgraph()`. New `GraphResult` structured output and `StoreStats` return type. Available in Rust, Python (UniFFI), and Go (UniFFI) bindings.
 

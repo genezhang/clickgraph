@@ -129,7 +129,15 @@ cargo test && pytest tests/integration/ && echo "✅ ALL TESTS PASSED"
 
 ### Check Generated SQL
 ```bash
-# Use sql_only mode for quick debugging
+# Option 1: cg CLI (no server needed — fastest for development)
+cg --schema benchmarks/social_network/schemas/social_benchmark.yaml \
+   sql "MATCH (n:User) RETURN n.name LIMIT 10"
+
+# Validate syntax + planning without execution
+cg --schema benchmarks/social_network/schemas/social_benchmark.yaml \
+   validate "MATCH (n:User)-[:FOLLOWS]->(f) RETURN f.name"
+
+# Option 2: Via server (if already running)
 curl -X POST http://localhost:8080/query \
   -H "Content-Type: application/json" \
   -d '{"query":"MATCH (n) RETURN n","sql_only":true}'

@@ -48,8 +48,8 @@ pub use pattern_schema::{
 };
 #[allow(unused_imports)]
 pub use schema_discovery::{
-    ColumnMetadata, DraftOptions, DraftRequest, EdgeHint, FkEdgeHint, IntrospectResponse, NodeHint,
-    SchemaDiscovery, Suggestion, TableMetadata,
+    extract_yaml_list_items, merge_batch_yaml, ColumnMetadata, DraftOptions, DraftRequest,
+    EdgeHint, FkEdgeHint, IntrospectResponse, NodeHint, SchemaDiscovery, Suggestion, TableMetadata,
 };
 #[allow(unused_imports)]
 pub use schema_validator::SchemaValidator;

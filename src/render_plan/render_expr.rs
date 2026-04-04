@@ -1142,10 +1142,6 @@ impl TryFrom<LogicalExpr> for RenderExpr {
             }
             _ => unimplemented!("Conversion for this LogicalExpr variant is not implemented"),
         };
-        println!(
-            "DEBUG TryFrom RenderExpr: Successfully converted to discriminant={:?}",
-            std::mem::discriminant(&expression)
-        );
         Ok(expression)
     }
 }

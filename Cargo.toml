@@ -4,6 +4,7 @@ members = [
     "clickgraph-embedded",
     "clickgraph-ffi",
     "clickgraph-tck",
+    "clickgraph-tool",
 ]
 
 [package]

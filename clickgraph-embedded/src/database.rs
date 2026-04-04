@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+#[cfg(feature = "embedded")]
 use clickgraph::executor::chdb_embedded::ChdbExecutor;
+#[cfg(feature = "embedded")]
 pub use clickgraph::executor::chdb_embedded::StorageCredentials;
 use clickgraph::executor::remote::RemoteClickHouseExecutor;
 use clickgraph::executor::{ExecutorError, QueryExecutor};
@@ -78,6 +80,7 @@ pub struct SystemConfig {
     ///
     /// If all fields are `None` (the default), chdb falls back to environment
     /// variables (`AWS_ACCESS_KEY_ID`, etc.) or instance-profile credentials.
+    #[cfg(feature = "embedded")]
     pub credentials: StorageCredentials,
 
     /// Optional remote ClickHouse connection for hybrid query + local storage.
@@ -108,31 +111,26 @@ pub struct Database {
 }
 
 impl Database {
-    /// Open a database using a YAML schema file.
+    /// Open a database using a YAML schema file (requires `embedded` feature for chdb).
     ///
     /// Loads the schema, creates a chdb session, and:
     /// - Creates VIEWs for schema entries WITH a `source:` field
     /// - Creates writable ReplacingMergeTree tables for entries WITHOUT `source:`
-    ///
-    /// # Arguments
-    ///
-    /// * `schema_path` -- path to the YAML schema file
-    /// * `config` -- session configuration (session dir, data dir, threads)
+    #[cfg(feature = "embedded")]
     pub fn new(schema_path: impl AsRef<Path>, config: SystemConfig) -> Result<Self, EmbeddedError> {
         let graph_schema = load_graph_schema(schema_path.as_ref())?;
         Self::from_schema(Arc::new(graph_schema), config)
     }
 
-    /// Open an in-memory database using a YAML schema file.
+    /// Open an in-memory database using a YAML schema file (requires `embedded` feature).
     ///
     /// Equivalent to `new()` with a temporary session directory that is
-    /// automatically cleaned up when the `Database` is dropped. Mirrors
-    /// Kuzu's `Database::new(":memory:", config)` pattern.
+    /// automatically cleaned up when the `Database` is dropped.
+    #[cfg(feature = "embedded")]
     pub fn in_memory(
         schema_path: impl AsRef<Path>,
         config: SystemConfig,
     ) -> Result<Self, EmbeddedError> {
-        // Force session_dir to None so from_schema uses an auto-cleaned temp dir
         let config = SystemConfig {
             session_dir: None,
             ..config
@@ -140,17 +138,15 @@ impl Database {
         Self::new(schema_path, config)
     }
 
-    /// Open a database with an already-built `GraphSchema`.
-    ///
-    /// Useful when you have already loaded and validated a schema.
+    /// Open a database backed by an existing `GraphSchema` and a chdb session
+    /// (requires `embedded` feature).
+    #[cfg(feature = "embedded")]
     pub fn from_schema(
         schema: Arc<GraphSchema>,
         config: SystemConfig,
     ) -> Result<Self, EmbeddedError> {
-        // Build the Tokio runtime first — needed for async remote pool init
         let runtime = build_runtime()?;
 
-        // Determine chdb session directory
         let (session_dir, auto_cleanup) = match config.session_dir {
             Some(dir) => (dir, false),
             None => {
@@ -160,15 +156,12 @@ impl Database {
             }
         };
 
-        // Create chdb executor, applying credentials at session init
         let executor =
             ChdbExecutor::new_with_credentials(&session_dir, auto_cleanup, &config.credentials)
                 .map_err(|e| EmbeddedError::Executor(e.to_string()))?;
 
-        // Create chdb VIEWs for schema entries with source: URIs
         let view_count = clickgraph::executor::data_loader::load_schema_sources(&executor, &schema)
             .map_err(|e| EmbeddedError::Executor(e.to_string()))?;
-
         if view_count > 0 {
             log::info!(
                 "Created {} chdb VIEW(s) from schema source: entries",
@@ -176,11 +169,9 @@ impl Database {
             );
         }
 
-        // Create writable ReplacingMergeTree tables for entries without source:
         let table_count =
             clickgraph::executor::data_loader::create_writable_tables(&executor, &schema)
                 .map_err(|e| EmbeddedError::Executor(e.to_string()))?;
-
         if table_count > 0 {
             log::info!(
                 "Created {} writable ReplacingMergeTree table(s)",
@@ -188,23 +179,7 @@ impl Database {
             );
         }
 
-        // Create remote executor if remote config is provided
-        let remote_executor = if let Some(ref remote) = config.remote {
-            let pool = runtime
-                .block_on(RoleConnectionPool::new_with_params(
-                    &remote.url,
-                    &remote.user,
-                    &remote.password,
-                    remote.database.as_deref(),
-                    remote.cluster_name.as_deref(),
-                    DEFAULT_REMOTE_MAX_CTE_DEPTH,
-                ))
-                .map_err(EmbeddedError::Executor)?;
-            log::info!("Remote ClickHouse executor initialized: {}", remote.url);
-            Some(Arc::new(RemoteClickHouseExecutor::new(Arc::new(pool))) as Arc<dyn QueryExecutor>)
-        } else {
-            None
-        };
+        let remote_executor = Self::build_remote_executor(&runtime, config.remote.as_ref())?;
 
         Ok(Database {
             executor: Arc::new(executor),
@@ -212,6 +187,52 @@ impl Database {
             schema,
             runtime,
         })
+    }
+
+    /// Open a database connected to a remote ClickHouse cluster (no chdb needed).
+    ///
+    /// Cypher is translated to SQL locally and executed on the remote ClickHouse.
+    /// Use `Connection::query_remote()` to run queries.
+    pub fn new_remote(
+        schema_path: impl AsRef<Path>,
+        remote: RemoteConfig,
+    ) -> Result<Self, EmbeddedError> {
+        let graph_schema = load_graph_schema(schema_path.as_ref())?;
+        let runtime = build_runtime()?;
+        let remote_executor =
+            Self::build_remote_executor(&runtime, Some(&remote))?.ok_or_else(|| {
+                EmbeddedError::Executor("Failed to connect to remote ClickHouse".to_string())
+            })?;
+        Ok(Database {
+            executor: Arc::new(NullExecutor),
+            remote_executor: Some(remote_executor),
+            schema: Arc::new(graph_schema),
+            runtime,
+        })
+    }
+
+    /// Build a remote executor from an optional `RemoteConfig`.
+    fn build_remote_executor(
+        runtime: &tokio::runtime::Runtime,
+        remote: Option<&RemoteConfig>,
+    ) -> Result<Option<Arc<dyn QueryExecutor>>, EmbeddedError> {
+        let Some(remote) = remote else {
+            return Ok(None);
+        };
+        let pool = runtime
+            .block_on(RoleConnectionPool::new_with_params(
+                &remote.url,
+                &remote.user,
+                &remote.password,
+                remote.database.as_deref(),
+                remote.cluster_name.as_deref(),
+                DEFAULT_REMOTE_MAX_CTE_DEPTH,
+            ))
+            .map_err(EmbeddedError::Executor)?;
+        log::info!("Remote ClickHouse executor initialized: {}", remote.url);
+        Ok(Some(
+            Arc::new(RemoteClickHouseExecutor::new(Arc::new(pool))) as Arc<dyn QueryExecutor>,
+        ))
     }
 
     /// Return a reference to the graph schema.

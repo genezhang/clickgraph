@@ -8,6 +8,43 @@ Get ClickGraph running in 5 minutes and execute your first graph query.
 - **Rust 1.85+** for building from source
 - 5 minutes of your time ⏱️
 
+## Option 0: Pre-built Binaries ⚡
+
+The fastest way to get the server and `cg` CLI without building from source:
+
+```bash
+# ClickGraph server
+curl -L https://github.com/genezhang/clickgraph/releases/latest/download/clickgraph-linux-x86_64 \
+  -o clickgraph && chmod +x clickgraph
+
+# cg CLI tool (agent/scripting use — no server needed)
+curl -L https://github.com/genezhang/clickgraph/releases/latest/download/cg-linux-x86_64 \
+  -o cg && chmod +x cg
+```
+
+Then run the server:
+
+```bash
+export CLICKHOUSE_URL="http://localhost:8123"
+export CLICKHOUSE_USER="your_user"
+export CLICKHOUSE_PASSWORD="your_pass"
+export GRAPH_CONFIG_PATH="./schemas/my_graph.yaml"
+./clickgraph
+```
+
+Or use `cg` for agent/script workflows without starting a server:
+
+```bash
+# Translate Cypher → SQL
+./cg --schema schema.yaml sql "MATCH (u:User) RETURN u.name LIMIT 5"
+
+# Execute against ClickHouse directly
+./cg --schema schema.yaml --clickhouse http://localhost:8123 \
+  query "MATCH (u:User)-[:FOLLOWS]->(f) RETURN f.name LIMIT 5"
+```
+
+---
+
 ## Option 1: Docker Setup (Recommended) ⚡
 
 This is the fastest way to get started. The docker-compose setup includes ClickHouse with sample data.
@@ -326,6 +363,15 @@ Receive-Job -Id $job.Id -Keep
 
 # Stop server
 Stop-Job -Id $job.Id; Remove-Job -Id $job.Id
+```
+
+### Debug Generated SQL (No Server Needed)
+
+Use `cg` to inspect the SQL translation without a running server:
+
+```bash
+cg --schema schema.yaml sql "MATCH (u:User)-[:FOLLOWS]->(f) RETURN f.name"
+cg --schema schema.yaml validate "MATCH (u:User) RETURN u.name"
 ```
 
 👉 **[More troubleshooting →](Troubleshooting-Guide.md)**

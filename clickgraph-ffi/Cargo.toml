@@ -12,6 +12,6 @@ crate-type = ["cdylib"]
 name = "clickgraph_ffi"
 
 [dependencies]
-clickgraph-embedded = { path = "../clickgraph-embedded" }
+clickgraph-embedded = { path = "../clickgraph-embedded", features = ["embedded"] }
 uniffi = "0.29"
 thiserror = "2.0"
