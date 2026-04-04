@@ -94,9 +94,10 @@ use clickgraph_embedded::{Connection, Database, RemoteConfig};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let remote = RemoteConfig {
         url: "http://localhost:8123".to_string(),
-        user: Some("default".to_string()),
-        password: None,
+        user: "default".to_string(),
+        password: String::new(),
         database: None,
+        cluster_name: None,
     };
     let db = Database::new_remote("schema.yaml", remote)?;
     let conn = Connection::new(&db)?;

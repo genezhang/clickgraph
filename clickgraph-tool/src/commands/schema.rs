@@ -1,7 +1,6 @@
 use anyhow::{anyhow, Result};
 use clickgraph::graph_catalog::{
-    config::GraphSchemaConfig, llm_prompt, merge_batch_yaml,
-    schema_discovery::SchemaDiscovery,
+    config::GraphSchemaConfig, llm_prompt, merge_batch_yaml, schema_discovery::SchemaDiscovery,
 };
 
 use crate::{

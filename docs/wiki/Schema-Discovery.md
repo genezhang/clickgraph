@@ -31,8 +31,8 @@ export ANTHROPIC_API_KEY=sk-ant-...
 # Discover schema directly from ClickHouse
 cg schema discover \
   --clickhouse http://localhost:8123 \
-  --ch-user your_user \
-  --ch-password your_pass \
+  --user your_user \
+  --password your_pass \
   --database mydb \
   --out mydb_schema.yaml
 

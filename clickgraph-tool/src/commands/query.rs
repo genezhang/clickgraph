@@ -175,9 +175,7 @@ fn value_to_json(v: &Value) -> serde_json::Value {
         Value::String(s) | Value::Date(s) | Value::Timestamp(s) | Value::UUID(s) => {
             serde_json::Value::String(s.clone())
         }
-        Value::List(items) => {
-            serde_json::Value::Array(items.iter().map(value_to_json).collect())
-        }
+        Value::List(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
         Value::Map(pairs) => serde_json::Value::Object(
             pairs
                 .iter()
