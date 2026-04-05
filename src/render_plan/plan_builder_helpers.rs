@@ -789,10 +789,20 @@ pub(super) fn extract_id_column(plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::Projection(proj) => extract_id_column(&proj.input),
         // For WithClause, recurse into input to get ID column from underlying node
         LogicalPlan::WithClause(wc) => extract_id_column(&wc.input),
-        // For Union (denormalized nodes), extract from first branch
+        // For Union (polymorphic nodes), only return id_column if all branches agree.
+        // If branches disagree (e.g. User→user_id vs Post→post_id), return None so
+        // callers fall back to schema lookup using the concrete relationship table context.
         LogicalPlan::Union(union) => {
-            if !union.inputs.is_empty() {
-                extract_id_column(&union.inputs[0])
+            if union.inputs.is_empty() {
+                return None;
+            }
+            let cols: Vec<Option<String>> = union
+                .inputs
+                .iter()
+                .map(|input| extract_id_column(input))
+                .collect();
+            if cols.windows(2).all(|w| w[0] == w[1]) {
+                cols.into_iter().next().flatten()
             } else {
                 None
             }

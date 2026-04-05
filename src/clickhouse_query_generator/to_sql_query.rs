@@ -15,7 +15,8 @@ use crate::{
     },
     server::query_context::{
         clear_all_render_contexts, get_cte_property_mapping, get_relationship_columns,
-        is_multi_type_vlp_alias, set_all_render_contexts,
+        is_multi_type_vlp_alias, restore_branch_context, set_alias_label_map,
+        set_all_render_contexts, set_multi_type_vlp_aliases, snapshot_branch_context,
     },
     utils::cte_naming::is_generated_cte_name,
 };
@@ -690,6 +691,15 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                     "   Anchor properties will be accessed directly (e.g., a.name), VLP CTE ({}) used via LEFT JOIN",
                     vlp_cte.cte_name
                 );
+                // Still rewrite UNION branches — they may use a VLP CTE directly
+                // even when the main plan's FROM is an anchor table (e.g., UNION ALL of a
+                // non-VLP FOLLOWS branch and a multi-type VLP AUTHORED/LIKED branch).
+                let parent_ctes_snap = plan.ctes.0.clone();
+                if let Some(ref mut union) = plan.union.0 {
+                    for branch in union.input.iter_mut() {
+                        rewrite_vlp_branch_select(branch, &parent_ctes_snap);
+                    }
+                }
                 return plan;
             } else {
                 log::debug!(
@@ -2482,60 +2492,163 @@ fn build_aliased_group_by(group_by: &GroupByExpressions, select: &SelectItems) -
 /// Render a single UNION branch to SQL. Simple branches produce
 /// `SELECT ... FROM ... WHERE ...`. Complex branches (with inner
 /// unions or per-arm LIMIT) wrap in a subselect.
+/// Returns the set of Cypher aliases that are actually backed by a multi-type VLP CTE
+/// in this specific branch (by checking FROM and JOINs against VLP CTE name pattern).
+fn branch_vlp_backed_aliases(branch: &RenderPlan) -> HashSet<String> {
+    vlp_backed_aliases_from_from_joins(&branch.from, &branch.joins)
+}
+
+/// Build alias→label map from a SQL scope's FROM clause and JOINs.
+/// Maps each SQL alias to the graph node label that owns the underlying table.
+/// This is ground truth: if `b` joins as `social.users`, then `b → User`.
+fn build_alias_label_map_from_scope(
+    from: &FromTableItem,
+    joins: &JoinItems,
+) -> HashMap<String, String> {
+    use crate::server::query_context::get_current_schema;
+    let schema = match get_current_schema() {
+        Some(s) => s,
+        None => return HashMap::new(),
+    };
+    let mut table_to_label: HashMap<String, String> = HashMap::new();
+    for (label, ns) in schema.all_node_schemas() {
+        let qualified = format!("{}.{}", ns.database, ns.table_name);
+        table_to_label.entry(qualified).or_insert_with(|| label.clone());
+    }
+    let mut map = HashMap::new();
+    if let Some(ref vtr) = from.0 {
+        if let Some(ref alias) = vtr.alias {
+            if let Some(label) = table_to_label.get(&vtr.name) {
+                map.insert(alias.clone(), label.clone());
+            }
+        }
+    }
+    for join in &joins.0 {
+        if let Some(label) = table_to_label.get(&join.table_name) {
+            map.insert(join.table_alias.clone(), label.clone());
+        }
+    }
+    map
+}
+
+/// Activate branch-local rendering context for a SQL scope.
+///
+/// Must be called (preceded by snapshot_branch_context()) at EVERY SQL branch boundary:
+/// - Each UNION branch (before rendering its FROM/JOINs/filters)
+/// - Each CTE body (before rendering its FROM/JOINs/filters)
+/// - The outer SELECT (after CTEs have rendered, before outer FROM/JOINs)
+///
+/// Two context fields are scoped to this branch:
+///
+/// 1. `alias_label_map` — rebuilt from this scope's actual FROM/JOIN table names.
+///    Ground truth for `n.id` pseudo-property resolution. Prevents stale VLP-context
+///    labels (e.g., `b → Post`) from leaking into non-VLP branches (where `b → User`).
+///
+/// 2. `multi_type_vlp_aliases` — filtered to only aliases VLP-backed in this scope.
+///    An alias is VLP-backed only if its table name starts with `vlp_` in this scope's
+///    FROM or JOINs. Prevents JSON_VALUE property rewriting from leaking into branches
+///    where the alias references a direct node table, not a VLP CTE.
+///
+/// These two invariants together ensure each SQL branch gets correct property resolution
+/// regardless of what other branches in the same query plan.
+fn activate_scope_context(from: &FromTableItem, joins: &JoinItems) {
+    // 1. Rebuild alias_label_map from this scope's actual FROM/JOIN table names.
+    let alias_label_map = build_alias_label_map_from_scope(from, joins);
+    set_alias_label_map(alias_label_map);
+
+    // 2. Filter multi_type_vlp_aliases to only aliases that are VLP-backed in this scope.
+    let vlp_backed = vlp_backed_aliases_from_from_joins(from, joins);
+    let full_vlp = crate::server::query_context::get_multi_type_vlp_aliases();
+    let scoped_vlp: HashMap<String, String> = full_vlp
+        .into_iter()
+        .filter(|(k, _)| vlp_backed.contains(k.as_str()))
+        .collect();
+    set_multi_type_vlp_aliases(scoped_vlp);
+}
+
+/// Returns VLP-backed aliases from explicit FROM + JOINs (shared by branch and outer-plan rendering).
+fn vlp_backed_aliases_from_from_joins(from: &FromTableItem, joins: &JoinItems) -> HashSet<String> {
+    let mut vlp_backed = HashSet::new();
+    if let Some(ref vtr) = from.0 {
+        if vtr.name.starts_with("vlp_") {
+            if let Some(ref alias) = vtr.alias {
+                vlp_backed.insert(alias.clone());
+            }
+        }
+    }
+    for join in &joins.0 {
+        if join.table_name.starts_with("vlp_") {
+            vlp_backed.insert(join.table_alias.clone());
+        }
+    }
+    vlp_backed
+}
+
 fn render_union_branch_sql(branch: &RenderPlan) -> String {
+    // Save branch-scoped context and activate for this branch's FROM/JOINs.
+    // Each UNION branch gets its own isolated context so VLP aliases from one
+    // branch (e.g., AUTHORED/LIKED) don't contaminate another (e.g., FOLLOWS).
+    let snapshot = snapshot_branch_context();
+    activate_scope_context(&branch.from, &branch.joins);
+
     let has_inner_union = branch.union.0.is_some();
     let has_limit = branch.limit.0.is_some();
     let has_skip = branch.skip.0.is_some();
     let has_order_by = !branch.order_by.0.is_empty();
 
-    if !has_inner_union && !has_limit && !has_skip && !has_order_by {
+    let bsql = if !has_inner_union && !has_limit && !has_skip && !has_order_by {
         // Simple branch: select + from + joins + filters
         let mut bsql = String::new();
         bsql.push_str(&branch.select.to_sql());
         bsql.push_str(&branch.from.to_sql());
         bsql.push_str(&branch.joins.to_sql());
         bsql.push_str(&branch.filters.to_sql());
-        return bsql;
-    }
+        bsql
+    } else {
+        // Complex branch: wrap in subselect to preserve inner union/limit semantics
+        let mut bsql = String::new();
+        bsql.push_str("SELECT * FROM (\n");
 
-    // Complex branch: wrap in subselect to preserve inner union/limit semantics
-    let mut bsql = String::new();
-    bsql.push_str("SELECT * FROM (\n");
+        // First inner branch
+        bsql.push_str(&branch.select.to_sql());
+        bsql.push_str(&branch.from.to_sql());
+        bsql.push_str(&branch.joins.to_sql());
+        bsql.push_str(&branch.filters.to_sql());
 
-    // First inner branch
-    bsql.push_str(&branch.select.to_sql());
-    bsql.push_str(&branch.from.to_sql());
-    bsql.push_str(&branch.joins.to_sql());
-    bsql.push_str(&branch.filters.to_sql());
-
-    // Inner union branches
-    if let Some(inner_union) = &branch.union.0 {
-        let inner_union_type = match inner_union.union_type {
-            UnionType::Distinct => "UNION DISTINCT \n",
-            UnionType::All => "UNION ALL \n",
-        };
-        for inner_branch in &inner_union.input {
-            bsql.push_str(inner_union_type);
-            bsql.push_str(&render_union_branch_sql(inner_branch));
+        // Inner union branches
+        if let Some(inner_union) = &branch.union.0 {
+            let inner_union_type = match inner_union.union_type {
+                UnionType::Distinct => "UNION DISTINCT \n",
+                UnionType::All => "UNION ALL \n",
+            };
+            for inner_branch in &inner_union.input {
+                bsql.push_str(inner_union_type);
+                bsql.push_str(&render_union_branch_sql(inner_branch));
+            }
         }
-    }
 
-    bsql.push_str(")\n");
+        bsql.push_str(")\n");
 
-    // Add ORDER BY, LIMIT, SKIP
-    if has_order_by {
-        bsql.push_str(&branch.order_by.to_sql());
-    }
-    if let Some(limit) = branch.limit.0 {
-        if let Some(skip) = branch.skip.0 {
-            bsql.push_str(&format!("LIMIT {skip}, {limit}\n"));
-        } else {
-            bsql.push_str(&format!("LIMIT {limit}\n"));
+        // Add ORDER BY, LIMIT, SKIP
+        if has_order_by {
+            bsql.push_str(&branch.order_by.to_sql());
         }
-    } else if let Some(skip) = branch.skip.0 {
-        // ClickHouse requires LIMIT when using offset; emulate SKIP-only with large upper bound
-        bsql.push_str(&format!("LIMIT {skip}, 18446744073709551615\n"));
-    }
+        if let Some(limit) = branch.limit.0 {
+            if let Some(skip) = branch.skip.0 {
+                bsql.push_str(&format!("LIMIT {skip}, {limit}\n"));
+            } else {
+                bsql.push_str(&format!("LIMIT {limit}\n"));
+            }
+        } else if let Some(skip) = branch.skip.0 {
+            // ClickHouse requires LIMIT when using offset; emulate SKIP-only with large upper bound
+            bsql.push_str(&format!("LIMIT {skip}, 18446744073709551615\n"));
+        }
+
+        bsql
+    };
+
+    // Restore context for the parent scope.
+    restore_branch_context(snapshot);
 
     bsql
 }
@@ -2921,6 +3034,10 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
         crate::server::query_context::set_current_variable_registry(registry.clone());
     }
 
+    // Activate outer scope context: rebuild alias_label_map and scope multi_type_vlp_aliases
+    // to this plan's FROM/JOINs. CTE bodies will snapshot/restore around their own context.
+    activate_scope_context(&plan.from, &plan.joins);
+
     // Disambiguate duplicate SELECT aliases. When multiple nodes share property
     // names (creationDate, id), the inner SELECT has duplicate aliases which
     // chdb rejects (Code 179). Suffix duplicates with _2, _3, etc.
@@ -3092,14 +3209,15 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                 // plan.from is None, the base plan is not a separate branch, so we must
                 // fall through to the else branch that iterates only over union.input.
                 if !has_aggregation && plan.from.0.is_some() {
-                    let first_branch_sql = {
-                        let mut branch_sql = String::new();
-                        branch_sql.push_str(&plan.select.to_sql());
-                        branch_sql.push_str(&plan.from.to_sql());
-                        branch_sql.push_str(&plan.joins.to_sql());
-                        branch_sql.push_str(&plan.filters.to_sql());
-                        branch_sql
-                    };
+                    // Activate scope context for the first (outer-plan) UNION branch,
+                    // scoping alias_label_map and multi_type_vlp_aliases to this scope.
+                    activate_scope_context(&plan.from, &plan.joins);
+
+                    let mut first_branch_sql = String::new();
+                    first_branch_sql.push_str(&plan.select.to_sql());
+                    first_branch_sql.push_str(&plan.from.to_sql());
+                    first_branch_sql.push_str(&plan.joins.to_sql());
+                    first_branch_sql.push_str(&plan.filters.to_sql());
                     sql.push_str(&first_branch_sql);
 
                     for union_branch in &union.input {
@@ -3228,15 +3346,15 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                     }
                 }
             } else {
-                // No union branches — just use the base plan as the subquery
-                let first_branch_sql = {
-                    let mut branch_sql = String::new();
-                    branch_sql.push_str(&plan.select.to_sql());
-                    branch_sql.push_str(&plan.from.to_sql());
-                    branch_sql.push_str(&plan.joins.to_sql());
-                    branch_sql.push_str(&plan.filters.to_sql());
-                    branch_sql
-                };
+                // Activate scope context for this UNION branch,
+                // scoping alias_label_map and multi_type_vlp_aliases to this scope.
+                activate_scope_context(&plan.from, &plan.joins);
+
+                let mut first_branch_sql = String::new();
+                first_branch_sql.push_str(&plan.select.to_sql());
+                first_branch_sql.push_str(&plan.from.to_sql());
+                first_branch_sql.push_str(&plan.joins.to_sql());
+                    first_branch_sql.push_str(&plan.filters.to_sql());
                 sql.push_str(&first_branch_sql);
             }
 
@@ -3304,15 +3422,15 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                 };
 
                 if plan.from.0.is_some() {
-                    // Base plan IS the first branch
-                    let first_branch_sql = {
-                        let mut branch_sql = String::new();
-                        branch_sql.push_str(&plan.select.to_sql());
-                        branch_sql.push_str(&plan.from.to_sql());
-                        branch_sql.push_str(&plan.joins.to_sql());
-                        branch_sql.push_str(&plan.filters.to_sql());
-                        branch_sql
-                    };
+                    // Activate scope context for this UNION branch,
+                    // scoping alias_label_map and multi_type_vlp_aliases to this scope.
+                    activate_scope_context(&plan.from, &plan.joins);
+
+                    let mut first_branch_sql = String::new();
+                    first_branch_sql.push_str(&plan.select.to_sql());
+                    first_branch_sql.push_str(&plan.from.to_sql());
+                    first_branch_sql.push_str(&plan.joins.to_sql());
+                    first_branch_sql.push_str(&plan.filters.to_sql());
                     sql.push_str(&first_branch_sql);
 
                     for union_branch in &union.input {
@@ -3329,15 +3447,15 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                     }
                 }
             } else {
-                // No union branches — just use the base plan
-                let first_branch_sql = {
-                    let mut branch_sql = String::new();
-                    branch_sql.push_str(&plan.select.to_sql());
-                    branch_sql.push_str(&plan.from.to_sql());
-                    branch_sql.push_str(&plan.joins.to_sql());
-                    branch_sql.push_str(&plan.filters.to_sql());
-                    branch_sql
-                };
+                // Activate scope context for this no-union plan,
+                // scoping alias_label_map and multi_type_vlp_aliases to this scope.
+                activate_scope_context(&plan.from, &plan.joins);
+
+                let mut first_branch_sql = String::new();
+                first_branch_sql.push_str(&plan.select.to_sql());
+                first_branch_sql.push_str(&plan.from.to_sql());
+                first_branch_sql.push_str(&plan.joins.to_sql());
+                first_branch_sql.push_str(&plan.filters.to_sql());
                 sql.push_str(&first_branch_sql);
             }
         }
@@ -3369,6 +3487,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
     sql.push_str(&plan.joins.to_sql());
     sql.push_str(&plan.array_join.to_sql());
     sql.push_str(&plan.filters.to_sql());
+
     sql.push_str(&plan.group_by.to_sql());
 
     // Add HAVING clause if present (after GROUP BY, before ORDER BY)
@@ -3705,6 +3824,12 @@ impl ToSql for Cte {
                 let saved_aliases =
                     crate::server::query_context::set_cte_alias_scope(scope_mapping);
 
+
+                // Scope branch context (alias_label_map + multi_type_vlp_aliases) to this
+                // CTE body's FROM/JOINs. Prevents VLP aliases and node labels from the
+                // outer scope leaking into this CTE body's property resolution.
+                let branch_snapshot = snapshot_branch_context();
+                activate_scope_context(&plan.from, &plan.joins);
                 // For structured content, render only the query body (not nested CTEs)
                 // CTEs should already be hoisted to the top level
                 let mut cte_body = String::new();
@@ -3897,6 +4022,9 @@ impl ToSql for Cte {
                     }
                 }
 
+
+                // Restore branch-scoped context (alias_label_map + multi_type_vlp_aliases).
+                restore_branch_context(branch_snapshot);
                 // Restore previous CTE alias scope
                 crate::server::query_context::set_cte_alias_scope(saved_aliases);
 
@@ -4474,7 +4602,9 @@ impl RenderExpr {
                 // Skip this rewrite if any node schema has "id" as a real property mapping —
                 // in that case filter_tagging already resolved p.id → Column("id") correctly.
                 if col_name == "id" {
-                    use crate::server::query_context::get_current_schema;
+                    use crate::server::query_context::{
+                        get_current_schema, get_node_label_for_alias,
+                    };
                     if let Some(schema) = get_current_schema() {
                         // If any schema has "id" as an explicit property mapping, "id" is a
                         // real column, not a pseudo-property residue from id() transforms.
@@ -4485,25 +4615,54 @@ impl RenderExpr {
                         if !has_id_as_property {
                             // No schema treats "id" as a real property — this must be an id()
                             // function residue. Rewrite to the actual node_id column.
-                            for ns in schema.all_node_schemas().values() {
+                            // Use the variable registry to find the label for this specific
+                            // alias, then look up that label's node_id column.
+                            let label = get_node_label_for_alias(&table_alias.0);
+                            let node_schema = label
+                                .as_deref()
+                                .and_then(|l| schema.node_schema_opt(l));
+                            if let Some(ns) = node_schema {
                                 let cols = ns.node_id.columns();
                                 if cols.len() == 1 {
                                     if let Some(first_col) = cols.first() {
                                         log::info!(
-                                            "🔧 Resolved {}.id → {}.{} (schema id column)",
+                                            "🔧 Resolved {}.id → {}.{} (schema id column, label={})",
                                             table_alias.0,
                                             table_alias.0,
-                                            first_col
+                                            first_col,
+                                            label.as_deref().unwrap_or("?"),
                                         );
                                         return format!("{}.{}", table_alias.0, first_col);
                                     }
                                 }
+                                // Composite node_id: fall through to render as-is
+                                log::warn!(
+                                    "⚠️  {}.id could not be resolved (composite node_id, label={})",
+                                    table_alias.0,
+                                    label.as_deref().unwrap_or("?"),
+                                );
+                            } else {
+                                // Label unknown — fall back to iterating all schemas
+                                // (pre-existing behaviour; handles cases where registry is absent)
+                                for ns in schema.all_node_schemas().values() {
+                                    let cols = ns.node_id.columns();
+                                    if cols.len() == 1 {
+                                        if let Some(first_col) = cols.first() {
+                                            log::warn!(
+                                                "🔧 Resolved {}.id → {}.{} (fallback — label unknown)",
+                                                table_alias.0,
+                                                table_alias.0,
+                                                first_col
+                                            );
+                                            return format!("{}.{}", table_alias.0, first_col);
+                                        }
+                                    }
+                                }
+                                log::warn!(
+                                    "⚠️  {}.id could not be resolved (composite/unknown ID, no label in registry)",
+                                    table_alias.0
+                                );
                             }
-                            // For composite IDs, fall through to render as-is (may error)
-                            log::warn!(
-                                "⚠️  {}.id could not be resolved (composite/unknown ID)",
-                                table_alias.0
-                            );
                         }
                     }
                 }

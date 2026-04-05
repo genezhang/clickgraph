@@ -1101,3 +1101,70 @@ async fn test_poly_property_return() {
         "n.name should resolve to username column in poly schema"
     );
 }
+
+// ===========================================================================
+// Category 8: n.id pseudo-property resolution (regression for social demo)
+// ===========================================================================
+//
+// The social demo schema has different ID columns per node type:
+//   User → user_id,  Post → post_id
+// Neo4j Browser emits `n.id` for id() lookups. The engine must resolve this
+// to the *correct* node's ID column, not whichever schema is iterated first.
+
+#[tokio::test]
+async fn test_user_dot_id_resolves_to_user_id() {
+    // MATCH (n:User) WHERE n.id = 1 → WHERE n.user_id = 1
+    let schema = create_standard_schema();
+    let sql = generate_sql(&schema, "MATCH (n:User) WHERE n.id = 1 RETURN n").await;
+    let sql_lower = sql.to_lowercase();
+    assert!(
+        sql_lower.contains("user_id"),
+        "n.id on User node must resolve to user_id column, got: {}",
+        sql
+    );
+    assert!(
+        !sql_lower.contains("post_id"),
+        "n.id on User node must NOT reference post_id, got: {}",
+        sql
+    );
+}
+
+#[tokio::test]
+async fn test_post_dot_id_resolves_to_post_id() {
+    // MATCH (n:Post) WHERE n.id = 1 → WHERE n.post_id = 1
+    let schema = create_standard_schema();
+    let sql = generate_sql(&schema, "MATCH (n:Post) WHERE n.id = 1 RETURN n").await;
+    let sql_lower = sql.to_lowercase();
+    assert!(
+        sql_lower.contains("post_id"),
+        "n.id on Post node must resolve to post_id column, got: {}",
+        sql
+    );
+    assert!(
+        !sql_lower.contains("user_id"),
+        "n.id on Post node must NOT reference user_id, got: {}",
+        sql
+    );
+}
+
+#[tokio::test]
+async fn test_user_and_post_dot_id_in_same_query() {
+    // Both aliases in one query — each must resolve to its own ID column
+    let schema = create_standard_schema();
+    let sql = generate_sql(
+        &schema,
+        "MATCH (u:User)-[:AUTHORED]->(p:Post) WHERE u.id = 1 AND p.id = 2 RETURN u, p",
+    )
+    .await;
+    let sql_lower = sql.to_lowercase();
+    assert!(
+        sql_lower.contains("user_id"),
+        "u.id must resolve to user_id in multi-label query, got: {}",
+        sql
+    );
+    assert!(
+        sql_lower.contains("post_id"),
+        "p.id must resolve to post_id in multi-label query, got: {}",
+        sql
+    );
+}

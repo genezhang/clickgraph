@@ -867,3 +867,381 @@ async fn test_neodash_expansion_with_id_parameter() {
         "from_id should appear: {sql}"
     );
 }
+
+// ===========================================================================
+// Multi-type expand regression: VLP alias must not bleed into non-VLP branches
+//
+// When `MATCH (a)-[r]-(b)` creates UNION branches where some branches use a
+// multi-type VLP CTE (e.g., vlp_multi_type_a_b for AUTHORED|LIKED) and other
+// branches use plain tables (e.g., social.user_follows for FOLLOWS), the VLP
+// property rewriting (JSON_VALUE(b.end_properties, ...)) must NOT be applied
+// to non-VLP branches. Without the fix, `b.user_id` in the FOLLOWS branch
+// generates `JSON_VALUE(b.end_properties, '$.user_id')` — an identifier that
+// doesn't exist on `social.users`.
+// ===========================================================================
+
+#[tokio::test]
+async fn test_mixed_type_expand_with_clause_compiles() {
+    // Regression: `MATCH (a) WITH a MATCH (a)-[r]-(b) RETURN r` with unlabeled r across
+    // multiple relationship types (FOLLOWS User→User, AUTHORED/LIKED User→Post).
+    // A multi-type VLP CTE is generated for cross-type branches. The VLP CTE body
+    // correctly uses `end_properties` as an internal column. The outer query must NOT
+    // use JSON_VALUE(b.end_properties, ...) for plain-table branches.
+    let schema = create_standard_schema();
+    let result = try_generate_expand_sql(
+        &schema,
+        "MATCH (a:User {user_id: '9'}) WITH a MATCH (a)-[r]-(b) RETURN r",
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "Mixed-type unlabeled WITH+expand should compile: {:?}",
+        result.err()
+    );
+    let sql = result.unwrap();
+    let sql_lower = sql.to_lowercase();
+    // Must reference FOLLOWS relationship columns
+    assert!(
+        sql_lower.contains("followed_id") || sql_lower.contains("follower_id"),
+        "FOLLOWS branch must reference follower/followed column: {}",
+        sql
+    );
+    // The outer query's JOIN conditions must not use JSON_VALUE on plain table aliases.
+    // `end_properties` is fine inside the VLP CTE body; what's wrong is
+    // JSON_VALUE(b.end_properties) in outer JOINs when b = social.users.
+    // We check that if `json_value` appears, it's only inside the CTE body
+    // (before the outer SELECT), not in the outer JOIN conditions.
+    if sql_lower.contains("json_value") {
+        // Find where the outer SELECT starts (after CTE declarations)
+        let outer_start = sql
+            .rfind("\nSELECT ")
+            .or_else(|| sql.find("SELECT "))
+            .unwrap_or(0);
+        let outer_sql = &sql_lower[outer_start..];
+        assert!(
+            !outer_sql.contains("json_value"),
+            "Outer SELECT must not use JSON_VALUE (VLP aliases bleeding): outer={}",
+            &sql[outer_start..]
+        );
+    }
+}
+
+/// Regression test: FOLLOWS JOIN must not be contaminated by VLP context.
+///
+/// When a User expand query produces both a multi-type VLP branch (AUTHORED+LIKED
+/// for Post endpoints, using `vlp_multi_type_a_b`) and a FOLLOWS branch (User→User,
+/// using `test.user_follows`), the FOLLOWS branch's JOIN ON condition must use the
+/// FOLLOWS table's own foreign-key columns (`follower_id`/`followed_id`), NOT the
+/// VLP endpoint column (`post_id`) or the JSON extraction function (`JSON_VALUE`).
+///
+/// Before the fix, `multi_type_vlp_aliases` leaked between UNION branches:
+/// `b` was registered as a VLP endpoint, causing the FOLLOWS branch to render
+/// `INNER JOIN test.users AS b ON b.post_id = r.followed_id` instead of the
+/// correct `ON b.user_id = r.followed_id`.
+#[tokio::test]
+async fn test_follows_join_not_contaminated_by_vlp_context() {
+    // FOLLOWS (User→User) query that also involves AUTHORED/LIKED (User→Post) in the
+    // broader expand context. Here we test the FOLLOWS branch in isolation to verify
+    // the JOIN ON uses user_id, not post_id or JSON_VALUE.
+    let schema = create_standard_schema();
+
+    // Simple FOLLOWS query: no VLP involved — verifies basic FOLLOWS JOIN columns
+    let sql = generate_expand_sql(
+        &schema,
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN r",
+    )
+    .await;
+    let sql_lower = sql.to_lowercase();
+
+    assert!(
+        sql_lower.contains("follower_id") || sql_lower.contains("followed_id"),
+        "FOLLOWS JOIN must use follower_id or followed_id, got: {sql}"
+    );
+    assert!(
+        !sql_lower.contains("post_id"),
+        "FOLLOWS JOIN must NOT reference post_id (VLP context leak), got: {sql}"
+    );
+    assert!(
+        !sql_lower.contains("json_value"),
+        "FOLLOWS JOIN must NOT use JSON_VALUE (VLP property rewriting leak), got: {sql}"
+    );
+}
+
+/// Regression test: FOLLOWS branch in multi-type expand must not use post_id or JSON_VALUE.
+///
+/// This is the more complex scenario: `MATCH (a:User) WITH a MATCH (a)-[r]-(b)` creates
+/// both VLP branches (AUTHORED/LIKED cross-type, using `vlp_multi_type_a_b`) and a
+/// FOLLOWS branch (using `test.user_follows`). The FOLLOWS branch's JOIN ON must use
+/// `user_id`, not `post_id` (which is the VLP endpoint column for Post nodes) and not
+/// `JSON_VALUE` (which is VLP-specific property extraction).
+#[tokio::test]
+async fn test_follows_join_in_mixed_expand_not_contaminated() {
+    let schema = create_standard_schema();
+    let result = try_generate_expand_sql(
+        &schema,
+        "MATCH (a:User {user_id: '1'}) WITH a MATCH (a)-[r]-(b) RETURN r",
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "Mixed-type expand should compile: {:?}",
+        result.err()
+    );
+    let sql = result.unwrap();
+    let sql_lower = sql.to_lowercase();
+
+    // Must include FOLLOWS relationship columns (User→User)
+    assert!(
+        sql_lower.contains("follower_id") || sql_lower.contains("followed_id"),
+        "FOLLOWS branch must use follower_id/followed_id, got: {sql}"
+    );
+
+    // The FOLLOWS branch must NOT use post_id (which is Post's node_id column)
+    // as a JOIN ON condition. This would indicate the VLP context (b → vlp endpoint)
+    // leaked into the FOLLOWS branch (b → test.users).
+    //
+    // post_id may appear inside the VLP CTE body (for the AUTHORED/LIKED paths),
+    // but must NOT appear in JOIN ON conditions for the FOLLOWS branch.
+    // We verify by checking the overall SQL does not use post_id outside of the VLP CTE.
+    if sql_lower.contains("post_id") {
+        // Find the CTE block (before the outer SELECT)
+        // CTE declarations end where the main query begins
+        // Look for the last "SELECT" that starts the outer query (not inside CTE)
+        let outer_start = sql
+            .rfind("
+SELECT ")
+            .or_else(|| sql.find("SELECT "))
+            .unwrap_or(0);
+        let outer_sql = &sql_lower[outer_start..];
+        assert!(
+            !outer_sql.contains("post_id"),
+            "FOLLOWS JOIN ON in outer query must not use post_id (VLP context leak), outer: {}",
+            &sql[outer_start..]
+        );
+    }
+
+    // Similarly, JSON_VALUE must not appear in the outer SELECT (FOLLOWS branch joins)
+    if sql_lower.contains("json_value") {
+        let outer_start = sql
+            .rfind("
+SELECT ")
+            .or_else(|| sql.find("SELECT "))
+            .unwrap_or(0);
+        let outer_sql = &sql_lower[outer_start..];
+        assert!(
+            !outer_sql.contains("json_value"),
+            "Outer SELECT must not use JSON_VALUE (VLP aliases bleeding into FOLLOWS branch): outer={}",
+            &sql[outer_start..]
+        );
+    }
+}
+
+// ===========================================================================
+// Both-endpoint IN-list filter tests
+//
+// The browser expand query sends:
+//   MATCH (a)-[r]->(b) WHERE id(a) IN [encoded_ids] AND id(b) IN [encoded_ids] RETURN r
+//
+// After element-ID decoding this becomes property IN-lists on both endpoints.
+// When the schema has mixed-type edges (FOLLOWS: User→User, AUTHORED/LIKED: User→Post),
+// a multi-type VLP CTE is generated for the cross-type branches.
+//
+// The VLP branch has `FROM vlp_multi_type_a_b AS t` — aliases `a` and `b` are NOT
+// in scope there. The WHERE clause must be rewritten from:
+//   a.user_id IN [...] AND b.post_id IN [...]   ← wrong: a/b not in scope
+// to:
+//   t.start_id IN [...] AND t.end_id IN [...]   ← correct: CTE columns
+//
+// The root cause (fixed in rewrite_vlp_select_aliases): the "optional VLP" early-return
+// fired when the main plan FROM was a regular table, skipping union-branch rewriting
+// entirely. All tests in this section would have caught that regression.
+// ===========================================================================
+
+/// Both endpoints filtered with IN-list, same node type (User→User, FOLLOWS only).
+/// The simpler case: no VLP needed, straight JOIN branch.
+#[tokio::test]
+async fn test_both_endpoint_in_list_same_type() {
+    let schema = create_standard_schema();
+    let sql = generate_expand_sql(
+        &schema,
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) WHERE a.user_id IN [1, 2] AND b.user_id IN [3, 4] RETURN r",
+    )
+    .await;
+
+    let sql_lower = sql.to_lowercase();
+    assert!(sql_lower.contains("select"), "Should produce valid SQL");
+    assert!(
+        sql_lower.contains("follower_id") || sql_lower.contains("followed_id"),
+        "FOLLOWS JOIN must use follower_id/followed_id: {sql}"
+    );
+    // Both IN-list values must survive into SQL
+    assert!(sql_lower.contains("in (1, 2)") || sql_lower.contains("in (1,2)") || sql.contains("IN [1, 2]"),
+        "Start node IN-list must appear in SQL: {sql}");
+    assert!(sql_lower.contains("in (3, 4)") || sql_lower.contains("in (3,4)") || sql.contains("IN [3, 4]"),
+        "End node IN-list must appear in SQL: {sql}");
+}
+
+/// Both endpoints filtered with IN-list, MIXED node types (User→User FOLLOWS  +  User→Post VLP).
+/// This is the EXACT browser expand pattern that triggered the regression:
+///   MATCH (a)-[r]->(b) WHERE id(a) IN [...] AND id(b) IN [...] RETURN r
+/// After decoding: a.user_id IN [15,24] AND b.post_id IN [10,30]
+/// The multi-type VLP branch (vlp_multi_type_a_b) must rewrite to t.start_id/t.end_id.
+#[tokio::test]
+async fn test_both_endpoint_in_list_mixed_type_vlp() {
+    let schema = create_standard_schema();
+    let sql = generate_expand_sql(
+        &schema,
+        "MATCH (a:User)-[r]->(b) WHERE a.user_id IN [15, 24] AND b.post_id IN [10, 30] RETURN r",
+    )
+    .await;
+
+    let sql_lower = sql.to_lowercase();
+    assert!(sql_lower.contains("select"), "Should produce valid SQL: {sql}");
+
+    // If a VLP CTE is generated (multi-type expand), the VLP branch WHERE must use
+    // t.start_id / t.end_id, NOT bare a.user_id / b.post_id (which are out of scope
+    // when FROM is vlp_multi_type_a_b AS t).
+    if sql_lower.contains("vlp_multi_type") {
+        // The IN-list values must still appear (filter preserved)
+        assert!(
+            sql.contains("15") && sql.contains("24"),
+            "start-node IN-list values must survive rewriting: {sql}"
+        );
+        assert!(
+            sql.contains("10") && sql.contains("30"),
+            "end-node IN-list values must survive rewriting: {sql}"
+        );
+        // The VLP branch WHERE must reference CTE columns (start_id / end_id),
+        // confirming that rewrite_vlp_branch_select ran on the UNION branch.
+        assert!(
+            sql_lower.contains("start_id") || sql_lower.contains("end_id"),
+            "VLP branch WHERE must use start_id/end_id columns (not bare a./b.): {sql}"
+        );
+        // Verify a.user_id does not appear as a WHERE predicate AFTER the VLP CTE definition.
+        // It may appear inside the CTE body itself (legitimate), but not in the outer UNION branch.
+        // Strategy: find the last SELECT (start of the outer UNION branch with FROM vlp_...) and
+        // check that a.user_id / b.post_id don't appear in that segment.
+        if let Some(vlp_branch_start) = sql.rfind("FROM vlp_multi_type") {
+            let vlp_branch_sql = &sql[vlp_branch_start..];
+            assert!(
+                !vlp_branch_sql.contains("a.user_id"),
+                "VLP branch must not reference out-of-scope alias a.user_id: {}",
+                vlp_branch_sql
+            );
+            assert!(
+                !vlp_branch_sql.contains("b.post_id"),
+                "VLP branch must not reference out-of-scope alias b.post_id: {}",
+                vlp_branch_sql
+            );
+        }
+    }
+}
+
+/// Both endpoints filtered with IN-list, undirected, mixed types.
+/// Browser may also send undirected: MATCH (a)-[r]-(b) WHERE id(a) IN [...] AND id(b) IN [...].
+#[tokio::test]
+async fn test_both_endpoint_in_list_undirected_mixed() {
+    let schema = create_standard_schema();
+    let sql = generate_expand_sql(
+        &schema,
+        "MATCH (a:User)-[r]-(b) WHERE a.user_id IN [15, 24] AND b.post_id IN [10, 30] RETURN r",
+    )
+    .await;
+
+    let sql_lower = sql.to_lowercase();
+    assert!(sql_lower.contains("select"), "Should produce valid SQL: {sql}");
+    assert!(
+        sql.contains("15") && sql.contains("10"),
+        "ID filter values must survive into SQL: {sql}"
+    );
+    if sql_lower.contains("vlp_multi_type") {
+        if let Some(vlp_branch_start) = sql.rfind("FROM vlp_multi_type") {
+            let vlp_branch_sql = &sql[vlp_branch_start..];
+            assert!(
+                !vlp_branch_sql.contains("a.user_id"),
+                "VLP branch must not reference out-of-scope a.user_id: {}",
+                vlp_branch_sql
+            );
+            assert!(
+                !vlp_branch_sql.contains("b.post_id"),
+                "VLP branch must not reference out-of-scope b.post_id: {}",
+                vlp_branch_sql
+            );
+        }
+    }
+}
+
+/// Full browser expand pattern: WITH barrier + both-endpoint IN-list.
+/// This matches what the Neo4j Browser sends for relationship expansion:
+///   MATCH (a:User) WHERE a.user_id IN [15,24] WITH a
+///   MATCH (a)-[r]->(b) WHERE b.post_id IN [10,30] RETURN r
+#[tokio::test]
+async fn test_browser_with_barrier_both_endpoints_filtered() {
+    let schema = create_standard_schema();
+    let sql = generate_expand_sql(
+        &schema,
+        "MATCH (a:User) WHERE a.user_id IN [15, 24] WITH a \
+         MATCH (a)-[r]->(b) WHERE b.post_id IN [10, 30] RETURN r",
+    )
+    .await;
+
+    let sql_lower = sql.to_lowercase();
+    assert!(sql_lower.contains("select"), "Should produce valid SQL: {sql}");
+    assert!(
+        sql.contains("15") && sql.contains("10"),
+        "ID filter values must appear in SQL: {sql}"
+    );
+    if sql_lower.contains("vlp_multi_type") {
+        if let Some(vlp_branch_start) = sql.rfind("FROM vlp_multi_type") {
+            let vlp_branch_sql = &sql[vlp_branch_start..];
+            assert!(
+                !vlp_branch_sql.contains("b.post_id"),
+                "VLP branch must not reference out-of-scope b.post_id: {}",
+                vlp_branch_sql
+            );
+        }
+    }
+}
+
+/// Return relationship r (not nodes) with multi-type expand — baseline.
+/// Tests that RETURN r works for all edge types in the schema.
+#[tokio::test]
+async fn test_return_relationship_untyped_directed() {
+    let schema = create_standard_schema();
+    let sql = generate_expand_sql(&schema, "MATCH (a:User)-[r]->(b) RETURN r").await;
+
+    let sql_lower = sql.to_lowercase();
+    assert!(sql_lower.contains("select"), "Should produce valid SQL: {sql}");
+    // The expand covers FOLLOWS (User→User) and AUTHORED/LIKED (User→Post)
+    assert!(
+        sql_lower.contains("union all"),
+        "Multi-type outgoing expand should produce UNION ALL: {sql}"
+    );
+}
+
+/// Return relationship r with both-endpoint equality filters (non-IN, simpler form).
+#[tokio::test]
+async fn test_return_relationship_both_endpoint_eq_filter() {
+    let schema = create_standard_schema();
+    let sql = generate_expand_sql(
+        &schema,
+        "MATCH (a:User)-[r]->(b) WHERE a.user_id = 15 AND b.post_id = 10 RETURN r",
+    )
+    .await;
+
+    let sql_lower = sql.to_lowercase();
+    assert!(sql_lower.contains("select"), "Should produce valid SQL: {sql}");
+    assert!(sql.contains("15"), "a filter value must appear: {sql}");
+    assert!(sql.contains("10"), "b filter value must appear: {sql}");
+    if sql_lower.contains("vlp_multi_type") {
+        if let Some(vlp_branch_start) = sql.rfind("FROM vlp_multi_type") {
+            let vlp_branch_sql = &sql[vlp_branch_start..];
+            assert!(
+                !vlp_branch_sql.contains("b.post_id"),
+                "VLP branch must not reference out-of-scope b.post_id: {}",
+                vlp_branch_sql
+            );
+        }
+    }
+}

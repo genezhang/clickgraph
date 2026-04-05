@@ -2143,14 +2143,9 @@ impl JoinBuilder for LogicalPlan {
                         },
                     );
 
-                    // Get left side ID column from the FROM table
-                    let left_id_col = extract_id_column(&graph_rel.left).ok_or_else(|| {
-                        RenderBuildError::InvalidRenderPlan(format!(
-                            "Cannot determine ID column for left node '{}' in relationship '{}'. \
-                             Node schema must define id_column in YAML, or node might have invalid plan structure.",
-                            graph_rel.left_connection, graph_rel.alias
-                        ))
-                    })?;
+                    // Get left side ID column from the FROM table (may be None for polymorphic
+                    // Union nodes whose branches disagree on the id column — e.g. User/Post).
+                    let left_id_col = extract_id_column(&graph_rel.left);
 
                     // Determine join condition based on direction
                     let is_optional = graph_rel.is_optional.unwrap_or(false);
@@ -2174,13 +2169,29 @@ impl JoinBuilder for LogicalPlan {
                     let rel_col_end = &rel_cols.to_id; // for right_connection (TARGET)
 
                     // JOIN 1: Relationship table -> FROM (left) node
-                    // Resolve full Identifier for composite ID support
-                    let left_label = extract_node_label_from_viewscan(&graph_rel.left);
+                    // Resolve full Identifier for composite ID support.
+                    // For polymorphic Union nodes, extract_node_label_from_viewscan returns None,
+                    // so fall back to from_node via relationship schema lookup.
+                    let left_label = extract_node_label_from_viewscan(&graph_rel.left).or_else(|| {
+                        let labels = graph_rel.labels.as_ref()?;
+                        let from_nodes: Vec<String> = labels
+                            .iter()
+                            .filter_map(|rel_type| {
+                                schema.rel_schemas_for_type(rel_type).into_iter().next().map(|rs| rs.from_node.clone())
+                            })
+                            .collect();
+                        if !from_nodes.is_empty() && from_nodes.windows(2).all(|w| w[0] == w[1]) {
+                            from_nodes.into_iter().next()
+                        } else {
+                            None
+                        }
+                    });
                     let left_node_id_flen: Identifier = left_label
                         .as_ref()
                         .and_then(|lbl| schema.node_schema_opt(lbl))
                         .map(|ns| ns.node_id.id.clone())
-                        .unwrap_or_else(|| Identifier::Single(left_id_col));
+                        .or_else(|| left_id_col.map(Identifier::Single))
+                        .unwrap_or_else(|| Identifier::Single("id".to_string()));
                     let join1_conditions = build_identifier_join_conditions(
                         &graph_rel.alias,
                         rel_col_start,
@@ -2202,22 +2213,34 @@ impl JoinBuilder for LogicalPlan {
                     // Get the CTE table name from the GraphJoins input
                     if let LogicalPlan::GraphJoins(gn) = right_joins.input.as_ref() {
                         if let Some(cte_table) = extract_table_name(&gn.input) {
-                            // Get the right node's ID column
-                            let right_id_col = extract_id_column(&right_joins.input).ok_or_else(|| {
-                                RenderBuildError::InvalidRenderPlan(format!(
-                                    "Cannot determine ID column for right node '{}' in relationship '{}'. \
-                                     Node schema must define id_column in YAML, or node might have invalid plan structure.",
-                                    graph_rel.right_connection, graph_rel.alias
-                                ))
-                            })?;
+                            // Get the right node's ID column (may be None for polymorphic
+                            // Union nodes whose branches disagree on the id column).
+                            let right_id_col = extract_id_column(&right_joins.input);
 
-                            // Resolve full Identifier for composite ID support
-                            let right_label = extract_node_label_from_viewscan(&right_joins.input);
+                            // Resolve full Identifier for composite ID support.
+                            // For polymorphic Union nodes, extract_node_label_from_viewscan
+                            // returns None, so fall back to to_node via relationship schema lookup.
+                            let right_label =
+                                extract_node_label_from_viewscan(&right_joins.input).or_else(|| {
+                                    let labels = graph_rel.labels.as_ref()?;
+                                    let to_nodes: Vec<String> = labels
+                                        .iter()
+                                        .filter_map(|rel_type| {
+                                            schema.rel_schemas_for_type(rel_type).into_iter().next().map(|rs| rs.to_node.clone())
+                                        })
+                                        .collect();
+                                    if !to_nodes.is_empty() && to_nodes.windows(2).all(|w| w[0] == w[1]) {
+                                        to_nodes.into_iter().next()
+                                    } else {
+                                        None
+                                    }
+                                });
                             let right_node_id_flen: Identifier = right_label
                                 .as_ref()
                                 .and_then(|lbl| schema.node_schema_opt(lbl))
                                 .map(|ns| ns.node_id.id.clone())
-                                .unwrap_or_else(|| Identifier::Single(right_id_col));
+                                .or_else(|| right_id_col.map(Identifier::Single))
+                                .unwrap_or_else(|| Identifier::Single("id".to_string()));
                             let join2_conditions = build_identifier_join_conditions(
                                 &graph_rel.right_connection,
                                 &right_node_id_flen,
@@ -2364,12 +2387,47 @@ impl JoinBuilder for LogicalPlan {
                 // Also extract labels for schema filter generation (optional for CTEs)
                 // MULTI-HOP FIX: For nested GraphRel left, extract label from the inner's
                 // right node (the shared node between the two hops).
+                // POLYMORPHIC FALLBACK: For Union nodes (polymorphic endpoints), neither
+                // extract_end_node_label nor extract_node_label_from_viewscan returns a label.
+                // Fall back to the from_node/to_node embedded in the relationship's label
+                // string (format: "TYPE::FromNode::ToNode") to get the correct schema.
                 let start_label = if let LogicalPlan::GraphRel(_) = graph_rel.left.as_ref() {
                     extract_end_node_label(&graph_rel.left)
                 } else {
                     extract_node_label_from_viewscan(&graph_rel.left)
-                };
-                let end_label = extract_node_label_from_viewscan(&graph_rel.right);
+                }
+                .or_else(|| {
+                    // Polymorphic fallback: for Union endpoints, look up from_node via rel schema.
+                    // Only apply when all relationship labels agree on the same from_node.
+                    let labels = graph_rel.labels.as_ref()?;
+                    let from_nodes: Vec<String> = labels
+                        .iter()
+                        .filter_map(|rel_type| {
+                            schema.rel_schemas_for_type(rel_type).into_iter().next().map(|rs| rs.from_node.clone())
+                        })
+                        .collect();
+                    if !from_nodes.is_empty() && from_nodes.windows(2).all(|w| w[0] == w[1]) {
+                        from_nodes.into_iter().next()
+                    } else {
+                        None
+                    }
+                });
+                let end_label = extract_node_label_from_viewscan(&graph_rel.right).or_else(|| {
+                    // Polymorphic fallback: for Union endpoints, look up to_node via rel schema.
+                    // Only apply when all relationship labels agree on the same to_node.
+                    let labels = graph_rel.labels.as_ref()?;
+                    let to_nodes: Vec<String> = labels
+                        .iter()
+                        .filter_map(|rel_type| {
+                            schema.rel_schemas_for_type(rel_type).into_iter().next().map(|rs| rs.to_node.clone())
+                        })
+                        .collect();
+                    if !to_nodes.is_empty() && to_nodes.windows(2).all(|w| w[0] == w[1]) {
+                        to_nodes.into_iter().next()
+                    } else {
+                        None
+                    }
+                });
 
                 // Get relationship table with parameterized view syntax if applicable
                 // POLYMORPHIC FIX: Always use extract from ViewScan source_table

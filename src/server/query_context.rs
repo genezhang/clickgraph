@@ -13,7 +13,7 @@
 //! ```ignore
 //! pub async fn query_handler(...) -> Result<...> {
 //!     let context = QueryContext::new(schema_name);
-//!     
+//!
 //!     with_query_context(context, async {
 //!         // ALL query processing happens here
 //!         // Context is automatically available via get_query_context()
@@ -92,6 +92,12 @@ pub struct QueryContext {
     /// Set once during render_plan_to_sql() so Cte::to_sql() can build scope-specific
     /// alias mappings without needing access to the full plan.
     pub all_cte_names: HashSet<String>,
+
+    /// Alias → node label mapping built from the render plan's FROM/JOIN tables.
+    /// Used by `n.id` pseudo-property resolution to find the correct schema node_id
+    /// column for a given table alias when the variable registry is not populated
+    /// (simple queries without WITH clauses).
+    pub alias_label_map: HashMap<String, String>,
 }
 
 impl QueryContext {
@@ -329,6 +335,13 @@ pub fn clear_cte_property_mappings() {
 // MULTI-TYPE VLP ALIASES ACCESSORS
 // ============================================================================
 
+/// Get the current multi-type VLP aliases map.
+pub fn get_multi_type_vlp_aliases() -> HashMap<String, String> {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().multi_type_vlp_aliases.clone())
+        .unwrap_or_default()
+}
+
 /// Set multi-type VLP aliases for the current query
 pub fn set_multi_type_vlp_aliases(aliases: HashMap<String, String>) {
     let _ = QUERY_CONTEXT.try_with(|ctx| {
@@ -434,6 +447,53 @@ pub fn resolve_with_current_registry(
         .flatten()
 }
 
+/// Get the primary node label for a given Cypher alias.
+///
+/// Checks, in priority order:
+/// 1. The current variable registry (populated for WITH-clause queries)
+/// 2. The alias-label map built from FROM/JOIN tables at render time
+///
+/// Returns None if alias is not known or not a node variable.
+pub fn get_node_label_for_alias(alias: &str) -> Option<String> {
+    QUERY_CONTEXT
+        .try_with(|ctx| {
+            let ctx = ctx.borrow();
+            // First: alias→label map built from actual FROM/JOIN table names at render time.
+            // This is ground truth for the current SQL branch — the alias IS this table.
+            // Checked first because the variable registry may carry stale labels from a
+            // different branch (e.g., VLP context has `b → Post`, but FOLLOWS branch has
+            // `b → social.users → User`).
+            if let Some(label) = ctx.alias_label_map.get(alias) {
+                return Some(label.clone());
+            }
+            // Second: variable registry (populated for queries with WITH clauses)
+            if let Some(registry) = ctx.current_variable_registry.as_ref() {
+                if let Some(var) = registry.lookup(alias) {
+                    if let Some(label) = var.primary_label_or_type() {
+                        return Some(label.to_string());
+                    }
+                }
+            }
+            None
+        })
+        .ok()
+        .flatten()
+}
+
+/// Set the alias→label mapping derived from the render plan's FROM/JOIN tables.
+pub fn set_alias_label_map(map: HashMap<String, String>) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().alias_label_map = map;
+    });
+}
+
+/// Clear the alias→label mapping.
+pub fn clear_alias_label_map() {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().alias_label_map.clear();
+    });
+}
+
 /// Clear the current variable registry
 pub fn clear_current_variable_registry() {
     let _ = QUERY_CONTEXT.try_with(|ctx| {
@@ -520,6 +580,42 @@ pub fn get_weight_cte_config() -> Option<crate::clickhouse_query_generator::Weig
         .try_with(|ctx| ctx.borrow().weight_cte_config.clone())
         .ok()
         .flatten()
+}
+
+// ============================================================================
+// BRANCH CONTEXT SNAPSHOT — for per-SQL-scope isolation
+// ============================================================================
+
+/// Snapshot of branch-scoped rendering context — the two fields that vary per SQL scope.
+/// Use snapshot_branch_context() / restore_branch_context() at every SQL branch boundary.
+#[derive(Clone, Default)]
+pub struct BranchContextSnapshot {
+    pub multi_type_vlp_aliases: HashMap<String, String>,
+    pub alias_label_map: HashMap<String, String>,
+}
+
+/// Save the current branch-scoped rendering context.
+/// Call this before entering a new SQL scope (UNION branch, CTE body, outer SELECT).
+pub fn snapshot_branch_context() -> BranchContextSnapshot {
+    QUERY_CONTEXT
+        .try_with(|ctx| {
+            let ctx = ctx.borrow();
+            BranchContextSnapshot {
+                multi_type_vlp_aliases: ctx.multi_type_vlp_aliases.clone(),
+                alias_label_map: ctx.alias_label_map.clone(),
+            }
+        })
+        .unwrap_or_default()
+}
+
+/// Restore a previously saved branch-scoped rendering context.
+/// Call this after a SQL scope finishes rendering.
+pub fn restore_branch_context(snapshot: BranchContextSnapshot) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        let mut ctx = ctx.borrow_mut();
+        ctx.multi_type_vlp_aliases = snapshot.multi_type_vlp_aliases;
+        ctx.alias_label_map = snapshot.alias_label_map;
+    });
 }
 
 #[cfg(test)]
