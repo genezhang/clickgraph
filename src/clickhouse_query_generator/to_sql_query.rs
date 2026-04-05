@@ -2513,7 +2513,9 @@ fn build_alias_label_map_from_scope(
     let mut table_to_label: HashMap<String, String> = HashMap::new();
     for (label, ns) in schema.all_node_schemas() {
         let qualified = format!("{}.{}", ns.database, ns.table_name);
-        table_to_label.entry(qualified).or_insert_with(|| label.clone());
+        table_to_label
+            .entry(qualified)
+            .or_insert_with(|| label.clone());
     }
     let mut map = HashMap::new();
     if let Some(ref vtr) = from.0 {
@@ -3354,7 +3356,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                 first_branch_sql.push_str(&plan.select.to_sql());
                 first_branch_sql.push_str(&plan.from.to_sql());
                 first_branch_sql.push_str(&plan.joins.to_sql());
-                    first_branch_sql.push_str(&plan.filters.to_sql());
+                first_branch_sql.push_str(&plan.filters.to_sql());
                 sql.push_str(&first_branch_sql);
             }
 
@@ -3824,7 +3826,6 @@ impl ToSql for Cte {
                 let saved_aliases =
                     crate::server::query_context::set_cte_alias_scope(scope_mapping);
 
-
                 // Scope branch context (alias_label_map + multi_type_vlp_aliases) to this
                 // CTE body's FROM/JOINs. Prevents VLP aliases and node labels from the
                 // outer scope leaking into this CTE body's property resolution.
@@ -4021,7 +4022,6 @@ impl ToSql for Cte {
                         cte_body.push_str(&format!("LIMIT {skip_str}{limit_val}\n"));
                     }
                 }
-
 
                 // Restore branch-scoped context (alias_label_map + multi_type_vlp_aliases).
                 restore_branch_context(branch_snapshot);
@@ -4618,9 +4618,8 @@ impl RenderExpr {
                             // Use the variable registry to find the label for this specific
                             // alias, then look up that label's node_id column.
                             let label = get_node_label_for_alias(&table_alias.0);
-                            let node_schema = label
-                                .as_deref()
-                                .and_then(|l| schema.node_schema_opt(l));
+                            let node_schema =
+                                label.as_deref().and_then(|l| schema.node_schema_opt(l));
                             if let Some(ns) = node_schema {
                                 let cols = ns.node_id.columns();
                                 if cols.len() == 1 {

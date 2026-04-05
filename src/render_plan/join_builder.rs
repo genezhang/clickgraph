@@ -2172,20 +2172,26 @@ impl JoinBuilder for LogicalPlan {
                     // Resolve full Identifier for composite ID support.
                     // For polymorphic Union nodes, extract_node_label_from_viewscan returns None,
                     // so fall back to from_node via relationship schema lookup.
-                    let left_label = extract_node_label_from_viewscan(&graph_rel.left).or_else(|| {
-                        let labels = graph_rel.labels.as_ref()?;
-                        let from_nodes: Vec<String> = labels
-                            .iter()
-                            .filter_map(|rel_type| {
-                                schema.rel_schemas_for_type(rel_type).into_iter().next().map(|rs| rs.from_node.clone())
-                            })
-                            .collect();
-                        if !from_nodes.is_empty() && from_nodes.windows(2).all(|w| w[0] == w[1]) {
-                            from_nodes.into_iter().next()
-                        } else {
-                            None
-                        }
-                    });
+                    let left_label =
+                        extract_node_label_from_viewscan(&graph_rel.left).or_else(|| {
+                            let labels = graph_rel.labels.as_ref()?;
+                            let from_nodes: Vec<String> = labels
+                                .iter()
+                                .filter_map(|rel_type| {
+                                    schema
+                                        .rel_schemas_for_type(rel_type)
+                                        .into_iter()
+                                        .next()
+                                        .map(|rs| rs.from_node.clone())
+                                })
+                                .collect();
+                            if !from_nodes.is_empty() && from_nodes.windows(2).all(|w| w[0] == w[1])
+                            {
+                                from_nodes.into_iter().next()
+                            } else {
+                                None
+                            }
+                        });
                     let left_node_id_flen: Identifier = left_label
                         .as_ref()
                         .and_then(|lbl| schema.node_schema_opt(lbl))
@@ -2220,16 +2226,22 @@ impl JoinBuilder for LogicalPlan {
                             // Resolve full Identifier for composite ID support.
                             // For polymorphic Union nodes, extract_node_label_from_viewscan
                             // returns None, so fall back to to_node via relationship schema lookup.
-                            let right_label =
-                                extract_node_label_from_viewscan(&right_joins.input).or_else(|| {
+                            let right_label = extract_node_label_from_viewscan(&right_joins.input)
+                                .or_else(|| {
                                     let labels = graph_rel.labels.as_ref()?;
                                     let to_nodes: Vec<String> = labels
                                         .iter()
                                         .filter_map(|rel_type| {
-                                            schema.rel_schemas_for_type(rel_type).into_iter().next().map(|rs| rs.to_node.clone())
+                                            schema
+                                                .rel_schemas_for_type(rel_type)
+                                                .into_iter()
+                                                .next()
+                                                .map(|rs| rs.to_node.clone())
                                         })
                                         .collect();
-                                    if !to_nodes.is_empty() && to_nodes.windows(2).all(|w| w[0] == w[1]) {
+                                    if !to_nodes.is_empty()
+                                        && to_nodes.windows(2).all(|w| w[0] == w[1])
+                                    {
                                         to_nodes.into_iter().next()
                                     } else {
                                         None
@@ -2403,7 +2415,11 @@ impl JoinBuilder for LogicalPlan {
                     let from_nodes: Vec<String> = labels
                         .iter()
                         .filter_map(|rel_type| {
-                            schema.rel_schemas_for_type(rel_type).into_iter().next().map(|rs| rs.from_node.clone())
+                            schema
+                                .rel_schemas_for_type(rel_type)
+                                .into_iter()
+                                .next()
+                                .map(|rs| rs.from_node.clone())
                         })
                         .collect();
                     if !from_nodes.is_empty() && from_nodes.windows(2).all(|w| w[0] == w[1]) {
@@ -2419,7 +2435,11 @@ impl JoinBuilder for LogicalPlan {
                     let to_nodes: Vec<String> = labels
                         .iter()
                         .filter_map(|rel_type| {
-                            schema.rel_schemas_for_type(rel_type).into_iter().next().map(|rs| rs.to_node.clone())
+                            schema
+                                .rel_schemas_for_type(rel_type)
+                                .into_iter()
+                                .next()
+                                .map(|rs| rs.to_node.clone())
                         })
                         .collect();
                     if !to_nodes.is_empty() && to_nodes.windows(2).all(|w| w[0] == w[1]) {

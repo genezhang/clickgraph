@@ -946,11 +946,7 @@ async fn test_follows_join_not_contaminated_by_vlp_context() {
     let schema = create_standard_schema();
 
     // Simple FOLLOWS query: no VLP involved — verifies basic FOLLOWS JOIN columns
-    let sql = generate_expand_sql(
-        &schema,
-        "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN r",
-    )
-    .await;
+    let sql = generate_expand_sql(&schema, "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN r").await;
     let sql_lower = sql.to_lowercase();
 
     assert!(
@@ -1009,8 +1005,10 @@ async fn test_follows_join_in_mixed_expand_not_contaminated() {
         // CTE declarations end where the main query begins
         // Look for the last "SELECT" that starts the outer query (not inside CTE)
         let outer_start = sql
-            .rfind("
-SELECT ")
+            .rfind(
+                "
+SELECT ",
+            )
             .or_else(|| sql.find("SELECT "))
             .unwrap_or(0);
         let outer_sql = &sql_lower[outer_start..];
@@ -1024,8 +1022,10 @@ SELECT ")
     // Similarly, JSON_VALUE must not appear in the outer SELECT (FOLLOWS branch joins)
     if sql_lower.contains("json_value") {
         let outer_start = sql
-            .rfind("
-SELECT ")
+            .rfind(
+                "
+SELECT ",
+            )
             .or_else(|| sql.find("SELECT "))
             .unwrap_or(0);
         let outer_sql = &sql_lower[outer_start..];
@@ -1076,10 +1076,18 @@ async fn test_both_endpoint_in_list_same_type() {
         "FOLLOWS JOIN must use follower_id/followed_id: {sql}"
     );
     // Both IN-list values must survive into SQL
-    assert!(sql_lower.contains("in (1, 2)") || sql_lower.contains("in (1,2)") || sql.contains("IN [1, 2]"),
-        "Start node IN-list must appear in SQL: {sql}");
-    assert!(sql_lower.contains("in (3, 4)") || sql_lower.contains("in (3,4)") || sql.contains("IN [3, 4]"),
-        "End node IN-list must appear in SQL: {sql}");
+    assert!(
+        sql_lower.contains("in (1, 2)")
+            || sql_lower.contains("in (1,2)")
+            || sql.contains("IN [1, 2]"),
+        "Start node IN-list must appear in SQL: {sql}"
+    );
+    assert!(
+        sql_lower.contains("in (3, 4)")
+            || sql_lower.contains("in (3,4)")
+            || sql.contains("IN [3, 4]"),
+        "End node IN-list must appear in SQL: {sql}"
+    );
 }
 
 /// Both endpoints filtered with IN-list, MIXED node types (User→User FOLLOWS  +  User→Post VLP).
@@ -1097,7 +1105,10 @@ async fn test_both_endpoint_in_list_mixed_type_vlp() {
     .await;
 
     let sql_lower = sql.to_lowercase();
-    assert!(sql_lower.contains("select"), "Should produce valid SQL: {sql}");
+    assert!(
+        sql_lower.contains("select"),
+        "Should produce valid SQL: {sql}"
+    );
 
     // If a VLP CTE is generated (multi-type expand), the VLP branch WHERE must use
     // t.start_id / t.end_id, NOT bare a.user_id / b.post_id (which are out of scope
@@ -1150,7 +1161,10 @@ async fn test_both_endpoint_in_list_undirected_mixed() {
     .await;
 
     let sql_lower = sql.to_lowercase();
-    assert!(sql_lower.contains("select"), "Should produce valid SQL: {sql}");
+    assert!(
+        sql_lower.contains("select"),
+        "Should produce valid SQL: {sql}"
+    );
     assert!(
         sql.contains("15") && sql.contains("10"),
         "ID filter values must survive into SQL: {sql}"
@@ -1187,7 +1201,10 @@ async fn test_browser_with_barrier_both_endpoints_filtered() {
     .await;
 
     let sql_lower = sql.to_lowercase();
-    assert!(sql_lower.contains("select"), "Should produce valid SQL: {sql}");
+    assert!(
+        sql_lower.contains("select"),
+        "Should produce valid SQL: {sql}"
+    );
     assert!(
         sql.contains("15") && sql.contains("10"),
         "ID filter values must appear in SQL: {sql}"
@@ -1212,7 +1229,10 @@ async fn test_return_relationship_untyped_directed() {
     let sql = generate_expand_sql(&schema, "MATCH (a:User)-[r]->(b) RETURN r").await;
 
     let sql_lower = sql.to_lowercase();
-    assert!(sql_lower.contains("select"), "Should produce valid SQL: {sql}");
+    assert!(
+        sql_lower.contains("select"),
+        "Should produce valid SQL: {sql}"
+    );
     // The expand covers FOLLOWS (User→User) and AUTHORED/LIKED (User→Post)
     assert!(
         sql_lower.contains("union all"),
@@ -1231,7 +1251,10 @@ async fn test_return_relationship_both_endpoint_eq_filter() {
     .await;
 
     let sql_lower = sql.to_lowercase();
-    assert!(sql_lower.contains("select"), "Should produce valid SQL: {sql}");
+    assert!(
+        sql_lower.contains("select"),
+        "Should produce valid SQL: {sql}"
+    );
     assert!(sql.contains("15"), "a filter value must appear: {sql}");
     assert!(sql.contains("10"), "b filter value must appear: {sql}");
     if sql_lower.contains("vlp_multi_type") {
