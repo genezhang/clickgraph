@@ -289,6 +289,41 @@ pub trait JoinBuilder {
 }
 
 /// Check if an OperatorApplication condition references a given alias in its operands
+/// Resolve an endpoint node label from relationship schema when the plan node is a
+/// polymorphic Union (making `extract_node_label_from_viewscan` return `None`).
+///
+/// For each rel_type, `.into_iter().next()` picks the first matching schema entry
+/// (BTreeMap order). When a rel_type has multiple polymorphic variants they will
+/// disagree on the endpoint label, so the consensus check returns `None` — correct
+/// behaviour because we cannot resolve a single label for a heterogeneous Union.
+fn consensus_endpoint_label(
+    labels: &[String],
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+    use_to_node: bool,
+) -> Option<String> {
+    let nodes: Vec<String> = labels
+        .iter()
+        .filter_map(|rel_type| {
+            schema
+                .rel_schemas_for_type(rel_type)
+                .into_iter()
+                .next()
+                .map(|rs| {
+                    if use_to_node {
+                        rs.to_node.clone()
+                    } else {
+                        rs.from_node.clone()
+                    }
+                })
+        })
+        .collect();
+    if !nodes.is_empty() && nodes.windows(2).all(|w| w[0] == w[1]) {
+        nodes.into_iter().next()
+    } else {
+        None
+    }
+}
+
 fn condition_references_alias(cond: &super::render_expr::OperatorApplication, alias: &str) -> bool {
     use super::render_expr::RenderExpr;
     for operand in &cond.operands {
@@ -2143,14 +2178,9 @@ impl JoinBuilder for LogicalPlan {
                         },
                     );
 
-                    // Get left side ID column from the FROM table
-                    let left_id_col = extract_id_column(&graph_rel.left).ok_or_else(|| {
-                        RenderBuildError::InvalidRenderPlan(format!(
-                            "Cannot determine ID column for left node '{}' in relationship '{}'. \
-                             Node schema must define id_column in YAML, or node might have invalid plan structure.",
-                            graph_rel.left_connection, graph_rel.alias
-                        ))
-                    })?;
+                    // Get left side ID column from the FROM table (may be None for polymorphic
+                    // Union nodes whose branches disagree on the id column — e.g. User/Post).
+                    let left_id_col = extract_id_column(&graph_rel.left);
 
                     // Determine join condition based on direction
                     let is_optional = graph_rel.is_optional.unwrap_or(false);
@@ -2174,13 +2204,45 @@ impl JoinBuilder for LogicalPlan {
                     let rel_col_end = &rel_cols.to_id; // for right_connection (TARGET)
 
                     // JOIN 1: Relationship table -> FROM (left) node
-                    // Resolve full Identifier for composite ID support
-                    let left_label = extract_node_label_from_viewscan(&graph_rel.left);
-                    let left_node_id_flen: Identifier = left_label
-                        .as_ref()
-                        .and_then(|lbl| schema.node_schema_opt(lbl))
-                        .map(|ns| ns.node_id.id.clone())
-                        .unwrap_or_else(|| Identifier::Single(left_id_col));
+                    // Resolve full Identifier for composite ID support.
+                    // For polymorphic Union nodes, extract_node_label_from_viewscan returns None,
+                    // so fall back to from_node via relationship schema lookup.
+                    // For multi-type VLP CTEs, the planner unified all start IDs into `start_id`.
+                    let left_vlp_table = extract_table_name(&graph_rel.left);
+                    let left_label =
+                        extract_node_label_from_viewscan(&graph_rel.left).or_else(|| {
+                            let labels = graph_rel.labels.as_ref()?;
+                            consensus_endpoint_label(labels, schema, false)
+                        });
+                    let left_node_id_flen: Identifier = if left_vlp_table
+                        .as_deref()
+                        .is_some_and(|t| t.starts_with("vlp_multi_type_"))
+                    {
+                        // Left endpoint is a multi-type VLP CTE: the planner already unified
+                        // all start-node IDs into the `start_id` column. Using the underlying
+                        // node's id column (e.g., user_id) would be wrong here.
+                        log::debug!(
+                                "🔍 join_builder: left endpoint '{}' is a multi-type VLP CTE ({}), using start_id",
+                                graph_rel.left_connection,
+                                left_vlp_table.as_deref().unwrap_or("?")
+                            );
+                        Identifier::Single("start_id".to_string())
+                    } else {
+                        left_label
+                            .as_ref()
+                            .and_then(|lbl| schema.node_schema_opt(lbl))
+                            .map(|ns| ns.node_id.id.clone())
+                            .or_else(|| left_id_col.map(Identifier::Single))
+                            .unwrap_or_else(|| {
+                                log::warn!(
+                                    "⚠️ join_builder: cannot resolve id column for left node '{}' \
+                                         (rel: {}), falling back to 'id'",
+                                    graph_rel.left_connection,
+                                    graph_rel.alias
+                                );
+                                Identifier::Single("id".to_string())
+                            })
+                    };
                     let join1_conditions = build_identifier_join_conditions(
                         &graph_rel.alias,
                         rel_col_start,
@@ -2202,22 +2264,46 @@ impl JoinBuilder for LogicalPlan {
                     // Get the CTE table name from the GraphJoins input
                     if let LogicalPlan::GraphJoins(gn) = right_joins.input.as_ref() {
                         if let Some(cte_table) = extract_table_name(&gn.input) {
-                            // Get the right node's ID column
-                            let right_id_col = extract_id_column(&right_joins.input).ok_or_else(|| {
-                                RenderBuildError::InvalidRenderPlan(format!(
-                                    "Cannot determine ID column for right node '{}' in relationship '{}'. \
-                                     Node schema must define id_column in YAML, or node might have invalid plan structure.",
-                                    graph_rel.right_connection, graph_rel.alias
-                                ))
-                            })?;
+                            // Get the right node's ID column (may be None for polymorphic
+                            // Union nodes whose branches disagree on the id column).
+                            let right_id_col = extract_id_column(&right_joins.input);
 
-                            // Resolve full Identifier for composite ID support
-                            let right_label = extract_node_label_from_viewscan(&right_joins.input);
-                            let right_node_id_flen: Identifier = right_label
-                                .as_ref()
-                                .and_then(|lbl| schema.node_schema_opt(lbl))
-                                .map(|ns| ns.node_id.id.clone())
-                                .unwrap_or_else(|| Identifier::Single(right_id_col));
+                            // Resolve full Identifier for composite ID support.
+                            // For polymorphic Union nodes, extract_node_label_from_viewscan
+                            // returns None, so fall back to to_node via relationship schema lookup.
+                            let right_label = extract_node_label_from_viewscan(&right_joins.input)
+                                .or_else(|| {
+                                    let labels = graph_rel.labels.as_ref()?;
+                                    consensus_endpoint_label(labels, schema, true)
+                                });
+                            let right_node_id_flen: Identifier = if cte_table
+                                .starts_with("vlp_multi_type_")
+                            {
+                                // Right endpoint is a multi-type VLP CTE: the planner already
+                                // unified all end-node IDs (user_id, post_id, …) into the
+                                // `end_id` column. Using a node-specific column here produces
+                                // broken SQL because the alias resolves to the VLP CTE, not the
+                                // raw node table.
+                                log::debug!(
+                                        "🔍 join_builder: right endpoint '{}' is a multi-type VLP CTE ({}), using end_id",
+                                        graph_rel.right_connection, cte_table
+                                    );
+                                Identifier::Single("end_id".to_string())
+                            } else {
+                                right_label
+                                        .as_ref()
+                                        .and_then(|lbl| schema.node_schema_opt(lbl))
+                                        .map(|ns| ns.node_id.id.clone())
+                                        .or_else(|| right_id_col.map(Identifier::Single))
+                                        .unwrap_or_else(|| {
+                                            log::warn!(
+                                                "⚠️ join_builder: cannot resolve id column for right node \
+                                                 '{}' (rel: {}), falling back to 'id'",
+                                                graph_rel.right_connection, graph_rel.alias
+                                            );
+                                            Identifier::Single("id".to_string())
+                                        })
+                            };
                             let join2_conditions = build_identifier_join_conditions(
                                 &graph_rel.right_connection,
                                 &right_node_id_flen,
@@ -2364,12 +2450,27 @@ impl JoinBuilder for LogicalPlan {
                 // Also extract labels for schema filter generation (optional for CTEs)
                 // MULTI-HOP FIX: For nested GraphRel left, extract label from the inner's
                 // right node (the shared node between the two hops).
+                // POLYMORPHIC FALLBACK: For Union nodes (polymorphic endpoints), neither
+                // extract_end_node_label nor extract_node_label_from_viewscan returns a label.
+                // Fall back to the from_node/to_node embedded in the relationship's label
+                // string (format: "TYPE::FromNode::ToNode") to get the correct schema.
                 let start_label = if let LogicalPlan::GraphRel(_) = graph_rel.left.as_ref() {
                     extract_end_node_label(&graph_rel.left)
                 } else {
                     extract_node_label_from_viewscan(&graph_rel.left)
-                };
-                let end_label = extract_node_label_from_viewscan(&graph_rel.right);
+                }
+                .or_else(|| {
+                    // Polymorphic fallback: for Union endpoints, look up from_node via rel schema.
+                    // Only apply when all relationship labels agree on the same from_node.
+                    let labels = graph_rel.labels.as_ref()?;
+                    consensus_endpoint_label(labels, schema, false)
+                });
+                let end_label = extract_node_label_from_viewscan(&graph_rel.right).or_else(|| {
+                    // Polymorphic fallback: for Union endpoints, look up to_node via rel schema.
+                    // Only apply when all relationship labels agree on the same to_node.
+                    let labels = graph_rel.labels.as_ref()?;
+                    consensus_endpoint_label(labels, schema, true)
+                });
 
                 // Get relationship table with parameterized view syntax if applicable
                 // POLYMORPHIC FIX: Always use extract from ViewScan source_table
