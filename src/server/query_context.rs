@@ -487,13 +487,6 @@ pub fn set_alias_label_map(map: HashMap<String, String>) {
     });
 }
 
-/// Clear the alias→label mapping.
-pub fn clear_alias_label_map() {
-    let _ = QUERY_CONTEXT.try_with(|ctx| {
-        ctx.borrow_mut().alias_label_map.clear();
-    });
-}
-
 /// Clear the current variable registry
 pub fn clear_current_variable_registry() {
     let _ = QUERY_CONTEXT.try_with(|ctx| {

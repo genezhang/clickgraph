@@ -74,6 +74,22 @@ async fn try_generate_expand_sql(schema: &GraphSchema, cypher: &str) -> Result<S
     .await
 }
 
+// ---------------------------------------------------------------------------
+// SQL fragment helpers
+// ---------------------------------------------------------------------------
+
+/// Returns the portion of the SQL string starting at the last top-level SELECT.
+/// This is used to check outer-query content without matching inside CTE bodies.
+///
+/// Panics with a clear message if no SELECT is found (i.e., invalid SQL).
+fn outer_select_fragment(sql: &str) -> &str {
+    let pos = sql
+        .rfind("\nSELECT ")
+        .or_else(|| sql.find("SELECT "))
+        .unwrap_or_else(|| panic!("SQL must contain at least one SELECT:\n{sql}"));
+    &sql[pos..]
+}
+
 // ===========================================================================
 // Standard schema tests
 // ===========================================================================
@@ -912,16 +928,10 @@ async fn test_mixed_type_expand_with_clause_compiles() {
     // We check that if `json_value` appears, it's only inside the CTE body
     // (before the outer SELECT), not in the outer JOIN conditions.
     if sql_lower.contains("json_value") {
-        // Find where the outer SELECT starts (after CTE declarations)
-        let outer_start = sql
-            .rfind("\nSELECT ")
-            .or_else(|| sql.find("SELECT "))
-            .unwrap_or(0);
-        let outer_sql = &sql_lower[outer_start..];
+        let outer = outer_select_fragment(&sql);
         assert!(
-            !outer_sql.contains("json_value"),
-            "Outer SELECT must not use JSON_VALUE (VLP aliases bleeding): outer={}",
-            &sql[outer_start..]
+            !outer.to_lowercase().contains("json_value"),
+            "Outer SELECT must not use JSON_VALUE (VLP aliases bleeding): outer={outer}"
         );
     }
 }
@@ -1001,38 +1011,21 @@ async fn test_follows_join_in_mixed_expand_not_contaminated() {
     // but must NOT appear in JOIN ON conditions for the FOLLOWS branch.
     // We verify by checking the overall SQL does not use post_id outside of the VLP CTE.
     if sql_lower.contains("post_id") {
-        // Find the CTE block (before the outer SELECT)
-        // CTE declarations end where the main query begins
-        // Look for the last "SELECT" that starts the outer query (not inside CTE)
-        let outer_start = sql
-            .rfind(
-                "
-SELECT ",
-            )
-            .or_else(|| sql.find("SELECT "))
-            .unwrap_or(0);
-        let outer_sql = &sql_lower[outer_start..];
+        // post_id may appear inside the VLP CTE body (for AUTHORED/LIKED paths),
+        // but must NOT appear in the outer SELECT (FOLLOWS branch JOIN ON conditions).
+        let outer = outer_select_fragment(&sql);
         assert!(
-            !outer_sql.contains("post_id"),
-            "FOLLOWS JOIN ON in outer query must not use post_id (VLP context leak), outer: {}",
-            &sql[outer_start..]
+            !outer.to_lowercase().contains("post_id"),
+            "FOLLOWS JOIN ON must not use post_id (VLP context leak), outer: {outer}"
         );
     }
 
     // Similarly, JSON_VALUE must not appear in the outer SELECT (FOLLOWS branch joins)
     if sql_lower.contains("json_value") {
-        let outer_start = sql
-            .rfind(
-                "
-SELECT ",
-            )
-            .or_else(|| sql.find("SELECT "))
-            .unwrap_or(0);
-        let outer_sql = &sql_lower[outer_start..];
+        let outer = outer_select_fragment(&sql);
         assert!(
-            !outer_sql.contains("json_value"),
-            "Outer SELECT must not use JSON_VALUE (VLP aliases bleeding into FOLLOWS branch): outer={}",
-            &sql[outer_start..]
+            !outer.to_lowercase().contains("json_value"),
+            "Outer SELECT must not use JSON_VALUE (VLP aliases bleeding into FOLLOWS branch): outer={outer}"
         );
     }
 }

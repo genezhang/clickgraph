@@ -289,6 +289,41 @@ pub trait JoinBuilder {
 }
 
 /// Check if an OperatorApplication condition references a given alias in its operands
+/// Resolve an endpoint node label from relationship schema when the plan node is a
+/// polymorphic Union (making `extract_node_label_from_viewscan` return `None`).
+///
+/// For each rel_type, `.into_iter().next()` picks the first matching schema entry
+/// (BTreeMap order). When a rel_type has multiple polymorphic variants they will
+/// disagree on the endpoint label, so the consensus check returns `None` — correct
+/// behaviour because we cannot resolve a single label for a heterogeneous Union.
+fn consensus_endpoint_label(
+    labels: &[String],
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+    use_to_node: bool,
+) -> Option<String> {
+    let nodes: Vec<String> = labels
+        .iter()
+        .filter_map(|rel_type| {
+            schema
+                .rel_schemas_for_type(rel_type)
+                .into_iter()
+                .next()
+                .map(|rs| {
+                    if use_to_node {
+                        rs.to_node.clone()
+                    } else {
+                        rs.from_node.clone()
+                    }
+                })
+        })
+        .collect();
+    if !nodes.is_empty() && nodes.windows(2).all(|w| w[0] == w[1]) {
+        nodes.into_iter().next()
+    } else {
+        None
+    }
+}
+
 fn condition_references_alias(cond: &super::render_expr::OperatorApplication, alias: &str) -> bool {
     use super::render_expr::RenderExpr;
     for operand in &cond.operands {
@@ -2175,29 +2210,21 @@ impl JoinBuilder for LogicalPlan {
                     let left_label =
                         extract_node_label_from_viewscan(&graph_rel.left).or_else(|| {
                             let labels = graph_rel.labels.as_ref()?;
-                            let from_nodes: Vec<String> = labels
-                                .iter()
-                                .filter_map(|rel_type| {
-                                    schema
-                                        .rel_schemas_for_type(rel_type)
-                                        .into_iter()
-                                        .next()
-                                        .map(|rs| rs.from_node.clone())
-                                })
-                                .collect();
-                            if !from_nodes.is_empty() && from_nodes.windows(2).all(|w| w[0] == w[1])
-                            {
-                                from_nodes.into_iter().next()
-                            } else {
-                                None
-                            }
+                            consensus_endpoint_label(labels, schema, false)
                         });
                     let left_node_id_flen: Identifier = left_label
                         .as_ref()
                         .and_then(|lbl| schema.node_schema_opt(lbl))
                         .map(|ns| ns.node_id.id.clone())
                         .or_else(|| left_id_col.map(Identifier::Single))
-                        .unwrap_or_else(|| Identifier::Single("id".to_string()));
+                        .unwrap_or_else(|| {
+                            log::warn!(
+                                "⚠️ join_builder: cannot resolve id column for left node '{}' \
+                                 (rel: {}), falling back to 'id'",
+                                graph_rel.left_connection, graph_rel.alias
+                            );
+                            Identifier::Single("id".to_string())
+                        });
                     let join1_conditions = build_identifier_join_conditions(
                         &graph_rel.alias,
                         rel_col_start,
@@ -2229,30 +2256,21 @@ impl JoinBuilder for LogicalPlan {
                             let right_label = extract_node_label_from_viewscan(&right_joins.input)
                                 .or_else(|| {
                                     let labels = graph_rel.labels.as_ref()?;
-                                    let to_nodes: Vec<String> = labels
-                                        .iter()
-                                        .filter_map(|rel_type| {
-                                            schema
-                                                .rel_schemas_for_type(rel_type)
-                                                .into_iter()
-                                                .next()
-                                                .map(|rs| rs.to_node.clone())
-                                        })
-                                        .collect();
-                                    if !to_nodes.is_empty()
-                                        && to_nodes.windows(2).all(|w| w[0] == w[1])
-                                    {
-                                        to_nodes.into_iter().next()
-                                    } else {
-                                        None
-                                    }
+                                    consensus_endpoint_label(labels, schema, true)
                                 });
                             let right_node_id_flen: Identifier = right_label
                                 .as_ref()
                                 .and_then(|lbl| schema.node_schema_opt(lbl))
                                 .map(|ns| ns.node_id.id.clone())
                                 .or_else(|| right_id_col.map(Identifier::Single))
-                                .unwrap_or_else(|| Identifier::Single("id".to_string()));
+                                .unwrap_or_else(|| {
+                                    log::warn!(
+                                        "⚠️ join_builder: cannot resolve id column for right node \
+                                         '{}' (rel: {}), falling back to 'id'",
+                                        graph_rel.right_connection, graph_rel.alias
+                                    );
+                                    Identifier::Single("id".to_string())
+                                });
                             let join2_conditions = build_identifier_join_conditions(
                                 &graph_rel.right_connection,
                                 &right_node_id_flen,
@@ -2412,41 +2430,13 @@ impl JoinBuilder for LogicalPlan {
                     // Polymorphic fallback: for Union endpoints, look up from_node via rel schema.
                     // Only apply when all relationship labels agree on the same from_node.
                     let labels = graph_rel.labels.as_ref()?;
-                    let from_nodes: Vec<String> = labels
-                        .iter()
-                        .filter_map(|rel_type| {
-                            schema
-                                .rel_schemas_for_type(rel_type)
-                                .into_iter()
-                                .next()
-                                .map(|rs| rs.from_node.clone())
-                        })
-                        .collect();
-                    if !from_nodes.is_empty() && from_nodes.windows(2).all(|w| w[0] == w[1]) {
-                        from_nodes.into_iter().next()
-                    } else {
-                        None
-                    }
+                    consensus_endpoint_label(labels, schema, false)
                 });
                 let end_label = extract_node_label_from_viewscan(&graph_rel.right).or_else(|| {
                     // Polymorphic fallback: for Union endpoints, look up to_node via rel schema.
                     // Only apply when all relationship labels agree on the same to_node.
                     let labels = graph_rel.labels.as_ref()?;
-                    let to_nodes: Vec<String> = labels
-                        .iter()
-                        .filter_map(|rel_type| {
-                            schema
-                                .rel_schemas_for_type(rel_type)
-                                .into_iter()
-                                .next()
-                                .map(|rs| rs.to_node.clone())
-                        })
-                        .collect();
-                    if !to_nodes.is_empty() && to_nodes.windows(2).all(|w| w[0] == w[1]) {
-                        to_nodes.into_iter().next()
-                    } else {
-                        None
-                    }
+                    consensus_endpoint_label(labels, schema, true)
                 });
 
                 // Get relationship table with parameterized view syntax if applicable
