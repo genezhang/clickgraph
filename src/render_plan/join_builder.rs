@@ -2207,24 +2207,42 @@ impl JoinBuilder for LogicalPlan {
                     // Resolve full Identifier for composite ID support.
                     // For polymorphic Union nodes, extract_node_label_from_viewscan returns None,
                     // so fall back to from_node via relationship schema lookup.
+                    // For multi-type VLP CTEs, the planner unified all start IDs into `start_id`.
+                    let left_vlp_table = extract_table_name(&graph_rel.left);
                     let left_label =
                         extract_node_label_from_viewscan(&graph_rel.left).or_else(|| {
                             let labels = graph_rel.labels.as_ref()?;
                             consensus_endpoint_label(labels, schema, false)
                         });
-                    let left_node_id_flen: Identifier = left_label
-                        .as_ref()
-                        .and_then(|lbl| schema.node_schema_opt(lbl))
-                        .map(|ns| ns.node_id.id.clone())
-                        .or_else(|| left_id_col.map(Identifier::Single))
-                        .unwrap_or_else(|| {
-                            log::warn!(
-                                "⚠️ join_builder: cannot resolve id column for left node '{}' \
-                                 (rel: {}), falling back to 'id'",
-                                graph_rel.left_connection, graph_rel.alias
+                    let left_node_id_flen: Identifier = if left_vlp_table
+                        .as_deref()
+                        .is_some_and(|t| t.starts_with("vlp_multi_type_"))
+                    {
+                        // Left endpoint is a multi-type VLP CTE: the planner already unified
+                        // all start-node IDs into the `start_id` column. Using the underlying
+                        // node's id column (e.g., user_id) would be wrong here.
+                        log::debug!(
+                                "🔍 join_builder: left endpoint '{}' is a multi-type VLP CTE ({}), using start_id",
+                                graph_rel.left_connection,
+                                left_vlp_table.as_deref().unwrap_or("?")
                             );
-                            Identifier::Single("id".to_string())
-                        });
+                        Identifier::Single("start_id".to_string())
+                    } else {
+                        left_label
+                            .as_ref()
+                            .and_then(|lbl| schema.node_schema_opt(lbl))
+                            .map(|ns| ns.node_id.id.clone())
+                            .or_else(|| left_id_col.map(Identifier::Single))
+                            .unwrap_or_else(|| {
+                                log::warn!(
+                                    "⚠️ join_builder: cannot resolve id column for left node '{}' \
+                                         (rel: {}), falling back to 'id'",
+                                    graph_rel.left_connection,
+                                    graph_rel.alias
+                                );
+                                Identifier::Single("id".to_string())
+                            })
+                    };
                     let join1_conditions = build_identifier_join_conditions(
                         &graph_rel.alias,
                         rel_col_start,
@@ -2258,19 +2276,34 @@ impl JoinBuilder for LogicalPlan {
                                     let labels = graph_rel.labels.as_ref()?;
                                     consensus_endpoint_label(labels, schema, true)
                                 });
-                            let right_node_id_flen: Identifier = right_label
-                                .as_ref()
-                                .and_then(|lbl| schema.node_schema_opt(lbl))
-                                .map(|ns| ns.node_id.id.clone())
-                                .or_else(|| right_id_col.map(Identifier::Single))
-                                .unwrap_or_else(|| {
-                                    log::warn!(
-                                        "⚠️ join_builder: cannot resolve id column for right node \
-                                         '{}' (rel: {}), falling back to 'id'",
-                                        graph_rel.right_connection, graph_rel.alias
+                            let right_node_id_flen: Identifier = if cte_table
+                                .starts_with("vlp_multi_type_")
+                            {
+                                // Right endpoint is a multi-type VLP CTE: the planner already
+                                // unified all end-node IDs (user_id, post_id, …) into the
+                                // `end_id` column. Using a node-specific column here produces
+                                // broken SQL because the alias resolves to the VLP CTE, not the
+                                // raw node table.
+                                log::debug!(
+                                        "🔍 join_builder: right endpoint '{}' is a multi-type VLP CTE ({}), using end_id",
+                                        graph_rel.right_connection, cte_table
                                     );
-                                    Identifier::Single("id".to_string())
-                                });
+                                Identifier::Single("end_id".to_string())
+                            } else {
+                                right_label
+                                        .as_ref()
+                                        .and_then(|lbl| schema.node_schema_opt(lbl))
+                                        .map(|ns| ns.node_id.id.clone())
+                                        .or_else(|| right_id_col.map(Identifier::Single))
+                                        .unwrap_or_else(|| {
+                                            log::warn!(
+                                                "⚠️ join_builder: cannot resolve id column for right node \
+                                                 '{}' (rel: {}), falling back to 'id'",
+                                                graph_rel.right_connection, graph_rel.alias
+                                            );
+                                            Identifier::Single("id".to_string())
+                                        })
+                            };
                             let join2_conditions = build_identifier_join_conditions(
                                 &graph_rel.right_connection,
                                 &right_node_id_flen,

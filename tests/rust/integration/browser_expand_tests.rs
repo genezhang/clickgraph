@@ -1233,6 +1233,74 @@ async fn test_return_relationship_untyped_directed() {
     );
 }
 
+// ===========================================================================
+// VLP CTE endpoint: end_id / start_id used in GraphJoins JOIN condition
+//
+// When a chained WITH-clause query produces a polymorphic right endpoint
+// resolved as a multi-type VLP CTE (vlp_multi_type_*), the JOIN condition
+// for that endpoint must use `end_id` (the VLP-unified column), NOT the
+// underlying node's native id column (user_id / post_id).
+//
+// Before the fix the GraphJoins code path fell through to `"id"` when both
+// extract_node_label_from_viewscan and consensus_endpoint_label returned None
+// for the heterogeneous Union behind the CTE.
+// ===========================================================================
+
+/// Chained WITH + VLP endpoint: JOIN must reference end_id, not a node-specific column.
+///
+/// `MATCH (a:User) WITH a MATCH (a)-[r]-(b) RETURN r, b` uses an undirected,
+/// unlabeled relationship so the planner generates a multi-type VLP CTE covering
+/// all relationship types (FOLLOWS User→User, AUTHORED/LIKED User→Post).
+///
+/// The JOIN condition for the VLP endpoint `b` must use `end_id` (the VLP CTE's
+/// unified column), NOT a node-specific column like `post_id` (first Union branch)
+/// which is wrong for the FOLLOWS arm where b is a User.
+///
+/// Before the fix the GraphJoins CTE-reference path fell through to `"id"` when
+/// both `extract_node_label_from_viewscan` and `consensus_endpoint_label` returned
+/// None for the heterogeneous Union behind the VLP CTE.
+#[tokio::test]
+async fn test_chained_with_vlp_endpoint_uses_end_id() {
+    let schema = create_standard_schema();
+    // Undirected + unlabeled: guaranteed to produce a multi-type VLP CTE in the
+    // standard schema (FOLLOWS User→User plus AUTHORED/LIKED User→Post).
+    let sql = generate_expand_sql(
+        &schema,
+        "MATCH (a:User {user_id: '1'}) WITH a MATCH (a)-[r]-(b) RETURN r, b",
+    )
+    .await;
+    let sql_lower = sql.to_lowercase();
+
+    // This query MUST produce a VLP CTE — fail loudly if it doesn't so the
+    // subsequent assertions aren't vacuously true.
+    assert!(
+        sql_lower.contains("vlp_multi_type"),
+        "Query must produce a multi-type VLP CTE for this test to be meaningful: {sql}"
+    );
+
+    // The outer query must read the VLP endpoint through `end_id` (the unified column).
+    // Correct: `t.end_id AS "b.post_id"` — the CTE alias backs the property access.
+    // Wrong:   `b.post_id = r.followed_id` — raw node column in a JOIN ON condition.
+    //
+    // `b.post_id` may legitimately appear as a quoted SELECT alias (correct form).
+    // What must NOT happen is `b.post_id` as a bare identifier on the left-hand side
+    // of a JOIN ON condition, which would indicate the VLP endpoint was resolved as a
+    // raw node table rather than through the unified end_id column.
+    let outer = outer_select_fragment(&sql);
+    let outer_lower = outer.to_lowercase();
+    assert!(
+        outer_lower.contains("end_id"),
+        "Outer query must reference end_id for VLP endpoint: {outer}"
+    );
+    // `b.post_id` is valid as a quoted SELECT alias (e.g., t.end_id AS "b.post_id").
+    // It is invalid as a raw JOIN ON column (e.g., ON b.post_id = r.followed_id).
+    // Check for the raw-column form: `b.post_id` followed by a comparison operator.
+    assert!(
+        !outer_lower.contains("b.post_id =") && !outer_lower.contains("b.post_id="),
+        "Outer JOIN ON must not use bare b.post_id as a condition (VLP endpoint must use end_id): {outer}"
+    );
+}
+
 /// Return relationship r with both-endpoint equality filters (non-IN, simpler form).
 #[tokio::test]
 async fn test_return_relationship_both_endpoint_eq_filter() {
