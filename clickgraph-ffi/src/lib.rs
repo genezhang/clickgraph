@@ -353,6 +353,7 @@ pub struct SystemConfig {
     pub session_dir: Option<String>,
     pub data_dir: Option<String>,
     pub max_threads: Option<u32>,
+    pub max_memory_usage_bytes: Option<u64>,
     pub s3_access_key_id: Option<String>,
     pub s3_secret_access_key: Option<String>,
     pub s3_region: Option<String>,
@@ -782,6 +783,7 @@ fn to_rust_system_config(config: SystemConfig) -> RustSystemConfig {
         session_dir: config.session_dir.map(std::path::PathBuf::from),
         data_dir: config.data_dir.map(std::path::PathBuf::from),
         max_threads: config.max_threads.map(|t| t as usize),
+        max_memory_usage_bytes: config.max_memory_usage_bytes,
         credentials: StorageCredentials {
             s3_access_key_id: config.s3_access_key_id,
             s3_secret_access_key: config.s3_secret_access_key,
