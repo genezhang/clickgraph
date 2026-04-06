@@ -1381,6 +1381,7 @@ impl TypeInference {
         graph_schema: &GraphSchema,
         relationships: &[RelationshipPattern],
         property_accesses: &HashMap<String, HashSet<String>>,
+        null_check_accesses: &HashMap<String, HashSet<String>>,
     ) -> AnalyzerResult<Arc<LogicalPlan>> {
         log::info!(
             "🔀 UnifiedTypeInference: Generating UNION for {} untyped nodes",
@@ -1481,29 +1482,47 @@ impl TypeInference {
             //
             // We use ANY-semantics: a type is kept if it has at least one of the accessed
             // properties. This correctly handles OR predicates (`WHERE n.p1 = 12 OR n.p2 = 13`)
-            // where different types satisfy different branches. IS NULL accesses are excluded
-            // from `property_accesses` entirely (see extract_props_from_expr) because
-            // accessing a missing property yields NULL, not an error.
+            // where different types satisfy different branches.
             //
-            // ALL-semantics would incorrectly eliminate types when properties appear in
-            // disjunctive (OR) predicates or when a type has only some of the accessed
-            // properties (those it lacks resolve to NULL and are filtered by the WHERE clause).
-            if let Some(props) = property_accesses.get(var_name) {
-                candidates.retain(|type_name| {
-                    if let Ok(node_schema) = graph_schema.node_schema(type_name) {
-                        props
-                            .iter()
-                            .any(|prop| node_schema.has_cypher_property(prop))
-                    } else {
-                        false
-                    }
-                });
-                log::debug!(
-                    "🔍 Constrained '{}' by properties {:?}: {:?}",
-                    var_name,
-                    props,
-                    candidates
-                );
+            // Properties are split into two sets:
+            //   - `regular`:    accessed in normal expressions (equality, comparisons, …)
+            //   - `null_check`: accessed inside IS NULL / IS NOT NULL predicates
+            //
+            // ALL-semantics would incorrectly eliminate types in disjunctive predicates.
+            // Pruning only on `regular` props (ignoring null_check) would incorrectly drop
+            // types that only appear in an IS NOT NULL branch of an OR, e.g.:
+            //   `WHERE n.p IS NOT NULL OR n.q = 5` — type A={p}, type B={q}: both must survive.
+            // Using `regular ∪ null_check` with ANY-semantics handles this correctly.
+            //
+            // Special case: if a variable has ONLY null-check accesses and no regular accesses,
+            // skip pruning entirely — missing properties return NULL, not an error
+            // (e.g., `WHERE n.missing IS NULL` should not eliminate any type candidates).
+            let regular_props = property_accesses.get(var_name);
+            let nc_props = null_check_accesses.get(var_name);
+            if regular_props.is_some() || nc_props.is_some() {
+                let has_regular = regular_props.map_or(false, |p| !p.is_empty());
+                if has_regular {
+                    // Prune using regular ∪ null_check with ANY semantics
+                    let all_props: HashSet<&String> = regular_props
+                        .iter()
+                        .flat_map(|s| s.iter())
+                        .chain(nc_props.iter().flat_map(|s| s.iter()))
+                        .collect();
+                    candidates.retain(|type_name| {
+                        if let Ok(node_schema) = graph_schema.node_schema(type_name) {
+                            all_props.iter().any(|prop| node_schema.has_cypher_property(prop))
+                        } else {
+                            false
+                        }
+                    });
+                    log::debug!(
+                        "🔍 Constrained '{}' by properties {:?}: {:?}",
+                        var_name,
+                        all_props,
+                        candidates
+                    );
+                }
+                // else: only null-check accesses — skip pruning (missing props → NULL)
             }
 
             if candidates.is_empty() {
@@ -3665,6 +3684,13 @@ impl AnalyzerPass for TypeInference {
                             .cloned()
                             .collect();
                         let arm_props: HashMap<_, _> = original_property_accesses
+                            .regular
+                            .iter()
+                            .filter(|(k, _)| arm_untyped.contains(k.as_str()))
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                        let arm_null_check: HashMap<_, _> = original_property_accesses
+                            .null_check
                             .iter()
                             .filter(|(k, _)| arm_untyped.contains(k.as_str()))
                             .map(|(k, v)| (k.clone(), v.clone()))
@@ -3676,6 +3702,7 @@ impl AnalyzerPass for TypeInference {
                             graph_schema,
                             &arm_rels,
                             &arm_props,
+                            &arm_null_check,
                         )?;
                         new_inputs.push(expanded);
                     }
@@ -3694,7 +3721,8 @@ impl AnalyzerPass for TypeInference {
                     plan_ctx,
                     graph_schema,
                     &original_relationships,
-                    &original_property_accesses,
+                    &original_property_accesses.regular,
+                    &original_property_accesses.null_check,
                 )?;
             }
         } else {
@@ -4184,76 +4212,98 @@ fn extract_patterns_recursive(
     }
 }
 
-/// Extract property accesses from the plan tree, grouped by variable name.
-/// Returns a map: variable_alias → set of Cypher property names accessed.
-/// Used to constrain node type candidates to only those types that have the accessed properties.
-fn extract_property_accesses(plan: &Arc<LogicalPlan>) -> HashMap<String, HashSet<String>> {
-    let mut accesses: HashMap<String, HashSet<String>> = HashMap::new();
-    extract_props_from_plan(plan.as_ref(), &mut accesses);
-    accesses
+/// Property accesses extracted from a plan, split by whether they appear inside
+/// IS NULL / IS NOT NULL predicates.
+///
+/// - `regular`: properties accessed in normal expressions (equality, comparison, functions, …)
+/// - `null_check`: properties accessed *only* as the operand of IS NULL / IS NOT NULL
+///
+/// Keeping them separate lets the pruning step use ANY-semantics on the full set while
+/// still allowing relaxation when a variable's accesses are exclusively null-checks
+/// (e.g., `WHERE n.missing IS NULL` — missing properties return NULL, not an error).
+struct PropertyAccesses {
+    regular: HashMap<String, HashSet<String>>,
+    null_check: HashMap<String, HashSet<String>>,
 }
 
-fn extract_props_from_plan(plan: &LogicalPlan, accesses: &mut HashMap<String, HashSet<String>>) {
+/// Extract property accesses from the plan tree, grouped by variable name.
+/// Used to constrain node type candidates to only those types that have the accessed properties.
+fn extract_property_accesses(plan: &Arc<LogicalPlan>) -> PropertyAccesses {
+    let mut regular: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut null_check: HashMap<String, HashSet<String>> = HashMap::new();
+    extract_props_from_plan(plan.as_ref(), &mut regular, &mut null_check);
+    PropertyAccesses { regular, null_check }
+}
+
+fn extract_props_from_plan(
+    plan: &LogicalPlan,
+    accesses: &mut HashMap<String, HashSet<String>>,
+    null_check: &mut HashMap<String, HashSet<String>>,
+) {
     match plan {
         LogicalPlan::Filter(filter) => {
-            extract_props_from_expr(&filter.predicate, accesses);
-            extract_props_from_plan(&filter.input, accesses);
+            extract_props_from_expr(&filter.predicate, accesses, null_check);
+            extract_props_from_plan(&filter.input, accesses, null_check);
         }
         LogicalPlan::Projection(proj) => {
             for item in &proj.items {
-                extract_props_from_expr(&item.expression, accesses);
+                extract_props_from_expr(&item.expression, accesses, null_check);
             }
-            extract_props_from_plan(&proj.input, accesses);
+            extract_props_from_plan(&proj.input, accesses, null_check);
         }
         LogicalPlan::OrderBy(ob) => {
             for item in &ob.items {
-                extract_props_from_expr(&item.expression, accesses);
+                extract_props_from_expr(&item.expression, accesses, null_check);
             }
-            extract_props_from_plan(&ob.input, accesses);
+            extract_props_from_plan(&ob.input, accesses, null_check);
         }
         LogicalPlan::GroupBy(gb) => {
             for item in &gb.expressions {
-                extract_props_from_expr(item, accesses);
+                extract_props_from_expr(item, accesses, null_check);
             }
             if let Some(ref having) = gb.having_clause {
-                extract_props_from_expr(having, accesses);
+                extract_props_from_expr(having, accesses, null_check);
             }
-            extract_props_from_plan(&gb.input, accesses);
+            extract_props_from_plan(&gb.input, accesses, null_check);
         }
         LogicalPlan::GraphRel(rel) => {
-            extract_props_from_plan(&rel.left, accesses);
-            extract_props_from_plan(&rel.center, accesses);
-            extract_props_from_plan(&rel.right, accesses);
+            extract_props_from_plan(&rel.left, accesses, null_check);
+            extract_props_from_plan(&rel.center, accesses, null_check);
+            extract_props_from_plan(&rel.right, accesses, null_check);
             if let Some(ref pred) = rel.where_predicate {
-                extract_props_from_expr(pred, accesses);
+                extract_props_from_expr(pred, accesses, null_check);
             }
         }
         LogicalPlan::GraphNode(node) => {
-            extract_props_from_plan(&node.input, accesses);
+            extract_props_from_plan(&node.input, accesses, null_check);
         }
         LogicalPlan::Union(u) => {
             for input in &u.inputs {
-                extract_props_from_plan(input, accesses);
+                extract_props_from_plan(input, accesses, null_check);
             }
         }
         LogicalPlan::WithClause(wc) => {
-            extract_props_from_plan(&wc.input, accesses);
+            extract_props_from_plan(&wc.input, accesses, null_check);
         }
         LogicalPlan::CartesianProduct(cp) => {
-            extract_props_from_plan(&cp.left, accesses);
-            extract_props_from_plan(&cp.right, accesses);
+            extract_props_from_plan(&cp.left, accesses, null_check);
+            extract_props_from_plan(&cp.right, accesses, null_check);
         }
         LogicalPlan::Limit(lim) => {
-            extract_props_from_plan(&lim.input, accesses);
+            extract_props_from_plan(&lim.input, accesses, null_check);
         }
         LogicalPlan::Skip(s) => {
-            extract_props_from_plan(&s.input, accesses);
+            extract_props_from_plan(&s.input, accesses, null_check);
         }
         _ => {}
     }
 }
 
-fn extract_props_from_expr(expr: &LogicalExpr, accesses: &mut HashMap<String, HashSet<String>>) {
+fn extract_props_from_expr(
+    expr: &LogicalExpr,
+    accesses: &mut HashMap<String, HashSet<String>>,
+    null_check: &mut HashMap<String, HashSet<String>>,
+) {
     match expr {
         LogicalExpr::PropertyAccessExp(pa) => {
             let var = pa.table_alias.0.clone();
@@ -4261,42 +4311,55 @@ fn extract_props_from_expr(expr: &LogicalExpr, accesses: &mut HashMap<String, Ha
             accesses.entry(var).or_default().insert(prop);
         }
         LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
-            // Skip IS NULL / IS NOT NULL — accessing a missing property returns NULL,
-            // so the property not existing in a type's schema is semantically valid.
-            // Including it would incorrectly eliminate types from the candidate set.
             use crate::query_planner::logical_expr::Operator as Op;
             if matches!(op.operator, Op::IsNull | Op::IsNotNull) {
+                // Record properties accessed inside IS NULL / IS NOT NULL in the
+                // null_check map, NOT in regular accesses. They still participate in
+                // ANY-semantics pruning (fixing the OR disjunction case, e.g.
+                // `WHERE n.p IS NOT NULL OR n.q = 5` keeps types with either p or q),
+                // but when a variable's ONLY accesses are null-checks the pruning is
+                // relaxed (missing properties return NULL, not an error — see pruning
+                // logic in generate_union_for_untyped_nodes).
+                // IS NULL / IS NOT NULL always takes a PropertyAccessExp operand —
+                // extract directly to avoid a double-mutable-borrow of null_check.
+                for operand in &op.operands {
+                    if let LogicalExpr::PropertyAccessExp(pa) = operand {
+                        let var = pa.table_alias.0.clone();
+                        let prop = pa.column.raw().to_string();
+                        null_check.entry(var).or_default().insert(prop);
+                    }
+                }
                 return;
             }
             for operand in &op.operands {
-                extract_props_from_expr(operand, accesses);
+                extract_props_from_expr(operand, accesses, null_check);
             }
         }
         LogicalExpr::ScalarFnCall(f) => {
             for arg in &f.args {
-                extract_props_from_expr(arg, accesses);
+                extract_props_from_expr(arg, accesses, null_check);
             }
         }
         LogicalExpr::AggregateFnCall(f) => {
             for arg in &f.args {
-                extract_props_from_expr(arg, accesses);
+                extract_props_from_expr(arg, accesses, null_check);
             }
         }
         LogicalExpr::Case(c) => {
             if let Some(ref e) = c.expr {
-                extract_props_from_expr(e, accesses);
+                extract_props_from_expr(e, accesses, null_check);
             }
             for (w, t) in &c.when_then {
-                extract_props_from_expr(w, accesses);
-                extract_props_from_expr(t, accesses);
+                extract_props_from_expr(w, accesses, null_check);
+                extract_props_from_expr(t, accesses, null_check);
             }
             if let Some(ref e) = c.else_expr {
-                extract_props_from_expr(e, accesses);
+                extract_props_from_expr(e, accesses, null_check);
             }
         }
         LogicalExpr::List(items) => {
             for item in items {
-                extract_props_from_expr(item, accesses);
+                extract_props_from_expr(item, accesses, null_check);
             }
         }
         _ => {}

@@ -56,6 +56,9 @@ impl std::fmt::Debug for RemoteConfig {
 /// Configuration for an embedded database session.
 ///
 /// Mirrors `kuzu::SystemConfig`.
+///
+/// All fields are `Option` so that callers can safely use `..SystemConfig::default()`
+/// to forward-compatibly add new fields without breaking struct literals.
 #[derive(Debug, Clone, Default)]
 pub struct SystemConfig {
     /// Directory where chdb stores its session data.
