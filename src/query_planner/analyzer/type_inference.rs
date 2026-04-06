@@ -1478,12 +1478,22 @@ impl TypeInference {
 
             // Constraint 2: Filter by accessed properties
             // Uses property_mappings keys (Cypher names), NOT column_names (ClickHouse names)
+            //
+            // We use ANY-semantics: a type is kept if it has at least one of the accessed
+            // properties. This correctly handles OR predicates (`WHERE n.p1 = 12 OR n.p2 = 13`)
+            // where different types satisfy different branches. IS NULL accesses are excluded
+            // from `property_accesses` entirely (see extract_props_from_expr) because
+            // accessing a missing property yields NULL, not an error.
+            //
+            // ALL-semantics would incorrectly eliminate types when properties appear in
+            // disjunctive (OR) predicates or when a type has only some of the accessed
+            // properties (those it lacks resolve to NULL and are filtered by the WHERE clause).
             if let Some(props) = property_accesses.get(var_name) {
                 candidates.retain(|type_name| {
                     if let Ok(node_schema) = graph_schema.node_schema(type_name) {
                         props
                             .iter()
-                            .all(|prop| node_schema.has_cypher_property(prop))
+                            .any(|prop| node_schema.has_cypher_property(prop))
                     } else {
                         false
                     }
@@ -1501,10 +1511,8 @@ impl TypeInference {
                     "🔍 No valid types for '{}' after constraints — query returns empty result",
                     var_name
                 );
-                // No type satisfies the constraints for this variable, so the entire
-                // query pattern produces no rows. Return Empty immediately so that
-                // downstream passes (FilterTagging, rendering) produce a correct
-                // zero-row plan (SELECT 1 AS "_empty" WHERE false).
+                // No type has ANY of the accessed properties (or relationship constraints
+                // eliminated all candidates). The query can produce no rows.
                 return Ok(Arc::new(LogicalPlan::Empty));
             }
 
@@ -4253,6 +4261,13 @@ fn extract_props_from_expr(expr: &LogicalExpr, accesses: &mut HashMap<String, Ha
             accesses.entry(var).or_default().insert(prop);
         }
         LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
+            // Skip IS NULL / IS NOT NULL — accessing a missing property returns NULL,
+            // so the property not existing in a type's schema is semantically valid.
+            // Including it would incorrectly eliminate types from the candidate set.
+            use crate::query_planner::logical_expr::Operator as Op;
+            if matches!(op.operator, Op::IsNull | Op::IsNotNull) {
+                return;
+            }
             for operand in &op.operands {
                 extract_props_from_expr(operand, accesses);
             }

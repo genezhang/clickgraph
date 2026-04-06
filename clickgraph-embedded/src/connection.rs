@@ -626,9 +626,8 @@ impl<'db> Connection<'db> {
 
     /// Delete nodes matching the given label and filter criteria.
     ///
-    /// Uses `ALTER TABLE DELETE` which is a ClickHouse mutation — asynchronous
-    /// and resource-heavy. Not suitable for high-frequency use in tight loops.
-    /// For bulk cleanup, prefer fewer calls with broader filters.
+    /// Uses lightweight `DELETE FROM` — synchronous and low-overhead compared to
+    /// the old `ALTER TABLE DELETE` mutation path.
     pub fn delete_nodes(
         &self,
         label: &str,
@@ -653,7 +652,6 @@ impl<'db> Connection<'db> {
     }
 
     /// Delete edges matching the given type and filter criteria.
-    /// See [`delete_nodes`] for mutation performance caveats.
     pub fn delete_edges(
         &self,
         edge_type: &str,
@@ -1569,7 +1567,7 @@ graph_schema:
         assert!(conn.delete_nodes("Person", filters).is_ok());
         let sqls = captured.lock().unwrap();
         let sql = &sqls[0];
-        assert!(sql.contains("ALTER TABLE") && sql.contains("DELETE WHERE"));
+        assert!(sql.contains("DELETE FROM") && sql.contains("WHERE"));
         assert!(sql.contains("full_name") && sql.contains("'Alice'"));
     }
 
