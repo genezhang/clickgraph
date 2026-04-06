@@ -102,6 +102,7 @@ docs1/
 !docs/variable-length-paths-guide.md
 !docs/docker-deployment.md
 !docs/denormalized-edge-tables.md
+!docs/motivation.md
 
 # Keep external documentation (wiki, images, features subdirs)
 !docs/wiki/
