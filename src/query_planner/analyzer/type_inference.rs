@@ -1510,7 +1510,9 @@ impl TypeInference {
                         .collect();
                     candidates.retain(|type_name| {
                         if let Ok(node_schema) = graph_schema.node_schema(type_name) {
-                            all_props.iter().any(|prop| node_schema.has_cypher_property(prop))
+                            all_props
+                                .iter()
+                                .any(|prop| node_schema.has_cypher_property(prop))
                         } else {
                             false
                         }
@@ -4232,7 +4234,10 @@ fn extract_property_accesses(plan: &Arc<LogicalPlan>) -> PropertyAccesses {
     let mut regular: HashMap<String, HashSet<String>> = HashMap::new();
     let mut null_check: HashMap<String, HashSet<String>> = HashMap::new();
     extract_props_from_plan(plan.as_ref(), &mut regular, &mut null_check);
-    PropertyAccesses { regular, null_check }
+    PropertyAccesses {
+        regular,
+        null_check,
+    }
 }
 
 fn extract_props_from_plan(
