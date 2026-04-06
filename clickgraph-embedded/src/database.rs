@@ -56,6 +56,9 @@ impl std::fmt::Debug for RemoteConfig {
 /// Configuration for an embedded database session.
 ///
 /// Mirrors `kuzu::SystemConfig`.
+///
+/// All fields are `Option` so that callers can safely use `..SystemConfig::default()`
+/// to forward-compatibly add new fields without breaking struct literals.
 #[derive(Debug, Clone, Default)]
 pub struct SystemConfig {
     /// Directory where chdb stores its session data.
@@ -69,8 +72,12 @@ pub struct SystemConfig {
 
     /// Maximum number of threads for chdb query execution.
     /// `None` uses the chdb default (typically number of CPU cores).
-    /// Reserved for future use -- not yet passed to chdb session.
     pub max_threads: Option<usize>,
+
+    /// Maximum memory a single query may use, in bytes.
+    /// `None` uses the chdb/ClickHouse default (no cap).
+    /// Set this in test environments to prevent runaway memory usage.
+    pub max_memory_usage_bytes: Option<u64>,
 
     /// Storage credentials for remote sources (S3, GCS, Azure Blob, Iceberg).
     ///
@@ -159,6 +166,17 @@ impl Database {
         let executor =
             ChdbExecutor::new_with_credentials(&session_dir, auto_cleanup, &config.credentials)
                 .map_err(|e| EmbeddedError::Executor(e.to_string()))?;
+
+        if let Some(threads) = config.max_threads {
+            executor
+                .execute_blocking_ddl(&format!("SET max_threads = {threads}"))
+                .map_err(|e| EmbeddedError::Executor(e.to_string()))?;
+        }
+        if let Some(bytes) = config.max_memory_usage_bytes {
+            executor
+                .execute_blocking_ddl(&format!("SET max_memory_usage = {bytes}"))
+                .map_err(|e| EmbeddedError::Executor(e.to_string()))?;
+        }
 
         let view_count = clickgraph::executor::data_loader::load_schema_sources(&executor, &schema)
             .map_err(|e| EmbeddedError::Executor(e.to_string()))?;

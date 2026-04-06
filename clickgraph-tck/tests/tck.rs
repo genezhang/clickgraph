@@ -48,8 +48,15 @@ static SHARED: LazyLock<&'static TckDatabase> = LazyLock::new(|| {
     let schema_path = std::env::temp_dir().join("clickgraph_tck_schema.yaml");
     std::fs::write(&schema_path, &yaml).expect("write TCK schema YAML");
 
-    let db =
-        Database::in_memory(&schema_path, SystemConfig::default()).expect("create TCK database");
+    // Cap resource usage: TCK queries are trivial; 4 threads and 4 GiB per
+    // query is plenty and prevents runaway memory if multiple test processes
+    // are accidentally started in parallel.
+    let config = SystemConfig {
+        max_threads: Some(4),
+        max_memory_usage_bytes: Some(4 * 1024 * 1024 * 1024), // 4 GiB
+        ..SystemConfig::default()
+    };
+    let db = Database::in_memory(&schema_path, config).expect("create TCK database");
 
     // Leak intentionally: chdb SIGABRT on Drop; same pattern as chdb_e2e.rs
     Box::leak(Box::new(TckDatabase { db, tables }))
@@ -67,7 +74,6 @@ fn all_tables() -> &'static [String] {
 fn truncate_all_tables() {
     let db = shared_db();
     if let Ok(conn) = Connection::new(db) {
-        let _ = conn.execute_sql("SET mutations_sync=2");
         for table in all_tables() {
             let r = conn.execute_sql(&format!("TRUNCATE TABLE IF EXISTS `default`.`{table}`"));
             if let Err(ref e) = r {

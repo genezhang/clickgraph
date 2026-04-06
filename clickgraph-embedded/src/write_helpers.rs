@@ -103,7 +103,7 @@ pub fn build_insert_sql(
     )
 }
 
-/// Build an `ALTER TABLE ... DELETE WHERE ...` SQL statement.
+/// Build a `DELETE FROM ... WHERE ...` SQL statement (lightweight delete).
 ///
 /// Maps filter keys from Cypher property names to ClickHouse column names using
 /// `property_mappings`, and renders filter values via `Value::to_sql_literal()`.
@@ -146,7 +146,7 @@ pub fn build_delete_sql(
     }
 
     Ok(format!(
-        "ALTER TABLE `{}`.`{}` DELETE WHERE {}",
+        "DELETE FROM `{}`.`{}` WHERE {}",
         db,
         table,
         conditions.join(" AND ")
@@ -393,7 +393,7 @@ mod tests {
         let sql = build_delete_sql("mydb", "users", &filters, &mappings, &["user_id"]).unwrap();
         assert_eq!(
             sql,
-            "ALTER TABLE `mydb`.`users` DELETE WHERE `full_name` = 'Alice'"
+            "DELETE FROM `mydb`.`users` WHERE `full_name` = 'Alice'"
         );
     }
 
@@ -406,10 +406,7 @@ mod tests {
         filters.insert("user_id".to_string(), Value::String("u123".to_string()));
 
         let sql = build_delete_sql("mydb", "users", &filters, &mappings, &["user_id"]).unwrap();
-        assert_eq!(
-            sql,
-            "ALTER TABLE `mydb`.`users` DELETE WHERE `user_id` = 'u123'"
-        );
+        assert_eq!(sql, "DELETE FROM `mydb`.`users` WHERE `user_id` = 'u123'");
     }
 
     #[test]
@@ -426,7 +423,7 @@ mod tests {
         // Keys are sorted for deterministic output
         assert_eq!(
             sql,
-            "ALTER TABLE `mydb`.`users` DELETE WHERE `user_age` = 30 AND `full_name` = 'Bob'"
+            "DELETE FROM `mydb`.`users` WHERE `user_age` = 30 AND `full_name` = 'Bob'"
         );
     }
 

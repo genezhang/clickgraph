@@ -15,7 +15,7 @@ path = "tests/tck.rs"
 harness = false
 
 [dev-dependencies]
-clickgraph-embedded = { path = "../clickgraph-embedded" }
+clickgraph-embedded = { path = "../clickgraph-embedded", features = ["embedded"] }
 cucumber = "0.21"
 futures = "0.3"
 uuid = { version = "1", features = ["v4"] }
