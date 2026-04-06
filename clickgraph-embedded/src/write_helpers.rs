@@ -406,10 +406,7 @@ mod tests {
         filters.insert("user_id".to_string(), Value::String("u123".to_string()));
 
         let sql = build_delete_sql("mydb", "users", &filters, &mappings, &["user_id"]).unwrap();
-        assert_eq!(
-            sql,
-            "DELETE FROM `mydb`.`users` WHERE `user_id` = 'u123'"
-        );
+        assert_eq!(sql, "DELETE FROM `mydb`.`users` WHERE `user_id` = 'u123'");
     }
 
     #[test]
