@@ -198,19 +198,6 @@ async fn when_executing_query(world: &mut TckWorld, step: &Step) {
     // Substitute parameters into the query
     let query = substitute_params(&query, &world.params);
 
-    // Reject write operations: ClickGraph is a read-only engine.
-    {
-        let upper = query.to_uppercase();
-        let contains_delete = upper
-            .split(|c: char| !c.is_ascii_alphabetic())
-            .any(|w| w == "DELETE");
-        if contains_delete {
-            world.error =
-                Some("DELETE is not supported: ClickGraph is a read-only query engine".to_string());
-            return;
-        }
-    }
-
     let db = shared_db();
     let conn = match Connection::new(db) {
         Ok(c) => c,
