@@ -201,11 +201,12 @@ async fn when_executing_query(world: &mut TckWorld, step: &Step) {
     // Reject write operations: ClickGraph is a read-only engine.
     {
         let upper = query.to_uppercase();
-        let contains_delete = upper.split(|c: char| !c.is_ascii_alphabetic()).any(|w| w == "DELETE");
+        let contains_delete = upper
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .any(|w| w == "DELETE");
         if contains_delete {
-            world.error = Some(
-                "DELETE is not supported: ClickGraph is a read-only query engine".to_string(),
-            );
+            world.error =
+                Some("DELETE is not supported: ClickGraph is a read-only query engine".to_string());
             return;
         }
     }
@@ -247,7 +248,6 @@ async fn when_executing_query(world: &mut TckWorld, step: &Step) {
             world.result_columns.clear();
         }
     }
-
 }
 
 // ---------------------------------------------------------------------------

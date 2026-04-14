@@ -134,12 +134,11 @@ impl AnalyzerPass for QueryValidation {
                 // Validate array subscript index types.
                 // When the child is a WithClause, build a map of alias → non-integer kind
                 // so we can detect `WITH true AS idx RETURN list[idx]` style errors.
-                let alias_types =
-                    if let LogicalPlan::WithClause(wc) = projection.input.as_ref() {
-                        build_non_integer_alias_map(&wc.items)
-                    } else {
-                        HashMap::new()
-                    };
+                let alias_types = if let LogicalPlan::WithClause(wc) = projection.input.as_ref() {
+                    build_non_integer_alias_map(&wc.items)
+                } else {
+                    HashMap::new()
+                };
 
                 for item in &projection.items {
                     if let Some(err_msg) =
