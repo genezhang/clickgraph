@@ -5133,14 +5133,16 @@ impl RenderExpr {
                 // Array subscript in ClickHouse: array[index]
                 // Cypher uses 0-based indexing; ClickHouse uses 1-based.
                 // For integer literals we add +1 at compile time.
-                // For variable / expression indices we wrap with toInt64(...)+1.
-                // Exception: string-literal indices are ClickHouse map-key accesses
+                // For expression indices we emit (expr)+1 without an explicit cast
+                // so ClickHouse's own type checker catches bad types (e.g. floats,
+                // strings) rather than silently coercing them.
+                // Exception: string-literal indices are map-key accesses
                 //   (e.g. top['score']) and must NOT be offset.
                 let array_sql = array.to_sql();
                 let index_sql = match index.as_ref() {
                     RenderExpr::Literal(Literal::Integer(n)) => format!("{}", n + 1),
                     RenderExpr::Literal(Literal::String(_)) => index.to_sql(),
-                    _ => format!("toInt64({})+1", index.to_sql()),
+                    _ => format!("({})+1", index.to_sql()),
                 };
                 format!("{}[{}]", array_sql, index_sql)
             }

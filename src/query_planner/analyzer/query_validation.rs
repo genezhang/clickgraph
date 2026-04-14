@@ -43,13 +43,16 @@ impl fmt::Display for NonIntegerKind {
 }
 
 /// Returns `Some(kind)` when `expr` is a clearly non-integer literal; `None` otherwise.
+///
+/// Note: `Literal::String` is intentionally excluded — bracket subscripts with string keys
+/// (`map['key']`, `node['prop']`) are valid Cypher map/property access and must not be
+/// rejected. String-keyed array subscripts (invalid) are caught at SQL execution time.
 fn infer_non_integer_kind(expr: &LogicalExpr) -> Option<NonIntegerKind> {
     match expr {
         LogicalExpr::Literal(lit) => match lit {
             Literal::Boolean(_) => Some(NonIntegerKind::Boolean),
             Literal::Float(_) => Some(NonIntegerKind::Float),
-            Literal::String(_) => Some(NonIntegerKind::Str),
-            Literal::Integer(_) | Literal::Null => None,
+            Literal::Integer(_) | Literal::String(_) | Literal::Null => None,
         },
         LogicalExpr::List(_) => Some(NonIntegerKind::List),
         LogicalExpr::MapLiteral(_) => Some(NonIntegerKind::Map),
@@ -74,10 +77,19 @@ fn build_non_integer_alias_map(items: &[ProjectionItem]) -> HashMap<String, NonI
 /// Walk `expr` recursively looking for an `ArraySubscript` whose index is a
 /// known non-integer type (either a direct literal or an alias bound to one).
 /// Returns `Some(error_message)` on the first violation found.
+///
+/// Covers all expression variants that `walk_expression` traverses so that
+/// subscripts nested inside CASE branches, aggregate calls, reduce expressions,
+/// map literals, array slicings, etc. are also checked.
 fn find_invalid_array_subscript(
     expr: &LogicalExpr,
     alias_types: &HashMap<String, NonIntegerKind>,
 ) -> Option<String> {
+    macro_rules! recurse {
+        ($e:expr) => {
+            find_invalid_array_subscript($e, alias_types)
+        };
+    }
     match expr {
         LogicalExpr::ArraySubscript { array, index } => {
             // Direct non-integer literal index.
@@ -101,23 +113,43 @@ fn find_invalid_array_subscript(
                     ));
                 }
             }
-            // Recurse into sub-expressions.
-            find_invalid_array_subscript(array, alias_types)
-                .or_else(|| find_invalid_array_subscript(index, alias_types))
+            recurse!(array).or_else(|| recurse!(index))
         }
-        LogicalExpr::OperatorApplicationExp(op) => op
-            .operands
-            .iter()
-            .find_map(|o| find_invalid_array_subscript(o, alias_types)),
-        LogicalExpr::ScalarFnCall(f) => f
-            .args
-            .iter()
-            .find_map(|a| find_invalid_array_subscript(a, alias_types)),
-        LogicalExpr::List(items) => items
-            .iter()
-            .find_map(|i| find_invalid_array_subscript(i, alias_types)),
+        LogicalExpr::OperatorApplicationExp(op) | LogicalExpr::Operator(op) => {
+            op.operands.iter().find_map(|o| recurse!(o))
+        }
+        LogicalExpr::ScalarFnCall(f) => f.args.iter().find_map(|a| recurse!(a)),
+        LogicalExpr::AggregateFnCall(f) => f.args.iter().find_map(|a| recurse!(a)),
+        LogicalExpr::List(items) => items.iter().find_map(|i| recurse!(i)),
+        LogicalExpr::MapLiteral(entries) => entries.iter().find_map(|(_, v)| recurse!(v)),
+        LogicalExpr::Case(c) => c
+            .expr
+            .as_ref()
+            .and_then(|e| recurse!(e))
+            .or_else(|| {
+                c.when_then
+                    .iter()
+                    .find_map(|(w, t)| recurse!(w).or_else(|| recurse!(t)))
+            })
+            .or_else(|| c.else_expr.as_ref().and_then(|e| recurse!(e))),
+        LogicalExpr::ReduceExpr(r) => recurse!(&r.initial_value)
+            .or_else(|| recurse!(&r.list))
+            .or_else(|| recurse!(&r.expression)),
+        LogicalExpr::ArraySlicing { array, from, to } => recurse!(array)
+            .or_else(|| from.as_ref().and_then(|f| recurse!(f)))
+            .or_else(|| to.as_ref().and_then(|t| recurse!(t))),
         _ => None,
     }
+}
+
+/// Check all expressions in a slice of projection items.
+fn check_items(
+    items: &[ProjectionItem],
+    alias_types: &HashMap<String, NonIntegerKind>,
+) -> Option<String> {
+    items
+        .iter()
+        .find_map(|item| find_invalid_array_subscript(&item.expression, alias_types))
 }
 
 pub struct QueryValidation;
@@ -355,6 +387,11 @@ impl AnalyzerPass for QueryValidation {
                 graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
             }
             LogicalPlan::Filter(filter) => {
+                // Validate subscript indices in WHERE predicates.
+                let empty_map = HashMap::new();
+                if let Some(err) = find_invalid_array_subscript(&filter.predicate, &empty_map) {
+                    return Err(AnalyzerError::InvalidPlan(err));
+                }
                 let child_tf =
                     self.analyze_with_graph_schema(filter.input.clone(), plan_ctx, graph_schema)?;
                 filter.rebuild_or_clone(child_tf, logical_plan.clone())
@@ -434,6 +471,27 @@ impl AnalyzerPass for QueryValidation {
                 }
             }
             LogicalPlan::WithClause(with_clause) => {
+                // Validate subscript indices inside WITH projection expressions.
+                let empty_map = HashMap::new();
+                if let Some(err) = check_items(&with_clause.items, &empty_map) {
+                    return Err(AnalyzerError::InvalidPlan(err));
+                }
+                // Build alias→type map so WHERE/ORDER BY can resolve alias references.
+                let alias_types = build_non_integer_alias_map(&with_clause.items);
+                if let Some(ref wc) = with_clause.where_clause {
+                    if let Some(err) = find_invalid_array_subscript(wc, &alias_types) {
+                        return Err(AnalyzerError::InvalidPlan(err));
+                    }
+                }
+                if let Some(ref order_by) = with_clause.order_by {
+                    for item in order_by {
+                        if let Some(err) =
+                            find_invalid_array_subscript(&item.expression, &alias_types)
+                        {
+                            return Err(AnalyzerError::InvalidPlan(err));
+                        }
+                    }
+                }
                 let child_tf = self.analyze_with_graph_schema(
                     with_clause.input.clone(),
                     plan_ctx,
