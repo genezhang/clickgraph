@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 
 use crate::{
@@ -7,12 +9,116 @@ use crate::{
             analyzer_pass::{AnalyzerPass, AnalyzerResult},
             errors::{AnalyzerError, Pass},
         },
-        logical_expr::Direction,
-        logical_plan::LogicalPlan,
+        logical_expr::{Direction, Literal, LogicalExpr},
+        logical_plan::{LogicalPlan, ProjectionItem},
         plan_ctx::PlanCtx,
         transformed::Transformed,
     },
 };
+
+// ---------------------------------------------------------------------------
+// Array index type validation helpers
+// ---------------------------------------------------------------------------
+
+/// Non-integer literal kinds that are illegal as array subscript indices.
+#[derive(Debug)]
+enum NonIntegerKind {
+    Boolean,
+    Float,
+    Str,
+    List,
+    Map,
+}
+
+impl fmt::Display for NonIntegerKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NonIntegerKind::Boolean => write!(f, "Boolean"),
+            NonIntegerKind::Float => write!(f, "Float"),
+            NonIntegerKind::Str => write!(f, "String"),
+            NonIntegerKind::List => write!(f, "List"),
+            NonIntegerKind::Map => write!(f, "Map"),
+        }
+    }
+}
+
+/// Returns `Some(kind)` when `expr` is a clearly non-integer literal; `None` otherwise.
+fn infer_non_integer_kind(expr: &LogicalExpr) -> Option<NonIntegerKind> {
+    match expr {
+        LogicalExpr::Literal(lit) => match lit {
+            Literal::Boolean(_) => Some(NonIntegerKind::Boolean),
+            Literal::Float(_) => Some(NonIntegerKind::Float),
+            Literal::String(_) => Some(NonIntegerKind::Str),
+            Literal::Integer(_) | Literal::Null => None,
+        },
+        LogicalExpr::List(_) => Some(NonIntegerKind::List),
+        LogicalExpr::MapLiteral(_) => Some(NonIntegerKind::Map),
+        _ => None,
+    }
+}
+
+/// Build a map from alias name → non-integer kind using the projection items of a
+/// WITH clause.  Only aliases whose expression is a known non-integer type are included.
+fn build_non_integer_alias_map(items: &[ProjectionItem]) -> HashMap<String, NonIntegerKind> {
+    let mut map = HashMap::new();
+    for item in items {
+        if let Some(col_alias) = &item.col_alias {
+            if let Some(kind) = infer_non_integer_kind(&item.expression) {
+                map.insert(col_alias.0.clone(), kind);
+            }
+        }
+    }
+    map
+}
+
+/// Walk `expr` recursively looking for an `ArraySubscript` whose index is a
+/// known non-integer type (either a direct literal or an alias bound to one).
+/// Returns `Some(error_message)` on the first violation found.
+fn find_invalid_array_subscript(
+    expr: &LogicalExpr,
+    alias_types: &HashMap<String, NonIntegerKind>,
+) -> Option<String> {
+    match expr {
+        LogicalExpr::ArraySubscript { array, index } => {
+            // Direct non-integer literal index.
+            if let Some(kind) = infer_non_integer_kind(index) {
+                return Some(format!(
+                    "TypeError: invalid array index type {} — must be Integer",
+                    kind
+                ));
+            }
+            // Alias-resolved non-integer index.
+            let alias_name: Option<&str> = match index.as_ref() {
+                LogicalExpr::ColumnAlias(ca) => Some(&ca.0),
+                LogicalExpr::TableAlias(ta) => Some(&ta.0),
+                _ => None,
+            };
+            if let Some(name) = alias_name {
+                if let Some(kind) = alias_types.get(name) {
+                    return Some(format!(
+                        "TypeError: invalid array index type {} (alias '{}') — must be Integer",
+                        kind, name
+                    ));
+                }
+            }
+            // Recurse into sub-expressions.
+            find_invalid_array_subscript(array, alias_types)
+                .or_else(|| find_invalid_array_subscript(index, alias_types))
+        }
+        LogicalExpr::OperatorApplicationExp(op) => op
+            .operands
+            .iter()
+            .find_map(|o| find_invalid_array_subscript(o, alias_types)),
+        LogicalExpr::ScalarFnCall(f) => f
+            .args
+            .iter()
+            .find_map(|a| find_invalid_array_subscript(a, alias_types)),
+        LogicalExpr::List(items) => items
+            .iter()
+            .find_map(|i| find_invalid_array_subscript(i, alias_types)),
+        _ => None,
+    }
+}
 
 pub struct QueryValidation;
 
@@ -25,6 +131,24 @@ impl AnalyzerPass for QueryValidation {
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         let transformed_plan = match logical_plan.as_ref() {
             LogicalPlan::Projection(projection) => {
+                // Validate array subscript index types.
+                // When the child is a WithClause, build a map of alias → non-integer kind
+                // so we can detect `WITH true AS idx RETURN list[idx]` style errors.
+                let alias_types =
+                    if let LogicalPlan::WithClause(wc) = projection.input.as_ref() {
+                        build_non_integer_alias_map(&wc.items)
+                    } else {
+                        HashMap::new()
+                    };
+
+                for item in &projection.items {
+                    if let Some(err_msg) =
+                        find_invalid_array_subscript(&item.expression, &alias_types)
+                    {
+                        return Err(AnalyzerError::InvalidPlan(err_msg));
+                    }
+                }
+
                 let child_tf = self.analyze_with_graph_schema(
                     projection.input.clone(),
                     plan_ctx,
