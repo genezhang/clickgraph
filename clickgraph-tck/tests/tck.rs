@@ -170,11 +170,8 @@ async fn given_having_executed(world: &mut TckWorld, step: &Step) {
 #[given(regex = r"^parameters are:$")]
 async fn given_parameters(world: &mut TckWorld, step: &Step) {
     if let Some(table) = step.table() {
-        // Expect a two-column table: | name | value |
-        // Skip the header row
-        let mut rows = table.rows.iter();
-        rows.next(); // header
-        for row in rows {
+        // Each row IS a key-value pair; there is no header in TCK parameter tables.
+        for row in table.rows.iter() {
             if row.len() >= 2 {
                 let name = row[0].trim().to_string();
                 let value = row[1].trim().to_string();
@@ -366,7 +363,7 @@ async fn then_side_effects(_world: &mut TckWorld) {
     // Accept without assertion.
 }
 
-#[then(regex = r"^a (\w+) should be raised at (?:compile|runtime|any) time: (.+)$")]
+#[then(regex = r"^an? (\w+) should be raised at (?:compile|runtime|any)(?:\s+time)?: (.+)$")]
 async fn then_error_raised(world: &mut TckWorld, _error_type: String, _error_name: String) {
     if world.is_skip() {
         return;
