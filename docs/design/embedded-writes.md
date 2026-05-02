@@ -1,7 +1,7 @@
 # Cypher Write Operations — Embedded Mode
 
-**Date**: 2026-05-02
-**Status**: Design Proposal — Phase 0 decisions open
+**Date**: 2026-05-02 (Phase 0 decisions locked 2026-05-02)
+**Status**: Phase 0 locked — ready to start Phase 1
 **Scope**: CREATE, SET, DELETE, REMOVE in MVP; MERGE in Phase 5
 **Non-Goals**: Server mode writes (stays read-only), source-backed-table writes, transactions, Bolt protocol writes
 
@@ -36,22 +36,23 @@ Add Cypher write support to ClickGraph's embedded (chdb-backed) execution mode. 
 
 These shape schema fields, error surfaces, and API contracts. Each row is **open** until accepted; flip to **locked** when agreed.
 
-| # | Decision | Recommendation | Status |
+| # | Decision | Resolution | Status |
 |---|---|---|---|
-| 0.1 | Where writes are gated | Single planner-level guard rejecting write `LogicalPlan` variants unless executor is `Embedded(chdb)`. Server keeps existing reject at `handlers.rs:1356` as defence-in-depth. | open |
-| 0.2 | ID generation strategy | Embedded writable tables today already get `String DEFAULT generateUUIDv4()` on ID columns at DDL time (`src/executor/data_loader.rs:198-208`), and `Connection::create_node()` auto-generates a UUID when the ID property is absent. Recommendation: **align Cypher CREATE with this**. Add `id_generation: Option<IdStrategy>` to `NodeSchema` — values `Uuid` (default, matches existing DDL), `Snowflake`, `Provided` (error if absent). When the column has a `DEFAULT` clause and Cypher omits the property, simply omit the column from the INSERT and let chdb fill it. | open |
-| 0.3 | Source-backed targets | Hard error at plan time if any target node/edge label resolves to a schema with `source:` set. Honest failure beats partial-write or silent translation. | open |
-| 0.4 | Atomicity | Best-effort, statement-scoped. Document explicitly: no transactions, partial failures possible. chdb has no MVCC. | open |
-| 0.5 | Property type coercion | Strict: error if Cypher literal type doesn't match column type. Same discipline as the read path. | open |
-| 0.6 | FK-edge writes | Out of scope for v1. Reject at plan time with actionable error suggesting standard edge-table schema. | open |
-| 0.7 | Read-after-write consistency | Writable tables are non-replicated `ReplacingMergeTree` (`src/graph_catalog/engine_detection.rs`), so `SYSTEM SYNC REPLICA` does not apply. INSERT and lightweight `DELETE FROM` are synchronous. Only `ALTER TABLE … UPDATE` (used for SET) is async. Recommendation: SET issues mutations with `SETTINGS mutations_sync = 2` (or `SYSTEM WAIT MUTATION` after) so the call returns after the mutation lands; INSERT/DELETE keep the lightweight path with no barrier needed. Document the SET-specific cost. | open |
-| 0.8 | Return shape | Return Neo4j-compatible counters (`nodesCreated`, `propertiesSet`, `nodesDeleted`, …) as a single-row `QueryResult`. Bindings already pass `QueryResult` through; no FFI changes needed. | open |
-| 0.9 | `EXPLAIN` for write queries | **Embedded API only.** Cypher `EXPLAIN` is not a parser clause today, and the Bolt server special-cases `EXPLAIN …` as an autocomplete probe (returns empty SUCCESS). This decision adds an embedded-API call (e.g., `Connection::explain(cypher)`) that returns the generated SQL string without executing. Cheap (pipeline already produces SQL); essential for debugging write failures. Bolt's existing no-op behaviour is preserved unchanged. Add a test asserting `explain()` never reaches the executor. | open |
+| 0.1 | Where writes are gated | Single planner-level guard rejecting write `LogicalPlan` variants unless executor is `Embedded(chdb)`. Server keeps existing reject at `handlers.rs:1356` as defence-in-depth. | **locked** |
+| 0.2 | ID generation strategy | Embedded writable tables already get `String DEFAULT generateUUIDv4()` on ID columns at DDL time (`src/executor/data_loader.rs:198-208`); `Connection::create_node()` auto-generates a UUID when the ID property is absent. Cypher CREATE follows the same model: add `id_generation: Option<IdStrategy>` to `NodeSchema` — values `Uuid` (default, matches existing DDL), `Snowflake`, `Provided` (error if absent). When the column has a `DEFAULT` clause and Cypher omits the property, omit the column from the INSERT and let chdb fill it. | **locked** |
+| 0.3 | Source-backed targets | Hard error at plan time if any target node/edge label resolves to a schema with `source:` set. | **locked** |
+| 0.4 | Atomicity | Best-effort, statement-scoped. No transactions; partial failures possible under chdb. Documented in user-facing notes. | **locked** |
+| 0.5 | Property type coercion | Strict: error if Cypher literal type doesn't match column type. Same discipline as the read path. Permissive coercion can be relaxed later if it bites — flipping the other direction would be a breaking change. | **locked** |
+| 0.6 | FK-edge writes | Out of scope for v1. Reject at plan time with actionable error suggesting standard edge-table schema. | **locked** |
+| 0.7 | Read-after-write consistency | **Use lightweight UPDATE.** Probe of chdb 26.1.2.1 (`SELECT version()` on `chdb-rust 1.3.1`'s bundled libchdb) confirmed: `UPDATE table SET col = expr WHERE pred` works synchronously, no flag at query time, immediately visible via `FINAL` — **provided the table was created with `SETTINGS enable_block_number_column = 1, enable_block_offset_column = 1`** (without these settings, `Code 48 NOT_IMPLEMENTED`). This makes SET symmetric with lightweight DELETE: both fast, both synchronous, no `mutations_sync` needed. The two block-tracking columns add small per-table overhead but no Cypher/schema surface impact. Phase 3 must extend `data_loader.rs:198-208` to emit the two settings on every writable table DDL. The async `ALTER TABLE … UPDATE` mutation path is **not** the recommended path; documented as a fallback if lightweight UPDATE bites in production. | **locked** |
+| 0.8 | Return shape | Neo4j-compatible counters (`nodesCreated`, `propertiesSet`, `nodesDeleted`, …) as a single-row `QueryResult`. Bindings already pass `QueryResult` through; no FFI changes needed. | **locked** |
+| 0.9 | `EXPLAIN` for write queries | **Embedded API only.** Cypher `EXPLAIN` is not a parser clause today, and the Bolt server special-cases `EXPLAIN …` as an autocomplete probe (returns empty SUCCESS). This decision adds an embedded-API call (e.g., `Connection::explain(cypher)`) that returns the generated SQL string without executing. Bolt's existing no-op behaviour is preserved unchanged. Add a test asserting `explain()` never reaches the executor. | **locked** |
 
-**Deliverable for Phase 0**: this section, all rows flipped to **locked**, plus any inline notes for choices that diverged from the recommendation.
+**Phase 0 status**: complete (all 9 decisions locked 2026-05-02). 0.7 was refined from the original mutations-based recommendation after a chdb-rust 1.3.1 probe confirmed lightweight UPDATE viability with the two block-tracking settings.
 
 **Decisions explicitly considered and rejected:**
 - **`read_only` flag on `Database::new(...)`** — rejected. The flag would only refuse queries, never produce different output. Callers who need read-only enforcement can check `query_type()` in three lines themselves; trust-boundary policy belongs at the call site, not as an engine config knob. Every flag is a future maintenance liability and test-matrix multiplier.
+- **Mutation-based SET (`ALTER TABLE … UPDATE … SETTINGS mutations_sync = 2`)** — rejected for v1 in favour of lightweight UPDATE (Decision 0.7). Kept as documented fallback if lightweight UPDATE proves problematic in production.
 
 ---
 
@@ -92,9 +93,9 @@ These shape schema fields, error surfaces, and API contracts. Each row is **open
 ### Files to add/modify
 
 - **`src/render_plan/`** — add terminal variants `RenderInsert`, `RenderDelete`, `RenderUpdate`. Terminal because writes don't compose into SELECTs.
-- **New: `src/clickhouse_query_generator/write_to_sql.rs`** — emits chdb-compatible SQL, aligned with the patterns already used by `clickgraph-embedded/src/write_helpers.rs`:
+- **New: `src/clickhouse_query_generator/write_to_sql.rs`** — emits chdb-compatible SQL, aligned with the patterns already used by `clickgraph-embedded/src/write_helpers.rs`. All three write paths are lightweight and synchronous:
   - **CREATE** → `INSERT INTO {table} ({cols}) VALUES (...)`. When a property is absent and the column has a `DEFAULT` (e.g., `generateUUIDv4()`), omit the column from the INSERT and let chdb fill it (per Decision 0.2).
-  - **SET** → `ALTER TABLE {table} UPDATE {col}={expr} WHERE {pk}={id} SETTINGS mutations_sync = 2` (per Decision 0.7).
+  - **SET** → `UPDATE {table} SET {col} = {expr} WHERE {pk} = {id}` (lightweight UPDATE per Decision 0.7 — synchronous, no flag, no `SETTINGS` clause needed at query time; relies on the table being created with the two block-tracking settings — see Phase 3).
   - **DELETE** → `DELETE FROM {table} WHERE {pk} IN ({ids})` (lightweight, synchronous — same path as `write_helpers::build_delete_sql`).
   - **DETACH DELETE** → one lightweight `DELETE FROM` per relationship table referencing the node label, then the node DELETE. Order matters; document.
 - **New: `src/clickhouse_query_generator/id_gen.rs`** — emits the right ID expression in INSERT column lists when the schema's `id_generation` is `Snowflake` and there's no DDL default to lean on.
@@ -119,9 +120,10 @@ These shape schema fields, error surfaces, and API contracts. Each row is **open
   - Read variants → existing path
   - Write variants → new `execute_write()` which:
     1. Asserts `Database` was created via `Database::new(...)` (chdb), not `sql_only` or `new_remote`. Return clear error otherwise.
-    2. Executes generated SQL via the chdb connection. INSERT and lightweight DELETE return synchronously; SET (`ALTER TABLE … UPDATE`) carries `SETTINGS mutations_sync = 2` per Decision 0.7 so the call returns after the mutation completes.
-    3. Returns affected-row counters as a single-row `QueryResult` per Decision 0.8
-- **`src/graph_catalog/graph_schema.rs`** — extend `NodeSchema` with optional `id_generation` field. Default `None` → behaves as `Provided`. Existing schemas unaffected.
+    2. Executes generated SQL via the chdb connection. INSERT, lightweight UPDATE (SET), and lightweight DELETE all return synchronously per Decision 0.7 — no mutation-wait barrier needed.
+    3. Returns affected-row counters as a single-row `QueryResult` per Decision 0.8.
+- **`src/executor/data_loader.rs:198-208`** — extend writable-table DDL to append `SETTINGS enable_block_number_column = 1, enable_block_offset_column = 1`. This is the prerequisite for lightweight UPDATE per Decision 0.7. Apply to every node and edge table created in embedded mode (i.e., schemas without a `source:` field). Add a unit test asserting the settings appear in the generated DDL.
+- **`src/graph_catalog/graph_schema.rs`** — extend `NodeSchema` with optional `id_generation` field. Default `None` → behaves as `Uuid` (existing behaviour). Existing schemas unaffected.
 - **`clickgraph-ffi/src/lib.rs`** — verify (don't expect changes); `Connection::query` already returns `QueryResult`. Confirm Python and Go bindings surface the new counter fields.
 
 ### Deliverables
@@ -168,7 +170,8 @@ Defer if Phase 1–4 burns more than estimated. CREATE/SET/DELETE covers the com
 
 | Risk | Mitigation |
 |---|---|
-| chdb mutation latency for SET (`ALTER TABLE … UPDATE` is async) | Decision 0.7 — `mutations_sync = 2` on SET. INSERT and lightweight `DELETE FROM` are synchronous and need no barrier. |
+| Lightweight UPDATE labelled experimental in newer ClickHouse releases | Decision 0.7 confirmed working on chdb 26.1.2.1 without an experimental flag at query time. Mutation-based SET retained as documented fallback if the engine path regresses. Pin chdb-rust version intentionally to limit surprise. |
+| Existing chdb-backed tables created before Phase 3 lack `enable_block_number_column`/`enable_block_offset_column` settings | Embedded chdb sessions are single-process and ephemeral, so there's no real "fleet of legacy tables" to migrate. New writable tables get the settings from day one via `data_loader.rs` change. If a long-lived persisted table exists, document the `ALTER TABLE … MODIFY SETTING` migration. |
 | Server mode accidentally exposes writes via shared planner | Phase 1 `write_guard` runs before render; server `handlers.rs` keeps existing reject as defence-in-depth |
 | FFI binding regressions on counter types | Run full `clickgraph-py` and `clickgraph-go` test suites in Phase 3 |
 | Schema migrations break existing read users | `id_generation` is optional with `None` default; existing schemas keep working unchanged |
