@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-Add Cypher write support to ClickGraph's embedded (chdb-backed) execution mode. Server mode and source-backed table sources (Parquet/S3/Iceberg/Delta) remain read-only by design. The work reuses existing parser AST and the `clickgraph-embedded/src/write_helpers.rs` SQL builders; the gap is the planner→render→executor bridge for Cypher write clauses.
+Add Cypher write support to ClickGraph's embedded (chdb-backed) execution mode. Server mode and source-backed table sources (Parquet/S3/Iceberg/Delta) remain read-only by design. The Cypher parser already produces write-clause AST nodes, and the embedded crate already supports writes via a direct Rust API (`Connection::create_node`/`create_edge`/`delete_nodes`/...). The gap is the **planner → render → executor bridge for Cypher write clauses** — i.e., letting `Connection::query("CREATE (n:Person {name:'x'})")` actually do something. The Cypher path will share the *patterns and validation rules* used by the direct-API SQL builders in `clickgraph-embedded/src/write_helpers.rs`, but will generate SQL through the renderer rather than reusing those builders directly (see Phase 2 rationale).
 
 - **Estimated effort**: 5.5 weeks for MVP (CREATE/SET/DELETE/REMOVE), 6.5 weeks with MERGE
 - **Risk profile**: Medium. Highest-risk phase is the planner work (Phase 1). SQL generation reuses proven infrastructure.
@@ -23,11 +23,12 @@ Add Cypher write support to ClickGraph's embedded (chdb-backed) execution mode. 
 |---|---|---|
 | Parser | **Complete** | `src/open_cypher_parser/{create,set,delete,remove}_clause.rs` — AST variants exist |
 | Query type detection | **Complete** | `src/query_planner/mod.rs:42-49` classifies `Delete`/`Update` |
-| Planner LogicalPlan | **Missing write variants** | `src/query_planner/logical_plan/mod.rs:466-508` — 13 read variants, no write |
+| Planner LogicalPlan | **Missing write variants** | `src/query_planner/logical_plan/mod.rs` — all variants today (`ViewScan`, `GraphNode`, `GraphRel`, `Filter`, `Projection`, `GroupBy`, `OrderBy`, `Skip`, `Limit`, `Cte`, `GraphJoins`, `Union`, `PageRank`, `Unwind`, `CartesianProduct`, `WithClause`, `Empty`) are read-side only |
 | Render plan | **Missing write variants** | `src/render_plan/` — no terminal write nodes |
-| SQL generation | **Direct-API exists; Cypher-path missing** | `clickgraph-embedded/src/write_helpers.rs` (684 lines) builds INSERT/DELETE for the direct Rust API |
-| Executor wiring | **Embedded read-only today** | `clickgraph-embedded/src/connection.rs::query()` routes to read execution only |
-| Hard-stop today | Server rejects writes | `src/server/handlers.rs:1356` |
+| SQL generation (direct API) | **Exists** | `clickgraph-embedded/src/write_helpers.rs` builds lightweight `INSERT`/`DELETE FROM` for the direct Rust API |
+| SQL generation (Cypher path) | **Missing** | No renderer support for write `LogicalPlan` variants |
+| Executor wiring (Cypher path) | **Read-only** | `clickgraph-embedded/src/connection.rs::query()` routes Cypher to `evaluate_read_statement`. Direct-API methods (`create_node`/`delete_nodes`/...) bypass this and already write. |
+| Hard-stop today | Server rejects Cypher writes | `src/server/handlers.rs:1356` |
 
 ---
 
@@ -38,14 +39,14 @@ These shape schema fields, error surfaces, and API contracts. Each row is **open
 | # | Decision | Recommendation | Status |
 |---|---|---|---|
 | 0.1 | Where writes are gated | Single planner-level guard rejecting write `LogicalPlan` variants unless executor is `Embedded(chdb)`. Server keeps existing reject at `handlers.rs:1356` as defence-in-depth. | open |
-| 0.2 | ID generation strategy | Add `id_generation: Option<IdStrategy>` to `NodeSchema` — values: `Snowflake` (chdb `generateSnowflakeID()`), `Uuid` (`generateUUIDv4()`), `Provided` (default; error if Cypher omits the ID property). | open |
+| 0.2 | ID generation strategy | Embedded writable tables today already get `String DEFAULT generateUUIDv4()` on ID columns at DDL time (`src/executor/data_loader.rs:198-208`), and `Connection::create_node()` auto-generates a UUID when the ID property is absent. Recommendation: **align Cypher CREATE with this**. Add `id_generation: Option<IdStrategy>` to `NodeSchema` — values `Uuid` (default, matches existing DDL), `Snowflake`, `Provided` (error if absent). When the column has a `DEFAULT` clause and Cypher omits the property, simply omit the column from the INSERT and let chdb fill it. | open |
 | 0.3 | Source-backed targets | Hard error at plan time if any target node/edge label resolves to a schema with `source:` set. Honest failure beats partial-write or silent translation. | open |
 | 0.4 | Atomicity | Best-effort, statement-scoped. Document explicitly: no transactions, partial failures possible. chdb has no MVCC. | open |
 | 0.5 | Property type coercion | Strict: error if Cypher literal type doesn't match column type. Same discipline as the read path. | open |
 | 0.6 | FK-edge writes | Out of scope for v1. Reject at plan time with actionable error suggesting standard edge-table schema. | open |
-| 0.7 | Read-after-write consistency | chdb mutations (`ALTER TABLE … UPDATE/DELETE`) are async by default. Either issue a `SYSTEM SYNC` barrier post-write, or document the eventual-consistency window. Recommendation: barrier by default, opt-out env var for batch workloads. | open |
+| 0.7 | Read-after-write consistency | Writable tables are non-replicated `ReplacingMergeTree` (`src/graph_catalog/engine_detection.rs`), so `SYSTEM SYNC REPLICA` does not apply. INSERT and lightweight `DELETE FROM` are synchronous. Only `ALTER TABLE … UPDATE` (used for SET) is async. Recommendation: SET issues mutations with `SETTINGS mutations_sync = 2` (or `SYSTEM WAIT MUTATION` after) so the call returns after the mutation lands; INSERT/DELETE keep the lightweight path with no barrier needed. Document the SET-specific cost. | open |
 | 0.8 | Return shape | Return Neo4j-compatible counters (`nodesCreated`, `propertiesSet`, `nodesDeleted`, …) as a single-row `QueryResult`. Bindings already pass `QueryResult` through; no FFI changes needed. | open |
-| 0.9 | `EXPLAIN` for write queries | Supported in embedded mode — surfaces generated SQL without executing. Cheap (pipeline already produces SQL) and essential for debugging write failures. Add a test asserting `EXPLAIN` never reaches the executor. | open |
+| 0.9 | `EXPLAIN` for write queries | **Embedded API only.** Cypher `EXPLAIN` is not a parser clause today, and the Bolt server special-cases `EXPLAIN …` as an autocomplete probe (returns empty SUCCESS). This decision adds an embedded-API call (e.g., `Connection::explain(cypher)`) that returns the generated SQL string without executing. Cheap (pipeline already produces SQL); essential for debugging write failures. Bolt's existing no-op behaviour is preserved unchanged. Add a test asserting `explain()` never reaches the executor. | open |
 
 **Deliverable for Phase 0**: this section, all rows flipped to **locked**, plus any inline notes for choices that diverged from the recommendation.
 
@@ -60,7 +61,7 @@ These shape schema fields, error surfaces, and API contracts. Each row is **open
 
 ### Files to add/modify
 
-- **`src/query_planner/logical_plan/mod.rs`** — extend the enum (currently lines 466–508):
+- **`src/query_planner/logical_plan/mod.rs`** — extend the `LogicalPlan` enum:
   ```rust
   Create { patterns: Vec<CreatePattern>, input: Option<Box<LogicalPlan>> },
   SetProperties { items: Vec<SetItem>, input: Box<LogicalPlan> },
@@ -91,13 +92,13 @@ These shape schema fields, error surfaces, and API contracts. Each row is **open
 ### Files to add/modify
 
 - **`src/render_plan/`** — add terminal variants `RenderInsert`, `RenderDelete`, `RenderUpdate`. Terminal because writes don't compose into SELECTs.
-- **New: `src/clickhouse_query_generator/write_to_sql.rs`** — emits chdb-compatible SQL:
-  - **CREATE** → `INSERT INTO {table} ({cols}) VALUES (...)`. ID column populated via `generateSnowflakeID()` / `generateUUIDv4()` / provided literal per Decision 0.2.
-  - **SET** → `ALTER TABLE {table} UPDATE {col}={expr} WHERE {pk}={id}`
-  - **DELETE** → `ALTER TABLE {table} DELETE WHERE {pk} IN ({ids})`
-  - **DETACH DELETE** → one DELETE per relationship table referencing the node label, then the node DELETE. Order matters; document.
-- **New: `src/clickhouse_query_generator/id_gen.rs`** — emits the right ID expression in INSERT column lists per `NodeSchema.id_generation`.
-- **Reuse note**: `clickgraph-embedded/src/write_helpers.rs` already builds INSERT/DELETE SQL for the direct Rust API. We **don't merge the two callers** in v1 — the Cypher path goes through the renderer, and the direct API keeps its bespoke builder. A future refactor could unify them, but conflating them now is yak-shaving.
+- **New: `src/clickhouse_query_generator/write_to_sql.rs`** — emits chdb-compatible SQL, aligned with the patterns already used by `clickgraph-embedded/src/write_helpers.rs`:
+  - **CREATE** → `INSERT INTO {table} ({cols}) VALUES (...)`. When a property is absent and the column has a `DEFAULT` (e.g., `generateUUIDv4()`), omit the column from the INSERT and let chdb fill it (per Decision 0.2).
+  - **SET** → `ALTER TABLE {table} UPDATE {col}={expr} WHERE {pk}={id} SETTINGS mutations_sync = 2` (per Decision 0.7).
+  - **DELETE** → `DELETE FROM {table} WHERE {pk} IN ({ids})` (lightweight, synchronous — same path as `write_helpers::build_delete_sql`).
+  - **DETACH DELETE** → one lightweight `DELETE FROM` per relationship table referencing the node label, then the node DELETE. Order matters; document.
+- **New: `src/clickhouse_query_generator/id_gen.rs`** — emits the right ID expression in INSERT column lists when the schema's `id_generation` is `Snowflake` and there's no DDL default to lean on.
+- **Reuse rationale**: the direct-API builders in `write_helpers.rs` operate on `Property` maps; the Cypher path operates on `LogicalPlan` nodes resolved by the planner. We keep two callers in v1 because the input shapes differ enough that a forced merge would slow down the planner work for marginal benefit. Tracked as a follow-up to unify under one builder once both paths stabilise.
 
 ### Deliverables
 - Snapshot tests under `tests/sql_snapshots/writes/`: Cypher in, deterministic SQL out
@@ -118,9 +119,8 @@ These shape schema fields, error surfaces, and API contracts. Each row is **open
   - Read variants → existing path
   - Write variants → new `execute_write()` which:
     1. Asserts `Database` was created via `Database::new(...)` (chdb), not `sql_only` or `new_remote`. Return clear error otherwise.
-    2. Executes generated SQL via the chdb connection
-    3. Issues `SYSTEM SYNC REPLICA`/equivalent barrier per Decision 0.7
-    4. Returns affected-row counters as a single-row `QueryResult` per Decision 0.8
+    2. Executes generated SQL via the chdb connection. INSERT and lightweight DELETE return synchronously; SET (`ALTER TABLE … UPDATE`) carries `SETTINGS mutations_sync = 2` per Decision 0.7 so the call returns after the mutation completes.
+    3. Returns affected-row counters as a single-row `QueryResult` per Decision 0.8
 - **`src/graph_catalog/graph_schema.rs`** — extend `NodeSchema` with optional `id_generation` field. Default `None` → behaves as `Provided`. Existing schemas unaffected.
 - **`clickgraph-ffi/src/lib.rs`** — verify (don't expect changes); `Connection::query` already returns `QueryResult`. Confirm Python and Go bindings surface the new counter fields.
 
@@ -142,8 +142,8 @@ These shape schema fields, error surfaces, and API contracts. Each row is **open
 
 ### Files to modify
 
-- **`clickgraph-tck/tests/tck.rs:564-572`** — relax skip filter for write-tagged scenarios (keep MERGE skipped until Phase 5)
-- Triage failures; aim for ~16 of 19 currently-skipped scenarios passing
+- **`clickgraph-tck/tests/tck.rs:564-572`** — current filter only excludes scenarios tagged `skip|fails|NegativeTests|crash|wip`. Write scenarios aren't excluded by a `@write` tag — they're tagged individually as `@skip`/`@fails`/`@wip` (or fail today because the planner rejects writes). Phase 4 work: identify the ~19 write scenarios currently masked this way, drop their per-scenario skip tags as each becomes implementable, and triage residual failures.
+- Aim for ~16 of 19 currently-skipped scenarios passing
 - **`STATUS.md`**, **`KNOWN_ISSUES.md`**, **`README.md`** — writes supported in embedded mode only, with caveats from Decisions 0.4 / 0.7 listed
 - **`docs/wiki/cypher-language-reference.md`** — write-clause sections (this is the primary feature doc per CLAUDE.md)
 
@@ -168,7 +168,7 @@ Defer if Phase 1–4 burns more than estimated. CREATE/SET/DELETE covers the com
 
 | Risk | Mitigation |
 |---|---|
-| chdb mutation latency (`ALTER TABLE … UPDATE/DELETE` is async) | Decision 0.7 — post-write barrier by default |
+| chdb mutation latency for SET (`ALTER TABLE … UPDATE` is async) | Decision 0.7 — `mutations_sync = 2` on SET. INSERT and lightweight `DELETE FROM` are synchronous and need no barrier. |
 | Server mode accidentally exposes writes via shared planner | Phase 1 `write_guard` runs before render; server `handlers.rs` keeps existing reject as defence-in-depth |
 | FFI binding regressions on counter types | Run full `clickgraph-py` and `clickgraph-go` test suites in Phase 3 |
 | Schema migrations break existing read users | `id_generation` is optional with `None` default; existing schemas keep working unchanged |
