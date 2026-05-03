@@ -89,6 +89,55 @@ pub fn cypher_to_sql(
     Ok(generate_sql(render_plan, max_cte_depth))
 }
 
+/// Convert a Cypher query to ClickHouse SQL after clearing all write
+/// clauses (CREATE / SET / DELETE / REMOVE) from the parsed AST.
+///
+/// This is the read-pipeline half of write+RETURN execution: after the
+/// embedded executor has run the write portion, the same statement is
+/// rendered as if it were a pure read query so the user-visible
+/// row payload reflects the post-write state. Stripping the clauses on
+/// the AST avoids re-parsing fragile Cypher strings — the planner
+/// re-derives the read pipeline naturally once those AST nodes are gone.
+pub fn cypher_to_sql_read_only(
+    cypher: &str,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+    max_cte_depth: u32,
+) -> Result<String, String> {
+    use crate::open_cypher_parser::ast::CypherStatement;
+    use crate::render_plan::plan_builder::RenderPlanBuilder;
+
+    let cleaned = crate::open_cypher_parser::strip_comments(cypher);
+    let (_remaining, mut statement) = crate::open_cypher_parser::parse_cypher_statement(&cleaned)
+        .map_err(|e| format!("Parse error: {:?}", e))?;
+
+    if let CypherStatement::Query {
+        ref mut query,
+        ref mut union_clauses,
+    } = statement
+    {
+        query.create_clause = None;
+        query.set_clause = None;
+        query.remove_clause = None;
+        query.delete_clause = None;
+        for u in union_clauses.iter_mut() {
+            u.query.create_clause = None;
+            u.query.set_clause = None;
+            u.query.remove_clause = None;
+            u.query.delete_clause = None;
+        }
+    }
+
+    let (logical_plan, plan_ctx) =
+        crate::query_planner::evaluate_read_statement(statement, schema, None, None, None)
+            .map_err(|e| format!("Plan error: {}", e))?;
+
+    let render_plan = logical_plan
+        .to_render_plan_with_ctx(schema, Some(&plan_ctx), None)
+        .map_err(|e| format!("Render error: {}", e))?;
+
+    Ok(generate_sql(render_plan, max_cte_depth))
+}
+
 /// Convert a Cypher query string to ClickHouse SQL, also returning the
 /// LogicalPlan and PlanCtx for downstream metadata extraction (e.g., graph output).
 ///

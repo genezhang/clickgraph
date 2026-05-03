@@ -1261,9 +1261,15 @@ impl<'db> Connection<'db> {
 
     /// Plan, render, and execute a Cypher write query (CREATE / SET /
     /// DELETE / REMOVE). Returns Neo4j-compatible counters as a single-row
-    /// `QueryResult` per Decision 0.8 of the embedded-writes design.
+    /// `QueryResult` per Decision 0.8 of the embedded-writes design — or,
+    /// when the statement also carries a RETURN clause (Phase 5d), the
+    /// row payload from re-running the read pipeline against the modified
+    /// state with the write counters attached via `QueryResult::get_write_counters()`.
     async fn handle_write_async(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
+        use clickgraph::clickhouse_query_generator::cypher_to_sql_read_only;
         use clickgraph::clickhouse_query_generator::write_to_sql::write_render_to_sql;
+        use clickgraph::open_cypher_parser::ast::CypherStatement;
+        use clickgraph::query_planner::logical_plan::LogicalPlan;
         use clickgraph::query_planner::write_guard::ensure_write_target_writable;
         use clickgraph::render_plan::write_plan_builder::build_write_plan;
         use clickgraph::server::query_context::{
@@ -1287,6 +1293,16 @@ impl<'db> Connection<'db> {
             let (_remaining, stmt) =
                 clickgraph::open_cypher_parser::parse_cypher_statement(&cleaned)
                     .map_err(|e| EmbeddedError::Query(format!("Parse error: {:?}", e)))?;
+
+            // Capture whether the statement carries a RETURN clause before
+            // ownership of `stmt` moves into the planner. write+RETURN
+            // routes through the Phase 5d branch below; pure writes keep
+            // the synthetic counter-row response.
+            let has_return = matches!(
+                &stmt,
+                CypherStatement::Query { query, .. } if query.return_clause.is_some()
+            );
+
             let (logical_plan, _plan_ctx) =
                 clickgraph::query_planner::evaluate_read_statement(stmt, &schema, None, None, None)
                     .map_err(|e| EmbeddedError::Query(format!("Plan error: {}", e)))?;
@@ -1295,42 +1311,65 @@ impl<'db> Connection<'db> {
             ensure_write_target_writable(&logical_plan, &schema, executor_kind)
                 .map_err(|e| EmbeddedError::Query(format!("Write rejected: {}", e)))?;
 
-            let write_plan = build_write_plan(&logical_plan, &schema)
+            // Walk past read-only wrappers (Projection / OrderBy / Skip /
+            // Limit) to find the write subplan. write+RETURN puts a
+            // Projection above the write; pure-write statements have the
+            // write at the root. The subplan retains its full read input
+            // (the MATCH/WHERE/etc. that bound the variables we mutate).
+            let write_subplan = find_write_subplan(&logical_plan).ok_or_else(|| {
+                EmbeddedError::Query(
+                    "Cypher write clause is not supported in this combination yet \
+                     (e.g. write clauses inside subqueries). Use a separate \
+                     write statement followed by a MATCH for now."
+                        .to_string(),
+                )
+            })?;
+
+            let write_plan = build_write_plan(write_subplan, &schema)
                 .map_err(|e| EmbeddedError::Query(format!("Write render error: {}", e)))?
                 .ok_or_else(|| {
-                    // The dispatch above sent us here because a write clause
-                    // (CREATE / SET / DELETE / REMOVE) was visible in the
-                    // parsed AST, but `build_write_plan` couldn't extract a
-                    // write variant from the planned tree — typically this
-                    // means the write was wrapped under a clause we don't
-                    // yet support in the write pipeline (e.g. CREATE ...
-                    // RETURN). Surface a clear error rather than the
-                    // generic "non-write plan" wording.
                     EmbeddedError::Query(
-                        "Cypher write clause is not supported in this combination yet \
-                         (e.g. CREATE … RETURN, or write clauses inside subqueries). \
-                         Use a separate write statement followed by a MATCH for now."
+                        "Internal error: write subplan resolved but `build_write_plan` \
+                         returned None. This is a planner/rendering bug; please report."
                             .to_string(),
                     )
                 })?;
+
+            // Phase 5d v1 supports DELETE / SET / REMOVE + RETURN by
+            // executing the write, then re-running the read pipeline with
+            // the write clauses stripped. CREATE + RETURN is *not*
+            // supported by that path: the read pipeline can't see freshly
+            // inserted rows by alias (the alias was never bound by a
+            // MATCH and the inserted row has no MATCH-able identity yet),
+            // so referencing the create-bound alias from RETURN would
+            // fail with "undefined variable" *after* the INSERT has
+            // already executed. Rejecting up-front keeps the database
+            // unchanged on failure and surfaces a clear, deterministic
+            // error rather than a partially-applied write. This matches
+            // the Phase 5b/5c contract pinned by
+            // `cypher_create_with_return_rejected_with_clear_error`.
+            if has_return && matches!(write_subplan, LogicalPlan::Create(_)) {
+                return Err(EmbeddedError::Query(
+                    "CREATE … RETURN is not supported in this build of ClickGraph yet. \
+                     The write would execute but the RETURN cannot reference the \
+                     newly created node by alias from the read pipeline. \
+                     Run CREATE as a separate statement, then MATCH … RETURN."
+                        .to_string(),
+                ));
+            }
+
             let stmts = write_render_to_sql(&write_plan);
             let compile_time_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
 
-            // Execute each rendered statement in order. Counters are
-            // best-effort: chdb's lightweight INSERT/UPDATE/DELETE don't
-            // surface affected-row counts, so we report the statement
-            // count as a coarse signal for now.
+            // Resolve counters via `count()` probes against the same
+            // WHERE that each lightweight DELETE / UPDATE will use, then
+            // execute the mutations themselves. The probes run *before*
+            // the writes so the count reflects the matched-but-not-yet-
+            // mutated row set — DELETE / UPDATE are naturally idempotent
+            // against the probe's snapshot for the chdb workload here.
+            // INSERT counts are exact and don't need a probe.
             let exec_start = Instant::now();
-            let mut nodes_created: u64 = 0;
-            let mut properties_set: u64 = 0;
-            let mut nodes_deleted: u64 = 0;
-            let mut relationships_deleted: u64 = 0;
-            let counters = classify_write_counters(&write_plan);
-            nodes_created += counters.nodes_created;
-            properties_set += counters.properties_set;
-            nodes_deleted += counters.nodes_deleted;
-            relationships_deleted += counters.relationships_deleted;
-
+            let counters = resolve_write_counters(&write_plan, &executor).await?;
             for sql in &stmts {
                 executor
                     .execute_json(sql, None)
@@ -1339,34 +1378,130 @@ impl<'db> Connection<'db> {
             }
             let execution_time_ms = exec_start.elapsed().as_secs_f64() * 1000.0;
 
-            let column_names = vec![
-                "nodes_created".to_string(),
-                "properties_set".to_string(),
-                "nodes_deleted".to_string(),
+            if !has_return {
+                // Pure-write path: surface counters as a synthetic 4-column
+                // single-row result for back-compat with Phase 5a/5b.
+                let column_names = vec![
+                    "nodes_created".to_string(),
+                    "properties_set".to_string(),
+                    "nodes_deleted".to_string(),
+                    "relationships_deleted".to_string(),
+                ];
+                let row = vec![
+                    Value::Int64(counters.nodes_created as i64),
+                    Value::Int64(counters.properties_set as i64),
+                    Value::Int64(counters.nodes_deleted as i64),
+                    Value::Int64(counters.relationships_deleted as i64),
+                ];
+                return Ok(QueryResult::with_timing(
+                    column_names,
+                    vec![row],
+                    compile_time_ms,
+                    execution_time_ms,
+                ));
+            }
+
+            // Phase 5d: write+RETURN. Render the Cypher through the
+            // read-only pipeline (which clears CREATE / SET / DELETE /
+            // REMOVE on the AST internally so the planner re-derives just
+            // the read shape), execute it against the now-modified state,
+            // and attach the write counters via the side-channel.
+            let read_compile_start = Instant::now();
+            let read_sql = cypher_to_sql_read_only(&cypher, &schema, DEFAULT_MAX_CTE_DEPTH)
+                .map_err(EmbeddedError::Query)?;
+            let read_compile_ms = read_compile_start.elapsed().as_secs_f64() * 1000.0;
+
+            let read_exec_start = Instant::now();
+            let json_rows = executor
+                .execute_json(&read_sql, None)
+                .await
+                .map_err(EmbeddedError::from)?;
+            let read_exec_ms = read_exec_start.elapsed().as_secs_f64() * 1000.0;
+
+            let mut column_names: Vec<String> = Vec::new();
+            let mut rows: Vec<Vec<Value>> = Vec::new();
+            for json_row in json_rows {
+                if let serde_json::Value::Object(obj) = json_row {
+                    if column_names.is_empty() {
+                        column_names = obj.keys().cloned().collect();
+                    }
+                    let row_vals: Vec<Value> = column_names
+                        .iter()
+                        .map(|col| {
+                            obj.get(col)
+                                .cloned()
+                                .map(Value::from)
+                                .unwrap_or(Value::Null)
+                        })
+                        .collect();
+                    rows.push(row_vals);
+                }
+            }
+
+            let mut counter_map: HashMap<String, i64> = HashMap::new();
+            counter_map.insert("nodes_created".to_string(), counters.nodes_created as i64);
+            counter_map.insert("properties_set".to_string(), counters.properties_set as i64);
+            counter_map.insert("nodes_deleted".to_string(), counters.nodes_deleted as i64);
+            counter_map.insert(
                 "relationships_deleted".to_string(),
-            ];
-            let row = vec![
-                Value::Int64(nodes_created as i64),
-                Value::Int64(properties_set as i64),
-                Value::Int64(nodes_deleted as i64),
-                Value::Int64(relationships_deleted as i64),
-            ];
-            Ok(QueryResult::with_timing(
+                counters.relationships_deleted as i64,
+            );
+
+            Ok(QueryResult::with_timing_and_counters(
                 column_names,
-                vec![row],
-                compile_time_ms,
-                execution_time_ms,
+                rows,
+                compile_time_ms + read_compile_ms,
+                execution_time_ms + read_exec_ms,
+                counter_map,
             ))
         })
         .await
     }
 }
 
-/// Best-effort counter extraction from a `WriteRenderPlan`. chdb's
-/// lightweight write path doesn't return affected-row counts, so we report
-/// per-operation counts (one Insert = one node created, etc.) rather than
-/// actual row counts. Callers that need accurate row counts should fetch
-/// before/after `count()` themselves.
+/// Walk past read-only wrappers (Projection / OrderBy / Skip / Limit) to
+/// find the topmost write subplan inside `plan`. Returns `None` if the
+/// plan tree contains no write node, or if a write is buried under a
+/// shape we don't yet descend through (UNION, CartesianProduct, etc.).
+///
+/// This lets `handle_write_async` peel off the RETURN/ORDER BY/SKIP/LIMIT
+/// chain that sits above a write in `MATCH … DELETE … RETURN …` shapes
+/// without coupling that knowledge to the write_plan_builder, which only
+/// matches root-level write nodes.
+fn find_write_subplan(
+    plan: &clickgraph::query_planner::logical_plan::LogicalPlan,
+) -> Option<&clickgraph::query_planner::logical_plan::LogicalPlan> {
+    use clickgraph::query_planner::logical_plan::LogicalPlan;
+    match plan {
+        LogicalPlan::Create(_)
+        | LogicalPlan::SetProperties(_)
+        | LogicalPlan::Delete(_)
+        | LogicalPlan::Remove(_) => Some(plan),
+        LogicalPlan::Projection(p) => find_write_subplan(&p.input),
+        LogicalPlan::OrderBy(o) => find_write_subplan(&o.input),
+        LogicalPlan::Skip(s) => find_write_subplan(&s.input),
+        LogicalPlan::Limit(l) => find_write_subplan(&l.input),
+        LogicalPlan::Filter(f) => find_write_subplan(&f.input),
+        LogicalPlan::WithClause(w) => find_write_subplan(&w.input),
+        LogicalPlan::GroupBy(g) => find_write_subplan(&g.input),
+        // The graph-join inference pass wraps the entire planned tree in a
+        // `GraphJoins` node even when the join list is empty (it carries
+        // anchor/correlation metadata). Walk through it to reach a write.
+        LogicalPlan::GraphJoins(gj) => find_write_subplan(&gj.input),
+        _ => None,
+    }
+}
+
+/// Counters surfaced as `nodes_created` / `properties_set` /
+/// `nodes_deleted` / `relationships_deleted` on the write `QueryResult`.
+/// `INSERT` counts come straight from the rendered op (rows are exact);
+/// `DELETE` and `UPDATE` counts come from `probe_*_count_sql` probes
+/// run against chdb just before the mutation, since the lightweight
+/// write path doesn't return affected-row counts and a static "+= 1
+/// per op" approximation drifts from the openCypher side-effect contract
+/// when the WHERE matches zero rows (e.g. `OPTIONAL MATCH … DELETE` on
+/// an empty graph) or many rows (e.g. `MATCH (n:X) SET n.k = …` with
+/// multiple `:X`).
 #[derive(Default)]
 struct WriteCounters {
     nodes_created: u64,
@@ -1375,45 +1510,115 @@ struct WriteCounters {
     relationships_deleted: u64,
 }
 
-fn classify_write_counters(plan: &clickgraph::render_plan::WriteRenderPlan) -> WriteCounters {
-    let mut c = WriteCounters::default();
-    walk(plan, &mut c);
-    c
+/// Flat list of count probes derived from a `WriteRenderPlan`. The async
+/// pass over the executor accumulates each probe's affected-row count
+/// into the right `WriteCounters` field; static (INSERT) counts go
+/// straight in without a probe.
+enum ProbeAction {
+    NodesCreatedStatic(u64),
+    NodesDeletedProbe(String),
+    RelationshipsDeletedProbe(String),
+    /// `properties_set` is per-property-per-row: `assignments * affected_rows`.
+    PropertiesSetProbe {
+        assignments: u64,
+        sql: String,
+    },
 }
 
-fn walk(plan: &clickgraph::render_plan::WriteRenderPlan, c: &mut WriteCounters) {
+fn collect_counter_probes(plan: &clickgraph::render_plan::WriteRenderPlan) -> Vec<ProbeAction> {
+    let mut out = Vec::new();
+    push_probes(plan, &mut out);
+    out
+}
+
+fn push_probes(plan: &clickgraph::render_plan::WriteRenderPlan, out: &mut Vec<ProbeAction>) {
+    use clickgraph::clickhouse_query_generator::write_to_sql::{
+        probe_delete_count_sql, probe_update_count_sql,
+    };
     use clickgraph::render_plan::WriteRenderPlan;
     match plan {
         WriteRenderPlan::Insert(op) => {
-            // Coarse heuristic: each row is one entity. Whether it's a
-            // node or relationship is encoded in the table — we attribute
-            // to nodes_created here. A future refinement can split by
-            // schema lookup once rel CREATE lands (currently rejected).
-            c.nodes_created += op.rows.len() as u64;
+            // INSERT counts are exact: one row per VALUES tuple.
+            // Whether it's a node or relationship is encoded in the table,
+            // but rel CREATE is currently rejected by build_write_plan, so
+            // every Insert here is a node create.
+            out.push(ProbeAction::NodesCreatedStatic(op.rows.len() as u64));
         }
         WriteRenderPlan::Update(op) => {
-            c.properties_set += op.assignments.len() as u64;
+            out.push(ProbeAction::PropertiesSetProbe {
+                assignments: op.assignments.len() as u64,
+                sql: probe_update_count_sql(op),
+            });
         }
-        WriteRenderPlan::Delete(_op) => {
-            // Sequence walk decides node-vs-rel by whether the DELETE is
-            // the last in a Sequence (node) or precedes one (rel cleanup).
-            // For a bare top-level Delete, attribute to nodes.
-            c.nodes_deleted += 1;
+        WriteRenderPlan::Delete(op) => {
+            out.push(ProbeAction::NodesDeletedProbe(probe_delete_count_sql(op)));
         }
         WriteRenderPlan::Sequence(seq) => {
-            // Rel-cleanup DELETEs precede a final node DELETE in DETACH
-            // DELETE. Attribute earlier DELETEs to relationships.
+            // DETACH DELETE renders as a Sequence of rel-cleanup DELETEs
+            // followed by the final node DELETE; `Sequence(Delete, …,
+            // Delete)` thus splits N-1 → relationships_deleted and last
+            // → nodes_deleted. Other Sequence shapes (multi-Insert from
+            // CREATE patterns; multi-Update from multi-target SET) walk
+            // recursively under the same rules.
             let len = seq.len();
             for (i, inner) in seq.iter().enumerate() {
                 match inner {
-                    WriteRenderPlan::Delete(_) if i + 1 < len => {
-                        c.relationships_deleted += 1;
+                    WriteRenderPlan::Delete(op) if i + 1 < len => {
+                        out.push(ProbeAction::RelationshipsDeletedProbe(
+                            probe_delete_count_sql(op),
+                        ));
                     }
-                    _ => walk(inner, c),
+                    _ => push_probes(inner, out),
                 }
             }
         }
     }
+}
+
+async fn run_count_probe(
+    executor: &Arc<dyn QueryExecutor>,
+    sql: &str,
+) -> Result<u64, EmbeddedError> {
+    let rows = executor
+        .execute_json(sql, None)
+        .await
+        .map_err(EmbeddedError::from)?;
+    let Some(serde_json::Value::Object(obj)) = rows.first() else {
+        return Ok(0);
+    };
+    let Some(val) = obj.get("n") else {
+        return Ok(0);
+    };
+    match val {
+        serde_json::Value::Number(n) => Ok(n.as_u64().unwrap_or(0)),
+        // ClickHouse returns count() as a string in some json formats;
+        // fall back to parsing.
+        serde_json::Value::String(s) => Ok(s.parse::<u64>().unwrap_or(0)),
+        _ => Ok(0),
+    }
+}
+
+async fn resolve_write_counters(
+    plan: &clickgraph::render_plan::WriteRenderPlan,
+    executor: &Arc<dyn QueryExecutor>,
+) -> Result<WriteCounters, EmbeddedError> {
+    let mut c = WriteCounters::default();
+    for probe in collect_counter_probes(plan) {
+        match probe {
+            ProbeAction::NodesCreatedStatic(n) => c.nodes_created += n,
+            ProbeAction::NodesDeletedProbe(sql) => {
+                c.nodes_deleted += run_count_probe(executor, &sql).await?;
+            }
+            ProbeAction::RelationshipsDeletedProbe(sql) => {
+                c.relationships_deleted += run_count_probe(executor, &sql).await?;
+            }
+            ProbeAction::PropertiesSetProbe { assignments, sql } => {
+                let affected = run_count_probe(executor, &sql).await?;
+                c.properties_set += assignments * affected;
+            }
+        }
+    }
+    Ok(c)
 }
 
 #[cfg(test)]
@@ -1569,6 +1774,18 @@ graph_schema:
                 _role: Option<&str>,
             ) -> Result<Vec<serde_json::Value>, ExecutorError> {
                 self.captured.lock().unwrap().push(sql.to_string());
+                // Phase 5d: write-counter probes (`SELECT count() AS n`)
+                // are now part of the write path. The fake executor has
+                // no underlying data, so we hand back a single-row `n=1`
+                // response — that's the count the *legacy static-count*
+                // approximation implied (one match per Delete / Update),
+                // and it keeps the dispatch-focused unit tests below
+                // pinning the same counter values they pinned pre-Phase-5d
+                // without making them depend on a real chdb session.
+                let trimmed = sql.trim_start();
+                if trimmed.starts_with("SELECT count() AS n") {
+                    return Ok(vec![serde_json::json!({"n": 1})]);
+                }
                 Ok(vec![])
             }
             async fn execute_text(
@@ -2158,6 +2375,13 @@ graph_schema:
         );
     }
 
+    /// `find_first_with_prefix` lets dispatch tests probe the captured
+    /// SQL stream without depending on the exact ordering between
+    /// count-probes (Phase 5d) and the lightweight DELETE/UPDATE itself.
+    fn find_first_with_prefix<'a>(sqls: &'a [String], prefix: &str) -> Option<&'a String> {
+        sqls.iter().find(|s| s.starts_with(prefix))
+    }
+
     #[test]
     fn cypher_set_routes_to_write_path_and_emits_update() {
         let (db, captured) = make_capturing_db(build_writable_test_schema());
@@ -2167,19 +2391,18 @@ graph_schema:
             .expect("SET should succeed via write dispatch");
         let mut iter = result.into_iter();
         let row = iter.next().unwrap();
+        // CapturingExecutor returns `n=1` for count probes (one match
+        // per write op), so properties_set = 1 assignment * 1 row.
         assert_eq!(row.get("properties_set").unwrap().as_i64(), Some(1));
 
         let sqls = captured.lock().unwrap();
-        assert!(
-            sqls[0].starts_with("UPDATE"),
-            "expected UPDATE, got: {}",
-            sqls[0]
-        );
+        let update = find_first_with_prefix(&sqls, "UPDATE")
+            .unwrap_or_else(|| panic!("expected UPDATE in captured SQL, got: {:?}", *sqls));
         // Lightweight UPDATE — no mutations_sync.
         assert!(
-            !sqls[0].to_lowercase().contains("mutations_sync"),
+            !update.to_lowercase().contains("mutations_sync"),
             "must not emit mutations_sync, got: {}",
-            sqls[0]
+            update
         );
     }
 
@@ -2192,14 +2415,12 @@ graph_schema:
             .expect("DELETE should succeed via write dispatch");
         let mut iter = result.into_iter();
         let row = iter.next().unwrap();
+        // CapturingExecutor's count probe returns `n=1` → nodes_deleted=1.
         assert_eq!(row.get("nodes_deleted").unwrap().as_i64(), Some(1));
 
         let sqls = captured.lock().unwrap();
-        assert!(
-            sqls[0].starts_with("DELETE FROM"),
-            "expected DELETE FROM, got: {}",
-            sqls[0]
-        );
+        find_first_with_prefix(&sqls, "DELETE FROM")
+            .unwrap_or_else(|| panic!("expected DELETE FROM in captured SQL, got: {:?}", *sqls));
     }
 
     #[test]
@@ -2212,16 +2433,22 @@ graph_schema:
         let mut iter = result.into_iter();
         let row = iter.next().unwrap();
         // KNOWS touches Person on both sides → 2 rel-cleanup deletes,
-        // then 1 node delete.
+        // then 1 node delete. With the per-op `n=1` mock, that's
+        // relationships_deleted >= 1 and nodes_deleted = 1.
         assert!(row.get("relationships_deleted").unwrap().as_i64().unwrap() >= 1);
         assert_eq!(row.get("nodes_deleted").unwrap().as_i64(), Some(1));
 
         let sqls = captured.lock().unwrap();
-        // Last SQL is the node delete.
+        // Last DELETE statement is the node delete (rel cleanups precede).
+        let last_delete = sqls
+            .iter()
+            .rev()
+            .find(|s| s.starts_with("DELETE FROM"))
+            .unwrap_or_else(|| panic!("expected DELETE in captured SQL, got: {:?}", *sqls));
         assert!(
-            sqls.last().unwrap().contains("`persons`") || sqls.last().unwrap().contains("`person`"),
-            "node DELETE must come last, got: {:?}",
-            sqls
+            last_delete.contains("`persons`") || last_delete.contains("`person`"),
+            "node DELETE must come last, got: {}",
+            last_delete
         );
     }
 
@@ -2232,10 +2459,16 @@ graph_schema:
         conn.query("MATCH (a:Person) WHERE a.person_id = 'p1' REMOVE a.name")
             .expect("REMOVE should succeed");
         let sqls = captured.lock().unwrap();
+        let update = find_first_with_prefix(&sqls, "UPDATE").unwrap_or_else(|| {
+            panic!(
+                "REMOVE should emit an UPDATE setting NULL, got: {:?}",
+                *sqls
+            )
+        });
         assert!(
-            sqls[0].contains("SET `full_name` = NULL"),
+            update.contains("SET `full_name` = NULL"),
             "REMOVE should emit SET … = NULL, got: {}",
-            sqls[0]
+            update
         );
     }
 
@@ -2331,13 +2564,87 @@ graph_schema:
         assert!(cols.contains(&"nodes_created".to_string()));
     }
 
-    /// `CREATE … RETURN` likewise must enter the write pipeline. We don't
-    /// yet support returning rows from a CREATE — the write pipeline
-    /// rejects this combination with a clear error rather than letting it
-    /// silently fall through to the read path.
+    /// Phase 5d: `OPTIONAL MATCH … DELETE … RETURN` must run the write
+    /// pipeline, then re-run the read pipeline and surface the user-visible
+    /// row payload plus the side-effect counters via the new
+    /// `QueryResult::get_write_counters()` side-channel. The pure-write
+    /// 4-column synthetic counter row is *not* used in this path — the
+    /// row payload comes from the read pipeline.
+    ///
+    /// We pin dispatch-shape (side-channel populated, read columns
+    /// surfaced, both write and read SQL reach the executor) here. End-
+    /// to-end counter accuracy on an empty graph (the actual TCK
+    /// `Delete1` [5] expectation of zero side effects) is exercised
+    /// against a real chdb session in `clickgraph-tck`.
     #[test]
-    fn cypher_create_with_return_rejected_with_clear_error() {
-        let (db, _captured) = make_capturing_db(build_writable_test_schema());
+    fn cypher_delete_with_return_executes_writes_and_runs_read_pipeline() {
+        let (db, captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let result = conn
+            .query("OPTIONAL MATCH (a:Person) DELETE a RETURN a")
+            .expect("DELETE … RETURN must succeed via Phase 5d write+RETURN path");
+
+        // Side-channel must be populated; the pure-write synthetic row
+        // must NOT be the surfaced row payload.
+        let counters = result
+            .get_write_counters()
+            .cloned()
+            .expect("write+RETURN must populate get_write_counters()");
+        let cols = result.get_column_names().to_vec();
+        assert!(
+            !cols.iter().any(|c| c == "nodes_created"),
+            "write+RETURN columns must come from the read pipeline, \
+             not the synthetic counter row; got {:?}",
+            cols
+        );
+        // The four canonical counters must all be present in the side-
+        // channel map even when zero, so downstream consumers (e.g. the
+        // TCK harness) can read every key without `Option` juggling.
+        for key in [
+            "nodes_created",
+            "properties_set",
+            "nodes_deleted",
+            "relationships_deleted",
+        ] {
+            assert!(
+                counters.contains_key(key),
+                "side-channel must include `{key}`, got: {counters:?}"
+            );
+        }
+
+        // Both the write (DELETE) and the re-run read pipeline (SELECT)
+        // must reach the executor; the count-probe (`SELECT count() AS n`)
+        // also runs alongside the DELETE per Phase 5d's accurate-counters
+        // pass.
+        let sqls = captured.lock().unwrap();
+        assert!(
+            sqls.iter().any(|s| s.starts_with("DELETE FROM")),
+            "write+RETURN must emit a DELETE statement, got: {:?}",
+            *sqls
+        );
+        assert!(
+            sqls.iter().any(|s| s.starts_with("SELECT count() AS n")),
+            "write+RETURN must probe the count for accurate counters, got: {:?}",
+            *sqls
+        );
+        assert!(
+            sqls.iter()
+                .any(|s| s.to_uppercase().contains("SELECT")
+                    && !s.starts_with("SELECT count() AS n")),
+            "write+RETURN must run the read pipeline (non-probe SELECT), got: {:?}",
+            *sqls
+        );
+    }
+
+    /// `CREATE … RETURN` likewise must enter the write pipeline. Phase 5d
+    /// supports DELETE/SET/REMOVE + RETURN via re-running the read pipeline,
+    /// but CREATE + RETURN remains rejected up-front because the alias
+    /// bound by CREATE has no MATCH-able identity for the read pipeline to
+    /// reference; rejecting before any execution keeps the database
+    /// unchanged on failure rather than leaving a partial INSERT.
+    #[test]
+    fn cypher_create_with_return_rejected_before_insert() {
+        let (db, captured) = make_capturing_db(build_writable_test_schema());
         let conn = Connection::new(&db).unwrap();
         let err = conn
             .query("CREATE (a:Person {person_id: 'p3'}) RETURN a")
@@ -2347,6 +2654,13 @@ graph_schema:
             msg.contains("not supported") && msg.to_lowercase().contains("create"),
             "expected write-pipeline rejection naming CREATE, got: {}",
             msg
+        );
+        // No INSERT must have been emitted: rejection happens before exec.
+        let sqls = captured.lock().unwrap();
+        assert!(
+            !sqls.iter().any(|s| s.to_uppercase().contains("INSERT")),
+            "CREATE … RETURN rejection must not emit any INSERT, got: {:?}",
+            *sqls
         );
     }
 }

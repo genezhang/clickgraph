@@ -99,6 +99,33 @@ fn delete_sql(op: &DeleteOp) -> String {
     )
 }
 
+/// Render a probe SQL that counts the rows a `DeleteOp` would affect,
+/// without mutating anything. Used by `clickgraph-embedded` to attach
+/// accurate `nodes_deleted` / `relationships_deleted` counters when the
+/// statement also carries a RETURN clause (Phase 5d): the lightweight
+/// DELETE itself returns no affected-row count, so we run the same
+/// `IN (subquery)` against `count(*)` first.
+pub fn probe_delete_count_sql(op: &DeleteOp) -> String {
+    format!(
+        "SELECT count() AS n FROM `{}`.`{}` WHERE `{}` IN {}",
+        op.database,
+        op.table,
+        op.id_column,
+        render_id_source(&op.source),
+    )
+}
+
+/// Probe SQL for an `UpdateOp` — same pattern as `probe_delete_count_sql`.
+pub fn probe_update_count_sql(op: &UpdateOp) -> String {
+    format!(
+        "SELECT count() AS n FROM `{}`.`{}` WHERE `{}` IN {}",
+        op.database,
+        op.table,
+        op.id_column,
+        render_id_source(&op.source),
+    )
+}
+
 fn render_id_source(source: &RowSource) -> String {
     match source {
         RowSource::Subquery(plan) => format!("({})", render_subquery(plan.as_ref())),

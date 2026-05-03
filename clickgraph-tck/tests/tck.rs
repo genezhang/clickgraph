@@ -228,21 +228,31 @@ async fn when_executing_query(world: &mut TckWorld, step: &Step) {
             world.result_columns = result.get_column_names().to_vec();
             let col_names = world.result_columns.clone();
 
-            // Write queries route through `handle_write_async` and return a
-            // single-row counter QueryResult. Detect by exact column shape
-            // and stash the counters separately so the side-effect step can
-            // assert against them. The result_rows stay empty (the TCK
-            // shapes for writes are `the result should be empty`).
-            //
-            // Always reset write_counters first so a regression that drops
-            // the counter row can't leak stale counters from the previous
-            // query in the same scenario. Non-Int64 cells are also a
-            // regression signal (we built that QueryResult ourselves), so
-            // surface them as a captured error rather than silently
-            // skipping the value — otherwise the side-effect step could
-            // pass against an empty counter map.
+            // Reset stale state up-front so a regression that drops counters
+            // can't leak values from the previous query in the same scenario.
             world.write_counters = None;
-            if is_write_counter_shape(&col_names) {
+
+            // Phase 5d: write+RETURN attaches counters via the side-channel
+            // (`get_write_counters`), and the row payload carries the
+            // user-visible result of the read pipeline. Pure-write
+            // statements still surface the synthetic 4-column counter row
+            // for back-compat (Phase 5a/5b).
+            if let Some(side_counters) = result.get_write_counters() {
+                let counters: HashMap<String, i64> =
+                    side_counters.iter().map(|(k, v)| (k.clone(), *v)).collect();
+                world.write_counters = Some(counters);
+                world.result_rows = result
+                    .map(|row| {
+                        let values: Vec<Value> = row.values().to_vec();
+                        format_row(&col_names, &values, &var_labels, &var_rel_types)
+                    })
+                    .collect();
+                world.error = None;
+            } else if is_write_counter_shape(&col_names) {
+                // Pure-write synthetic counter-row. Stash the four counters
+                // and leave result_rows empty (the TCK write shapes are
+                // `the result should be empty`). Non-Int64 cells are a
+                // regression signal; surface as a captured error.
                 match result.next() {
                     Some(row) => {
                         let mut counters = HashMap::new();
@@ -271,8 +281,8 @@ async fn when_executing_query(world: &mut TckWorld, step: &Step) {
                         }
                     }
                     None => {
-                        // Counter shape but no row — that's a contract
-                        // violation in handle_write_async, surface it.
+                        // Counter shape but no row — contract violation
+                        // in handle_write_async, surface it.
                         world.error = Some(
                             "write QueryResult had counter columns but no row \
                              (handle_write_async regression?)"

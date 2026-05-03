@@ -1,5 +1,6 @@
 //! `QueryResult` and `Row` types — the output of `Connection::query()`.
 
+use std::collections::HashMap;
 use std::ops::Index;
 
 use super::value::Value;
@@ -18,6 +19,14 @@ pub struct QueryResult {
     compile_time_ms: f64,
     /// Time spent executing the SQL query (milliseconds).
     execution_time_ms: f64,
+    /// Side-effect counters for write+RETURN queries (Phase 5d).
+    /// `Some` when the originating Cypher contained a write clause
+    /// (CREATE / SET / DELETE / REMOVE) *and* a RETURN clause; the row
+    /// payload then carries the user-visible result of the read pipeline,
+    /// while these counters reflect the write portion.
+    /// `None` for pure read queries and (for back-compat) for pure-write
+    /// queries that surface counters as a synthetic single-row payload.
+    write_counters: Option<HashMap<String, i64>>,
 }
 
 impl QueryResult {
@@ -28,6 +37,7 @@ impl QueryResult {
             position: 0,
             compile_time_ms: 0.0,
             execution_time_ms: 0.0,
+            write_counters: None,
         }
     }
 
@@ -43,6 +53,29 @@ impl QueryResult {
             position: 0,
             compile_time_ms,
             execution_time_ms,
+            write_counters: None,
+        }
+    }
+
+    /// Construct a write+RETURN result: user-visible rows plus the
+    /// side-effect counter map produced by the write portion of the
+    /// statement. Used by `handle_write_async` to attach write counters
+    /// to a result whose row payload comes from re-running the read
+    /// pipeline after the writes have executed.
+    pub(crate) fn with_timing_and_counters(
+        column_names: Vec<String>,
+        rows: Vec<Vec<Value>>,
+        compile_time_ms: f64,
+        execution_time_ms: f64,
+        write_counters: HashMap<String, i64>,
+    ) -> Self {
+        Self {
+            column_names,
+            rows,
+            position: 0,
+            compile_time_ms,
+            execution_time_ms,
+            write_counters: Some(write_counters),
         }
     }
 
@@ -73,6 +106,18 @@ impl QueryResult {
     /// Mirrors `kuzu::QueryResult::get_execution_time()`.
     pub fn get_execution_time(&self) -> f64 {
         self.execution_time_ms
+    }
+
+    /// Side-effect counters for a write+RETURN query (Phase 5d).
+    ///
+    /// Returns `Some` only when the originating Cypher contained both a
+    /// write clause (CREATE / SET / DELETE / REMOVE) and a RETURN clause —
+    /// the row payload then carries the read-pipeline output and these
+    /// counters reflect the write portion. Pure read queries and
+    /// pure-write queries (which surface counters as a synthetic row)
+    /// return `None`.
+    pub fn get_write_counters(&self) -> Option<&HashMap<String, i64>> {
+        self.write_counters.as_ref()
     }
 
     /// Infer column data types from the first row of results.

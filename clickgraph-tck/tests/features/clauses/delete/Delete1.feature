@@ -41,17 +41,22 @@
 #     value is exercising the lift path and confirming the ungated dispatch
 #     stays clean. Re-tag candidate for `@unsupported-label-mutation` once
 #     we want it filtered out of the active list.
+#   * [5] is ungated in Phase 5d. `OPTIONAL MATCH (:DoesNotExist) DELETE a
+#     RETURN a` runs the write pipeline (no-op against an empty graph), then
+#     re-runs the read pipeline with the write clauses stripped to produce
+#     the user-visible `| a | null |` row. Side-effect counters are attached
+#     via the new `QueryResult::get_write_counters()` side-channel; the
+#     harness asserts `no side effects` against an all-zero counter map.
 # Scenarios still gated with per-scenario @wip:
 #   * [1] [2] — `MATCH (n) DELETE n` / `MATCH (n) DETACH DELETE n` over an
 #     untyped node match. ClickGraph's untyped MATCH expands to a UNION
 #     across every node table; the DELETE pipeline currently picks one
 #     label via `find_alias_label` and emits a single-table DELETE. Phase
-#     5d/e will extend the pipeline to fan out the DELETE across every
+#     5e will extend the pipeline to fan out the DELETE across every
 #     resolved label (or refuse with a clear "ambiguous DELETE" error).
 #   * [4] [6] — OPTIONAL MATCH (untyped) then DELETE / DETACH DELETE on an
 #     empty graph. Same untyped-DELETE gap as [1] [2], plus OPTIONAL-MATCH-
 #     yielding-no-rows handling on the write path.
-#   * [5] — OPTIONAL MATCH … DELETE … RETURN. Needs write+RETURN (Phase 5d).
 #   * [7] — expects a runtime ConstraintVerificationFailed; ClickGraph's
 #     non-DETACH DELETE silently leaves dangling rows rather than raising
 #     (engine semantics differ). Stay @wip until we add a referential-
@@ -126,7 +131,6 @@ Feature: Delete1 - Deleting nodes
     Then the result should be empty
     And no side effects
 
-  @wip
   Scenario: [5] Ignore null when deleting node
     Given an empty graph
     When executing query:
