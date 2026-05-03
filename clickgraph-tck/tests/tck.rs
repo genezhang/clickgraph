@@ -107,6 +107,11 @@ pub struct TckWorld {
     last_sql: Option<String>,
     /// Variable name → node label (for edge table routing).
     node_label_map: HashMap<String, String>,
+    /// Side-effect counters captured from the last write query
+    /// (`nodes_created` / `properties_set` / `nodes_deleted` /
+    /// `relationships_deleted`). `None` for read queries — we detect a
+    /// write by checking the result column shape.
+    write_counters: Option<HashMap<String, i64>>,
 }
 
 impl TckWorld {
@@ -121,6 +126,7 @@ impl TckWorld {
             error: None,
             last_sql: None,
             node_label_map: HashMap::new(),
+            write_counters: None,
         }
     }
 
@@ -221,20 +227,90 @@ async fn when_executing_query(world: &mut TckWorld, step: &Step) {
         Ok(mut result) => {
             world.result_columns = result.get_column_names().to_vec();
             let col_names = world.result_columns.clone();
-            world.result_rows = result
-                .map(|row| {
-                    let values: Vec<Value> = row.values().to_vec();
-                    format_row(&col_names, &values, &var_labels, &var_rel_types)
-                })
-                .collect();
-            world.error = None;
+
+            // Write queries route through `handle_write_async` and return a
+            // single-row counter QueryResult. Detect by exact column shape
+            // and stash the counters separately so the side-effect step can
+            // assert against them. The result_rows stay empty (the TCK
+            // shapes for writes are `the result should be empty`).
+            //
+            // Always reset write_counters first so a regression that drops
+            // the counter row can't leak stale counters from the previous
+            // query in the same scenario. Non-Int64 cells are also a
+            // regression signal (we built that QueryResult ourselves), so
+            // surface them as a captured error rather than silently
+            // skipping the value — otherwise the side-effect step could
+            // pass against an empty counter map.
+            world.write_counters = None;
+            if is_write_counter_shape(&col_names) {
+                match result.next() {
+                    Some(row) => {
+                        let mut counters = HashMap::new();
+                        let mut bad_cell: Option<(String, String)> = None;
+                        for (name, value) in col_names.iter().zip(row.values().iter()) {
+                            match value.as_i64() {
+                                Some(n) => {
+                                    counters.insert(name.clone(), n);
+                                }
+                                None => {
+                                    bad_cell = Some((name.clone(), format!("{:?}", value)));
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some((name, repr)) = bad_cell {
+                            world.error = Some(format!(
+                                "write counter `{name}` was not Int64 (got {repr}); \
+                                 handle_write_async result shape regressed?"
+                            ));
+                            world.result_rows.clear();
+                        } else {
+                            world.write_counters = Some(counters);
+                            world.result_rows.clear();
+                            world.error = None;
+                        }
+                    }
+                    None => {
+                        // Counter shape but no row — that's a contract
+                        // violation in handle_write_async, surface it.
+                        world.error = Some(
+                            "write QueryResult had counter columns but no row \
+                             (handle_write_async regression?)"
+                                .to_string(),
+                        );
+                        world.result_rows.clear();
+                    }
+                }
+            } else {
+                world.result_rows = result
+                    .map(|row| {
+                        let values: Vec<Value> = row.values().to_vec();
+                        format_row(&col_names, &values, &var_labels, &var_rel_types)
+                    })
+                    .collect();
+                world.error = None;
+            }
         }
         Err(e) => {
             world.error = Some(e.to_string());
             world.result_rows.clear();
             world.result_columns.clear();
+            world.write_counters = None;
         }
     }
+}
+
+/// Recognise the four-column counter shape that `handle_write_async`
+/// returns. Used to distinguish read vs. write QueryResult and route the
+/// side-effect step to counter assertions.
+fn is_write_counter_shape(cols: &[String]) -> bool {
+    const EXPECTED: [&str; 4] = [
+        "nodes_created",
+        "properties_set",
+        "nodes_deleted",
+        "relationships_deleted",
+    ];
+    cols.len() == EXPECTED.len() && EXPECTED.iter().all(|n| cols.iter().any(|c| c == n))
 }
 
 // ---------------------------------------------------------------------------
@@ -352,15 +428,130 @@ async fn then_result_empty(world: &mut TckWorld) {
 }
 
 #[then(regex = r"^no side effects$")]
-async fn then_no_side_effects(_world: &mut TckWorld) {
-    // In read-only test scenarios, there should be no side effects.
-    // We accept this step as a no-op.
+async fn then_no_side_effects(world: &mut TckWorld) {
+    if world.is_skip() {
+        return;
+    }
+    // For read-only queries the write_counters field is None and there's
+    // nothing to check. For write queries we assert all four counters are
+    // zero. This matches the TCK semantics — read scenarios assert "no
+    // side effects" too, and we don't want to break the 402/402 baseline.
+    if let Some(counters) = &world.write_counters {
+        for (name, value) in counters {
+            assert_eq!(
+                *value, 0,
+                "expected no side effects but {name} = {value}; counters={counters:?}"
+            );
+        }
+    }
 }
 
 #[then(regex = r"^the side effects should be:$")]
-async fn then_side_effects(_world: &mut TckWorld) {
-    // Side-effect tracking (node/rel counts) is not implemented.
-    // Accept without assertion.
+async fn then_side_effects(world: &mut TckWorld, step: &Step) {
+    if world.is_skip() {
+        return;
+    }
+    let table = match step.table() {
+        Some(t) => t,
+        None => return,
+    };
+
+    let counters = match &world.write_counters {
+        Some(c) => c.clone(),
+        None => {
+            // Read query — no counter row was captured. The scenario
+            // either hit a skip path or the harness still doesn't route
+            // this query through the write pipeline. Mark @wip-style
+            // skip rather than fail so triage can surface it.
+            world.skip_reason = Some(
+                "side effects asserted but no counter row was captured \
+                 (likely a read-shaped query that should have routed to \
+                 the write pipeline)"
+                    .to_string(),
+            );
+            return;
+        }
+    };
+
+    // Each Gherkin row is `| <key> | <value> |`. The keys we know how to
+    // map are listed in `effect_to_counter`. Unknown keys (today: any
+    // `+labels` / `-labels` / `+properties` from a label mutation, plus
+    // any future `+nodes` for relationship CREATE that's still unsupported)
+    // mark the scenario as skipped so it's surfaced as @wip rather than
+    // failing the run.
+    for row in &table.rows {
+        if row.len() < 2 {
+            continue;
+        }
+        let key = row[0].trim();
+        let expected_str = row[1].trim();
+        let expected: i64 = match expected_str.parse() {
+            Ok(n) => n,
+            Err(_) => {
+                world.skip_reason = Some(format!(
+                    "side-effect value '{expected_str}' is not an integer (key={key})"
+                ));
+                return;
+            }
+        };
+
+        let counter = match effect_to_counter(key) {
+            Some(c) => c,
+            None => {
+                // Unsupported side-effect category (label mutations,
+                // edge creation that's not implemented). Skip rather
+                // than fail.
+                world.skip_reason = Some(format!(
+                    "side-effect '{key}' is not yet mapped to a ClickGraph counter \
+                     (typical for label mutations or unimplemented write forms)"
+                ));
+                return;
+            }
+        };
+        // Treat an absent counter key as a hard error rather than 0 —
+        // a silent default would let a regression in counter capture
+        // (e.g., column rename, non-Int64 cell silently dropped) make
+        // assertions pass when they shouldn't.
+        let actual = match counters.get(counter) {
+            Some(n) => *n,
+            None => {
+                panic!(
+                    "side-effect counter `{counter}` is missing from the captured \
+                     counter row; available={counters:?}. This indicates \
+                     handle_write_async returned a different counter shape than \
+                     expected — fix the harness mapping or handle_write_async."
+                );
+            }
+        };
+        assert_eq!(
+            actual, expected,
+            "side-effect mismatch for {key}: expected {expected}, got {actual} \
+             (counter={counter}, all={counters:?})"
+        );
+    }
+}
+
+/// Map a TCK side-effect key to the QueryResult counter column it
+/// corresponds to. `None` means the side effect isn't representable in
+/// the current four-counter shape — typically label mutations, which
+/// ClickGraph doesn't support at all (labels are baked into the table
+/// identity, see Cypher Language Reference).
+fn effect_to_counter(key: &str) -> Option<&'static str> {
+    match key {
+        "+nodes" => Some("nodes_created"),
+        "+properties" => Some("properties_set"),
+        "-nodes" => Some("nodes_deleted"),
+        "-relationships" => Some("relationships_deleted"),
+        // `-properties` (REMOVE / SET = NULL) is also `properties_set`
+        // in our model since the work is a SET … = NULL update — but
+        // TCK scenarios that use it generally assert it alone, so we
+        // mirror that here.
+        "-properties" => Some("properties_set"),
+        // Label mutations: not supported at all (out of scope).
+        // Relationship CREATE side effect (`+relationships`): not yet
+        // supported, so leave unmapped to surface as @wip skip.
+        _ => None,
+    }
 }
 
 #[then(regex = r"^an? (\w+) should be raised at (?:compile|runtime|any)(?:\s+time)?: (.+)$")]
@@ -562,11 +753,20 @@ fn main() {
             // cross-contamination.
             .max_concurrent_scenarios(1)
             .filter_run("tests/features", |_, _, sc| {
-                // Skip scenarios tagged @skip or @NegativeTests
+                // Skip scenarios tagged with any harness-recognised filter
+                // tag. `unsupported-label-mutation` is a permanent skip
+                // (labels are part of the table identity in ClickGraph —
+                // see docs/wiki/Cypher-Language-Reference.md#write-clauses);
+                // the rest are temporary import / triage gates.
                 !sc.tags.iter().any(|t| {
                     matches!(
                         t.as_str(),
-                        "skip" | "fails" | "NegativeTests" | "crash" | "wip"
+                        "skip"
+                            | "fails"
+                            | "NegativeTests"
+                            | "crash"
+                            | "wip"
+                            | "unsupported-label-mutation"
                     )
                 })
             }),
