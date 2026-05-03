@@ -1046,7 +1046,14 @@ RETURN item
 
 ClickGraph translates write clauses to ClickHouse's lightweight `INSERT` / `UPDATE` / `DELETE` mutation path. UPDATE and DELETE require block-tracking columns on the table; ClickGraph adds `enable_block_number_column = 1, enable_block_offset_column = 1` to the `CREATE TABLE` settings of every writable table at DDL time, so this is automatic for tables ClickGraph creates.
 
-Writes return a single-row `QueryResult` with Neo4j-compatible counters: `nodes_created`, `properties_set`, `nodes_deleted`, `relationships_deleted`. Affected-row counts are best-effort — chdb's lightweight write path doesn't surface row counts, so each write op contributes one to its counter (use a `MATCH ... RETURN count(...)` before/after for exact counts).
+Writes return a single-row `QueryResult` with Neo4j-compatible counters: `nodes_created`, `properties_set`, `nodes_deleted`, `relationships_deleted`. The counters are derived from the rendered write plan rather than from chdb (which doesn't surface affected-row counts on the lightweight path):
+
+- `nodes_created` = total rows across all `INSERT` ops (so `UNWIND list AS x CREATE (:Node {...})` reports one per element).
+- `properties_set` = total `SET alias.col = expr` assignments rendered (so `SET a.x = 1, a.y = 2` reports `2`).
+- `nodes_deleted` = the trailing node `DELETE` in each top-level `DELETE` / `DETACH DELETE` plan (one per matched alias is approximate — see below).
+- `relationships_deleted` = the per-edge-type cleanup `DELETE`s emitted for `DETACH DELETE`.
+
+Counts are still best-effort: when a `MATCH` matches zero rows the rendered plan is the same shape, so the counters report the *intended* count from the plan, not the *executed* row count from chdb. Use `MATCH … RETURN count(*)` before/after for exact counts.
 
 ### CREATE Clause
 
@@ -1097,7 +1104,8 @@ The planner translates each `SET alias.prop = expr` to an `UPDATE` filtered by `
 
 **Limitations**:
 - Setting properties on relationships (`SET r.prop = …`) is not implemented yet.
-- `SET a += {…}` (map-merge SET) is not implemented yet.
+- `SET a += {…}` (map-merge SET) and `SET a = {…}` (full-map SET) are not implemented yet.
+- `SET a:NewLabel` (label-add) is **not supported** and will not be — ClickGraph encodes labels into the *table identity* (one writable table per node label), so labels are not a runtime property that can be added or removed. Use a different node label up front, or insert a fresh node.
 - Writes against `source:`-backed labels are rejected.
 
 ### DELETE / DETACH DELETE Clause
@@ -1130,7 +1138,7 @@ REMOVE a.age          -- a.age becomes NULL
 ```
 
 **Limitations**:
-- `REMOVE a:Label` (label removal) is not implemented — labels are encoded into the table identity in ClickGraph and aren't a runtime property.
+- `REMOVE a:Label` (label removal) is **not supported** — same reason as `SET a:Label` above: labels are part of the table identity, not a runtime property.
 
 ---
 
@@ -2534,7 +2542,7 @@ See [Known Limitations](Known-Limitations.md) for complete list.
 
 **Not Supported:**
 - ❌ `MERGE` clause (match-or-create) — planned for v0.7.x; use `MATCH ... WITH ... CREATE` patterns as a workaround
-- ❌ `CREATE … RETURN`, relationship `CREATE`, `SET r.prop` on relationship aliases, `DELETE r` for an edge alias, `SET a += {…}` map-merge, `REMOVE a:Label`
+- ❌ `CREATE … RETURN`, relationship `CREATE`, `SET r.prop` on relationship aliases, `DELETE r` for an edge alias, `SET a += {…}` / `SET a = {…}` map-merge / full-map, `SET a:Label` and `REMOVE a:Label` (label-add/remove are out-of-scope, not just unimplemented — labels are baked into the table identity)
 - ❌ Writes in server / remote / sql_only modes — embedded mode only
 - ❌ Writes against nodes/edges backed by a `source:` URI in the schema YAML
 - ❌ Complex subqueries (`CALL { ... }`)

@@ -4,7 +4,7 @@
 
 # ClickGraph
 
-#### ClickGraph - A high-performance, stateless graph query service for ClickHouse, written in Rust, with Neo4j ecosystem compatibility - Cypher and Bolt Protocol 5.8 support. Reads via Cypher across server, embedded (in-process chdb), remote, and sql_only modes; **Cypher writes (`CREATE` / `SET` / `DELETE` / `REMOVE`) supported in embedded mode** as of v0.6.7. Exports query results to external destinations. Golang and Python bindings in addition to native Rust. New `cg` CLI tool supports agentic workflows.
+#### ClickGraph - A high-performance graph query engine for ClickHouse, written in Rust, with Neo4j ecosystem compatibility - Cypher and Bolt Protocol 5.8 support. Server mode is stateless (translates Cypher to ClickHouse SQL with no extra datastore); embedded mode runs in-process via chdb and is **read-write** as of v0.6.7 (`CREATE` / `SET` / `DELETE` / `REMOVE`). Reads also work in remote and sql_only modes. Exports query results to external destinations. Golang and Python bindings in addition to native Rust. New `cg` CLI tool supports agentic workflows.
 
 > **Note: ClickGraph dev release is at beta quality for view-based graph analytics applications. Kindly raise an issue if you encounter any problem.**
 

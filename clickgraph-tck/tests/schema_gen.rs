@@ -408,15 +408,18 @@ mod tests {
 
     #[test]
     fn test_feature_is_filtered_recognises_filter_tags() {
-        // Feature-level filter tag → excluded from schema inference.
-        let wip_feature = "@wip\nFeature: Foo\n  Scenario: bar\n    Given x\n";
-        assert!(feature_is_filtered(wip_feature));
-
-        let skip_feature = "@skip\nFeature: Foo\n";
-        assert!(feature_is_filtered(skip_feature));
-
-        let fails_feature = "@fails\nFeature: Foo\n";
-        assert!(feature_is_filtered(fails_feature));
+        // Every tag the cucumber harness skips must also exclude the
+        // feature from schema inference — otherwise the universal
+        // catalog gets out of sync with the scenarios actually run.
+        // Keep this set in lock-step with `feature_is_filtered()` and
+        // the cucumber filter in `tests/tck.rs:filter_run`.
+        for tag in ["@wip", "@skip", "@fails", "@crash", "@NegativeTests"] {
+            let src = format!("{tag}\nFeature: Foo\n  Scenario: bar\n    Given x\n");
+            assert!(
+                feature_is_filtered(&src),
+                "{tag} should exclude feature from schema inference"
+            );
+        }
 
         // Non-filter tags don't trigger exclusion.
         let plain = "@SomeAnnotation\nFeature: Foo\n";
@@ -425,6 +428,10 @@ mod tests {
         // Tag line below the Feature: line is per-scenario, not feature-level.
         let scenario_tag = "Feature: Foo\n  @wip\n  Scenario: bar\n";
         assert!(!feature_is_filtered(scenario_tag));
+
+        // Multiple tags on the same line — match if any is a filter tag.
+        let multi = "@SomeAnnotation @wip\nFeature: Foo\n";
+        assert!(feature_is_filtered(multi));
 
         // No tags at all.
         assert!(!feature_is_filtered("Feature: Foo\n  Scenario: bar\n"));
