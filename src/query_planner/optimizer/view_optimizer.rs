@@ -269,6 +269,11 @@ impl OptimizerPass for ViewOptimizer {
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
+            // Write variants — view optimization does not apply.
+            LogicalPlan::Create(_)
+            | LogicalPlan::SetProperties(_)
+            | LogicalPlan::Delete(_)
+            | LogicalPlan::Remove(_) => Transformed::No(logical_plan.clone()),
         };
 
         Ok(transformed_plan)

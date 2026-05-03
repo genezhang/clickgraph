@@ -191,6 +191,13 @@ impl PatternMetadataBuilder {
                 Self::extract_pattern_info(&wc.input, plan_ctx, metadata)?
             }
             LogicalPlan::ViewScan(_) | LogicalPlan::Empty | LogicalPlan::PageRank(_) => {}
+            // Write variants — recurse into preceding read pipeline.
+            LogicalPlan::Create(c) => Self::extract_pattern_info(&c.input, plan_ctx, metadata)?,
+            LogicalPlan::SetProperties(sp) => {
+                Self::extract_pattern_info(&sp.input, plan_ctx, metadata)?
+            }
+            LogicalPlan::Delete(d) => Self::extract_pattern_info(&d.input, plan_ctx, metadata)?,
+            LogicalPlan::Remove(r) => Self::extract_pattern_info(&r.input, plan_ctx, metadata)?,
         }
         Ok(())
     }

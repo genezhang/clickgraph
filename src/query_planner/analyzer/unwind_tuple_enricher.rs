@@ -143,6 +143,12 @@ pub fn enrich_unwind_with_tuple_info(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan>
         )),
         // Leaf nodes - no children to recurse into
         LogicalPlan::Empty | LogicalPlan::ViewScan(_) | LogicalPlan::PageRank(_) => plan.clone(),
+
+        // Write variants — no UNWIND tuple enrichment needed.
+        LogicalPlan::Create(_)
+        | LogicalPlan::SetProperties(_)
+        | LogicalPlan::Delete(_)
+        | LogicalPlan::Remove(_) => plan.clone(),
     }
 }
 

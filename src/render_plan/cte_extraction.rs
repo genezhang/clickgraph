@@ -4451,6 +4451,10 @@ pub fn extract_ctes_with_context(
                     LogicalPlan::Unwind(_) => "Unwind",
                     LogicalPlan::CartesianProduct(_) => "CartesianProduct",
                     LogicalPlan::WithClause(_) => "WithClause",
+                    LogicalPlan::Create(_) => "Create",
+                    LogicalPlan::SetProperties(_) => "SetProperties",
+                    LogicalPlan::Delete(_) => "Delete",
+                    LogicalPlan::Remove(_) => "Remove",
                 }
             );
             extract_ctes_with_context(
@@ -4949,6 +4953,11 @@ pub fn extract_ctes_with_context(
             );
             Ok(ctes)
         }
+        // Write variants — write payloads do not contribute CTEs to read-side rendering.
+        LogicalPlan::Create(_)
+        | LogicalPlan::SetProperties(_)
+        | LogicalPlan::Delete(_)
+        | LogicalPlan::Remove(_) => Ok(vec![]),
     }
 }
 

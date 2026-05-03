@@ -331,6 +331,19 @@ impl GraphJoinInference {
             }
             // Leaf nodes - nothing to extract
             LogicalPlan::ViewScan(_) | LogicalPlan::Empty | LogicalPlan::PageRank(_) => {}
+            // Write variants — recurse into preceding read pipeline.
+            LogicalPlan::Create(c) => {
+                Self::extract_pattern_info(&c.input, plan_ctx, metadata)?;
+            }
+            LogicalPlan::SetProperties(sp) => {
+                Self::extract_pattern_info(&sp.input, plan_ctx, metadata)?;
+            }
+            LogicalPlan::Delete(d) => {
+                Self::extract_pattern_info(&d.input, plan_ctx, metadata)?;
+            }
+            LogicalPlan::Remove(r) => {
+                Self::extract_pattern_info(&r.input, plan_ctx, metadata)?;
+            }
         }
 
         Ok(())
@@ -389,6 +402,11 @@ impl GraphJoinInference {
             | LogicalPlan::PageRank(_)
             | LogicalPlan::Cte(_)
             | LogicalPlan::Union(_) => {}
+            // Write variants — recurse into preceding read pipeline.
+            LogicalPlan::Create(c) => Self::collect_fresh_scan_aliases(&c.input, aliases),
+            LogicalPlan::SetProperties(sp) => Self::collect_fresh_scan_aliases(&sp.input, aliases),
+            LogicalPlan::Delete(d) => Self::collect_fresh_scan_aliases(&d.input, aliases),
+            LogicalPlan::Remove(r) => Self::collect_fresh_scan_aliases(&r.input, aliases),
         }
     }
 
@@ -597,6 +615,19 @@ impl GraphJoinInference {
 
             // Leaf nodes - nothing to recurse
             LogicalPlan::ViewScan(_) | LogicalPlan::Empty | LogicalPlan::PageRank(_) => {}
+            // Write variants — recurse into preceding read pipeline.
+            LogicalPlan::Create(c) => {
+                self.register_with_cte_references(&c.input, plan_ctx, captured_refs)?;
+            }
+            LogicalPlan::SetProperties(sp) => {
+                self.register_with_cte_references(&sp.input, plan_ctx, captured_refs)?;
+            }
+            LogicalPlan::Delete(d) => {
+                self.register_with_cte_references(&d.input, plan_ctx, captured_refs)?;
+            }
+            LogicalPlan::Remove(r) => {
+                self.register_with_cte_references(&r.input, plan_ctx, captured_refs)?;
+            }
         }
 
         Ok(())
@@ -1829,6 +1860,11 @@ impl GraphJoinInference {
                     }
                 }
             }
+            // Write variants — read-side join inference does not apply.
+            LogicalPlan::Create(_)
+            | LogicalPlan::SetProperties(_)
+            | LogicalPlan::Delete(_)
+            | LogicalPlan::Remove(_) => Transformed::No(logical_plan.clone()),
         };
         Ok(transformed_plan)
     }
@@ -2280,6 +2316,11 @@ impl GraphJoinInference {
                 // Don't recurse - treat this as a boundary
                 Ok(())
             }
+            // Write variants — read-side join collection does not apply.
+            LogicalPlan::Create(_)
+            | LogicalPlan::SetProperties(_)
+            | LogicalPlan::Delete(_)
+            | LogicalPlan::Remove(_) => Ok(()),
         };
 
         crate::debug_print!("+- collect_graph_joins EXIT");

@@ -483,6 +483,11 @@ impl FilterBuilder for LogicalPlan {
                 }
             }
             LogicalPlan::WithClause(wc) => wc.input.extract_filters()?,
+            // Write variants — recurse into preceding read pipeline for filter extraction.
+            LogicalPlan::Create(c) => c.input.extract_filters()?,
+            LogicalPlan::SetProperties(sp) => sp.input.extract_filters()?,
+            LogicalPlan::Delete(d) => d.input.extract_filters()?,
+            LogicalPlan::Remove(r) => r.input.extract_filters()?,
         };
         Ok(filters)
     }

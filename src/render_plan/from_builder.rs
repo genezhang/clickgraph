@@ -261,6 +261,14 @@ impl FromBuilder for LogicalPlan {
             }
 
             LogicalPlan::WithClause(wc) => from_table_to_view_ref(wc.input.extract_from()?),
+
+            // Write variants — recurse into preceding read pipeline. The write
+            // payload itself does not produce a FROM clause (its SQL is rendered
+            // separately in Phase 2's write_to_sql.rs).
+            LogicalPlan::Create(c) => from_table_to_view_ref(c.input.extract_from()?),
+            LogicalPlan::SetProperties(sp) => from_table_to_view_ref(sp.input.extract_from()?),
+            LogicalPlan::Delete(d) => from_table_to_view_ref(d.input.extract_from()?),
+            LogicalPlan::Remove(r) => from_table_to_view_ref(r.input.extract_from()?),
         };
 
         Ok(view_ref_to_from_table(from_ref))

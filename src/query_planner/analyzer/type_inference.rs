@@ -1039,6 +1039,11 @@ impl TypeInference {
                     Ok(Transformed::No(plan))
                 }
             }
+            // Write variants — read-side label inference does not apply.
+            LogicalPlan::Create(_)
+            | LogicalPlan::SetProperties(_)
+            | LogicalPlan::Delete(_)
+            | LogicalPlan::Remove(_) => Ok(Transformed::No(plan)),
         }
     }
 
@@ -3340,6 +3345,11 @@ impl TypeInference {
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
+            // Write variants — read-side table-name push does not apply.
+            LogicalPlan::Create(_)
+            | LogicalPlan::SetProperties(_)
+            | LogicalPlan::Delete(_)
+            | LogicalPlan::Remove(_) => Transformed::No(logical_plan.clone()),
         };
         Ok(transformed_plan.get_plan().clone())
     }
@@ -3623,6 +3633,11 @@ impl TypeInference {
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
+            // Write variants — read-side table-name push does not apply.
+            LogicalPlan::Create(_)
+            | LogicalPlan::SetProperties(_)
+            | LogicalPlan::Delete(_)
+            | LogicalPlan::Remove(_) => Transformed::No(logical_plan.clone()),
         };
         Ok(transformed_plan)
     }
@@ -4844,6 +4859,12 @@ fn clone_plan_with_labels(
         // Base cases that don't need recursion
         LogicalPlan::Empty => LogicalPlan::Empty,
         LogicalPlan::ViewScan(view_scan) => LogicalPlan::ViewScan(view_scan.clone()),
+
+        // Write variants — clone unchanged; label inference only applies to read patterns.
+        LogicalPlan::Create(c) => LogicalPlan::Create(c.clone()),
+        LogicalPlan::SetProperties(sp) => LogicalPlan::SetProperties(sp.clone()),
+        LogicalPlan::Delete(d) => LogicalPlan::Delete(d.clone()),
+        LogicalPlan::Remove(r) => LogicalPlan::Remove(r.clone()),
     }
 }
 

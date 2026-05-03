@@ -230,6 +230,12 @@ fn find_relationship_direction(plan: &LogicalPlan, rel_alias: &str) -> Option<St
         LogicalPlan::GraphNode(gn) => find_relationship_direction(&gn.input, rel_alias),
         LogicalPlan::GraphJoins(gj) => find_relationship_direction(&gj.input, rel_alias),
         LogicalPlan::ViewScan(_) | LogicalPlan::Empty => None,
+
+        // Write variants — recurse into preceding read pipeline.
+        LogicalPlan::Create(c) => find_relationship_direction(&c.input, rel_alias),
+        LogicalPlan::SetProperties(sp) => find_relationship_direction(&sp.input, rel_alias),
+        LogicalPlan::Delete(d) => find_relationship_direction(&d.input, rel_alias),
+        LogicalPlan::Remove(r) => find_relationship_direction(&r.input, rel_alias),
     }
 }
 

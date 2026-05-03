@@ -308,6 +308,11 @@ impl CleanupViewScanFilters {
                     Transformed::No(_) => Transformed::No(logical_plan),
                 }
             }
+            // Write variants — read-side filter cleanup does not apply.
+            LogicalPlan::Create(_)
+            | LogicalPlan::SetProperties(_)
+            | LogicalPlan::Delete(_)
+            | LogicalPlan::Remove(_) => Transformed::No(logical_plan),
         };
 
         Ok(transformed_plan)

@@ -106,6 +106,12 @@ pub(crate) fn find_label_for_alias_in_plan(
             None
         }
         LogicalPlan::Empty | LogicalPlan::PageRank(_) => None,
+
+        // Write variants — recurse into preceding read pipeline.
+        LogicalPlan::Create(c) => find_label_for_alias_in_plan(&c.input, target_alias),
+        LogicalPlan::SetProperties(sp) => find_label_for_alias_in_plan(&sp.input, target_alias),
+        LogicalPlan::Delete(d) => find_label_for_alias_in_plan(&d.input, target_alias),
+        LogicalPlan::Remove(r) => find_label_for_alias_in_plan(&r.input, target_alias),
     }
 }
 

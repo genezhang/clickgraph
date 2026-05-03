@@ -38,7 +38,7 @@ use crate::{
         logical_plan::{
             errors::LogicalPlanError, match_clause, optional_match_clause, order_by_clause,
             return_clause, skip_n_limit_clause, unwind_clause, where_clause, with_clause,
-            LogicalPlan,
+            write_clause_builder, LogicalPlan,
         },
         plan_ctx::PlanCtx,
     },
@@ -68,11 +68,18 @@ pub fn build_logical_plan(
     );
 
     // 🚨 DIAGNOSTIC: Check if query is completely empty
+    // Standalone write queries (e.g., `CREATE (a:Person {...})` with no RETURN)
+    // are valid — they have no read-side clauses but do have CREATE/SET/DELETE/REMOVE.
+    let has_write_clause = query_ast.create_clause.is_some()
+        || query_ast.set_clause.is_some()
+        || query_ast.delete_clause.is_some()
+        || query_ast.remove_clause.is_some();
     if query_ast.match_clauses.is_empty()
         && query_ast.optional_match_clauses.is_empty()
         && query_ast.unwind_clauses.is_empty()
         && query_ast.return_clause.is_none()
         && query_ast.with_clause.is_none()
+        && !has_write_clause
     {
         log::error!("❌ EMPTY QUERY DETECTED: Parser returned empty AST!");
         log::error!("   This usually means:");
@@ -208,6 +215,23 @@ pub fn build_logical_plan(
     // For "WITH a, COUNT(b) as follows WHERE follows > 1", the WHERE can now reference "follows"
     if let Some(where_clause) = &query_ast.where_clause {
         logical_plan = where_clause::evaluate_where_clause(where_clause, logical_plan)?;
+    }
+
+    // Process write clauses (embedded chdb only; gated by `write_guard` at the
+    // executor entry point). Order matters: CREATE wraps its preceding read
+    // pipeline, then SET / REMOVE / DELETE chain on top. Per OpenCypher,
+    // queries with multiple write clauses apply them in this order.
+    if let Some(create_clause) = &query_ast.create_clause {
+        logical_plan = write_clause_builder::build_create(create_clause, logical_plan, schema)?;
+    }
+    if let Some(set_clause) = &query_ast.set_clause {
+        logical_plan = write_clause_builder::build_set(set_clause, logical_plan, schema)?;
+    }
+    if let Some(remove_clause) = &query_ast.remove_clause {
+        logical_plan = write_clause_builder::build_remove(remove_clause, logical_plan, schema)?;
+    }
+    if let Some(delete_clause) = &query_ast.delete_clause {
+        logical_plan = write_clause_builder::build_delete(delete_clause, logical_plan, schema)?;
     }
 
     if let Some(return_clause) = &query_ast.return_clause {

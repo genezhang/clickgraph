@@ -338,7 +338,31 @@ Every pass returns `Transformed::Yes(plan)` if it modified the plan, `Transforme
 ### 7. PlanCtx Dual Registration
 `PlanCtx::insert_table_ctx()` registers variables in BOTH the legacy `alias_table_ctx_map` AND the new `VariableRegistry`. Both systems must stay in sync during the migration period.
 
-## Recent Changes (Feb 2026)
+## Recent Changes (May 2026)
+
+### Write LogicalPlan Variants (Phase 1 of embedded-mode writes)
+
+**What changed**: Added four write variants to `LogicalPlan`:
+
+- `Create { input, patterns: Vec<CreatePattern> }` — node and/or relationship creation
+- `SetProperties { input, items: Vec<SetItem> }` — property assignment
+- `Delete { input, targets: Vec<String>, detach: bool }` — node/edge deletion
+- `Remove { input, items: Vec<RemoveItem> }` — property removal
+
+`input` is the preceding read pipeline (or `LogicalPlan::Empty` for standalone CREATE). All write variants are routed only through embedded chdb execution.
+
+**Builder**: `logical_plan/write_clause_builder.rs` converts AST → variants. Resolves labels via `GraphSchema`, validates property names, rejects:
+- Source-backed (`source:` set) targets
+- FK-edge relationships (out of scope for v1)
+- Multi-label CREATE patterns
+- Undirected CREATE relationships
+- Variable-length paths inside CREATE
+
+**Guard**: `query_planner/write_guard.rs::ensure_write_target_writable(plan, schema, executor)` is the single admission check called by the executor before rendering. Centralises Decisions 0.1 (executor must be `EmbeddedChdb`), 0.3 (no source-backed targets), and 0.6 (no FK-edges). The HTTP/Bolt server's existing reject at `handlers.rs:1356` is retained as defence-in-depth.
+
+**Wiring**: `logical_plan/plan_builder.rs::build_logical_plan` processes write clauses *after* WHERE and *before* RETURN, in order CREATE → SET → REMOVE → DELETE.
+
+**Read-side passes**: every analyzer/optimizer/render `match` over `LogicalPlan` now has a write-variant arm — most simply pass the plan through unchanged because writes use a separate render/execute path (Phase 2/3). The few exceptions that *do* recurse into `input` are the metadata-collection helpers (`extract_pattern_info`, `find_label_for_alias_in_plan`, `extract_filters`, etc.) — preceding read pipeline must still be analysed for property requirements.
 
 ### Schema Type System Migration
 **What Changed**: `NodeIdSchema.dtype` and `RelationshipSchema.from/to_node_id_dtype` migrated from `String` to `SchemaType` enum.

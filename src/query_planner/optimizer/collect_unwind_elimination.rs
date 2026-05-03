@@ -356,6 +356,12 @@ impl CollectUnwindElimination {
             | LogicalPlan::Cte(_)
             | LogicalPlan::PageRank(_)
             | LogicalPlan::Empty => Ok((plan, HashMap::new())),
+
+            // Write variants — collect/unwind elimination only operates on read plans.
+            LogicalPlan::Create(_)
+            | LogicalPlan::SetProperties(_)
+            | LogicalPlan::Delete(_)
+            | LogicalPlan::Remove(_) => Ok((plan, HashMap::new())),
         }
     }
 

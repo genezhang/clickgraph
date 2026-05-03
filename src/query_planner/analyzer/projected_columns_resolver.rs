@@ -371,6 +371,12 @@ impl AnalyzerPass for ProjectedColumnsResolver {
             | LogicalPlan::PageRank(_)
             | LogicalPlan::Unwind(_)
             | LogicalPlan::CartesianProduct(_) => Transformed::No(logical_plan.clone()),
+
+            // Write variants — read-side projected-columns resolution does not apply.
+            LogicalPlan::Create(_)
+            | LogicalPlan::SetProperties(_)
+            | LogicalPlan::Delete(_)
+            | LogicalPlan::Remove(_) => Transformed::No(logical_plan.clone()),
         })
     }
 }

@@ -1897,6 +1897,12 @@ pub fn extract_filters(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Ren
             }
         }
         LogicalPlan::WithClause(wc) => extract_filters(&wc.input)?,
+
+        // Write variants — recurse into preceding read pipeline.
+        LogicalPlan::Create(c) => extract_filters(&c.input)?,
+        LogicalPlan::SetProperties(sp) => extract_filters(&sp.input)?,
+        LogicalPlan::Delete(d) => extract_filters(&d.input)?,
+        LogicalPlan::Remove(r) => extract_filters(&r.input)?,
     };
     Ok(filters)
 }
@@ -2629,6 +2635,12 @@ pub fn extract_from(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<FromTa
             }
         }
         LogicalPlan::WithClause(wc) => from_table_to_view_ref(extract_from(&wc.input)?),
+
+        // Write variants — recurse into preceding read pipeline.
+        LogicalPlan::Create(c) => from_table_to_view_ref(extract_from(&c.input)?),
+        LogicalPlan::SetProperties(sp) => from_table_to_view_ref(extract_from(&sp.input)?),
+        LogicalPlan::Delete(d) => from_table_to_view_ref(extract_from(&d.input)?),
+        LogicalPlan::Remove(r) => from_table_to_view_ref(extract_from(&r.input)?),
     };
     Ok(view_ref_to_from_table(from_ref))
 }
