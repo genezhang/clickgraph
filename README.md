@@ -4,7 +4,7 @@
 
 # ClickGraph
 
-#### ClickGraph - A high-performance, stateless, read-only graph query service for ClickHouse, written in Rust, with Neo4j ecosystem compatibility - Cypher and Bolt Protocol 5.8 support. Now supports embedded mode with local writes, and exporting query results to external destinations, with Golang and Python bindings, in addition to native Rust. New `cg` CLI tool supports agentic workflows.
+#### ClickGraph - A high-performance, stateless graph query service for ClickHouse, written in Rust, with Neo4j ecosystem compatibility - Cypher and Bolt Protocol 5.8 support. Reads via Cypher across server, embedded (in-process chdb), remote, and sql_only modes; **Cypher writes (`CREATE` / `SET` / `DELETE` / `REMOVE`) supported in embedded mode** as of v0.6.7. Exports query results to external destinations. Golang and Python bindings in addition to native Rust. New `cg` CLI tool supports agentic workflows.
 
 > **Note: ClickGraph dev release is at beta quality for view-based graph analytics applications. Kindly raise an issue if you encounter any problem.**
 
@@ -16,12 +16,16 @@
 See [motivation and rationale](docs/motivation.md).
 
 ---
+## What's New in v0.6.7-dev
+
+- **Cypher writes in embedded mode** — `CREATE`, `SET`, `DELETE` / `DETACH DELETE`, and `REMOVE` against ClickGraph-managed (non-`source:`) tables. Translates to ClickHouse's lightweight `INSERT` / `UPDATE` / `DELETE` mutation path; tables created by ClickGraph automatically get `enable_block_number_column = 1, enable_block_offset_column = 1`. Per-node `id_generation` schema attribute (`uuid` default / `provided` / `snowflake`). Returns Neo4j-compatible counters (`nodes_created`, `properties_set`, `nodes_deleted`, `relationships_deleted`). Server / remote / sql_only modes reject writes upstream via the `write_guard` admission check; `source:`-backed nodes/edges remain read-only. `MERGE`, relationship `CREATE`, `CREATE … RETURN`, edge-alias `DELETE r`, `SET a += {…}` map-merge, and `REMOVE a:Label` are not implemented yet — each is rejected with an explicit error rather than silently mis-rendering. See [docs/wiki/Cypher-Language-Reference.md](docs/wiki/Cypher-Language-Reference.md#write-clauses) for full syntax + caveats and [docs/design/embedded-writes.md](docs/design/embedded-writes.md) for the design.
+
 ## What's New in v0.6.6-dev
 
 - **`cg` CLI tool** — Agent/script-oriented CLI (`clickgraph-tool` crate). Translate and execute Cypher without a running server: `cg sql`, `cg validate`, `cg query`, `cg nl` (NL→Cypher via LLM), `cg schema show/validate/discover/diff`. Config via `~/.config/cg/config.toml`. Designed for agentic callers, CI pipelines, and scripting.
 - **`embedded` feature now opt-in** — `clickgraph-embedded` compiles without chdb by default. New `Database::new_remote(schema, RemoteConfig)` constructor executes Cypher against external ClickHouse with no chdb dependency — useful for lightweight tooling and the `cg` CLI.
 - **Agent skills** — Three publishable skills for any agentic framework (Claude Code, LangChain, AutoGen, CrewAI, OpenAI function calling): `/cypher` (NL→Cypher→execute), `/graph-schema` (show schema), `/schema-discover` (generate schema YAML from ClickHouse via LLM). See [skills/README.md](skills/README.md).
-- **openCypher TCK** — 383/402 openCypher Technology Compatibility Kit scenarios passing (95.3%), 0 failures. The 19 skipped scenarios cover Cypher write clauses (`CREATE`, `SET`, `DELETE`, `MERGE`) — not yet supported as Cypher syntax. Note: a programmatic write API (`create_node()`, `create_edge()`, `upsert_node()`) is already available in embedded mode; Cypher write syntax support is planned.
+- **openCypher TCK** — 402/402 read scenarios passing (100%). Write scenarios are not yet imported from upstream openCypher TCK; v0.6.7 adds the Cypher write pipeline that will unblock them.
 
 ## What's New in v0.6.5-dev
 
@@ -51,7 +55,7 @@ See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 - **Hybrid remote + local** - Query remote ClickHouse, store subgraph locally in chdb for fast re-querying
 - **Query Metrics** - Phase-by-phase timing via HTTP headers and structured logging
 - **ClickHouse cluster load balancing** - `CLICKHOUSE_CLUSTER` env var auto-discovers and balances queries across cluster nodes
-- **openCypher TCK: 383/402 passing (95.3%)** - 0 failures; 19 skipped = Cypher write clauses (`CREATE`, `SET`, `DELETE`, `MERGE`) not yet implemented as Cypher syntax (programmatic write API available in embedded mode)
+- **openCypher TCK: 402/402 read scenarios passing (100%)** - 0 failures. Write feature files are not yet imported from upstream; v0.6.7 adds the Cypher write pipeline (`CREATE` / `SET` / `DELETE` / `REMOVE`) that will unblock them.
 - **LDBC SNB benchmark: 36/37 queries (97%)** - Near-complete Social Network Benchmark coverage. See [benchmark results](benchmarks/ldbc_snb/BENCHMARK_RESULTS.md) for performance data on sf0.003, sf1 and sf10 datasets
 
 ### Neo4j Ecosystem Compatibility
@@ -287,13 +291,13 @@ RETURN friend.name
 ### Test Coverage
 - **Rust Unit Tests**: 1,601 passing (100%)
 - **Integration Tests**: 3,068 passing (108 environment-dependent)
-- **openCypher TCK**: 383/402 scenarios passing (95.3%), 0 failures, 19 skipped
+- **openCypher TCK**: 402/402 read scenarios passing (100%), 0 failures
 - **LDBC SNB**: 36/37 queries passing (97%)
 - **Benchmarks**: 14/14 passing (100%)
 - **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)
 
 ### Known Limitations
-- **Cypher write syntax**: `CREATE`, `SET`, `DELETE`, `MERGE` not yet supported as Cypher queries. Programmatic write API (`create_node()`, `create_edge()`, `upsert_node()`) is available in embedded mode; full Cypher write support is planned.
+- **Cypher writes — embedded mode only**: `CREATE`, `SET`, `DELETE`, `REMOVE` work in embedded mode against ClickGraph-managed tables (v0.6.7+). Server / remote / sql_only modes reject writes; `source:`-backed nodes/edges remain read-only. `MERGE` is planned for v0.7.x. See [Known Issues #2 / #3](KNOWN_ISSUES.md) for the full list of unsupported write combinations.
 - **Anonymous Nodes**: Use named nodes for better SQL generation
 
 See [STATUS.md](STATUS.md) and [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for details.

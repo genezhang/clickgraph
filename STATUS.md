@@ -1,12 +1,13 @@
 # ClickGraph Status
 
-*Updated: April 3, 2026*
+*Updated: May 2, 2026*
 
-## Current Version: v0.6.6-dev
+## Current Version: v0.6.7-dev
 
-Read-only Cypher-to-ClickHouse SQL query engine with Neo4j Browser compatibility.
+Cypher-to-ClickHouse SQL query engine with Neo4j Browser compatibility.
 Supports server mode, embedded (in-process chdb), remote ClickHouse, and SQL-only translation.
-New: `cg` CLI tool for agent/script-oriented use (`clickgraph-tool` workspace crate).
+**Embedded mode is now read-write** (v0.6.7+): `CREATE`, `SET`, `DELETE`, and `REMOVE` against ClickGraph-managed tables; server / remote / sql_only modes remain read-only and reject writes upstream.
+`cg` CLI tool for agent/script-oriented use (`clickgraph-tool` workspace crate).
 
 **Unit Tests**: 1,601 passing (100%)
 **Integration Tests**: 183 passing (100%)
@@ -58,6 +59,7 @@ New: `cg` CLI tool for agent/script-oriented use (`clickgraph-tool` workspace cr
 - **GraphRAG structured output**: `format: "Graph"` returns deduplicated nodes, edges, and stats
 - **ClickHouse cluster load balancing**: `CLICKHOUSE_CLUSTER` for auto-discovery and load balancing
 - **Embedded mode** (`--features embedded`): `QueryExecutor` trait + `ChdbExecutor` + `clickgraph-embedded` crate — run Cypher queries in-process over Parquet/Iceberg/Delta/S3 without a ClickHouse server. Kuzu-compatible Rust API (`Database`, `Connection`, `QueryResult`). `source:` URI field in YAML schema. S3/GCS/Azure credential support via `StorageCredentials`. The `embedded` feature is **opt-in** (default off) so dependent crates can use sql_only/remote modes without pulling in chdb.
+- **Cypher writes (embedded mode)** (v0.6.7+): `CREATE`, `SET`, `DELETE` / `DETACH DELETE`, and `REMOVE` against ClickGraph-managed nodes. Translates to ClickHouse lightweight `INSERT` / `UPDATE` / `DELETE`. Writable tables get `enable_block_number_column = 1, enable_block_offset_column = 1` in DDL automatically. Per-node `id_generation` schema attribute (`uuid` default / `provided` / `snowflake`). Returns Neo4j-compatible counters (`nodes_created`, `properties_set`, `nodes_deleted`, `relationships_deleted`). Server / remote / sql_only modes reject writes upstream via the `write_guard` admission check; `source:`-backed nodes/edges remain read-only. `MERGE`, relationship CREATE, `CREATE … RETURN`, edge-alias DELETE, `SET a += {…}` map-merge, and `REMOVE a:Label` are not implemented yet.
 - **Remote mode** (`Database::new_remote()`): Cypher translated locally, executed against external ClickHouse. No chdb required. Available without any feature flags.
 - **Hybrid remote query + local storage**: `RemoteConfig` in `SystemConfig` enables embedded mode to query a remote ClickHouse cluster via `query_remote()` / `query_remote_graph()`, decompose results into `GraphResult` (nodes + edges), and store subgraphs locally via `store_subgraph()` for fast re-querying. `query_graph()` returns structured graph results for local queries. Available in Rust, Python, and Go.
 - **`cg` CLI tool** (`clickgraph-tool`): Agent/script-oriented CLI. `cg sql` (Cypher→SQL), `cg validate` (parse+plan), `cg query` (execute via remote CH), `cg nl` (NL→Cypher via LLM), `cg schema show/validate/discover/diff`. Config via `~/.config/cg/config.toml` or `CG_*` env vars. LLM: Anthropic default, any OpenAI-compatible endpoint. Does not require chdb or a running ClickGraph server.
@@ -72,7 +74,9 @@ New: `cg` CLI tool for agent/script-oriented use (`clickgraph-tool` workspace cr
 
 See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for details.
 
-- ❌ Write operations (CREATE, SET, DELETE, MERGE) — out of scope by design
+- ✅ Write operations (CREATE, SET, DELETE, REMOVE) — embedded mode only (v0.6.7+); server / remote / sql_only modes remain read-only
+- ❌ `MERGE` clause — planned for v0.7.x
+- ❌ Relationship `CREATE`, `CREATE … RETURN`, edge-alias `DELETE r`, `SET a += {…}` map-merge, `REMOVE a:Label` — planned
 - ⚠️ CALL subquery not supported (blocks LDBC bi-16)
 - ⚠️ Shortest path may OOM on dense graphs — use bounded ranges `*1..5`
 - ⚠️ Multiple standalone UNWIND without MATCH partially supported (single UNWIND works)

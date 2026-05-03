@@ -137,6 +137,12 @@ fn type_from_hint(hint: &str) -> InferredType {
 // ---------------------------------------------------------------------------
 
 /// Scan all `.feature` files under `features_dir` and build a `SchemaCatalog`.
+///
+/// Files with a Feature-level `@wip` / `@skip` / `@fails` / `@crash` tag are
+/// excluded from schema inference too — otherwise unrun feature files
+/// (typically ones imported pending harness extensions) would inflate the
+/// universal schema with labels and properties that don't appear in any
+/// running scenario.
 pub fn scan_features(features_dir: &str) -> SchemaCatalog {
     let mut catalog = SchemaCatalog::default();
 
@@ -146,6 +152,9 @@ pub fn scan_features(features_dir: &str) -> SchemaCatalog {
             Ok(c) => c,
             Err(_) => continue,
         };
+        if feature_is_filtered(&content) {
+            continue;
+        }
         scan_feature_content(&content, &mut catalog);
     }
 
@@ -154,6 +163,29 @@ pub fn scan_features(features_dir: &str) -> SchemaCatalog {
     catalog.nodes.entry("__Unlabeled".to_string()).or_default();
 
     catalog
+}
+
+/// True if the file carries a Feature-level filter tag (`@wip`, `@skip`,
+/// `@fails`, `@crash`) — same set the cucumber harness skips. We look at
+/// any standalone tag line that appears *before* the `Feature:` keyword.
+fn feature_is_filtered(content: &str) -> bool {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Feature:") {
+            return false;
+        }
+        if let Some(rest) = trimmed.strip_prefix('@') {
+            // Only the bare tag (whitespace-separated tokens). Match the
+            // tags the cucumber filter recognises.
+            for tok in rest.split_whitespace() {
+                let tok = tok.trim_start_matches('@');
+                if matches!(tok, "wip" | "skip" | "fails" | "crash" | "NegativeTests") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Recursively collect `.feature` file paths under `dir`.
@@ -372,6 +404,30 @@ mod tests {
         assert_eq!(t.merge("int"), InferredType::Integer);
         assert_eq!(t.merge("float"), InferredType::Float);
         assert_eq!(t.merge("string"), InferredType::String);
+    }
+
+    #[test]
+    fn test_feature_is_filtered_recognises_filter_tags() {
+        // Feature-level filter tag → excluded from schema inference.
+        let wip_feature = "@wip\nFeature: Foo\n  Scenario: bar\n    Given x\n";
+        assert!(feature_is_filtered(wip_feature));
+
+        let skip_feature = "@skip\nFeature: Foo\n";
+        assert!(feature_is_filtered(skip_feature));
+
+        let fails_feature = "@fails\nFeature: Foo\n";
+        assert!(feature_is_filtered(fails_feature));
+
+        // Non-filter tags don't trigger exclusion.
+        let plain = "@SomeAnnotation\nFeature: Foo\n";
+        assert!(!feature_is_filtered(plain));
+
+        // Tag line below the Feature: line is per-scenario, not feature-level.
+        let scenario_tag = "Feature: Foo\n  @wip\n  Scenario: bar\n";
+        assert!(!feature_is_filtered(scenario_tag));
+
+        // No tags at all.
+        assert!(!feature_is_filtered("Feature: Foo\n  Scenario: bar\n"));
     }
 
     #[test]

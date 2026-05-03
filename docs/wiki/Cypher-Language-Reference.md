@@ -2,7 +2,7 @@
 
 Complete syntax reference for Cypher queries supported by ClickGraph.
 
-> **Note**: ClickGraph is a **read-only** graph query engine. Write operations (`CREATE`, `SET`, `DELETE`, `MERGE`) are not supported.
+> **Writes (v0.6.7+)**: Embedded mode (in-process chdb) supports `CREATE`, `SET`, `DELETE`, and `REMOVE` against tables ClickGraph manages itself. **Server mode** (HTTP / Bolt against an external ClickHouse), **remote mode** (`Database::new_remote()`), **sql_only mode**, and any node/edge backed by a `source:` URI in the schema YAML remain **read-only** — writes targeting those are rejected before SQL is generated. `MERGE` is not implemented yet. See [Write Clauses](#write-clauses) below for full caveats.
 
 > **Terminology (v0.5.2+)**: ClickGraph uses **"node"** and **"edge"** terminology following ISO standards (SQL/PGQ ISO/IEC 9075-16:2023, GQL ISO/IEC 39075:2024). The term "relationship" is deprecated but still supported for backward compatibility with Neo4j Cypher. In this documentation, we use "edge" to refer to connections between nodes.
 
@@ -16,6 +16,11 @@ Complete syntax reference for Cypher queries supported by ClickGraph.
 - [WITH Clause](#with-clause)
 - [UNION and UNION ALL](#union-and-union-all) ⭐ **NEW**
 - [UNWIND Clause](#unwind-clause)
+- [Write Clauses](#write-clauses) ⭐ **NEW (v0.6.7, embedded mode)**
+  - [CREATE](#create-clause)
+  - [SET](#set-clause)
+  - [DELETE / DETACH DELETE](#delete--detach-delete-clause)
+  - [REMOVE](#remove-clause)
 - [ORDER BY, LIMIT, SKIP](#order-by-limit-skip)
 - [Aggregation Functions](#aggregation-functions)
 - [Path Expressions](#path-expressions)
@@ -1032,6 +1037,100 @@ WITH n.items AS items
 UNWIND items AS item
 RETURN item
 ```
+
+---
+
+## Write Clauses
+
+> **Mode**: Embedded mode only (in-process chdb). Server / remote / sql_only modes reject writes upstream with a clear error. Writes also require the target node label or relationship type to be **ClickGraph-managed** — nodes/edges that resolve to a `source:` URI (Parquet, S3, Iceberg, Delta) or to an FK-edge variant of a denormalized schema are read-only. The planner runs an admission check before SQL is generated.
+
+ClickGraph translates write clauses to ClickHouse's lightweight `INSERT` / `UPDATE` / `DELETE` mutation path. UPDATE and DELETE require block-tracking columns on the table; ClickGraph adds `enable_block_number_column = 1, enable_block_offset_column = 1` to the `CREATE TABLE` settings of every writable table at DDL time, so this is automatic for tables ClickGraph creates.
+
+Writes return a single-row `QueryResult` with Neo4j-compatible counters: `nodes_created`, `properties_set`, `nodes_deleted`, `relationships_deleted`. Affected-row counts are best-effort — chdb's lightweight write path doesn't surface row counts, so each write op contributes one to its counter (use a `MATCH ... RETURN count(...)` before/after for exact counts).
+
+### CREATE Clause
+
+Insert new nodes (and, in future phases, relationships) into ClickGraph-managed tables.
+
+```cypher
+-- Standalone CREATE
+CREATE (a:Person {person_id: 'u1', name: 'Alice', age: 30})
+
+-- MATCH ... CREATE: insert one node per matched row
+MATCH (org:Org {id: $org_id})
+CREATE (m:Member {member_id: $new_id, org_id: org.id, joined_at: datetime()})
+```
+
+**ID generation** — controlled per-node via the `id_generation` schema attribute (see [Schema Reference](../schema-reference.md)):
+
+| `id_generation` | Behaviour when CREATE omits the ID property |
+|---|---|
+| `uuid` (default) | Column omitted from INSERT; DDL `DEFAULT generateUUIDv4()` fills it |
+| `provided` | INSERT is rejected — caller must supply the ID |
+| `snowflake` | Planner emits `generateSnowflakeID()` in the INSERT column list |
+
+**Limitations**:
+- `CREATE … RETURN` is not supported yet — the write pipeline rejects it with an explicit error. Issue a separate `MATCH … RETURN` after the write.
+- `CREATE (a)-[:R]->(b)` (relationship CREATE) is rejected today; Phase 5 work.
+- `CREATE` against a node label backed by `source:` is rejected (read-only source).
+
+### SET Clause
+
+Update properties on matched nodes via lightweight `UPDATE`.
+
+```cypher
+-- Single property
+MATCH (a:Person {person_id: 'u1'})
+SET a.age = 31
+
+-- Multiple assignments — last write wins per (alias, column)
+MATCH (a:Person {person_id: 'u1'})
+SET a.age = 31, a.name = 'Alice Smith'
+
+-- Driven by another match
+MATCH (a:Person)-[:KNOWS]->(b:Person)
+WHERE b.is_admin = true
+SET a.has_admin_friend = true
+```
+
+The planner translates each `SET alias.prop = expr` to an `UPDATE` filtered by `id IN (SELECT alias.id FROM (read pipeline))`. Multiple `SET` items on the same alias collapse into a single `UPDATE` (last wins for duplicate columns).
+
+**Limitations**:
+- Setting properties on relationships (`SET r.prop = …`) is not implemented yet.
+- `SET a += {…}` (map-merge SET) is not implemented yet.
+- Writes against `source:`-backed labels are rejected.
+
+### DELETE / DETACH DELETE Clause
+
+Remove matched nodes via lightweight `DELETE`.
+
+```cypher
+-- Plain DELETE (fails if the node has incident edges)
+MATCH (a:Person {person_id: 'u1'})
+DELETE a
+
+-- DETACH DELETE: remove incident relationships first, then the node
+MATCH (a:Person {person_id: 'u1'})
+DETACH DELETE a
+```
+
+`DETACH DELETE` emits a sequence: one `DELETE FROM <rel-table>` per relationship type touching the node label (in either direction), then the final `DELETE FROM <node-table>`. The node-id column is resolved from the schema, so composite or non-default PK columns work correctly.
+
+**Limitations**:
+- `DELETE r` for a relationship alias is rejected with a pointer to use `Connection::delete_edges` (Phase 5 will lift this restriction).
+- Polymorphic edge schemas (multiple table variants per type) are walked and de-duplicated by `(database, table_name)`.
+
+### REMOVE Clause
+
+Clear properties on matched nodes — translates to `SET <column> = NULL` via lightweight `UPDATE`.
+
+```cypher
+MATCH (a:Person {person_id: 'u1'})
+REMOVE a.age          -- a.age becomes NULL
+```
+
+**Limitations**:
+- `REMOVE a:Label` (label removal) is not implemented — labels are encoded into the table identity in ClickGraph and aren't a runtime property.
 
 ---
 
@@ -2434,7 +2533,10 @@ Lambdas work with ClickHouse array functions:
 See [Known Limitations](Known-Limitations.md) for complete list.
 
 **Not Supported:**
-- ❌ Write operations (`CREATE`, `SET`, `DELETE`, `MERGE`)
+- ❌ `MERGE` clause (match-or-create) — planned for v0.7.x; use `MATCH ... WITH ... CREATE` patterns as a workaround
+- ❌ `CREATE … RETURN`, relationship `CREATE`, `SET r.prop` on relationship aliases, `DELETE r` for an edge alias, `SET a += {…}` map-merge, `REMOVE a:Label`
+- ❌ Writes in server / remote / sql_only modes — embedded mode only
+- ❌ Writes against nodes/edges backed by a `source:` URI in the schema YAML
 - ❌ Complex subqueries (`CALL { ... }`)
 - ❌ Named path expressions (partial support)
 - ❌ Advanced list comprehensions with filters

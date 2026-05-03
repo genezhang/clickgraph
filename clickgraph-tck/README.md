@@ -4,13 +4,15 @@ openCypher [Technology Compatibility Kit (TCK)](https://github.com/opencypher/op
 
 ## Current status
 
-**383 / 402 scenarios passing (95.3%)** — 19 skipped (`@NegativeTests` / `@skip`), 0 failing.
+**402 / 402 read scenarios passing (100%)** — 0 failing.
+
+Write feature files (`Create*`, `Set*`, `Delete*`, `Remove*` — 21 files / 205 scenarios) were imported from upstream openCypher TCK on 2026-05-02 as part of Phase 4 of the embedded-writes work. They are tagged `@wip` at the Feature level and currently filtered out of the run; per-scenario triage will lift the tag incrementally as harness extensions land. See [`docs/design/embedded-writes.md`](../docs/design/embedded-writes.md) Appendix (Phase 4).
 
 ## What it tests
 
 The TCK is the openCypher project's official conformance suite. Each scenario is a Gherkin `.feature` file that specifies a graph setup, a Cypher query, and expected results. This crate runs a subset of those scenarios against ClickGraph's embedded query engine.
 
-**Current coverage** — 402 scenarios across 20 feature files:
+**Current coverage** — 402 read scenarios across 20 feature files (write feature files imported but `@wip`-gated):
 
 | Category | Feature files | Scenarios |
 |----------|--------------|-----------|
@@ -26,9 +28,21 @@ The TCK is the openCypher project's official conformance suite. Each scenario is
 
 Scenarios tagged `@NegativeTests`, `@skip`, `@fails`, `@crash`, or `@wip` are skipped.
 
-### Known gaps
+### Write feature files (imported, `@wip`-gated)
 
-Write operations (`SET`, `DELETE`, `MERGE`) are not covered — ClickGraph is a read-query engine. The TCK's write-oriented feature files are not included.
+| Category | Feature files | Scenarios |
+|----------|--------------|-----------|
+| `CREATE` | Create1–6 | ~70 |
+| `SET` | Set1–6 | ~80 |
+| `DELETE` | Delete1–6 | ~40 |
+| `REMOVE` | Remove1–3 | ~15 |
+
+These exercise the Cypher write pipeline added in v0.6.7 (`CREATE` / `SET` / `DELETE` / `REMOVE` against ClickGraph-managed embedded tables — see [`docs/wiki/Cypher-Language-Reference.md#write-clauses`](../docs/wiki/Cypher-Language-Reference.md#write-clauses)). Triage requires:
+- The `the side effects should be:` step to assert against `nodes_created` / `properties_set` / `nodes_deleted` / `relationships_deleted` counters (currently no-ops at line 360 of `tests/tck.rs`).
+- `schema_gen.rs` to handle anonymous nodes (`CREATE ()`) — bare nodes today don't get a label and aren't catalogued.
+- Per-scenario disposition for combinations not yet supported by the write pipeline (`MERGE`, `CREATE … RETURN`, relationship `CREATE`, `DELETE r` for an edge alias, `SET a += {…}` map-merge, `REMOVE a:Label`).
+
+`MERGE` (Merge1..6 upstream) is not imported yet — tracked for v0.7.x Phase 5.
 
 ## How it works
 
