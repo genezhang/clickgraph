@@ -9,14 +9,15 @@
 //!   been created with `enable_block_number_column=1, enable_block_offset_column=1`,
 //!   which Phase 3 wires into `data_loader.rs`).
 //! - `DELETE FROM `db`.`table` WHERE id_col IN (subquery)` (lightweight).
-//! - `Sequence` flattens to one statement per element, separated by `\n;\n`
-//!   so the executor can split and run each in turn.
+//! - `Sequence` flattens to a `Vec<String>` with one statement per element,
+//!   in execution order; the executor (Phase 3) runs each in turn.
 //!
 //! No `SETTINGS mutations_sync = …` is emitted — Decision 0.7 explicitly
 //! ruled out the mutation path.
 
+use crate::render_plan::plan_builder_helpers::render_expr_to_sql_string;
 use crate::render_plan::write_render::{DeleteOp, InsertOp, RowSource, UpdateOp, WriteRenderPlan};
-use crate::render_plan::{RenderPlan, ToSql};
+use crate::render_plan::RenderPlan;
 
 /// Render a `WriteRenderPlan` to one or more SQL statements, in execution
 /// order. Returned vector contains the statements; the executor (Phase 3)
@@ -142,11 +143,11 @@ fn render_expr_inline(expr: &crate::render_plan::render_expr::RenderExpr) -> Str
         RenderExpr::Column(c) => c.raw().to_string(),
         RenderExpr::TableAlias(a) => a.0.clone(),
         RenderExpr::ColumnAlias(a) => a.0.clone(),
-        // Fall back to the read-side renderer for anything we don't handle
-        // explicitly. Conservative: write payloads should be simple, but if
-        // we encounter something unexpected, at least produce *some* SQL
-        // rather than a placeholder.
-        _ => expr.to_sql(),
+        // Fall back to the shared read-side renderer for anything we don't
+        // handle explicitly. Conservative: write payloads should be simple
+        // expressions (the cases above), but if we encounter something
+        // unexpected, produce sensible SQL rather than a placeholder.
+        _ => render_expr_to_sql_string(expr, &[]),
     }
 }
 

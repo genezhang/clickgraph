@@ -23,11 +23,10 @@
 
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::graph_catalog::expression_parser::PropertyValue;
-use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema, RelationshipSchema};
+use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema};
 use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_plan::{
     Create, CreatePattern, CreateRel, Delete, LogicalPlan, Remove, SetItem, SetProperties,
@@ -36,7 +35,7 @@ use crate::query_planner::logical_plan::{
 
 use super::errors::RenderBuildError;
 use super::plan_builder::RenderPlanBuilder;
-use super::render_expr::{ColumnAlias, Literal as RenderLiteral, RenderExpr, TableAlias};
+use super::render_expr::{ColumnAlias, RenderExpr, TableAlias};
 use super::write_render::{DeleteOp, InsertOp, RowSource, UpdateOp, WriteRenderPlan};
 use super::{RenderPlan, SelectItem, SelectItems};
 
@@ -185,7 +184,12 @@ fn build_set(
             WriteRenderError::Build(format!("SET: unknown node label `{}`", label))
         })?;
 
+        // Per Cypher semantics, repeated assignments to the same property
+        // are last-wins. ClickHouse rejects duplicate column assignments in
+        // an UPDATE list, so collapse before emitting.
         let mut assignments: Vec<(String, RenderExpr)> = Vec::with_capacity(items.len());
+        let mut col_index: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for item in &items {
             let column =
                 resolve_node_property_column(node_schema, &item.property).ok_or_else(|| {
@@ -194,7 +198,13 @@ fn build_set(
                         alias, item.property
                     ))
                 })?;
-            assignments.push((column, render_value(&item.value)?));
+            let value = render_value(&item.value)?;
+            if let Some(&i) = col_index.get(&column) {
+                assignments[i].1 = value;
+            } else {
+                col_index.insert(column.clone(), assignments.len());
+                assignments.push((column, value));
+            }
         }
 
         let id_column = node_id_column_or_error(node_schema, "SET", &alias)?;
@@ -264,11 +274,14 @@ fn build_delete(del: &Delete, schema: &GraphSchema) -> Result<WriteRenderPlan, W
                 WriteRenderError::Build(format!("DELETE: unknown node label `{}`", label))
             })?;
 
+            let id_column = node_id_column_or_error(node_schema, "DELETE", alias)?;
+
             if del.detach {
-                ops.extend(build_detach_rel_deletes(alias, &label, &del.input, schema)?);
+                ops.extend(build_detach_rel_deletes(
+                    alias, &label, &id_column, &del.input, schema,
+                )?);
             }
 
-            let id_column = node_id_column_or_error(node_schema, "DELETE", alias)?;
             let source = build_id_source(alias, &id_column, &del.input, schema)?;
             ops.push(WriteRenderPlan::Delete(DeleteOp {
                 database: node_schema.database.clone(),
@@ -279,32 +292,17 @@ fn build_delete(del: &Delete, schema: &GraphSchema) -> Result<WriteRenderPlan, W
             continue;
         }
 
-        // Otherwise try as a relationship alias.
-        if let Some(rel_type) = find_alias_rel_type(alias, &del.input) {
-            let rel_schema = find_rel_schema(schema, &rel_type).ok_or_else(|| {
-                WriteRenderError::Build(format!("DELETE: unknown relationship type `{}`", rel_type))
-            })?;
-            // Use from_id as the discriminator column for the IN list. We
-            // identify rows via (from_id, to_id) pairs in practice — for v1
-            // we use from_id only and document this in the SQL generator.
-            let id_column = rel_schema
-                .from_id
-                .as_single()
-                .map_err(|_| {
-                    WriteRenderError::Build(format!(
-                        "DELETE on rel `{}`: composite from_id is not supported in v1",
-                        alias
-                    ))
-                })?
-                .to_string();
-            let source = build_rel_id_source(alias, &id_column, &del.input, schema)?;
-            ops.push(WriteRenderPlan::Delete(DeleteOp {
-                database: rel_schema.database.clone(),
-                table: rel_schema.table_name.clone(),
-                id_column,
-                source,
-            }));
-            continue;
+        // Relationship-alias DELETE is deferred. Keying the DELETE by
+        // `from_id` alone would over-delete (multiple edges share the same
+        // source node), and an `(from_id, to_id)` tuple-IN form requires
+        // render-plan support that lands in a follow-up. Reject cleanly.
+        if find_alias_rel_type(alias, &del.input).is_some() {
+            return Err(WriteRenderError::Build(format!(
+                "DELETE on relationship alias `{}` is not supported in this build of \
+                 ClickGraph yet. Use `Connection::delete_edges(...)` for now (or wait \
+                 for the tuple-IN form to land in a follow-up).",
+                alias
+            )));
         }
 
         return Err(WriteRenderError::Build(format!(
@@ -323,9 +321,16 @@ fn build_delete(del: &Delete, schema: &GraphSchema) -> Result<WriteRenderPlan, W
 
 /// For DETACH DELETE: enumerate every relationship table that references
 /// `node_label`, and emit one DELETE per side that touches it.
+///
+/// `node_id_column` is the resolved primary-key column on `node_label`'s
+/// table — it threads through into the rel-cleanup subqueries so they
+/// project the right column from the read pipeline. (Previously this was
+/// hard-coded to `"id"`, which broke for schemas where the PK has a
+/// different column name like `user_id`.)
 fn build_detach_rel_deletes(
     alias: &str,
     node_label: &str,
+    node_id_column: &str,
     input: &Arc<LogicalPlan>,
     schema: &GraphSchema,
 ) -> Result<Vec<WriteRenderPlan>, WriteRenderError> {
@@ -346,6 +351,9 @@ fn build_detach_rel_deletes(
             continue;
         }
 
+        // Multiple polymorphic variants of the same rel type can share a
+        // physical table. Dedupe by (database, table) so we emit at most
+        // one DELETE per side per physical table.
         let key = (rel_schema.database.clone(), rel_schema.table_name.clone());
         if !seen.insert(key.clone()) {
             continue;
@@ -366,7 +374,7 @@ fn build_detach_rel_deletes(
                 database: rel_schema.database.clone(),
                 table: rel_schema.table_name.clone(),
                 id_column: from_col,
-                source: build_id_source(alias, "id", input, schema)?,
+                source: build_id_source(alias, node_id_column, input, schema)?,
             }));
         }
         if touches_to {
@@ -384,7 +392,7 @@ fn build_detach_rel_deletes(
                 database: rel_schema.database.clone(),
                 table: rel_schema.table_name.clone(),
                 id_column: to_col,
-                source: build_id_source(alias, "id", input, schema)?,
+                source: build_id_source(alias, node_id_column, input, schema)?,
             }));
         }
     }
@@ -399,17 +407,6 @@ fn build_detach_rel_deletes(
 /// the read pipeline, with its SELECT list overridden to project just
 /// `<alias>.<id_column>`.
 fn build_id_source(
-    alias: &str,
-    id_column: &str,
-    input: &Arc<LogicalPlan>,
-    schema: &GraphSchema,
-) -> Result<RowSource, WriteRenderError> {
-    let mut render_plan = input.to_render_plan(schema)?;
-    override_select_to_id(&mut render_plan, alias, id_column);
-    Ok(RowSource::Subquery(Box::new(render_plan)))
-}
-
-fn build_rel_id_source(
     alias: &str,
     id_column: &str,
     input: &Arc<LogicalPlan>,
@@ -456,19 +453,6 @@ fn node_id_column_or_error(
                 clause, alias, e
             ))
         })
-}
-
-fn find_rel_schema<'a>(schema: &'a GraphSchema, rel_type: &str) -> Option<&'a RelationshipSchema> {
-    // Prefer single-key (covers most schemas) then fall back to the composite
-    // index to handle polymorphic relationship variants.
-    if let Some(s) = schema.get_relationships_schema_opt(rel_type) {
-        return Some(s);
-    }
-    schema
-        .get_relationships_schemas()
-        .iter()
-        .find(|(k, _)| k.starts_with(&format!("{}::", rel_type)))
-        .map(|(_, v)| v)
 }
 
 fn find_alias_label(alias: &str, plan: &LogicalPlan) -> Option<String> {
@@ -545,19 +529,4 @@ fn unwrap_singleton(mut ops: Vec<WriteRenderPlan>) -> WriteRenderPlan {
     } else {
         WriteRenderPlan::Sequence(ops)
     }
-}
-
-// ---------------------------------------------------------------------------
-// Tag selectors so this file's `use` block isn't flagged as dead in the
-// scenario where these types aren't directly referenced after the typestate
-// roundtrip lands. Keeping them re-exported keeps callers stable.
-// ---------------------------------------------------------------------------
-
-#[allow(dead_code)]
-fn _phantom_anchor()
-where
-    RenderLiteral: Sized,
-    InsertOp: Serialize,
-    DeleteOp: for<'de> Deserialize<'de>,
-{
 }

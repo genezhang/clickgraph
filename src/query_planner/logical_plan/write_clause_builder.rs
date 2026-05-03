@@ -139,25 +139,30 @@ fn validate_alias_writable(
     schema: &GraphSchema,
     clause: &str,
 ) -> Result<()> {
-    let Some(label) = find_alias_label(alias, input) else {
-        // Alias not bound in this plan tree — caller must MATCH it first.
-        return Err(LogicalPlanError::QueryPlanningError(format!(
-            "{} target `{}` is not bound by a preceding MATCH clause",
-            clause, alias
-        )));
-    };
-    if let Some(node_schema) = schema.node_schema_opt(&label) {
-        if node_schema.source.is_some() {
-            return Err(LogicalPlanError::InvalidSchema {
-                label,
-                reason: format!(
-                    "label resolves to a source-backed (read-only) table; cannot {}",
-                    clause
-                ),
-            });
+    if let Some(label) = find_alias_label(alias, input) {
+        if let Some(node_schema) = schema.node_schema_opt(&label) {
+            if node_schema.source.is_some() {
+                return Err(LogicalPlanError::InvalidSchema {
+                    label,
+                    reason: format!(
+                        "label resolves to a source-backed (read-only) table; cannot {}",
+                        clause
+                    ),
+                });
+            }
         }
+        return Ok(());
     }
-    Ok(())
+    // Relationship aliases are bound by MATCH but don't carry a node label.
+    // Defer to the render-plan builder (Phase 2) so it can emit the precise
+    // rel-DELETE error message; here we just confirm the alias is bound.
+    if find_alias_rel_type(alias, input).is_some() {
+        return Ok(());
+    }
+    Err(LogicalPlanError::QueryPlanningError(format!(
+        "{} target `{}` is not bound by a preceding MATCH clause",
+        clause, alias
+    )))
 }
 
 /// Validate that `property` exists on `alias`'s schema (when statically
@@ -223,6 +228,39 @@ fn find_alias_label(alias: &str, plan: &LogicalPlan) -> Option<String> {
         LogicalPlan::SetProperties(sp) => find_alias_label(alias, &sp.input),
         LogicalPlan::Delete(d) => find_alias_label(alias, &d.input),
         LogicalPlan::Remove(r) => find_alias_label(alias, &r.input),
+        LogicalPlan::Empty | LogicalPlan::ViewScan(_) | LogicalPlan::PageRank(_) => None,
+    }
+}
+
+/// Walk the plan tree looking for a `GraphRel` whose alias matches. Returns
+/// the first declared relationship type if found.
+fn find_alias_rel_type(alias: &str, plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphRel(r) if r.alias == alias => {
+            r.labels.as_ref().and_then(|l| l.first().cloned())
+        }
+        LogicalPlan::GraphRel(r) => find_alias_rel_type(alias, &r.left)
+            .or_else(|| find_alias_rel_type(alias, &r.center))
+            .or_else(|| find_alias_rel_type(alias, &r.right)),
+        LogicalPlan::GraphNode(n) => find_alias_rel_type(alias, &n.input),
+        LogicalPlan::Filter(f) => find_alias_rel_type(alias, &f.input),
+        LogicalPlan::Projection(p) => find_alias_rel_type(alias, &p.input),
+        LogicalPlan::GroupBy(gb) => find_alias_rel_type(alias, &gb.input),
+        LogicalPlan::OrderBy(ob) => find_alias_rel_type(alias, &ob.input),
+        LogicalPlan::Skip(s) => find_alias_rel_type(alias, &s.input),
+        LogicalPlan::Limit(l) => find_alias_rel_type(alias, &l.input),
+        LogicalPlan::Cte(c) => find_alias_rel_type(alias, &c.input),
+        LogicalPlan::GraphJoins(gj) => find_alias_rel_type(alias, &gj.input),
+        LogicalPlan::Unwind(u) => find_alias_rel_type(alias, &u.input),
+        LogicalPlan::Union(u) => u.inputs.iter().find_map(|p| find_alias_rel_type(alias, p)),
+        LogicalPlan::CartesianProduct(cp) => {
+            find_alias_rel_type(alias, &cp.left).or_else(|| find_alias_rel_type(alias, &cp.right))
+        }
+        LogicalPlan::WithClause(wc) => find_alias_rel_type(alias, &wc.input),
+        LogicalPlan::Create(c) => find_alias_rel_type(alias, &c.input),
+        LogicalPlan::SetProperties(sp) => find_alias_rel_type(alias, &sp.input),
+        LogicalPlan::Delete(d) => find_alias_rel_type(alias, &d.input),
+        LogicalPlan::Remove(r) => find_alias_rel_type(alias, &r.input),
         LogicalPlan::Empty | LogicalPlan::ViewScan(_) | LogicalPlan::PageRank(_) => None,
     }
 }

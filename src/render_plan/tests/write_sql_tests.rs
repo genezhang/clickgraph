@@ -289,3 +289,147 @@ fn string_literals_with_quotes_are_escaped() {
     // Single quote doubled per ClickHouse / SQL convention.
     assert!(stmt.contains("'O''Brien'"), "got: {}", stmt);
 }
+
+// ---------- Review-driven regression coverage (PR #278) ----------
+
+/// Repeat assignments to the same column collapse to last-wins per Cypher
+/// semantics. Previously the builder appended both, which ClickHouse rejects.
+#[test]
+fn set_repeated_property_collapses_last_wins() {
+    let sql = cypher_to_write_sql("MATCH (a:Person) WHERE a.id = 'u1' SET a.age = 1, a.age = 2");
+    assert_eq!(sql.len(), 1, "got: {:?}", sql);
+    let stmt = &sql[0];
+
+    // Last value wins.
+    assert!(
+        stmt.contains("SET `age` = 2"),
+        "expected SET `age` = 2, got: {}",
+        stmt
+    );
+    // No `, `age` = ...` for the dropped earlier value.
+    let occurrences = stmt.matches("`age`").count();
+    assert_eq!(
+        occurrences, 1,
+        "expected exactly one `age` reference in SET list, got {} in: {}",
+        occurrences, stmt
+    );
+}
+
+/// Rel-alias DELETE keys by from_id alone would over-delete. Phase 2
+/// rejects with a clear error pending the tuple-IN form.
+#[test]
+fn delete_relationship_alias_is_rejected() {
+    use crate::query_planner::logical_plan::plan_builder::build_logical_plan;
+    use crate::render_plan::write_plan_builder::build_write_plan;
+
+    let ast = open_cypher_parser::parse_query(
+        "MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE a.id = 'u1' DELETE r",
+    )
+    .expect("parse");
+    let schema = build_test_schema();
+    let (plan, _ctx) = build_logical_plan(&ast, &schema, None, None, None).expect("plan");
+    let plan = std::sync::Arc::try_unwrap(plan).unwrap_or_else(|arc| (*arc).clone());
+
+    let err = build_write_plan(&plan, &schema).expect_err("must reject rel DELETE");
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("relationship alias `r`")
+            && (msg.contains("not supported") || msg.contains("tuple-IN")),
+        "got: {}",
+        msg
+    );
+}
+
+/// DETACH DELETE must thread the resolved node ID column through to
+/// rel-cleanup subqueries, not the literal `"id"`. Verify against a schema
+/// whose PK column is `user_id`.
+#[test]
+fn detach_delete_uses_resolved_pk_column_for_non_id_schemas() {
+    use crate::clickhouse_query_generator::write_to_sql::write_render_to_sql;
+    use crate::graph_catalog::config::Identifier;
+    use crate::query_planner::analyzer;
+    use crate::query_planner::logical_plan::plan_builder::build_logical_plan;
+    use crate::query_planner::optimizer;
+    use crate::render_plan::write_plan_builder::build_write_plan;
+
+    // Person with PK `user_id` (not `id`).
+    let mut node = NodeSchema {
+        database: "test".into(),
+        table_name: "person".into(),
+        column_names: vec!["user_id".into(), "name".into()],
+        primary_keys: "user_id".into(),
+        node_id: NodeIdSchema::single("user_id".into(), SchemaType::String),
+        property_mappings: [
+            ("name".into(), prop_col("name")),
+            ("user_id".into(), prop_col("user_id")),
+        ]
+        .into_iter()
+        .collect(),
+        view_parameters: None,
+        engine: None,
+        use_final: None,
+        filter: None,
+        is_denormalized: false,
+        from_properties: None,
+        to_properties: None,
+        denormalized_source_table: None,
+        label_column: None,
+        label_value: None,
+        node_id_types: None,
+        source: None,
+        property_types: HashMap::new(),
+    };
+    node.column_names.sort();
+
+    let mut nodes = HashMap::new();
+    nodes.insert("Person".to_string(), node);
+
+    let mut rel = knows_rel();
+    // Rel still uses from_id/to_id; that's fine.
+    rel.from_id = Identifier::from("from_id");
+    rel.to_id = Identifier::from("to_id");
+    let mut rels = HashMap::new();
+    rels.insert("KNOWS::Person::Person".to_string(), rel);
+
+    let schema = GraphSchema::build(1, "test".to_string(), nodes, rels);
+
+    let ast =
+        open_cypher_parser::parse_query("MATCH (a:Person) WHERE a.user_id = 'u1' DETACH DELETE a")
+            .expect("parse");
+    let (logical_plan, mut plan_ctx) =
+        build_logical_plan(&ast, &schema, None, None, None).expect("plan");
+    let logical_plan = analyzer::initial_analyzing(logical_plan, &mut plan_ctx, &schema).unwrap();
+    let logical_plan = optimizer::initial_optimization(logical_plan, &mut plan_ctx).unwrap();
+    let logical_plan =
+        analyzer::intermediate_analyzing(logical_plan, &mut plan_ctx, &schema).unwrap();
+    let logical_plan = optimizer::final_optimization(logical_plan, &mut plan_ctx).unwrap();
+    let logical_plan = analyzer::final_analyzing(logical_plan, &mut plan_ctx, &schema).unwrap();
+    let plan = std::sync::Arc::try_unwrap(logical_plan).unwrap_or_else(|arc| (*arc).clone());
+
+    let write_plan = build_write_plan(&plan, &schema)
+        .expect("write build")
+        .expect("write plan present");
+    let sql = write_render_to_sql(&write_plan);
+
+    // Final node DELETE keys on `user_id`.
+    let last = sql.last().unwrap();
+    assert!(
+        last.contains("`user_id`"),
+        "node DELETE must key on `user_id`, got: {}",
+        last
+    );
+
+    // Rel-cleanup statements must SELECT `user_id` (not `id`) from the subquery.
+    for stmt in &sql[..sql.len() - 1] {
+        assert!(
+            stmt.contains("user_id"),
+            "rel cleanup must reference `user_id`, got: {}",
+            stmt
+        );
+        assert!(
+            !stmt.contains("`id`"),
+            "rel cleanup must not reference literal `id`, got: {}",
+            stmt
+        );
+    }
+}

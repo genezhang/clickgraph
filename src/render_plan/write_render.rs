@@ -20,10 +20,14 @@
 //!
 //! ## DETACH DELETE
 //!
-//! Modeled as `Sequence(vec![Delete(rel1), Delete(rel2), ..., Delete(node)])`.
+//! Modeled as `Sequence(vec![Delete(rel1_from), Delete(rel1_to), ..., Delete(node)])`.
 //! The builder walks the schema to find every relationship table that
-//! references the node label and emits one DELETE per side that points at it
-//! (`from_id IN ids OR to_id IN ids`), followed by the node DELETE itself.
+//! references the node label and emits one DELETE per side that points at
+//! the node (one `WHERE from_id IN (ids)` for tables where the node is the
+//! source, one `WHERE to_id IN (ids)` for tables where it is the target),
+//! followed by the node DELETE itself. Two DELETEs per side rather than a
+//! single `from_id OR to_id` predicate so the lightweight DELETE path can
+//! use a separate `IN` filter on each indexed column.
 
 use serde::{Deserialize, Serialize};
 

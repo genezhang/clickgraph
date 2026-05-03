@@ -15,7 +15,7 @@ pub mod to_sql_query; // Made public for EXISTS subquery generation with WITH cl
 pub mod variable_length_cte;
 pub mod write_to_sql;
 
-pub use id_gen::{id_insert_decision, IdInsertDecision, IdStrategy};
+pub use id_gen::{auto_id_decision, IdInsertDecision, IdStrategy};
 pub use write_to_sql::write_render_to_sql;
 mod view_query;
 mod view_scan;
