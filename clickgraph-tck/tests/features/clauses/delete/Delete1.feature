@@ -41,7 +41,7 @@
 #     value is exercising the lift path and confirming the ungated dispatch
 #     stays clean. Re-tag candidate for `@unsupported-label-mutation` once
 #     we want it filtered out of the active list.
-#   * [5] is ungated in Phase 5d. `OPTIONAL MATCH (:DoesNotExist) DELETE a
+#   * [5] is ungated in Phase 5d. `OPTIONAL MATCH (a:DoesNotExist) DELETE a
 #     RETURN a` runs the write pipeline (no-op against an empty graph), then
 #     re-runs the read pipeline with the write clauses stripped to produce
 #     the user-visible `| a | null |` row. Side-effect counters are attached

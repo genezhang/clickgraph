@@ -1345,9 +1345,8 @@ impl<'db> Connection<'db> {
             // fail with "undefined variable" *after* the INSERT has
             // already executed. Rejecting up-front keeps the database
             // unchanged on failure and surfaces a clear, deterministic
-            // error rather than a partially-applied write. This matches
-            // the Phase 5b/5c contract pinned by
-            // `cypher_create_with_return_rejected_with_clear_error`.
+            // error rather than a partially-applied write. Pinned by
+            // `cypher_create_with_return_rejected_before_insert` below.
             if has_return && matches!(write_subplan, LogicalPlan::Create(_)) {
                 return Err(EmbeddedError::Query(
                     "CREATE … RETURN is not supported in this build of ClickGraph yet. \
@@ -1583,18 +1582,38 @@ async fn run_count_probe(
         .execute_json(sql, None)
         .await
         .map_err(EmbeddedError::from)?;
+    // The probe SQL is fully under our control (`SELECT count() AS n …`),
+    // so a missing row, missing `n` column, or non-numeric value is a
+    // contract violation — most likely a regression in the probe SQL
+    // builder or in the executor's JSON shape. Surface as an error
+    // rather than silently bottoming out at 0, which would let an
+    // inaccurate-counter regression pass tests instead of failing them.
     let Some(serde_json::Value::Object(obj)) = rows.first() else {
-        return Ok(0);
+        return Err(EmbeddedError::Query(format!(
+            "count probe `{sql}` returned no rows; expected one `{{\"n\": <N>}}` row"
+        )));
     };
     let Some(val) = obj.get("n") else {
-        return Ok(0);
+        return Err(EmbeddedError::Query(format!(
+            "count probe `{sql}` row is missing the `n` column; got: {obj:?}"
+        )));
     };
     match val {
-        serde_json::Value::Number(n) => Ok(n.as_u64().unwrap_or(0)),
-        // ClickHouse returns count() as a string in some json formats;
-        // fall back to parsing.
-        serde_json::Value::String(s) => Ok(s.parse::<u64>().unwrap_or(0)),
-        _ => Ok(0),
+        serde_json::Value::Number(n) => n.as_u64().ok_or_else(|| {
+            EmbeddedError::Query(format!(
+                "count probe `{sql}` returned non-u64 number: {n:?}"
+            ))
+        }),
+        // ClickHouse JSONEachRow surfaces `count()` as a string for
+        // values that don't fit i64; accept the string form and parse it.
+        serde_json::Value::String(s) => s.parse::<u64>().map_err(|e| {
+            EmbeddedError::Query(format!(
+                "count probe `{sql}` returned unparseable string `{s}`: {e}"
+            ))
+        }),
+        other => Err(EmbeddedError::Query(format!(
+            "count probe `{sql}` returned unexpected `n` type: {other:?}"
+        ))),
     }
 }
 
