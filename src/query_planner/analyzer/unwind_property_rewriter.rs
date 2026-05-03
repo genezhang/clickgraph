@@ -207,6 +207,12 @@ fn rewrite_plan(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
 
         // Base cases - no children to rewrite
         LogicalPlan::ViewScan(_) | LogicalPlan::Empty | LogicalPlan::PageRank(_) => plan.clone(),
+
+        // Write variants — UNWIND-property rewriting only operates on read plans.
+        LogicalPlan::Create(_)
+        | LogicalPlan::SetProperties(_)
+        | LogicalPlan::Delete(_)
+        | LogicalPlan::Remove(_) => plan.clone(),
     }
 }
 
@@ -370,5 +376,11 @@ fn find_tuple_property_index(
 
         // Base cases
         LogicalPlan::ViewScan(_) | LogicalPlan::Empty | LogicalPlan::PageRank(_) => None,
+
+        // Write variants — no tuple-property indices to find.
+        LogicalPlan::Create(_)
+        | LogicalPlan::SetProperties(_)
+        | LogicalPlan::Delete(_)
+        | LogicalPlan::Remove(_) => None,
     }
 }

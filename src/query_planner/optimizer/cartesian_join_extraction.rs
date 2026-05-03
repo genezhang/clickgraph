@@ -451,6 +451,11 @@ impl OptimizerPass for CartesianJoinExtraction {
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
+            // Write variants — read-side cartesian-join extraction does not apply.
+            LogicalPlan::Create(_)
+            | LogicalPlan::SetProperties(_)
+            | LogicalPlan::Delete(_)
+            | LogicalPlan::Remove(_) => Transformed::No(logical_plan.clone()),
         };
 
         Ok(transformed_plan)
@@ -614,6 +619,11 @@ fn collect_aliases_from_plan_inner(plan: &LogicalPlan, aliases: &mut HashSet<Str
             }
             collect_aliases_from_plan_inner(&wc.input, aliases);
         }
+        // Write variants — recurse into preceding read pipeline.
+        LogicalPlan::Create(c) => collect_aliases_from_plan_inner(&c.input, aliases),
+        LogicalPlan::SetProperties(sp) => collect_aliases_from_plan_inner(&sp.input, aliases),
+        LogicalPlan::Delete(d) => collect_aliases_from_plan_inner(&d.input, aliases),
+        LogicalPlan::Remove(r) => collect_aliases_from_plan_inner(&r.input, aliases),
     }
 }
 

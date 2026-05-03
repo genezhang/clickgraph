@@ -74,6 +74,10 @@ impl AnalyzerPass for FilterTagging {
             LogicalPlan::Unwind(_) => "Unwind",
             LogicalPlan::CartesianProduct(_) => "CartesianProduct",
             LogicalPlan::WithClause(_) => "WithClause",
+            LogicalPlan::Create(_) => "Create",
+            LogicalPlan::SetProperties(_) => "SetProperties",
+            LogicalPlan::Delete(_) => "Delete",
+            LogicalPlan::Remove(_) => "Remove",
         };
         log::trace!("FilterTagging: About to match on variant: {}", variant_name);
         Ok(match logical_plan.as_ref() {
@@ -503,6 +507,11 @@ impl AnalyzerPass for FilterTagging {
                 };
                 Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_with)))
             }
+            // Write variants — read-side filter tagging does not apply.
+            LogicalPlan::Create(_)
+            | LogicalPlan::SetProperties(_)
+            | LogicalPlan::Delete(_)
+            | LogicalPlan::Remove(_) => Transformed::No(logical_plan.clone()),
         })
     }
 }

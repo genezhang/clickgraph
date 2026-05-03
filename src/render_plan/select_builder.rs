@@ -1267,6 +1267,14 @@ impl SelectBuilder for LogicalPlan {
                 }
                 items
             }
+
+            // Write variants — recurse into preceding read pipeline. The write
+            // clause itself does not contribute SELECT items (Phase 2 renders
+            // counters separately).
+            LogicalPlan::Create(c) => c.input.extract_select_items(plan_ctx)?,
+            LogicalPlan::SetProperties(sp) => sp.input.extract_select_items(plan_ctx)?,
+            LogicalPlan::Delete(d) => d.input.extract_select_items(plan_ctx)?,
+            LogicalPlan::Remove(r) => r.input.extract_select_items(plan_ctx)?,
         };
 
         Ok(select_items)

@@ -517,6 +517,11 @@ impl AnalyzerPass for QueryValidation {
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
+            // Write variants — read-side query validation does not apply here.
+            LogicalPlan::Create(_)
+            | LogicalPlan::SetProperties(_)
+            | LogicalPlan::Delete(_)
+            | LogicalPlan::Remove(_) => Transformed::No(logical_plan.clone()),
         };
         Ok(transformed_plan)
     }

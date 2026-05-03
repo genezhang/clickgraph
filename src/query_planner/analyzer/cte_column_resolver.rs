@@ -489,6 +489,13 @@ impl AnalyzerPass for CteColumnResolver {
             | LogicalPlan::PageRank(_)
             | LogicalPlan::Unwind(_)
             | LogicalPlan::CartesianProduct(_) => Transformed::No(logical_plan.clone()),
+
+            // Write variants — pass through unchanged. CTE column resolution is
+            // a read-side concern; write evaluation uses a separate pipeline.
+            LogicalPlan::Create(_)
+            | LogicalPlan::SetProperties(_)
+            | LogicalPlan::Delete(_)
+            | LogicalPlan::Remove(_) => Transformed::No(logical_plan.clone()),
         })
     }
 }

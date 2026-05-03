@@ -618,6 +618,12 @@ impl RenderPlanBuilder for LogicalPlan {
                     .or(cp.right.extract_last_node_cte(schema)?)
             }
             LogicalPlan::WithClause(wc) => wc.input.extract_last_node_cte(schema)?,
+
+            // Write variants — recurse into preceding read pipeline.
+            LogicalPlan::Create(c) => c.input.extract_last_node_cte(schema)?,
+            LogicalPlan::SetProperties(sp) => sp.input.extract_last_node_cte(schema)?,
+            LogicalPlan::Delete(d) => d.input.extract_last_node_cte(schema)?,
+            LogicalPlan::Remove(r) => r.input.extract_last_node_cte(schema)?,
         };
         Ok(last_node_cte)
     }

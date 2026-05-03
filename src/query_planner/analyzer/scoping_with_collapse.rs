@@ -91,6 +91,12 @@ fn contains_with_clause(plan: &LogicalPlan) -> bool {
         LogicalPlan::GraphNode(gn) => contains_with_clause(&gn.input),
         // Leaf nodes — no children to recurse into
         LogicalPlan::Empty | LogicalPlan::ViewScan(_) | LogicalPlan::PageRank(_) => false,
+
+        // Write variants — recurse into preceding read pipeline.
+        LogicalPlan::Create(c) => contains_with_clause(&c.input),
+        LogicalPlan::SetProperties(sp) => contains_with_clause(&sp.input),
+        LogicalPlan::Delete(d) => contains_with_clause(&d.input),
+        LogicalPlan::Remove(r) => contains_with_clause(&r.input),
     }
 }
 

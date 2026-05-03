@@ -106,6 +106,7 @@ mod unwind_clause;
 mod view_scan;
 mod where_clause;
 mod with_clause;
+pub mod write_clause_builder;
 
 pub use view_scan::ViewScan;
 
@@ -505,6 +506,114 @@ pub enum LogicalPlan {
     /// This is NOT just a projection - it has bridging semantics and contains
     /// ORDER BY, SKIP, LIMIT, WHERE as part of its syntax (per OpenCypher grammar).
     WithClause(WithClause),
+
+    /// CREATE clause — embedded-mode write op (chdb only).
+    /// `input` carries the optional preceding read pipeline; `LogicalPlan::Empty`
+    /// for standalone CREATE.
+    Create(Create),
+
+    /// SET clause — embedded-mode write op (chdb only).
+    /// Each item updates a single property on a bound alias.
+    SetProperties(SetProperties),
+
+    /// DELETE / DETACH DELETE clause — embedded-mode write op (chdb only).
+    Delete(Delete),
+
+    /// REMOVE clause — embedded-mode write op (chdb only).
+    /// In ClickHouse-backed storage we represent this as `SET property = NULL`.
+    Remove(Remove),
+}
+
+/// A property literal carried by CREATE / SET write operations.
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct WriteProperty {
+    pub key: String,
+    pub value: LogicalExpr,
+}
+
+/// A node to be created by a CREATE clause.
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct CreateNode {
+    /// Optional Cypher alias (`a` in `CREATE (a:Person {...})`). Subsequent
+    /// clauses in the same query may reference this alias.
+    pub alias: Option<String>,
+    /// Resolved node label. Single label only — Cypher CREATE forbids multi-label nodes.
+    pub label: String,
+    pub properties: Vec<WriteProperty>,
+}
+
+/// A relationship to be created by a CREATE clause.
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct CreateRel {
+    pub alias: Option<String>,
+    pub rel_type: String,
+    /// Direction of the edge as written in Cypher. `Either` is illegal for CREATE
+    /// and rejected by the planner.
+    pub direction: Direction,
+    /// Alias of the start node (must be bound by a prior MATCH or CREATE in this query).
+    pub start_alias: String,
+    pub end_alias: String,
+    pub properties: Vec<WriteProperty>,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub enum CreatePattern {
+    Node(CreateNode),
+    Rel(CreateRel),
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct Create {
+    /// Preceding query input. `LogicalPlan::Empty` for standalone CREATE.
+    #[serde(with = "serde_arc")]
+    pub input: Arc<LogicalPlan>,
+    pub patterns: Vec<CreatePattern>,
+}
+
+/// A single `n.prop = expr` SET item.
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct SetItem {
+    /// Alias bound by a prior MATCH (e.g., `n` in `SET n.age = 30`).
+    pub target_alias: String,
+    /// Property name on that alias.
+    pub property: String,
+    /// New value expression.
+    pub value: LogicalExpr,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct SetProperties {
+    #[serde(with = "serde_arc")]
+    pub input: Arc<LogicalPlan>,
+    pub items: Vec<SetItem>,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct Delete {
+    #[serde(with = "serde_arc")]
+    pub input: Arc<LogicalPlan>,
+    /// Aliases to delete. Each must be bound by a prior MATCH.
+    pub targets: Vec<String>,
+    /// `DETACH DELETE` flag — when true, planner emits per-relationship DELETEs first.
+    pub detach: bool,
+}
+
+/// A single `REMOVE n.prop` item.
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct RemoveItem {
+    pub target_alias: String,
+    pub property: String,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[serde(bound = "")]
+pub struct Remove {
+    #[serde(with = "serde_arc")]
+    pub input: Arc<LogicalPlan>,
+    pub items: Vec<RemoveItem>,
 }
 
 /// Cartesian product of two disconnected graph patterns.
@@ -1590,6 +1699,10 @@ impl LogicalPlan {
                 }
                 c
             }
+            LogicalPlan::Create(c) => c.input.count_plan_nodes_impl(cap, current),
+            LogicalPlan::SetProperties(sp) => sp.input.count_plan_nodes_impl(cap, current),
+            LogicalPlan::Delete(d) => d.input.count_plan_nodes_impl(cap, current),
+            LogicalPlan::Remove(r) => r.input.count_plan_nodes_impl(cap, current),
         }
     }
 }
@@ -1667,6 +1780,18 @@ impl LogicalPlan {
             LogicalPlan::WithClause(with_clause) => {
                 children.push(&with_clause.input);
             }
+            LogicalPlan::Create(c) => {
+                children.push(&c.input);
+            }
+            LogicalPlan::SetProperties(sp) => {
+                children.push(&sp.input);
+            }
+            LogicalPlan::Delete(d) => {
+                children.push(&d.input);
+            }
+            LogicalPlan::Remove(r) => {
+                children.push(&r.input);
+            }
             LogicalPlan::ViewScan(_) => {
                 // ViewScan is a leaf node - no children to traverse
             }
@@ -1713,6 +1838,12 @@ impl LogicalPlan {
                 wc.items.len(),
                 wc.distinct
             ),
+            LogicalPlan::Create(c) => format!("Create(patterns: {})", c.patterns.len()),
+            LogicalPlan::SetProperties(sp) => format!("SetProperties(items: {})", sp.items.len()),
+            LogicalPlan::Delete(d) => {
+                format!("Delete(targets: {}, detach: {})", d.targets.len(), d.detach)
+            }
+            LogicalPlan::Remove(r) => format!("Remove(items: {})", r.items.len()),
         }
     }
 
@@ -1749,6 +1880,10 @@ impl LogicalPlan {
             LogicalPlan::WithClause(with_clause) => {
                 with_clause.input.contains_variable_length_path()
             }
+            LogicalPlan::Create(c) => c.input.contains_variable_length_path(),
+            LogicalPlan::SetProperties(sp) => sp.input.contains_variable_length_path(),
+            LogicalPlan::Delete(d) => d.input.contains_variable_length_path(),
+            LogicalPlan::Remove(r) => r.input.contains_variable_length_path(),
             // Leaf nodes
             LogicalPlan::ViewScan(_) | LogicalPlan::Empty | LogicalPlan::PageRank(_) => false,
         }

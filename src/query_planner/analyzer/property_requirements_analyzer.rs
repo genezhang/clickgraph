@@ -340,6 +340,13 @@ impl PropertyRequirementsAnalyzer {
             LogicalPlan::Empty => {
                 log::info!("🔍 PropertyRequirementsAnalyzer: Reached Empty plan");
             }
+
+            // Write variants — recurse into preceding read pipeline (the write
+            // payload itself doesn't surface read-side property requirements).
+            LogicalPlan::Create(c) => Self::analyze_node(&c.input, requirements),
+            LogicalPlan::SetProperties(sp) => Self::analyze_node(&sp.input, requirements),
+            LogicalPlan::Delete(d) => Self::analyze_node(&d.input, requirements),
+            LogicalPlan::Remove(r) => Self::analyze_node(&r.input, requirements),
         }
     }
 

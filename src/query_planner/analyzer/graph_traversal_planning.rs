@@ -301,6 +301,11 @@ impl AnalyzerPass for GraphTRaversalPlanning {
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
+            // Write variants — read-side traversal planning does not apply.
+            LogicalPlan::Create(_)
+            | LogicalPlan::SetProperties(_)
+            | LogicalPlan::Delete(_)
+            | LogicalPlan::Remove(_) => Transformed::No(logical_plan.clone()),
         };
         Ok(transformed_plan)
     }

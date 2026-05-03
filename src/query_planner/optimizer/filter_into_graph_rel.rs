@@ -1064,6 +1064,11 @@ impl OptimizerPass for FilterIntoGraphRel {
                     Transformed::No(_) => Transformed::No(logical_plan.clone()),
                 }
             }
+            // Write variants — read-side filter pushdown does not apply.
+            LogicalPlan::Create(_)
+            | LogicalPlan::SetProperties(_)
+            | LogicalPlan::Delete(_)
+            | LogicalPlan::Remove(_) => Transformed::No(logical_plan.clone()),
         };
         Ok(transformed_plan)
     }

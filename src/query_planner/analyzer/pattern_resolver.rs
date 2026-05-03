@@ -514,6 +514,12 @@ fn clone_plan_with_labels(plan: &LogicalPlan, combo: &HashMap<String, String>) -
         // Base cases that don't need recursion
         LogicalPlan::Empty => LogicalPlan::Empty,
         LogicalPlan::ViewScan(view_scan) => LogicalPlan::ViewScan(view_scan.clone()),
+
+        // Write variants — clone unchanged; pattern resolution only operates on read patterns.
+        LogicalPlan::Create(c) => LogicalPlan::Create(c.clone()),
+        LogicalPlan::SetProperties(sp) => LogicalPlan::SetProperties(sp.clone()),
+        LogicalPlan::Delete(d) => LogicalPlan::Delete(d.clone()),
+        LogicalPlan::Remove(r) => LogicalPlan::Remove(r.clone()),
     }
 }
 
@@ -764,6 +770,12 @@ fn extract_relationships_recursive(
         | LogicalPlan::PageRank(_) => {
             // Base cases - no relationships
         }
+
+        // Write variants — no relationships to extract from write payload.
+        LogicalPlan::Create(_)
+        | LogicalPlan::SetProperties(_)
+        | LogicalPlan::Delete(_)
+        | LogicalPlan::Remove(_) => {}
     }
 }
 

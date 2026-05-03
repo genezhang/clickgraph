@@ -23,6 +23,7 @@ pub mod transformed;
 pub mod translator;
 pub mod typed_variable;
 pub mod types;
+pub mod write_guard;
 
 pub fn get_query_type(query_ast: &OpenCypherQueryAst) -> QueryType {
     // CALL with RETURN (e.g., CALL db.labels() YIELD label RETURN ...) is a read query

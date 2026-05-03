@@ -678,6 +678,12 @@ pub(super) fn find_table_name_for_alias(plan: &LogicalPlan, target_alias: &str) 
 
         // === WithClause - search input ===
         LogicalPlan::WithClause(wc) => find_table_name_for_alias(&wc.input, target_alias),
+
+        // === Write variants - recurse into preceding read pipeline ===
+        LogicalPlan::Create(c) => find_table_name_for_alias(&c.input, target_alias),
+        LogicalPlan::SetProperties(sp) => find_table_name_for_alias(&sp.input, target_alias),
+        LogicalPlan::Delete(d) => find_table_name_for_alias(&d.input, target_alias),
+        LogicalPlan::Remove(r) => find_table_name_for_alias(&r.input, target_alias),
     }
 }
 
@@ -2318,6 +2324,10 @@ pub(super) fn plan_type_name(plan: &LogicalPlan) -> &'static str {
         LogicalPlan::Unwind(_) => "Unwind",
         LogicalPlan::CartesianProduct(_) => "CartesianProduct",
         LogicalPlan::WithClause(_) => "WithClause",
+        LogicalPlan::Create(_) => "Create",
+        LogicalPlan::SetProperties(_) => "SetProperties",
+        LogicalPlan::Delete(_) => "Delete",
+        LogicalPlan::Remove(_) => "Remove",
     }
 }
 

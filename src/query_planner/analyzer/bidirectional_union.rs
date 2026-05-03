@@ -502,6 +502,15 @@ fn transform_bidirectional(
                 }
             }
         }
+
+        // Write variants — preserved unchanged; bidirectional-union analysis is
+        // a read-side concern. Their preceding read pipeline (input) is not
+        // recursed because by the time it ran, BidirectionalUnion already fired
+        // on the read plan.
+        LogicalPlan::Create(_)
+        | LogicalPlan::SetProperties(_)
+        | LogicalPlan::Delete(_)
+        | LogicalPlan::Remove(_) => Ok(Transformed::No(plan.clone())),
     }
 }
 
