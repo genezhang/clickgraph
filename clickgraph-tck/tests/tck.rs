@@ -233,18 +233,54 @@ async fn when_executing_query(world: &mut TckWorld, step: &Step) {
             // and stash the counters separately so the side-effect step can
             // assert against them. The result_rows stay empty (the TCK
             // shapes for writes are `the result should be empty`).
+            //
+            // Always reset write_counters first so a regression that drops
+            // the counter row can't leak stale counters from the previous
+            // query in the same scenario. Non-Int64 cells are also a
+            // regression signal (we built that QueryResult ourselves), so
+            // surface them as a captured error rather than silently
+            // skipping the value — otherwise the side-effect step could
+            // pass against an empty counter map.
+            world.write_counters = None;
             if is_write_counter_shape(&col_names) {
-                if let Some(row) = result.next() {
-                    let mut counters = HashMap::new();
-                    for (name, value) in col_names.iter().zip(row.values().iter()) {
-                        if let Some(n) = value.as_i64() {
-                            counters.insert(name.clone(), n);
+                match result.next() {
+                    Some(row) => {
+                        let mut counters = HashMap::new();
+                        let mut bad_cell: Option<(String, String)> = None;
+                        for (name, value) in col_names.iter().zip(row.values().iter()) {
+                            match value.as_i64() {
+                                Some(n) => {
+                                    counters.insert(name.clone(), n);
+                                }
+                                None => {
+                                    bad_cell = Some((name.clone(), format!("{:?}", value)));
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some((name, repr)) = bad_cell {
+                            world.error = Some(format!(
+                                "write counter `{name}` was not Int64 (got {repr}); \
+                                 handle_write_async result shape regressed?"
+                            ));
+                            world.result_rows.clear();
+                        } else {
+                            world.write_counters = Some(counters);
+                            world.result_rows.clear();
+                            world.error = None;
                         }
                     }
-                    world.write_counters = Some(counters);
+                    None => {
+                        // Counter shape but no row — that's a contract
+                        // violation in handle_write_async, surface it.
+                        world.error = Some(
+                            "write QueryResult had counter columns but no row \
+                             (handle_write_async regression?)"
+                                .to_string(),
+                        );
+                        world.result_rows.clear();
+                    }
                 }
-                world.result_rows.clear();
-                world.error = None;
             } else {
                 world.result_rows = result
                     .map(|row| {
@@ -252,7 +288,6 @@ async fn when_executing_query(world: &mut TckWorld, step: &Step) {
                         format_row(&col_names, &values, &var_labels, &var_rel_types)
                     })
                     .collect();
-                world.write_counters = None;
                 world.error = None;
             }
         }
@@ -473,7 +508,21 @@ async fn then_side_effects(world: &mut TckWorld, step: &Step) {
                 return;
             }
         };
-        let actual = counters.get(counter).copied().unwrap_or(0);
+        // Treat an absent counter key as a hard error rather than 0 —
+        // a silent default would let a regression in counter capture
+        // (e.g., column rename, non-Int64 cell silently dropped) make
+        // assertions pass when they shouldn't.
+        let actual = match counters.get(counter) {
+            Some(n) => *n,
+            None => {
+                panic!(
+                    "side-effect counter `{counter}` is missing from the captured \
+                     counter row; available={counters:?}. This indicates \
+                     handle_write_async returned a different counter shape than \
+                     expected — fix the harness mapping or handle_write_async."
+                );
+            }
+        };
         assert_eq!(
             actual, expected,
             "side-effect mismatch for {key}: expected {expected}, got {actual} \
