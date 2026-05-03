@@ -29,14 +29,18 @@
 #encoding: utf-8
 
 # Phase 4 import from upstream openCypher TCK (master, fetched 2026-05-02).
-# File-level @wip lifted in Phase 5c — labeled-MATCH DETACH DELETE works end-
-# to-end through the embedded write pipeline (covered by
-# `cypher_detach_delete_emits_rel_then_node_delete_sequence` in
-# clickgraph-embedded). Of the ungated scenarios, only [3] runs: it does the
-# `MATCH (n:X) DETACH DELETE n` shape against a labelled node with a small
-# fan-out of `:R` relationships, which is the canonical DETACH path. Its
-# `-labels` row is unmapped in `effect_to_counter()` (label mutations are
-# out of scope) and surfaces as a harness skip — by design.
+# File-level @wip lifted in Phase 5c. Of the ungated scenarios:
+#   * [3] is ungated. The DETACH DELETE pipeline executes end-to-end (the
+#     `MATCH (n:X) DETACH DELETE n` shape over a small `:R` fan-out; covered
+#     by `cypher_detach_delete_emits_rel_then_node_delete_sequence` in
+#     clickgraph-embedded). The harness asserts `-nodes` and `-relationships`
+#     successfully, then hits the trailing `-labels` row — which
+#     `effect_to_counter()` deliberately leaves unmapped — and records the
+#     scenario as a skip (same pattern as `Create1` [3]/[4]). It is *not*
+#     a "running end-to-end with full counter assertions" scenario; its
+#     value is exercising the lift path and confirming the ungated dispatch
+#     stays clean. Re-tag candidate for `@unsupported-label-mutation` once
+#     we want it filtered out of the active list.
 # Scenarios still gated with per-scenario @wip:
 #   * [1] [2] — `MATCH (n) DELETE n` / `MATCH (n) DETACH DELETE n` over an
 #     untyped node match. ClickGraph's untyped MATCH expands to a UNION
