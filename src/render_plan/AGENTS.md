@@ -33,8 +33,43 @@ plan_builder.rs          ← trait RenderPlanBuilder: LogicalPlan → RenderPlan
     │
     ├─ select_builder.rs, from_builder.rs, filter_builder.rs, group_by_builder.rs
     │
+    ├─ write_plan_builder.rs            ← **Phase 2 (May 2026)**: LogicalPlan write
+    │                                       variants (Create/SetProperties/Delete/Remove)
+    │                                       → WriteRenderPlan. Embedded chdb only.
+    │
+    ├─ write_render.rs                  ← WriteRenderPlan enum: Insert/Update/Delete/Sequence
+    │                                       (siblings to RenderPlan; terminal — writes don't
+    │                                       compose into SELECTs).
+    │
     └─ mod.rs (531)                     ← RenderPlan, Join, Cte, SelectItem structs
 ```
+
+### Write Path (Phase 2)
+
+The read path (`to_render_plan` → `render_plan_to_sql`) and the write path
+(`build_write_plan` → `write_render_to_sql`) are intentionally separate:
+
+```
+LogicalPlan
+    │
+    ├─ Read variant ───→ RenderPlanBuilder::to_render_plan ───→ RenderPlan
+    │                                                              │
+    │                                                              ▼
+    │                                                       generate_sql() (SELECT)
+    │
+    └─ Write variant ──→ write_plan_builder::build_write_plan ──→ WriteRenderPlan
+                                                                    │
+                                                                    ▼
+                                                          write_render_to_sql()
+                                                          → Vec<String> (one stmt per op)
+```
+
+`build_write_plan` returns `Ok(None)` for read-only plans, so the dispatcher
+in Phase 3's `Connection::query()` will be a single function call. Per
+Decision 0.7 the SQL emits **lightweight UPDATE / DELETE** with no
+`SETTINGS` clause; `data_loader.rs` (Phase 3) supplies the table-level
+`enable_block_number_column = 1, enable_block_offset_column = 1` that the
+lightweight path requires.
 
 ## Critical Invariants
 
