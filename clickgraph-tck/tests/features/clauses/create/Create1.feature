@@ -31,7 +31,13 @@
 # Phase 4 import from upstream openCypher TCK (master, fetched 2026-05-02).
 # File-level @wip lifted in Phase 5b — anonymous-node CREATE (`CREATE ()`,
 # `CREATE (n {...})`) now routes to the `__Unlabeled` node catalogued by
-# schema_gen.rs, so scenarios [1] [2] [3] [4] [7] [9] run.
+# schema_gen.rs. Of the ungated scenarios:
+#   * [1] [2] [7] [9] run to completion and assert their side-effect counters.
+#   * [3] [4] are ungated but the harness still records them as skips because
+#     their side-effect tables include `+labels`, which effect_to_counter()
+#     leaves unmapped on purpose (ClickGraph doesn't support label mutations,
+#     so there is no counter to assert against). They surface in the run as
+#     triage candidates rather than passes.
 # Scenarios still gated with per-scenario @wip:
 #   * [5] [6] — multi-label CREATE (`CREATE (:A:B:C:D)`); planner rejects.
 #   * [8] [10] [11] [12] — CREATE … RETURN (read-after-write inside the
@@ -40,9 +46,6 @@
 #     UndefinedVariable). ClickGraph executes these without raising the
 #     expected diagnostic, which would surface as a triage skip rather than
 #     a meaningful pass — keep @wip until the planner enforces these.
-# Side-effect rows containing `+labels` (scenarios [3] [4] [12]) are mapped
-# to `world.skip_reason` by the harness (effect_to_counter returns None),
-# so those scenarios skip cleanly rather than running half-asserted.
 Feature: Create1 - Creating nodes
 
   Scenario: [1] Create a single node

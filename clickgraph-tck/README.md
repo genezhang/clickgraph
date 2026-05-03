@@ -6,7 +6,7 @@ openCypher [Technology Compatibility Kit (TCK)](https://github.com/opencypher/op
 
 **402 / 402 read scenarios passing (100%)** — 0 failing.
 
-Write feature files (`Create*`, `Set*`, `Delete*`, `Remove*` — 21 files / 205 scenarios) were imported from upstream openCypher TCK on 2026-05-02 as part of Phase 4 of the embedded-writes work. Phase 5a (#281) added the side-effect step. Phase 5b (this commit) added anonymous-node support (`CREATE ()`, `CREATE (n {...})` route to the `__Unlabeled` table catalogued by `schema_gen.rs`), lifting the file-level `@wip` from `Create1.feature` so its un-gated scenarios run. Remaining write scenarios stay `@wip` per-scenario until the corresponding capability lands. See [`docs/design/embedded-writes.md`](../docs/design/embedded-writes.md) Appendix (Phase 5).
+Write feature files (`Create*`, `Set*`, `Delete*`, `Remove*` — 21 files / 205 scenarios) were imported from upstream openCypher TCK on 2026-05-02 as part of Phase 4 of the embedded-writes work. Phase 5a (#281) added the side-effect step. Phase 5b (this commit) added anonymous-node support (`CREATE ()`, `CREATE (n {...})` route to the `__Unlabeled` table catalogued by `schema_gen.rs`), lifting the file-level `@wip` from `Create1.feature`. Of the un-gated scenarios, `Create1` [1] [2] [7] [9] now run end-to-end; [3] and [4] are ungated but the harness still reports them as skips because their side-effect tables include `+labels`, which `effect_to_counter()` deliberately leaves unmapped (label mutations are out of scope). Remaining scenarios stay `@wip` per-scenario until the corresponding capability lands. See [`docs/design/embedded-writes.md`](../docs/design/embedded-writes.md) Appendix (Phase 5).
 
 ## What it tests
 
