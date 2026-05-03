@@ -64,6 +64,7 @@ fn setup_person_schema() -> GraphSchema {
         node_id_types: None,
         source: None,
         property_types: HashMap::new(),
+        id_generation: None,
     };
     nodes.insert("Person".to_string(), person_node);
 

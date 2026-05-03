@@ -270,6 +270,7 @@ mod tests {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         }
     }
 

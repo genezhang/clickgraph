@@ -61,6 +61,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -101,6 +102,7 @@ fn setup_polymorphic_schema() -> GraphSchema {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -403,6 +405,7 @@ fn test_non_polymorphic_relationship() {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -502,6 +505,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -528,6 +532,7 @@ fn test_fixed_endpoint_polymorphic_edge() {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 

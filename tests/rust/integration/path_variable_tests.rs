@@ -47,6 +47,7 @@ fn create_test_schema() -> GraphSchema {
             label_value: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 

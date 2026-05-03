@@ -570,10 +570,41 @@ pub struct NodeDefinition {
     /// When absent, DDL columns default to String
     #[serde(default)]
     pub property_types: HashMap<String, String>,
+
+    /// Optional: ID generation strategy for embedded-mode CREATE.
+    /// Accepted values (case-insensitive): "uuid" (default), "provided", "snowflake".
+    /// Server / source-backed schemas ignore this field — writes are rejected
+    /// upstream by the executor admission check.
+    #[serde(default)]
+    pub id_generation: Option<String>,
 }
 
 fn default_naming_convention() -> String {
     "snake_case".to_string()
+}
+
+/// Parse the optional `id_generation` YAML attribute into an `IdStrategy`.
+/// Returns `Ok(None)` when unset; otherwise validates against the closed set
+/// of accepted values (case-insensitive).
+fn parse_id_generation(
+    raw: &Option<String>,
+    label: &str,
+) -> Result<Option<crate::clickhouse_query_generator::IdStrategy>, GraphSchemaError> {
+    use crate::clickhouse_query_generator::IdStrategy;
+    let Some(value) = raw.as_deref() else {
+        return Ok(None);
+    };
+    match value.trim().to_ascii_lowercase().as_str() {
+        "uuid" => Ok(Some(IdStrategy::Uuid)),
+        "provided" => Ok(Some(IdStrategy::Provided)),
+        "snowflake" => Ok(Some(IdStrategy::Snowflake)),
+        other => Err(GraphSchemaError::InvalidConfig {
+            message: format!(
+                "Node '{}': invalid id_generation '{}' (expected one of: uuid, provided, snowflake)",
+                label, other
+            ),
+        }),
+    }
 }
 
 /// Relationship definition in schema config
@@ -1339,6 +1370,7 @@ fn build_node_schema(
         node_id_types,
         source: node_def.source.clone(),
         property_types,
+        id_generation: parse_id_generation(&node_def.id_generation, &node_def.label)?,
     })
 }
 
@@ -2708,6 +2740,7 @@ graph_schema:
                     types: None,
                     source: None,
                     property_types: HashMap::new(),
+                    id_generation: None,
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Standard(StandardEdgeDefinition {
@@ -2777,6 +2810,7 @@ graph_schema:
                     types: None,
                     source: None,
                     property_types: HashMap::new(),
+                    id_generation: None,
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Standard(StandardEdgeDefinition {
@@ -2840,6 +2874,7 @@ graph_schema:
                     types: None,
                     source: None,
                     property_types: HashMap::new(),
+                    id_generation: None,
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Polymorphic(PolymorphicEdgeDefinition {
@@ -2902,6 +2937,7 @@ graph_schema:
                     types: None,
                     source: None,
                     property_types: HashMap::new(),
+                    id_generation: None,
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Polymorphic(PolymorphicEdgeDefinition {
@@ -2966,6 +3002,7 @@ graph_schema:
                         types: None,
                         source: None,
                         property_types: HashMap::new(),
+                        id_generation: None,
                     },
                     NodeDefinition {
                         label: "User".to_string(),
@@ -2987,6 +3024,7 @@ graph_schema:
                         types: None,
                         source: None,
                         property_types: HashMap::new(),
+                        id_generation: None,
                     },
                 ],
                 relationships: vec![],
@@ -3054,6 +3092,7 @@ graph_schema:
                     types: None,
                     source: None,
                     property_types: HashMap::new(),
+                    id_generation: None,
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Polymorphic(PolymorphicEdgeDefinition {
@@ -3122,6 +3161,7 @@ graph_schema:
                     types: None,
                     source: None,
                     property_types: HashMap::new(),
+                    id_generation: None,
                 }],
                 relationships: vec![],
                 edges: vec![EdgeDefinition::Polymorphic(PolymorphicEdgeDefinition {
@@ -3517,6 +3557,7 @@ mod node_id_identity_mapping_tests {
             types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         };
 
         let discovery = TableDiscovery {
@@ -3572,6 +3613,7 @@ mod node_id_identity_mapping_tests {
             types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         };
 
         let discovery = TableDiscovery {
@@ -3628,6 +3670,7 @@ mod node_id_identity_mapping_tests {
             types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         };
 
         let discovery = TableDiscovery {
@@ -3645,6 +3688,101 @@ mod node_id_identity_mapping_tests {
             node_schema.property_mappings["ip"].to_sql_column_only(),
             "orig_h",
             "Explicit mapping should take precedence over identity mapping"
+        );
+    }
+
+    #[test]
+    fn test_id_generation_yaml_round_trip() {
+        // YAML deserialization → IdStrategy mapping for all three accepted
+        // values (and case-insensitivity), plus the unset / invalid cases.
+        use crate::clickhouse_query_generator::IdStrategy;
+
+        let cases = [
+            ("uuid", IdStrategy::Uuid),
+            ("UUID", IdStrategy::Uuid),
+            ("provided", IdStrategy::Provided),
+            ("Snowflake", IdStrategy::Snowflake),
+        ];
+        for (raw, expected) in cases {
+            let yaml = format!(
+                r#"
+name: id_gen_test
+graph_schema:
+  nodes:
+    - label: User
+      database: test
+      table: users
+      node_id: user_id
+      type: string
+      id_generation: {raw}
+      property_mappings:
+        user_id: user_id
+"#
+            );
+            let config = GraphSchemaConfig::from_yaml_str(&yaml)
+                .expect("YAML should parse with id_generation");
+            assert_eq!(
+                config.graph_schema.nodes[0].id_generation.as_deref(),
+                Some(raw),
+                "raw YAML field should round-trip"
+            );
+
+            let schema = config
+                .to_graph_schema()
+                .expect("schema should build with id_generation");
+            let node_schema = schema.node_schema("User").expect("User node schema");
+            assert_eq!(
+                node_schema.id_generation,
+                Some(expected),
+                "id_generation '{raw}' should map to {:?}",
+                expected
+            );
+        }
+
+        // Unset → None
+        let yaml_no_id = r#"
+name: id_gen_test
+graph_schema:
+  nodes:
+    - label: User
+      database: test
+      table: users
+      node_id: user_id
+      type: string
+      property_mappings:
+        user_id: user_id
+"#;
+        let schema = GraphSchemaConfig::from_yaml_str(yaml_no_id)
+            .unwrap()
+            .to_graph_schema()
+            .unwrap();
+        assert!(
+            schema.node_schema("User").unwrap().id_generation.is_none(),
+            "missing id_generation should stay None"
+        );
+
+        // Invalid → InvalidConfig error
+        let yaml_bad = r#"
+name: id_gen_test
+graph_schema:
+  nodes:
+    - label: User
+      database: test
+      table: users
+      node_id: user_id
+      type: string
+      id_generation: bogus
+      property_mappings:
+        user_id: user_id
+"#;
+        let err = GraphSchemaConfig::from_yaml_str(yaml_bad)
+            .unwrap()
+            .to_graph_schema()
+            .expect_err("invalid id_generation must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid id_generation") && msg.contains("bogus"),
+            "error should name the bad value: {msg}"
         );
     }
 }
@@ -3765,6 +3903,7 @@ graph_schema:
                 node_id_types: None,
                 source: None,
                 property_types: HashMap::new(),
+                id_generation: None,
             },
         );
         nodes
@@ -3909,6 +4048,7 @@ graph_schema:
                 node_id_types: None,
                 source: None,
                 property_types: HashMap::new(),
+                id_generation: None,
             },
         );
         nodes

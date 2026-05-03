@@ -371,6 +371,7 @@ mod tests {
             node_id_types: None,
             source: source.map(|s| s.to_string()),
             property_types: std::collections::HashMap::new(),
+            id_generation: None,
         }
     }
 

@@ -236,8 +236,12 @@ pub fn build_node_ddl(node_schema: &NodeSchema) -> String {
         format!("({})", id_columns.join(", "))
     };
 
+    // Lightweight UPDATE prerequisite (Decision 0.7 of the embedded-writes
+    // design): the table must be created with the two block-tracking
+    // columns enabled. Without these, chdb returns Code 48 NOT_IMPLEMENTED
+    // when a Cypher SET clause runs against the table.
     format!(
-        "CREATE TABLE IF NOT EXISTS `{}`.`{}` ({}) ENGINE = ReplacingMergeTree(_version) ORDER BY {}",
+        "CREATE TABLE IF NOT EXISTS `{}`.`{}` ({}) ENGINE = ReplacingMergeTree(_version) ORDER BY {} SETTINGS enable_block_number_column = 1, enable_block_offset_column = 1",
         node_schema.database,
         node_schema.table_name,
         col_defs.join(", "),
@@ -299,8 +303,9 @@ pub fn build_edge_ddl(rel_schema: &RelationshipSchema) -> String {
     order_cols.extend(from_id_cols.iter().map(|s| s.to_string()));
     order_cols.extend(to_id_cols.iter().map(|s| s.to_string()));
 
+    // Lightweight UPDATE prerequisite (Decision 0.7) — see node DDL above.
     format!(
-        "CREATE TABLE IF NOT EXISTS `{}`.`{}` ({}) ENGINE = ReplacingMergeTree(_version) ORDER BY ({})",
+        "CREATE TABLE IF NOT EXISTS `{}`.`{}` ({}) ENGINE = ReplacingMergeTree(_version) ORDER BY ({}) SETTINGS enable_block_number_column = 1, enable_block_offset_column = 1",
         rel_schema.database,
         rel_schema.table_name,
         col_defs.join(", "),
@@ -347,6 +352,19 @@ graph_schema:
         assert!(ddl.contains("_version UInt64 DEFAULT now64()"));
         assert!(ddl.contains("ReplacingMergeTree(_version)"));
         assert!(ddl.contains("ORDER BY (person_id)"));
+        // Lightweight UPDATE prerequisites (Decision 0.7) — block-tracking
+        // columns must be enabled. Without these, chdb returns Code 48
+        // NOT_IMPLEMENTED on Cypher SET.
+        assert!(
+            ddl.contains("enable_block_number_column = 1"),
+            "missing enable_block_number_column SETTING: {}",
+            ddl
+        );
+        assert!(
+            ddl.contains("enable_block_offset_column = 1"),
+            "missing enable_block_offset_column SETTING: {}",
+            ddl
+        );
         // ID column should not be duplicated
         let id_count = ddl.matches("person_id").count();
         // person_id appears in: column def, ORDER BY = 2 occurrences
@@ -393,6 +411,17 @@ graph_schema:
         assert!(ddl.contains("_version UInt64 DEFAULT now64()"));
         assert!(ddl.contains("ReplacingMergeTree(_version)"));
         assert!(ddl.contains("ORDER BY (from_person_id, to_person_id)"));
+        // Lightweight UPDATE prerequisites (Decision 0.7).
+        assert!(
+            ddl.contains("enable_block_number_column = 1"),
+            "missing enable_block_number_column: {}",
+            ddl
+        );
+        assert!(
+            ddl.contains("enable_block_offset_column = 1"),
+            "missing enable_block_offset_column: {}",
+            ddl
+        );
     }
 
     #[test]

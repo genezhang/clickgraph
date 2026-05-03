@@ -1191,7 +1191,14 @@ impl<'db> Connection<'db> {
     }
 
     async fn query_async(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
-        if let Ok((_, stmt)) = clickgraph::open_cypher_parser::parse_cypher_statement(cypher) {
+        // Strip comments before dispatch parsing so write detection matches
+        // what `handle_write_async` sees during its own parse below — comments
+        // (e.g., `// ...` or `/* ... */`) inside the query would otherwise
+        // break parsing here and silently bypass write routing.
+        let dispatch_input = clickgraph::open_cypher_parser::strip_comments(cypher);
+        if let Ok((_, stmt)) =
+            clickgraph::open_cypher_parser::parse_cypher_statement(&dispatch_input)
+        {
             if let clickgraph::open_cypher_parser::ast::CypherStatement::CopyTo(ref copy_stmt) =
                 stmt
             {
@@ -1225,8 +1232,187 @@ impl<'db> Connection<'db> {
                     return self.handle_fulltext_search_call(cypher).await;
                 }
             }
+            // Cypher write clauses route to a separate executor path that
+            // emits lightweight INSERT / UPDATE / DELETE per Phase 2's
+            // WriteRenderPlan. Read queries fall through to the regular
+            // SELECT path below.
+            //
+            // Any query carrying a write clause — CREATE / SET / DELETE /
+            // REMOVE — must enter the write pipeline so we either execute it
+            // or reject it with a clear error. Falling through to the read
+            // path produces confusing render-time errors. Note that
+            // `get_query_type` only inspects SET / DELETE / REMOVE, so we
+            // also need an explicit `create_clause.is_some()` check to cover
+            // `CREATE`, `MATCH ... CREATE`, and `CREATE ... RETURN` variants.
+            if let clickgraph::open_cypher_parser::ast::CypherStatement::Query { query, .. } = &stmt
+            {
+                use clickgraph::query_planner::types::QueryType;
+                let is_write = matches!(
+                    clickgraph::query_planner::get_query_type(query),
+                    QueryType::Update | QueryType::Delete
+                ) || query.create_clause.is_some();
+                if is_write {
+                    return self.handle_write_async(cypher).await;
+                }
+            }
         }
         self.query_with_executor_async(cypher, &self.executor).await
+    }
+
+    /// Plan, render, and execute a Cypher write query (CREATE / SET /
+    /// DELETE / REMOVE). Returns Neo4j-compatible counters as a single-row
+    /// `QueryResult` per Decision 0.8 of the embedded-writes design.
+    async fn handle_write_async(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
+        use clickgraph::clickhouse_query_generator::write_to_sql::write_render_to_sql;
+        use clickgraph::query_planner::write_guard::ensure_write_target_writable;
+        use clickgraph::render_plan::write_plan_builder::build_write_plan;
+        use clickgraph::server::query_context::{
+            set_current_schema, with_query_context, QueryContext,
+        };
+
+        let schema = Arc::clone(&self.schema);
+        let executor = Arc::clone(&self.executor);
+        let executor_kind = self.db.executor_kind;
+        let cypher = cypher.to_string();
+
+        with_query_context(QueryContext::new(None), async move {
+            set_current_schema(Arc::clone(&schema));
+
+            let compile_start = Instant::now();
+
+            // Parse, plan, run the regular analyzer/optimizer pipeline so
+            // any read pipeline below the write variant is fully resolved
+            // before we render.
+            let cleaned = clickgraph::open_cypher_parser::strip_comments(&cypher);
+            let (_remaining, stmt) =
+                clickgraph::open_cypher_parser::parse_cypher_statement(&cleaned)
+                    .map_err(|e| EmbeddedError::Query(format!("Parse error: {:?}", e)))?;
+            let (logical_plan, _plan_ctx) =
+                clickgraph::query_planner::evaluate_read_statement(stmt, &schema, None, None, None)
+                    .map_err(|e| EmbeddedError::Query(format!("Plan error: {}", e)))?;
+
+            // Decision 0.1 / 0.3 / 0.6 admission check.
+            ensure_write_target_writable(&logical_plan, &schema, executor_kind)
+                .map_err(|e| EmbeddedError::Query(format!("Write rejected: {}", e)))?;
+
+            let write_plan = build_write_plan(&logical_plan, &schema)
+                .map_err(|e| EmbeddedError::Query(format!("Write render error: {}", e)))?
+                .ok_or_else(|| {
+                    // The dispatch above sent us here because a write clause
+                    // (CREATE / SET / DELETE / REMOVE) was visible in the
+                    // parsed AST, but `build_write_plan` couldn't extract a
+                    // write variant from the planned tree — typically this
+                    // means the write was wrapped under a clause we don't
+                    // yet support in the write pipeline (e.g. CREATE ...
+                    // RETURN). Surface a clear error rather than the
+                    // generic "non-write plan" wording.
+                    EmbeddedError::Query(
+                        "Cypher write clause is not supported in this combination yet \
+                         (e.g. CREATE … RETURN, or write clauses inside subqueries). \
+                         Use a separate write statement followed by a MATCH for now."
+                            .to_string(),
+                    )
+                })?;
+            let stmts = write_render_to_sql(&write_plan);
+            let compile_time_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
+
+            // Execute each rendered statement in order. Counters are
+            // best-effort: chdb's lightweight INSERT/UPDATE/DELETE don't
+            // surface affected-row counts, so we report the statement
+            // count as a coarse signal for now.
+            let exec_start = Instant::now();
+            let mut nodes_created: u64 = 0;
+            let mut properties_set: u64 = 0;
+            let mut nodes_deleted: u64 = 0;
+            let mut relationships_deleted: u64 = 0;
+            let counters = classify_write_counters(&write_plan);
+            nodes_created += counters.nodes_created;
+            properties_set += counters.properties_set;
+            nodes_deleted += counters.nodes_deleted;
+            relationships_deleted += counters.relationships_deleted;
+
+            for sql in &stmts {
+                executor
+                    .execute_json(sql, None)
+                    .await
+                    .map_err(EmbeddedError::from)?;
+            }
+            let execution_time_ms = exec_start.elapsed().as_secs_f64() * 1000.0;
+
+            let column_names = vec![
+                "nodes_created".to_string(),
+                "properties_set".to_string(),
+                "nodes_deleted".to_string(),
+                "relationships_deleted".to_string(),
+            ];
+            let row = vec![
+                Value::Int64(nodes_created as i64),
+                Value::Int64(properties_set as i64),
+                Value::Int64(nodes_deleted as i64),
+                Value::Int64(relationships_deleted as i64),
+            ];
+            Ok(QueryResult::with_timing(
+                column_names,
+                vec![row],
+                compile_time_ms,
+                execution_time_ms,
+            ))
+        })
+        .await
+    }
+}
+
+/// Best-effort counter extraction from a `WriteRenderPlan`. chdb's
+/// lightweight write path doesn't return affected-row counts, so we report
+/// per-operation counts (one Insert = one node created, etc.) rather than
+/// actual row counts. Callers that need accurate row counts should fetch
+/// before/after `count()` themselves.
+#[derive(Default)]
+struct WriteCounters {
+    nodes_created: u64,
+    properties_set: u64,
+    nodes_deleted: u64,
+    relationships_deleted: u64,
+}
+
+fn classify_write_counters(plan: &clickgraph::render_plan::WriteRenderPlan) -> WriteCounters {
+    let mut c = WriteCounters::default();
+    walk(plan, &mut c);
+    c
+}
+
+fn walk(plan: &clickgraph::render_plan::WriteRenderPlan, c: &mut WriteCounters) {
+    use clickgraph::render_plan::WriteRenderPlan;
+    match plan {
+        WriteRenderPlan::Insert(op) => {
+            // Coarse heuristic: each row is one entity. Whether it's a
+            // node or relationship is encoded in the table — we attribute
+            // to nodes_created here. A future refinement can split by
+            // schema lookup once rel CREATE lands (currently rejected).
+            c.nodes_created += op.rows.len() as u64;
+        }
+        WriteRenderPlan::Update(op) => {
+            c.properties_set += op.assignments.len() as u64;
+        }
+        WriteRenderPlan::Delete(_op) => {
+            // Sequence walk decides node-vs-rel by whether the DELETE is
+            // the last in a Sequence (node) or precedes one (rel cleanup).
+            // For a bare top-level Delete, attribute to nodes.
+            c.nodes_deleted += 1;
+        }
+        WriteRenderPlan::Sequence(seq) => {
+            // Rel-cleanup DELETEs precede a final node DELETE in DETACH
+            // DELETE. Attribute earlier DELETEs to relationships.
+            let len = seq.len();
+            for (i, inner) in seq.iter().enumerate() {
+                match inner {
+                    WriteRenderPlan::Delete(_) if i + 1 < len => {
+                        c.relationships_deleted += 1;
+                    }
+                    _ => walk(inner, c),
+                }
+            }
+        }
     }
 }
 
@@ -1363,6 +1549,7 @@ graph_schema:
                 .enable_all()
                 .build()
                 .unwrap(),
+            executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::EmbeddedChdb,
         }
     }
 
@@ -1378,9 +1565,10 @@ graph_schema:
         impl QueryExecutor for CapturingExecutor {
             async fn execute_json(
                 &self,
-                _sql: &str,
+                sql: &str,
                 _role: Option<&str>,
             ) -> Result<Vec<serde_json::Value>, ExecutorError> {
+                self.captured.lock().unwrap().push(sql.to_string());
                 Ok(vec![])
             }
             async fn execute_text(
@@ -1404,6 +1592,7 @@ graph_schema:
                 .enable_all()
                 .build()
                 .unwrap(),
+            executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::EmbeddedChdb,
         };
         (db, captured)
     }
@@ -1438,6 +1627,7 @@ graph_schema:
                 .enable_all()
                 .build()
                 .unwrap(),
+            executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::EmbeddedChdb,
         }
     }
 
@@ -1932,6 +2122,231 @@ graph_schema:
             sqls[0].contains("''';"),
             "escaped quote should precede semicolon: {}",
             sqls[0]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Cypher write dispatch (Phase 3)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cypher_create_routes_to_write_path_and_emits_insert() {
+        let (db, captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let mut result = conn
+            .query("CREATE (a:Person {person_id: 'p1', name: 'Alice'})")
+            .expect("CREATE should succeed via write dispatch");
+
+        // Counters surface as a single-row QueryResult per Decision 0.8.
+        assert_eq!(result.get_column_names().len(), 4);
+        assert_eq!(result.num_rows(), 1);
+        let row = result.next().unwrap();
+        assert_eq!(row.get("nodes_created").unwrap().as_i64(), Some(1));
+
+        let sqls = captured.lock().unwrap();
+        assert_eq!(sqls.len(), 1, "expected one INSERT, got {:?}", sqls);
+        assert!(
+            sqls[0].starts_with("INSERT INTO"),
+            "expected INSERT, got: {}",
+            sqls[0]
+        );
+        // No SETTINGS at query time per Decision 0.7.
+        assert!(
+            !sqls[0].to_lowercase().contains("settings"),
+            "must not emit SETTINGS at query time, got: {}",
+            sqls[0]
+        );
+    }
+
+    #[test]
+    fn cypher_set_routes_to_write_path_and_emits_update() {
+        let (db, captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let result = conn
+            .query("MATCH (a:Person) WHERE a.person_id = 'p1' SET a.name = 'Bob'")
+            .expect("SET should succeed via write dispatch");
+        let mut iter = result.into_iter();
+        let row = iter.next().unwrap();
+        assert_eq!(row.get("properties_set").unwrap().as_i64(), Some(1));
+
+        let sqls = captured.lock().unwrap();
+        assert!(
+            sqls[0].starts_with("UPDATE"),
+            "expected UPDATE, got: {}",
+            sqls[0]
+        );
+        // Lightweight UPDATE — no mutations_sync.
+        assert!(
+            !sqls[0].to_lowercase().contains("mutations_sync"),
+            "must not emit mutations_sync, got: {}",
+            sqls[0]
+        );
+    }
+
+    #[test]
+    fn cypher_delete_routes_to_write_path_and_emits_delete() {
+        let (db, captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let result = conn
+            .query("MATCH (a:Person) WHERE a.person_id = 'p1' DELETE a")
+            .expect("DELETE should succeed via write dispatch");
+        let mut iter = result.into_iter();
+        let row = iter.next().unwrap();
+        assert_eq!(row.get("nodes_deleted").unwrap().as_i64(), Some(1));
+
+        let sqls = captured.lock().unwrap();
+        assert!(
+            sqls[0].starts_with("DELETE FROM"),
+            "expected DELETE FROM, got: {}",
+            sqls[0]
+        );
+    }
+
+    #[test]
+    fn cypher_detach_delete_emits_rel_then_node_delete_sequence() {
+        let (db, captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let result = conn
+            .query("MATCH (a:Person) WHERE a.person_id = 'p1' DETACH DELETE a")
+            .expect("DETACH DELETE should succeed");
+        let mut iter = result.into_iter();
+        let row = iter.next().unwrap();
+        // KNOWS touches Person on both sides → 2 rel-cleanup deletes,
+        // then 1 node delete.
+        assert!(row.get("relationships_deleted").unwrap().as_i64().unwrap() >= 1);
+        assert_eq!(row.get("nodes_deleted").unwrap().as_i64(), Some(1));
+
+        let sqls = captured.lock().unwrap();
+        // Last SQL is the node delete.
+        assert!(
+            sqls.last().unwrap().contains("`persons`") || sqls.last().unwrap().contains("`person`"),
+            "node DELETE must come last, got: {:?}",
+            sqls
+        );
+    }
+
+    #[test]
+    fn cypher_remove_routes_to_write_path() {
+        let (db, captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        conn.query("MATCH (a:Person) WHERE a.person_id = 'p1' REMOVE a.name")
+            .expect("REMOVE should succeed");
+        let sqls = captured.lock().unwrap();
+        assert!(
+            sqls[0].contains("SET `full_name` = NULL"),
+            "REMOVE should emit SET … = NULL, got: {}",
+            sqls[0]
+        );
+    }
+
+    #[test]
+    fn cypher_write_rejected_in_sql_only_mode() {
+        // `from_executor` tags the Database as SqlOnly. Writes must reject.
+        let schema = build_writable_test_schema();
+        let db = Database::from_executor(
+            schema,
+            Arc::new({
+                use async_trait::async_trait;
+                use clickgraph::executor::{ExecutorError, QueryExecutor};
+                struct Stub;
+                #[async_trait]
+                impl QueryExecutor for Stub {
+                    async fn execute_json(
+                        &self,
+                        _sql: &str,
+                        _role: Option<&str>,
+                    ) -> Result<Vec<serde_json::Value>, ExecutorError> {
+                        Ok(vec![])
+                    }
+                    async fn execute_text(
+                        &self,
+                        _sql: &str,
+                        _format: &str,
+                        _role: Option<&str>,
+                    ) -> Result<String, ExecutorError> {
+                        Ok(String::new())
+                    }
+                }
+                Stub
+            }),
+        )
+        .unwrap();
+        let conn = Connection::new(&db).unwrap();
+        let err = conn
+            .query("CREATE (a:Person {person_id: 'p1'})")
+            .expect_err("must reject write in sql_only mode");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("embedded chdb mode") || msg.contains("EmbeddedChdb"),
+            "expected executor-rejection error, got: {}",
+            msg
+        );
+    }
+
+    /// `CREATE` with leading line comments must still route to the write
+    /// path. Regression for the dispatch parser silently bypassing writes
+    /// when the input contained comments.
+    #[test]
+    fn cypher_create_with_comments_routes_to_write_path() {
+        let (db, captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let cypher = "// leading comment\n/* block comment */\nCREATE (a:Person {person_id: 'p1'})";
+        let result = conn
+            .query(cypher)
+            .expect("CREATE with comments must route to write dispatch");
+        let mut iter = result.into_iter();
+        let row = iter.next().unwrap();
+        assert_eq!(row.get("nodes_created").unwrap().as_i64(), Some(1));
+
+        let sqls = captured.lock().unwrap();
+        assert!(
+            sqls[0].starts_with("INSERT INTO"),
+            "comment-prefixed CREATE must still emit INSERT, got: {}",
+            sqls[0]
+        );
+    }
+
+    /// `MATCH … CREATE` (read query feeding a write) must enter the write
+    /// pipeline rather than silently fall through to the read path. We pin
+    /// only that dispatch reaches the write pipeline and produces a
+    /// counter-shaped `QueryResult` — exact semantics for MATCH-driven
+    /// CREATE may keep evolving.
+    #[test]
+    fn cypher_match_create_routes_to_write_path() {
+        let (db, _captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let result = conn
+            .query("MATCH (a:Person) CREATE (b:Person {person_id: 'p2'})")
+            .expect("MATCH … CREATE must reach write pipeline");
+        // Counter-shape ensures we routed to handle_write_async; if it
+        // had fallen through to the read path, the QueryResult columns
+        // would not be the four counter columns.
+        let cols = result.get_column_names();
+        assert_eq!(
+            cols.len(),
+            4,
+            "expected counter result from write path, got cols={:?}",
+            cols
+        );
+        assert!(cols.contains(&"nodes_created".to_string()));
+    }
+
+    /// `CREATE … RETURN` likewise must enter the write pipeline. We don't
+    /// yet support returning rows from a CREATE — the write pipeline
+    /// rejects this combination with a clear error rather than letting it
+    /// silently fall through to the read path.
+    #[test]
+    fn cypher_create_with_return_rejected_with_clear_error() {
+        let (db, _captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let err = conn
+            .query("CREATE (a:Person {person_id: 'p3'}) RETURN a")
+            .expect_err("CREATE … RETURN must surface a write-pipeline error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not supported") && msg.to_lowercase().contains("create"),
+            "expected write-pipeline rejection naming CREATE, got: {}",
+            msg
         );
     }
 }

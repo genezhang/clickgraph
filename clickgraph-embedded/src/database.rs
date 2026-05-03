@@ -115,6 +115,10 @@ pub struct Database {
     /// Shared Tokio runtime for blocking `Connection::query()` calls.
     /// Created once, reused by all connections -- avoids per-call overhead.
     pub(crate) runtime: tokio::runtime::Runtime,
+    /// What kind of backend the primary executor is. Used by the write
+    /// guard (Phase 3 of the embedded-writes plan) to gate Cypher write
+    /// clauses to the embedded chdb path only.
+    pub(crate) executor_kind: clickgraph::query_planner::write_guard::ExecutorKind,
 }
 
 impl Database {
@@ -204,6 +208,7 @@ impl Database {
             remote_executor,
             schema,
             runtime,
+            executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::EmbeddedChdb,
         })
     }
 
@@ -226,6 +231,7 @@ impl Database {
             remote_executor: Some(remote_executor),
             schema: Arc::new(graph_schema),
             runtime,
+            executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::Remote,
         })
     }
 
@@ -271,6 +277,11 @@ impl Database {
             remote_executor: None,
             schema,
             runtime: build_runtime()?,
+            // Test helper: the executor is opaque, so we cannot route
+            // writes through it safely. Tag as SqlOnly so the write
+            // guard rejects writes here — tests that need writes should
+            // construct a chdb-backed Database via `new` instead.
+            executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::SqlOnly,
         })
     }
 

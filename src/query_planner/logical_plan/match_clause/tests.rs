@@ -520,6 +520,7 @@ fn test_generate_scan() {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -578,6 +579,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
     nodes.insert(
@@ -602,6 +604,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
     nodes.insert(
@@ -626,6 +629,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -756,6 +760,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
     nodes.insert(
@@ -780,6 +785,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
     nodes.insert(
@@ -804,6 +810,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
     nodes.insert(
@@ -828,6 +835,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
     nodes.insert(
@@ -852,6 +860,7 @@ fn create_test_schema_with_relationships() -> GraphSchema {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -989,6 +998,7 @@ fn create_single_relationship_schema() -> GraphSchema {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -1264,6 +1274,7 @@ fn test_infer_relationship_type_too_many_matches_error() {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -1363,6 +1374,7 @@ fn create_single_node_schema() -> GraphSchema {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -1400,6 +1412,7 @@ fn create_multi_node_schema() -> GraphSchema {
                 node_id_types: None,
                 source: None,
                 property_types: HashMap::new(),
+                id_generation: None,
             },
         );
     }
@@ -1483,6 +1496,7 @@ fn test_infer_node_label_many_nodes_no_error() {
                 node_id_types: None,
                 source: None,
                 property_types: HashMap::new(),
+                id_generation: None,
             },
         );
     }
@@ -1534,6 +1548,7 @@ fn test_infer_node_label_denormalized_single_node() {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -1575,6 +1590,7 @@ fn test_infer_relationship_type_polymorphic_edge() {
                 node_id_types: None,
                 source: None,
                 property_types: HashMap::new(),
+                id_generation: None,
             },
         );
     }

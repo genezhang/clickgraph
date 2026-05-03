@@ -53,6 +53,7 @@ fn person_node() -> NodeSchema {
         node_id_types: None,
         source: None,
         property_types: HashMap::new(),
+        id_generation: None,
     }
 }
 
@@ -378,6 +379,7 @@ fn detach_delete_uses_resolved_pk_column_for_non_id_schemas() {
         node_id_types: None,
         source: None,
         property_types: HashMap::new(),
+        id_generation: None,
     };
     node.column_names.sort();
 

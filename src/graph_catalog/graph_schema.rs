@@ -98,6 +98,14 @@ pub struct NodeSchema {
     /// When present, DDL columns use the specified ClickHouse type instead of String
     #[serde(skip)]
     pub property_types: HashMap<String, SchemaType>,
+
+    /// Optional: How the node ID column is filled when Cypher CREATE omits
+    /// it (Decision 0.2 of the embedded-writes design). `None` is treated as
+    /// `Uuid` — the DDL `DEFAULT generateUUIDv4()` fills the column. Other
+    /// strategies (`Provided`, `Snowflake`) are dispatched by
+    /// `clickhouse_query_generator::auto_id_decision`.
+    #[serde(skip)]
+    pub id_generation: Option<crate::clickhouse_query_generator::IdStrategy>,
 }
 
 impl NodeSchema {
@@ -187,6 +195,7 @@ impl NodeSchema {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         }
     }
 }
@@ -1886,6 +1895,7 @@ mod tests {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         };
 
         let flight_edge = RelationshipSchema {
@@ -1967,6 +1977,7 @@ mod tests {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         };
 
         let flight_edge = RelationshipSchema {
@@ -2041,6 +2052,7 @@ mod tests {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         };
 
         let user = NodeSchema {
@@ -2074,6 +2086,7 @@ mod tests {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         };
 
         let mut from_props = HashMap::new();
@@ -2161,6 +2174,7 @@ mod tests {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         };
 
         let mut to_props_post = HashMap::new();
@@ -2187,6 +2201,7 @@ mod tests {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         };
 
         let mut to_props = HashMap::new();
@@ -2278,6 +2293,7 @@ mod tests {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         };
 
         let mut from_props = HashMap::new();
@@ -2352,6 +2368,7 @@ mod tests {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         };
 
         let flight_edge = RelationshipSchema {
@@ -2423,6 +2440,7 @@ mod tests {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         };
 
         let mut from_props = HashMap::new();
@@ -2507,6 +2525,7 @@ mod tests {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         };
 
         let mut from_props = HashMap::new();

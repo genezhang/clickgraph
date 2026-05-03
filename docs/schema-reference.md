@@ -193,6 +193,7 @@ MATCH (u:User) RETURN count(u)
 | `auto_discover_columns` | bool | `false` | Auto-map all table columns as properties |
 | `exclude_columns` | list | `[]` | Columns to exclude from auto-discovery |
 | `naming_convention` | string | `"snake_case"` | Property naming: "snake_case" or "camelCase" |
+| `id_generation` | enum | `"uuid"` | **Embedded mode only.** How the ID column is filled when Cypher `CREATE` omits it: `"uuid"` (default — DDL `DEFAULT generateUUIDv4()` fills it), `"provided"` (caller must supply, planner errors otherwise), `"snowflake"` (planner emits a `generateSnowflakeID()` call). |
 
 ### Shared Table Attributes (for label_column pattern)
 
