@@ -29,8 +29,8 @@ use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema};
 use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_plan::{
-    Create, CreatePattern, CreateRel, Delete, LogicalPlan, Remove, SetItem, SetProperties,
-    WriteProperty,
+    Create, CreatePattern, CreateRel, Delete, Filter, GraphJoins, LogicalPlan, Remove, SetItem,
+    SetProperties, Union, WriteProperty,
 };
 
 use super::errors::RenderBuildError;
@@ -168,58 +168,96 @@ fn build_set(
     sp: &SetProperties,
     schema: &GraphSchema,
 ) -> Result<WriteRenderPlan, WriteRenderError> {
-    // Group SET items by target alias so each alias produces one UpdateOp.
+    // Group SET items by target alias so each alias produces one UpdateOp
+    // (or, for Phase 5e multi-label aliases, one UpdateOp per resolved
+    // label).
     let grouped = group_assignments_by_alias(&sp.items);
     let mut ops: Vec<WriteRenderPlan> = Vec::with_capacity(grouped.len());
 
     for (alias, items) in grouped {
-        let label = find_alias_label(&alias, &sp.input).ok_or_else(|| {
-            WriteRenderError::Build(format!(
+        let labels = find_all_alias_labels(&alias, &sp.input);
+        if labels.is_empty() {
+            return Err(WriteRenderError::Build(format!(
                 "SET: alias `{}` is not bound by a preceding MATCH (or its label cannot be \
                  resolved at this stage)",
                 alias
-            ))
-        })?;
-        let node_schema = schema.node_schema_opt(&label).ok_or_else(|| {
-            WriteRenderError::Build(format!("SET: unknown node label `{}`", label))
-        })?;
-
-        // Per Cypher semantics, repeated assignments to the same property
-        // are last-wins. ClickHouse rejects duplicate column assignments in
-        // an UPDATE list, so collapse before emitting.
-        let mut assignments: Vec<(String, RenderExpr)> = Vec::with_capacity(items.len());
-        let mut col_index: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
-        for item in &items {
-            let column =
-                resolve_node_property_column(node_schema, &item.property).ok_or_else(|| {
-                    WriteRenderError::Build(format!(
-                        "SET: property `{}.{}` cannot be mapped to a writable column",
-                        alias, item.property
-                    ))
-                })?;
-            let value = render_value(&item.value)?;
-            if let Some(&i) = col_index.get(&column) {
-                assignments[i].1 = value;
-            } else {
-                col_index.insert(column.clone(), assignments.len());
-                assignments.push((column, value));
-            }
+            )));
         }
 
-        let id_column = node_id_column_or_error(node_schema, "SET", &alias)?;
-        let source = build_id_source(&alias, &id_column, &sp.input, schema)?;
-
-        ops.push(WriteRenderPlan::Update(UpdateOp {
-            database: node_schema.database.clone(),
-            table: node_schema.table_name.clone(),
-            assignments,
-            id_column,
-            source,
-        }));
+        // Phase 5e: when an untyped MATCH expands to a Union over multiple
+        // node tables, emit one UPDATE per label table, sourcing each
+        // UPDATE from a label-scoped slice of the read pipeline. Single-
+        // label aliases keep the original input untouched.
+        for label in &labels {
+            let scoped_input = if labels.len() > 1 {
+                slice_plan_to_label(&alias, label, &sp.input).ok_or_else(|| {
+                    WriteRenderError::Build(format!(
+                        "SET: untyped target `{}` resolves to multiple labels {:?} but \
+                         the read pipeline could not be sliced for label `{}`.",
+                        alias, labels, label
+                    ))
+                })?
+            } else {
+                sp.input.clone()
+            };
+            ops.push(build_set_for_label(
+                &alias,
+                label,
+                &items,
+                &scoped_input,
+                schema,
+            )?);
+        }
     }
 
     Ok(unwrap_singleton(ops))
+}
+
+/// Build the single UPDATE for an (alias, label) pair against `input`,
+/// which must bind `alias` to exactly `label`.
+fn build_set_for_label(
+    alias: &str,
+    label: &str,
+    items: &[SetItem],
+    input: &Arc<LogicalPlan>,
+    schema: &GraphSchema,
+) -> Result<WriteRenderPlan, WriteRenderError> {
+    let node_schema = schema
+        .node_schema_opt(label)
+        .ok_or_else(|| WriteRenderError::Build(format!("SET: unknown node label `{}`", label)))?;
+
+    // Per Cypher semantics, repeated assignments to the same property
+    // are last-wins. ClickHouse rejects duplicate column assignments in
+    // an UPDATE list, so collapse before emitting.
+    let mut assignments: Vec<(String, RenderExpr)> = Vec::with_capacity(items.len());
+    let mut col_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for item in items {
+        let column =
+            resolve_node_property_column(node_schema, &item.property).ok_or_else(|| {
+                WriteRenderError::Build(format!(
+                    "SET: property `{}.{}` cannot be mapped to a writable column",
+                    alias, item.property
+                ))
+            })?;
+        let value = render_value(&item.value)?;
+        if let Some(&i) = col_index.get(&column) {
+            assignments[i].1 = value;
+        } else {
+            col_index.insert(column.clone(), assignments.len());
+            assignments.push((column, value));
+        }
+    }
+
+    let id_column = node_id_column_or_error(node_schema, "SET", alias)?;
+    let source = build_id_source(alias, &id_column, input, schema)?;
+
+    Ok(WriteRenderPlan::Update(UpdateOp {
+        database: node_schema.database.clone(),
+        table: node_schema.table_name.clone(),
+        assignments,
+        id_column,
+        source,
+    }))
 }
 
 fn build_remove(rem: &Remove, schema: &GraphSchema) -> Result<WriteRenderPlan, WriteRenderError> {
@@ -269,26 +307,34 @@ fn build_delete(del: &Delete, schema: &GraphSchema) -> Result<WriteRenderPlan, W
 
     for alias in &del.targets {
         // First try as a node alias.
-        if let Some(label) = find_alias_label(alias, &del.input) {
-            let node_schema = schema.node_schema_opt(&label).ok_or_else(|| {
-                WriteRenderError::Build(format!("DELETE: unknown node label `{}`", label))
-            })?;
-
-            let id_column = node_id_column_or_error(node_schema, "DELETE", alias)?;
-
-            if del.detach {
-                ops.extend(build_detach_rel_deletes(
-                    alias, &label, &id_column, &del.input, schema,
+        let labels = find_all_alias_labels(alias, &del.input);
+        if !labels.is_empty() {
+            // Phase 5e: untyped MATCH (n) expands to a Union over every
+            // node table, binding `n` to multiple labels at once. Fan out
+            // to one DELETE per label, slicing the read pipeline so each
+            // per-table source query reads only that label's branch.
+            for label in &labels {
+                let scoped_input = if labels.len() > 1 {
+                    slice_plan_to_label(alias, label, &del.input).ok_or_else(|| {
+                        WriteRenderError::Build(format!(
+                            "DELETE: untyped target `{}` resolves to multiple labels {:?} \
+                             but the read pipeline could not be sliced for label `{}`. \
+                             This is typically a planner shape we don't yet handle in the \
+                             multi-label fan-out — file a bug with the offending Cypher.",
+                            alias, labels, label
+                        ))
+                    })?
+                } else {
+                    del.input.clone()
+                };
+                ops.extend(build_delete_for_label(
+                    alias,
+                    label,
+                    del.detach,
+                    &scoped_input,
+                    schema,
                 )?);
             }
-
-            let source = build_id_source(alias, &id_column, &del.input, schema)?;
-            ops.push(WriteRenderPlan::Delete(DeleteOp {
-                database: node_schema.database.clone(),
-                table: node_schema.table_name.clone(),
-                id_column,
-                source,
-            }));
             continue;
         }
 
@@ -317,6 +363,39 @@ fn build_delete(del: &Delete, schema: &GraphSchema) -> Result<WriteRenderPlan, W
         ));
     }
     Ok(unwrap_singleton(ops))
+}
+
+/// Emit the DELETE ops for a single (alias, label) pair against `input`,
+/// which must bind `alias` to exactly `label`. Used by the multi-label
+/// fan-out and by the existing single-label path with the same code.
+fn build_delete_for_label(
+    alias: &str,
+    label: &str,
+    detach: bool,
+    input: &Arc<LogicalPlan>,
+    schema: &GraphSchema,
+) -> Result<Vec<WriteRenderPlan>, WriteRenderError> {
+    let mut ops: Vec<WriteRenderPlan> = Vec::new();
+
+    let node_schema = schema.node_schema_opt(label).ok_or_else(|| {
+        WriteRenderError::Build(format!("DELETE: unknown node label `{}`", label))
+    })?;
+    let id_column = node_id_column_or_error(node_schema, "DELETE", alias)?;
+
+    if detach {
+        ops.extend(build_detach_rel_deletes(
+            alias, label, &id_column, input, schema,
+        )?);
+    }
+
+    let source = build_id_source(alias, &id_column, input, schema)?;
+    ops.push(WriteRenderPlan::Delete(DeleteOp {
+        database: node_schema.database.clone(),
+        table: node_schema.table_name.clone(),
+        id_column,
+        source,
+    }));
+    Ok(ops)
 }
 
 /// For DETACH DELETE: enumerate every relationship table that references
@@ -453,6 +532,139 @@ fn node_id_column_or_error(
                 clause, alias, e
             ))
         })
+}
+
+/// Return *every* label bound to `alias` in `plan`, sorted and deduped.
+///
+/// Phase 5e: an untyped Cypher MATCH like `MATCH (n) DELETE n` expands
+/// the planner's `n` GraphNode into a `LogicalPlan::Union` with one
+/// branch per node table — each branch binds `alias = n` to a different
+/// label. The single-label `find_alias_label` returns whichever label
+/// the depth-first walk reaches first, so the write pipeline used to
+/// emit a DELETE/UPDATE for just that one table; this helper enumerates
+/// all of them so the caller can fan out across the union.
+fn find_all_alias_labels(alias: &str, plan: &LogicalPlan) -> Vec<String> {
+    let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    collect_alias_labels(alias, plan, &mut out);
+    out.into_iter().collect()
+}
+
+fn collect_alias_labels(
+    alias: &str,
+    plan: &LogicalPlan,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    match plan {
+        LogicalPlan::GraphNode(n) if n.alias == alias => {
+            if let Some(l) = &n.label {
+                out.insert(l.clone());
+            }
+            collect_alias_labels(alias, &n.input, out);
+        }
+        LogicalPlan::GraphNode(n) => collect_alias_labels(alias, &n.input, out),
+        LogicalPlan::GraphRel(r) => {
+            collect_alias_labels(alias, &r.left, out);
+            collect_alias_labels(alias, &r.center, out);
+            collect_alias_labels(alias, &r.right, out);
+        }
+        LogicalPlan::Filter(f) => collect_alias_labels(alias, &f.input, out),
+        LogicalPlan::Projection(p) => collect_alias_labels(alias, &p.input, out),
+        LogicalPlan::GroupBy(gb) => collect_alias_labels(alias, &gb.input, out),
+        LogicalPlan::OrderBy(ob) => collect_alias_labels(alias, &ob.input, out),
+        LogicalPlan::Skip(s) => collect_alias_labels(alias, &s.input, out),
+        LogicalPlan::Limit(l) => collect_alias_labels(alias, &l.input, out),
+        LogicalPlan::Cte(c) => collect_alias_labels(alias, &c.input, out),
+        LogicalPlan::GraphJoins(gj) => collect_alias_labels(alias, &gj.input, out),
+        LogicalPlan::Unwind(u) => collect_alias_labels(alias, &u.input, out),
+        LogicalPlan::Union(u) => {
+            for b in &u.inputs {
+                collect_alias_labels(alias, b, out);
+            }
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            collect_alias_labels(alias, &cp.left, out);
+            collect_alias_labels(alias, &cp.right, out);
+        }
+        LogicalPlan::WithClause(wc) => collect_alias_labels(alias, &wc.input, out),
+        LogicalPlan::Create(c) => collect_alias_labels(alias, &c.input, out),
+        LogicalPlan::SetProperties(sp) => collect_alias_labels(alias, &sp.input, out),
+        LogicalPlan::Delete(d) => collect_alias_labels(alias, &d.input, out),
+        LogicalPlan::Remove(r) => collect_alias_labels(alias, &r.input, out),
+        LogicalPlan::Empty | LogicalPlan::ViewScan(_) | LogicalPlan::PageRank(_) => {}
+    }
+}
+
+/// Walk `plan` and return a copy with every `LogicalPlan::Union` replaced
+/// by the single branch that binds `alias` to `target_label` only.
+/// Returns `None` if no such branch exists or the plan shape contains a
+/// non-Union variant we don't yet know how to slice.
+///
+/// Phase 5e calls this for every label resolved by `find_all_alias_labels`
+/// to scope each per-label DELETE/UPDATE's source query to just that
+/// label's read pipeline. Wrappers above the Union (Filter, Projection,
+/// GraphJoins, etc.) are preserved so any WHERE / LIMIT / etc. on the
+/// untyped MATCH still constrains the per-label slice.
+fn slice_plan_to_label(
+    alias: &str,
+    target_label: &str,
+    plan: &Arc<LogicalPlan>,
+) -> Option<Arc<LogicalPlan>> {
+    match plan.as_ref() {
+        LogicalPlan::Union(u) => {
+            // Pick the branch whose only label binding for `alias` is
+            // `target_label`. If a branch carries multiple labels we
+            // can't safely scope it, so skip and rely on a deeper match.
+            for branch in &u.inputs {
+                let branch_labels = find_all_alias_labels(alias, branch);
+                if branch_labels.len() == 1 && branch_labels[0] == target_label {
+                    return Some(branch.clone());
+                }
+            }
+            // Fall back: the target label might be inside a nested Union.
+            for branch in &u.inputs {
+                if let Some(b) = slice_plan_to_label(alias, target_label, branch) {
+                    return Some(b);
+                }
+            }
+            None
+        }
+        // Read-pipeline wrappers: recurse and rebuild around the sliced input.
+        LogicalPlan::Filter(f) => {
+            slice_plan_to_label(alias, target_label, &f.input).map(|new_input| {
+                Arc::new(LogicalPlan::Filter(Filter {
+                    input: new_input,
+                    predicate: f.predicate.clone(),
+                }))
+            })
+        }
+        LogicalPlan::GraphJoins(gj) => {
+            slice_plan_to_label(alias, target_label, &gj.input).map(|new_input| {
+                Arc::new(LogicalPlan::GraphJoins(GraphJoins {
+                    input: new_input,
+                    joins: gj.joins.clone(),
+                    optional_aliases: gj.optional_aliases.clone(),
+                    anchor_table: gj.anchor_table.clone(),
+                    cte_references: gj.cte_references.clone(),
+                    correlation_predicates: gj.correlation_predicates.clone(),
+                }))
+            })
+        }
+        // Below the Union, leaf shapes that already bind a single label
+        // are returned as-is. Anything else (CartesianProduct, WithClause,
+        // GraphRel, GroupBy/OrderBy/Skip/Limit/Projection above the Union)
+        // is intentionally left out of v1 — multi-label fan-out under
+        // those shapes is a follow-up. Returning None here makes the
+        // caller surface a clear "could not be sliced" error rather than
+        // generating wrong SQL silently.
+        _ => {
+            let labels = find_all_alias_labels(alias, plan);
+            if labels.len() == 1 && labels[0] == target_label {
+                Some(plan.clone())
+            } else {
+                None
+            }
+        }
+    }
 }
 
 fn find_alias_label(alias: &str, plan: &LogicalPlan) -> Option<String> {

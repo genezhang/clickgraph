@@ -205,10 +205,57 @@ fn validate_alias_writable(
     if find_alias_rel_type(alias, input).is_some() {
         return Ok(());
     }
+    // Phase 5e: an untyped `MATCH (n)` binds `n` via a labelless GraphNode
+    // at this stage — Union expansion across writable node tables happens
+    // in a later analyzer pass. If we can find such a binding, defer the
+    // writable-schema check to the renderer (which sees the expanded
+    // Union and will validate each branch's schema). Without this, the
+    // planner rejects every untyped MATCH+DELETE/SET/REMOVE before the
+    // renderer ever gets a chance to fan out across labels.
+    if alias_is_bound_anywhere(alias, input) {
+        return Ok(());
+    }
     Err(LogicalPlanError::QueryPlanningError(format!(
         "{} target `{}` is not bound by a preceding MATCH clause",
         clause, alias
     )))
+}
+
+/// Walk the plan tree looking for *any* `GraphNode` or `GraphRel` that
+/// binds `alias`, regardless of whether a static label is attached.
+/// Used by `validate_alias_writable` and `validate_alias_property` to
+/// accept untyped `MATCH (n)` bindings that haven't been expanded into
+/// per-label Union branches yet.
+fn alias_is_bound_anywhere(alias: &str, plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::GraphNode(n) if n.alias == alias => true,
+        LogicalPlan::GraphRel(r) if r.alias == alias => true,
+        LogicalPlan::GraphNode(n) => alias_is_bound_anywhere(alias, &n.input),
+        LogicalPlan::GraphRel(r) => {
+            alias_is_bound_anywhere(alias, &r.left)
+                || alias_is_bound_anywhere(alias, &r.center)
+                || alias_is_bound_anywhere(alias, &r.right)
+        }
+        LogicalPlan::Filter(f) => alias_is_bound_anywhere(alias, &f.input),
+        LogicalPlan::Projection(p) => alias_is_bound_anywhere(alias, &p.input),
+        LogicalPlan::GroupBy(gb) => alias_is_bound_anywhere(alias, &gb.input),
+        LogicalPlan::OrderBy(ob) => alias_is_bound_anywhere(alias, &ob.input),
+        LogicalPlan::Skip(s) => alias_is_bound_anywhere(alias, &s.input),
+        LogicalPlan::Limit(l) => alias_is_bound_anywhere(alias, &l.input),
+        LogicalPlan::Cte(c) => alias_is_bound_anywhere(alias, &c.input),
+        LogicalPlan::GraphJoins(gj) => alias_is_bound_anywhere(alias, &gj.input),
+        LogicalPlan::Unwind(u) => alias_is_bound_anywhere(alias, &u.input),
+        LogicalPlan::Union(u) => u.inputs.iter().any(|p| alias_is_bound_anywhere(alias, p)),
+        LogicalPlan::CartesianProduct(cp) => {
+            alias_is_bound_anywhere(alias, &cp.left) || alias_is_bound_anywhere(alias, &cp.right)
+        }
+        LogicalPlan::WithClause(wc) => alias_is_bound_anywhere(alias, &wc.input),
+        LogicalPlan::Create(c) => alias_is_bound_anywhere(alias, &c.input),
+        LogicalPlan::SetProperties(sp) => alias_is_bound_anywhere(alias, &sp.input),
+        LogicalPlan::Delete(d) => alias_is_bound_anywhere(alias, &d.input),
+        LogicalPlan::Remove(r) => alias_is_bound_anywhere(alias, &r.input),
+        LogicalPlan::Empty | LogicalPlan::ViewScan(_) | LogicalPlan::PageRank(_) => false,
+    }
 }
 
 /// Validate that `property` exists on `alias`'s schema (when statically

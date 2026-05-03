@@ -1733,6 +1733,37 @@ graph_schema:
         Arc::new(config.to_graph_schema().expect("valid schema"))
     }
 
+    /// Phase 5e schema: three writable node labels with distinct ID
+    /// columns, no relationships. Lets the multi-label fan-out test
+    /// assert that `MATCH (n) DELETE n` emits one DELETE per node table.
+    fn build_multi_label_writable_schema() -> Arc<GraphSchema> {
+        let yaml = r#"name: test_multi_label
+graph_schema:
+  nodes:
+    - label: A
+      database: test_db
+      table: a_nodes
+      node_id: a_id
+      property_mappings:
+        a_id: a_id
+    - label: B
+      database: test_db
+      table: b_nodes
+      node_id: b_id
+      property_mappings:
+        b_id: b_id
+    - label: C
+      database: test_db
+      table: c_nodes
+      node_id: c_id
+      property_mappings:
+        c_id: c_id
+  edges: []
+"#;
+        let config: GraphSchemaConfig = serde_yaml::from_str(yaml).expect("valid yaml");
+        Arc::new(config.to_graph_schema().expect("valid schema"))
+    }
+
     fn build_source_backed_schema() -> Arc<GraphSchema> {
         let yaml = "name: test_source\ngraph_schema:\n  nodes:\n    - label: ReadOnlyUser\n      database: test_db\n      table: readonly_users\n      node_id: user_id\n      source: \"s3://bucket/users.parquet\"\n      property_mappings:\n        user_id: user_id\n        name: full_name\n  edges:\n    - type: READ_ONLY_FOLLOWS\n      database: test_db\n      table: readonly_follows\n      from_node: ReadOnlyUser\n      to_node: ReadOnlyUser\n      from_id: follower_id\n      to_id: followed_id\n      source: \"s3://bucket/follows.parquet\"\n      property_mappings: {}\n";
         let config: GraphSchemaConfig = serde_yaml::from_str(yaml).expect("valid yaml");
@@ -2581,6 +2612,111 @@ graph_schema:
             cols
         );
         assert!(cols.contains(&"nodes_created".to_string()));
+    }
+
+    /// Phase 5e: `MATCH (n) DELETE n` over a schema with multiple writable
+    /// node labels must fan out into one DELETE per node table (and one
+    /// `count()` probe per DELETE for accurate counters), not pick a
+    /// single label via `find_alias_label` and silently leave the other
+    /// tables intact.
+    #[test]
+    fn cypher_untyped_match_delete_fans_out_across_node_tables() {
+        let (db, captured) = make_capturing_db(build_multi_label_writable_schema());
+        let conn = Connection::new(&db).unwrap();
+        conn.query("MATCH (n) DELETE n")
+            .expect("untyped DELETE should succeed via Phase 5e fan-out");
+
+        let sqls = captured.lock().unwrap();
+        // Three labels in the schema → three DELETEs, each targeting a
+        // distinct node table.
+        let deletes: Vec<&String> = sqls
+            .iter()
+            .filter(|s| s.starts_with("DELETE FROM"))
+            .collect();
+        assert_eq!(
+            deletes.len(),
+            3,
+            "expected one DELETE per node label (3), got {} of {:?}",
+            deletes.len(),
+            *sqls
+        );
+        for table in ["`a_nodes`", "`b_nodes`", "`c_nodes`"] {
+            assert!(
+                deletes.iter().any(|s| s.contains(table)),
+                "no DELETE targeting {table}, got: {deletes:?}"
+            );
+        }
+
+        // Each DELETE is preceded by a `count()` probe so the per-table
+        // counter is accurate (Phase 5d) — three probes total here.
+        let probes: Vec<&String> = sqls
+            .iter()
+            .filter(|s| s.starts_with("SELECT count() AS n"))
+            .collect();
+        assert_eq!(
+            probes.len(),
+            3,
+            "expected one count probe per DELETE, got: {:?}",
+            *sqls
+        );
+    }
+
+    /// Phase 5e: `MATCH (n) SET n.k = 'v'` likewise fans out to one
+    /// UPDATE per node table when `n` is bound across multiple labels.
+    /// The schema below maps the property `k` to the same column name
+    /// on every label so the UPDATE is renderable on each table.
+    #[test]
+    fn cypher_untyped_match_set_fans_out_across_node_tables() {
+        // Custom schema: same property key (`k`) writable on three
+        // labels, each with a distinct ID column.
+        let yaml = r#"name: test_multi_label_set
+graph_schema:
+  nodes:
+    - label: A
+      database: test_db
+      table: a_nodes
+      node_id: a_id
+      property_mappings:
+        a_id: a_id
+        k: k_col
+    - label: B
+      database: test_db
+      table: b_nodes
+      node_id: b_id
+      property_mappings:
+        b_id: b_id
+        k: k_col
+    - label: C
+      database: test_db
+      table: c_nodes
+      node_id: c_id
+      property_mappings:
+        c_id: c_id
+        k: k_col
+  edges: []
+"#;
+        let config: GraphSchemaConfig = serde_yaml::from_str(yaml).expect("valid yaml");
+        let schema = Arc::new(config.to_graph_schema().expect("valid schema"));
+        let (db, captured) = make_capturing_db(schema);
+        let conn = Connection::new(&db).unwrap();
+        conn.query("MATCH (n) SET n.k = 'v'")
+            .expect("untyped SET should succeed via Phase 5e fan-out");
+
+        let sqls = captured.lock().unwrap();
+        let updates: Vec<&String> = sqls.iter().filter(|s| s.starts_with("UPDATE")).collect();
+        assert_eq!(
+            updates.len(),
+            3,
+            "expected one UPDATE per node label (3), got {} of {:?}",
+            updates.len(),
+            *sqls
+        );
+        for table in ["`a_nodes`", "`b_nodes`", "`c_nodes`"] {
+            assert!(
+                updates.iter().any(|s| s.contains(table)),
+                "no UPDATE targeting {table}, got: {updates:?}"
+            );
+        }
     }
 
     /// Phase 5d: `OPTIONAL MATCH … DELETE … RETURN` must run the write
