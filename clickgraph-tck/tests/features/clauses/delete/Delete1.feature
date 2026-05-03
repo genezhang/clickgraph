@@ -29,18 +29,30 @@
 #encoding: utf-8
 
 # Phase 4 import from upstream openCypher TCK (master, fetched 2026-05-02).
-# File-level @wip lifted in Phase 5c. Of the ungated scenarios:
+# File-level @wip lifted in Phase 5c. Phase 5e ungates [1] [2] [4] [6] —
+# the planner now lifts `DELETE` / `SET` / `REMOVE` to peel the write off
+# the root, runs the inner read pipeline through type inference (so an
+# untyped `MATCH (n)` expands to a Union of typed branches), then re-wraps;
+# the write_plan_builder fans out one DELETE per resolved node label via
+# `find_all_alias_labels` + `slice_plan_to_label`. Of the ungated scenarios:
+#   * [1] [2] — `MATCH (n) DELETE n` / `MATCH (n) DETACH DELETE n` after
+#     `CREATE ()` over the universal TCK schema. The Union expansion
+#     produces one DELETE per node label catalogued by `schema_gen.rs`;
+#     the count probe (Phase 5d) for each per-label DELETE returns 0
+#     except for `__Unlabeled` (which holds the one row), so
+#     `nodes_deleted` totals to 1 across the fan-out as expected.
 #   * [3] is ungated. The DETACH DELETE pipeline executes end-to-end (the
 #     `MATCH (n:X) DETACH DELETE n` shape over a small `:R` fan-out; covered
 #     by `cypher_detach_delete_emits_rel_then_node_delete_sequence` in
 #     clickgraph-embedded). The harness asserts `-nodes` and `-relationships`
 #     successfully, then hits the trailing `-labels` row — which
 #     `effect_to_counter()` deliberately leaves unmapped — and records the
-#     scenario as a skip (same pattern as `Create1` [3]/[4]). It is *not*
-#     a "running end-to-end with full counter assertions" scenario; its
-#     value is exercising the lift path and confirming the ungated dispatch
-#     stays clean. Re-tag candidate for `@unsupported-label-mutation` once
-#     we want it filtered out of the active list.
+#     scenario as a skip (same pattern as `Create1` [3]/[4]). Re-tag
+#     candidate for `@unsupported-label-mutation` once we want it filtered
+#     out of the active list.
+#   * [4] [6] — OPTIONAL MATCH (untyped) then DELETE / DETACH DELETE on
+#     an empty graph. Multi-label fan-out emits per-label DELETEs whose
+#     count probes all return 0; `no side effects` therefore holds.
 #   * [5] is ungated in Phase 5d. `OPTIONAL MATCH (a:DoesNotExist) DELETE a
 #     RETURN a` runs the write pipeline (no-op against an empty graph), then
 #     re-runs the read pipeline with the write clauses stripped to produce
@@ -48,15 +60,6 @@
 #     via the new `QueryResult::get_write_counters()` side-channel; the
 #     harness asserts `no side effects` against an all-zero counter map.
 # Scenarios still gated with per-scenario @wip:
-#   * [1] [2] — `MATCH (n) DELETE n` / `MATCH (n) DETACH DELETE n` over an
-#     untyped node match. ClickGraph's untyped MATCH expands to a UNION
-#     across every node table; the DELETE pipeline currently picks one
-#     label via `find_alias_label` and emits a single-table DELETE. Phase
-#     5e will extend the pipeline to fan out the DELETE across every
-#     resolved label (or refuse with a clear "ambiguous DELETE" error).
-#   * [4] [6] — OPTIONAL MATCH (untyped) then DELETE / DETACH DELETE on an
-#     empty graph. Same untyped-DELETE gap as [1] [2], plus OPTIONAL-MATCH-
-#     yielding-no-rows handling on the write path.
 #   * [7] — expects a runtime ConstraintVerificationFailed; ClickGraph's
 #     non-DETACH DELETE silently leaves dangling rows rather than raising
 #     (engine semantics differ). Stay @wip until we add a referential-
@@ -68,7 +71,6 @@
 #     to `SET n:Label` / `REMOVE n:Label`.
 Feature: Delete1 - Deleting nodes
 
-  @wip
   Scenario: [1] Delete nodes
     Given an empty graph
     And having executed:
@@ -84,7 +86,6 @@ Feature: Delete1 - Deleting nodes
     And the side effects should be:
       | -nodes | 1 |
 
-  @wip
   Scenario: [2] Detach delete node
     Given an empty graph
     And having executed:
@@ -120,7 +121,6 @@ Feature: Delete1 - Deleting nodes
       | -relationships | 3 |
       | -labels        | 1 |
 
-  @wip
   Scenario: [4] Delete on null node
     Given an empty graph
     When executing query:
@@ -144,7 +144,6 @@ Feature: Delete1 - Deleting nodes
       | null |
     And no side effects
 
-  @wip
   Scenario: [6] Detach delete on null node
     Given an empty graph
     When executing query:

@@ -3652,6 +3652,57 @@ impl AnalyzerPass for TypeInference {
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
         log::info!("🏷️ UnifiedTypeInference: Starting 4-phase type inference pass");
 
+        // Phase 5e: when the root is a write clause (DELETE / SET /
+        // REMOVE / CREATE), lift its input, run inference on the inner
+        // read pipeline, then re-wrap. This keeps the write rooted (so
+        // `build_write_plan` still recognises it) while letting the
+        // inner Union expansion fire — `MATCH (n) DELETE n` becomes
+        // `Delete { input: Union[GN(n, A), GN(n, B), GN(n, C)] }`,
+        // which the multi-label fan-out walks via
+        // `find_all_alias_labels` in `write_plan_builder`.
+        match logical_plan.as_ref() {
+            LogicalPlan::Delete(d) => {
+                let inner =
+                    self.analyze_with_graph_schema(d.input.clone(), plan_ctx, graph_schema)?;
+                return Ok(match inner {
+                    Transformed::Yes(new_input) => {
+                        let mut cloned = d.clone();
+                        cloned.input = new_input;
+                        Transformed::Yes(Arc::new(LogicalPlan::Delete(cloned)))
+                    }
+                    Transformed::No(_) => Transformed::No(logical_plan),
+                });
+            }
+            LogicalPlan::SetProperties(sp) => {
+                let inner =
+                    self.analyze_with_graph_schema(sp.input.clone(), plan_ctx, graph_schema)?;
+                return Ok(match inner {
+                    Transformed::Yes(new_input) => {
+                        let mut cloned = sp.clone();
+                        cloned.input = new_input;
+                        Transformed::Yes(Arc::new(LogicalPlan::SetProperties(cloned)))
+                    }
+                    Transformed::No(_) => Transformed::No(logical_plan),
+                });
+            }
+            LogicalPlan::Remove(r) => {
+                let inner =
+                    self.analyze_with_graph_schema(r.input.clone(), plan_ctx, graph_schema)?;
+                return Ok(match inner {
+                    Transformed::Yes(new_input) => {
+                        let mut cloned = r.clone();
+                        cloned.input = new_input;
+                        Transformed::Yes(Arc::new(LogicalPlan::Remove(cloned)))
+                    }
+                    Transformed::No(_) => Transformed::No(logical_plan),
+                });
+            }
+            // CREATE handling unchanged: standalone CREATE has Empty
+            // input; MATCH→CREATE leaves the read pipeline already
+            // typed by the planner.
+            _ => {}
+        }
+
         // Phase 0: Relationship-based label inference (from SchemaInference)
         // Walk the plan and infer missing labels from GraphRel patterns
         log::info!("🏷️ UnifiedTypeInference: Phase 0 - Relationship-based label inference");
@@ -4107,6 +4158,25 @@ fn discover_untyped_recursive(
         LogicalPlan::CartesianProduct(cp) => {
             discover_untyped_recursive(&cp.left, plan_ctx, untyped);
             discover_untyped_recursive(&cp.right, plan_ctx, untyped);
+        }
+
+        // Phase 5e: untyped patterns inside DELETE / SET / REMOVE inputs
+        // need to be discovered just like read-only patterns; without
+        // this, the write pipeline never sees `MATCH (n)`'s `n`
+        // expanded across node tables. CREATE inputs are recursed for
+        // symmetry (a `MATCH (m) CREATE (b)` shape carries `m` under
+        // the create wrapper).
+        LogicalPlan::Delete(d) => {
+            discover_untyped_recursive(&d.input, plan_ctx, untyped);
+        }
+        LogicalPlan::SetProperties(sp) => {
+            discover_untyped_recursive(&sp.input, plan_ctx, untyped);
+        }
+        LogicalPlan::Remove(r) => {
+            discover_untyped_recursive(&r.input, plan_ctx, untyped);
+        }
+        LogicalPlan::Create(c) => {
+            discover_untyped_recursive(&c.input, plan_ctx, untyped);
         }
 
         // Leaf nodes - no traversal needed
@@ -4860,11 +4930,32 @@ fn clone_plan_with_labels(
         LogicalPlan::Empty => LogicalPlan::Empty,
         LogicalPlan::ViewScan(view_scan) => LogicalPlan::ViewScan(view_scan.clone()),
 
-        // Write variants — clone unchanged; label inference only applies to read patterns.
-        LogicalPlan::Create(c) => LogicalPlan::Create(c.clone()),
-        LogicalPlan::SetProperties(sp) => LogicalPlan::SetProperties(sp.clone()),
-        LogicalPlan::Delete(d) => LogicalPlan::Delete(d.clone()),
-        LogicalPlan::Remove(r) => LogicalPlan::Remove(r.clone()),
+        // Phase 5e: write variants — recurse into the read input so
+        // untyped patterns under DELETE/SET/REMOVE/CREATE pick up the
+        // combination's labels too. Without recursion, an untyped
+        // `MATCH (n) DELETE n` keeps its inner `GraphNode(n, label=None)`
+        // through label inference and the write pipeline never sees the
+        // expanded Union of typed branches.
+        LogicalPlan::Create(c) => {
+            let mut cloned = c.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&c.input, combo, all_candidates));
+            LogicalPlan::Create(cloned)
+        }
+        LogicalPlan::SetProperties(sp) => {
+            let mut cloned = sp.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&sp.input, combo, all_candidates));
+            LogicalPlan::SetProperties(cloned)
+        }
+        LogicalPlan::Delete(d) => {
+            let mut cloned = d.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&d.input, combo, all_candidates));
+            LogicalPlan::Delete(cloned)
+        }
+        LogicalPlan::Remove(r) => {
+            let mut cloned = r.clone();
+            cloned.input = Arc::new(clone_plan_with_labels(&r.input, combo, all_candidates));
+            LogicalPlan::Remove(cloned)
+        }
     }
 }
 
