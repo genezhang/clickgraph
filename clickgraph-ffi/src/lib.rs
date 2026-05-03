@@ -272,6 +272,14 @@ pub struct QueryResult {
     position: AtomicUsize,
     compile_time_ms: f64,
     execution_time_ms: f64,
+    /// Side-effect counters for write+RETURN queries (Phase 5d). `Some`
+    /// only when the originating Cypher statement combined a write
+    /// clause with a RETURN clause; the row payload then carries the
+    /// read-pipeline result and these counters reflect the write
+    /// portion. Pure read queries and pure-write queries (where
+    /// counters are surfaced as a synthetic single-row payload) leave
+    /// this `None`. Mirrors `clickgraph_embedded::QueryResult::get_write_counters`.
+    write_counters: Option<std::collections::HashMap<String, i64>>,
 }
 
 #[uniffi::export]
@@ -330,6 +338,18 @@ impl QueryResult {
     /// Time spent executing the SQL query (milliseconds).
     pub fn get_execution_time(&self) -> f64 {
         self.execution_time_ms
+    }
+
+    /// Side-effect counters from a write+RETURN query (Phase 5d).
+    ///
+    /// Returns `Some` only when the originating Cypher contained both
+    /// a write clause (CREATE / SET / DELETE / REMOVE) and a RETURN
+    /// clause — the row payload then carries the read-pipeline output
+    /// and these counters reflect the write portion. Pure read queries
+    /// and pure-write queries (which surface counters as a synthetic
+    /// 4-column row) return `None`.
+    pub fn get_write_counters(&self) -> Option<std::collections::HashMap<String, i64>> {
+        self.write_counters.clone()
     }
 
     /// Infer column data types from the first row of results.
@@ -491,6 +511,11 @@ impl Connection {
         let compile_time_ms = result.get_compiling_time();
         let execution_time_ms = result.get_execution_time();
         let columns = result.get_column_names().to_vec();
+        // Extract the Phase 5d write+RETURN side-channel before the
+        // iterator consumes `result` below (cloning the small
+        // `Option<HashMap>` is cheap and avoids restructuring around
+        // ownership).
+        let write_counters = result.get_write_counters().cloned();
         let rows: Vec<Vec<RustValue>> = result.map(|row| row.values().to_vec()).collect();
 
         Ok(Arc::new(QueryResult {
@@ -499,6 +524,7 @@ impl Connection {
             position: AtomicUsize::new(0),
             compile_time_ms,
             execution_time_ms,
+            write_counters,
         }))
     }
 
@@ -713,6 +739,12 @@ impl Connection {
         let compile_time_ms = result.get_compiling_time();
         let execution_time_ms = result.get_execution_time();
         let columns = result.get_column_names().to_vec();
+        // Phase 5d write+RETURN counters surface here too — even though
+        // `query_remote` runs against an external ClickHouse, the
+        // embedded connection's `handle_write_async` is the same path,
+        // and a write+RETURN dispatch through it populates the
+        // side-channel before producing the row payload.
+        let write_counters = result.get_write_counters().cloned();
         let rows: Vec<Vec<RustValue>> = result.map(|row| row.values().to_vec()).collect();
 
         Ok(Arc::new(QueryResult {
@@ -721,6 +753,7 @@ impl Connection {
             position: AtomicUsize::new(0),
             compile_time_ms,
             execution_time_ms,
+            write_counters,
         }))
     }
 
