@@ -73,6 +73,7 @@ fn create_test_schema() -> GraphSchema {
             label_value: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -128,6 +129,7 @@ fn create_test_schema() -> GraphSchema {
             label_value: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -1625,6 +1627,7 @@ async fn test_expression_property_preserved_through_render_phase() {
             label_value: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 

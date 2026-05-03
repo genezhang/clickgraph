@@ -252,6 +252,7 @@ fn setup_test_schema() {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -278,6 +279,7 @@ fn setup_test_schema() {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -304,6 +306,7 @@ fn setup_test_schema() {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -330,6 +333,7 @@ fn setup_test_schema() {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 

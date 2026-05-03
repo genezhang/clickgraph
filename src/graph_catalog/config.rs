@@ -1339,6 +1339,7 @@ fn build_node_schema(
         node_id_types,
         source: node_def.source.clone(),
         property_types,
+        id_generation: None,
     })
 }
 
@@ -3765,6 +3766,7 @@ graph_schema:
                 node_id_types: None,
                 source: None,
                 property_types: HashMap::new(),
+                id_generation: None,
             },
         );
         nodes
@@ -3909,6 +3911,7 @@ graph_schema:
                 node_id_types: None,
                 source: None,
                 property_types: HashMap::new(),
+                id_generation: None,
             },
         );
         nodes

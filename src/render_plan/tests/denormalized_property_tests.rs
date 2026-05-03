@@ -62,6 +62,7 @@ fn setup_denormalized_schema() -> GraphSchema {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -473,6 +474,7 @@ fn test_denormalized_edge_table_same_table_for_node_and_edge() {
             node_id_types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 

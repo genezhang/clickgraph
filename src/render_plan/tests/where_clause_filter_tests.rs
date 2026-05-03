@@ -120,6 +120,7 @@ fn setup_test_graph_schema() -> GraphSchema {
         node_id_types: None,
         source: None,
         property_types: HashMap::new(),
+        id_generation: None,
     };
     nodes.insert("User".to_string(), user_node);
 

@@ -58,6 +58,7 @@ pub fn create_standard_schema() -> GraphSchema {
             label_value: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -102,6 +103,7 @@ pub fn create_standard_schema() -> GraphSchema {
             label_value: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -266,6 +268,7 @@ pub fn create_fk_edge_schema() -> GraphSchema {
             label_value: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -302,6 +305,7 @@ pub fn create_fk_edge_schema() -> GraphSchema {
             label_value: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -383,6 +387,7 @@ pub fn create_denormalized_schema() -> GraphSchema {
             label_value: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -484,6 +489,7 @@ pub fn create_composite_id_schema() -> GraphSchema {
             label_value: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -520,6 +526,7 @@ pub fn create_composite_id_schema() -> GraphSchema {
             label_value: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -668,6 +675,7 @@ pub fn create_polymorphic_schema() -> GraphSchema {
             label_value: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
@@ -712,6 +720,7 @@ pub fn create_polymorphic_schema() -> GraphSchema {
             label_value: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         },
     );
 
