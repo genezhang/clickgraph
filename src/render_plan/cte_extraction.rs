@@ -4953,11 +4953,21 @@ pub fn extract_ctes_with_context(
             );
             Ok(ctes)
         }
-        // Write variants — write payloads do not contribute CTEs to read-side rendering.
-        LogicalPlan::Create(_)
-        | LogicalPlan::SetProperties(_)
-        | LogicalPlan::Delete(_)
-        | LogicalPlan::Remove(_) => Ok(vec![]),
+        // Write variants — recurse into the preceding read pipeline so any
+        // CTEs it produced (WITH CTEs, VLP CTEs, etc.) still reach the
+        // renderer. The write payload itself does not contribute CTEs.
+        LogicalPlan::Create(c) => {
+            extract_ctes_with_context(&c.input, last_node_alias, context, schema, plan_ctx)
+        }
+        LogicalPlan::SetProperties(sp) => {
+            extract_ctes_with_context(&sp.input, last_node_alias, context, schema, plan_ctx)
+        }
+        LogicalPlan::Delete(d) => {
+            extract_ctes_with_context(&d.input, last_node_alias, context, schema, plan_ctx)
+        }
+        LogicalPlan::Remove(r) => {
+            extract_ctes_with_context(&r.input, last_node_alias, context, schema, plan_ctx)
+        }
     }
 }
 

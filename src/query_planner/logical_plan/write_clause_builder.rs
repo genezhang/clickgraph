@@ -25,8 +25,8 @@ use crate::{
     query_planner::{
         logical_expr::{Direction, LogicalExpr},
         logical_plan::{
-            errors::LogicalPlanError, Create, CreateNode, CreatePattern, CreateRel, Delete,
-            LogicalPlan, Remove, RemoveItem, SetItem, SetProperties, WriteProperty,
+            errors::LogicalPlanError, generate_id, Create, CreateNode, CreatePattern, CreateRel,
+            Delete, LogicalPlan, Remove, RemoveItem, SetItem, SetProperties, WriteProperty,
         },
     },
 };
@@ -55,14 +55,21 @@ pub fn build_create(
 }
 
 /// Build a `LogicalPlan::SetProperties` from a parsed `SetClause`.
+///
+/// Property names are validated against the alias's schema when the alias
+/// resolves to a statically-known label in `input`. Aliases whose label can
+/// only be inferred later (e.g., bound across a WITH boundary) are accepted
+/// without validation here; downstream passes catch them.
 pub fn build_set(
     set: &SetClause<'_>,
     input: Arc<LogicalPlan>,
-    _schema: &GraphSchema,
+    schema: &GraphSchema,
 ) -> Result<Arc<LogicalPlan>> {
     let mut items = Vec::with_capacity(set.set_items.len());
     for op in &set.set_items {
-        items.push(set_item_from_op(op)?);
+        let item = set_item_from_op(op)?;
+        validate_alias_property(&item.target_alias, &item.property, &input, schema, "SET")?;
+        items.push(item);
     }
     Ok(Arc::new(LogicalPlan::SetProperties(SetProperties {
         input,
@@ -71,15 +78,21 @@ pub fn build_set(
 }
 
 /// Build a `LogicalPlan::Delete` from a parsed `DeleteClause`.
+///
+/// Validates that each target alias is bound by `input` and (when its label
+/// resolves statically) that the target schema is writable.
 pub fn build_delete(
     del: &DeleteClause<'_>,
     input: Arc<LogicalPlan>,
-    _schema: &GraphSchema,
+    schema: &GraphSchema,
 ) -> Result<Arc<LogicalPlan>> {
     let mut targets = Vec::with_capacity(del.delete_items.len());
     for expr in &del.delete_items {
         match expr {
-            Expression::Variable(name) => targets.push((*name).to_string()),
+            Expression::Variable(name) => {
+                validate_alias_writable(name, &input, schema, "DELETE")?;
+                targets.push((*name).to_string());
+            }
             other => {
                 return Err(LogicalPlanError::QueryPlanningError(format!(
                     "DELETE only accepts bare variable references; got `{:?}`",
@@ -96,20 +109,122 @@ pub fn build_delete(
 }
 
 /// Build a `LogicalPlan::Remove` from a parsed `RemoveClause`.
+///
+/// Property validation works the same way as `build_set`.
 pub fn build_remove(
     rem: &RemoveClause<'_>,
     input: Arc<LogicalPlan>,
-    _schema: &GraphSchema,
+    schema: &GraphSchema,
 ) -> Result<Arc<LogicalPlan>> {
-    let items = rem
-        .remove_items
-        .iter()
-        .map(|prop| RemoveItem {
+    let mut items = Vec::with_capacity(rem.remove_items.len());
+    for prop in &rem.remove_items {
+        validate_alias_property(prop.base, prop.key, &input, schema, "REMOVE")?;
+        items.push(RemoveItem {
             target_alias: prop.base.to_string(),
             property: prop.key.to_string(),
-        })
-        .collect();
+        });
+    }
     Ok(Arc::new(LogicalPlan::Remove(Remove { input, items })))
+}
+
+// ---------------------------------------------------------------------------
+// Alias / property validation for SET / DELETE / REMOVE
+// ---------------------------------------------------------------------------
+
+/// If `alias`'s label can be resolved from `input`, verify the schema is
+/// writable (no `source:`, no FK-edge for relationships).
+fn validate_alias_writable(
+    alias: &str,
+    input: &Arc<LogicalPlan>,
+    schema: &GraphSchema,
+    clause: &str,
+) -> Result<()> {
+    let Some(label) = find_alias_label(alias, input) else {
+        // Alias not bound in this plan tree — caller must MATCH it first.
+        return Err(LogicalPlanError::QueryPlanningError(format!(
+            "{} target `{}` is not bound by a preceding MATCH clause",
+            clause, alias
+        )));
+    };
+    if let Some(node_schema) = schema.node_schema_opt(&label) {
+        if node_schema.source.is_some() {
+            return Err(LogicalPlanError::InvalidSchema {
+                label,
+                reason: format!(
+                    "label resolves to a source-backed (read-only) table; cannot {}",
+                    clause
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Validate that `property` exists on `alias`'s schema (when statically
+/// resolvable) and that the schema is writable.
+fn validate_alias_property(
+    alias: &str,
+    property: &str,
+    input: &Arc<LogicalPlan>,
+    schema: &GraphSchema,
+    clause: &str,
+) -> Result<()> {
+    let Some(label) = find_alias_label(alias, input) else {
+        // Label unresolved at this point — defer to downstream passes.
+        return Ok(());
+    };
+    if let Some(node_schema) = schema.node_schema_opt(&label) {
+        if node_schema.source.is_some() {
+            return Err(LogicalPlanError::InvalidSchema {
+                label,
+                reason: format!(
+                    "label resolves to a source-backed (read-only) table; cannot {}",
+                    clause
+                ),
+            });
+        }
+        let known = node_schema.property_mappings.contains_key(property)
+            || node_schema.column_names.iter().any(|c| c == property);
+        if !known {
+            return Err(LogicalPlanError::QueryPlanningError(format!(
+                "property `{}` is not defined for node label `{}` ({} clause)",
+                property, label, clause
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Walk the plan tree looking for a `GraphNode` or `GraphRel` whose alias
+/// matches and which carries a static label. Returns `None` if the alias is
+/// not found or its label is not statically resolvable here.
+fn find_alias_label(alias: &str, plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::GraphNode(node) if node.alias == alias => node.label.clone(),
+        LogicalPlan::GraphNode(node) => find_alias_label(alias, &node.input),
+        LogicalPlan::GraphRel(rel) => find_alias_label(alias, &rel.left)
+            .or_else(|| find_alias_label(alias, &rel.center))
+            .or_else(|| find_alias_label(alias, &rel.right)),
+        LogicalPlan::Filter(f) => find_alias_label(alias, &f.input),
+        LogicalPlan::Projection(p) => find_alias_label(alias, &p.input),
+        LogicalPlan::GroupBy(gb) => find_alias_label(alias, &gb.input),
+        LogicalPlan::OrderBy(ob) => find_alias_label(alias, &ob.input),
+        LogicalPlan::Skip(s) => find_alias_label(alias, &s.input),
+        LogicalPlan::Limit(l) => find_alias_label(alias, &l.input),
+        LogicalPlan::Cte(c) => find_alias_label(alias, &c.input),
+        LogicalPlan::GraphJoins(gj) => find_alias_label(alias, &gj.input),
+        LogicalPlan::Unwind(u) => find_alias_label(alias, &u.input),
+        LogicalPlan::Union(u) => u.inputs.iter().find_map(|p| find_alias_label(alias, p)),
+        LogicalPlan::CartesianProduct(cp) => {
+            find_alias_label(alias, &cp.left).or_else(|| find_alias_label(alias, &cp.right))
+        }
+        LogicalPlan::WithClause(wc) => find_alias_label(alias, &wc.input),
+        LogicalPlan::Create(c) => find_alias_label(alias, &c.input),
+        LogicalPlan::SetProperties(sp) => find_alias_label(alias, &sp.input),
+        LogicalPlan::Delete(d) => find_alias_label(alias, &d.input),
+        LogicalPlan::Remove(r) => find_alias_label(alias, &r.input),
+        LogicalPlan::Empty | LogicalPlan::ViewScan(_) | LogicalPlan::PageRank(_) => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -166,7 +281,8 @@ fn collect_patterns_from_connection(
 /// Resolve a CREATE relationship endpoint to an alias. If the endpoint is
 /// labeled, emit a `CreatePattern::Node` for it (we're creating a new node);
 /// otherwise it must already be bound by a prior clause, so we only return its
-/// alias.
+/// alias. Anonymous labelled endpoints are valid Cypher — synthesise an
+/// internal alias rather than rejecting them.
 fn endpoint_alias_or_create(
     pat: &NodePattern<'_>,
     schema: &GraphSchema,
@@ -174,13 +290,11 @@ fn endpoint_alias_or_create(
     side: &str,
 ) -> Result<String> {
     if pat.labels.is_some() {
-        let node = create_node_from_pattern(pat, schema)?;
-        let alias = node.alias.clone().ok_or_else(|| {
-            LogicalPlanError::QueryPlanningError(format!(
-                "CREATE {} endpoint with a label must also have an alias",
-                side
-            ))
-        })?;
+        let mut node = create_node_from_pattern(pat, schema)?;
+        let alias = node.alias.clone().unwrap_or_else(generate_id);
+        if node.alias.is_none() {
+            node.alias = Some(alias.clone());
+        }
         out.push(CreatePattern::Node(node));
         Ok(alias)
     } else {
@@ -638,5 +752,82 @@ mod tests {
             "got {:?}",
             err
         );
+    }
+
+    // Anonymous labelled endpoints get auto-generated aliases (PR #277 review).
+    #[test]
+    fn create_relationship_with_anonymous_endpoints() {
+        let p = plan("CREATE (:Person {name: 'a'})-[:KNOWS]->(:Person {name: 'b'})");
+        let create = match p {
+            LogicalPlan::Create(c) => c,
+            other => panic!("expected Create, got {:?}", other),
+        };
+        // Two anonymous Person nodes + the KNOWS rel = 3 patterns.
+        assert_eq!(create.patterns.len(), 3);
+        let aliases: Vec<String> = create
+            .patterns
+            .iter()
+            .filter_map(|p| match p {
+                CreatePattern::Node(n) => n.alias.clone(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(aliases.len(), 2);
+        assert_ne!(aliases[0], aliases[1], "anonymous aliases must be distinct");
+
+        let rel = create.patterns.iter().find_map(|p| match p {
+            CreatePattern::Rel(r) => Some(r),
+            _ => None,
+        });
+        let rel = rel.expect("Rel pattern present");
+        assert_eq!(rel.start_alias, aliases[0]);
+        assert_eq!(rel.end_alias, aliases[1]);
+    }
+
+    // SET / REMOVE now validate properties against the bound alias's schema.
+    #[test]
+    fn set_unknown_property_rejected() {
+        let err = plan_err("MATCH (a:Person) SET a.nickname = 'x'");
+        let msg = err.to_string();
+        assert!(msg.contains("nickname"), "got `{}`", msg);
+    }
+
+    #[test]
+    fn remove_unknown_property_rejected() {
+        let err = plan_err("MATCH (a:Person) REMOVE a.nickname");
+        let msg = err.to_string();
+        assert!(msg.contains("nickname"), "got `{}`", msg);
+    }
+
+    #[test]
+    fn set_against_source_backed_label_rejected() {
+        let mut node = person_node("Source");
+        node.source = Some("table_function:numbers(10)".to_string());
+        node.column_names.push("payload".to_string());
+        node.property_mappings.insert(
+            "payload".to_string(),
+            PropertyValue::Column("payload".to_string()),
+        );
+        let mut nodes = HashMap::new();
+        nodes.insert("Source".to_string(), node);
+        let schema = GraphSchema::build(1, "test".to_string(), nodes, HashMap::new());
+
+        let ast = parse_query("MATCH (a:Source) SET a.payload = 1").expect("parse");
+        let err = build_logical_plan(&ast, &schema, None, None, None).expect_err("must error");
+        assert!(
+            matches!(err, LogicalPlanError::InvalidSchema { .. }),
+            "got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn delete_unbound_alias_rejected() {
+        // Standalone DELETE with no MATCH — alias is not bound anywhere.
+        // The parser routes this through a query AST with delete_clause set
+        // but no reading clauses; build_delete must reject it.
+        let err = plan_err("MATCH (a:Person) DELETE b");
+        let msg = err.to_string();
+        assert!(msg.contains("not bound"), "got `{}`", msg);
     }
 }
