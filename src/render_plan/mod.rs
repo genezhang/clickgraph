@@ -80,6 +80,10 @@ pub mod errors;
 pub mod plan_builder;
 pub mod render_expr;
 pub mod view_plan;
+pub mod write_plan_builder;
+pub mod write_render;
+
+pub use write_render::{DeleteOp, InsertOp, RowSource, UpdateOp, WriteRenderPlan};
 
 #[cfg(test)]
 mod tests;

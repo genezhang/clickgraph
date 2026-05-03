@@ -5,3 +5,4 @@ mod variable_length_tests;
 mod vlp_property_pruning_tests;
 mod where_clause_filter_tests;
 mod with_clause_cte_tests;
+mod write_sql_tests;

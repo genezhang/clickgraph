@@ -688,7 +688,7 @@ pub(super) fn find_table_name_for_alias(plan: &LogicalPlan, target_alias: &str) 
 }
 
 /// Convert a RenderExpr to a SQL string for use in CTE WHERE clauses
-pub(super) fn render_expr_to_sql_string(
+pub(crate) fn render_expr_to_sql_string(
     expr: &RenderExpr,
     alias_mapping: &[(String, String)],
 ) -> String {

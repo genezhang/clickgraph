@@ -6,12 +6,17 @@ mod edge_uniqueness_tests;
 mod errors;
 mod function_registry;
 mod function_translator;
+pub mod id_gen;
 pub mod json_builder; // Type-preserving JSON construction utilities
 pub mod multi_type_vlp_joins; // Multi-type VLP JOIN expansion (Part 1D)
 pub mod pagerank;
 pub mod to_sql; // Made public for EXISTS subquery support
 pub mod to_sql_query; // Made public for EXISTS subquery generation with WITH clauses
 pub mod variable_length_cte;
+pub mod write_to_sql;
+
+pub use id_gen::{auto_id_decision, IdInsertDecision, IdStrategy};
+pub use write_to_sql::write_render_to_sql;
 mod view_query;
 mod view_scan;
 #[cfg(test)]
