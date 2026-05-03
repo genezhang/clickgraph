@@ -478,9 +478,17 @@ def _uniffi_check_api_checksums(lib):
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_clickgraph_ffi_checksum_method_connection_export_to_sql() != 32040:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_get_query_timeout() != 28113:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_import_csv_file() != 21411:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_import_file() != 7469:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_clickgraph_ffi_checksum_method_connection_import_json() != 33520:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_clickgraph_ffi_checksum_method_connection_import_json_file() != 47788:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_import_parquet_file() != 9562:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_clickgraph_ffi_checksum_method_connection_query() != 57594:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
@@ -491,6 +499,8 @@ def _uniffi_check_api_checksums(lib):
     if lib.uniffi_clickgraph_ffi_checksum_method_connection_query_remote_graph() != 5753:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_clickgraph_ffi_checksum_method_connection_query_to_sql() != 49541:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_connection_set_query_timeout() != 32027:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_clickgraph_ffi_checksum_method_connection_store_subgraph() != 10117:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
@@ -512,7 +522,15 @@ def _uniffi_check_api_checksums(lib):
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_clickgraph_ffi_checksum_method_queryresult_get_all_rows() != 39210:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_queryresult_get_column_data_types() != 63155:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_queryresult_get_compiling_time() != 43673:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_queryresult_get_execution_time() != 21561:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_clickgraph_ffi_checksum_method_queryresult_get_next() != 45662:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_method_queryresult_get_write_counters() != 40280:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_clickgraph_ffi_checksum_method_queryresult_has_next() != 35692:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
@@ -521,6 +539,8 @@ def _uniffi_check_api_checksums(lib):
     if lib.uniffi_clickgraph_ffi_checksum_method_queryresult_reset() != 31967:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_clickgraph_ffi_checksum_constructor_database_open() != 41458:
+        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    if lib.uniffi_clickgraph_ffi_checksum_constructor_database_open_in_memory() != 1488:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_clickgraph_ffi_checksum_constructor_database_open_sql_only() != 21564:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
@@ -708,6 +728,25 @@ _UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_export_to_sql.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_export_to_sql.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_get_query_timeout.argtypes = (
+    ctypes.c_void_p,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_get_query_timeout.restype = ctypes.c_uint64
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_import_csv_file.argtypes = (
+    ctypes.c_void_p,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_import_csv_file.restype = None
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_import_file.argtypes = (
+    ctypes.c_void_p,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_import_file.restype = None
 _UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_import_json.argtypes = (
     ctypes.c_void_p,
     _UniffiRustBuffer,
@@ -722,6 +761,13 @@ _UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_import_json_file.argtypes 
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_import_json_file.restype = None
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_import_parquet_file.argtypes = (
+    ctypes.c_void_p,
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_import_parquet_file.restype = None
 _UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_query.argtypes = (
     ctypes.c_void_p,
     _UniffiRustBuffer,
@@ -752,6 +798,12 @@ _UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_query_to_sql.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_query_to_sql.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_set_query_timeout.argtypes = (
+    ctypes.c_void_p,
+    ctypes.c_uint64,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_set_query_timeout.restype = None
 _UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_store_subgraph.argtypes = (
     ctypes.c_void_p,
     ctypes.c_void_p,
@@ -789,6 +841,12 @@ _UniffiLib.uniffi_clickgraph_ffi_fn_constructor_database_open.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_clickgraph_ffi_fn_constructor_database_open.restype = ctypes.c_void_p
+_UniffiLib.uniffi_clickgraph_ffi_fn_constructor_database_open_in_memory.argtypes = (
+    _UniffiRustBuffer,
+    _UniffiRustBuffer,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_constructor_database_open_in_memory.restype = ctypes.c_void_p
 _UniffiLib.uniffi_clickgraph_ffi_fn_constructor_database_open_sql_only.argtypes = (
     _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
@@ -855,11 +913,31 @@ _UniffiLib.uniffi_clickgraph_ffi_fn_method_queryresult_get_all_rows.argtypes = (
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_clickgraph_ffi_fn_method_queryresult_get_all_rows.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_queryresult_get_column_data_types.argtypes = (
+    ctypes.c_void_p,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_queryresult_get_column_data_types.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_queryresult_get_compiling_time.argtypes = (
+    ctypes.c_void_p,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_queryresult_get_compiling_time.restype = ctypes.c_double
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_queryresult_get_execution_time.argtypes = (
+    ctypes.c_void_p,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_queryresult_get_execution_time.restype = ctypes.c_double
 _UniffiLib.uniffi_clickgraph_ffi_fn_method_queryresult_get_next.argtypes = (
     ctypes.c_void_p,
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_clickgraph_ffi_fn_method_queryresult_get_next.restype = _UniffiRustBuffer
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_queryresult_get_write_counters.argtypes = (
+    ctypes.c_void_p,
+    ctypes.POINTER(_UniffiRustCallStatus),
+)
+_UniffiLib.uniffi_clickgraph_ffi_fn_method_queryresult_get_write_counters.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_clickgraph_ffi_fn_method_queryresult_has_next.argtypes = (
     ctypes.c_void_p,
     ctypes.POINTER(_UniffiRustCallStatus),
@@ -1170,12 +1248,24 @@ _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_export.restype = cty
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_export_to_sql.argtypes = (
 )
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_export_to_sql.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_get_query_timeout.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_get_query_timeout.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_import_csv_file.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_import_csv_file.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_import_file.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_import_file.restype = ctypes.c_uint16
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_import_json.argtypes = (
 )
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_import_json.restype = ctypes.c_uint16
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_import_json_file.argtypes = (
 )
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_import_json_file.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_import_parquet_file.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_import_parquet_file.restype = ctypes.c_uint16
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_query.argtypes = (
 )
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_query.restype = ctypes.c_uint16
@@ -1191,6 +1281,9 @@ _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_query_remote_graph.r
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_query_to_sql.argtypes = (
 )
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_query_to_sql.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_set_query_timeout.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_set_query_timeout.restype = ctypes.c_uint16
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_store_subgraph.argtypes = (
 )
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_connection_store_subgraph.restype = ctypes.c_uint16
@@ -1221,9 +1314,21 @@ _UniffiLib.uniffi_clickgraph_ffi_checksum_method_queryresult_column_names.restyp
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_queryresult_get_all_rows.argtypes = (
 )
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_queryresult_get_all_rows.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_queryresult_get_column_data_types.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_queryresult_get_column_data_types.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_queryresult_get_compiling_time.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_queryresult_get_compiling_time.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_queryresult_get_execution_time.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_queryresult_get_execution_time.restype = ctypes.c_uint16
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_queryresult_get_next.argtypes = (
 )
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_queryresult_get_next.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_queryresult_get_write_counters.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_method_queryresult_get_write_counters.restype = ctypes.c_uint16
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_queryresult_has_next.argtypes = (
 )
 _UniffiLib.uniffi_clickgraph_ffi_checksum_method_queryresult_has_next.restype = ctypes.c_uint16
@@ -1236,6 +1341,9 @@ _UniffiLib.uniffi_clickgraph_ffi_checksum_method_queryresult_reset.restype = cty
 _UniffiLib.uniffi_clickgraph_ffi_checksum_constructor_database_open.argtypes = (
 )
 _UniffiLib.uniffi_clickgraph_ffi_checksum_constructor_database_open.restype = ctypes.c_uint16
+_UniffiLib.uniffi_clickgraph_ffi_checksum_constructor_database_open_in_memory.argtypes = (
+)
+_UniffiLib.uniffi_clickgraph_ffi_checksum_constructor_database_open_in_memory.restype = ctypes.c_uint16
 _UniffiLib.uniffi_clickgraph_ffi_checksum_constructor_database_open_sql_only.argtypes = (
 )
 _UniffiLib.uniffi_clickgraph_ffi_checksum_constructor_database_open_sql_only.restype = ctypes.c_uint16
@@ -1719,6 +1827,7 @@ class SystemConfig:
     session_dir: "typing.Optional[str]"
     data_dir: "typing.Optional[str]"
     max_threads: "typing.Optional[int]"
+    max_memory_usage_bytes: "typing.Optional[int]"
     s3_access_key_id: "typing.Optional[str]"
     s3_secret_access_key: "typing.Optional[str]"
     s3_region: "typing.Optional[str]"
@@ -1734,10 +1843,11 @@ class SystemConfig:
     Remote ClickHouse connection for hybrid query + local storage.
     """
 
-    def __init__(self, *, session_dir: "typing.Optional[str]", data_dir: "typing.Optional[str]", max_threads: "typing.Optional[int]", s3_access_key_id: "typing.Optional[str]", s3_secret_access_key: "typing.Optional[str]", s3_region: "typing.Optional[str]", s3_endpoint_url: "typing.Optional[str]", s3_session_token: "typing.Optional[str]", gcs_access_key_id: "typing.Optional[str]", gcs_secret_access_key: "typing.Optional[str]", azure_storage_account_name: "typing.Optional[str]", azure_storage_account_key: "typing.Optional[str]", azure_storage_connection_string: "typing.Optional[str]", remote: "typing.Optional[RemoteConfig]"):
+    def __init__(self, *, session_dir: "typing.Optional[str]", data_dir: "typing.Optional[str]", max_threads: "typing.Optional[int]", max_memory_usage_bytes: "typing.Optional[int]", s3_access_key_id: "typing.Optional[str]", s3_secret_access_key: "typing.Optional[str]", s3_region: "typing.Optional[str]", s3_endpoint_url: "typing.Optional[str]", s3_session_token: "typing.Optional[str]", gcs_access_key_id: "typing.Optional[str]", gcs_secret_access_key: "typing.Optional[str]", azure_storage_account_name: "typing.Optional[str]", azure_storage_account_key: "typing.Optional[str]", azure_storage_connection_string: "typing.Optional[str]", remote: "typing.Optional[RemoteConfig]"):
         self.session_dir = session_dir
         self.data_dir = data_dir
         self.max_threads = max_threads
+        self.max_memory_usage_bytes = max_memory_usage_bytes
         self.s3_access_key_id = s3_access_key_id
         self.s3_secret_access_key = s3_secret_access_key
         self.s3_region = s3_region
@@ -1751,7 +1861,7 @@ class SystemConfig:
         self.remote = remote
 
     def __str__(self):
-        return "SystemConfig(session_dir={}, data_dir={}, max_threads={}, s3_access_key_id={}, s3_secret_access_key={}, s3_region={}, s3_endpoint_url={}, s3_session_token={}, gcs_access_key_id={}, gcs_secret_access_key={}, azure_storage_account_name={}, azure_storage_account_key={}, azure_storage_connection_string={}, remote={})".format(self.session_dir, self.data_dir, self.max_threads, self.s3_access_key_id, self.s3_secret_access_key, self.s3_region, self.s3_endpoint_url, self.s3_session_token, self.gcs_access_key_id, self.gcs_secret_access_key, self.azure_storage_account_name, self.azure_storage_account_key, self.azure_storage_connection_string, self.remote)
+        return "SystemConfig(session_dir={}, data_dir={}, max_threads={}, max_memory_usage_bytes={}, s3_access_key_id={}, s3_secret_access_key={}, s3_region={}, s3_endpoint_url={}, s3_session_token={}, gcs_access_key_id={}, gcs_secret_access_key={}, azure_storage_account_name={}, azure_storage_account_key={}, azure_storage_connection_string={}, remote={})".format(self.session_dir, self.data_dir, self.max_threads, self.max_memory_usage_bytes, self.s3_access_key_id, self.s3_secret_access_key, self.s3_region, self.s3_endpoint_url, self.s3_session_token, self.gcs_access_key_id, self.gcs_secret_access_key, self.azure_storage_account_name, self.azure_storage_account_key, self.azure_storage_connection_string, self.remote)
 
     def __eq__(self, other):
         if self.session_dir != other.session_dir:
@@ -1759,6 +1869,8 @@ class SystemConfig:
         if self.data_dir != other.data_dir:
             return False
         if self.max_threads != other.max_threads:
+            return False
+        if self.max_memory_usage_bytes != other.max_memory_usage_bytes:
             return False
         if self.s3_access_key_id != other.s3_access_key_id:
             return False
@@ -1791,6 +1903,7 @@ class _UniffiConverterTypeSystemConfig(_UniffiConverterRustBuffer):
             session_dir=_UniffiConverterOptionalString.read(buf),
             data_dir=_UniffiConverterOptionalString.read(buf),
             max_threads=_UniffiConverterOptionalUInt32.read(buf),
+            max_memory_usage_bytes=_UniffiConverterOptionalUInt64.read(buf),
             s3_access_key_id=_UniffiConverterOptionalString.read(buf),
             s3_secret_access_key=_UniffiConverterOptionalString.read(buf),
             s3_region=_UniffiConverterOptionalString.read(buf),
@@ -1809,6 +1922,7 @@ class _UniffiConverterTypeSystemConfig(_UniffiConverterRustBuffer):
         _UniffiConverterOptionalString.check_lower(value.session_dir)
         _UniffiConverterOptionalString.check_lower(value.data_dir)
         _UniffiConverterOptionalUInt32.check_lower(value.max_threads)
+        _UniffiConverterOptionalUInt64.check_lower(value.max_memory_usage_bytes)
         _UniffiConverterOptionalString.check_lower(value.s3_access_key_id)
         _UniffiConverterOptionalString.check_lower(value.s3_secret_access_key)
         _UniffiConverterOptionalString.check_lower(value.s3_region)
@@ -1826,6 +1940,7 @@ class _UniffiConverterTypeSystemConfig(_UniffiConverterRustBuffer):
         _UniffiConverterOptionalString.write(value.session_dir, buf)
         _UniffiConverterOptionalString.write(value.data_dir, buf)
         _UniffiConverterOptionalUInt32.write(value.max_threads, buf)
+        _UniffiConverterOptionalUInt64.write(value.max_memory_usage_bytes, buf)
         _UniffiConverterOptionalString.write(value.s3_access_key_id, buf)
         _UniffiConverterOptionalString.write(value.s3_secret_access_key, buf)
         _UniffiConverterOptionalString.write(value.s3_region, buf)
@@ -2034,6 +2149,54 @@ class Value:
                 return False
             return True
     
+    class DATE:
+        v: "str"
+
+        def __init__(self,v: "str"):
+            self.v = v
+
+        def __str__(self):
+            return "Value.DATE(v={})".format(self.v)
+
+        def __eq__(self, other):
+            if not other.is_DATE():
+                return False
+            if self.v != other.v:
+                return False
+            return True
+    
+    class TIMESTAMP:
+        v: "str"
+
+        def __init__(self,v: "str"):
+            self.v = v
+
+        def __str__(self):
+            return "Value.TIMESTAMP(v={})".format(self.v)
+
+        def __eq__(self, other):
+            if not other.is_TIMESTAMP():
+                return False
+            if self.v != other.v:
+                return False
+            return True
+    
+    class UUID:
+        v: "str"
+
+        def __init__(self,v: "str"):
+            self.v = v
+
+        def __str__(self):
+            return "Value.UUID(v={})".format(self.v)
+
+        def __eq__(self, other):
+            if not other.is_UUID():
+                return False
+            if self.v != other.v:
+                return False
+            return True
+    
     class LIST:
         items: "typing.List[Value]"
 
@@ -2090,6 +2253,18 @@ class Value:
         return isinstance(self, Value.STRING)
     def is_string(self) -> bool:
         return isinstance(self, Value.STRING)
+    def is_DATE(self) -> bool:
+        return isinstance(self, Value.DATE)
+    def is_date(self) -> bool:
+        return isinstance(self, Value.DATE)
+    def is_TIMESTAMP(self) -> bool:
+        return isinstance(self, Value.TIMESTAMP)
+    def is_timestamp(self) -> bool:
+        return isinstance(self, Value.TIMESTAMP)
+    def is_UUID(self) -> bool:
+        return isinstance(self, Value.UUID)
+    def is_uuid(self) -> bool:
+        return isinstance(self, Value.UUID)
     def is_LIST(self) -> bool:
         return isinstance(self, Value.LIST)
     def is_list(self) -> bool:
@@ -2108,6 +2283,9 @@ Value.BOOL = type("Value.BOOL", (Value.BOOL, Value,), {})  # type: ignore
 Value.INT64 = type("Value.INT64", (Value.INT64, Value,), {})  # type: ignore
 Value.FLOAT64 = type("Value.FLOAT64", (Value.FLOAT64, Value,), {})  # type: ignore
 Value.STRING = type("Value.STRING", (Value.STRING, Value,), {})  # type: ignore
+Value.DATE = type("Value.DATE", (Value.DATE, Value,), {})  # type: ignore
+Value.TIMESTAMP = type("Value.TIMESTAMP", (Value.TIMESTAMP, Value,), {})  # type: ignore
+Value.UUID = type("Value.UUID", (Value.UUID, Value,), {})  # type: ignore
 Value.LIST = type("Value.LIST", (Value.LIST, Value,), {})  # type: ignore
 Value.MAP = type("Value.MAP", (Value.MAP, Value,), {})  # type: ignore
 
@@ -2138,10 +2316,22 @@ class _UniffiConverterTypeValue(_UniffiConverterRustBuffer):
                 _UniffiConverterString.read(buf),
             )
         if variant == 6:
+            return Value.DATE(
+                _UniffiConverterString.read(buf),
+            )
+        if variant == 7:
+            return Value.TIMESTAMP(
+                _UniffiConverterString.read(buf),
+            )
+        if variant == 8:
+            return Value.UUID(
+                _UniffiConverterString.read(buf),
+            )
+        if variant == 9:
             return Value.LIST(
                 _UniffiConverterSequenceTypeValue.read(buf),
             )
-        if variant == 7:
+        if variant == 10:
             return Value.MAP(
                 _UniffiConverterSequenceTypeMapEntry.read(buf),
             )
@@ -2161,6 +2351,15 @@ class _UniffiConverterTypeValue(_UniffiConverterRustBuffer):
             _UniffiConverterDouble.check_lower(value.v)
             return
         if value.is_STRING():
+            _UniffiConverterString.check_lower(value.v)
+            return
+        if value.is_DATE():
+            _UniffiConverterString.check_lower(value.v)
+            return
+        if value.is_TIMESTAMP():
+            _UniffiConverterString.check_lower(value.v)
+            return
+        if value.is_UUID():
             _UniffiConverterString.check_lower(value.v)
             return
         if value.is_LIST():
@@ -2187,11 +2386,20 @@ class _UniffiConverterTypeValue(_UniffiConverterRustBuffer):
         if value.is_STRING():
             buf.write_i32(5)
             _UniffiConverterString.write(value.v, buf)
-        if value.is_LIST():
+        if value.is_DATE():
             buf.write_i32(6)
+            _UniffiConverterString.write(value.v, buf)
+        if value.is_TIMESTAMP():
+            buf.write_i32(7)
+            _UniffiConverterString.write(value.v, buf)
+        if value.is_UUID():
+            buf.write_i32(8)
+            _UniffiConverterString.write(value.v, buf)
+        if value.is_LIST():
+            buf.write_i32(9)
             _UniffiConverterSequenceTypeValue.write(value.items, buf)
         if value.is_MAP():
-            buf.write_i32(7)
+            buf.write_i32(10)
             _UniffiConverterSequenceTypeMapEntry.write(value.entries, buf)
 
 
@@ -2220,6 +2428,33 @@ class _UniffiConverterOptionalUInt32(_UniffiConverterRustBuffer):
             return None
         elif flag == 1:
             return _UniffiConverterUInt32.read(buf)
+        else:
+            raise InternalError("Unexpected flag byte for optional type")
+
+
+
+class _UniffiConverterOptionalUInt64(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        if value is not None:
+            _UniffiConverterUInt64.check_lower(value)
+
+    @classmethod
+    def write(cls, value, buf):
+        if value is None:
+            buf.write_u8(0)
+            return
+
+        buf.write_u8(1)
+        _UniffiConverterUInt64.write(value, buf)
+
+    @classmethod
+    def read(cls, buf):
+        flag = buf.read_u8()
+        if flag == 0:
+            return None
+        elif flag == 1:
+            return _UniffiConverterUInt64.read(buf)
         else:
             raise InternalError("Unexpected flag byte for optional type")
 
@@ -2301,6 +2536,33 @@ class _UniffiConverterOptionalTypeRow(_UniffiConverterRustBuffer):
             return None
         elif flag == 1:
             return _UniffiConverterTypeRow.read(buf)
+        else:
+            raise InternalError("Unexpected flag byte for optional type")
+
+
+
+class _UniffiConverterOptionalMapStringInt64(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, value):
+        if value is not None:
+            _UniffiConverterMapStringInt64.check_lower(value)
+
+    @classmethod
+    def write(cls, value, buf):
+        if value is None:
+            buf.write_u8(0)
+            return
+
+        buf.write_u8(1)
+        _UniffiConverterMapStringInt64.write(value, buf)
+
+    @classmethod
+    def read(cls, buf):
+        flag = buf.read_u8()
+        if flag == 0:
+            return None
+        elif flag == 1:
+            return _UniffiConverterMapStringInt64.read(buf)
         else:
             raise InternalError("Unexpected flag byte for optional type")
 
@@ -2506,6 +2768,39 @@ class _UniffiConverterSequenceMapStringTypeValue(_UniffiConverterRustBuffer):
 
 
 
+class _UniffiConverterMapStringInt64(_UniffiConverterRustBuffer):
+    @classmethod
+    def check_lower(cls, items):
+        for (key, value) in items.items():
+            _UniffiConverterString.check_lower(key)
+            _UniffiConverterInt64.check_lower(value)
+
+    @classmethod
+    def write(cls, items, buf):
+        buf.write_i32(len(items))
+        for (key, value) in items.items():
+            _UniffiConverterString.write(key, buf)
+            _UniffiConverterInt64.write(value, buf)
+
+    @classmethod
+    def read(cls, buf):
+        count = buf.read_i32()
+        if count < 0:
+            raise InternalError("Unexpected negative map size")
+
+        # It would be nice to use a dict comprehension,
+        # but in Python 3.7 and before the evaluation order is not according to spec,
+        # so we we're reading the value before the key.
+        # This loop makes the order explicit: first reading the key, then the value.
+        d = {}
+        for i in range(count):
+            key = _UniffiConverterString.read(buf)
+            val = _UniffiConverterInt64.read(buf)
+            d[key] = val
+        return d
+
+
+
 class _UniffiConverterMapStringTypeValue(_UniffiConverterRustBuffer):
     @classmethod
     def check_lower(cls, items):
@@ -2603,6 +2898,26 @@ class ConnectionProtocol(typing.Protocol):
         """
 
         raise NotImplementedError
+    def get_query_timeout(self, ):
+        """
+        Get the current query timeout in milliseconds. 0 = no timeout.
+        """
+
+        raise NotImplementedError
+    def import_csv_file(self, label: "str",file_path: "str"):
+        """
+        Import nodes from a CSV file (first row must be a header).
+        """
+
+        raise NotImplementedError
+    def import_file(self, label: "str",file_path: "str"):
+        """
+        Import nodes from a file, auto-detecting format from the extension.
+
+        Supported: `.parquet`, `.csv`, `.tsv`, `.json`, `.ndjson`, `.jsonl`.
+        """
+
+        raise NotImplementedError
     def import_json(self, label: "str",json_lines: "str"):
         """
         Import nodes from inline newline-delimited JSON (JSONEachRow format).
@@ -2612,6 +2927,12 @@ class ConnectionProtocol(typing.Protocol):
     def import_json_file(self, label: "str",file_path: "str"):
         """
         Import nodes from a JSON file (JSONEachRow format).
+        """
+
+        raise NotImplementedError
+    def import_parquet_file(self, label: "str",file_path: "str"):
+        """
+        Import nodes from a Parquet file.
         """
 
         raise NotImplementedError
@@ -2646,6 +2967,14 @@ class ConnectionProtocol(typing.Protocol):
     def query_to_sql(self, cypher: "str"):
         """
         Translate a Cypher query to ClickHouse SQL without executing it.
+        """
+
+        raise NotImplementedError
+    def set_query_timeout(self, timeout_ms: "int"):
+        """
+        Set the query timeout in milliseconds. 0 = no timeout (default).
+
+        Persists across calls on this connection.
         """
 
         raise NotImplementedError
@@ -2881,6 +3210,57 @@ class Connection():
 
 
 
+    def get_query_timeout(self, ) -> "int":
+        """
+        Get the current query timeout in milliseconds. 0 = no timeout.
+        """
+
+        return _UniffiConverterUInt64.lift(
+            _uniffi_rust_call(_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_get_query_timeout,self._uniffi_clone_pointer(),)
+        )
+
+
+
+
+
+    def import_csv_file(self, label: "str",file_path: "str") -> None:
+        """
+        Import nodes from a CSV file (first row must be a header).
+        """
+
+        _UniffiConverterString.check_lower(label)
+        
+        _UniffiConverterString.check_lower(file_path)
+        
+        _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_import_csv_file,self._uniffi_clone_pointer(),
+        _UniffiConverterString.lower(label),
+        _UniffiConverterString.lower(file_path))
+
+
+
+
+
+
+    def import_file(self, label: "str",file_path: "str") -> None:
+        """
+        Import nodes from a file, auto-detecting format from the extension.
+
+        Supported: `.parquet`, `.csv`, `.tsv`, `.json`, `.ndjson`, `.jsonl`.
+        """
+
+        _UniffiConverterString.check_lower(label)
+        
+        _UniffiConverterString.check_lower(file_path)
+        
+        _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_import_file,self._uniffi_clone_pointer(),
+        _UniffiConverterString.lower(label),
+        _UniffiConverterString.lower(file_path))
+
+
+
+
+
+
     def import_json(self, label: "str",json_lines: "str") -> None:
         """
         Import nodes from inline newline-delimited JSON (JSONEachRow format).
@@ -2909,6 +3289,24 @@ class Connection():
         _UniffiConverterString.check_lower(file_path)
         
         _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_import_json_file,self._uniffi_clone_pointer(),
+        _UniffiConverterString.lower(label),
+        _UniffiConverterString.lower(file_path))
+
+
+
+
+
+
+    def import_parquet_file(self, label: "str",file_path: "str") -> None:
+        """
+        Import nodes from a Parquet file.
+        """
+
+        _UniffiConverterString.check_lower(label)
+        
+        _UniffiConverterString.check_lower(file_path)
+        
+        _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_import_parquet_file,self._uniffi_clone_pointer(),
         _UniffiConverterString.lower(label),
         _UniffiConverterString.lower(file_path))
 
@@ -2996,6 +3394,23 @@ class Connection():
             _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_query_to_sql,self._uniffi_clone_pointer(),
         _UniffiConverterString.lower(cypher))
         )
+
+
+
+
+
+    def set_query_timeout(self, timeout_ms: "int") -> None:
+        """
+        Set the query timeout in milliseconds. 0 = no timeout (default).
+
+        Persists across calls on this connection.
+        """
+
+        _UniffiConverterUInt64.check_lower(timeout_ms)
+        
+        _uniffi_rust_call(_UniffiLib.uniffi_clickgraph_ffi_fn_method_connection_set_query_timeout,self._uniffi_clone_pointer(),
+        _UniffiConverterUInt64.lower(timeout_ms))
+
 
 
 
@@ -3134,6 +3549,22 @@ class Database():
         # Call the (fallible) function before creating any half-baked object instances.
         pointer = _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_constructor_database_open,
         _UniffiConverterString.lower(schema_path))
+        return cls._make_instance_(pointer)
+
+    @classmethod
+    def open_in_memory(cls, schema_path: "str",config: "SystemConfig"):
+        """
+        Open an in-memory database (auto-cleaned temp session directory).
+        """
+
+        _UniffiConverterString.check_lower(schema_path)
+        
+        _UniffiConverterTypeSystemConfig.check_lower(config)
+        
+        # Call the (fallible) function before creating any half-baked object instances.
+        pointer = _uniffi_rust_call_with_error(_UniffiConverterTypeClickGraphError,_UniffiLib.uniffi_clickgraph_ffi_fn_constructor_database_open_in_memory,
+        _UniffiConverterString.lower(schema_path),
+        _UniffiConverterTypeSystemConfig.lower(config))
         return cls._make_instance_(pointer)
 
     @classmethod
@@ -3356,9 +3787,40 @@ class QueryResultProtocol(typing.Protocol):
         """
 
         raise NotImplementedError
+    def get_column_data_types(self, ):
+        """
+        Infer column data types from the first row of results.
+        """
+
+        raise NotImplementedError
+    def get_compiling_time(self, ):
+        """
+        Time spent translating Cypher to SQL (milliseconds).
+        """
+
+        raise NotImplementedError
+    def get_execution_time(self, ):
+        """
+        Time spent executing the SQL query (milliseconds).
+        """
+
+        raise NotImplementedError
     def get_next(self, ):
         """
         Return the next row (cursor-style). Returns None when exhausted.
+        """
+
+        raise NotImplementedError
+    def get_write_counters(self, ):
+        """
+        Side-effect counters from a write+RETURN query (Phase 5d).
+
+        Returns `Some` only when the originating Cypher contained both
+        a write clause (CREATE / SET / DELETE / REMOVE) and a RETURN
+        clause — the row payload then carries the read-pipeline output
+        and these counters reflect the write portion. Pure read queries
+        and pure-write queries (which surface counters as a synthetic
+        4-column row) return `None`.
         """
 
         raise NotImplementedError
@@ -3432,6 +3894,45 @@ class QueryResult():
 
 
 
+    def get_column_data_types(self, ) -> "typing.List[str]":
+        """
+        Infer column data types from the first row of results.
+        """
+
+        return _UniffiConverterSequenceString.lift(
+            _uniffi_rust_call(_UniffiLib.uniffi_clickgraph_ffi_fn_method_queryresult_get_column_data_types,self._uniffi_clone_pointer(),)
+        )
+
+
+
+
+
+    def get_compiling_time(self, ) -> "float":
+        """
+        Time spent translating Cypher to SQL (milliseconds).
+        """
+
+        return _UniffiConverterDouble.lift(
+            _uniffi_rust_call(_UniffiLib.uniffi_clickgraph_ffi_fn_method_queryresult_get_compiling_time,self._uniffi_clone_pointer(),)
+        )
+
+
+
+
+
+    def get_execution_time(self, ) -> "float":
+        """
+        Time spent executing the SQL query (milliseconds).
+        """
+
+        return _UniffiConverterDouble.lift(
+            _uniffi_rust_call(_UniffiLib.uniffi_clickgraph_ffi_fn_method_queryresult_get_execution_time,self._uniffi_clone_pointer(),)
+        )
+
+
+
+
+
     def get_next(self, ) -> "typing.Optional[Row]":
         """
         Return the next row (cursor-style). Returns None when exhausted.
@@ -3439,6 +3940,26 @@ class QueryResult():
 
         return _UniffiConverterOptionalTypeRow.lift(
             _uniffi_rust_call(_UniffiLib.uniffi_clickgraph_ffi_fn_method_queryresult_get_next,self._uniffi_clone_pointer(),)
+        )
+
+
+
+
+
+    def get_write_counters(self, ) -> "typing.Optional[dict[str, int]]":
+        """
+        Side-effect counters from a write+RETURN query (Phase 5d).
+
+        Returns `Some` only when the originating Cypher contained both
+        a write clause (CREATE / SET / DELETE / REMOVE) and a RETURN
+        clause — the row payload then carries the read-pipeline output
+        and these counters reflect the write portion. Pure read queries
+        and pure-write queries (which surface counters as a synthetic
+        4-column row) return `None`.
+        """
+
+        return _UniffiConverterOptionalMapStringInt64.lift(
+            _uniffi_rust_call(_UniffiLib.uniffi_clickgraph_ffi_fn_method_queryresult_get_write_counters,self._uniffi_clone_pointer(),)
         )
 
 
