@@ -1,6 +1,6 @@
 # Known Issues
 
-**Last Updated**: February 17, 2026
+**Last Updated**: May 2, 2026
 
 For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).
 
@@ -13,6 +13,21 @@ For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).
 **Error**: `MEMORY_LIMIT_EXCEEDED` or query timeout  
 **Cause**: Recursive CTE-based shortest path explores all paths. Dense graphs cause exponential explosion.  
 **Workaround**: Use bounded path length: `shortestPath((a)-[:FOLLOWS*1..5]->(b))`
+
+### 2. Cypher Writes Are Embedded-Only
+**Status**: By design (v0.6.7+)
+**Cause**: ClickHouse server's lightweight UPDATE/DELETE path differs from chdb in maturity and concurrency semantics. ClickGraph's `write_guard` rejects writes against any executor that isn't `EmbeddedChdb` (server / remote / sql_only modes) and against any node/edge backed by a `source:` URI in the schema YAML.
+**Workaround**: For server / remote workloads, perform writes via the ClickHouse SQL interface directly, then query through ClickGraph as normal.
+
+### 3. Unsupported Write Combinations
+**Status**: Pending Phase 5 (MERGE) and Phase 5+ (write extensions)
+**Affected**: `MERGE`, `CREATE … RETURN`, relationship `CREATE`, `DELETE r` for an edge alias, `SET a += {…}` map-merge, `REMOVE a:Label`. Each case is rejected with an explicit error in the write pipeline rather than silently falling through.
+**Workaround**: Issue a separate `MATCH … RETURN` after a `CREATE` to read back. For relationship CREATE today, use `Connection::create_edges()` (direct API). For edge deletion, `Connection::delete_edges()`.
+
+### 4. Best-Effort Write Counters
+**Status**: chdb limitation
+**Cause**: chdb's lightweight write path doesn't return affected-row counts, so ClickGraph attributes one to the relevant counter per write op (`Insert`, `Update`, `Delete`).
+**Workaround**: Issue a `MATCH … RETURN count(*)` before/after the write for an exact count.
 
 ---
 
@@ -58,8 +73,10 @@ For fixed issues and release history, see [CHANGELOG.md](CHANGELOG.md).
 
 ## Out of Scope (by design)
 
-ClickGraph is a **read-only** analytical query engine:
-- ❌ Write operations (`CREATE`, `SET`, `DELETE`, `MERGE`)
+ClickGraph is primarily an analytical query engine. Limited write support exists in embedded mode (v0.6.7+); the rest stays out of scope:
+- ✅ Cypher writes (`CREATE`, `SET`, `DELETE`, `REMOVE`) in **embedded mode only**, against ClickGraph-managed (non-`source:`) tables — see Active Issues #2 / #3 for caveats
+- ❌ Cypher writes in server / remote / sql_only modes
+- ❌ `MERGE` clause (planned for v0.7.x)
 - ❌ Schema DDL (`CREATE INDEX`, `CREATE CONSTRAINT`)
 - ❌ Transaction management (`BEGIN`, `COMMIT`, `ROLLBACK`)
 - ❌ Stored procedures (APOC/GDS) — only built-in `db.*` procedures

@@ -1,1 +1,1 @@
-openCypher TCK commit: master (fetched 2026-03-29)
+openCypher TCK commit: master (read clauses fetched 2026-03-29; write clauses Create*/Set*/Delete*/Remove* added 2026-05-02 as @wip pending harness extensions)
