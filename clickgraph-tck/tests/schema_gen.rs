@@ -179,7 +179,15 @@ fn feature_is_filtered(content: &str) -> bool {
             // tags the cucumber filter recognises.
             for tok in rest.split_whitespace() {
                 let tok = tok.trim_start_matches('@');
-                if matches!(tok, "wip" | "skip" | "fails" | "crash" | "NegativeTests") {
+                if matches!(
+                    tok,
+                    "wip"
+                        | "skip"
+                        | "fails"
+                        | "crash"
+                        | "NegativeTests"
+                        | "unsupported-label-mutation"
+                ) {
                     return true;
                 }
             }
@@ -413,7 +421,14 @@ mod tests {
         // catalog gets out of sync with the scenarios actually run.
         // Keep this set in lock-step with `feature_is_filtered()` and
         // the cucumber filter in `tests/tck.rs:filter_run`.
-        for tag in ["@wip", "@skip", "@fails", "@crash", "@NegativeTests"] {
+        for tag in [
+            "@wip",
+            "@skip",
+            "@fails",
+            "@crash",
+            "@NegativeTests",
+            "@unsupported-label-mutation",
+        ] {
             let src = format!("{tag}\nFeature: Foo\n  Scenario: bar\n    Given x\n");
             assert!(
                 feature_is_filtered(&src),

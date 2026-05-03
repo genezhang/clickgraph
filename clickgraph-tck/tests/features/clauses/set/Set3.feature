@@ -28,20 +28,14 @@
 
 #encoding: utf-8
 
-# @wip — Phase 4 import from upstream openCypher TCK (master, fetched 2026-05-02).
-# Cypher write clauses (CREATE / SET / DELETE / REMOVE) are implemented in
-# embedded mode as of v0.6.7, but this scenario file requires harness
-# extensions before it runs cleanly:
-#   * `the side effects should be:` step currently no-ops; needs counter
-#     assertion against the QueryResult counters returned by handle_write_async.
-#   * Some scenarios use anonymous nodes (`CREATE ()`) that schema_gen.rs
-#     doesn't yet collect into the universal catalog.
-#   * Several scenarios chain CREATE/MATCH/SET in patterns that exercise
-#     unimplemented combinations (CREATE … RETURN, relationship CREATE,
-#     map-merge SET) — see KNOWN_ISSUES.md.
-# Lifted incrementally as triage lands. See docs/design/embedded-writes.md
-# Appendix (Phase 4) for the plan.
-@wip
+# @unsupported-label-mutation — ClickGraph does not support runtime label
+# mutations (`SET n:Label` / `REMOVE n:Label`). Labels are part of the
+# table identity in ClickGraph (one writable table per node label), so
+# adding or removing a label is a structural change rather than a
+# runtime property mutation. These scenarios are filtered out
+# permanently by the cucumber harness — track in
+# docs/wiki/Cypher-Language-Reference.md#write-clauses.
+@unsupported-label-mutation
 Feature: Set3 - Set a Label
 
   Scenario: [1] Add a single label to a node with no label

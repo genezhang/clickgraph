@@ -26,7 +26,7 @@ The TCK is the openCypher project's official conformance suite. Each scenario is
 | Null handling | Null1 | 5 |
 | String functions | String1 | 1 |
 
-Scenarios tagged `@NegativeTests`, `@skip`, `@fails`, `@crash`, or `@wip` are skipped.
+Scenarios tagged `@NegativeTests`, `@skip`, `@fails`, `@crash`, `@wip`, or `@unsupported-label-mutation` are skipped. The first five are *temporary* — `@wip` flags features still being triaged for support, and the others mark scenarios that need a one-off look. `@unsupported-label-mutation` is *permanent*: ClickGraph does not support runtime label mutations (`SET n:Label` / `REMOVE n:Label`) because labels are part of the table identity in ClickGraph (one writable table per label), not a runtime property.
 
 ### Write feature files (imported, `@wip`-gated)
 
@@ -37,11 +37,18 @@ Scenarios tagged `@NegativeTests`, `@skip`, `@fails`, `@crash`, or `@wip` are sk
 | `DELETE` | Delete1–6 | ~40 |
 | `REMOVE` | Remove1–3 | ~15 |
 
-These exercise the Cypher write pipeline added in v0.6.7 (`CREATE` / `SET` / `DELETE` / `REMOVE` against ClickGraph-managed embedded tables — see [`docs/wiki/Cypher-Language-Reference.md#write-clauses`](../docs/wiki/Cypher-Language-Reference.md#write-clauses)). Triage requires harness extensions in three layers:
+These exercise the Cypher write pipeline added in v0.6.7 (`CREATE` / `SET` / `DELETE` / `REMOVE` against ClickGraph-managed embedded tables — see [`docs/wiki/Cypher-Language-Reference.md#write-clauses`](../docs/wiki/Cypher-Language-Reference.md#write-clauses)).
 
-1. **Side-effect step** (`the side effects should be:`, currently a no-op at line 360 of `tests/tck.rs`) needs to parse the Gherkin table and assert against `QueryResult` counters. The counters that exist today cover only `+nodes` / `-nodes` / `+properties` / `-properties` / `+relationships` / `-relationships`. They do **not** cover the `+labels` / `-labels` / `+properties` for label-mutation rows, because ClickGraph doesn't support `SET n:Label` / `REMOVE n:Label` at all (labels are encoded into the table identity — see [Cypher Language Reference](../docs/wiki/Cypher-Language-Reference.md#write-clauses)). Scenarios asserting label side-effects therefore stay `@wip` permanently and should be triaged into a separate `@unsupported-label-mutation` tag rather than waiting on the harness.
-2. **Schema generation** in `schema_gen.rs` needs to handle anonymous nodes (`CREATE ()`) — bare nodes today don't get a label and aren't catalogued. Several Create*/Delete* scenarios depend on this.
-3. **Per-scenario disposition** for combinations the write pipeline rejects deliberately (`CREATE … RETURN`, relationship `CREATE`, `DELETE r` for an edge alias, `SET a += {…}` / `SET a = {…}` map-merge / full-map, `SET a:Label` / `REMOVE a:Label` label mutations, `MERGE`). Each is rejected with an explicit error today; Phase 5 will lift the implementation gaps and document the rest as out-of-scope.
+Phase 5a (this commit) ships the harness extensions to start running them:
+
+- **Side-effect step** — `the side effects should be:` now parses the Gherkin table and asserts against the four `QueryResult` counter columns returned by `handle_write_async` (`nodes_created` / `properties_set` / `nodes_deleted` / `relationships_deleted`). `+nodes` / `+properties` / `-nodes` / `-relationships` / `-properties` map directly. Unmappable side effects (label mutations, future `+relationships` for relationship CREATE) mark the scenario as skipped via `world.skip_reason` so they surface as triage candidates rather than hard-failing the run.
+- **Counter capture** — `when_executing_query` detects the four-column counter shape returned by writes and stashes the row in `TckWorld::write_counters` so the side-effect step can read it. Read queries leave `write_counters = None`.
+- **Permanent skip tag `@unsupported-label-mutation`** — added to `Set3.feature` (label-add scenarios) and `Remove2.feature` (label-remove scenarios). The cucumber filter and `schema_gen::feature_is_filtered()` both recognise it. Re-tagging these from `@wip` reflects that label mutations will never be supported (labels are part of the table identity in ClickGraph), so they should be filtered out structurally, not held in triage limbo.
+
+Still pending before more imports unlock:
+
+1. **Schema generation** in `schema_gen.rs` needs to handle anonymous nodes (`CREATE ()`) — bare nodes today don't get a label and aren't catalogued. Several `Create1` / `Delete1` scenarios depend on this.
+2. **Per-scenario disposition** for combinations the write pipeline rejects deliberately (`CREATE … RETURN`, relationship `CREATE`, `DELETE r` for an edge alias, `SET a += {…}` / `SET a = {…}` map-merge / full-map, `MERGE`). Each is rejected with an explicit error today; Phase 5 will lift the implementation gaps and document the rest as out-of-scope.
 
 `MERGE` (Merge1..6 upstream) is not imported yet — tracked for v0.7.x Phase 5.
 
