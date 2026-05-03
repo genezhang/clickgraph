@@ -28,20 +28,21 @@
 
 #encoding: utf-8
 
-# @wip — Phase 4 import from upstream openCypher TCK (master, fetched 2026-05-02).
-# Cypher write clauses (CREATE / SET / DELETE / REMOVE) are implemented in
-# embedded mode as of v0.6.7, but this scenario file requires harness
-# extensions before it runs cleanly:
-#   * `the side effects should be:` step currently no-ops; needs counter
-#     assertion against the QueryResult counters returned by handle_write_async.
-#   * Some scenarios use anonymous nodes (`CREATE ()`) that schema_gen.rs
-#     doesn't yet collect into the universal catalog.
-#   * Several scenarios chain CREATE/MATCH/SET in patterns that exercise
-#     unimplemented combinations (CREATE … RETURN, relationship CREATE,
-#     map-merge SET) — see KNOWN_ISSUES.md.
-# Lifted incrementally as triage lands. See docs/design/embedded-writes.md
-# Appendix (Phase 4) for the plan.
-@wip
+# Phase 4 import from upstream openCypher TCK (master, fetched 2026-05-02).
+# File-level @wip lifted in Phase 5b — anonymous-node CREATE (`CREATE ()`,
+# `CREATE (n {...})`) now routes to the `__Unlabeled` node catalogued by
+# schema_gen.rs, so scenarios [1] [2] [3] [4] [7] [9] run.
+# Scenarios still gated with per-scenario @wip:
+#   * [5] [6] — multi-label CREATE (`CREATE (:A:B:C:D)`); planner rejects.
+#   * [8] [10] [11] [12] — CREATE … RETURN (read-after-write inside the
+#     same statement); rejected upstream by the write/read split.
+#   * [13]-[20] — expect specific compile-time SyntaxError (VariableAlreadyBound,
+#     UndefinedVariable). ClickGraph executes these without raising the
+#     expected diagnostic, which would surface as a triage skip rather than
+#     a meaningful pass — keep @wip until the planner enforces these.
+# Side-effect rows containing `+labels` (scenarios [3] [4] [12]) are mapped
+# to `world.skip_reason` by the harness (effect_to_counter returns None),
+# so those scenarios skip cleanly rather than running half-asserted.
 Feature: Create1 - Creating nodes
 
   Scenario: [1] Create a single node
@@ -86,6 +87,7 @@ Feature: Create1 - Creating nodes
       | +nodes  | 2 |
       | +labels | 1 |
 
+  @wip
   Scenario: [5] Create a single node with multiple labels
     Given an empty graph
     When executing query:
@@ -97,6 +99,7 @@ Feature: Create1 - Creating nodes
       | +nodes  | 1 |
       | +labels | 4 |
 
+  @wip
   Scenario: [6] Create three nodes with multiple labels
     Given an empty graph
     When executing query:
@@ -119,6 +122,7 @@ Feature: Create1 - Creating nodes
       | +nodes      | 1 |
       | +properties | 1 |
 
+  @wip
   Scenario: [8] Create a single node with a property and return it
     Given any graph
     When executing query:
@@ -144,6 +148,7 @@ Feature: Create1 - Creating nodes
       | +nodes      | 1 |
       | +properties | 2 |
 
+  @wip
   Scenario: [10] Create a single node with two properties and return them
     Given any graph
     When executing query:
@@ -158,6 +163,7 @@ Feature: Create1 - Creating nodes
       | +nodes      | 1 |
       | +properties | 2 |
 
+  @wip
   Scenario: [11] Create a single node with null properties should not return those properties
     Given any graph
     When executing query:
@@ -172,6 +178,7 @@ Feature: Create1 - Creating nodes
       | +nodes      | 1 |
       | +properties | 1 |
 
+  @wip
   Scenario: [12] CREATE does not lose precision on large integers
     Given an empty graph
     When executing query:
@@ -187,6 +194,7 @@ Feature: Create1 - Creating nodes
       | +properties | 1 |
       | +labels     | 1 |
 
+  @wip
   Scenario: [13] Fail when creating a node that is already bound
     Given any graph
     When executing query:
@@ -196,6 +204,7 @@ Feature: Create1 - Creating nodes
       """
     Then a SyntaxError should be raised at compile time: VariableAlreadyBound
 
+  @wip
   Scenario: [14] Fail when creating a node with properties that is already bound
     Given any graph
     When executing query:
@@ -206,6 +215,7 @@ Feature: Create1 - Creating nodes
       """
     Then a SyntaxError should be raised at compile time: VariableAlreadyBound
 
+  @wip
   Scenario: [15] Fail when adding a new label predicate on a node that is already bound 1
     Given an empty graph
     When executing query:
@@ -216,6 +226,7 @@ Feature: Create1 - Creating nodes
     Then a SyntaxError should be raised at compile time: VariableAlreadyBound
 
   # Consider improve naming of this and the next three scenarios, they seem to test invariant nature of node patterns
+  @wip
   Scenario: [16] Fail when adding new label predicate on a node that is already bound 2
     Given an empty graph
     When executing query:
@@ -225,6 +236,7 @@ Feature: Create1 - Creating nodes
       """
     Then a SyntaxError should be raised at compile time: VariableAlreadyBound
 
+  @wip
   Scenario: [17] Fail when adding new label predicate on a node that is already bound 3
     Given an empty graph
     When executing query:
@@ -234,6 +246,7 @@ Feature: Create1 - Creating nodes
       """
     Then a SyntaxError should be raised at compile time: VariableAlreadyBound
 
+  @wip
   Scenario: [18] Fail when adding new label predicate on a node that is already bound 4
     Given an empty graph
     When executing query:
@@ -243,6 +256,7 @@ Feature: Create1 - Creating nodes
       """
     Then a SyntaxError should be raised at compile time: VariableAlreadyBound
 
+  @wip
   Scenario: [19] Fail when adding new label predicate on a node that is already bound 5
     Given an empty graph
     When executing query:
@@ -252,6 +266,7 @@ Feature: Create1 - Creating nodes
       """
     Then a SyntaxError should be raised at compile time: VariableAlreadyBound
 
+  @wip
   Scenario: [20] Fail when creating a node using undefined variable in pattern
     Given any graph
     When executing query:

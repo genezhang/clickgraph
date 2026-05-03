@@ -325,40 +325,44 @@ fn endpoint_alias_or_create(
     pat: &NodePattern<'_>,
     schema: &GraphSchema,
     out: &mut Vec<CreatePattern>,
-    side: &str,
+    _side: &str,
 ) -> Result<String> {
-    if pat.labels.is_some() {
-        let mut node = create_node_from_pattern(pat, schema)?;
-        let alias = node.alias.clone().unwrap_or_else(generate_id);
-        if node.alias.is_none() {
-            node.alias = Some(alias.clone());
+    // A bare reference like `(a)` (no label, no properties) to a previously
+    // bound alias must keep referencing that alias rather than synthesising
+    // a fresh `__Unlabeled` node.
+    if pat.labels.is_none() && pat.properties.is_none() {
+        if let Some(name) = pat.name {
+            return Ok(name.to_string());
         }
-        out.push(CreatePattern::Node(node));
-        Ok(alias)
-    } else {
-        let name = pat.name.ok_or_else(|| {
-            LogicalPlanError::QueryPlanningError(format!(
-                "CREATE {} endpoint must be either a labelled node or a reference to a bound alias",
-                side
-            ))
-        })?;
-        Ok(name.to_string())
     }
+    let mut node = create_node_from_pattern(pat, schema)?;
+    let alias = node.alias.clone().unwrap_or_else(generate_id);
+    if node.alias.is_none() {
+        node.alias = Some(alias.clone());
+    }
+    out.push(CreatePattern::Node(node));
+    Ok(alias)
 }
 
+/// Sentinel label used when a CREATE pattern declares no label
+/// (e.g. `CREATE ()` or `CREATE (n {prop: 1})`). The active schema must
+/// register a writable node under this label for the CREATE to succeed —
+/// production schemas typically don't, so the missing-schema error fires
+/// just as it would for any other unknown label. Test harnesses (notably
+/// `clickgraph-tck`) catalogue `__Unlabeled` automatically.
+pub(crate) const UNLABELED_DEFAULT: &str = "__Unlabeled";
+
 fn create_node_from_pattern(pat: &NodePattern<'_>, schema: &GraphSchema) -> Result<CreateNode> {
-    let labels = pat.labels.as_ref().ok_or_else(|| {
-        LogicalPlanError::QueryPlanningError(
-            "CREATE requires every node to specify a label (e.g., (a:Person {...}))".to_string(),
-        )
-    })?;
-    if labels.len() != 1 {
-        return Err(LogicalPlanError::QueryPlanningError(format!(
-            "CREATE node patterns must declare exactly one label; got {:?}",
-            labels
-        )));
-    }
-    let label = labels[0].to_string();
+    let label = match pat.labels.as_ref() {
+        None => UNLABELED_DEFAULT.to_string(),
+        Some(labels) if labels.len() == 1 => labels[0].to_string(),
+        Some(labels) => {
+            return Err(LogicalPlanError::QueryPlanningError(format!(
+                "CREATE node patterns must declare at most one label; got {:?}",
+                labels
+            )));
+        }
+    };
 
     let node_schema = schema.node_schema(&label).map_err(|_| {
         LogicalPlanError::NodeNotFound(format!(
@@ -748,10 +752,40 @@ mod tests {
     }
 
     #[test]
-    fn create_node_without_label_rejected() {
-        let err = plan_err("CREATE (a)");
-        let msg = err.to_string();
-        assert!(msg.contains("label"), "got `{}`", msg);
+    fn create_unlabeled_node_without_unlabeled_schema_is_rejected() {
+        // No `__Unlabeled` entry in `build_test_schema()`, so `CREATE ()`
+        // hits the same NodeNotFound path as any other unknown label.
+        let err = plan_err("CREATE ()");
+        assert!(
+            matches!(&err, LogicalPlanError::NodeNotFound(msg) if msg.contains("__Unlabeled")),
+            "got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn create_unlabeled_node_dispatches_to_unlabeled_when_schema_has_it() {
+        // When the active schema registers an `__Unlabeled` node, anonymous
+        // CREATE patterns route there. This is what TCK harnesses opt into
+        // via schema_gen — production schemas typically don't define it.
+        let mut nodes = HashMap::new();
+        nodes.insert("__Unlabeled".to_string(), person_node("Unlabeled"));
+        let schema = GraphSchema::build(1, "test".to_string(), nodes, HashMap::new());
+
+        let ast = parse_query("CREATE (), (a), (b {name: 'foo'})").expect("parse");
+        let (plan, _ctx) =
+            build_logical_plan(&ast, &schema, None, None, None).expect("planning succeeds");
+        let create = match &*plan {
+            LogicalPlan::Create(c) => c,
+            other => panic!("expected Create, got {:?}", other),
+        };
+        assert_eq!(create.patterns.len(), 3);
+        for pat in &create.patterns {
+            match pat {
+                CreatePattern::Node(n) => assert_eq!(n.label, "__Unlabeled"),
+                other => panic!("expected only Node patterns, got {:?}", other),
+            }
+        }
     }
 
     #[test]

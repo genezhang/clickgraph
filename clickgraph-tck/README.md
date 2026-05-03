@@ -6,7 +6,7 @@ openCypher [Technology Compatibility Kit (TCK)](https://github.com/opencypher/op
 
 **402 / 402 read scenarios passing (100%)** — 0 failing.
 
-Write feature files (`Create*`, `Set*`, `Delete*`, `Remove*` — 21 files / 205 scenarios) were imported from upstream openCypher TCK on 2026-05-02 as part of Phase 4 of the embedded-writes work. They are tagged `@wip` at the Feature level and currently filtered out of the run; per-scenario triage will lift the tag incrementally as harness extensions land. See [`docs/design/embedded-writes.md`](../docs/design/embedded-writes.md) Appendix (Phase 4).
+Write feature files (`Create*`, `Set*`, `Delete*`, `Remove*` — 21 files / 205 scenarios) were imported from upstream openCypher TCK on 2026-05-02 as part of Phase 4 of the embedded-writes work. Phase 5a (#281) added the side-effect step. Phase 5b (this commit) added anonymous-node support (`CREATE ()`, `CREATE (n {...})` route to the `__Unlabeled` table catalogued by `schema_gen.rs`), lifting the file-level `@wip` from `Create1.feature` so its un-gated scenarios run. Remaining write scenarios stay `@wip` per-scenario until the corresponding capability lands. See [`docs/design/embedded-writes.md`](../docs/design/embedded-writes.md) Appendix (Phase 5).
 
 ## What it tests
 
@@ -47,8 +47,8 @@ Phase 5a (this commit) ships the harness extensions to start running them:
 
 Still pending before more imports unlock:
 
-1. **Schema generation** in `schema_gen.rs` needs to handle anonymous nodes (`CREATE ()`) — bare nodes today don't get a label and aren't catalogued. Several `Create1` / `Delete1` scenarios depend on this.
-2. **Per-scenario disposition** for combinations the write pipeline rejects deliberately (`CREATE … RETURN`, relationship `CREATE`, `DELETE r` for an edge alias, `SET a += {…}` / `SET a = {…}` map-merge / full-map, `MERGE`). Each is rejected with an explicit error today; Phase 5 will lift the implementation gaps and document the rest as out-of-scope.
+1. **Anonymous nodes** are catalogued under the `__Unlabeled` synthetic label in `schema_gen.rs` (since the initial Phase 4 import) and now route through the write pipeline (Phase 5b). `Create1` scenarios [1] [2] [3] [4] [7] [9] are running; the rest stay `@wip` per-scenario behind the issues below.
+2. **Per-scenario disposition** for combinations the write pipeline rejects deliberately (`CREATE … RETURN`, multi-label CREATE (`CREATE (:A:B:C:D)`), relationship `CREATE`, `DELETE r` for an edge alias, `SET a += {…}` / `SET a = {…}` map-merge / full-map, `MERGE`, expected SyntaxError diagnostics). Each is rejected with an explicit error today; Phase 5c+ will lift the implementation gaps and document the rest as out-of-scope.
 
 `MERGE` (Merge1..6 upstream) is not imported yet — tracked for v0.7.x Phase 5.
 
