@@ -43,8 +43,16 @@ pub fn build_create(
     schema: &GraphSchema,
 ) -> Result<Arc<LogicalPlan>> {
     let mut patterns = Vec::new();
+    // Aliases already bound by the read pipeline (`MATCH (x) CREATE (x)-[:R]->(y)`).
+    // Endpoints whose name is in this set resolve to references rather than
+    // synthesised CreateNodes; everything else (including a bare `(y)` that
+    // isn't bound upstream) gets a fresh `__Unlabeled` CreateNode so the
+    // emitted relationship's start/end aliases always have a corresponding
+    // node pattern in the same CREATE.
+    let mut bound_aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    collect_bound_aliases(&input, &mut bound_aliases);
     for path in &create.path_patterns {
-        collect_patterns_from_path(path, schema, &mut patterns)?;
+        collect_patterns_from_path(path, schema, &mut patterns, &mut bound_aliases)?;
     }
     if patterns.is_empty() {
         return Err(LogicalPlanError::QueryPlanningError(
@@ -52,6 +60,44 @@ pub fn build_create(
         ));
     }
     Ok(Arc::new(LogicalPlan::Create(Create { input, patterns })))
+}
+
+/// Collect every alias bound by `plan` (GraphNode / GraphRel aliases at any
+/// depth). Used by CREATE-pattern endpoint resolution to distinguish a bare
+/// `(name)` reference to an upstream binding from a fresh anonymous node.
+fn collect_bound_aliases(plan: &LogicalPlan, out: &mut std::collections::HashSet<String>) {
+    match plan {
+        LogicalPlan::GraphNode(n) => {
+            out.insert(n.alias.clone());
+            collect_bound_aliases(&n.input, out);
+        }
+        LogicalPlan::GraphRel(r) => {
+            out.insert(r.alias.clone());
+            collect_bound_aliases(&r.left, out);
+            collect_bound_aliases(&r.center, out);
+            collect_bound_aliases(&r.right, out);
+        }
+        LogicalPlan::Filter(f) => collect_bound_aliases(&f.input, out),
+        LogicalPlan::Projection(p) => collect_bound_aliases(&p.input, out),
+        LogicalPlan::GroupBy(gb) => collect_bound_aliases(&gb.input, out),
+        LogicalPlan::OrderBy(ob) => collect_bound_aliases(&ob.input, out),
+        LogicalPlan::Skip(s) => collect_bound_aliases(&s.input, out),
+        LogicalPlan::Limit(l) => collect_bound_aliases(&l.input, out),
+        LogicalPlan::Cte(c) => collect_bound_aliases(&c.input, out),
+        LogicalPlan::GraphJoins(gj) => collect_bound_aliases(&gj.input, out),
+        LogicalPlan::Unwind(u) => collect_bound_aliases(&u.input, out),
+        LogicalPlan::Union(u) => u.inputs.iter().for_each(|p| collect_bound_aliases(p, out)),
+        LogicalPlan::CartesianProduct(cp) => {
+            collect_bound_aliases(&cp.left, out);
+            collect_bound_aliases(&cp.right, out);
+        }
+        LogicalPlan::WithClause(wc) => collect_bound_aliases(&wc.input, out),
+        LogicalPlan::Create(c) => collect_bound_aliases(&c.input, out),
+        LogicalPlan::SetProperties(sp) => collect_bound_aliases(&sp.input, out),
+        LogicalPlan::Delete(d) => collect_bound_aliases(&d.input, out),
+        LogicalPlan::Remove(r) => collect_bound_aliases(&r.input, out),
+        LogicalPlan::Empty | LogicalPlan::ViewScan(_) | LogicalPlan::PageRank(_) => {}
+    }
 }
 
 /// Build a `LogicalPlan::SetProperties` from a parsed `SetClause`.
@@ -273,16 +319,19 @@ fn collect_patterns_from_path(
     path: &PathPattern<'_>,
     schema: &GraphSchema,
     out: &mut Vec<CreatePattern>,
+    bound_aliases: &mut std::collections::HashSet<String>,
 ) -> Result<()> {
     match path {
         PathPattern::Node(node_pat) => {
-            out.push(CreatePattern::Node(create_node_from_pattern(
-                node_pat, schema,
-            )?));
+            let node = create_node_from_pattern(node_pat, schema)?;
+            if let Some(alias) = &node.alias {
+                bound_aliases.insert(alias.clone());
+            }
+            out.push(CreatePattern::Node(node));
         }
         PathPattern::ConnectedPattern(connections) => {
             for conn in connections {
-                collect_patterns_from_connection(conn, schema, out)?;
+                collect_patterns_from_connection(conn, schema, out, bound_aliases)?;
             }
         }
         PathPattern::ShortestPath(_) | PathPattern::AllShortestPaths(_) => {
@@ -298,15 +347,19 @@ fn collect_patterns_from_connection(
     conn: &ConnectedPattern<'_>,
     schema: &GraphSchema,
     out: &mut Vec<CreatePattern>,
+    bound_aliases: &mut std::collections::HashSet<String>,
 ) -> Result<()> {
     let start_borrow = conn.start_node.borrow();
     let end_borrow = conn.end_node.borrow();
 
-    // For each endpoint: if labeled, emit a CreateNode (we're creating it);
-    // if it's a bare reference (`(a)` with no label), it must already be bound
-    // by a prior MATCH/CREATE — record only its alias for the relationship.
-    let start_alias = endpoint_alias_or_create(&start_borrow, schema, out, "start")?;
-    let end_alias = endpoint_alias_or_create(&end_borrow, schema, out, "end")?;
+    // For each endpoint: if labeled or property-bearing, emit a CreateNode
+    // (we're creating it). Bare `(name)` resolves to a reference if `name`
+    // is already bound (by `input` or by an earlier pattern in the same
+    // CREATE); otherwise we synthesise an `__Unlabeled` CreateNode so the
+    // emitted relationship's start/end aliases always correspond to a node
+    // pattern. Anonymous endpoints (no name, no label) get a fresh alias.
+    let start_alias = endpoint_alias_or_create(&start_borrow, schema, out, bound_aliases)?;
+    let end_alias = endpoint_alias_or_create(&end_borrow, schema, out, bound_aliases)?;
 
     let rel = create_rel_from_pattern(&conn.relationship, start_alias, end_alias, schema)?;
     // Note: standalone CREATE pattern is `start, rel, end` — the Rel pattern
@@ -316,49 +369,56 @@ fn collect_patterns_from_connection(
     Ok(())
 }
 
-/// Resolve a CREATE relationship endpoint to an alias. If the endpoint is
-/// labeled, emit a `CreatePattern::Node` for it (we're creating a new node);
-/// otherwise it must already be bound by a prior clause, so we only return its
-/// alias. Anonymous labelled endpoints are valid Cypher — synthesise an
-/// internal alias rather than rejecting them.
 fn endpoint_alias_or_create(
     pat: &NodePattern<'_>,
     schema: &GraphSchema,
     out: &mut Vec<CreatePattern>,
-    side: &str,
+    bound_aliases: &mut std::collections::HashSet<String>,
 ) -> Result<String> {
-    if pat.labels.is_some() {
-        let mut node = create_node_from_pattern(pat, schema)?;
-        let alias = node.alias.clone().unwrap_or_else(generate_id);
-        if node.alias.is_none() {
-            node.alias = Some(alias.clone());
+    // Bare reference (`(name)`, no labels, no props) to an alias that is
+    // already bound — by the read pipeline or by an earlier CREATE pattern
+    // in the same clause — resolves to a reference. No new node.
+    if pat.labels.is_none() && pat.properties.is_none() {
+        if let Some(name) = pat.name {
+            if bound_aliases.contains(name) {
+                return Ok(name.to_string());
+            }
         }
-        out.push(CreatePattern::Node(node));
-        Ok(alias)
-    } else {
-        let name = pat.name.ok_or_else(|| {
-            LogicalPlanError::QueryPlanningError(format!(
-                "CREATE {} endpoint must be either a labelled node or a reference to a bound alias",
-                side
-            ))
-        })?;
-        Ok(name.to_string())
     }
+    // Otherwise we're creating a node. `create_node_from_pattern` defaults a
+    // missing label to `__Unlabeled`. Reuse the user-supplied name as alias
+    // when present (so `CREATE (root)-[:LINK]->(root)` binds `root` once and
+    // the second occurrence falls into the bound-reference branch above);
+    // otherwise synthesise an opaque id.
+    let mut node = create_node_from_pattern(pat, schema)?;
+    let alias = node.alias.clone().unwrap_or_else(generate_id);
+    if node.alias.is_none() {
+        node.alias = Some(alias.clone());
+    }
+    bound_aliases.insert(alias.clone());
+    out.push(CreatePattern::Node(node));
+    Ok(alias)
 }
 
+/// Sentinel label used when a CREATE pattern declares no label
+/// (e.g. `CREATE ()` or `CREATE (n {prop: 1})`). The active schema must
+/// register a writable node under this label for the CREATE to succeed —
+/// production schemas typically don't, so the missing-schema error fires
+/// just as it would for any other unknown label. Test harnesses (notably
+/// `clickgraph-tck`) catalogue `__Unlabeled` automatically.
+pub(crate) const UNLABELED_DEFAULT: &str = "__Unlabeled";
+
 fn create_node_from_pattern(pat: &NodePattern<'_>, schema: &GraphSchema) -> Result<CreateNode> {
-    let labels = pat.labels.as_ref().ok_or_else(|| {
-        LogicalPlanError::QueryPlanningError(
-            "CREATE requires every node to specify a label (e.g., (a:Person {...}))".to_string(),
-        )
-    })?;
-    if labels.len() != 1 {
-        return Err(LogicalPlanError::QueryPlanningError(format!(
-            "CREATE node patterns must declare exactly one label; got {:?}",
-            labels
-        )));
-    }
-    let label = labels[0].to_string();
+    let label = match pat.labels.as_ref() {
+        None => UNLABELED_DEFAULT.to_string(),
+        Some(labels) if labels.len() == 1 => labels[0].to_string(),
+        Some(labels) => {
+            return Err(LogicalPlanError::QueryPlanningError(format!(
+                "CREATE node patterns must declare at most one label; got {:?}",
+                labels
+            )));
+        }
+    };
 
     let node_schema = schema.node_schema(&label).map_err(|_| {
         LogicalPlanError::NodeNotFound(format!(
@@ -748,10 +808,40 @@ mod tests {
     }
 
     #[test]
-    fn create_node_without_label_rejected() {
-        let err = plan_err("CREATE (a)");
-        let msg = err.to_string();
-        assert!(msg.contains("label"), "got `{}`", msg);
+    fn create_unlabeled_node_without_unlabeled_schema_is_rejected() {
+        // No `__Unlabeled` entry in `build_test_schema()`, so `CREATE ()`
+        // hits the same NodeNotFound path as any other unknown label.
+        let err = plan_err("CREATE ()");
+        assert!(
+            matches!(&err, LogicalPlanError::NodeNotFound(msg) if msg.contains("__Unlabeled")),
+            "got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn create_unlabeled_node_dispatches_to_unlabeled_when_schema_has_it() {
+        // When the active schema registers an `__Unlabeled` node, anonymous
+        // CREATE patterns route there. This is what TCK harnesses opt into
+        // via schema_gen — production schemas typically don't define it.
+        let mut nodes = HashMap::new();
+        nodes.insert("__Unlabeled".to_string(), person_node("Unlabeled"));
+        let schema = GraphSchema::build(1, "test".to_string(), nodes, HashMap::new());
+
+        let ast = parse_query("CREATE (), (a), (b {name: 'foo'})").expect("parse");
+        let (plan, _ctx) =
+            build_logical_plan(&ast, &schema, None, None, None).expect("planning succeeds");
+        let create = match &*plan {
+            LogicalPlan::Create(c) => c,
+            other => panic!("expected Create, got {:?}", other),
+        };
+        assert_eq!(create.patterns.len(), 3);
+        for pat in &create.patterns {
+            match pat {
+                CreatePattern::Node(n) => assert_eq!(n.label, "__Unlabeled"),
+                other => panic!("expected only Node patterns, got {:?}", other),
+            }
+        }
     }
 
     #[test]
@@ -791,6 +881,93 @@ mod tests {
             "got {:?}",
             err
         );
+    }
+
+    // Phase 5b regression coverage: bare-name endpoints in a CREATE'd
+    // relationship must synthesise an `__Unlabeled` CreateNode unless the
+    // alias is already bound by `input` or by an earlier pattern in the
+    // same CREATE — otherwise the emitted Rel points at aliases with no
+    // node pattern.
+    #[test]
+    fn create_self_loop_synthesises_unlabeled_node_once() {
+        let mut nodes = HashMap::new();
+        nodes.insert("__Unlabeled".to_string(), person_node("Unlabeled"));
+        let mut rels = HashMap::new();
+        let mut self_rel = knows_rel();
+        self_rel.from_node = "__Unlabeled".to_string();
+        self_rel.to_node = "__Unlabeled".to_string();
+        self_rel.from_node_table = "unlabeled".to_string();
+        self_rel.to_node_table = "unlabeled".to_string();
+        rels.insert("LINK::__Unlabeled::__Unlabeled".to_string(), self_rel);
+        let schema = GraphSchema::build(1, "test".to_string(), nodes, rels);
+
+        let ast = parse_query("CREATE (root)-[:LINK]->(root)").expect("parse");
+        let (plan, _ctx) =
+            build_logical_plan(&ast, &schema, None, None, None).expect("planning succeeds");
+        let create = match &*plan {
+            LogicalPlan::Create(c) => c,
+            other => panic!("expected Create, got {:?}", other),
+        };
+        // Exactly one CreateNode for `root`, plus the relationship.
+        let node_count = create
+            .patterns
+            .iter()
+            .filter(|p| matches!(p, CreatePattern::Node(_)))
+            .count();
+        let rel_count = create
+            .patterns
+            .iter()
+            .filter(|p| matches!(p, CreatePattern::Rel(_)))
+            .count();
+        assert_eq!(node_count, 1, "self-loop must bind `root` exactly once");
+        assert_eq!(rel_count, 1);
+        for p in &create.patterns {
+            if let CreatePattern::Rel(r) = p {
+                assert_eq!(r.start_alias, "root");
+                assert_eq!(r.end_alias, "root");
+            }
+            if let CreatePattern::Node(n) = p {
+                assert_eq!(n.alias.as_deref(), Some("root"));
+                assert_eq!(n.label, "__Unlabeled");
+            }
+        }
+    }
+
+    #[test]
+    fn create_with_matched_alias_does_not_resynthesise() {
+        // `MATCH (a:Person) CREATE (a)-[:KNOWS]->(b)` — `a` is bound upstream,
+        // so it must not produce a fresh CreateNode; `b` is unbound, so it
+        // does (as `__Unlabeled` if no label). Built against a schema that
+        // declares both Person and __Unlabeled as KNOWS endpoints.
+        let mut nodes = HashMap::new();
+        nodes.insert("Person".to_string(), person_node("Person"));
+        nodes.insert("__Unlabeled".to_string(), person_node("Unlabeled"));
+        let mut rels = HashMap::new();
+        let mut p_to_u = knows_rel();
+        p_to_u.to_node = "__Unlabeled".to_string();
+        p_to_u.to_node_table = "unlabeled".to_string();
+        rels.insert("KNOWS::Person::__Unlabeled".to_string(), p_to_u);
+        let schema = GraphSchema::build(1, "test".to_string(), nodes, rels);
+
+        let ast = parse_query("MATCH (a:Person) CREATE (a)-[:KNOWS]->(b)").expect("parse");
+        let (plan, _ctx) =
+            build_logical_plan(&ast, &schema, None, None, None).expect("planning succeeds");
+        let create = match &*plan {
+            LogicalPlan::Create(c) => c,
+            other => panic!("expected Create, got {:?}", other),
+        };
+        let create_nodes: Vec<&CreateNode> = create
+            .patterns
+            .iter()
+            .filter_map(|p| match p {
+                CreatePattern::Node(n) => Some(n),
+                _ => None,
+            })
+            .collect();
+        // Only `b` should be synthesised — `a` came from MATCH.
+        assert_eq!(create_nodes.len(), 1);
+        assert_eq!(create_nodes[0].alias.as_deref(), Some("b"));
+        assert_eq!(create_nodes[0].label, "__Unlabeled");
     }
 
     // Anonymous labelled endpoints get auto-generated aliases (PR #277 review).
