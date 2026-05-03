@@ -6,13 +6,13 @@ openCypher [Technology Compatibility Kit (TCK)](https://github.com/opencypher/op
 
 **402 / 402 read scenarios passing (100%)** — 0 failing.
 
-Write feature files (`Create*`, `Set*`, `Delete*`, `Remove*` — 21 files / 205 scenarios) were imported from upstream openCypher TCK on 2026-05-02 as part of Phase 4 of the embedded-writes work. Phase 5a (#281) added the side-effect step. Phase 5b (#282) added anonymous-node support (`CREATE ()`, `CREATE (n {...})` route to the `__Unlabeled` table catalogued by `schema_gen.rs`), lifting the file-level `@wip` from `Create1.feature`. Phase 5c (this commit) lifts the file-level `@wip` on `Delete1.feature` and ungates scenario [3]. Status by scenario:
+Write feature files (`Create*`, `Set*`, `Delete*`, `Remove*` — 21 files / 205 scenarios) were imported from upstream openCypher TCK on 2026-05-02 as part of Phase 4 of the embedded-writes work. Phase 5a (#281) added the side-effect step. Phase 5b (#282) added anonymous-node support (`CREATE ()`, `CREATE (n {...})` route to the `__Unlabeled` table catalogued by `schema_gen.rs`), lifting the file-level `@wip` from `Create1.feature`. Phase 5c (#283) lifted the file-level `@wip` on `Delete1.feature` and ungated scenario [3]. Phase 5d (this commit) wires write+RETURN through the embedded executor: when a Cypher statement carries both a write clause and a RETURN clause, `handle_write_async` executes the write, then re-runs the read pipeline against the modified state with the write clauses stripped from the AST, and attaches the side-effect counters via a new `QueryResult::get_write_counters()` side-channel. The TCK harness reads the side-channel first and falls back to the synthetic counter-row shape used by pure writes. Status by scenario:
 
-- **Running end-to-end with full counter assertions:** `Create1` [1] [2] [7] [9] (4).
+- **Running end-to-end with full counter assertions:** `Create1` [1] [2] [7] [9] and `Delete1` [5] (5).
 - **Ungated, pipeline runs, but harness records as skip on an unmapped side-effect key:** `Create1` [3] [4] (`+labels`) and `Delete1` [3] (`-nodes`/`-relationships` are asserted, then the trailing `-labels` row triggers the unmapped-key skip). The DETACH DELETE pipeline still executes — coverage for it lives in `cypher_detach_delete_emits_rel_then_node_delete_sequence` (`clickgraph-embedded`) — but the cucumber report tallies these as skips by design (label mutations are out of scope, so there's no counter to assert against).
 - **Still gated `@wip`:** every other write scenario, with per-scenario reasons in each feature file's header.
 
-The two largest blockers gating the remaining ~190 scenarios are write+RETURN (Phase 5d) and untyped-MATCH+DELETE/SET (Phase 5e). See [`docs/design/embedded-writes.md`](../docs/design/embedded-writes.md) Appendix.
+The largest blocker gating the remaining ~190 scenarios is now untyped-MATCH+DELETE/SET (Phase 5e); write+RETURN itself is implemented in Phase 5d but additional `Set*`/`Remove*`/`Delete*` scenarios that combine it with other unsupported pieces (multi-pattern MATCH writes, label mutations, RETURN on relationship-bound aliases) stay `@wip` until those are addressed individually. See [`docs/design/embedded-writes.md`](../docs/design/embedded-writes.md) Appendix.
 
 ## What it tests
 
