@@ -268,7 +268,20 @@ fn validate_alias_property(
     clause: &str,
 ) -> Result<()> {
     let Some(label) = find_alias_label(alias, input) else {
-        // Label unresolved at this point — defer to downstream passes.
+        // Label unresolved at this point. Phase 5e: an untyped
+        // `MATCH (n) SET n.k = …` is fine — `alias_is_bound_anywhere`
+        // confirms `n` is bound by *some* GraphNode/GraphRel and the
+        // renderer's per-label fan-out validates the property against
+        // each resolved schema. But if the alias isn't bound anywhere,
+        // fail fast with the same diagnostic `validate_alias_writable`
+        // produces, instead of letting the renderer surface a less
+        // direct "not bound" error after dispatch.
+        if !alias_is_bound_anywhere(alias, input) {
+            return Err(LogicalPlanError::QueryPlanningError(format!(
+                "{} target `{}` is not bound by a preceding MATCH clause",
+                clause, alias
+            )));
+        }
         return Ok(());
     };
     if let Some(node_schema) = schema.node_schema_opt(&label) {

@@ -596,14 +596,26 @@ fn collect_alias_labels(
 
 /// Walk `plan` and return a copy with every `LogicalPlan::Union` replaced
 /// by the single branch that binds `alias` to `target_label` only.
-/// Returns `None` if no such branch exists or the plan shape contains a
-/// non-Union variant we don't yet know how to slice.
+/// Returns `None` if no such branch exists, or if the plan shape between
+/// the root and the Union contains a wrapper this function doesn't yet
+/// rebuild — in which case the caller surfaces a clear "could not be
+/// sliced" error instead of generating wrong SQL silently.
 ///
 /// Phase 5e calls this for every label resolved by `find_all_alias_labels`
-/// to scope each per-label DELETE/UPDATE's source query to just that
-/// label's read pipeline. Wrappers above the Union (Filter, Projection,
-/// GraphJoins, etc.) are preserved so any WHERE / LIMIT / etc. on the
-/// untyped MATCH still constrains the per-label slice.
+/// to scope each per-label DELETE/UPDATE's source query to that label's
+/// read pipeline.
+///
+/// **Wrappers preserved above the Union (v1):** `Filter` (so any WHERE
+/// from the untyped MATCH still constrains the slice) and `GraphJoins`
+/// (so the joins-and-anchor metadata threads through). Other wrappers
+/// — `Projection`, `OrderBy`, `Skip`, `Limit`, `GroupBy`, `WithClause`,
+/// `CartesianProduct` — are intentionally not rebuilt; if they appear
+/// above the Union, slicing returns `None`. (Note that even when slicing
+/// succeeds, `override_select_to_id` later strips `order_by` / `skip` /
+/// `limit` from the rendered subquery, so those clauses on the read
+/// side don't propagate into the source-of-IDs subquery anyway —
+/// extending this function to rebuild them would be cosmetic only.)
+/// Multi-label fan-out under those shapes is a follow-up.
 fn slice_plan_to_label(
     alias: &str,
     target_label: &str,
@@ -650,11 +662,9 @@ fn slice_plan_to_label(
             })
         }
         // Below the Union, leaf shapes that already bind a single label
-        // are returned as-is. Anything else (CartesianProduct, WithClause,
-        // GraphRel, GroupBy/OrderBy/Skip/Limit/Projection above the Union)
-        // is intentionally left out of v1 — multi-label fan-out under
-        // those shapes is a follow-up. Returning None here makes the
-        // caller surface a clear "could not be sliced" error rather than
+        // are returned as-is. Any other shape (any wrapper not listed
+        // in this function's doc comment) returns `None` so the caller
+        // surfaces a clear "could not be sliced" error rather than
         // generating wrong SQL silently.
         _ => {
             let labels = find_all_alias_labels(alias, plan);
