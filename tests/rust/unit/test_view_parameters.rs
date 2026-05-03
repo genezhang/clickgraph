@@ -169,6 +169,7 @@ property_mappings:
             types: None,
             source: None,
             property_types: HashMap::new(),
+            id_generation: None,
         };
 
         // Serialize to YAML

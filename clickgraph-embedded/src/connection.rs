@@ -1191,7 +1191,14 @@ impl<'db> Connection<'db> {
     }
 
     async fn query_async(&self, cypher: &str) -> Result<QueryResult, EmbeddedError> {
-        if let Ok((_, stmt)) = clickgraph::open_cypher_parser::parse_cypher_statement(cypher) {
+        // Strip comments before dispatch parsing so write detection matches
+        // what `handle_write_async` sees during its own parse below — comments
+        // (e.g., `// ...` or `/* ... */`) inside the query would otherwise
+        // break parsing here and silently bypass write routing.
+        let dispatch_input = clickgraph::open_cypher_parser::strip_comments(cypher);
+        if let Ok((_, stmt)) =
+            clickgraph::open_cypher_parser::parse_cypher_statement(&dispatch_input)
+        {
             if let clickgraph::open_cypher_parser::ast::CypherStatement::CopyTo(ref copy_stmt) =
                 stmt
             {
@@ -1229,26 +1236,23 @@ impl<'db> Connection<'db> {
             // emits lightweight INSERT / UPDATE / DELETE per Phase 2's
             // WriteRenderPlan. Read queries fall through to the regular
             // SELECT path below.
+            //
+            // Any query carrying a write clause — CREATE / SET / DELETE /
+            // REMOVE — must enter the write pipeline so we either execute it
+            // or reject it with a clear error. Falling through to the read
+            // path produces confusing render-time errors. Note that
+            // `get_query_type` only inspects SET / DELETE / REMOVE, so we
+            // also need an explicit `create_clause.is_some()` check to cover
+            // `CREATE`, `MATCH ... CREATE`, and `CREATE ... RETURN` variants.
             if let clickgraph::open_cypher_parser::ast::CypherStatement::Query { query, .. } = &stmt
             {
                 use clickgraph::query_planner::types::QueryType;
-                match clickgraph::query_planner::get_query_type(query) {
-                    QueryType::Update | QueryType::Delete => {
-                        return self.handle_write_async(cypher).await;
-                    }
-                    _ => {
-                        // Standalone CREATE has no `delete_clause` / `set_clause`
-                        // / `remove_clause` so `get_query_type` reports `Read`.
-                        // Detect explicitly and route to the write path.
-                        if query.create_clause.is_some()
-                            && query.return_clause.is_none()
-                            && query.match_clauses.is_empty()
-                            && query.optional_match_clauses.is_empty()
-                            && query.with_clause.is_none()
-                        {
-                            return self.handle_write_async(cypher).await;
-                        }
-                    }
+                let is_write = matches!(
+                    clickgraph::query_planner::get_query_type(query),
+                    QueryType::Update | QueryType::Delete
+                ) || query.create_clause.is_some();
+                if is_write {
+                    return self.handle_write_async(cypher).await;
                 }
             }
         }
@@ -1294,8 +1298,19 @@ impl<'db> Connection<'db> {
             let write_plan = build_write_plan(&logical_plan, &schema)
                 .map_err(|e| EmbeddedError::Query(format!("Write render error: {}", e)))?
                 .ok_or_else(|| {
+                    // The dispatch above sent us here because a write clause
+                    // (CREATE / SET / DELETE / REMOVE) was visible in the
+                    // parsed AST, but `build_write_plan` couldn't extract a
+                    // write variant from the planned tree — typically this
+                    // means the write was wrapped under a clause we don't
+                    // yet support in the write pipeline (e.g. CREATE ...
+                    // RETURN). Surface a clear error rather than the
+                    // generic "non-write plan" wording.
                     EmbeddedError::Query(
-                        "Internal error: write dispatch reached non-write plan".to_string(),
+                        "Cypher write clause is not supported in this combination yet \
+                         (e.g. CREATE … RETURN, or write clauses inside subqueries). \
+                         Use a separate write statement followed by a MATCH for now."
+                            .to_string(),
                     )
                 })?;
             let stmts = write_render_to_sql(&write_plan);
@@ -2264,6 +2279,73 @@ graph_schema:
         assert!(
             msg.contains("embedded chdb mode") || msg.contains("EmbeddedChdb"),
             "expected executor-rejection error, got: {}",
+            msg
+        );
+    }
+
+    /// `CREATE` with leading line comments must still route to the write
+    /// path. Regression for the dispatch parser silently bypassing writes
+    /// when the input contained comments.
+    #[test]
+    fn cypher_create_with_comments_routes_to_write_path() {
+        let (db, captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let cypher = "// leading comment\n/* block comment */\nCREATE (a:Person {person_id: 'p1'})";
+        let result = conn
+            .query(cypher)
+            .expect("CREATE with comments must route to write dispatch");
+        let mut iter = result.into_iter();
+        let row = iter.next().unwrap();
+        assert_eq!(row.get("nodes_created").unwrap().as_i64(), Some(1));
+
+        let sqls = captured.lock().unwrap();
+        assert!(
+            sqls[0].starts_with("INSERT INTO"),
+            "comment-prefixed CREATE must still emit INSERT, got: {}",
+            sqls[0]
+        );
+    }
+
+    /// `MATCH … CREATE` (read query feeding a write) must enter the write
+    /// pipeline rather than silently fall through to the read path. We pin
+    /// only that dispatch reaches the write pipeline and produces a
+    /// counter-shaped `QueryResult` — exact semantics for MATCH-driven
+    /// CREATE may keep evolving.
+    #[test]
+    fn cypher_match_create_routes_to_write_path() {
+        let (db, _captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let result = conn
+            .query("MATCH (a:Person) CREATE (b:Person {person_id: 'p2'})")
+            .expect("MATCH … CREATE must reach write pipeline");
+        // Counter-shape ensures we routed to handle_write_async; if it
+        // had fallen through to the read path, the QueryResult columns
+        // would not be the four counter columns.
+        let cols = result.get_column_names();
+        assert_eq!(
+            cols.len(),
+            4,
+            "expected counter result from write path, got cols={:?}",
+            cols
+        );
+        assert!(cols.contains(&"nodes_created".to_string()));
+    }
+
+    /// `CREATE … RETURN` likewise must enter the write pipeline. We don't
+    /// yet support returning rows from a CREATE — the write pipeline
+    /// rejects this combination with a clear error rather than letting it
+    /// silently fall through to the read path.
+    #[test]
+    fn cypher_create_with_return_rejected_with_clear_error() {
+        let (db, _captured) = make_capturing_db(build_writable_test_schema());
+        let conn = Connection::new(&db).unwrap();
+        let err = conn
+            .query("CREATE (a:Person {person_id: 'p3'}) RETURN a")
+            .expect_err("CREATE … RETURN must surface a write-pipeline error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not supported") && msg.to_lowercase().contains("create"),
+            "expected write-pipeline rejection naming CREATE, got: {}",
             msg
         );
     }
