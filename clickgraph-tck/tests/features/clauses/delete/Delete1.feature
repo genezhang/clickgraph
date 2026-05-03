@@ -28,22 +28,42 @@
 
 #encoding: utf-8
 
-# @wip — Phase 4 import from upstream openCypher TCK (master, fetched 2026-05-02).
-# Cypher write clauses (CREATE / SET / DELETE / REMOVE) are implemented in
-# embedded mode as of v0.6.7, but this scenario file requires harness
-# extensions before it runs cleanly:
-#   * `the side effects should be:` step currently no-ops; needs counter
-#     assertion against the QueryResult counters returned by handle_write_async.
-#   * Some scenarios use anonymous nodes (`CREATE ()`) that schema_gen.rs
-#     doesn't yet collect into the universal catalog.
-#   * Several scenarios chain CREATE/MATCH/SET in patterns that exercise
-#     unimplemented combinations (CREATE … RETURN, relationship CREATE,
-#     map-merge SET) — see KNOWN_ISSUES.md.
-# Lifted incrementally as triage lands. See docs/design/embedded-writes.md
-# Appendix (Phase 4) for the plan.
-@wip
+# Phase 4 import from upstream openCypher TCK (master, fetched 2026-05-02).
+# File-level @wip lifted in Phase 5c. Of the ungated scenarios:
+#   * [3] is ungated. The DETACH DELETE pipeline executes end-to-end (the
+#     `MATCH (n:X) DETACH DELETE n` shape over a small `:R` fan-out; covered
+#     by `cypher_detach_delete_emits_rel_then_node_delete_sequence` in
+#     clickgraph-embedded). The harness asserts `-nodes` and `-relationships`
+#     successfully, then hits the trailing `-labels` row — which
+#     `effect_to_counter()` deliberately leaves unmapped — and records the
+#     scenario as a skip (same pattern as `Create1` [3]/[4]). It is *not*
+#     a "running end-to-end with full counter assertions" scenario; its
+#     value is exercising the lift path and confirming the ungated dispatch
+#     stays clean. Re-tag candidate for `@unsupported-label-mutation` once
+#     we want it filtered out of the active list.
+# Scenarios still gated with per-scenario @wip:
+#   * [1] [2] — `MATCH (n) DELETE n` / `MATCH (n) DETACH DELETE n` over an
+#     untyped node match. ClickGraph's untyped MATCH expands to a UNION
+#     across every node table; the DELETE pipeline currently picks one
+#     label via `find_alias_label` and emits a single-table DELETE. Phase
+#     5d/e will extend the pipeline to fan out the DELETE across every
+#     resolved label (or refuse with a clear "ambiguous DELETE" error).
+#   * [4] [6] — OPTIONAL MATCH (untyped) then DELETE / DETACH DELETE on an
+#     empty graph. Same untyped-DELETE gap as [1] [2], plus OPTIONAL-MATCH-
+#     yielding-no-rows handling on the write path.
+#   * [5] — OPTIONAL MATCH … DELETE … RETURN. Needs write+RETURN (Phase 5d).
+#   * [7] — expects a runtime ConstraintVerificationFailed; ClickGraph's
+#     non-DETACH DELETE silently leaves dangling rows rather than raising
+#     (engine semantics differ). Stay @wip until we add a referential-
+#     integrity check or document as out-of-scope.
+#   * [8] — `DELETE n:Person` (label-mutation form of DELETE) expects a
+#     SyntaxError. ClickGraph rejects with a different message. Stay @wip
+#     until the planner emits the openCypher diagnostic or the scenario is
+#     re-tagged @unsupported-label-mutation per the same rule that applies
+#     to `SET n:Label` / `REMOVE n:Label`.
 Feature: Delete1 - Deleting nodes
 
+  @wip
   Scenario: [1] Delete nodes
     Given an empty graph
     And having executed:
@@ -59,6 +79,7 @@ Feature: Delete1 - Deleting nodes
     And the side effects should be:
       | -nodes | 1 |
 
+  @wip
   Scenario: [2] Detach delete node
     Given an empty graph
     And having executed:
@@ -94,6 +115,7 @@ Feature: Delete1 - Deleting nodes
       | -relationships | 3 |
       | -labels        | 1 |
 
+  @wip
   Scenario: [4] Delete on null node
     Given an empty graph
     When executing query:
@@ -104,6 +126,7 @@ Feature: Delete1 - Deleting nodes
     Then the result should be empty
     And no side effects
 
+  @wip
   Scenario: [5] Ignore null when deleting node
     Given an empty graph
     When executing query:
@@ -117,6 +140,7 @@ Feature: Delete1 - Deleting nodes
       | null |
     And no side effects
 
+  @wip
   Scenario: [6] Detach delete on null node
     Given an empty graph
     When executing query:
@@ -127,6 +151,7 @@ Feature: Delete1 - Deleting nodes
     Then the result should be empty
     And no side effects
 
+  @wip
   Scenario: [7] Failing when deleting connected nodes
     Given an empty graph
     And having executed:
@@ -143,6 +168,7 @@ Feature: Delete1 - Deleting nodes
       """
     Then a ConstraintVerificationFailed should be raised at runtime: DeleteConnectedNode
 
+  @wip
   Scenario: [8] Failing when deleting a label
     Given any graph
     When executing query:
