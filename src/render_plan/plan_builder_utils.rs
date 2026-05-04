@@ -6872,13 +6872,17 @@ fn populate_cte_property_mappings_from_render_plan(
 ///
 /// Returns (flattened_items, compound_key_mappings) where compound_key_mappings contains
 /// entries like ("msg.id", "latestLike_msg_id") for downstream property_mapping injection.
+/// (flattened_items, compound_key_mappings) — compound_key_mappings entries like
+/// ("msg.id", "latestLike_msg_id") feed downstream property_mapping injection.
+type FlattenedMapLiteralResult = (Vec<SelectItem>, Vec<(String, String)>);
+
 fn try_flatten_head_collect_map_literal(
     expr: &crate::query_planner::logical_expr::LogicalExpr,
     col_alias: Option<&str>,
     plan: &LogicalPlan,
     plan_ctx: Option<&PlanCtx>,
     scope: Option<&super::variable_scope::VariableScope>,
-) -> Option<(Vec<SelectItem>, Vec<(String, String)>)> {
+) -> Option<FlattenedMapLiteralResult> {
     use crate::query_planner::logical_expr::LogicalExpr;
 
     let alias = col_alias?;
