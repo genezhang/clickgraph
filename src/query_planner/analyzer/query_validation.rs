@@ -21,11 +21,14 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 /// Non-integer literal kinds that are illegal as array subscript indices.
+///
+/// Note: `String` is intentionally absent — bracket subscripts with string keys
+/// (`map['key']`, `node['prop']`) are valid Cypher map/property access and must
+/// not be rejected. See `infer_non_integer_kind`.
 #[derive(Debug)]
 enum NonIntegerKind {
     Boolean,
     Float,
-    Str,
     List,
     Map,
 }
@@ -35,7 +38,6 @@ impl fmt::Display for NonIntegerKind {
         match self {
             NonIntegerKind::Boolean => write!(f, "Boolean"),
             NonIntegerKind::Float => write!(f, "Float"),
-            NonIntegerKind::Str => write!(f, "String"),
             NonIntegerKind::List => write!(f, "List"),
             NonIntegerKind::Map => write!(f, "Map"),
         }

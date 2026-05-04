@@ -35,15 +35,13 @@ use crate::{
 use std::sync::Arc;
 
 /// Extracted info from a pattern comprehension (or list comprehension with pattern predicate).
-/// Used to track the pattern, projection, aggregation type, and optional list constraint
+/// Used to track the pattern, aggregation type, and optional list constraint
 /// during WITH/RETURN clause rewriting.
 struct PatternComprehensionInfo<'a> {
     /// The path pattern from the comprehension (e.g., `(p)-[:HAS_TAG]->()`)
     pattern: crate::open_cypher_parser::ast::PathPattern<'a>,
     /// Optional WHERE clause from the comprehension
     where_clause: Option<Box<Expression<'a>>>,
-    /// The projection expression (what gets collected/counted)
-    projection: Box<Expression<'a>>,
     /// How this comprehension is aggregated (Count, GroupArray, Sum, etc.)
     aggregation_type: crate::query_planner::logical_plan::AggregationType,
     /// For list comprehensions: (iteration_var, list_alias) — e.g., ("p", "posts")
@@ -457,7 +455,6 @@ fn rewrite_expression_pattern_comprehensions<'a>(
                 vec![PatternComprehensionInfo {
                     pattern: (*pc.pattern).clone(),
                     where_clause: pc.where_clause.clone(),
-                    projection: pc.projection.clone(),
                     aggregation_type:
                         crate::query_planner::logical_plan::AggregationType::GroupArray,
                     list_constraint: None,
@@ -549,7 +546,6 @@ fn rewrite_expression_pattern_comprehensions<'a>(
                         vec![PatternComprehensionInfo {
                             pattern: (*pc.pattern).clone(),
                             where_clause: pc.where_clause.clone(),
-                            projection: pc.projection.clone(),
                             aggregation_type: agg_type,
                             list_constraint: None,
                         }],
@@ -605,9 +601,6 @@ fn rewrite_expression_pattern_comprehensions<'a>(
 
                                 let iteration_var = lc.variable.to_string();
 
-                                // The identity projection (just the variable itself)
-                                let projection = Box::new(Expression::Variable(lc.variable));
-
                                 // Replace with count(*)
                                 let replacement_expr = Expression::FunctionCallExp(FunctionCall {
                                     name: "count".to_string(),
@@ -621,7 +614,6 @@ fn rewrite_expression_pattern_comprehensions<'a>(
                                     vec![PatternComprehensionInfo {
                                         pattern: path_pattern,
                                         where_clause: None, // WHERE is already in the pattern
-                                        projection,
                                         aggregation_type: crate::query_planner::logical_plan::AggregationType::Count,
                                         list_constraint: Some((iteration_var, list_alias)),
                                     }],

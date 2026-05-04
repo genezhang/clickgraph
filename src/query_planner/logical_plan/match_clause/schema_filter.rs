@@ -34,6 +34,7 @@ impl<'a> SchemaPropertyFilter<'a> {
     ///
     /// # Returns
     /// Vector of node label names (e.g., ["User", "NetworkConnection"])
+    #[allow(dead_code)]
     pub fn filter_node_schemas(&self, required_properties: &HashSet<String>) -> Vec<String> {
         // If no properties required, return all node schemas
         if required_properties.is_empty() {

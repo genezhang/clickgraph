@@ -528,6 +528,11 @@ fn encode_properties_map(properties: &HashMap<String, Value>) -> Vec<u8> {
 const MAX_JSON_NESTING_DEPTH: usize = 64;
 
 /// Encode a JSON value to packstream format.
+///
+/// Test-only convenience wrapper around `encode_json_value_into`. Production
+/// callers use the buffer-writing variant directly to avoid per-element
+/// allocation.
+#[cfg(test)]
 fn encode_json_value(value: &Value) -> Vec<u8> {
     let mut result = Vec::new();
     encode_json_value_into(value, &mut result, 0);
