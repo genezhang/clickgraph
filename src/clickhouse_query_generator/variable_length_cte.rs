@@ -846,6 +846,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
     ///
     /// Only matches simple patterns like `end_node.id = <value>` to avoid false positives
     /// from complex multi-predicate filters.
+    #[allow(dead_code)]
     fn extract_target_id_negation(&self) -> Option<String> {
         let filter = self.end_node_filters.as_ref()?;
 

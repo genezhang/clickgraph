@@ -74,6 +74,7 @@ pub fn get_client() -> Client {
 /// SELECT * FROM data
 /// WHERE required_role IN (SELECT role_name FROM system.current_roles);
 /// ```
+#[allow(dead_code)]
 pub async fn set_role(client: &Client, role: &str) -> Result<(), clickhouse::error::Error> {
     log::debug!("Setting ClickHouse role: {}", role);
     client.query(&format!("SET ROLE {}", role)).execute().await
