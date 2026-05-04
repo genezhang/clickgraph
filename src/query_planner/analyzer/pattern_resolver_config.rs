@@ -1,6 +1,8 @@
 //! Combination-limit configuration shared by TypeInference's untyped-node
-//! expansion (Phase 2). Caps how many type combinations the pass enumerates
-//! before the schema-direction validity filter prunes them.
+//! expansion (Phase 2). This module defines a two-stage limit:
+//! `MAX_RAW_COMBINATIONS` caps raw type-combination enumeration before the
+//! schema-direction validity filter runs, and `get_max_combinations()`
+//! caps how many valid (post-filter) UNION branches may be emitted.
 //!
 //! These constants used to live alongside the now-deleted `pattern_resolver`
 //! module; the file name is preserved for git-blame continuity.
