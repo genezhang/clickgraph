@@ -28,6 +28,7 @@ use crate::query_planner::{
 pub struct FilterPushDown;
 
 impl OptimizerPass for FilterPushDown {
+    #[allow(clippy::only_used_in_recursion)] // plan_ctx required by OptimizerPass trait
     fn optimize(
         &self,
         logical_plan: Arc<LogicalPlan>,

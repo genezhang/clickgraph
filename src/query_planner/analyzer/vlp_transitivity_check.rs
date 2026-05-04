@@ -207,6 +207,7 @@ impl AnalyzerPass for VlpTransitivityCheck {
 }
 
 impl VlpTransitivityCheck {
+    #[allow(clippy::only_used_in_recursion)] // plan_ctx threaded for analyzer-pass API symmetry
     fn check_transitivity_recursive(
         &self,
         plan: Arc<LogicalPlan>,

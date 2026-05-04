@@ -29,6 +29,7 @@ impl CteReferencePopulator {
     /// @param plan: The plan to process
     /// @param available_ctes: Map of alias -> CTE name for all CTEs visible at this point
     /// @param plan_ctx: Plan context for looking up CTE names
+    #[allow(clippy::only_used_in_recursion)] // plan_ctx threaded for analyzer-pass API symmetry
     fn populate(
         &self,
         plan: Arc<LogicalPlan>,

@@ -1884,6 +1884,7 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
 }
 
 /// Extract CTEs with context - the main CTE extraction function
+#[allow(clippy::only_used_in_recursion)] // last_node_alias forwarded through recursion
 pub fn extract_ctes_with_context(
     plan: &LogicalPlan,
     last_node_alias: &str,
