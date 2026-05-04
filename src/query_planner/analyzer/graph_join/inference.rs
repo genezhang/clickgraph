@@ -813,6 +813,7 @@ impl GraphJoinInference {
             .collect()
     }
 
+    #[allow(clippy::only_used_in_recursion)] // captured_cte_refs threaded through recursion
     fn build_graph_joins(
         logical_plan: Arc<LogicalPlan>,
         collected_graph_joins: &mut Vec<Join>,
@@ -1869,6 +1870,8 @@ impl GraphJoinInference {
         Ok(transformed_plan)
     }
 
+    #[allow(clippy::too_many_arguments)] // recursive analyzer entry point — context is intrinsic
+    #[allow(clippy::only_used_in_recursion)] // cte_scope_aliases / node_appearances forwarded through recursion
     fn collect_graph_joins(
         &self,
         logical_plan: Arc<LogicalPlan>,

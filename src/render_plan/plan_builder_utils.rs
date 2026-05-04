@@ -1227,6 +1227,7 @@ fn rewrite_render_expr_for_cte_with_context(
 
 /// Extract a JOIN condition from a filter expression.
 /// Looks for equality patterns between CTE aliases and other tables.
+#[allow(clippy::only_used_in_recursion)] // Some context parameters are intentionally threaded through recursive descent (notably `cte_schemas`).
 fn extract_cte_join_condition_from_filter(
     filter_expr: &RenderExpr,
     cte_alias: &str,
@@ -6589,6 +6590,7 @@ fn clear_stale_joins_for_cte_aliases(
 /// Expand TableAlias expressions in a LogicalPlan's Projection/Selection
 /// This is needed when the final SELECT has `RETURN a` where `a` is from a CTE
 /// The to_render_plan() method doesn't know about CTEs, so we expand here first.
+#[allow(clippy::only_used_in_recursion)] // cte_schemas / cte_references / schema threaded through recursion
 fn expand_table_aliases_in_plan(
     plan: LogicalPlan,
     cte_schemas: &crate::render_plan::CteSchemas,

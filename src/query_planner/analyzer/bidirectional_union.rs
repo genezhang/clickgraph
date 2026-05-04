@@ -42,6 +42,7 @@ impl AnalyzerPass for BidirectionalUnion {
     }
 }
 
+#[allow(clippy::only_used_in_recursion)] // plan_ctx threaded for analyzer-pass API symmetry
 fn transform_bidirectional(
     plan: &Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,

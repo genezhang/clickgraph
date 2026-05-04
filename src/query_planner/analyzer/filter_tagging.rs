@@ -2104,6 +2104,7 @@ impl FilterTagging {
 
     /// Find a property mapping from a specific edge's ViewScan
     /// This is used for multi-hop denormalized patterns where we know which edge owns the node
+    #[allow(clippy::only_used_in_recursion)] // is_from_node threaded for recursive symmetry
     fn find_property_in_viewscan_with_edge(
         plan: &LogicalPlan,
         alias: &str,

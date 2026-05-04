@@ -48,6 +48,7 @@ pub struct CleanupViewScanFilters;
 
 impl CleanupViewScanFilters {
     /// Recursively optimize, tracking whether we're inside a GraphRel context
+    #[allow(clippy::only_used_in_recursion)] // plan_ctx threaded for optimizer-pass API symmetry
     fn optimize_with_context(
         &self,
         logical_plan: Arc<LogicalPlan>,
