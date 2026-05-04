@@ -2862,8 +2862,15 @@ impl VariableLengthCteStrategy {
             return strategy.generate_sql(context, properties, filters);
         }
 
-        // Build the generator based on pattern type (Traditional/FK-Edge schemas).
-        // The fully-denormalized case returned above via DenormalizedCteStrategy.
+        // Build the generator for everything except the fully-denormalized
+        // pattern (which returned above via `DenormalizedCteStrategy`).
+        // Three remaining cases:
+        //   * mixed access (one endpoint denormalized, the other not)
+        //     → `new_mixed`
+        //   * traditional / FK-edge / polymorphic edge schemas
+        //     → `new_with_fk_edge` (the polymorphic-capable constructor —
+        //       `polymorphic_info` is extracted in `Self::new` and threaded
+        //       in via the generator's polymorphic fields below)
         let mut generator = if self.start_is_denormalized != self.end_is_denormalized {
             // Mixed access pattern
             VariableLengthCteGenerator::new_mixed(
