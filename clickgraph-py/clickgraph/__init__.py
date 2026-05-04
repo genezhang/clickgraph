@@ -175,6 +175,17 @@ class QueryResult:
             self._compiling_time = 0.0
             self._execution_time = 0.0
             self._column_data_types = []
+        # Phase 5d write+RETURN side-channel: populated only when the
+        # originating Cypher combined a write clause with a RETURN
+        # clause; `None` for pure reads and pure writes (whose counters
+        # are surfaced as a synthetic 4-column row payload). Wrapped in
+        # try/except so the wrapper keeps working when the auto-
+        # generated `_ffi.py` predates the side-channel addition; the
+        # warning above already nags about that case.
+        try:
+            self._write_counters = ffi_result.get_write_counters()
+        except AttributeError:
+            self._write_counters = None
 
     @property
     def column_names(self) -> list[str]:
@@ -200,6 +211,21 @@ class QueryResult:
     def column_data_types(self) -> list[str]:
         """Inferred column data types (e.g., ``["String", "Int64", "Date"]``)."""
         return list(self._column_data_types)
+
+    @property
+    def write_counters(self) -> dict[str, int] | None:
+        """Side-effect counters from a write+RETURN query (Phase 5d).
+
+        Returns a dict with keys ``nodes_created`` / ``properties_set`` /
+        ``nodes_deleted`` / ``relationships_deleted`` only when the
+        originating Cypher combined a write clause (CREATE / SET /
+        DELETE / REMOVE) with a RETURN clause — the row payload then
+        carries the read-pipeline output and these counters reflect
+        the write portion. Pure read queries and pure-write queries
+        (which surface counters as a synthetic 4-column row) return
+        ``None``.
+        """
+        return None if self._write_counters is None else dict(self._write_counters)
 
     def has_next(self) -> bool:
         """Return True if there are more rows (Kuzu-compatible cursor)."""

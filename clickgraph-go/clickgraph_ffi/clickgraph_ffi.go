@@ -1,3 +1,4 @@
+
 package clickgraph_ffi
 
 // #include <clickgraph_ffi.h>
@@ -5,14 +6,16 @@ import "C"
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"io"
+	"unsafe"
+	"encoding/binary"
 	"math"
 	"runtime"
 	"sync/atomic"
-	"unsafe"
 )
+
+
 
 // This is needed, because as of go 1.24
 // type RustBuffer C.RustBuffer cannot have methods,
@@ -39,25 +42,25 @@ type ExternalCRustBuffer interface {
 }
 
 func RustBufferFromC(b C.RustBuffer) ExternalCRustBuffer {
-	return GoRustBuffer{
+	return GoRustBuffer {
 		inner: b,
 	}
 }
 
 func CFromRustBuffer(b ExternalCRustBuffer) C.RustBuffer {
-	return C.RustBuffer{
+	return C.RustBuffer {
 		capacity: C.uint64_t(b.Capacity()),
-		len:      C.uint64_t(b.Len()),
-		data:     (*C.uchar)(b.Data()),
+		len: C.uint64_t(b.Len()),
+		data: (*C.uchar)(b.Data()),
 	}
 }
 
 func RustBufferFromExternal(b ExternalCRustBuffer) GoRustBuffer {
-	return GoRustBuffer{
-		inner: C.RustBuffer{
+	return GoRustBuffer {
+		inner: C.RustBuffer {
 			capacity: C.uint64_t(b.Capacity()),
-			len:      C.uint64_t(b.Len()),
-			data:     (*C.uchar)(b.Data()),
+			len: C.uint64_t(b.Len()),
+			data: (*C.uchar)(b.Data()),
 		},
 	}
 }
@@ -80,7 +83,7 @@ func (cb GoRustBuffer) AsReader() *bytes.Reader {
 }
 
 func (cb GoRustBuffer) Free() {
-	rustCall(func(status *C.RustCallStatus) bool {
+	rustCall(func( status *C.RustCallStatus) bool {
 		C.ffi_clickgraph_ffi_rustbuffer_free(cb.inner, status)
 		return false
 	})
@@ -89,6 +92,7 @@ func (cb GoRustBuffer) Free() {
 func (cb GoRustBuffer) ToGoBytes() []byte {
 	return C.GoBytes(unsafe.Pointer(cb.inner.data), C.int(cb.inner.len))
 }
+
 
 func stringToRustBuffer(str string) C.RustBuffer {
 	return bytesToRustBuffer([]byte(str))
@@ -100,15 +104,16 @@ func bytesToRustBuffer(b []byte) C.RustBuffer {
 	}
 	// We can pass the pointer along here, as it is pinned
 	// for the duration of this call
-	foreign := C.ForeignBytes{
-		len:  C.int(len(b)),
+	foreign := C.ForeignBytes {
+		len: C.int(len(b)),
 		data: (*C.uchar)(unsafe.Pointer(&b[0])),
 	}
-
-	return rustCall(func(status *C.RustCallStatus) C.RustBuffer {
+	
+	return rustCall(func( status *C.RustCallStatus) C.RustBuffer {
 		return C.ffi_clickgraph_ffi_rustbuffer_from_bytes(foreign, status)
 	})
 }
+
 
 type BufLifter[GoType any] interface {
 	Lift(value RustBufferI) GoType
@@ -151,6 +156,8 @@ func LiftFromRustBuffer[GoType any](bufReader BufReader[GoType], rbuf RustBuffer
 	return item
 }
 
+
+
 func rustCallWithError[E any, U any](converter BufReader[*E], callback func(*C.RustCallStatus) U) (U, *E) {
 	var status C.RustCallStatus
 	returnValue := callback(&status)
@@ -163,13 +170,13 @@ func checkCallStatus[E any](converter BufReader[*E], status C.RustCallStatus) *E
 	case 0:
 		return nil
 	case 1:
-		return LiftFromRustBuffer(converter, GoRustBuffer{inner: status.errorBuf})
+		return LiftFromRustBuffer(converter, GoRustBuffer { inner: status.errorBuf })
 	case 2:
 		// when the rust code sees a panic, it tries to construct a rustBuffer
 		// with the message.  but if that code panics, then it just sends back
 		// an empty buffer.
 		if status.errorBuf.len > 0 {
-			panic(fmt.Errorf("%s", FfiConverterStringINSTANCE.Lift(GoRustBuffer{inner: status.errorBuf})))
+			panic(fmt.Errorf("%s", FfiConverterStringINSTANCE.Lift(GoRustBuffer { inner: status.errorBuf })))
 		} else {
 			panic(fmt.Errorf("Rust panicked while handling Rust panic"))
 		}
@@ -189,7 +196,7 @@ func checkCallStatusUnknown(status C.RustCallStatus) error {
 		// with the message.  but if that code panics, then it just sends back
 		// an empty buffer.
 		if status.errorBuf.len > 0 {
-			panic(fmt.Errorf("%s", FfiConverterStringINSTANCE.Lift(GoRustBuffer{
+			panic(fmt.Errorf("%s", FfiConverterStringINSTANCE.Lift(GoRustBuffer {
 				inner: status.errorBuf,
 			})))
 		} else {
@@ -211,6 +218,7 @@ func rustCall[U any](callback func(*C.RustCallStatus) U) U {
 type NativeError interface {
 	AsError() error
 }
+
 
 func writeInt8(writer io.Writer, value int8) {
 	if err := binary.Write(writer, binary.BigEndian, value); err != nil {
@@ -271,6 +279,7 @@ func writeFloat64(writer io.Writer, value float64) {
 		panic(err)
 	}
 }
+
 
 func readInt8(reader io.Reader) int8 {
 	var result int8
@@ -353,9 +362,10 @@ func readFloat64(reader io.Reader) float64 {
 }
 
 func init() {
-
-	uniffiCheckChecksums()
+        
+        uniffiCheckChecksums()
 }
+
 
 func uniffiCheckChecksums() {
 	// Get the bindings contract version from our ComponentInterface
@@ -369,303 +379,395 @@ func uniffiCheckChecksums() {
 		panic("clickgraph_ffi: UniFFI contract version mismatch")
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_connection_create_edge()
-		})
-		if checksum != 21385 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_create_edge: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_create_edge()
+	})
+	if checksum != 21385 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_create_edge: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_connection_create_edges()
-		})
-		if checksum != 50594 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_create_edges: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_create_edges()
+	})
+	if checksum != 50594 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_create_edges: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_connection_create_node()
-		})
-		if checksum != 20098 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_create_node: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_create_node()
+	})
+	if checksum != 20098 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_create_node: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_connection_create_nodes()
-		})
-		if checksum != 32025 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_create_nodes: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_create_nodes()
+	})
+	if checksum != 32025 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_create_nodes: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_connection_delete_edges()
-		})
-		if checksum != 52763 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_delete_edges: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_delete_edges()
+	})
+	if checksum != 52763 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_delete_edges: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_connection_delete_nodes()
-		})
-		if checksum != 9764 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_delete_nodes: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_delete_nodes()
+	})
+	if checksum != 9764 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_delete_nodes: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_connection_execute_sql()
-		})
-		if checksum != 25632 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_execute_sql: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_execute_sql()
+	})
+	if checksum != 25632 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_execute_sql: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_connection_export()
-		})
-		if checksum != 2862 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_export: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_export()
+	})
+	if checksum != 2862 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_export: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_connection_export_to_sql()
-		})
-		if checksum != 32040 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_export_to_sql: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_export_to_sql()
+	})
+	if checksum != 32040 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_export_to_sql: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_connection_import_json()
-		})
-		if checksum != 33520 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_import_json: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_get_query_timeout()
+	})
+	if checksum != 28113 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_get_query_timeout: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_connection_import_json_file()
-		})
-		if checksum != 47788 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_import_json_file: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_import_csv_file()
+	})
+	if checksum != 21411 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_import_csv_file: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_connection_query()
-		})
-		if checksum != 57594 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_query: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_import_file()
+	})
+	if checksum != 7469 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_import_file: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_connection_query_graph()
-		})
-		if checksum != 10722 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_query_graph: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_import_json()
+	})
+	if checksum != 33520 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_import_json: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_connection_query_remote()
-		})
-		if checksum != 34372 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_query_remote: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_import_json_file()
+	})
+	if checksum != 47788 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_import_json_file: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_connection_query_remote_graph()
-		})
-		if checksum != 5753 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_query_remote_graph: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_import_parquet_file()
+	})
+	if checksum != 9562 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_import_parquet_file: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_connection_query_to_sql()
-		})
-		if checksum != 49541 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_query_to_sql: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_query()
+	})
+	if checksum != 57594 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_query: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_connection_store_subgraph()
-		})
-		if checksum != 10117 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_store_subgraph: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_query_graph()
+	})
+	if checksum != 10722 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_query_graph: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_connection_upsert_edge()
-		})
-		if checksum != 37273 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_upsert_edge: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_query_remote()
+	})
+	if checksum != 34372 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_query_remote: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_connection_upsert_node()
-		})
-		if checksum != 57089 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_upsert_node: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_query_remote_graph()
+	})
+	if checksum != 5753 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_query_remote_graph: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_database_connect()
-		})
-		if checksum != 3694 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_database_connect: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_query_to_sql()
+	})
+	if checksum != 49541 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_query_to_sql: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_graphresult_edge_count()
-		})
-		if checksum != 18762 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_graphresult_edge_count: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_set_query_timeout()
+	})
+	if checksum != 32027 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_set_query_timeout: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_graphresult_edges()
-		})
-		if checksum != 2052 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_graphresult_edges: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_store_subgraph()
+	})
+	if checksum != 10117 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_store_subgraph: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_graphresult_node_count()
-		})
-		if checksum != 64698 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_graphresult_node_count: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_upsert_edge()
+	})
+	if checksum != 37273 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_upsert_edge: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_graphresult_nodes()
-		})
-		if checksum != 9609 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_graphresult_nodes: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_connection_upsert_node()
+	})
+	if checksum != 57089 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_connection_upsert_node: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_queryresult_column_names()
-		})
-		if checksum != 20724 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_queryresult_column_names: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_database_connect()
+	})
+	if checksum != 3694 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_database_connect: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_queryresult_get_all_rows()
-		})
-		if checksum != 39210 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_queryresult_get_all_rows: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_graphresult_edge_count()
+	})
+	if checksum != 18762 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_graphresult_edge_count: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_queryresult_get_next()
-		})
-		if checksum != 45662 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_queryresult_get_next: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_graphresult_edges()
+	})
+	if checksum != 2052 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_graphresult_edges: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_queryresult_has_next()
-		})
-		if checksum != 35692 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_queryresult_has_next: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_graphresult_node_count()
+	})
+	if checksum != 64698 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_graphresult_node_count: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_queryresult_num_rows()
-		})
-		if checksum != 51536 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_queryresult_num_rows: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_graphresult_nodes()
+	})
+	if checksum != 9609 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_graphresult_nodes: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_method_queryresult_reset()
-		})
-		if checksum != 31967 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_queryresult_reset: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_queryresult_column_names()
+	})
+	if checksum != 20724 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_queryresult_column_names: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_constructor_database_open()
-		})
-		if checksum != 41458 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_constructor_database_open: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_queryresult_get_all_rows()
+	})
+	if checksum != 39210 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_queryresult_get_all_rows: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_constructor_database_open_sql_only()
-		})
-		if checksum != 21564 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_constructor_database_open_sql_only: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_queryresult_get_column_data_types()
+	})
+	if checksum != 63155 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_queryresult_get_column_data_types: UniFFI API checksum mismatch")
+	}
 	}
 	{
-		checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
-			return C.uniffi_clickgraph_ffi_checksum_constructor_database_open_with_config()
-		})
-		if checksum != 8053 {
-			// If this happens try cleaning and rebuilding your project
-			panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_constructor_database_open_with_config: UniFFI API checksum mismatch")
-		}
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_queryresult_get_compiling_time()
+	})
+	if checksum != 43673 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_queryresult_get_compiling_time: UniFFI API checksum mismatch")
+	}
+	}
+	{
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_queryresult_get_execution_time()
+	})
+	if checksum != 21561 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_queryresult_get_execution_time: UniFFI API checksum mismatch")
+	}
+	}
+	{
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_queryresult_get_next()
+	})
+	if checksum != 45662 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_queryresult_get_next: UniFFI API checksum mismatch")
+	}
+	}
+	{
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_queryresult_get_write_counters()
+	})
+	if checksum != 40280 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_queryresult_get_write_counters: UniFFI API checksum mismatch")
+	}
+	}
+	{
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_queryresult_has_next()
+	})
+	if checksum != 35692 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_queryresult_has_next: UniFFI API checksum mismatch")
+	}
+	}
+	{
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_queryresult_num_rows()
+	})
+	if checksum != 51536 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_queryresult_num_rows: UniFFI API checksum mismatch")
+	}
+	}
+	{
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_method_queryresult_reset()
+	})
+	if checksum != 31967 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_method_queryresult_reset: UniFFI API checksum mismatch")
+	}
+	}
+	{
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_constructor_database_open()
+	})
+	if checksum != 41458 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_constructor_database_open: UniFFI API checksum mismatch")
+	}
+	}
+	{
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_constructor_database_open_in_memory()
+	})
+	if checksum != 1488 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_constructor_database_open_in_memory: UniFFI API checksum mismatch")
+	}
+	}
+	{
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_constructor_database_open_sql_only()
+	})
+	if checksum != 21564 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_constructor_database_open_sql_only: UniFFI API checksum mismatch")
+	}
+	}
+	{
+	checksum := rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint16_t {
+		return C.uniffi_clickgraph_ffi_checksum_constructor_database_open_with_config()
+	})
+	if checksum != 8053 {
+		// If this happens try cleaning and rebuilding your project
+		panic("clickgraph_ffi: uniffi_clickgraph_ffi_checksum_constructor_database_open_with_config: UniFFI API checksum mismatch")
+	}
 	}
 }
+
+
 
 type FfiConverterUint32 struct{}
 
@@ -687,7 +789,7 @@ func (FfiConverterUint32) Read(reader io.Reader) uint32 {
 	return readUint32(reader)
 }
 
-type FfiDestroyerUint32 struct{}
+type FfiDestroyerUint32 struct {}
 
 func (FfiDestroyerUint32) Destroy(_ uint32) {}
 
@@ -711,7 +813,7 @@ func (FfiConverterUint64) Read(reader io.Reader) uint64 {
 	return readUint64(reader)
 }
 
-type FfiDestroyerUint64 struct{}
+type FfiDestroyerUint64 struct {}
 
 func (FfiDestroyerUint64) Destroy(_ uint64) {}
 
@@ -735,7 +837,7 @@ func (FfiConverterInt64) Read(reader io.Reader) int64 {
 	return readInt64(reader)
 }
 
-type FfiDestroyerInt64 struct{}
+type FfiDestroyerInt64 struct {}
 
 func (FfiDestroyerInt64) Destroy(_ int64) {}
 
@@ -759,7 +861,7 @@ func (FfiConverterFloat64) Read(reader io.Reader) float64 {
 	return readFloat64(reader)
 }
 
-type FfiDestroyerFloat64 struct{}
+type FfiDestroyerFloat64 struct {}
 
 func (FfiDestroyerFloat64) Destroy(_ float64) {}
 
@@ -790,7 +892,7 @@ func (FfiConverterBool) Read(reader io.Reader) bool {
 	return readInt8(reader) != 0
 }
 
-type FfiDestroyerBool struct{}
+type FfiDestroyerBool struct {}
 
 func (FfiDestroyerBool) Destroy(_ bool) {}
 
@@ -844,34 +946,35 @@ func (FfiConverterString) Write(writer io.Writer, value string) {
 	}
 }
 
-type FfiDestroyerString struct{}
+type FfiDestroyerString struct {}
 
 func (FfiDestroyerString) Destroy(_ string) {}
+
 
 // Below is an implementation of synchronization requirements outlined in the link.
 // https://github.com/mozilla/uniffi-rs/blob/0dc031132d9493ca812c3af6e7dd60ad2ea95bf0/uniffi_bindgen/src/bindings/kotlin/templates/ObjectRuntime.kt#L31
 
 type FfiObject struct {
-	pointer       unsafe.Pointer
-	callCounter   atomic.Int64
+	pointer unsafe.Pointer
+	callCounter atomic.Int64
 	cloneFunction func(unsafe.Pointer, *C.RustCallStatus) unsafe.Pointer
-	freeFunction  func(unsafe.Pointer, *C.RustCallStatus)
-	destroyed     atomic.Bool
+	freeFunction func(unsafe.Pointer, *C.RustCallStatus)
+	destroyed atomic.Bool
 }
 
 func newFfiObject(
-	pointer unsafe.Pointer,
-	cloneFunction func(unsafe.Pointer, *C.RustCallStatus) unsafe.Pointer,
+	pointer unsafe.Pointer, 
+	cloneFunction func(unsafe.Pointer, *C.RustCallStatus) unsafe.Pointer, 
 	freeFunction func(unsafe.Pointer, *C.RustCallStatus),
 ) FfiObject {
-	return FfiObject{
-		pointer:       pointer,
-		cloneFunction: cloneFunction,
-		freeFunction:  freeFunction,
+	return FfiObject {
+		pointer: pointer,
+		cloneFunction: cloneFunction, 
+		freeFunction: freeFunction,
 	}
 }
 
-func (ffiObject *FfiObject) incrementPointer(debugName string) unsafe.Pointer {
+func (ffiObject *FfiObject)incrementPointer(debugName string) unsafe.Pointer {
 	for {
 		counter := ffiObject.callCounter.Load()
 		if counter <= -1 {
@@ -880,7 +983,7 @@ func (ffiObject *FfiObject) incrementPointer(debugName string) unsafe.Pointer {
 		if counter == math.MaxInt64 {
 			panic(fmt.Errorf("%v object call counter would overflow", debugName))
 		}
-		if ffiObject.callCounter.CompareAndSwap(counter, counter+1) {
+		if ffiObject.callCounter.CompareAndSwap(counter, counter + 1) {
 			break
 		}
 	}
@@ -890,13 +993,13 @@ func (ffiObject *FfiObject) incrementPointer(debugName string) unsafe.Pointer {
 	})
 }
 
-func (ffiObject *FfiObject) decrementPointer() {
+func (ffiObject *FfiObject)decrementPointer() {
 	if ffiObject.callCounter.Add(-1) == -1 {
 		ffiObject.freeRustArcPtr()
 	}
 }
 
-func (ffiObject *FfiObject) destroy() {
+func (ffiObject *FfiObject)destroy() {
 	if ffiObject.destroyed.CompareAndSwap(false, true) {
 		if ffiObject.callCounter.Add(-1) == -1 {
 			ffiObject.freeRustArcPtr()
@@ -904,13 +1007,12 @@ func (ffiObject *FfiObject) destroy() {
 	}
 }
 
-func (ffiObject *FfiObject) freeRustArcPtr() {
+func (ffiObject *FfiObject)freeRustArcPtr() {
 	rustCall(func(status *C.RustCallStatus) int32 {
 		ffiObject.freeFunction(ffiObject.pointer, status)
 		return 0
 	})
 }
-
 type ConnectionInterface interface {
 	// Create an edge between two nodes.
 	CreateEdge(edgeType string, fromId string, toId string, properties map[string]Value) error
@@ -940,10 +1042,20 @@ type ConnectionInterface interface {
 	Export(cypher string, outputPath string, options ExportOptions) error
 	// Generate the export SQL without executing it (for debugging).
 	ExportToSql(cypher string, outputPath string, options ExportOptions) (string, error)
+	// Get the current query timeout in milliseconds. 0 = no timeout.
+	GetQueryTimeout() uint64
+	// Import nodes from a CSV file (first row must be a header).
+	ImportCsvFile(label string, filePath string) error
+	// Import nodes from a file, auto-detecting format from the extension.
+	//
+	// Supported: `.parquet`, `.csv`, `.tsv`, `.json`, `.ndjson`, `.jsonl`.
+	ImportFile(label string, filePath string) error
 	// Import nodes from inline newline-delimited JSON (JSONEachRow format).
 	ImportJson(label string, jsonLines string) error
 	// Import nodes from a JSON file (JSONEachRow format).
 	ImportJsonFile(label string, filePath string) error
+	// Import nodes from a Parquet file.
+	ImportParquetFile(label string, filePath string) error
 	// Execute a Cypher query and return a QueryResult.
 	Query(cypher string) (*QueryResult, error)
 	// Execute a Cypher query locally and return a structured graph result.
@@ -958,6 +1070,10 @@ type ConnectionInterface interface {
 	QueryRemoteGraph(cypher string) (*GraphResult, error)
 	// Translate a Cypher query to ClickHouse SQL without executing it.
 	QueryToSql(cypher string) (string, error)
+	// Set the query timeout in milliseconds. 0 = no timeout (default).
+	//
+	// Persists across calls on this connection.
+	SetQueryTimeout(timeoutMs uint64) 
 	// Store a `GraphResult` into local writable tables.
 	//
 	// Decomposes the graph into nodes and edges, then batch-inserts each group.
@@ -973,28 +1089,31 @@ type Connection struct {
 	ffiObject FfiObject
 }
 
+
+
+
 // Create an edge between two nodes.
 func (_self *Connection) CreateEdge(edgeType string, fromId string, toId string, properties map[string]Value) error {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
 	defer _self.ffiObject.decrementPointer()
-	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) bool {
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) bool {
 		C.uniffi_clickgraph_ffi_fn_method_connection_create_edge(
-			_pointer, FfiConverterStringINSTANCE.Lower(edgeType), FfiConverterStringINSTANCE.Lower(fromId), FfiConverterStringINSTANCE.Lower(toId), FfiConverterMapStringValueINSTANCE.Lower(properties), _uniffiStatus)
+		_pointer,FfiConverterStringINSTANCE.Lower(edgeType), FfiConverterStringINSTANCE.Lower(fromId), FfiConverterStringINSTANCE.Lower(toId), FfiConverterMapStringValueINSTANCE.Lower(properties),_uniffiStatus)
 		return false
 	})
-	return _uniffiErr.AsError()
+		return _uniffiErr.AsError()
 }
 
 // Create multiple edges in a single batch INSERT.
 func (_self *Connection) CreateEdges(edgeType string, batch []EdgeInput) error {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
 	defer _self.ffiObject.decrementPointer()
-	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) bool {
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) bool {
 		C.uniffi_clickgraph_ffi_fn_method_connection_create_edges(
-			_pointer, FfiConverterStringINSTANCE.Lower(edgeType), FfiConverterSequenceEdgeInputINSTANCE.Lower(batch), _uniffiStatus)
+		_pointer,FfiConverterStringINSTANCE.Lower(edgeType), FfiConverterSequenceEdgeInputINSTANCE.Lower(batch),_uniffiStatus)
 		return false
 	})
-	return _uniffiErr.AsError()
+		return _uniffiErr.AsError()
 }
 
 // Create a node with the given label and properties.
@@ -1003,18 +1122,18 @@ func (_self *Connection) CreateEdges(edgeType string, batch []EdgeInput) error {
 func (_self *Connection) CreateNode(label string, properties map[string]Value) (string, error) {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
 	defer _self.ffiObject.decrementPointer()
-	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) RustBufferI {
-		return GoRustBuffer{
-			inner: C.uniffi_clickgraph_ffi_fn_method_connection_create_node(
-				_pointer, FfiConverterStringINSTANCE.Lower(label), FfiConverterMapStringValueINSTANCE.Lower(properties), _uniffiStatus),
-		}
-	})
-	if _uniffiErr != nil {
-		var _uniffiDefaultValue string
-		return _uniffiDefaultValue, _uniffiErr
-	} else {
-		return FfiConverterStringINSTANCE.Lift(_uniffiRV), nil
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer {
+		inner: C.uniffi_clickgraph_ffi_fn_method_connection_create_node(
+		_pointer,FfiConverterStringINSTANCE.Lower(label), FfiConverterMapStringValueINSTANCE.Lower(properties),_uniffiStatus),
 	}
+	})
+		if _uniffiErr != nil {
+			var _uniffiDefaultValue string
+			return _uniffiDefaultValue, _uniffiErr
+		} else {
+			return FfiConverterStringINSTANCE.Lift(_uniffiRV), nil
+		}
 }
 
 // Create multiple nodes in a single batch INSERT.
@@ -1023,42 +1142,42 @@ func (_self *Connection) CreateNode(label string, properties map[string]Value) (
 func (_self *Connection) CreateNodes(label string, batch []map[string]Value) ([]string, error) {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
 	defer _self.ffiObject.decrementPointer()
-	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) RustBufferI {
-		return GoRustBuffer{
-			inner: C.uniffi_clickgraph_ffi_fn_method_connection_create_nodes(
-				_pointer, FfiConverterStringINSTANCE.Lower(label), FfiConverterSequenceMapStringValueINSTANCE.Lower(batch), _uniffiStatus),
-		}
-	})
-	if _uniffiErr != nil {
-		var _uniffiDefaultValue []string
-		return _uniffiDefaultValue, _uniffiErr
-	} else {
-		return FfiConverterSequenceStringINSTANCE.Lift(_uniffiRV), nil
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer {
+		inner: C.uniffi_clickgraph_ffi_fn_method_connection_create_nodes(
+		_pointer,FfiConverterStringINSTANCE.Lower(label), FfiConverterSequenceMapStringValueINSTANCE.Lower(batch),_uniffiStatus),
 	}
+	})
+		if _uniffiErr != nil {
+			var _uniffiDefaultValue []string
+			return _uniffiDefaultValue, _uniffiErr
+		} else {
+			return FfiConverterSequenceStringINSTANCE.Lift(_uniffiRV), nil
+		}
 }
 
 // Delete edges matching the given type and filter criteria.
 func (_self *Connection) DeleteEdges(edgeType string, filter map[string]Value) error {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
 	defer _self.ffiObject.decrementPointer()
-	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) bool {
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) bool {
 		C.uniffi_clickgraph_ffi_fn_method_connection_delete_edges(
-			_pointer, FfiConverterStringINSTANCE.Lower(edgeType), FfiConverterMapStringValueINSTANCE.Lower(filter), _uniffiStatus)
+		_pointer,FfiConverterStringINSTANCE.Lower(edgeType), FfiConverterMapStringValueINSTANCE.Lower(filter),_uniffiStatus)
 		return false
 	})
-	return _uniffiErr.AsError()
+		return _uniffiErr.AsError()
 }
 
 // Delete nodes matching the given label and filter criteria.
 func (_self *Connection) DeleteNodes(label string, filter map[string]Value) error {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
 	defer _self.ffiObject.decrementPointer()
-	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) bool {
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) bool {
 		C.uniffi_clickgraph_ffi_fn_method_connection_delete_nodes(
-			_pointer, FfiConverterStringINSTANCE.Lower(label), FfiConverterMapStringValueINSTANCE.Lower(filter), _uniffiStatus)
+		_pointer,FfiConverterStringINSTANCE.Lower(label), FfiConverterMapStringValueINSTANCE.Lower(filter),_uniffiStatus)
 		return false
 	})
-	return _uniffiErr.AsError()
+		return _uniffiErr.AsError()
 }
 
 // Execute a raw SQL statement (DDL, DML, or administrative command).
@@ -1068,12 +1187,12 @@ func (_self *Connection) DeleteNodes(label string, filter map[string]Value) erro
 func (_self *Connection) ExecuteSql(sql string) error {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
 	defer _self.ffiObject.decrementPointer()
-	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) bool {
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) bool {
 		C.uniffi_clickgraph_ffi_fn_method_connection_execute_sql(
-			_pointer, FfiConverterStringINSTANCE.Lower(sql), _uniffiStatus)
+		_pointer,FfiConverterStringINSTANCE.Lower(sql),_uniffiStatus)
 		return false
 	})
-	return _uniffiErr.AsError()
+		return _uniffiErr.AsError()
 }
 
 // Export Cypher query results directly to a file.
@@ -1083,86 +1202,134 @@ func (_self *Connection) ExecuteSql(sql string) error {
 func (_self *Connection) Export(cypher string, outputPath string, options ExportOptions) error {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
 	defer _self.ffiObject.decrementPointer()
-	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) bool {
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) bool {
 		C.uniffi_clickgraph_ffi_fn_method_connection_export(
-			_pointer, FfiConverterStringINSTANCE.Lower(cypher), FfiConverterStringINSTANCE.Lower(outputPath), FfiConverterExportOptionsINSTANCE.Lower(options), _uniffiStatus)
+		_pointer,FfiConverterStringINSTANCE.Lower(cypher), FfiConverterStringINSTANCE.Lower(outputPath), FfiConverterExportOptionsINSTANCE.Lower(options),_uniffiStatus)
 		return false
 	})
-	return _uniffiErr.AsError()
+		return _uniffiErr.AsError()
 }
 
 // Generate the export SQL without executing it (for debugging).
 func (_self *Connection) ExportToSql(cypher string, outputPath string, options ExportOptions) (string, error) {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
 	defer _self.ffiObject.decrementPointer()
-	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) RustBufferI {
-		return GoRustBuffer{
-			inner: C.uniffi_clickgraph_ffi_fn_method_connection_export_to_sql(
-				_pointer, FfiConverterStringINSTANCE.Lower(cypher), FfiConverterStringINSTANCE.Lower(outputPath), FfiConverterExportOptionsINSTANCE.Lower(options), _uniffiStatus),
-		}
-	})
-	if _uniffiErr != nil {
-		var _uniffiDefaultValue string
-		return _uniffiDefaultValue, _uniffiErr
-	} else {
-		return FfiConverterStringINSTANCE.Lift(_uniffiRV), nil
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer {
+		inner: C.uniffi_clickgraph_ffi_fn_method_connection_export_to_sql(
+		_pointer,FfiConverterStringINSTANCE.Lower(cypher), FfiConverterStringINSTANCE.Lower(outputPath), FfiConverterExportOptionsINSTANCE.Lower(options),_uniffiStatus),
 	}
+	})
+		if _uniffiErr != nil {
+			var _uniffiDefaultValue string
+			return _uniffiDefaultValue, _uniffiErr
+		} else {
+			return FfiConverterStringINSTANCE.Lift(_uniffiRV), nil
+		}
+}
+
+// Get the current query timeout in milliseconds. 0 = no timeout.
+func (_self *Connection) GetQueryTimeout() uint64 {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	return FfiConverterUint64INSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint64_t {
+		return C.uniffi_clickgraph_ffi_fn_method_connection_get_query_timeout(
+		_pointer,_uniffiStatus)
+	}))
+}
+
+// Import nodes from a CSV file (first row must be a header).
+func (_self *Connection) ImportCsvFile(label string, filePath string) error {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) bool {
+		C.uniffi_clickgraph_ffi_fn_method_connection_import_csv_file(
+		_pointer,FfiConverterStringINSTANCE.Lower(label), FfiConverterStringINSTANCE.Lower(filePath),_uniffiStatus)
+		return false
+	})
+		return _uniffiErr.AsError()
+}
+
+// Import nodes from a file, auto-detecting format from the extension.
+//
+// Supported: `.parquet`, `.csv`, `.tsv`, `.json`, `.ndjson`, `.jsonl`.
+func (_self *Connection) ImportFile(label string, filePath string) error {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) bool {
+		C.uniffi_clickgraph_ffi_fn_method_connection_import_file(
+		_pointer,FfiConverterStringINSTANCE.Lower(label), FfiConverterStringINSTANCE.Lower(filePath),_uniffiStatus)
+		return false
+	})
+		return _uniffiErr.AsError()
 }
 
 // Import nodes from inline newline-delimited JSON (JSONEachRow format).
 func (_self *Connection) ImportJson(label string, jsonLines string) error {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
 	defer _self.ffiObject.decrementPointer()
-	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) bool {
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) bool {
 		C.uniffi_clickgraph_ffi_fn_method_connection_import_json(
-			_pointer, FfiConverterStringINSTANCE.Lower(label), FfiConverterStringINSTANCE.Lower(jsonLines), _uniffiStatus)
+		_pointer,FfiConverterStringINSTANCE.Lower(label), FfiConverterStringINSTANCE.Lower(jsonLines),_uniffiStatus)
 		return false
 	})
-	return _uniffiErr.AsError()
+		return _uniffiErr.AsError()
 }
 
 // Import nodes from a JSON file (JSONEachRow format).
 func (_self *Connection) ImportJsonFile(label string, filePath string) error {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
 	defer _self.ffiObject.decrementPointer()
-	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) bool {
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) bool {
 		C.uniffi_clickgraph_ffi_fn_method_connection_import_json_file(
-			_pointer, FfiConverterStringINSTANCE.Lower(label), FfiConverterStringINSTANCE.Lower(filePath), _uniffiStatus)
+		_pointer,FfiConverterStringINSTANCE.Lower(label), FfiConverterStringINSTANCE.Lower(filePath),_uniffiStatus)
 		return false
 	})
-	return _uniffiErr.AsError()
+		return _uniffiErr.AsError()
+}
+
+// Import nodes from a Parquet file.
+func (_self *Connection) ImportParquetFile(label string, filePath string) error {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) bool {
+		C.uniffi_clickgraph_ffi_fn_method_connection_import_parquet_file(
+		_pointer,FfiConverterStringINSTANCE.Lower(label), FfiConverterStringINSTANCE.Lower(filePath),_uniffiStatus)
+		return false
+	})
+		return _uniffiErr.AsError()
 }
 
 // Execute a Cypher query and return a QueryResult.
 func (_self *Connection) Query(cypher string) (*QueryResult, error) {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
 	defer _self.ffiObject.decrementPointer()
-	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
 		return C.uniffi_clickgraph_ffi_fn_method_connection_query(
-			_pointer, FfiConverterStringINSTANCE.Lower(cypher), _uniffiStatus)
+		_pointer,FfiConverterStringINSTANCE.Lower(cypher),_uniffiStatus)
 	})
-	if _uniffiErr != nil {
-		var _uniffiDefaultValue *QueryResult
-		return _uniffiDefaultValue, _uniffiErr
-	} else {
-		return FfiConverterQueryResultINSTANCE.Lift(_uniffiRV), nil
-	}
+		if _uniffiErr != nil {
+			var _uniffiDefaultValue *QueryResult
+			return _uniffiDefaultValue, _uniffiErr
+		} else {
+			return FfiConverterQueryResultINSTANCE.Lift(_uniffiRV), nil
+		}
 }
 
 // Execute a Cypher query locally and return a structured graph result.
 func (_self *Connection) QueryGraph(cypher string) (*GraphResult, error) {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
 	defer _self.ffiObject.decrementPointer()
-	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
 		return C.uniffi_clickgraph_ffi_fn_method_connection_query_graph(
-			_pointer, FfiConverterStringINSTANCE.Lower(cypher), _uniffiStatus)
+		_pointer,FfiConverterStringINSTANCE.Lower(cypher),_uniffiStatus)
 	})
-	if _uniffiErr != nil {
-		var _uniffiDefaultValue *GraphResult
-		return _uniffiDefaultValue, _uniffiErr
-	} else {
-		return FfiConverterGraphResultINSTANCE.Lift(_uniffiRV), nil
-	}
+		if _uniffiErr != nil {
+			var _uniffiDefaultValue *GraphResult
+			return _uniffiDefaultValue, _uniffiErr
+		} else {
+			return FfiConverterGraphResultINSTANCE.Lift(_uniffiRV), nil
+		}
 }
 
 // Execute a Cypher query against the remote ClickHouse cluster.
@@ -1171,16 +1338,16 @@ func (_self *Connection) QueryGraph(cypher string) (*GraphResult, error) {
 func (_self *Connection) QueryRemote(cypher string) (*QueryResult, error) {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
 	defer _self.ffiObject.decrementPointer()
-	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
 		return C.uniffi_clickgraph_ffi_fn_method_connection_query_remote(
-			_pointer, FfiConverterStringINSTANCE.Lower(cypher), _uniffiStatus)
+		_pointer,FfiConverterStringINSTANCE.Lower(cypher),_uniffiStatus)
 	})
-	if _uniffiErr != nil {
-		var _uniffiDefaultValue *QueryResult
-		return _uniffiDefaultValue, _uniffiErr
-	} else {
-		return FfiConverterQueryResultINSTANCE.Lift(_uniffiRV), nil
-	}
+		if _uniffiErr != nil {
+			var _uniffiDefaultValue *QueryResult
+			return _uniffiDefaultValue, _uniffiErr
+		} else {
+			return FfiConverterQueryResultINSTANCE.Lift(_uniffiRV), nil
+		}
 }
 
 // Execute a Cypher query on the remote cluster and return a structured graph result.
@@ -1189,34 +1356,47 @@ func (_self *Connection) QueryRemote(cypher string) (*QueryResult, error) {
 func (_self *Connection) QueryRemoteGraph(cypher string) (*GraphResult, error) {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
 	defer _self.ffiObject.decrementPointer()
-	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
 		return C.uniffi_clickgraph_ffi_fn_method_connection_query_remote_graph(
-			_pointer, FfiConverterStringINSTANCE.Lower(cypher), _uniffiStatus)
+		_pointer,FfiConverterStringINSTANCE.Lower(cypher),_uniffiStatus)
 	})
-	if _uniffiErr != nil {
-		var _uniffiDefaultValue *GraphResult
-		return _uniffiDefaultValue, _uniffiErr
-	} else {
-		return FfiConverterGraphResultINSTANCE.Lift(_uniffiRV), nil
-	}
+		if _uniffiErr != nil {
+			var _uniffiDefaultValue *GraphResult
+			return _uniffiDefaultValue, _uniffiErr
+		} else {
+			return FfiConverterGraphResultINSTANCE.Lift(_uniffiRV), nil
+		}
 }
 
 // Translate a Cypher query to ClickHouse SQL without executing it.
 func (_self *Connection) QueryToSql(cypher string) (string, error) {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
 	defer _self.ffiObject.decrementPointer()
-	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) RustBufferI {
-		return GoRustBuffer{
-			inner: C.uniffi_clickgraph_ffi_fn_method_connection_query_to_sql(
-				_pointer, FfiConverterStringINSTANCE.Lower(cypher), _uniffiStatus),
-		}
-	})
-	if _uniffiErr != nil {
-		var _uniffiDefaultValue string
-		return _uniffiDefaultValue, _uniffiErr
-	} else {
-		return FfiConverterStringINSTANCE.Lift(_uniffiRV), nil
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer {
+		inner: C.uniffi_clickgraph_ffi_fn_method_connection_query_to_sql(
+		_pointer,FfiConverterStringINSTANCE.Lower(cypher),_uniffiStatus),
 	}
+	})
+		if _uniffiErr != nil {
+			var _uniffiDefaultValue string
+			return _uniffiDefaultValue, _uniffiErr
+		} else {
+			return FfiConverterStringINSTANCE.Lift(_uniffiRV), nil
+		}
+}
+
+// Set the query timeout in milliseconds. 0 = no timeout (default).
+//
+// Persists across calls on this connection.
+func (_self *Connection) SetQueryTimeout(timeoutMs uint64)  {
+	_pointer := _self.ffiObject.incrementPointer("*Connection")
+	defer _self.ffiObject.decrementPointer()
+	rustCall(func(_uniffiStatus *C.RustCallStatus) bool {
+		C.uniffi_clickgraph_ffi_fn_method_connection_set_query_timeout(
+		_pointer,FfiConverterUint64INSTANCE.Lower(timeoutMs),_uniffiStatus)
+		return false
+	})
 }
 
 // Store a `GraphResult` into local writable tables.
@@ -1225,30 +1405,30 @@ func (_self *Connection) QueryToSql(cypher string) (string, error) {
 func (_self *Connection) StoreSubgraph(graph *GraphResult) (StoreStats, error) {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
 	defer _self.ffiObject.decrementPointer()
-	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) RustBufferI {
-		return GoRustBuffer{
-			inner: C.uniffi_clickgraph_ffi_fn_method_connection_store_subgraph(
-				_pointer, FfiConverterGraphResultINSTANCE.Lower(graph), _uniffiStatus),
-		}
-	})
-	if _uniffiErr != nil {
-		var _uniffiDefaultValue StoreStats
-		return _uniffiDefaultValue, _uniffiErr
-	} else {
-		return FfiConverterStoreStatsINSTANCE.Lift(_uniffiRV), nil
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer {
+		inner: C.uniffi_clickgraph_ffi_fn_method_connection_store_subgraph(
+		_pointer,FfiConverterGraphResultINSTANCE.Lower(graph),_uniffiStatus),
 	}
+	})
+		if _uniffiErr != nil {
+			var _uniffiDefaultValue StoreStats
+			return _uniffiDefaultValue, _uniffiErr
+		} else {
+			return FfiConverterStoreStatsINSTANCE.Lift(_uniffiRV), nil
+		}
 }
 
 // Upsert an edge (INSERT with ReplacingMergeTree deduplication).
 func (_self *Connection) UpsertEdge(edgeType string, fromId string, toId string, properties map[string]Value) error {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
 	defer _self.ffiObject.decrementPointer()
-	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) bool {
+	_, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) bool {
 		C.uniffi_clickgraph_ffi_fn_method_connection_upsert_edge(
-			_pointer, FfiConverterStringINSTANCE.Lower(edgeType), FfiConverterStringINSTANCE.Lower(fromId), FfiConverterStringINSTANCE.Lower(toId), FfiConverterMapStringValueINSTANCE.Lower(properties), _uniffiStatus)
+		_pointer,FfiConverterStringINSTANCE.Lower(edgeType), FfiConverterStringINSTANCE.Lower(fromId), FfiConverterStringINSTANCE.Lower(toId), FfiConverterMapStringValueINSTANCE.Lower(properties),_uniffiStatus)
 		return false
 	})
-	return _uniffiErr.AsError()
+		return _uniffiErr.AsError()
 }
 
 // Upsert a node (INSERT with ReplacingMergeTree deduplication).
@@ -1257,30 +1437,31 @@ func (_self *Connection) UpsertEdge(edgeType string, fromId string, toId string,
 func (_self *Connection) UpsertNode(label string, properties map[string]Value) (string, error) {
 	_pointer := _self.ffiObject.incrementPointer("*Connection")
 	defer _self.ffiObject.decrementPointer()
-	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) RustBufferI {
-		return GoRustBuffer{
-			inner: C.uniffi_clickgraph_ffi_fn_method_connection_upsert_node(
-				_pointer, FfiConverterStringINSTANCE.Lower(label), FfiConverterMapStringValueINSTANCE.Lower(properties), _uniffiStatus),
-		}
-	})
-	if _uniffiErr != nil {
-		var _uniffiDefaultValue string
-		return _uniffiDefaultValue, _uniffiErr
-	} else {
-		return FfiConverterStringINSTANCE.Lift(_uniffiRV), nil
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer {
+		inner: C.uniffi_clickgraph_ffi_fn_method_connection_upsert_node(
+		_pointer,FfiConverterStringINSTANCE.Lower(label), FfiConverterMapStringValueINSTANCE.Lower(properties),_uniffiStatus),
 	}
+	})
+		if _uniffiErr != nil {
+			var _uniffiDefaultValue string
+			return _uniffiDefaultValue, _uniffiErr
+		} else {
+			return FfiConverterStringINSTANCE.Lift(_uniffiRV), nil
+		}
 }
 func (object *Connection) Destroy() {
 	runtime.SetFinalizer(object, nil)
 	object.ffiObject.destroy()
 }
 
-type FfiConverterConnection struct{}
+type FfiConverterConnection struct {}
 
 var FfiConverterConnectionINSTANCE = FfiConverterConnection{}
 
+
 func (c FfiConverterConnection) Lift(pointer unsafe.Pointer) *Connection {
-	result := &Connection{
+	result := &Connection {
 		newFfiObject(
 			pointer,
 			func(pointer unsafe.Pointer, status *C.RustCallStatus) unsafe.Pointer {
@@ -1306,18 +1487,21 @@ func (c FfiConverterConnection) Lower(value *Connection) unsafe.Pointer {
 	pointer := value.ffiObject.incrementPointer("*Connection")
 	defer value.ffiObject.decrementPointer()
 	return pointer
-
+	
 }
 
 func (c FfiConverterConnection) Write(writer io.Writer, value *Connection) {
 	writeUint64(writer, uint64(uintptr(c.Lower(value))))
 }
 
-type FfiDestroyerConnection struct{}
+type FfiDestroyerConnection struct {}
 
 func (_ FfiDestroyerConnection) Destroy(value *Connection) {
-	value.Destroy()
+		value.Destroy()
 }
+
+
+
 
 type DatabaseInterface interface {
 	// Create a connection to this database.
@@ -1327,17 +1511,31 @@ type Database struct {
 	ffiObject FfiObject
 }
 
+
 // Open a database from a YAML schema file with default configuration.
 func DatabaseOpen(schemaPath string) (*Database, error) {
-	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
-		return C.uniffi_clickgraph_ffi_fn_constructor_database_open(FfiConverterStringINSTANCE.Lower(schemaPath), _uniffiStatus)
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
+		return C.uniffi_clickgraph_ffi_fn_constructor_database_open(FfiConverterStringINSTANCE.Lower(schemaPath),_uniffiStatus)
 	})
-	if _uniffiErr != nil {
-		var _uniffiDefaultValue *Database
-		return _uniffiDefaultValue, _uniffiErr
-	} else {
-		return FfiConverterDatabaseINSTANCE.Lift(_uniffiRV), nil
-	}
+		if _uniffiErr != nil {
+			var _uniffiDefaultValue *Database
+			return _uniffiDefaultValue, _uniffiErr
+		} else {
+			return FfiConverterDatabaseINSTANCE.Lift(_uniffiRV), nil
+		}
+}
+
+// Open an in-memory database (auto-cleaned temp session directory).
+func DatabaseOpenInMemory(schemaPath string, config SystemConfig) (*Database, error) {
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
+		return C.uniffi_clickgraph_ffi_fn_constructor_database_open_in_memory(FfiConverterStringINSTANCE.Lower(schemaPath), FfiConverterSystemConfigINSTANCE.Lower(config),_uniffiStatus)
+	})
+		if _uniffiErr != nil {
+			var _uniffiDefaultValue *Database
+			return _uniffiDefaultValue, _uniffiErr
+		} else {
+			return FfiConverterDatabaseINSTANCE.Lift(_uniffiRV), nil
+		}
 }
 
 // Open a database in SQL-only mode (no chdb backend).
@@ -1346,56 +1544,59 @@ func DatabaseOpen(schemaPath string) (*Database, error) {
 // `export_to_sql()` for Cypher → SQL translation. Calling `query()` or
 // `export()` will return an error.
 func DatabaseOpenSqlOnly(schemaPath string) (*Database, error) {
-	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
-		return C.uniffi_clickgraph_ffi_fn_constructor_database_open_sql_only(FfiConverterStringINSTANCE.Lower(schemaPath), _uniffiStatus)
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
+		return C.uniffi_clickgraph_ffi_fn_constructor_database_open_sql_only(FfiConverterStringINSTANCE.Lower(schemaPath),_uniffiStatus)
 	})
-	if _uniffiErr != nil {
-		var _uniffiDefaultValue *Database
-		return _uniffiDefaultValue, _uniffiErr
-	} else {
-		return FfiConverterDatabaseINSTANCE.Lift(_uniffiRV), nil
-	}
+		if _uniffiErr != nil {
+			var _uniffiDefaultValue *Database
+			return _uniffiDefaultValue, _uniffiErr
+		} else {
+			return FfiConverterDatabaseINSTANCE.Lift(_uniffiRV), nil
+		}
 }
 
 // Open a database from a YAML schema file with custom configuration.
 func DatabaseOpenWithConfig(schemaPath string, config SystemConfig) (*Database, error) {
-	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
-		return C.uniffi_clickgraph_ffi_fn_constructor_database_open_with_config(FfiConverterStringINSTANCE.Lower(schemaPath), FfiConverterSystemConfigINSTANCE.Lower(config), _uniffiStatus)
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
+		return C.uniffi_clickgraph_ffi_fn_constructor_database_open_with_config(FfiConverterStringINSTANCE.Lower(schemaPath), FfiConverterSystemConfigINSTANCE.Lower(config),_uniffiStatus)
 	})
-	if _uniffiErr != nil {
-		var _uniffiDefaultValue *Database
-		return _uniffiDefaultValue, _uniffiErr
-	} else {
-		return FfiConverterDatabaseINSTANCE.Lift(_uniffiRV), nil
-	}
+		if _uniffiErr != nil {
+			var _uniffiDefaultValue *Database
+			return _uniffiDefaultValue, _uniffiErr
+		} else {
+			return FfiConverterDatabaseINSTANCE.Lift(_uniffiRV), nil
+		}
 }
+
+
 
 // Create a connection to this database.
 func (_self *Database) Connect() (*Connection, error) {
 	_pointer := _self.ffiObject.incrementPointer("*Database")
 	defer _self.ffiObject.decrementPointer()
-	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{}, func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
+	_uniffiRV, _uniffiErr := rustCallWithError[ClickGraphError](FfiConverterClickGraphError{},func(_uniffiStatus *C.RustCallStatus) unsafe.Pointer {
 		return C.uniffi_clickgraph_ffi_fn_method_database_connect(
-			_pointer, _uniffiStatus)
+		_pointer,_uniffiStatus)
 	})
-	if _uniffiErr != nil {
-		var _uniffiDefaultValue *Connection
-		return _uniffiDefaultValue, _uniffiErr
-	} else {
-		return FfiConverterConnectionINSTANCE.Lift(_uniffiRV), nil
-	}
+		if _uniffiErr != nil {
+			var _uniffiDefaultValue *Connection
+			return _uniffiDefaultValue, _uniffiErr
+		} else {
+			return FfiConverterConnectionINSTANCE.Lift(_uniffiRV), nil
+		}
 }
 func (object *Database) Destroy() {
 	runtime.SetFinalizer(object, nil)
 	object.ffiObject.destroy()
 }
 
-type FfiConverterDatabase struct{}
+type FfiConverterDatabase struct {}
 
 var FfiConverterDatabaseINSTANCE = FfiConverterDatabase{}
 
+
 func (c FfiConverterDatabase) Lift(pointer unsafe.Pointer) *Database {
-	result := &Database{
+	result := &Database {
 		newFfiObject(
 			pointer,
 			func(pointer unsafe.Pointer, status *C.RustCallStatus) unsafe.Pointer {
@@ -1421,18 +1622,21 @@ func (c FfiConverterDatabase) Lower(value *Database) unsafe.Pointer {
 	pointer := value.ffiObject.incrementPointer("*Database")
 	defer value.ffiObject.decrementPointer()
 	return pointer
-
+	
 }
 
 func (c FfiConverterDatabase) Write(writer io.Writer, value *Database) {
 	writeUint64(writer, uint64(uintptr(c.Lower(value))))
 }
 
-type FfiDestroyerDatabase struct{}
+type FfiDestroyerDatabase struct {}
 
 func (_ FfiDestroyerDatabase) Destroy(value *Database) {
-	value.Destroy()
+		value.Destroy()
 }
+
+
+
 
 type GraphResultInterface interface {
 	// Return the number of edges.
@@ -1448,13 +1652,16 @@ type GraphResult struct {
 	ffiObject FfiObject
 }
 
+
+
+
 // Return the number of edges.
 func (_self *GraphResult) EdgeCount() uint64 {
 	_pointer := _self.ffiObject.incrementPointer("*GraphResult")
 	defer _self.ffiObject.decrementPointer()
 	return FfiConverterUint64INSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint64_t {
 		return C.uniffi_clickgraph_ffi_fn_method_graphresult_edge_count(
-			_pointer, _uniffiStatus)
+		_pointer,_uniffiStatus)
 	}))
 }
 
@@ -1463,10 +1670,10 @@ func (_self *GraphResult) Edges() []GraphEdge {
 	_pointer := _self.ffiObject.incrementPointer("*GraphResult")
 	defer _self.ffiObject.decrementPointer()
 	return FfiConverterSequenceGraphEdgeINSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) RustBufferI {
-		return GoRustBuffer{
-			inner: C.uniffi_clickgraph_ffi_fn_method_graphresult_edges(
-				_pointer, _uniffiStatus),
-		}
+		return GoRustBuffer {
+		inner: C.uniffi_clickgraph_ffi_fn_method_graphresult_edges(
+		_pointer,_uniffiStatus),
+	}
 	}))
 }
 
@@ -1476,7 +1683,7 @@ func (_self *GraphResult) NodeCount() uint64 {
 	defer _self.ffiObject.decrementPointer()
 	return FfiConverterUint64INSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint64_t {
 		return C.uniffi_clickgraph_ffi_fn_method_graphresult_node_count(
-			_pointer, _uniffiStatus)
+		_pointer,_uniffiStatus)
 	}))
 }
 
@@ -1485,10 +1692,10 @@ func (_self *GraphResult) Nodes() []GraphNode {
 	_pointer := _self.ffiObject.incrementPointer("*GraphResult")
 	defer _self.ffiObject.decrementPointer()
 	return FfiConverterSequenceGraphNodeINSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) RustBufferI {
-		return GoRustBuffer{
-			inner: C.uniffi_clickgraph_ffi_fn_method_graphresult_nodes(
-				_pointer, _uniffiStatus),
-		}
+		return GoRustBuffer {
+		inner: C.uniffi_clickgraph_ffi_fn_method_graphresult_nodes(
+		_pointer,_uniffiStatus),
+	}
 	}))
 }
 func (object *GraphResult) Destroy() {
@@ -1496,12 +1703,13 @@ func (object *GraphResult) Destroy() {
 	object.ffiObject.destroy()
 }
 
-type FfiConverterGraphResult struct{}
+type FfiConverterGraphResult struct {}
 
 var FfiConverterGraphResultINSTANCE = FfiConverterGraphResult{}
 
+
 func (c FfiConverterGraphResult) Lift(pointer unsafe.Pointer) *GraphResult {
-	result := &GraphResult{
+	result := &GraphResult {
 		newFfiObject(
 			pointer,
 			func(pointer unsafe.Pointer, status *C.RustCallStatus) unsafe.Pointer {
@@ -1527,46 +1735,67 @@ func (c FfiConverterGraphResult) Lower(value *GraphResult) unsafe.Pointer {
 	pointer := value.ffiObject.incrementPointer("*GraphResult")
 	defer value.ffiObject.decrementPointer()
 	return pointer
-
+	
 }
 
 func (c FfiConverterGraphResult) Write(writer io.Writer, value *GraphResult) {
 	writeUint64(writer, uint64(uintptr(c.Lower(value))))
 }
 
-type FfiDestroyerGraphResult struct{}
+type FfiDestroyerGraphResult struct {}
 
 func (_ FfiDestroyerGraphResult) Destroy(value *GraphResult) {
-	value.Destroy()
+		value.Destroy()
 }
+
+
+
 
 type QueryResultInterface interface {
 	// Column names in result order.
 	ColumnNames() []string
 	// Return all rows at once as a list of Row records.
 	GetAllRows() []Row
+	// Infer column data types from the first row of results.
+	GetColumnDataTypes() []string
+	// Time spent translating Cypher to SQL (milliseconds).
+	GetCompilingTime() float64
+	// Time spent executing the SQL query (milliseconds).
+	GetExecutionTime() float64
 	// Return the next row (cursor-style). Returns None when exhausted.
 	GetNext() *Row
+	// Side-effect counters from a write+RETURN query (Phase 5d).
+	//
+	// Returns `Some` only when the originating Cypher contained both
+	// a write clause (CREATE / SET / DELETE / REMOVE) and a RETURN
+	// clause — the row payload then carries the read-pipeline output
+	// and these counters reflect the write portion. Pure read queries
+	// and pure-write queries (which surface counters as a synthetic
+	// 4-column row) return `None`.
+	GetWriteCounters() *map[string]int64
 	// Return true if the cursor has more rows.
 	HasNext() bool
 	// Total number of rows.
 	NumRows() uint64
 	// Reset the cursor to the beginning.
-	Reset()
+	Reset() 
 }
 type QueryResult struct {
 	ffiObject FfiObject
 }
+
+
+
 
 // Column names in result order.
 func (_self *QueryResult) ColumnNames() []string {
 	_pointer := _self.ffiObject.incrementPointer("*QueryResult")
 	defer _self.ffiObject.decrementPointer()
 	return FfiConverterSequenceStringINSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) RustBufferI {
-		return GoRustBuffer{
-			inner: C.uniffi_clickgraph_ffi_fn_method_queryresult_column_names(
-				_pointer, _uniffiStatus),
-		}
+		return GoRustBuffer {
+		inner: C.uniffi_clickgraph_ffi_fn_method_queryresult_column_names(
+		_pointer,_uniffiStatus),
+	}
 	}))
 }
 
@@ -1575,10 +1804,42 @@ func (_self *QueryResult) GetAllRows() []Row {
 	_pointer := _self.ffiObject.incrementPointer("*QueryResult")
 	defer _self.ffiObject.decrementPointer()
 	return FfiConverterSequenceRowINSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) RustBufferI {
-		return GoRustBuffer{
-			inner: C.uniffi_clickgraph_ffi_fn_method_queryresult_get_all_rows(
-				_pointer, _uniffiStatus),
-		}
+		return GoRustBuffer {
+		inner: C.uniffi_clickgraph_ffi_fn_method_queryresult_get_all_rows(
+		_pointer,_uniffiStatus),
+	}
+	}))
+}
+
+// Infer column data types from the first row of results.
+func (_self *QueryResult) GetColumnDataTypes() []string {
+	_pointer := _self.ffiObject.incrementPointer("*QueryResult")
+	defer _self.ffiObject.decrementPointer()
+	return FfiConverterSequenceStringINSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer {
+		inner: C.uniffi_clickgraph_ffi_fn_method_queryresult_get_column_data_types(
+		_pointer,_uniffiStatus),
+	}
+	}))
+}
+
+// Time spent translating Cypher to SQL (milliseconds).
+func (_self *QueryResult) GetCompilingTime() float64 {
+	_pointer := _self.ffiObject.incrementPointer("*QueryResult")
+	defer _self.ffiObject.decrementPointer()
+	return FfiConverterFloat64INSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) C.double {
+		return C.uniffi_clickgraph_ffi_fn_method_queryresult_get_compiling_time(
+		_pointer,_uniffiStatus)
+	}))
+}
+
+// Time spent executing the SQL query (milliseconds).
+func (_self *QueryResult) GetExecutionTime() float64 {
+	_pointer := _self.ffiObject.incrementPointer("*QueryResult")
+	defer _self.ffiObject.decrementPointer()
+	return FfiConverterFloat64INSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) C.double {
+		return C.uniffi_clickgraph_ffi_fn_method_queryresult_get_execution_time(
+		_pointer,_uniffiStatus)
 	}))
 }
 
@@ -1587,10 +1848,29 @@ func (_self *QueryResult) GetNext() *Row {
 	_pointer := _self.ffiObject.incrementPointer("*QueryResult")
 	defer _self.ffiObject.decrementPointer()
 	return FfiConverterOptionalRowINSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) RustBufferI {
-		return GoRustBuffer{
-			inner: C.uniffi_clickgraph_ffi_fn_method_queryresult_get_next(
-				_pointer, _uniffiStatus),
-		}
+		return GoRustBuffer {
+		inner: C.uniffi_clickgraph_ffi_fn_method_queryresult_get_next(
+		_pointer,_uniffiStatus),
+	}
+	}))
+}
+
+// Side-effect counters from a write+RETURN query (Phase 5d).
+//
+// Returns `Some` only when the originating Cypher contained both
+// a write clause (CREATE / SET / DELETE / REMOVE) and a RETURN
+// clause — the row payload then carries the read-pipeline output
+// and these counters reflect the write portion. Pure read queries
+// and pure-write queries (which surface counters as a synthetic
+// 4-column row) return `None`.
+func (_self *QueryResult) GetWriteCounters() *map[string]int64 {
+	_pointer := _self.ffiObject.incrementPointer("*QueryResult")
+	defer _self.ffiObject.decrementPointer()
+	return FfiConverterOptionalMapStringInt64INSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) RustBufferI {
+		return GoRustBuffer {
+		inner: C.uniffi_clickgraph_ffi_fn_method_queryresult_get_write_counters(
+		_pointer,_uniffiStatus),
+	}
 	}))
 }
 
@@ -1600,7 +1880,7 @@ func (_self *QueryResult) HasNext() bool {
 	defer _self.ffiObject.decrementPointer()
 	return FfiConverterBoolINSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) C.int8_t {
 		return C.uniffi_clickgraph_ffi_fn_method_queryresult_has_next(
-			_pointer, _uniffiStatus)
+		_pointer,_uniffiStatus)
 	}))
 }
 
@@ -1610,17 +1890,17 @@ func (_self *QueryResult) NumRows() uint64 {
 	defer _self.ffiObject.decrementPointer()
 	return FfiConverterUint64INSTANCE.Lift(rustCall(func(_uniffiStatus *C.RustCallStatus) C.uint64_t {
 		return C.uniffi_clickgraph_ffi_fn_method_queryresult_num_rows(
-			_pointer, _uniffiStatus)
+		_pointer,_uniffiStatus)
 	}))
 }
 
 // Reset the cursor to the beginning.
-func (_self *QueryResult) Reset() {
+func (_self *QueryResult) Reset()  {
 	_pointer := _self.ffiObject.incrementPointer("*QueryResult")
 	defer _self.ffiObject.decrementPointer()
 	rustCall(func(_uniffiStatus *C.RustCallStatus) bool {
 		C.uniffi_clickgraph_ffi_fn_method_queryresult_reset(
-			_pointer, _uniffiStatus)
+		_pointer,_uniffiStatus)
 		return false
 	})
 }
@@ -1629,12 +1909,13 @@ func (object *QueryResult) Destroy() {
 	object.ffiObject.destroy()
 }
 
-type FfiConverterQueryResult struct{}
+type FfiConverterQueryResult struct {}
 
 var FfiConverterQueryResultINSTANCE = FfiConverterQueryResult{}
 
+
 func (c FfiConverterQueryResult) Lift(pointer unsafe.Pointer) *QueryResult {
-	result := &QueryResult{
+	result := &QueryResult {
 		newFfiObject(
 			pointer,
 			func(pointer unsafe.Pointer, status *C.RustCallStatus) unsafe.Pointer {
@@ -1660,32 +1941,35 @@ func (c FfiConverterQueryResult) Lower(value *QueryResult) unsafe.Pointer {
 	pointer := value.ffiObject.incrementPointer("*QueryResult")
 	defer value.ffiObject.decrementPointer()
 	return pointer
-
+	
 }
 
 func (c FfiConverterQueryResult) Write(writer io.Writer, value *QueryResult) {
 	writeUint64(writer, uint64(uintptr(c.Lower(value))))
 }
 
-type FfiDestroyerQueryResult struct{}
+type FfiDestroyerQueryResult struct {}
 
 func (_ FfiDestroyerQueryResult) Destroy(value *QueryResult) {
-	value.Destroy()
+		value.Destroy()
 }
 
+
+
+
 type EdgeInput struct {
-	FromId     string
-	ToId       string
+	FromId string
+	ToId string
 	Properties map[string]Value
 }
 
 func (r *EdgeInput) Destroy() {
-	FfiDestroyerString{}.Destroy(r.FromId)
-	FfiDestroyerString{}.Destroy(r.ToId)
-	FfiDestroyerMapStringValue{}.Destroy(r.Properties)
+		FfiDestroyerString{}.Destroy(r.FromId);
+		FfiDestroyerString{}.Destroy(r.ToId);
+		FfiDestroyerMapStringValue{}.Destroy(r.Properties);
 }
 
-type FfiConverterEdgeInput struct{}
+type FfiConverterEdgeInput struct {}
 
 var FfiConverterEdgeInputINSTANCE = FfiConverterEdgeInput{}
 
@@ -1694,10 +1978,10 @@ func (c FfiConverterEdgeInput) Lift(rb RustBufferI) EdgeInput {
 }
 
 func (c FfiConverterEdgeInput) Read(reader io.Reader) EdgeInput {
-	return EdgeInput{
-		FfiConverterStringINSTANCE.Read(reader),
-		FfiConverterStringINSTANCE.Read(reader),
-		FfiConverterMapStringValueINSTANCE.Read(reader),
+	return EdgeInput {
+			FfiConverterStringINSTANCE.Read(reader),
+			FfiConverterStringINSTANCE.Read(reader),
+			FfiConverterMapStringValueINSTANCE.Read(reader),
 	}
 }
 
@@ -1710,12 +1994,12 @@ func (c FfiConverterEdgeInput) LowerExternal(value EdgeInput) ExternalCRustBuffe
 }
 
 func (c FfiConverterEdgeInput) Write(writer io.Writer, value EdgeInput) {
-	FfiConverterStringINSTANCE.Write(writer, value.FromId)
-	FfiConverterStringINSTANCE.Write(writer, value.ToId)
-	FfiConverterMapStringValueINSTANCE.Write(writer, value.Properties)
+		FfiConverterStringINSTANCE.Write(writer, value.FromId);
+		FfiConverterStringINSTANCE.Write(writer, value.ToId);
+		FfiConverterMapStringValueINSTANCE.Write(writer, value.Properties);
 }
 
-type FfiDestroyerEdgeInput struct{}
+type FfiDestroyerEdgeInput struct {}
 
 func (_ FfiDestroyerEdgeInput) Destroy(value EdgeInput) {
 	value.Destroy()
@@ -1730,11 +2014,11 @@ type ExportOptions struct {
 }
 
 func (r *ExportOptions) Destroy() {
-	FfiDestroyerOptionalString{}.Destroy(r.Format)
-	FfiDestroyerOptionalString{}.Destroy(r.Compression)
+		FfiDestroyerOptionalString{}.Destroy(r.Format);
+		FfiDestroyerOptionalString{}.Destroy(r.Compression);
 }
 
-type FfiConverterExportOptions struct{}
+type FfiConverterExportOptions struct {}
 
 var FfiConverterExportOptionsINSTANCE = FfiConverterExportOptions{}
 
@@ -1743,9 +2027,9 @@ func (c FfiConverterExportOptions) Lift(rb RustBufferI) ExportOptions {
 }
 
 func (c FfiConverterExportOptions) Read(reader io.Reader) ExportOptions {
-	return ExportOptions{
-		FfiConverterOptionalStringINSTANCE.Read(reader),
-		FfiConverterOptionalStringINSTANCE.Read(reader),
+	return ExportOptions {
+			FfiConverterOptionalStringINSTANCE.Read(reader),
+			FfiConverterOptionalStringINSTANCE.Read(reader),
 	}
 }
 
@@ -1758,33 +2042,33 @@ func (c FfiConverterExportOptions) LowerExternal(value ExportOptions) ExternalCR
 }
 
 func (c FfiConverterExportOptions) Write(writer io.Writer, value ExportOptions) {
-	FfiConverterOptionalStringINSTANCE.Write(writer, value.Format)
-	FfiConverterOptionalStringINSTANCE.Write(writer, value.Compression)
+		FfiConverterOptionalStringINSTANCE.Write(writer, value.Format);
+		FfiConverterOptionalStringINSTANCE.Write(writer, value.Compression);
 }
 
-type FfiDestroyerExportOptions struct{}
+type FfiDestroyerExportOptions struct {}
 
 func (_ FfiDestroyerExportOptions) Destroy(value ExportOptions) {
 	value.Destroy()
 }
 
 type GraphEdge struct {
-	Id         string
-	TypeName   string
-	FromId     string
-	ToId       string
+	Id string
+	TypeName string
+	FromId string
+	ToId string
 	Properties map[string]Value
 }
 
 func (r *GraphEdge) Destroy() {
-	FfiDestroyerString{}.Destroy(r.Id)
-	FfiDestroyerString{}.Destroy(r.TypeName)
-	FfiDestroyerString{}.Destroy(r.FromId)
-	FfiDestroyerString{}.Destroy(r.ToId)
-	FfiDestroyerMapStringValue{}.Destroy(r.Properties)
+		FfiDestroyerString{}.Destroy(r.Id);
+		FfiDestroyerString{}.Destroy(r.TypeName);
+		FfiDestroyerString{}.Destroy(r.FromId);
+		FfiDestroyerString{}.Destroy(r.ToId);
+		FfiDestroyerMapStringValue{}.Destroy(r.Properties);
 }
 
-type FfiConverterGraphEdge struct{}
+type FfiConverterGraphEdge struct {}
 
 var FfiConverterGraphEdgeINSTANCE = FfiConverterGraphEdge{}
 
@@ -1793,12 +2077,12 @@ func (c FfiConverterGraphEdge) Lift(rb RustBufferI) GraphEdge {
 }
 
 func (c FfiConverterGraphEdge) Read(reader io.Reader) GraphEdge {
-	return GraphEdge{
-		FfiConverterStringINSTANCE.Read(reader),
-		FfiConverterStringINSTANCE.Read(reader),
-		FfiConverterStringINSTANCE.Read(reader),
-		FfiConverterStringINSTANCE.Read(reader),
-		FfiConverterMapStringValueINSTANCE.Read(reader),
+	return GraphEdge {
+			FfiConverterStringINSTANCE.Read(reader),
+			FfiConverterStringINSTANCE.Read(reader),
+			FfiConverterStringINSTANCE.Read(reader),
+			FfiConverterStringINSTANCE.Read(reader),
+			FfiConverterMapStringValueINSTANCE.Read(reader),
 	}
 }
 
@@ -1811,32 +2095,32 @@ func (c FfiConverterGraphEdge) LowerExternal(value GraphEdge) ExternalCRustBuffe
 }
 
 func (c FfiConverterGraphEdge) Write(writer io.Writer, value GraphEdge) {
-	FfiConverterStringINSTANCE.Write(writer, value.Id)
-	FfiConverterStringINSTANCE.Write(writer, value.TypeName)
-	FfiConverterStringINSTANCE.Write(writer, value.FromId)
-	FfiConverterStringINSTANCE.Write(writer, value.ToId)
-	FfiConverterMapStringValueINSTANCE.Write(writer, value.Properties)
+		FfiConverterStringINSTANCE.Write(writer, value.Id);
+		FfiConverterStringINSTANCE.Write(writer, value.TypeName);
+		FfiConverterStringINSTANCE.Write(writer, value.FromId);
+		FfiConverterStringINSTANCE.Write(writer, value.ToId);
+		FfiConverterMapStringValueINSTANCE.Write(writer, value.Properties);
 }
 
-type FfiDestroyerGraphEdge struct{}
+type FfiDestroyerGraphEdge struct {}
 
 func (_ FfiDestroyerGraphEdge) Destroy(value GraphEdge) {
 	value.Destroy()
 }
 
 type GraphNode struct {
-	Id         string
-	Labels     []string
+	Id string
+	Labels []string
 	Properties map[string]Value
 }
 
 func (r *GraphNode) Destroy() {
-	FfiDestroyerString{}.Destroy(r.Id)
-	FfiDestroyerSequenceString{}.Destroy(r.Labels)
-	FfiDestroyerMapStringValue{}.Destroy(r.Properties)
+		FfiDestroyerString{}.Destroy(r.Id);
+		FfiDestroyerSequenceString{}.Destroy(r.Labels);
+		FfiDestroyerMapStringValue{}.Destroy(r.Properties);
 }
 
-type FfiConverterGraphNode struct{}
+type FfiConverterGraphNode struct {}
 
 var FfiConverterGraphNodeINSTANCE = FfiConverterGraphNode{}
 
@@ -1845,10 +2129,10 @@ func (c FfiConverterGraphNode) Lift(rb RustBufferI) GraphNode {
 }
 
 func (c FfiConverterGraphNode) Read(reader io.Reader) GraphNode {
-	return GraphNode{
-		FfiConverterStringINSTANCE.Read(reader),
-		FfiConverterSequenceStringINSTANCE.Read(reader),
-		FfiConverterMapStringValueINSTANCE.Read(reader),
+	return GraphNode {
+			FfiConverterStringINSTANCE.Read(reader),
+			FfiConverterSequenceStringINSTANCE.Read(reader),
+			FfiConverterMapStringValueINSTANCE.Read(reader),
 	}
 }
 
@@ -1861,28 +2145,28 @@ func (c FfiConverterGraphNode) LowerExternal(value GraphNode) ExternalCRustBuffe
 }
 
 func (c FfiConverterGraphNode) Write(writer io.Writer, value GraphNode) {
-	FfiConverterStringINSTANCE.Write(writer, value.Id)
-	FfiConverterSequenceStringINSTANCE.Write(writer, value.Labels)
-	FfiConverterMapStringValueINSTANCE.Write(writer, value.Properties)
+		FfiConverterStringINSTANCE.Write(writer, value.Id);
+		FfiConverterSequenceStringINSTANCE.Write(writer, value.Labels);
+		FfiConverterMapStringValueINSTANCE.Write(writer, value.Properties);
 }
 
-type FfiDestroyerGraphNode struct{}
+type FfiDestroyerGraphNode struct {}
 
 func (_ FfiDestroyerGraphNode) Destroy(value GraphNode) {
 	value.Destroy()
 }
 
 type MapEntry struct {
-	Key   string
+	Key string
 	Value Value
 }
 
 func (r *MapEntry) Destroy() {
-	FfiDestroyerString{}.Destroy(r.Key)
-	FfiDestroyerValue{}.Destroy(r.Value)
+		FfiDestroyerString{}.Destroy(r.Key);
+		FfiDestroyerValue{}.Destroy(r.Value);
 }
 
-type FfiConverterMapEntry struct{}
+type FfiConverterMapEntry struct {}
 
 var FfiConverterMapEntryINSTANCE = FfiConverterMapEntry{}
 
@@ -1891,9 +2175,9 @@ func (c FfiConverterMapEntry) Lift(rb RustBufferI) MapEntry {
 }
 
 func (c FfiConverterMapEntry) Read(reader io.Reader) MapEntry {
-	return MapEntry{
-		FfiConverterStringINSTANCE.Read(reader),
-		FfiConverterValueINSTANCE.Read(reader),
+	return MapEntry {
+			FfiConverterStringINSTANCE.Read(reader),
+			FfiConverterValueINSTANCE.Read(reader),
 	}
 }
 
@@ -1906,33 +2190,33 @@ func (c FfiConverterMapEntry) LowerExternal(value MapEntry) ExternalCRustBuffer 
 }
 
 func (c FfiConverterMapEntry) Write(writer io.Writer, value MapEntry) {
-	FfiConverterStringINSTANCE.Write(writer, value.Key)
-	FfiConverterValueINSTANCE.Write(writer, value.Value)
+		FfiConverterStringINSTANCE.Write(writer, value.Key);
+		FfiConverterValueINSTANCE.Write(writer, value.Value);
 }
 
-type FfiDestroyerMapEntry struct{}
+type FfiDestroyerMapEntry struct {}
 
 func (_ FfiDestroyerMapEntry) Destroy(value MapEntry) {
 	value.Destroy()
 }
 
 type RemoteConfig struct {
-	Url         string
-	User        string
-	Password    string
-	Database    *string
+	Url string
+	User string
+	Password string
+	Database *string
 	ClusterName *string
 }
 
 func (r *RemoteConfig) Destroy() {
-	FfiDestroyerString{}.Destroy(r.Url)
-	FfiDestroyerString{}.Destroy(r.User)
-	FfiDestroyerString{}.Destroy(r.Password)
-	FfiDestroyerOptionalString{}.Destroy(r.Database)
-	FfiDestroyerOptionalString{}.Destroy(r.ClusterName)
+		FfiDestroyerString{}.Destroy(r.Url);
+		FfiDestroyerString{}.Destroy(r.User);
+		FfiDestroyerString{}.Destroy(r.Password);
+		FfiDestroyerOptionalString{}.Destroy(r.Database);
+		FfiDestroyerOptionalString{}.Destroy(r.ClusterName);
 }
 
-type FfiConverterRemoteConfig struct{}
+type FfiConverterRemoteConfig struct {}
 
 var FfiConverterRemoteConfigINSTANCE = FfiConverterRemoteConfig{}
 
@@ -1941,12 +2225,12 @@ func (c FfiConverterRemoteConfig) Lift(rb RustBufferI) RemoteConfig {
 }
 
 func (c FfiConverterRemoteConfig) Read(reader io.Reader) RemoteConfig {
-	return RemoteConfig{
-		FfiConverterStringINSTANCE.Read(reader),
-		FfiConverterStringINSTANCE.Read(reader),
-		FfiConverterStringINSTANCE.Read(reader),
-		FfiConverterOptionalStringINSTANCE.Read(reader),
-		FfiConverterOptionalStringINSTANCE.Read(reader),
+	return RemoteConfig {
+			FfiConverterStringINSTANCE.Read(reader),
+			FfiConverterStringINSTANCE.Read(reader),
+			FfiConverterStringINSTANCE.Read(reader),
+			FfiConverterOptionalStringINSTANCE.Read(reader),
+			FfiConverterOptionalStringINSTANCE.Read(reader),
 	}
 }
 
@@ -1959,14 +2243,14 @@ func (c FfiConverterRemoteConfig) LowerExternal(value RemoteConfig) ExternalCRus
 }
 
 func (c FfiConverterRemoteConfig) Write(writer io.Writer, value RemoteConfig) {
-	FfiConverterStringINSTANCE.Write(writer, value.Url)
-	FfiConverterStringINSTANCE.Write(writer, value.User)
-	FfiConverterStringINSTANCE.Write(writer, value.Password)
-	FfiConverterOptionalStringINSTANCE.Write(writer, value.Database)
-	FfiConverterOptionalStringINSTANCE.Write(writer, value.ClusterName)
+		FfiConverterStringINSTANCE.Write(writer, value.Url);
+		FfiConverterStringINSTANCE.Write(writer, value.User);
+		FfiConverterStringINSTANCE.Write(writer, value.Password);
+		FfiConverterOptionalStringINSTANCE.Write(writer, value.Database);
+		FfiConverterOptionalStringINSTANCE.Write(writer, value.ClusterName);
 }
 
-type FfiDestroyerRemoteConfig struct{}
+type FfiDestroyerRemoteConfig struct {}
 
 func (_ FfiDestroyerRemoteConfig) Destroy(value RemoteConfig) {
 	value.Destroy()
@@ -1974,15 +2258,15 @@ func (_ FfiDestroyerRemoteConfig) Destroy(value RemoteConfig) {
 
 type Row struct {
 	Columns []string
-	Values  []Value
+	Values []Value
 }
 
 func (r *Row) Destroy() {
-	FfiDestroyerSequenceString{}.Destroy(r.Columns)
-	FfiDestroyerSequenceValue{}.Destroy(r.Values)
+		FfiDestroyerSequenceString{}.Destroy(r.Columns);
+		FfiDestroyerSequenceValue{}.Destroy(r.Values);
 }
 
-type FfiConverterRow struct{}
+type FfiConverterRow struct {}
 
 var FfiConverterRowINSTANCE = FfiConverterRow{}
 
@@ -1991,9 +2275,9 @@ func (c FfiConverterRow) Lift(rb RustBufferI) Row {
 }
 
 func (c FfiConverterRow) Read(reader io.Reader) Row {
-	return Row{
-		FfiConverterSequenceStringINSTANCE.Read(reader),
-		FfiConverterSequenceValueINSTANCE.Read(reader),
+	return Row {
+			FfiConverterSequenceStringINSTANCE.Read(reader),
+			FfiConverterSequenceValueINSTANCE.Read(reader),
 	}
 }
 
@@ -2006,11 +2290,11 @@ func (c FfiConverterRow) LowerExternal(value Row) ExternalCRustBuffer {
 }
 
 func (c FfiConverterRow) Write(writer io.Writer, value Row) {
-	FfiConverterSequenceStringINSTANCE.Write(writer, value.Columns)
-	FfiConverterSequenceValueINSTANCE.Write(writer, value.Values)
+		FfiConverterSequenceStringINSTANCE.Write(writer, value.Columns);
+		FfiConverterSequenceValueINSTANCE.Write(writer, value.Values);
 }
 
-type FfiDestroyerRow struct{}
+type FfiDestroyerRow struct {}
 
 func (_ FfiDestroyerRow) Destroy(value Row) {
 	value.Destroy()
@@ -2022,11 +2306,11 @@ type StoreStats struct {
 }
 
 func (r *StoreStats) Destroy() {
-	FfiDestroyerUint64{}.Destroy(r.NodesStored)
-	FfiDestroyerUint64{}.Destroy(r.EdgesStored)
+		FfiDestroyerUint64{}.Destroy(r.NodesStored);
+		FfiDestroyerUint64{}.Destroy(r.EdgesStored);
 }
 
-type FfiConverterStoreStats struct{}
+type FfiConverterStoreStats struct {}
 
 var FfiConverterStoreStatsINSTANCE = FfiConverterStoreStats{}
 
@@ -2035,9 +2319,9 @@ func (c FfiConverterStoreStats) Lift(rb RustBufferI) StoreStats {
 }
 
 func (c FfiConverterStoreStats) Read(reader io.Reader) StoreStats {
-	return StoreStats{
-		FfiConverterUint64INSTANCE.Read(reader),
-		FfiConverterUint64INSTANCE.Read(reader),
+	return StoreStats {
+			FfiConverterUint64INSTANCE.Read(reader),
+			FfiConverterUint64INSTANCE.Read(reader),
 	}
 }
 
@@ -2050,52 +2334,54 @@ func (c FfiConverterStoreStats) LowerExternal(value StoreStats) ExternalCRustBuf
 }
 
 func (c FfiConverterStoreStats) Write(writer io.Writer, value StoreStats) {
-	FfiConverterUint64INSTANCE.Write(writer, value.NodesStored)
-	FfiConverterUint64INSTANCE.Write(writer, value.EdgesStored)
+		FfiConverterUint64INSTANCE.Write(writer, value.NodesStored);
+		FfiConverterUint64INSTANCE.Write(writer, value.EdgesStored);
 }
 
-type FfiDestroyerStoreStats struct{}
+type FfiDestroyerStoreStats struct {}
 
 func (_ FfiDestroyerStoreStats) Destroy(value StoreStats) {
 	value.Destroy()
 }
 
 type SystemConfig struct {
-	SessionDir                   *string
-	DataDir                      *string
-	MaxThreads                   *uint32
-	S3AccessKeyId                *string
-	S3SecretAccessKey            *string
-	S3Region                     *string
-	S3EndpointUrl                *string
-	S3SessionToken               *string
-	GcsAccessKeyId               *string
-	GcsSecretAccessKey           *string
-	AzureStorageAccountName      *string
-	AzureStorageAccountKey       *string
+	SessionDir *string
+	DataDir *string
+	MaxThreads *uint32
+	MaxMemoryUsageBytes *uint64
+	S3AccessKeyId *string
+	S3SecretAccessKey *string
+	S3Region *string
+	S3EndpointUrl *string
+	S3SessionToken *string
+	GcsAccessKeyId *string
+	GcsSecretAccessKey *string
+	AzureStorageAccountName *string
+	AzureStorageAccountKey *string
 	AzureStorageConnectionString *string
 	// Remote ClickHouse connection for hybrid query + local storage.
 	Remote *RemoteConfig
 }
 
 func (r *SystemConfig) Destroy() {
-	FfiDestroyerOptionalString{}.Destroy(r.SessionDir)
-	FfiDestroyerOptionalString{}.Destroy(r.DataDir)
-	FfiDestroyerOptionalUint32{}.Destroy(r.MaxThreads)
-	FfiDestroyerOptionalString{}.Destroy(r.S3AccessKeyId)
-	FfiDestroyerOptionalString{}.Destroy(r.S3SecretAccessKey)
-	FfiDestroyerOptionalString{}.Destroy(r.S3Region)
-	FfiDestroyerOptionalString{}.Destroy(r.S3EndpointUrl)
-	FfiDestroyerOptionalString{}.Destroy(r.S3SessionToken)
-	FfiDestroyerOptionalString{}.Destroy(r.GcsAccessKeyId)
-	FfiDestroyerOptionalString{}.Destroy(r.GcsSecretAccessKey)
-	FfiDestroyerOptionalString{}.Destroy(r.AzureStorageAccountName)
-	FfiDestroyerOptionalString{}.Destroy(r.AzureStorageAccountKey)
-	FfiDestroyerOptionalString{}.Destroy(r.AzureStorageConnectionString)
-	FfiDestroyerOptionalRemoteConfig{}.Destroy(r.Remote)
+		FfiDestroyerOptionalString{}.Destroy(r.SessionDir);
+		FfiDestroyerOptionalString{}.Destroy(r.DataDir);
+		FfiDestroyerOptionalUint32{}.Destroy(r.MaxThreads);
+		FfiDestroyerOptionalUint64{}.Destroy(r.MaxMemoryUsageBytes);
+		FfiDestroyerOptionalString{}.Destroy(r.S3AccessKeyId);
+		FfiDestroyerOptionalString{}.Destroy(r.S3SecretAccessKey);
+		FfiDestroyerOptionalString{}.Destroy(r.S3Region);
+		FfiDestroyerOptionalString{}.Destroy(r.S3EndpointUrl);
+		FfiDestroyerOptionalString{}.Destroy(r.S3SessionToken);
+		FfiDestroyerOptionalString{}.Destroy(r.GcsAccessKeyId);
+		FfiDestroyerOptionalString{}.Destroy(r.GcsSecretAccessKey);
+		FfiDestroyerOptionalString{}.Destroy(r.AzureStorageAccountName);
+		FfiDestroyerOptionalString{}.Destroy(r.AzureStorageAccountKey);
+		FfiDestroyerOptionalString{}.Destroy(r.AzureStorageConnectionString);
+		FfiDestroyerOptionalRemoteConfig{}.Destroy(r.Remote);
 }
 
-type FfiConverterSystemConfig struct{}
+type FfiConverterSystemConfig struct {}
 
 var FfiConverterSystemConfigINSTANCE = FfiConverterSystemConfig{}
 
@@ -2104,21 +2390,22 @@ func (c FfiConverterSystemConfig) Lift(rb RustBufferI) SystemConfig {
 }
 
 func (c FfiConverterSystemConfig) Read(reader io.Reader) SystemConfig {
-	return SystemConfig{
-		FfiConverterOptionalStringINSTANCE.Read(reader),
-		FfiConverterOptionalStringINSTANCE.Read(reader),
-		FfiConverterOptionalUint32INSTANCE.Read(reader),
-		FfiConverterOptionalStringINSTANCE.Read(reader),
-		FfiConverterOptionalStringINSTANCE.Read(reader),
-		FfiConverterOptionalStringINSTANCE.Read(reader),
-		FfiConverterOptionalStringINSTANCE.Read(reader),
-		FfiConverterOptionalStringINSTANCE.Read(reader),
-		FfiConverterOptionalStringINSTANCE.Read(reader),
-		FfiConverterOptionalStringINSTANCE.Read(reader),
-		FfiConverterOptionalStringINSTANCE.Read(reader),
-		FfiConverterOptionalStringINSTANCE.Read(reader),
-		FfiConverterOptionalStringINSTANCE.Read(reader),
-		FfiConverterOptionalRemoteConfigINSTANCE.Read(reader),
+	return SystemConfig {
+			FfiConverterOptionalStringINSTANCE.Read(reader),
+			FfiConverterOptionalStringINSTANCE.Read(reader),
+			FfiConverterOptionalUint32INSTANCE.Read(reader),
+			FfiConverterOptionalUint64INSTANCE.Read(reader),
+			FfiConverterOptionalStringINSTANCE.Read(reader),
+			FfiConverterOptionalStringINSTANCE.Read(reader),
+			FfiConverterOptionalStringINSTANCE.Read(reader),
+			FfiConverterOptionalStringINSTANCE.Read(reader),
+			FfiConverterOptionalStringINSTANCE.Read(reader),
+			FfiConverterOptionalStringINSTANCE.Read(reader),
+			FfiConverterOptionalStringINSTANCE.Read(reader),
+			FfiConverterOptionalStringINSTANCE.Read(reader),
+			FfiConverterOptionalStringINSTANCE.Read(reader),
+			FfiConverterOptionalStringINSTANCE.Read(reader),
+			FfiConverterOptionalRemoteConfigINSTANCE.Read(reader),
 	}
 }
 
@@ -2131,28 +2418,28 @@ func (c FfiConverterSystemConfig) LowerExternal(value SystemConfig) ExternalCRus
 }
 
 func (c FfiConverterSystemConfig) Write(writer io.Writer, value SystemConfig) {
-	FfiConverterOptionalStringINSTANCE.Write(writer, value.SessionDir)
-	FfiConverterOptionalStringINSTANCE.Write(writer, value.DataDir)
-	FfiConverterOptionalUint32INSTANCE.Write(writer, value.MaxThreads)
-	FfiConverterOptionalStringINSTANCE.Write(writer, value.S3AccessKeyId)
-	FfiConverterOptionalStringINSTANCE.Write(writer, value.S3SecretAccessKey)
-	FfiConverterOptionalStringINSTANCE.Write(writer, value.S3Region)
-	FfiConverterOptionalStringINSTANCE.Write(writer, value.S3EndpointUrl)
-	FfiConverterOptionalStringINSTANCE.Write(writer, value.S3SessionToken)
-	FfiConverterOptionalStringINSTANCE.Write(writer, value.GcsAccessKeyId)
-	FfiConverterOptionalStringINSTANCE.Write(writer, value.GcsSecretAccessKey)
-	FfiConverterOptionalStringINSTANCE.Write(writer, value.AzureStorageAccountName)
-	FfiConverterOptionalStringINSTANCE.Write(writer, value.AzureStorageAccountKey)
-	FfiConverterOptionalStringINSTANCE.Write(writer, value.AzureStorageConnectionString)
-	FfiConverterOptionalRemoteConfigINSTANCE.Write(writer, value.Remote)
+		FfiConverterOptionalStringINSTANCE.Write(writer, value.SessionDir);
+		FfiConverterOptionalStringINSTANCE.Write(writer, value.DataDir);
+		FfiConverterOptionalUint32INSTANCE.Write(writer, value.MaxThreads);
+		FfiConverterOptionalUint64INSTANCE.Write(writer, value.MaxMemoryUsageBytes);
+		FfiConverterOptionalStringINSTANCE.Write(writer, value.S3AccessKeyId);
+		FfiConverterOptionalStringINSTANCE.Write(writer, value.S3SecretAccessKey);
+		FfiConverterOptionalStringINSTANCE.Write(writer, value.S3Region);
+		FfiConverterOptionalStringINSTANCE.Write(writer, value.S3EndpointUrl);
+		FfiConverterOptionalStringINSTANCE.Write(writer, value.S3SessionToken);
+		FfiConverterOptionalStringINSTANCE.Write(writer, value.GcsAccessKeyId);
+		FfiConverterOptionalStringINSTANCE.Write(writer, value.GcsSecretAccessKey);
+		FfiConverterOptionalStringINSTANCE.Write(writer, value.AzureStorageAccountName);
+		FfiConverterOptionalStringINSTANCE.Write(writer, value.AzureStorageAccountKey);
+		FfiConverterOptionalStringINSTANCE.Write(writer, value.AzureStorageConnectionString);
+		FfiConverterOptionalRemoteConfigINSTANCE.Write(writer, value.Remote);
 }
 
-type FfiDestroyerSystemConfig struct{}
+type FfiDestroyerSystemConfig struct {}
 
 func (_ FfiDestroyerSystemConfig) Destroy(value SystemConfig) {
 	value.Destroy()
 }
-
 type ClickGraphError struct {
 	err error
 }
@@ -2185,22 +2472,22 @@ var ErrClickGraphErrorValidationError = fmt.Errorf("ClickGraphErrorValidationErr
 type ClickGraphErrorDatabaseError struct {
 	Msg string
 }
-
 func NewClickGraphErrorDatabaseError(
 	msg string,
 ) *ClickGraphError {
-	return &ClickGraphError{err: &ClickGraphErrorDatabaseError{
-		Msg: msg}}
+	return &ClickGraphError { err: &ClickGraphErrorDatabaseError {
+			Msg: msg,} }
 }
 
 func (e ClickGraphErrorDatabaseError) destroy() {
-	FfiDestroyerString{}.Destroy(e.Msg)
+		FfiDestroyerString{}.Destroy(e.Msg)
 }
+
 
 func (err ClickGraphErrorDatabaseError) Error() string {
 	return fmt.Sprint("DatabaseError",
 		": ",
-
+		
 		"Msg=",
 		err.Msg,
 	)
@@ -2209,26 +2496,25 @@ func (err ClickGraphErrorDatabaseError) Error() string {
 func (self ClickGraphErrorDatabaseError) Is(target error) bool {
 	return target == ErrClickGraphErrorDatabaseError
 }
-
 type ClickGraphErrorQueryError struct {
 	Msg string
 }
-
 func NewClickGraphErrorQueryError(
 	msg string,
 ) *ClickGraphError {
-	return &ClickGraphError{err: &ClickGraphErrorQueryError{
-		Msg: msg}}
+	return &ClickGraphError { err: &ClickGraphErrorQueryError {
+			Msg: msg,} }
 }
 
 func (e ClickGraphErrorQueryError) destroy() {
-	FfiDestroyerString{}.Destroy(e.Msg)
+		FfiDestroyerString{}.Destroy(e.Msg)
 }
+
 
 func (err ClickGraphErrorQueryError) Error() string {
 	return fmt.Sprint("QueryError",
 		": ",
-
+		
 		"Msg=",
 		err.Msg,
 	)
@@ -2237,26 +2523,25 @@ func (err ClickGraphErrorQueryError) Error() string {
 func (self ClickGraphErrorQueryError) Is(target error) bool {
 	return target == ErrClickGraphErrorQueryError
 }
-
 type ClickGraphErrorExportError struct {
 	Msg string
 }
-
 func NewClickGraphErrorExportError(
 	msg string,
 ) *ClickGraphError {
-	return &ClickGraphError{err: &ClickGraphErrorExportError{
-		Msg: msg}}
+	return &ClickGraphError { err: &ClickGraphErrorExportError {
+			Msg: msg,} }
 }
 
 func (e ClickGraphErrorExportError) destroy() {
-	FfiDestroyerString{}.Destroy(e.Msg)
+		FfiDestroyerString{}.Destroy(e.Msg)
 }
+
 
 func (err ClickGraphErrorExportError) Error() string {
 	return fmt.Sprint("ExportError",
 		": ",
-
+		
 		"Msg=",
 		err.Msg,
 	)
@@ -2265,26 +2550,25 @@ func (err ClickGraphErrorExportError) Error() string {
 func (self ClickGraphErrorExportError) Is(target error) bool {
 	return target == ErrClickGraphErrorExportError
 }
-
 type ClickGraphErrorValidationError struct {
 	Msg string
 }
-
 func NewClickGraphErrorValidationError(
 	msg string,
 ) *ClickGraphError {
-	return &ClickGraphError{err: &ClickGraphErrorValidationError{
-		Msg: msg}}
+	return &ClickGraphError { err: &ClickGraphErrorValidationError {
+			Msg: msg,} }
 }
 
 func (e ClickGraphErrorValidationError) destroy() {
-	FfiDestroyerString{}.Destroy(e.Msg)
+		FfiDestroyerString{}.Destroy(e.Msg)
 }
+
 
 func (err ClickGraphErrorValidationError) Error() string {
 	return fmt.Sprint("ValidationError",
 		": ",
-
+		
 		"Msg=",
 		err.Msg,
 	)
@@ -2315,19 +2599,19 @@ func (c FfiConverterClickGraphError) Read(reader io.Reader) *ClickGraphError {
 
 	switch errorID {
 	case 1:
-		return &ClickGraphError{&ClickGraphErrorDatabaseError{
+		return &ClickGraphError{ &ClickGraphErrorDatabaseError{
 			Msg: FfiConverterStringINSTANCE.Read(reader),
 		}}
 	case 2:
-		return &ClickGraphError{&ClickGraphErrorQueryError{
+		return &ClickGraphError{ &ClickGraphErrorQueryError{
 			Msg: FfiConverterStringINSTANCE.Read(reader),
 		}}
 	case 3:
-		return &ClickGraphError{&ClickGraphErrorExportError{
+		return &ClickGraphError{ &ClickGraphErrorExportError{
 			Msg: FfiConverterStringINSTANCE.Read(reader),
 		}}
 	case 4:
-		return &ClickGraphError{&ClickGraphErrorValidationError{
+		return &ClickGraphError{ &ClickGraphErrorValidationError{
 			Msg: FfiConverterStringINSTANCE.Read(reader),
 		}}
 	default:
@@ -2337,41 +2621,43 @@ func (c FfiConverterClickGraphError) Read(reader io.Reader) *ClickGraphError {
 
 func (c FfiConverterClickGraphError) Write(writer io.Writer, value *ClickGraphError) {
 	switch variantValue := value.err.(type) {
-	case *ClickGraphErrorDatabaseError:
-		writeInt32(writer, 1)
-		FfiConverterStringINSTANCE.Write(writer, variantValue.Msg)
-	case *ClickGraphErrorQueryError:
-		writeInt32(writer, 2)
-		FfiConverterStringINSTANCE.Write(writer, variantValue.Msg)
-	case *ClickGraphErrorExportError:
-		writeInt32(writer, 3)
-		FfiConverterStringINSTANCE.Write(writer, variantValue.Msg)
-	case *ClickGraphErrorValidationError:
-		writeInt32(writer, 4)
-		FfiConverterStringINSTANCE.Write(writer, variantValue.Msg)
-	default:
-		_ = variantValue
-		panic(fmt.Sprintf("invalid error value `%v` in FfiConverterClickGraphError.Write", value))
+		case *ClickGraphErrorDatabaseError:
+			writeInt32(writer, 1)
+			FfiConverterStringINSTANCE.Write(writer, variantValue.Msg)
+		case *ClickGraphErrorQueryError:
+			writeInt32(writer, 2)
+			FfiConverterStringINSTANCE.Write(writer, variantValue.Msg)
+		case *ClickGraphErrorExportError:
+			writeInt32(writer, 3)
+			FfiConverterStringINSTANCE.Write(writer, variantValue.Msg)
+		case *ClickGraphErrorValidationError:
+			writeInt32(writer, 4)
+			FfiConverterStringINSTANCE.Write(writer, variantValue.Msg)
+		default:
+			_ = variantValue
+			panic(fmt.Sprintf("invalid error value `%v` in FfiConverterClickGraphError.Write", value))
 	}
 }
 
-type FfiDestroyerClickGraphError struct{}
+type FfiDestroyerClickGraphError struct {}
 
 func (_ FfiDestroyerClickGraphError) Destroy(value *ClickGraphError) {
 	switch variantValue := value.err.(type) {
-	case ClickGraphErrorDatabaseError:
-		variantValue.destroy()
-	case ClickGraphErrorQueryError:
-		variantValue.destroy()
-	case ClickGraphErrorExportError:
-		variantValue.destroy()
-	case ClickGraphErrorValidationError:
-		variantValue.destroy()
-	default:
-		_ = variantValue
-		panic(fmt.Sprintf("invalid error value `%v` in FfiDestroyerClickGraphError.Destroy", value))
+		case ClickGraphErrorDatabaseError:
+			variantValue.destroy()
+		case ClickGraphErrorQueryError:
+			variantValue.destroy()
+		case ClickGraphErrorExportError:
+			variantValue.destroy()
+		case ClickGraphErrorValidationError:
+			variantValue.destroy()
+		default:
+			_ = variantValue
+			panic(fmt.Sprintf("invalid error value `%v` in FfiDestroyerClickGraphError.Destroy", value))
 	}
 }
+
+
 
 type Value interface {
 	Destroy()
@@ -2381,56 +2667,71 @@ type ValueNull struct {
 
 func (e ValueNull) Destroy() {
 }
-
 type ValueBool struct {
 	V bool
 }
 
 func (e ValueBool) Destroy() {
-	FfiDestroyerBool{}.Destroy(e.V)
+		FfiDestroyerBool{}.Destroy(e.V);
 }
-
 type ValueInt64 struct {
 	V int64
 }
 
 func (e ValueInt64) Destroy() {
-	FfiDestroyerInt64{}.Destroy(e.V)
+		FfiDestroyerInt64{}.Destroy(e.V);
 }
-
 type ValueFloat64 struct {
 	V float64
 }
 
 func (e ValueFloat64) Destroy() {
-	FfiDestroyerFloat64{}.Destroy(e.V)
+		FfiDestroyerFloat64{}.Destroy(e.V);
 }
-
 type ValueString struct {
 	V string
 }
 
 func (e ValueString) Destroy() {
-	FfiDestroyerString{}.Destroy(e.V)
+		FfiDestroyerString{}.Destroy(e.V);
+}
+type ValueDate struct {
+	V string
 }
 
+func (e ValueDate) Destroy() {
+		FfiDestroyerString{}.Destroy(e.V);
+}
+type ValueTimestamp struct {
+	V string
+}
+
+func (e ValueTimestamp) Destroy() {
+		FfiDestroyerString{}.Destroy(e.V);
+}
+type ValueUuid struct {
+	V string
+}
+
+func (e ValueUuid) Destroy() {
+		FfiDestroyerString{}.Destroy(e.V);
+}
 type ValueList struct {
 	Items []Value
 }
 
 func (e ValueList) Destroy() {
-	FfiDestroyerSequenceValue{}.Destroy(e.Items)
+		FfiDestroyerSequenceValue{}.Destroy(e.Items);
 }
-
 type ValueMap struct {
 	Entries []MapEntry
 }
 
 func (e ValueMap) Destroy() {
-	FfiDestroyerSequenceMapEntry{}.Destroy(e.Entries)
+		FfiDestroyerSequenceMapEntry{}.Destroy(e.Entries);
 }
 
-type FfiConverterValue struct{}
+type FfiConverterValue struct {}
 
 var FfiConverterValueINSTANCE = FfiConverterValue{}
 
@@ -2447,71 +2748,95 @@ func (c FfiConverterValue) LowerExternal(value Value) ExternalCRustBuffer {
 }
 func (FfiConverterValue) Read(reader io.Reader) Value {
 	id := readInt32(reader)
-	switch id {
-	case 1:
-		return ValueNull{}
-	case 2:
-		return ValueBool{
-			FfiConverterBoolINSTANCE.Read(reader),
-		}
-	case 3:
-		return ValueInt64{
-			FfiConverterInt64INSTANCE.Read(reader),
-		}
-	case 4:
-		return ValueFloat64{
-			FfiConverterFloat64INSTANCE.Read(reader),
-		}
-	case 5:
-		return ValueString{
-			FfiConverterStringINSTANCE.Read(reader),
-		}
-	case 6:
-		return ValueList{
-			FfiConverterSequenceValueINSTANCE.Read(reader),
-		}
-	case 7:
-		return ValueMap{
-			FfiConverterSequenceMapEntryINSTANCE.Read(reader),
-		}
-	default:
-		panic(fmt.Sprintf("invalid enum value %v in FfiConverterValue.Read()", id))
+	switch (id) {
+		case 1:
+			return ValueNull{
+			};
+		case 2:
+			return ValueBool{
+				FfiConverterBoolINSTANCE.Read(reader),
+			};
+		case 3:
+			return ValueInt64{
+				FfiConverterInt64INSTANCE.Read(reader),
+			};
+		case 4:
+			return ValueFloat64{
+				FfiConverterFloat64INSTANCE.Read(reader),
+			};
+		case 5:
+			return ValueString{
+				FfiConverterStringINSTANCE.Read(reader),
+			};
+		case 6:
+			return ValueDate{
+				FfiConverterStringINSTANCE.Read(reader),
+			};
+		case 7:
+			return ValueTimestamp{
+				FfiConverterStringINSTANCE.Read(reader),
+			};
+		case 8:
+			return ValueUuid{
+				FfiConverterStringINSTANCE.Read(reader),
+			};
+		case 9:
+			return ValueList{
+				FfiConverterSequenceValueINSTANCE.Read(reader),
+			};
+		case 10:
+			return ValueMap{
+				FfiConverterSequenceMapEntryINSTANCE.Read(reader),
+			};
+		default:
+			panic(fmt.Sprintf("invalid enum value %v in FfiConverterValue.Read()", id));
 	}
 }
 
 func (FfiConverterValue) Write(writer io.Writer, value Value) {
 	switch variant_value := value.(type) {
-	case ValueNull:
-		writeInt32(writer, 1)
-	case ValueBool:
-		writeInt32(writer, 2)
-		FfiConverterBoolINSTANCE.Write(writer, variant_value.V)
-	case ValueInt64:
-		writeInt32(writer, 3)
-		FfiConverterInt64INSTANCE.Write(writer, variant_value.V)
-	case ValueFloat64:
-		writeInt32(writer, 4)
-		FfiConverterFloat64INSTANCE.Write(writer, variant_value.V)
-	case ValueString:
-		writeInt32(writer, 5)
-		FfiConverterStringINSTANCE.Write(writer, variant_value.V)
-	case ValueList:
-		writeInt32(writer, 6)
-		FfiConverterSequenceValueINSTANCE.Write(writer, variant_value.Items)
-	case ValueMap:
-		writeInt32(writer, 7)
-		FfiConverterSequenceMapEntryINSTANCE.Write(writer, variant_value.Entries)
-	default:
-		_ = variant_value
-		panic(fmt.Sprintf("invalid enum value `%v` in FfiConverterValue.Write", value))
+		case ValueNull:
+			writeInt32(writer, 1)
+		case ValueBool:
+			writeInt32(writer, 2)
+			FfiConverterBoolINSTANCE.Write(writer, variant_value.V)
+		case ValueInt64:
+			writeInt32(writer, 3)
+			FfiConverterInt64INSTANCE.Write(writer, variant_value.V)
+		case ValueFloat64:
+			writeInt32(writer, 4)
+			FfiConverterFloat64INSTANCE.Write(writer, variant_value.V)
+		case ValueString:
+			writeInt32(writer, 5)
+			FfiConverterStringINSTANCE.Write(writer, variant_value.V)
+		case ValueDate:
+			writeInt32(writer, 6)
+			FfiConverterStringINSTANCE.Write(writer, variant_value.V)
+		case ValueTimestamp:
+			writeInt32(writer, 7)
+			FfiConverterStringINSTANCE.Write(writer, variant_value.V)
+		case ValueUuid:
+			writeInt32(writer, 8)
+			FfiConverterStringINSTANCE.Write(writer, variant_value.V)
+		case ValueList:
+			writeInt32(writer, 9)
+			FfiConverterSequenceValueINSTANCE.Write(writer, variant_value.Items)
+		case ValueMap:
+			writeInt32(writer, 10)
+			FfiConverterSequenceMapEntryINSTANCE.Write(writer, variant_value.Entries)
+		default:
+			_ = variant_value
+			panic(fmt.Sprintf("invalid enum value `%v` in FfiConverterValue.Write", value))
 	}
 }
 
-type FfiDestroyerValue struct{}
+type FfiDestroyerValue struct {}
 
 func (_ FfiDestroyerValue) Destroy(value Value) {
 	value.Destroy()
 }
+
+
 
 type FfiConverterOptionalUint32 struct{}
 
@@ -2546,13 +2871,56 @@ func (_ FfiConverterOptionalUint32) Write(writer io.Writer, value *uint32) {
 	}
 }
 
-type FfiDestroyerOptionalUint32 struct{}
+type FfiDestroyerOptionalUint32 struct {}
 
 func (_ FfiDestroyerOptionalUint32) Destroy(value *uint32) {
 	if value != nil {
 		FfiDestroyerUint32{}.Destroy(*value)
 	}
 }
+
+
+type FfiConverterOptionalUint64 struct{}
+
+var FfiConverterOptionalUint64INSTANCE = FfiConverterOptionalUint64{}
+
+func (c FfiConverterOptionalUint64) Lift(rb RustBufferI) *uint64 {
+	return LiftFromRustBuffer[*uint64](c, rb)
+}
+
+func (_ FfiConverterOptionalUint64) Read(reader io.Reader) *uint64 {
+	if readInt8(reader) == 0 {
+		return nil
+	}
+	temp := FfiConverterUint64INSTANCE.Read(reader)
+	return &temp
+}
+
+func (c FfiConverterOptionalUint64) Lower(value *uint64) C.RustBuffer {
+	return LowerIntoRustBuffer[*uint64](c, value)
+}
+
+func (c FfiConverterOptionalUint64) LowerExternal(value *uint64) ExternalCRustBuffer {
+	return RustBufferFromC(LowerIntoRustBuffer[*uint64](c, value))
+}
+
+func (_ FfiConverterOptionalUint64) Write(writer io.Writer, value *uint64) {
+	if value == nil {
+		writeInt8(writer, 0)
+	} else {
+		writeInt8(writer, 1)
+		FfiConverterUint64INSTANCE.Write(writer, *value)
+	}
+}
+
+type FfiDestroyerOptionalUint64 struct {}
+
+func (_ FfiDestroyerOptionalUint64) Destroy(value *uint64) {
+	if value != nil {
+		FfiDestroyerUint64{}.Destroy(*value)
+	}
+}
+
 
 type FfiConverterOptionalString struct{}
 
@@ -2587,13 +2955,14 @@ func (_ FfiConverterOptionalString) Write(writer io.Writer, value *string) {
 	}
 }
 
-type FfiDestroyerOptionalString struct{}
+type FfiDestroyerOptionalString struct {}
 
 func (_ FfiDestroyerOptionalString) Destroy(value *string) {
 	if value != nil {
 		FfiDestroyerString{}.Destroy(*value)
 	}
 }
+
 
 type FfiConverterOptionalRemoteConfig struct{}
 
@@ -2628,13 +2997,14 @@ func (_ FfiConverterOptionalRemoteConfig) Write(writer io.Writer, value *RemoteC
 	}
 }
 
-type FfiDestroyerOptionalRemoteConfig struct{}
+type FfiDestroyerOptionalRemoteConfig struct {}
 
 func (_ FfiDestroyerOptionalRemoteConfig) Destroy(value *RemoteConfig) {
 	if value != nil {
 		FfiDestroyerRemoteConfig{}.Destroy(*value)
 	}
 }
+
 
 type FfiConverterOptionalRow struct{}
 
@@ -2669,13 +3039,56 @@ func (_ FfiConverterOptionalRow) Write(writer io.Writer, value *Row) {
 	}
 }
 
-type FfiDestroyerOptionalRow struct{}
+type FfiDestroyerOptionalRow struct {}
 
 func (_ FfiDestroyerOptionalRow) Destroy(value *Row) {
 	if value != nil {
 		FfiDestroyerRow{}.Destroy(*value)
 	}
 }
+
+
+type FfiConverterOptionalMapStringInt64 struct{}
+
+var FfiConverterOptionalMapStringInt64INSTANCE = FfiConverterOptionalMapStringInt64{}
+
+func (c FfiConverterOptionalMapStringInt64) Lift(rb RustBufferI) *map[string]int64 {
+	return LiftFromRustBuffer[*map[string]int64](c, rb)
+}
+
+func (_ FfiConverterOptionalMapStringInt64) Read(reader io.Reader) *map[string]int64 {
+	if readInt8(reader) == 0 {
+		return nil
+	}
+	temp := FfiConverterMapStringInt64INSTANCE.Read(reader)
+	return &temp
+}
+
+func (c FfiConverterOptionalMapStringInt64) Lower(value *map[string]int64) C.RustBuffer {
+	return LowerIntoRustBuffer[*map[string]int64](c, value)
+}
+
+func (c FfiConverterOptionalMapStringInt64) LowerExternal(value *map[string]int64) ExternalCRustBuffer {
+	return RustBufferFromC(LowerIntoRustBuffer[*map[string]int64](c, value))
+}
+
+func (_ FfiConverterOptionalMapStringInt64) Write(writer io.Writer, value *map[string]int64) {
+	if value == nil {
+		writeInt8(writer, 0)
+	} else {
+		writeInt8(writer, 1)
+		FfiConverterMapStringInt64INSTANCE.Write(writer, *value)
+	}
+}
+
+type FfiDestroyerOptionalMapStringInt64 struct {}
+
+func (_ FfiDestroyerOptionalMapStringInt64) Destroy(value *map[string]int64) {
+	if value != nil {
+		FfiDestroyerMapStringInt64{}.Destroy(*value)
+	}
+}
+
 
 type FfiConverterSequenceString struct{}
 
@@ -2716,13 +3129,14 @@ func (c FfiConverterSequenceString) Write(writer io.Writer, value []string) {
 	}
 }
 
-type FfiDestroyerSequenceString struct{}
+type FfiDestroyerSequenceString struct {}
 
 func (FfiDestroyerSequenceString) Destroy(sequence []string) {
 	for _, value := range sequence {
-		FfiDestroyerString{}.Destroy(value)
+		FfiDestroyerString{}.Destroy(value)	
 	}
 }
+
 
 type FfiConverterSequenceEdgeInput struct{}
 
@@ -2763,13 +3177,14 @@ func (c FfiConverterSequenceEdgeInput) Write(writer io.Writer, value []EdgeInput
 	}
 }
 
-type FfiDestroyerSequenceEdgeInput struct{}
+type FfiDestroyerSequenceEdgeInput struct {}
 
 func (FfiDestroyerSequenceEdgeInput) Destroy(sequence []EdgeInput) {
 	for _, value := range sequence {
-		FfiDestroyerEdgeInput{}.Destroy(value)
+		FfiDestroyerEdgeInput{}.Destroy(value)	
 	}
 }
+
 
 type FfiConverterSequenceGraphEdge struct{}
 
@@ -2810,13 +3225,14 @@ func (c FfiConverterSequenceGraphEdge) Write(writer io.Writer, value []GraphEdge
 	}
 }
 
-type FfiDestroyerSequenceGraphEdge struct{}
+type FfiDestroyerSequenceGraphEdge struct {}
 
 func (FfiDestroyerSequenceGraphEdge) Destroy(sequence []GraphEdge) {
 	for _, value := range sequence {
-		FfiDestroyerGraphEdge{}.Destroy(value)
+		FfiDestroyerGraphEdge{}.Destroy(value)	
 	}
 }
+
 
 type FfiConverterSequenceGraphNode struct{}
 
@@ -2857,13 +3273,14 @@ func (c FfiConverterSequenceGraphNode) Write(writer io.Writer, value []GraphNode
 	}
 }
 
-type FfiDestroyerSequenceGraphNode struct{}
+type FfiDestroyerSequenceGraphNode struct {}
 
 func (FfiDestroyerSequenceGraphNode) Destroy(sequence []GraphNode) {
 	for _, value := range sequence {
-		FfiDestroyerGraphNode{}.Destroy(value)
+		FfiDestroyerGraphNode{}.Destroy(value)	
 	}
 }
+
 
 type FfiConverterSequenceMapEntry struct{}
 
@@ -2904,13 +3321,14 @@ func (c FfiConverterSequenceMapEntry) Write(writer io.Writer, value []MapEntry) 
 	}
 }
 
-type FfiDestroyerSequenceMapEntry struct{}
+type FfiDestroyerSequenceMapEntry struct {}
 
 func (FfiDestroyerSequenceMapEntry) Destroy(sequence []MapEntry) {
 	for _, value := range sequence {
-		FfiDestroyerMapEntry{}.Destroy(value)
+		FfiDestroyerMapEntry{}.Destroy(value)	
 	}
 }
+
 
 type FfiConverterSequenceRow struct{}
 
@@ -2951,13 +3369,14 @@ func (c FfiConverterSequenceRow) Write(writer io.Writer, value []Row) {
 	}
 }
 
-type FfiDestroyerSequenceRow struct{}
+type FfiDestroyerSequenceRow struct {}
 
 func (FfiDestroyerSequenceRow) Destroy(sequence []Row) {
 	for _, value := range sequence {
-		FfiDestroyerRow{}.Destroy(value)
+		FfiDestroyerRow{}.Destroy(value)	
 	}
 }
+
 
 type FfiConverterSequenceValue struct{}
 
@@ -2998,13 +3417,14 @@ func (c FfiConverterSequenceValue) Write(writer io.Writer, value []Value) {
 	}
 }
 
-type FfiDestroyerSequenceValue struct{}
+type FfiDestroyerSequenceValue struct {}
 
 func (FfiDestroyerSequenceValue) Destroy(sequence []Value) {
 	for _, value := range sequence {
-		FfiDestroyerValue{}.Destroy(value)
+		FfiDestroyerValue{}.Destroy(value)	
 	}
 }
+
 
 type FfiConverterSequenceMapStringValue struct{}
 
@@ -3045,15 +3465,65 @@ func (c FfiConverterSequenceMapStringValue) Write(writer io.Writer, value []map[
 	}
 }
 
-type FfiDestroyerSequenceMapStringValue struct{}
+type FfiDestroyerSequenceMapStringValue struct {}
 
 func (FfiDestroyerSequenceMapStringValue) Destroy(sequence []map[string]Value) {
 	for _, value := range sequence {
-		FfiDestroyerMapStringValue{}.Destroy(value)
+		FfiDestroyerMapStringValue{}.Destroy(value)	
 	}
 }
 
-type FfiConverterMapStringValue struct{}
+
+type FfiConverterMapStringInt64 struct {}
+
+var FfiConverterMapStringInt64INSTANCE = FfiConverterMapStringInt64{}
+
+func (c FfiConverterMapStringInt64) Lift(rb RustBufferI) map[string]int64 {
+	return LiftFromRustBuffer[map[string]int64](c, rb)
+}
+
+func (_ FfiConverterMapStringInt64) Read(reader io.Reader) map[string]int64 {
+	result := make(map[string]int64)
+	length := readInt32(reader)
+	for i := int32(0); i < length; i++ {
+		key := FfiConverterStringINSTANCE.Read(reader)
+		value := FfiConverterInt64INSTANCE.Read(reader)
+		result[key] = value
+	}
+	return result
+}
+
+func (c FfiConverterMapStringInt64) Lower(value map[string]int64) C.RustBuffer {
+	return LowerIntoRustBuffer[map[string]int64](c, value)
+}
+
+func (c FfiConverterMapStringInt64) LowerExternal(value map[string]int64) ExternalCRustBuffer {
+	return RustBufferFromC(LowerIntoRustBuffer[map[string]int64](c, value))
+}
+
+func (_ FfiConverterMapStringInt64) Write(writer io.Writer, mapValue map[string]int64) {
+	if len(mapValue) > math.MaxInt32 {
+		panic("map[string]int64 is too large to fit into Int32")
+	}
+
+	writeInt32(writer, int32(len(mapValue)))
+	for key, value := range mapValue {
+		FfiConverterStringINSTANCE.Write(writer, key)
+		FfiConverterInt64INSTANCE.Write(writer, value)
+	}
+}
+
+type FfiDestroyerMapStringInt64 struct {}
+
+func (_ FfiDestroyerMapStringInt64) Destroy(mapValue map[string]int64) {
+	for key, value := range mapValue {
+		FfiDestroyerString{}.Destroy(key)
+		FfiDestroyerInt64{}.Destroy(value)	
+	}
+}
+
+
+type FfiConverterMapStringValue struct {}
 
 var FfiConverterMapStringValueINSTANCE = FfiConverterMapStringValue{}
 
@@ -3092,11 +3562,12 @@ func (_ FfiConverterMapStringValue) Write(writer io.Writer, mapValue map[string]
 	}
 }
 
-type FfiDestroyerMapStringValue struct{}
+type FfiDestroyerMapStringValue struct {}
 
 func (_ FfiDestroyerMapStringValue) Destroy(mapValue map[string]Value) {
 	for key, value := range mapValue {
 		FfiDestroyerString{}.Destroy(key)
-		FfiDestroyerValue{}.Destroy(value)
+		FfiDestroyerValue{}.Destroy(value)	
 	}
 }
+

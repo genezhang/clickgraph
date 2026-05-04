@@ -433,6 +433,21 @@ void uniffi_clickgraph_ffi_fn_method_connection_export(void* ptr, RustBuffer cyp
 RustBuffer uniffi_clickgraph_ffi_fn_method_connection_export_to_sql(void* ptr, RustBuffer cypher, RustBuffer output_path, RustBuffer options, RustCallStatus *out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_GET_QUERY_TIMEOUT
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_GET_QUERY_TIMEOUT
+uint64_t uniffi_clickgraph_ffi_fn_method_connection_get_query_timeout(void* ptr, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_IMPORT_CSV_FILE
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_IMPORT_CSV_FILE
+void uniffi_clickgraph_ffi_fn_method_connection_import_csv_file(void* ptr, RustBuffer label, RustBuffer file_path, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_IMPORT_FILE
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_IMPORT_FILE
+void uniffi_clickgraph_ffi_fn_method_connection_import_file(void* ptr, RustBuffer label, RustBuffer file_path, RustCallStatus *out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_IMPORT_JSON
 #define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_IMPORT_JSON
 void uniffi_clickgraph_ffi_fn_method_connection_import_json(void* ptr, RustBuffer label, RustBuffer json_lines, RustCallStatus *out_status
@@ -441,6 +456,11 @@ void uniffi_clickgraph_ffi_fn_method_connection_import_json(void* ptr, RustBuffe
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_IMPORT_JSON_FILE
 #define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_IMPORT_JSON_FILE
 void uniffi_clickgraph_ffi_fn_method_connection_import_json_file(void* ptr, RustBuffer label, RustBuffer file_path, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_IMPORT_PARQUET_FILE
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_IMPORT_PARQUET_FILE
+void uniffi_clickgraph_ffi_fn_method_connection_import_parquet_file(void* ptr, RustBuffer label, RustBuffer file_path, RustCallStatus *out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_QUERY
@@ -466,6 +486,11 @@ void* uniffi_clickgraph_ffi_fn_method_connection_query_remote_graph(void* ptr, R
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_QUERY_TO_SQL
 #define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_QUERY_TO_SQL
 RustBuffer uniffi_clickgraph_ffi_fn_method_connection_query_to_sql(void* ptr, RustBuffer cypher, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_SET_QUERY_TIMEOUT
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_SET_QUERY_TIMEOUT
+void uniffi_clickgraph_ffi_fn_method_connection_set_query_timeout(void* ptr, uint64_t timeout_ms, RustCallStatus *out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_CONNECTION_STORE_SUBGRAPH
@@ -496,6 +521,11 @@ void uniffi_clickgraph_ffi_fn_free_database(void* ptr, RustCallStatus *out_statu
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_CONSTRUCTOR_DATABASE_OPEN
 #define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_CONSTRUCTOR_DATABASE_OPEN
 void* uniffi_clickgraph_ffi_fn_constructor_database_open(RustBuffer schema_path, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_CONSTRUCTOR_DATABASE_OPEN_IN_MEMORY
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_CONSTRUCTOR_DATABASE_OPEN_IN_MEMORY
+void* uniffi_clickgraph_ffi_fn_constructor_database_open_in_memory(RustBuffer schema_path, RustBuffer config, RustCallStatus *out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_CONSTRUCTOR_DATABASE_OPEN_SQL_ONLY
@@ -563,9 +593,29 @@ RustBuffer uniffi_clickgraph_ffi_fn_method_queryresult_column_names(void* ptr, R
 RustBuffer uniffi_clickgraph_ffi_fn_method_queryresult_get_all_rows(void* ptr, RustCallStatus *out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_QUERYRESULT_GET_COLUMN_DATA_TYPES
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_QUERYRESULT_GET_COLUMN_DATA_TYPES
+RustBuffer uniffi_clickgraph_ffi_fn_method_queryresult_get_column_data_types(void* ptr, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_QUERYRESULT_GET_COMPILING_TIME
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_QUERYRESULT_GET_COMPILING_TIME
+double uniffi_clickgraph_ffi_fn_method_queryresult_get_compiling_time(void* ptr, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_QUERYRESULT_GET_EXECUTION_TIME
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_QUERYRESULT_GET_EXECUTION_TIME
+double uniffi_clickgraph_ffi_fn_method_queryresult_get_execution_time(void* ptr, RustCallStatus *out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_QUERYRESULT_GET_NEXT
 #define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_QUERYRESULT_GET_NEXT
 RustBuffer uniffi_clickgraph_ffi_fn_method_queryresult_get_next(void* ptr, RustCallStatus *out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_QUERYRESULT_GET_WRITE_COUNTERS
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_QUERYRESULT_GET_WRITE_COUNTERS
+RustBuffer uniffi_clickgraph_ffi_fn_method_queryresult_get_write_counters(void* ptr, RustCallStatus *out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_FN_METHOD_QUERYRESULT_HAS_NEXT
@@ -917,6 +967,24 @@ uint16_t uniffi_clickgraph_ffi_checksum_method_connection_export_to_sql(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_GET_QUERY_TIMEOUT
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_GET_QUERY_TIMEOUT
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_get_query_timeout(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_IMPORT_CSV_FILE
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_IMPORT_CSV_FILE
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_import_csv_file(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_IMPORT_FILE
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_IMPORT_FILE
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_import_file(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_IMPORT_JSON
 #define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_IMPORT_JSON
 uint16_t uniffi_clickgraph_ffi_checksum_method_connection_import_json(void
@@ -926,6 +994,12 @@ uint16_t uniffi_clickgraph_ffi_checksum_method_connection_import_json(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_IMPORT_JSON_FILE
 #define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_IMPORT_JSON_FILE
 uint16_t uniffi_clickgraph_ffi_checksum_method_connection_import_json_file(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_IMPORT_PARQUET_FILE
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_IMPORT_PARQUET_FILE
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_import_parquet_file(void
     
 );
 #endif
@@ -956,6 +1030,12 @@ uint16_t uniffi_clickgraph_ffi_checksum_method_connection_query_remote_graph(voi
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_QUERY_TO_SQL
 #define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_QUERY_TO_SQL
 uint16_t uniffi_clickgraph_ffi_checksum_method_connection_query_to_sql(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_SET_QUERY_TIMEOUT
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_CONNECTION_SET_QUERY_TIMEOUT
+uint16_t uniffi_clickgraph_ffi_checksum_method_connection_set_query_timeout(void
     
 );
 #endif
@@ -1019,9 +1099,33 @@ uint16_t uniffi_clickgraph_ffi_checksum_method_queryresult_get_all_rows(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_QUERYRESULT_GET_COLUMN_DATA_TYPES
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_QUERYRESULT_GET_COLUMN_DATA_TYPES
+uint16_t uniffi_clickgraph_ffi_checksum_method_queryresult_get_column_data_types(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_QUERYRESULT_GET_COMPILING_TIME
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_QUERYRESULT_GET_COMPILING_TIME
+uint16_t uniffi_clickgraph_ffi_checksum_method_queryresult_get_compiling_time(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_QUERYRESULT_GET_EXECUTION_TIME
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_QUERYRESULT_GET_EXECUTION_TIME
+uint16_t uniffi_clickgraph_ffi_checksum_method_queryresult_get_execution_time(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_QUERYRESULT_GET_NEXT
 #define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_QUERYRESULT_GET_NEXT
 uint16_t uniffi_clickgraph_ffi_checksum_method_queryresult_get_next(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_QUERYRESULT_GET_WRITE_COUNTERS
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_METHOD_QUERYRESULT_GET_WRITE_COUNTERS
+uint16_t uniffi_clickgraph_ffi_checksum_method_queryresult_get_write_counters(void
     
 );
 #endif
@@ -1046,6 +1150,12 @@ uint16_t uniffi_clickgraph_ffi_checksum_method_queryresult_reset(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_CONSTRUCTOR_DATABASE_OPEN
 #define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_CONSTRUCTOR_DATABASE_OPEN
 uint16_t uniffi_clickgraph_ffi_checksum_constructor_database_open(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_CONSTRUCTOR_DATABASE_OPEN_IN_MEMORY
+#define UNIFFI_FFIDEF_UNIFFI_CLICKGRAPH_FFI_CHECKSUM_CONSTRUCTOR_DATABASE_OPEN_IN_MEMORY
+uint16_t uniffi_clickgraph_ffi_checksum_constructor_database_open_in_memory(void
     
 );
 #endif

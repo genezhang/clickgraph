@@ -30,7 +30,7 @@ use crate::graph_catalog::graph_schema::{GraphSchema, NodeSchema};
 use crate::query_planner::logical_expr::LogicalExpr;
 use crate::query_planner::logical_plan::{
     Create, CreatePattern, CreateRel, Delete, Filter, GraphJoins, LogicalPlan, Remove, SetItem,
-    SetProperties, Union, WriteProperty,
+    SetProperties, WriteProperty,
 };
 
 use super::errors::RenderBuildError;

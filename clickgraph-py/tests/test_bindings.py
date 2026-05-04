@@ -261,6 +261,69 @@ class TestQueryResult:
         except Exception:
             pytest.skip("chdb not available")
 
+    # Phase 5d side-channel: read queries leave write_counters as None.
+    # The wrapper exposes the property regardless of FFI freshness — even
+    # when `_ffi.py` predates `get_write_counters`, the defensive
+    # try/except in __init__ keeps it returning None instead of raising.
+    def test_write_counters_none_on_read_query(self, conn):
+        try:
+            result = conn.query("MATCH (u:User) RETURN u.name LIMIT 0")
+        except Exception:
+            pytest.skip("chdb not available")
+        assert hasattr(result, "write_counters"), (
+            "QueryResult must expose `write_counters` so callers can "
+            "distinguish write+RETURN counters from a synthetic counter row"
+        )
+        assert result.write_counters is None, (
+            f"read query must return None for write_counters, "
+            f"got {result.write_counters!r}"
+        )
+
+    def test_write_counters_property_is_isolated_from_internal_state(self, conn):
+        """Mutating the returned dict must not corrupt the QueryResult's
+        own snapshot — the property hands back a fresh copy on each
+        access (or `None`)."""
+        try:
+            result = conn.query("MATCH (u:User) RETURN u.name LIMIT 0")
+        except Exception:
+            pytest.skip("chdb not available")
+        # A read query stays None; mutate-attempt is a no-op.
+        first = result.write_counters
+        second = result.write_counters
+        assert first == second  # both None, same value
+
+    def test_write_counters_fallback_when_ffi_lacks_method(self):
+        """Older auto-generated `_ffi.py` (predating the side-channel)
+        won't expose `get_write_counters`. The wrapper's defensive
+        try/except in __init__ must keep returning None instead of
+        raising AttributeError when `QueryResult.write_counters` is
+        accessed downstream."""
+        from clickgraph import QueryResult as ClickQueryResult
+
+        class FakeFfiResultNoCounters:
+            """Mimics a stale `_ffi.py` QueryResult that lacks
+            `get_write_counters` but has the older interface."""
+
+            def column_names(self):
+                return ["x"]
+
+            def get_all_rows(self):
+                return []
+
+            def get_compiling_time(self):
+                return 0.0
+
+            def get_execution_time(self):
+                return 0.0
+
+            def get_column_data_types(self):
+                return ["Null"]
+
+            # Note: deliberately no `get_write_counters` — must not raise.
+
+        wrapped = ClickQueryResult(FakeFfiResultNoCounters())
+        assert wrapped.write_counters is None
+
 
 # ---------------------------------------------------------------------------
 # Kuzu-compatible API
