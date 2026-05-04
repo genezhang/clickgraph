@@ -67,9 +67,9 @@ fn extract_from_ast_expr<'a>(
     constraints: &mut HashMap<String, HashSet<String>>,
     negated: bool,
 ) {
-    match expr {
-        // Handle operator applications: IN, =, AND, OR, NOT
-        ast::Expression::OperatorApplicationExp(op_app) => {
+    // Handle operator applications: IN, =, AND, OR, NOT
+    if let ast::Expression::OperatorApplicationExp(op_app) = expr {
+        {
             match op_app.operator {
                 // NOT operator - flip negation flag and recurse
                 ast::Operator::Not => {
@@ -151,8 +151,6 @@ fn extract_from_ast_expr<'a>(
                 }
             }
         }
-        // For other expression types, no id() patterns expected
-        _ => {}
     }
 }
 

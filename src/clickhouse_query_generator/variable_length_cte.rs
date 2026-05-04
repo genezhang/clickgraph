@@ -2183,11 +2183,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             format!("\n    WHERE {}", where_conditions.join(" AND "))
         };
 
-        let path_rel_expr = if self.needs_path_data() {
-            "CAST([] AS Array(String)) AS path_relationships"
-        } else {
-            "CAST([] AS Array(String)) AS path_relationships"
-        };
+        let path_rel_expr = "CAST([] AS Array(String)) AS path_relationships";
         format!(
             "    SELECT\n        ew.{source} AS start_id,\n        ew.{target} AS end_id,\n        1 AS hop_count,\n        ew.{weight} AS total_weight,\n        [ew.{source}, ew.{target}] AS path_nodes,\n        {path_rel_expr} \n    FROM {cte} ew{where_clause}",
             source = wc.source_column,

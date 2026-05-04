@@ -416,16 +416,7 @@ impl FilterBuilder for LogicalPlan {
 
                 let mut iter = filters.into_iter();
                 let first = iter.next().unwrap();
-                match first {
-                    Some(first_expr) => {
-                        if iter.all(|f| f.is_some()) {
-                            Some(first_expr)
-                        } else {
-                            None
-                        }
-                    }
-                    None => None,
-                }
+                first.filter(|_| iter.all(|f| f.is_some()))
             }
             LogicalPlan::PageRank(_) => None,
             LogicalPlan::Unwind(u) => u.input.extract_filters()?,

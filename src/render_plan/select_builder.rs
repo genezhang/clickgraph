@@ -2349,8 +2349,8 @@ impl LogicalPlan {
                             if let Some(rel_type) = labels.first() {
                                 // Get property mappings from schema via plan_ctx
                                 let schema = ctx.schema();
-                                let rel_props =
-                                    schema.get_relationship_properties(&[rel_type.clone()]);
+                                let rel_props = schema
+                                    .get_relationship_properties(std::slice::from_ref(rel_type));
                                 log::info!(
                                     "  🔍 Found {} properties for denormalized rel '{}': {:?}",
                                     rel_props.len(),

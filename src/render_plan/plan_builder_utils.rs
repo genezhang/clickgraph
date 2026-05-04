@@ -4680,10 +4680,10 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
     let mut endpoint_position: HashMap<String, &str> = HashMap::new();
 
     for cte in &plan.ctes.0 {
-        if cte.vlp_cypher_start_alias.is_some() && cte.vlp_cypher_end_alias.is_some() {
-            let start = cte.vlp_cypher_start_alias.as_ref().unwrap();
-            let end = cte.vlp_cypher_end_alias.as_ref().unwrap();
-
+        if let (Some(start), Some(end)) = (
+            cte.vlp_cypher_start_alias.as_ref(),
+            cte.vlp_cypher_end_alias.as_ref(),
+        ) {
             endpoint_position.insert(start.clone(), "start");
             endpoint_position.insert(end.clone(), "end");
 
@@ -7906,12 +7906,9 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         // or from CTE name (fallback, may fail for aliases with underscores)
                         let aliases = if !cte.with_exported_aliases.is_empty() {
                             cte.with_exported_aliases.clone()
-                        } else if let Some(extracted) =
-                            crate::utils::cte_naming::extract_aliases_from_cte_name(&cte.cte_name)
-                        {
-                            extracted
                         } else {
-                            Vec::new()
+                            crate::utils::cte_naming::extract_aliases_from_cte_name(&cte.cte_name)
+                                .unwrap_or_default()
                         };
                         for alias in aliases {
                             if !alias.is_empty() {
@@ -8325,10 +8322,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         ) {
                             match expr {
                                 RenderExpr::PropertyAccessExp(prop) => {
-                                    if let Ok((properties, table_alias_override)) =
+                                    if let Ok((properties, Some(edge_alias))) =
                                         plan.get_properties_with_table_alias(&prop.table_alias.0)
                                     {
-                                        if let Some(edge_alias) = table_alias_override {
+                                        {
                                             // This is a denormalized node — resolve both alias and property.
                                             // The properties list is (cypher_name, db_column) pairs
                                             // from from_node_properties or to_node_properties,
@@ -10666,7 +10663,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                             && j.table_alias != old_from_alias
                                             && j.table_alias != pattern_alias
                                             // Node tables: "ldbc.Person" (contains '.' but not '_' after the db prefix)
-                                            && j.table_name.split('.').last().is_some_and(|n| !n.contains('_'))
+                                            && j.table_name.split('.').next_back().is_some_and(|n| !n.contains('_'))
                                             && j.joining_on.iter().any(|op| {
                                                 op.operands.iter().any(|operand| {
                                                     if let RenderExpr::PropertyAccessExp(pa) = operand {

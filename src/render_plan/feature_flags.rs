@@ -130,8 +130,10 @@ mod tests {
 
     #[test]
     fn test_enabled_flags() {
-        let mut flags = PlanBuilderFeatureFlags::default();
-        flags.extract_utilities = true;
+        let flags = PlanBuilderFeatureFlags {
+            extract_utilities: true,
+            ..PlanBuilderFeatureFlags::default()
+        };
         let enabled = flags.enabled_flags();
         assert!(enabled["extract_utilities"]);
         assert!(!enabled["extract_join_builder"]);

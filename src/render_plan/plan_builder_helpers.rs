@@ -2922,11 +2922,7 @@ pub(super) fn add_label_column_to_union_branches(
                 .filter_map(|item| item.col_alias.as_ref())
                 .find_map(|alias| {
                     let a = &alias.0;
-                    if let Some(dot) = a.find('.') {
-                        Some(a[..dot].to_string())
-                    } else {
-                        None
-                    }
+                    a.find('.').map(|dot| a[..dot].to_string())
                 });
 
             // Build the qualified label column alias: "n.__label__" or "__label__"
