@@ -192,43 +192,6 @@ impl ViewScan {
         }
     }
 
-    /// Create a new relationship view scan with input plan
-    pub fn relationship_with_input(
-        source_table: String,
-        view_filter: Option<LogicalExpr>,
-        property_mapping: HashMap<String, PropertyValue>,
-        id_column: String,
-        output_schema: Vec<String>,
-        projections: Vec<LogicalExpr>,
-        from_id: impl Into<Identifier>,
-        to_id: impl Into<Identifier>,
-        input: Arc<LogicalPlan>,
-    ) -> Self {
-        ViewScan {
-            source_table,
-            view_filter,
-            property_mapping,
-            id_column,
-            output_schema,
-            projections,
-            from_id: Some(from_id.into()),
-            to_id: Some(to_id.into()),
-            input: Some(input),
-            view_parameter_names: None,
-            view_parameter_values: None,
-            use_final: false,       // Default: no FINAL
-            is_denormalized: false, // Default: not denormalized (for edges)
-            from_node_properties: None,
-            to_node_properties: None,
-            type_column: None,
-            type_values: None,
-            from_label_column: None,
-            to_label_column: None,
-            schema_filter: None, // Default: no schema-level filter
-            node_label: None,    // Not used for relationships
-        }
-    }
-
     /// Get the mapped column name for a property
     pub fn get_mapped_column(&self, property: &str) -> Option<&PropertyValue> {
         self.property_mapping.get(property)

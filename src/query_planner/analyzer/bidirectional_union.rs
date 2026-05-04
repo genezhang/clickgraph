@@ -1348,6 +1348,7 @@ mod tests {
         }))
     }
 
+    #[allow(clippy::too_many_arguments)] // builds a GraphRel test fixture; 8 args are the entity's fields
     fn make_test_graph_rel(
         left: Arc<LogicalPlan>,
         right: Arc<LogicalPlan>,
