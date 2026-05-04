@@ -311,6 +311,11 @@ pub fn infer_relationship_type_from_nodes(
     Ok(Some(matching_types))
 }
 
+/// One concrete (from_label, to_label, rel_type) triple chosen for an edge.
+pub type ResolvedTriple = (String, String, String);
+/// One full assignment of triples — one entry per pattern in input order.
+pub type PatternCombination = Vec<ResolvedTriple>;
+
 /// **NEW (Feb 2026)**: Resolve connected patterns with shared variables
 ///
 /// Detects when multiple patterns share variables and applies cross-pattern constraints
@@ -323,7 +328,7 @@ pub fn infer_relationship_type_from_nodes(
 ///
 /// Without optimization:
 /// - r1 can be 10 types → 10 combinations
-/// - r2 can be 10 types → 10 combinations  
+/// - r2 can be 10 types → 10 combinations
 /// - Total: 10 × 10 = 100 UNION branches
 ///
 /// With optimization:
@@ -340,11 +345,6 @@ pub fn infer_relationship_type_from_nodes(
 /// - `Ok(Some(combinations))` - Optimized list of valid type combinations
 /// - `Ok(None)` - No optimization needed (patterns not connected or already typed)
 /// - `Err(...)` - Too many combinations even after optimization
-/// One concrete (from_label, to_label, rel_type) triple chosen for an edge.
-pub type ResolvedTriple = (String, String, String);
-/// One full assignment of triples — one entry per pattern in input order.
-pub type PatternCombination = Vec<ResolvedTriple>;
-
 pub fn resolve_connected_patterns(
     patterns: Vec<(String, String, Vec<String>)>, // (from_alias, to_alias, rel_types)
     schema: &GraphSchema,

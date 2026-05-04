@@ -1381,6 +1381,7 @@ impl TypeInference {
     ///
     /// Key difference from old PatternResolver: We apply check_relationship_exists_with_direction()
     /// and optimize_undirected_pattern() to ensure only schema-valid branches are generated.
+    #[allow(clippy::too_many_arguments)] // type-inference entry: plan + untyped-node set + plan/schema contexts + pattern relationships + per-alias property/null-check accesses
     fn generate_union_for_untyped_nodes(
         &self,
         plan: Arc<LogicalPlan>,

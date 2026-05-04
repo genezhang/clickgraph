@@ -2231,6 +2231,7 @@ fn find_node_in_row_with_label(
 
 /// Find or reconstruct a relationship in the result row using its alias, path metadata,
 /// and the start/end node element IDs.
+#[allow(clippy::too_many_arguments)] // path-result reconstruction needs row + alias + both endpoint ids + (rel_types, from_labels, to_labels) for polymorphic resolution + return metadata + schema
 fn find_relationship_in_row_with_type(
     row: &HashMap<String, Value>,
     alias: &str,

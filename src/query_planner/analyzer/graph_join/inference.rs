@@ -2601,6 +2601,7 @@ impl GraphJoinInference {
     /// | MixedAccess       | Partial: only JOIN the non-embedded node          |
     /// | EdgeToEdge        | Multi-hop: edge2.from_id = edge1.to_id           |
     /// | CoupledSameRow    | None - unify aliases, same physical row           |
+    #[allow(clippy::too_many_arguments)] // dispatches per-pattern join generation; needs the full triad (left/rel/right) of aliases, cte_names, optional flags, schemas, plus pattern context, plan context, and join accumulator
     fn handle_graph_pattern_v2(
         &self,
         ctx: &PatternSchemaContext,
@@ -2779,6 +2780,7 @@ impl GraphJoinInference {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)] // analyzer entry — needs graph_rel, root plan, plan/schema contexts, the join accumulator + tracking ctx, plus cached pattern metadata
     fn infer_graph_join(
         &self,
         graph_rel: &GraphRel,
