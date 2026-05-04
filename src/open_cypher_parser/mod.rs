@@ -81,7 +81,7 @@ pub fn parse_cypher_statement(
     Ok((
         input,
         CypherStatement::Query {
-            query: first_query,
+            query: Box::new(first_query),
             union_clauses,
         },
     ))
