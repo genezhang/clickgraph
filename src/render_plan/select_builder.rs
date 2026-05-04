@@ -1010,10 +1010,9 @@ impl SelectBuilder for LogicalPlan {
                                             .map(|ca| ColumnAlias(ca.0.clone())),
                                     });
                                     continue;
-                                } else if table_alias_override.is_some() {
+                                } else if let Some(actual_table_alias) = table_alias_override {
                                     // Has actual_table_alias but property not found in mapping
                                     // Use original column name with the overridden alias
-                                    let actual_table_alias = table_alias_override.unwrap();
                                     log::debug!(
                                         "🔍 Using actual table alias '{}' for {}.{} (property not in mapping)",
                                         actual_table_alias,

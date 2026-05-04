@@ -378,7 +378,7 @@ pub fn rewrite_render_plan_with_scope(plan: &mut RenderPlan, scope: &VariableSco
                 if !cte_info.property_mapping.is_empty() {
                     // Expand node CTE variable into individual property columns
                     let mut props: Vec<_> = cte_info.property_mapping.iter().collect();
-                    props.sort_by_key(|(k, _)| k.clone());
+                    props.sort_by(|a, b| a.0.cmp(b.0));
                     for (cypher_prop, cte_col) in props {
                         expanded_items.push(SelectItem {
                             expression: RenderExpr::PropertyAccessExp(PropertyAccess {

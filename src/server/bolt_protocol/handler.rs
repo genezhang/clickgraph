@@ -760,7 +760,7 @@ impl BoltHandler {
         }
 
         // Parse arguments from CALL sys.set(arg1, arg2)
-        let inner = trimmed.trim_end_matches(|c| c == ';' || c == ')');
+        let inner = trimmed.trim_end_matches([';', ')']);
         let inner = if let Some(pos) = inner.find('(') {
             &inner[pos + 1..]
         } else {

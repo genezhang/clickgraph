@@ -85,7 +85,8 @@ pub struct NodeSchema {
     /// Populated from:
     /// 1. Auto-detection (querying ClickHouse system.columns) - preferred
     /// 2. Schema YAML (type/types field) - for sql_only mode
-    /// Required for Neo4j compatibility (elementId function support)
+    ///
+    /// Required for Neo4j compatibility (elementId function support).
     #[serde(skip)]
     pub node_id_types: Option<Vec<SchemaType>>,
 
@@ -318,7 +319,8 @@ pub struct RelationshipSchema {
     /// Populated from:
     /// 1. Auto-detection (querying ClickHouse system.columns)
     /// 2. Schema YAML (type/types field)
-    /// Required for Neo4j compatibility (elementId function support for relationships)
+    ///
+    /// Required for Neo4j compatibility (elementId function support for relationships).
     #[serde(skip)]
     pub edge_id_types: Option<Vec<SchemaType>>,
 

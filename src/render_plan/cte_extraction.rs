@@ -2731,7 +2731,7 @@ pub fn extract_ctes_with_context(
                                     continue;
                                 }
                                 if !include_all {
-                                    if let Some(ref req_set) = reqs {
+                                    if let Some(req_set) = reqs {
                                         if !req_set.contains(prop_name.as_str())
                                             && !req_set.contains(prop_value.raw())
                                         {
@@ -2810,7 +2810,7 @@ pub fn extract_ctes_with_context(
                                 // (prop_value.raw()) because PropertyRequirementsAnalyzer records
                                 // DB column names after view resolution
                                 if !include_all {
-                                    if let Some(ref req_set) = required {
+                                    if let Some(req_set) = required {
                                         if !req_set.contains(prop_name.as_str())
                                             && !req_set.contains(prop_value.raw())
                                         {
@@ -2853,7 +2853,7 @@ pub fn extract_ctes_with_context(
                                 }
                                 // Check both Cypher property name and DB column name
                                 if !include_all {
-                                    if let Some(ref req_set) = required {
+                                    if let Some(req_set) = required {
                                         if !req_set.contains(prop_name.as_str())
                                             && !req_set.contains(prop_value.raw())
                                         {
@@ -3684,7 +3684,7 @@ pub fn extract_ctes_with_context(
                             if let Some(ref from_props) = node_schema.from_properties {
                                 for (logical_prop, physical_col) in from_props {
                                     if !start_include_all {
-                                        if let Some(ref req_set) = start_required {
+                                        if let Some(req_set) = start_required {
                                             if !req_set.contains(logical_prop.as_str())
                                                 && !req_set.contains(physical_col.as_str())
                                             {
@@ -3708,7 +3708,7 @@ pub fn extract_ctes_with_context(
                             if let Some(ref to_props) = node_schema.to_properties {
                                 for (logical_prop, physical_col) in to_props {
                                     if !end_include_all {
-                                        if let Some(ref req_set) = end_required {
+                                        if let Some(req_set) = end_required {
                                             if !req_set.contains(logical_prop.as_str())
                                                 && !req_set.contains(physical_col.as_str())
                                             {
