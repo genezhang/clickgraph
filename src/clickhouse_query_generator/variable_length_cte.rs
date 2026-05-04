@@ -124,6 +124,7 @@ impl From<crate::query_planner::logical_plan::ShortestPathMode> for ShortestPath
 }
 
 impl<'a> VariableLengthCteGenerator<'a> {
+    #[allow(clippy::too_many_arguments)] // VLP CTE generation requires the full pattern (nodes, rel, aliases, filters, mode); each arg is a distinct schema/query input
     pub fn new(
         schema: &'a GraphSchema, // Schema for constraint compilation
         spec: VariableLengthSpec,
@@ -174,6 +175,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
     }
 
     /// Create a generator with polymorphic edge support
+    #[allow(clippy::too_many_arguments)] // adds polymorphic-edge fields on top of `new`'s params; each is a distinct schema input
     pub fn new_with_polymorphic(
         schema: &'a GraphSchema, // Schema for constraint compilation
         spec: VariableLengthSpec,
@@ -300,82 +302,6 @@ impl<'a> VariableLengthCteGenerator<'a> {
             from_node_label,
             to_node_label,
             // Heterogeneous polymorphic path fields - set later via setter method
-            intermediate_node_table: None,
-            intermediate_node_id_column: None,
-            intermediate_node_label: None,
-            weight_cte: None,
-            needs_path_relationships: true,
-            use_bfs_mode: false,
-            is_undirected: false,
-        }
-    }
-
-    /// Create a generator for denormalized edges (node properties embedded in edge table)
-    pub fn new_denormalized(
-        schema: &'a GraphSchema, // Schema for constraint compilation
-        spec: VariableLengthSpec,
-        relationship_table: &str, // The only table - edge table with node properties
-        rel_from_col: &str,       // From column (e.g., "Origin")
-        rel_to_col: &str,         // To column (e.g., "Dest")
-        start_alias: &str,        // Cypher alias (e.g., "a")
-        end_alias: &str,          // Cypher alias (e.g., "b")
-        relationship_cypher_alias: &str, // Cypher relationship alias (e.g., "r")
-        properties: Vec<NodeProperty>, // Properties to include in CTE
-        shortest_path_mode: Option<ShortestPathMode>,
-        start_node_filters: Option<String>,
-        end_node_filters: Option<String>,
-        relationship_filters: Option<String>, // Filters on relationship properties
-        path_variable: Option<String>,
-        relationship_types: Option<Vec<String>>,
-        edge_id: Option<Identifier>,
-    ) -> Self {
-        let database = std::env::var("CLICKHOUSE_DATABASE").ok();
-
-        log::debug!(
-            "new_denormalized: {} properties, start='{}', end='{}'",
-            properties.len(),
-            start_alias,
-            end_alias
-        );
-
-        Self {
-            schema,
-            spec,
-            cte_name: format!("vlp_{}_{}", start_alias, end_alias),
-            // For denormalized: node tables are NOT used, only relationship table
-            start_node_table: relationship_table.to_string(), // Will be ignored
-            start_node_id_column: rel_from_col.to_string(),   // Use from_col as start ID
-            start_node_alias: "start_node".to_string(),
-            relationship_table: relationship_table.to_string(),
-            relationship_from_column: rel_from_col.to_string(),
-            relationship_to_column: rel_to_col.to_string(),
-            relationship_alias: "rel".to_string(),
-            end_node_table: relationship_table.to_string(), // Will be ignored
-            end_node_id_column: rel_to_col.to_string(),     // Use to_col as end ID
-            end_node_alias: "end_node".to_string(),
-            start_cypher_alias: start_alias.to_string(),
-            end_cypher_alias: end_alias.to_string(),
-            relationship_cypher_alias: relationship_cypher_alias.to_string(),
-            properties, // Denormalized properties from edge table
-            database,
-            shortest_path_mode,
-            start_node_filters,
-            end_node_filters,
-            relationship_filters,
-            path_variable,
-            relationship_types,
-            edge_id,
-            is_denormalized: true, // Enable denormalized mode (both nodes)
-            start_is_denormalized: true, // Start node is denormalized
-            end_is_denormalized: true, // End node is denormalized
-            is_fk_edge: false,     // Denormalized edges are not FK-edges
-            // Polymorphic edge fields - not used for denormalized edges
-            type_column: None,
-            from_label_column: None,
-            to_label_column: None,
-            from_node_label: None,
-            to_node_label: None,
-            // Heterogeneous polymorphic path fields - not used for denormalized edges
             intermediate_node_table: None,
             intermediate_node_id_column: None,
             intermediate_node_label: None,
@@ -3988,6 +3914,7 @@ pub struct ChainedJoinGenerator {
 }
 
 impl ChainedJoinGenerator {
+    #[allow(clippy::too_many_arguments)] // builds inline N-hop JOIN for fixed-length VLPs; each arg is a distinct table/column/alias from the matched pattern
     pub fn new(
         hop_count: u32,
         start_table: &str,
