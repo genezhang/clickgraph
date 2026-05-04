@@ -539,10 +539,9 @@ fn node_id_column_or_error(
 /// Phase 5e: an untyped Cypher MATCH like `MATCH (n) DELETE n` expands
 /// the planner's `n` GraphNode into a `LogicalPlan::Union` with one
 /// branch per node table — each branch binds `alias = n` to a different
-/// label. The single-label `find_alias_label` returns whichever label
-/// the depth-first walk reaches first, so the write pipeline used to
-/// emit a DELETE/UPDATE for just that one table; this helper enumerates
-/// all of them so the caller can fan out across the union.
+/// label. Earlier code only returned the depth-first-first label and
+/// emitted a DELETE/UPDATE for just that one table; this helper
+/// enumerates every label so the caller can fan out across the union.
 fn find_all_alias_labels(alias: &str, plan: &LogicalPlan) -> Vec<String> {
     let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     collect_alias_labels(alias, plan, &mut out);
@@ -674,35 +673,6 @@ fn slice_plan_to_label(
                 None
             }
         }
-    }
-}
-
-fn find_alias_label(alias: &str, plan: &LogicalPlan) -> Option<String> {
-    match plan {
-        LogicalPlan::GraphNode(n) if n.alias == alias => n.label.clone(),
-        LogicalPlan::GraphNode(n) => find_alias_label(alias, &n.input),
-        LogicalPlan::GraphRel(r) => find_alias_label(alias, &r.left)
-            .or_else(|| find_alias_label(alias, &r.center))
-            .or_else(|| find_alias_label(alias, &r.right)),
-        LogicalPlan::Filter(f) => find_alias_label(alias, &f.input),
-        LogicalPlan::Projection(p) => find_alias_label(alias, &p.input),
-        LogicalPlan::GroupBy(gb) => find_alias_label(alias, &gb.input),
-        LogicalPlan::OrderBy(ob) => find_alias_label(alias, &ob.input),
-        LogicalPlan::Skip(s) => find_alias_label(alias, &s.input),
-        LogicalPlan::Limit(l) => find_alias_label(alias, &l.input),
-        LogicalPlan::Cte(c) => find_alias_label(alias, &c.input),
-        LogicalPlan::GraphJoins(gj) => find_alias_label(alias, &gj.input),
-        LogicalPlan::Unwind(u) => find_alias_label(alias, &u.input),
-        LogicalPlan::Union(u) => u.inputs.iter().find_map(|p| find_alias_label(alias, p)),
-        LogicalPlan::CartesianProduct(cp) => {
-            find_alias_label(alias, &cp.left).or_else(|| find_alias_label(alias, &cp.right))
-        }
-        LogicalPlan::WithClause(wc) => find_alias_label(alias, &wc.input),
-        LogicalPlan::Create(c) => find_alias_label(alias, &c.input),
-        LogicalPlan::SetProperties(sp) => find_alias_label(alias, &sp.input),
-        LogicalPlan::Delete(d) => find_alias_label(alias, &d.input),
-        LogicalPlan::Remove(r) => find_alias_label(alias, &r.input),
-        LogicalPlan::Empty | LogicalPlan::ViewScan(_) | LogicalPlan::PageRank(_) => None,
     }
 }
 

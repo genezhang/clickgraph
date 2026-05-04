@@ -2489,15 +2489,6 @@ fn build_aliased_group_by(group_by: &GroupByExpressions, select: &SelectItems) -
     sql
 }
 
-/// Render a single UNION branch to SQL. Simple branches produce
-/// `SELECT ... FROM ... WHERE ...`. Complex branches (with inner
-/// unions or per-arm LIMIT) wrap in a subselect.
-/// Returns the set of Cypher aliases that are actually backed by a multi-type VLP CTE
-/// in this specific branch (by checking FROM and JOINs against VLP CTE name pattern).
-fn branch_vlp_backed_aliases(branch: &RenderPlan) -> HashSet<String> {
-    vlp_backed_aliases_from_from_joins(&branch.from, &branch.joins)
-}
-
 /// Build alias→label map from a SQL scope's FROM clause and JOINs.
 /// Maps each SQL alias to the graph node label that owns the underlying table.
 /// This is ground truth: if `b` joins as `social.users`, then `b → User`.
