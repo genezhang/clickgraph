@@ -964,15 +964,12 @@ fn find_collect_source_label(
         LogicalPlan::WithClause(wc) => {
             // Check this WithClause's items for collect(X) AS list_alias
             for item in &wc.items {
-                let alias_name = item.col_alias.as_ref().map(|a| a.0.as_str()).or_else(|| {
-                    if let LogicalExpr::TableAlias(ref v) = item.expression {
-                        Some(v.0.as_str())
-                    } else if let LogicalExpr::ColumnAlias(ref v) = item.expression {
-                        Some(v.0.as_str())
-                    } else {
-                        None
-                    }
-                });
+                let fallback = match &item.expression {
+                    LogicalExpr::TableAlias(v) => Some(v.0.as_str()),
+                    LogicalExpr::ColumnAlias(v) => Some(v.0.as_str()),
+                    _ => None,
+                };
+                let alias_name = item.col_alias.as_ref().map(|a| a.0.as_str()).or(fallback);
                 if alias_name == Some(list_alias) {
                     // Found the item producing list_alias. Check if it's collect(X).
                     if let Some(source_var) = extract_collect_source_var(&item.expression) {

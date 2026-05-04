@@ -867,8 +867,6 @@ mod tests {
 
     #[test]
     fn test_translate_datetime_epoch_millis_passthrough() {
-        use crate::query_planner::logical_expr::Literal;
-
         // datetime({epochMillis: friend.birthday}) -> friend.birthday (identity)
         let fn_call = ScalarFnCall {
             name: "datetime".to_string(),

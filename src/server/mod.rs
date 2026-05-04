@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use axum::{
     extract::DefaultBodyLimit,
+    http::StatusCode,
     routing::{get, post},
     Router,
 };
@@ -281,9 +282,10 @@ async fn run_server(app_state: AppState, config: ServerConfig) {
 
     // Per-request timeout (covers parsing + planning + execution)
     if config.query_timeout_secs > 0 {
-        app = app.layer(TimeoutLayer::new(Duration::from_secs(
-            config.query_timeout_secs,
-        )));
+        app = app.layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(config.query_timeout_secs),
+        ));
         log::info!("HTTP request timeout: {}s", config.query_timeout_secs);
     }
 

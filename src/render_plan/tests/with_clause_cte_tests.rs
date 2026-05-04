@@ -244,7 +244,8 @@ mod regression_infinite_loop {
 
 #[cfg(test)]
 mod regression_cte_column_naming {
-    use super::*;
+    // No `use super::*;` — the tests in this module reach into
+    // `crate::utils::cte_column_naming` directly via fully-qualified paths.
 
     /// Regression test for CTE column name resolution.
     /// Before fix: create_cte_reference used strip_prefix("fids_p_") which

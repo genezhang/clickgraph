@@ -2862,29 +2862,16 @@ impl VariableLengthCteStrategy {
             return strategy.generate_sql(context, properties, filters);
         }
 
-        // Build the generator based on pattern type (Traditional/FK-Edge schemas)
-        let mut generator = if self.is_denormalized {
-            // Dead code - we return above for denormalized
-            unreachable!("Denormalized case handled above");
-            VariableLengthCteGenerator::new_denormalized(
-                schema,
-                context.spec.clone(),
-                &self.rel_table,
-                &self.rel_from_col,
-                &self.rel_to_col,
-                &self.pattern_ctx.left_node_alias,
-                &self.pattern_ctx.right_node_alias,
-                context.relationship_cypher_alias.as_deref().unwrap_or(""),
-                properties.to_vec(),
-                shortest_path_mode,
-                filters.start_sql.clone(),
-                filters.end_sql.clone(),
-                filters.relationship_sql.clone(),
-                context.path_variable.clone(),
-                context.relationship_types.clone(),
-                context.edge_id.clone(),
-            )
-        } else if self.start_is_denormalized != self.end_is_denormalized {
+        // Build the generator for everything except the fully-denormalized
+        // pattern (which returned above via `DenormalizedCteStrategy`).
+        // Three remaining cases:
+        //   * mixed access (one endpoint denormalized, the other not)
+        //     → `new_mixed`
+        //   * traditional / FK-edge / polymorphic edge schemas
+        //     → `new_with_fk_edge` (the polymorphic-capable constructor —
+        //       `polymorphic_info` is extracted in `Self::new` and threaded
+        //       in via the generator's polymorphic fields below)
+        let mut generator = if self.start_is_denormalized != self.end_is_denormalized {
             // Mixed access pattern
             VariableLengthCteGenerator::new_mixed(
                 schema,
