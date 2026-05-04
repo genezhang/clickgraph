@@ -1,7 +1,9 @@
-//! Configuration for PatternResolver
+//! Combination-limit configuration shared by TypeInference's untyped-node
+//! expansion (Phase 2). Caps how many type combinations the pass enumerates
+//! before the schema-direction validity filter prunes them.
 //!
-//! Manages configuration for systematic pattern type resolution,
-//! particularly the maximum number of type combinations to generate.
+//! These constants used to live alongside the now-deleted `pattern_resolver`
+//! module; the file name is preserved for git-blame continuity.
 
 use std::sync::OnceLock;
 
