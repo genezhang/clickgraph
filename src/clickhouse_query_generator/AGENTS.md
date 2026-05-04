@@ -188,7 +188,6 @@ Fields: schema, spec (min/max hops), start/end node tables & ID columns,
 
 **Constructor hierarchy**:
 - `new()` → `new_with_polymorphic()` → `new_with_fk_edge()` (each adds parameters)
-- `new_denormalized()` — For denormalized edges (node props in edge table)
 - `new_mixed()` — For hybrid patterns (one node denorm, one standard)
 
 **Key functions**:
