@@ -157,6 +157,7 @@ impl ViewScan {
     }
 
     /// Create a new relationship view scan with source and target columns
+    #[allow(clippy::too_many_arguments)] // relationship view scan needs source table, filter, mapping, id columns, output schema, projections, and from/to id columns; all are intrinsic to the entity
     pub fn new_relationship(
         source_table: String,
         view_filter: Option<LogicalExpr>,

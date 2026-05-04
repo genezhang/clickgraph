@@ -377,6 +377,7 @@ impl Cte {
     }
 
     /// Create a new VLP CTE with endpoint information
+    #[allow(clippy::too_many_arguments)] // VLP endpoint metadata: each pair (alias, table, id_col) is needed for both start and end nodes; not factorable without losing clarity
     pub fn new_vlp(
         cte_name: String,
         content: CteContent,
@@ -424,44 +425,6 @@ impl Cte {
                 },
             ],
             from_alias: Some(VLP_CTE_FROM_ALIAS.to_string()), // VLP CTEs use standard FROM alias
-            outer_where_filters: None,
-            with_exported_aliases: Vec::new(),
-            variable_registry: None,
-        }
-    }
-
-    /// Create a new VLP CTE with full column metadata from CteGenerationResult
-    pub fn new_vlp_with_columns(
-        cte_name: String,
-        content: CteContent,
-        is_recursive: bool,
-        start_alias: String,
-        end_alias: String,
-        start_table: String,
-        end_table: String,
-        cypher_start_alias: String,
-        cypher_end_alias: String,
-        start_id_col: String,
-        end_id_col: String,
-        path_variable: Option<String>,
-        columns: Vec<CteColumnMetadata>,
-        from_alias: String,
-    ) -> Self {
-        Self {
-            cte_name,
-            content,
-            is_recursive,
-            vlp_start_alias: Some(start_alias),
-            vlp_end_alias: Some(end_alias),
-            vlp_start_table: Some(start_table),
-            vlp_end_table: Some(end_table),
-            vlp_cypher_start_alias: Some(cypher_start_alias),
-            vlp_cypher_end_alias: Some(cypher_end_alias),
-            vlp_start_id_col: Some(start_id_col),
-            vlp_end_id_col: Some(end_id_col),
-            vlp_path_variable: path_variable,
-            columns,
-            from_alias: Some(from_alias),
             outer_where_filters: None,
             with_exported_aliases: Vec::new(),
             variable_registry: None,

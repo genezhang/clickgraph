@@ -289,6 +289,7 @@ fn infer_node_labels_from_rel(
 ///
 /// # Returns
 /// A Cte ready to be added to the CTE list, or an error
+#[allow(clippy::too_many_arguments)] // VLP CTE generation requires the full pattern context (schema, spec, properties, all-three filter slots, mode, types, labels, options); each is a distinct planner input
 pub fn generate_vlp_cte_via_manager(
     pattern_ctx: &PatternSchemaContext,
     schema: &GraphSchema,
@@ -6440,128 +6441,6 @@ pub fn get_node_schema_by_table<'a>(
         }
     }
     None
-}
-
-/// Expand fixed-length path patterns into inline JOINs
-///
-/// This function generates JOIN clauses for exact hop-count patterns (*2, *3, etc.)
-/// without using CTEs. It directly chains relationship and node JOINs.
-///
-/// # Arguments
-/// * `exact_hops` - Number of hops (e.g., 2 for *2)
-/// * `start_table` - Table name for start node
-/// * `start_id_col` - ID column for start node
-/// * `rel_table` - Table name for relationship
-/// * `from_col` - From-node ID column in relationship table
-/// * `to_col` - To-node ID column in relationship table
-/// * `end_table` - Table name for end node
-/// * `end_id_col` - ID column for end node
-/// * `start_alias` - Cypher alias for start node
-/// * `end_alias` - Cypher alias for end node
-///
-/// # Returns
-/// Vector of JOIN items to be added to the FROM clause
-pub fn expand_fixed_length_joins(
-    exact_hops: u32,
-    _start_table: &str,
-    start_id_col: &str,
-    rel_table: &str,
-    from_col: &str,
-    to_col: &str,
-    end_table: &str,
-    end_id_col: &str,
-    start_alias: &str,
-    end_alias: &str,
-) -> Vec<Join> {
-    use super::render_expr::{
-        Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
-    };
-
-    let mut joins = Vec::new();
-
-    log::debug!(
-        "expand_fixed_length_joins: Generating {} hops from {} to {}",
-        exact_hops,
-        start_alias,
-        end_alias
-    );
-
-    for hop in 1..=exact_hops {
-        let rel_alias = format!("r{}", hop);
-
-        // Determine previous node/relationship alias
-        let prev_alias = if hop == 1 {
-            start_alias.to_string()
-        } else {
-            // Bridge directly through previous relationship's to_id
-            format!("r{}", hop - 1)
-        };
-
-        let prev_id_col = if hop == 1 {
-            start_id_col.to_string()
-        } else {
-            to_col.to_string() // Bridge through previous relationship's to_id
-        };
-
-        // Add relationship JOIN
-        joins.push(Join {
-            table_name: rel_table.to_string(),
-            table_alias: rel_alias.clone(),
-            joining_on: vec![OperatorApplication {
-                operator: Operator::Equal,
-                operands: vec![
-                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: TableAlias(prev_alias),
-                        column: PropertyValue::Column(prev_id_col),
-                    }),
-                    RenderExpr::PropertyAccessExp(PropertyAccess {
-                        table_alias: TableAlias(rel_alias.clone()),
-                        column: PropertyValue::Column(from_col.to_string()),
-                    }),
-                ],
-            }],
-            join_type: JoinType::Inner,
-            pre_filter: None,
-            from_id_column: None,
-            to_id_column: None,
-            graph_rel: None,
-        });
-
-        // TODO: Add intermediate node JOIN only if properties referenced
-        // For now, always bridge directly through relationship IDs (optimization!)
-    }
-
-    // Always add final node JOIN (the endpoint)
-    let last_rel = format!("r{}", exact_hops);
-    joins.push(Join {
-        table_name: end_table.to_string(),
-        table_alias: end_alias.to_string(),
-        joining_on: vec![OperatorApplication {
-            operator: Operator::Equal,
-            operands: vec![
-                RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: TableAlias(last_rel),
-                    column: PropertyValue::Column(to_col.to_string()),
-                }),
-                RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: TableAlias(end_alias.to_string()),
-                    column: PropertyValue::Column(end_id_col.to_string()),
-                }),
-            ],
-        }],
-        join_type: JoinType::Inner,
-        pre_filter: None,
-        from_id_column: None,
-        to_id_column: None,
-        graph_rel: None,
-    });
-
-    log::debug!(
-        "expand_fixed_length_joins: Generated {} JOINs (no intermediate nodes)",
-        joins.len()
-    );
-
-    joins
 }
 
 /// Schema-aware fixed-length VLP JOIN generation using VlpContext
