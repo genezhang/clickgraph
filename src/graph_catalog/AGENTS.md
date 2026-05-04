@@ -301,7 +301,6 @@ JoinStrategy:
 
 ### Pattern Analysis (from pattern_schema.rs)
 - `PatternSchemaContext::analyze(left_node, edge, right_node, schema)` → computes strategies
-- `PatternSchemaContext::from_graph_rel_dyn(graph_rel, schema)` → factory from query planner types
 - `.left_node_strategy()`, `.right_node_strategy()`, `.edge_strategy()`, `.join_strategy()`
 - `.get_node_property(alias, prop, schema)` → resolves property to SQL column
 - `.get_edge_property(prop, schema)` → resolves edge property to SQL column

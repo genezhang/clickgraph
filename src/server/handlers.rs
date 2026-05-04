@@ -943,6 +943,7 @@ pub async fn query_handler(
 }
 
 /// Inner query handler logic - runs within task-local context
+#[allow(clippy::too_many_arguments)] // HTTP query entrypoint: app state, request payload, schema/query/format inputs, sql_only flag, replan policy, plus timing/metrics handles
 async fn query_handler_inner(
     app_state: Arc<AppState>,
     payload: QueryRequest,

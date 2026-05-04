@@ -489,6 +489,7 @@ pub fn register_path_variable(
 /// * `graph_rel` - The GraphRel node (for path variable registration)
 /// * `path_variable` - Optional path variable name
 /// * `shortest_path_mode` - Whether this is a shortest path query
+#[allow(clippy::too_many_arguments)] // registers a relationship pattern + its endpoints + path/shortest-path config in one call; each arg is a distinct piece of pattern metadata
 pub fn register_relationship_in_context(
     plan_ctx: &mut PlanCtx,
     rel_alias: &str,
