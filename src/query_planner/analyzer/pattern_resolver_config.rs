@@ -36,26 +36,68 @@ static MAX_COMBINATIONS: OnceLock<usize> = OnceLock::new();
 /// Reads from CLICKGRAPH_MAX_TYPE_COMBINATIONS environment variable,
 /// falls back to DEFAULT_MAX_COMBINATIONS if not set or invalid.
 pub fn get_max_combinations() -> usize {
-    *MAX_COMBINATIONS.get_or_init(|| {
-        std::env::var(ENV_MAX_COMBINATIONS)
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_MAX_COMBINATIONS)
-            .max(1)
-    })
+    *MAX_COMBINATIONS.get_or_init(read_max_combinations_from_env)
+}
+
+/// Inner parsing logic split out so tests can exercise it without touching
+/// the process-wide `OnceLock`. Reads the env var, parses to `usize`, falls
+/// back to `DEFAULT_MAX_COMBINATIONS` on missing/unparseable, and clamps
+/// the floor to 1.
+fn read_max_combinations_from_env() -> usize {
+    std::env::var(ENV_MAX_COMBINATIONS)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_MAX_COMBINATIONS)
+        .max(1)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+
+    /// Verifies the cached public entry point returns a sane value. The
+    /// `OnceLock` makes per-test mutation of the cache impossible, so the
+    /// behavioural coverage lives on `read_max_combinations_from_env`
+    /// below — this just pins that the cache wrapper itself runs.
+    #[test]
+    fn get_max_combinations_returns_positive() {
+        let max = get_max_combinations();
+        assert!(max > 0, "max combinations must be positive, got {max}");
+    }
+
+    /// `#[serial]`: all tests in this block mutate the same env var, so
+    /// they must not run in parallel with each other.
+    #[test]
+    #[serial]
+    fn read_env_falls_back_to_default_when_unset() {
+        // SAFETY: this test owns CLICKGRAPH_MAX_TYPE_COMBINATIONS for its
+        // duration via `#[serial]`.
+        std::env::remove_var(ENV_MAX_COMBINATIONS);
+        assert_eq!(read_max_combinations_from_env(), DEFAULT_MAX_COMBINATIONS);
+    }
 
     #[test]
-    fn test_default_max_combinations() {
-        // Exercises the env-var override path + OnceLock cache. The bound
-        // itself is a constant, so a `>= DEFAULT_MAX_COMBINATIONS` assertion
-        // would fire `clippy::assertions_on_constants`; instead we just
-        // exercise the codepath and accept that `.max(1)` clamps to 1.
-        let max = get_max_combinations();
-        assert!(max > 0);
+    #[serial]
+    fn read_env_honours_valid_override() {
+        std::env::set_var(ENV_MAX_COMBINATIONS, "12345");
+        assert_eq!(read_max_combinations_from_env(), 12345);
+        std::env::remove_var(ENV_MAX_COMBINATIONS);
+    }
+
+    #[test]
+    #[serial]
+    fn read_env_falls_back_to_default_on_unparseable() {
+        std::env::set_var(ENV_MAX_COMBINATIONS, "not-a-number");
+        assert_eq!(read_max_combinations_from_env(), DEFAULT_MAX_COMBINATIONS);
+        std::env::remove_var(ENV_MAX_COMBINATIONS);
+    }
+
+    #[test]
+    #[serial]
+    fn read_env_clamps_zero_to_one() {
+        std::env::set_var(ENV_MAX_COMBINATIONS, "0");
+        assert_eq!(read_max_combinations_from_env(), 1);
+        std::env::remove_var(ENV_MAX_COMBINATIONS);
     }
 }
