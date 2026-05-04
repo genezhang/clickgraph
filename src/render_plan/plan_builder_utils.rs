@@ -17539,7 +17539,7 @@ fn find_pc_cte_join_column(
     if let FromTableItem(Some(ref from)) = with_cte_render.from {
         if let Some(ref from_alias) = from.alias {
             let key = (var_name.to_string(), "id".to_string());
-            if !col_map.contains_key(&key) {
+            col_map.entry(key).or_insert_with(|| {
                 // Condition 1: CTE SELECT has a bare alias matching var_name
                 let cte_has_bare_alias = with_cte_render
                     .select
@@ -17565,12 +17565,12 @@ fn find_pc_cte_join_column(
                 };
                 if cte_has_bare_alias && has_bare_column {
                     // UNWIND scalar: the column name IS the alias
-                    col_map.insert(key, format!("{}.\"{}\"", from_alias, var_name));
+                    format!("{}.\"{}\"", from_alias, var_name)
                 } else {
                     let cte_col = crate::utils::cte_column_naming::cte_column_name(var_name, "id");
-                    col_map.insert(key, format!("{}.{}", from_alias, cte_col));
+                    format!("{}.{}", from_alias, cte_col)
                 }
-            }
+            });
         }
     }
 
@@ -17689,11 +17689,11 @@ fn generate_and_replace_arraycount_pc_subqueries(
             for pc in pattern_comprehensions.iter() {
                 for cv in &pc.correlation_vars {
                     let key = (cv.var_name.clone(), "id".to_string());
-                    if !branch_col_map.contains_key(&key) {
+                    branch_col_map.entry(key).or_insert_with(|| {
                         let cte_col =
                             crate::utils::cte_column_naming::cte_column_name(&cv.var_name, "id");
-                        branch_col_map.insert(key, format!("{}.{}", from_alias, cte_col));
-                    }
+                        format!("{}.{}", from_alias, cte_col)
+                    });
                 }
                 if let Some(ref lc) = pc.list_constraint {
                     let key1 = (lc.list_alias.clone(), "id".to_string());
