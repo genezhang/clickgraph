@@ -106,21 +106,6 @@ pub struct MultiTypeVlpJoinGenerator<'a> {
 }
 
 impl<'a> MultiTypeVlpJoinGenerator<'a> {
-    /// Helper: Generate node alias prefix from node type
-    ///
-    /// Derives alias prefix from first character of type name (lowercase).
-    /// Examples: "User" -> "u", "Post" -> "p", "Flight" -> "f"
-    /// Fallback: "n" for uncommon types
-    ///
-    /// This avoids hardcoded schema-specific logic (User->u, Post->p).
-    fn node_alias_prefix(node_type: &str) -> char {
-        node_type
-            .chars()
-            .next()
-            .map(|c| c.to_ascii_lowercase())
-            .unwrap_or('n')
-    }
-
     /// Create a new multi-type VLP JOIN generator
     ///
     /// # Arguments
