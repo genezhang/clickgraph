@@ -165,6 +165,7 @@ impl NodeSchema {
 
     /// Helper for tests: Create a NodeSchema with default denormalized fields (traditional node pattern)
     #[cfg(test)]
+    #[allow(clippy::too_many_arguments)] // 9 fields are intrinsic to NodeSchema; test-only constructor
     pub fn new_traditional(
         database: String,
         table_name: String,

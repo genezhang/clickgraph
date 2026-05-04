@@ -273,6 +273,7 @@ fn create_graph_node(
     }))
 }
 
+#[allow(clippy::too_many_arguments)] // builds a GraphRel test fixture; 8 args are the entity's fields
 fn create_graph_rel(
     left: Arc<LogicalPlan>,
     center: Arc<LogicalPlan>,
