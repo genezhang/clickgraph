@@ -1167,7 +1167,7 @@ async fn query_handler_inner(
                 }
             };
             let logical_plan =
-                match query_planner::evaluate_call_query(query_ast.clone(), &graph_schema) {
+                match query_planner::evaluate_call_query((**query_ast).clone(), &graph_schema) {
                     Ok(plan) => plan,
                     Err(e) => {
                         // Return 400 for call planning errors (both sql_only and normal mode)

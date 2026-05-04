@@ -41,10 +41,10 @@ pub fn transform_id_functions<'a>(
                 "  Transforming main query with {} MATCH clauses",
                 query.match_clauses.len()
             );
-            let transformed_query = transform_query(query, &mut transformer);
+            let transformed_query = transform_query(*query, &mut transformer);
 
             CypherStatement::Query {
-                query: transformed_query,
+                query: Box::new(transformed_query),
                 union_clauses: union_clauses
                     .into_iter()
                     .map(|uc| crate::open_cypher_parser::ast::UnionClause {
@@ -372,14 +372,14 @@ fn split_query_by_labels<'a>(
                             .cloned();
 
                         // Clone and modify the query to add the label
-                        modified_query = clone_query_with_label(
+                        modified_query = Box::new(clone_query_with_label(
                             arena,
                             &modified_query,
                             var_name,
                             label,
                             id_values,
                             schema,
-                        );
+                        ));
                     }
                 }
 
@@ -451,7 +451,7 @@ fn split_query_by_labels<'a>(
                     .collect();
 
                 for combo in &label_combos {
-                    let mut modified_query = query.clone();
+                    let mut modified_query: OpenCypherQueryAst<'_> = (*query).clone();
                     for (var_name, label) in combo {
                         let id_values = id_values_by_label
                             .get(*var_name)
@@ -507,7 +507,7 @@ fn split_query_by_labels<'a>(
                 );
 
                 return CypherStatement::Query {
-                    query: first,
+                    query: Box::new(first),
                     union_clauses: new_unions,
                 };
             }
@@ -600,7 +600,7 @@ fn split_query_by_labels<'a>(
                 new_union_clauses.len() + 1
             );
             CypherStatement::Query {
-                query: main_query,
+                query: Box::new(main_query),
                 union_clauses: new_union_clauses,
             }
         }

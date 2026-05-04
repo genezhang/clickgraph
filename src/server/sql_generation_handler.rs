@@ -231,7 +231,7 @@ pub async fn sql_generation_handler(
         // Note: CALL with UNION doesn't make sense, so we use the first query
         let planning_start = Instant::now();
         let logical_plan =
-            match query_planner::evaluate_call_query(first_query.clone(), &graph_schema) {
+            match query_planner::evaluate_call_query((**first_query).clone(), &graph_schema) {
                 Ok(plan) => plan,
                 Err(e) => {
                     let _planning_time = planning_start.elapsed().as_secs_f64() * 1000.0;

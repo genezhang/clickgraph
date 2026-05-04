@@ -199,7 +199,7 @@ pub fn evaluate_cypher_statement(
             // If no union clauses, just evaluate the single query
             if union_clauses.is_empty() {
                 return evaluate_query(
-                    query,
+                    *query,
                     schema,
                     tenant_id,
                     view_parameter_values,

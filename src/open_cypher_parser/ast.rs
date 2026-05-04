@@ -11,11 +11,15 @@ pub enum UnionType {
 }
 
 /// A complete Cypher statement - either a regular query or a standalone procedure call
+///
+/// `Query.query` is boxed because `OpenCypherQueryAst` is ~720 bytes — far larger than
+/// `ProcedureCall` (~72 bytes) and `CopyTo` (~80 bytes). Without boxing, every value of
+/// this enum (including the small variants) pays the 720-byte cost. See clippy::large_enum_variant.
 #[derive(Debug, PartialEq, Clone)]
 pub enum CypherStatement<'a> {
     /// Regular query with optional UNION clauses
     Query {
-        query: OpenCypherQueryAst<'a>,
+        query: Box<OpenCypherQueryAst<'a>>,
         union_clauses: Vec<UnionClause<'a>>,
     },
     /// Standalone procedure call (e.g., CALL db.labels())
