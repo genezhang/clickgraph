@@ -150,10 +150,10 @@ impl AnalyzerPass for FilterTagging {
                             // through to propagate Empty just like the Err branch below.
                             match self.extract_filters(mapped, plan_ctx) {
                                 Ok(final_filter) => {
-                                    return Ok(if final_filter.is_some() {
+                                    return Ok(if let Some(predicate) = final_filter {
                                         Transformed::Yes(Arc::new(LogicalPlan::Filter(Filter {
                                             input: child_tf.get_plan().clone(),
-                                            predicate: final_filter.unwrap(),
+                                            predicate,
                                         })))
                                     } else {
                                         Transformed::Yes(child_tf.get_plan().clone())

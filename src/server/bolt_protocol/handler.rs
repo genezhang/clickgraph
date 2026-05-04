@@ -223,7 +223,7 @@ fn decode_id_parameters(
                     // Decode each element in the array
                     let decoded: Vec<Value> = arr
                         .iter()
-                        .filter_map(|v| {
+                        .map(|v| {
                             if let Some(encoded_id) = v.as_i64() {
                                 // Use IdMapper to decode (tries cache first)
                                 if let Some((_label, raw_value)) =
@@ -236,9 +236,9 @@ fn decode_id_parameters(
                                     );
                                     // Try to parse as integer, fallback to string
                                     if let Ok(int_val) = raw_value.parse::<i64>() {
-                                        return Some(Value::Number(int_val.into()));
+                                        return Value::Number(int_val.into());
                                     }
-                                    return Some(Value::String(raw_value));
+                                    return Value::String(raw_value);
                                 } else {
                                     // Fallback: extract raw_value directly from bit pattern
                                     // This handles cross-session IDs where cache doesn't have the mapping
@@ -250,11 +250,11 @@ fn decode_id_parameters(
                                         encoded_id,
                                         raw_value
                                     );
-                                    return Some(Value::Number(raw_value.into()));
+                                    return Value::Number(raw_value.into());
                                 }
                             }
                             // Keep original if not a number
-                            Some(v.clone())
+                            v.clone()
                         })
                         .collect();
 

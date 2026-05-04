@@ -10,7 +10,7 @@ mod tests {
         let validator = SchemaValidator::new(client);
 
         // Basic constructor test
-        assert!(!validator.column_cache.is_empty() == false); // Cache starts empty
+        assert!(validator.column_cache.is_empty()); // Cache starts empty
     }
 
     #[test]

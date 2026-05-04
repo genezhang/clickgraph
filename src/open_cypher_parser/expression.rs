@@ -2074,44 +2074,36 @@ mod tests {
         // "yearly" should NOT match as temporal accessor "year"
         let input = "datetime('2013-01-01').yearly";
         let result = parse_expression(input);
-        match result {
-            Ok((remaining, _)) => {
-                // Parser should consume datetime(...) but NOT .yearly as temporal
-                assert!(
-                    remaining.contains("yearly"),
-                    "Expected 'yearly' to remain unparsed, got remaining: {}",
-                    remaining
-                );
-            }
-            Err(_) => {} // Also acceptable — failing to parse is fine
+        // Parser should consume datetime(...) but NOT .yearly as temporal.
+        // Err is also acceptable — failing to parse is fine.
+        if let Ok((remaining, _)) = result {
+            assert!(
+                remaining.contains("yearly"),
+                "Expected 'yearly' to remain unparsed, got remaining: {}",
+                remaining
+            );
         }
 
         // "months" should NOT match as temporal accessor "month"
         let input = "datetime('2013-01-01').months";
         let result = parse_expression(input);
-        match result {
-            Ok((remaining, _)) => {
-                assert!(
-                    remaining.contains("months"),
-                    "Expected 'months' to remain unparsed, got remaining: {}",
-                    remaining
-                );
-            }
-            Err(_) => {}
+        if let Ok((remaining, _)) = result {
+            assert!(
+                remaining.contains("months"),
+                "Expected 'months' to remain unparsed, got remaining: {}",
+                remaining
+            );
         }
 
         // "year_start" should NOT match as temporal accessor "year"
         let input = "datetime('2013-01-01').year_start";
         let result = parse_expression(input);
-        match result {
-            Ok((remaining, _)) => {
-                assert!(
-                    remaining.contains("year_start"),
-                    "Expected 'year_start' to remain unparsed, got remaining: {}",
-                    remaining
-                );
-            }
-            Err(_) => {}
+        if let Ok((remaining, _)) = result {
+            assert!(
+                remaining.contains("year_start"),
+                "Expected 'year_start' to remain unparsed, got remaining: {}",
+                remaining
+            );
         }
     }
 

@@ -452,7 +452,7 @@ impl IdMapper {
         // We can't distinguish hashed vs raw values, but for small non-negative numbers
         // (0 to 2^31-1), it's almost certainly the raw value
         // NOTE: 0 is a valid ID value (e.g., user_id=0), so we accept the range [0, 2^31)
-        if id_hash >= 0 && id_hash < (1i64 << 31) {
+        if (0..(1i64 << 31)).contains(&id_hash) {
             return Some((label, id_hash.to_string()));
         }
 

@@ -3399,12 +3399,11 @@ impl TypeInference {
                         // Skip denormalized nodes — render phase handles with direction context
                         if !graph_schema.is_denormalized_node(&label) {
                             // Create ViewScan using the label
-                            match crate::query_planner::logical_plan::match_clause::try_generate_view_scan(
-                            &graph_node.alias,
-                            &label,
-                            plan_ctx,
-                        ) {
-                            Ok(Some(view_scan)) => {
+                            if let Ok(Some(view_scan)) = crate::query_planner::logical_plan::match_clause::try_generate_view_scan(
+                                &graph_node.alias,
+                                &label,
+                                plan_ctx,
+                            ) {
                                 // Rebuild GraphNode with ViewScan instead of Empty
                                 return Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphNode(
                                     crate::query_planner::logical_plan::GraphNode {
@@ -3417,8 +3416,6 @@ impl TypeInference {
                                     },
                                 ))));
                             }
-                            _ => {}
-                        }
                         }
                     }
                 }
@@ -3849,9 +3846,9 @@ fn extract_labels_from_logical_expr(
     constraints: &mut HashMap<String, HashSet<String>>,
     negated: bool,
 ) {
-    match expr {
-        LogicalExpr::Operator(op_app) => {
-            use crate::query_planner::logical_expr::Operator;
+    if let LogicalExpr::Operator(op_app) = expr {
+        use crate::query_planner::logical_expr::Operator;
+        {
             match op_app.operator {
                 // NOT operator - flip negation flag and recurse
                 Operator::Not => {
@@ -3928,7 +3925,6 @@ fn extract_labels_from_logical_expr(
                 _ => {}
             }
         }
-        _ => {}
     }
 }
 

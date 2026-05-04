@@ -3286,15 +3286,15 @@ impl JoinBuilder for LogicalPlan {
                         }
                         // Preserve right-node pre_filter (schema filters + user predicates)
                         // that would normally go on the end-node JOIN we're eliding.
-                        if right_node_pre_filter.is_some() {
+                        if let Some(rnpf) = right_node_pre_filter.clone() {
                             rel_join.pre_filter = match rel_join.pre_filter.take() {
                                 Some(existing) => {
                                     Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
                                         operator: Operator::And,
-                                        operands: vec![existing, right_node_pre_filter.unwrap()],
+                                        operands: vec![existing, rnpf],
                                     }))
                                 }
-                                None => right_node_pre_filter.clone(),
+                                None => Some(rnpf),
                             };
                         }
                     }
