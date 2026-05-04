@@ -125,6 +125,9 @@ use crate::{
 // The default value (5) is now set directly in plan_builder.rs
 // via `max_inferred_types.unwrap_or(5)` and documented in plan_ctx.
 
+/// Result of `infer_pattern_types`: (inferred_edge_types, left_label, right_label).
+pub type InferredPatternTypes = (Option<Vec<String>>, Option<String>, Option<String>);
+
 pub struct TypeInference;
 
 impl TypeInference {
@@ -1844,7 +1847,7 @@ impl TypeInference {
         right_connection: &str,
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
-    ) -> AnalyzerResult<(Option<Vec<String>>, Option<String>, Option<String>)> {
+    ) -> AnalyzerResult<InferredPatternTypes> {
         // STEP 1: Gather all KNOWN constraints
         let known_left_label = plan_ctx
             .get_table_ctx(left_connection)

@@ -5675,17 +5675,17 @@ pub fn get_fixed_path_info(
     }))
 }
 
+/// (node_aliases, rel_aliases, node_id_columns) — node_id_columns maps alias → (table, id_column).
+type PathAliasesWithIds = (
+    Vec<String>,
+    Vec<String>,
+    std::collections::HashMap<String, (String, String)>,
+);
+
 /// Collect node and relationship aliases plus ID column mappings
 fn collect_path_aliases_with_ids(
     plan: &LogicalPlan,
-) -> Result<
-    (
-        Vec<String>,
-        Vec<String>,
-        std::collections::HashMap<String, (String, String)>,
-    ),
-    super::errors::RenderBuildError,
-> {
+) -> Result<PathAliasesWithIds, super::errors::RenderBuildError> {
     let mut node_aliases = Vec::new();
     let mut rel_aliases = Vec::new();
     let mut node_id_columns = std::collections::HashMap::new();

@@ -340,11 +340,16 @@ pub fn infer_relationship_type_from_nodes(
 /// - `Ok(Some(combinations))` - Optimized list of valid type combinations
 /// - `Ok(None)` - No optimization needed (patterns not connected or already typed)
 /// - `Err(...)` - Too many combinations even after optimization
+/// One concrete (from_label, to_label, rel_type) triple chosen for an edge.
+pub type ResolvedTriple = (String, String, String);
+/// One full assignment of triples — one entry per pattern in input order.
+pub type PatternCombination = Vec<ResolvedTriple>;
+
 pub fn resolve_connected_patterns(
     patterns: Vec<(String, String, Vec<String>)>, // (from_alias, to_alias, rel_types)
     schema: &GraphSchema,
     max_combinations: usize,
-) -> LogicalPlanResult<Option<Vec<Vec<(String, String, String)>>>> {
+) -> LogicalPlanResult<Option<Vec<PatternCombination>>> {
     // patterns: [(r1_from, r1_to, r1_types), (r2_from, r2_to, r2_types), ...]
     // Each entry: (from_node_alias, to_node_alias, possible_rel_types)
 

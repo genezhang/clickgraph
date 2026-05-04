@@ -27,6 +27,9 @@ fn wrap_epoch_millis_arg(args: &[String]) -> Vec<String> {
     }
 }
 
+/// Argument transformation: maps SQL-string args to (possibly rewritten) SQL-string args.
+pub type ArgTransform = fn(&[String]) -> Vec<String>;
+
 /// Function mapping entry
 #[derive(Clone)]
 pub struct FunctionMapping {
@@ -37,7 +40,7 @@ pub struct FunctionMapping {
     pub clickhouse_name: &'static str,
     /// Optional argument transformation function
     /// Takes SQL string args, returns transformed SQL string args
-    pub arg_transform: Option<fn(&[String]) -> Vec<String>>,
+    pub arg_transform: Option<ArgTransform>,
 }
 
 /// Get function mapping for a Neo4j function name
