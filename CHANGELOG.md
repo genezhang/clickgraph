@@ -1,3 +1,53 @@
+## [0.6.7-dev] - 2026-05-04
+
+### 🚀 Features
+
+- **Cypher writes in embedded mode** (PRs #275–#286): `CREATE`, `SET`, `DELETE` / `DETACH DELETE`, and `REMOVE` against ClickGraph-managed nodes, translated to ClickHouse lightweight `INSERT` / `UPDATE` / `DELETE`. Server / remote / sql_only modes reject writes upstream via the new `write_guard` admission check; `source:`-backed nodes/edges remain read-only. Phased rollout:
+  - **Phase 0** (#275, #276) — design lock; chose lightweight `UPDATE` over rewrite for `SET`.
+  - **Phase 1** (#277) — `Create` / `Update` / `Delete` `LogicalPlan` variants + builder + write_guard.
+  - **Phase 2** (#278) — `WriteRenderPlan` + `write_to_sql` + `id_gen` (per-node `id_generation` schema attribute: `uuid` default / `provided` / `snowflake`).
+  - **Phase 3** (#279) — executor wiring; writable tables get `enable_block_number_column = 1, enable_block_offset_column = 1` in DDL automatically.
+  - **Phase 4** (#280) — TCK write feature files imported (`Create*`, `Set*`, `Delete*`, `Remove*` — 21 files / 205 scenarios) and write-clause docs.
+  - **Phase 5a** (#281) — TCK side-effect step + `@unsupported-label-mutation` skip tag.
+  - **Phase 5b** (#282) — anonymous-node `CREATE` (`CREATE ()`, `CREATE (n {…})`) routes to `__Unlabeled` table catalogued by `schema_gen.rs`; lifts `Create1.feature` file-level `@wip`.
+  - **Phase 5c** (#283) — lifts `Delete1.feature` file-level `@wip`; ungates scenario [3]; per-scenario triage notes.
+  - **Phase 5d** (#284) — write+RETURN side-channel via `QueryResult::get_write_counters()`; accurate Neo4j-compatible counters (`nodes_created`, `properties_set`, `nodes_deleted`, `relationships_deleted`).
+  - **Phase 5e** (#285) — untyped-MATCH+write fan-out: `TypeInference` lifts a write root, runs label inference on the inner read pipeline so `MATCH (n) DELETE n` expands to `Delete { input: Union[GN(n, A), GN(n, B), …] }`; the write-plan builder fans out one DELETE / UPDATE per resolved label.
+  - **FFI exposure** (#286): `write_counters` side-channel reachable from FFI + Python bindings.
+  
+  `MERGE`, relationship `CREATE`, `CREATE … RETURN` (MATCH-bound), edge-alias `DELETE r`, `SET a += {…}` map-merge, and `REMOVE a:Label` are not implemented yet — gated `@wip` in the TCK with per-scenario reasons. See `clickgraph-tck/README.md` for the live status.
+
+- **TCK 100%** (PR #273): All 402 read scenarios passing — fixed list indexing (negative indices + out-of-range → null), type validation, step-regex parsing, and DELETE detection regressions.
+
+### 🧹 Infrastructure
+
+- **Clippy zero-warnings** (PRs #287–#302, 16 PRs): The `cargo clippy --all-targets` count went from 68 to 0. Highlights:
+  - Dropped the **`pattern_resolver` module** (#287): superseded by `TypeInference` since the unified type-inference pass landed; ~1,400 lines of dead code removed.
+  - **`large_enum_variant`** (#298): boxed `CypherStatement::Query.query` so the enum drops from 728 bytes → ~80 bytes (every value of the enum was previously paying the largest variant's cost). Auto-deref coercion absorbed most call sites — final diff was 6 files / 28 lines.
+  - **`module_inception`** (#295): unwrapped 4 redundant inner `#[cfg(test)] mod foo { … }` blocks where the file was already declared as the same-named module in its parent.
+  - **`type_complexity`** (#297): factored 5 wide tuple types into named aliases (`ArgTransform`, `ResolvedTriple`/`PatternCombination`, `InferredPatternTypes`, `PathAliasesWithIds`, `FlattenedMapLiteralResult`) — placed adjacent to first use and named for domain meaning.
+  - **`only_used_in_recursion`** (#296): documented 14 sites where a parameter (`plan_ctx`, `captured_cte_refs`, etc.) is forwarded through recursion to maintain analyzer/optimizer Pass-trait signature symmetry.
+  - **`too_many_arguments`** (#299, #300, #301, #302): triaged 23 sites — deleted 6 dead helpers (`relationship_with_input`, `new_denormalized`, `Cte::new_vlp_with_columns`, `expand_fixed_length_joins`, `from_graph_rel_dyn`, `generate_and_store_pattern_combinations`); documented 13 legit-but-wide functions with rationale; allowed 4 test-only fixtures.
+  - Dead-code triage (#288, #293): `set_role`, `encode_json_value`, `extract_target_id_negation`, `filter_node_schemas` retained with `#[allow(dead_code)]` and rationale; non-reachable enum variant + 1 unused field deleted.
+  - Mechanical idiomatic fixes across (#289–#294): `unnecessary_unwrap` → `if let`, `contains_key + insert` → `entry().or_insert_with`, `from_str` inherent → `impl FromStr`, `&mut` borrow correctness, etc.
+
+### 🐛 Bug Fixes
+
+- **Browser expand regression** (#268): three root-cause fixes for Neo4j Browser node-expand path.
+- **FFI memory cap** (#271): `max_memory_usage_bytes` exposed in FFI `SystemConfig`.
+- **TCK list & equality semantics** (#273): list indexing (`l[i]` / `l[-i]` / out-of-range), type validation, regex-based step parsing, DELETE detection.
+
+### 🔒 Security
+
+- **`rustls-webpki`** 0.103.10 → 0.103.13 (#274) — RUSTSEC-2026-0098 / 0099 / 0104.
+
+### 📚 Documentation
+
+- **Embedded-writes design plan** (#275, #276): `docs/design/embedded-writes.md` with phase decomposition, ID-generation strategy, and counter design.
+- **`motivation.md`** (#272): project motivation document.
+
+---
+
 ## [0.6.6-dev] - 2026-04-03
 
 ### 🚀 Features

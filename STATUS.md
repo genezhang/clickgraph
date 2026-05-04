@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: May 2, 2026*
+*Updated: May 4, 2026*
 
 ## Current Version: v0.6.7-dev
 
@@ -9,15 +9,16 @@ Supports server mode, embedded (in-process chdb), remote ClickHouse, and SQL-onl
 **Embedded mode is now read-write** (v0.6.7+): `CREATE`, `SET`, `DELETE`, and `REMOVE` against ClickGraph-managed tables; server / remote / sql_only modes remain read-only and reject writes upstream.
 `cg` CLI tool for agent/script-oriented use (`clickgraph-tool` workspace crate).
 
-**Unit Tests**: 1,601 passing (100%)
+**Unit Tests**: 1,653 passing (100%)
 **Integration Tests**: 183 passing (100%)
 **Embedded Tests**: 152 passing (unit + integration + e2e)
 **Go Binding Tests**: 14 passing (100%)
-**openCypher TCK**: 383/402 scenarios passing (95.3%), 0 failures, 19 skipped — see `clickgraph-tck/`
+**openCypher TCK**: **402/402 read scenarios passing (100%)** — 0 failures. Write feature files (~205 scenarios across `Create*`/`Set*`/`Delete*`/`Remove*`) imported and partially lifted: 9 scenarios run end-to-end with counter assertions; remaining are `@wip` with per-scenario triage notes. See `clickgraph-tck/`.
 **LDBC SNB**: 36/37 queries passing at sf0.003 and sf1 (97%) — bi-16 blocked by CALL subquery
 **Benchmark**: 14/14 queries (100%)
 **E2E Tests**: Bolt 4/4, Cache 5/5 (100%)
 **Endurance**: 24h / 518M requests / 0 server errors / P50=1ms / 27 MB RSS (jemalloc) — [details](tests/stress/RESULTS.md)
+**Lint**: `cargo clippy --all-targets` — **0 warnings** (cleaned from 68 across PRs #287–#302)
 
 ### Integration Test Breakdown
 
