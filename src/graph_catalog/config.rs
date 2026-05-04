@@ -10,6 +10,7 @@ use super::schema_validator::SchemaValidator;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use std::collections::{BTreeMap, HashMap};
+use std::str::FromStr;
 use thiserror::Error;
 
 /// Error type for identifier operations

@@ -15,7 +15,7 @@ use super::filter_builder::FilterBuilder;
 use super::from_builder::FromBuilder;
 use super::group_by_builder::GroupByBuilder;
 use super::join_builder::JoinBuilder;
-use super::properties_builder::PropertiesBuilder;
+use super::properties_builder::{PropertiesBuilder, ResolvedProperties};
 use super::render_expr::{
     AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess,
     RenderExpr, TableAlias,
@@ -183,7 +183,7 @@ pub(crate) trait RenderPlanBuilder {
     fn get_properties_with_table_alias(
         &self,
         alias: &str,
-    ) -> RenderPlanBuilderResult<(Vec<(String, String)>, Option<String>)>;
+    ) -> RenderPlanBuilderResult<ResolvedProperties>;
 
     /// Normalize aggregate function arguments: convert TableAlias(a) to PropertyAccess(a.id_column)
     /// This is needed for queries like COUNT(b) where b is a node alias
@@ -506,7 +506,7 @@ impl RenderPlanBuilder for LogicalPlan {
     fn get_properties_with_table_alias(
         &self,
         alias: &str,
-    ) -> RenderPlanBuilderResult<(Vec<(String, String)>, Option<String>)> {
+    ) -> RenderPlanBuilderResult<ResolvedProperties> {
         // Delegate to the PropertiesBuilder trait implementation
         <LogicalPlan as PropertiesBuilder>::get_properties_with_table_alias(self, alias)
     }
