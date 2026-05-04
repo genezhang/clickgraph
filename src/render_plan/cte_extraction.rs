@@ -2336,12 +2336,7 @@ pub fn extract_ctes_with_context(
 
                     let cleaned_predicate = strip_label_expr_from_logical(where_predicate);
 
-                    if cleaned_predicate.is_none() {
-                        log::info!("🔧 WHERE predicate contained only label expressions - cleared");
-                        (None, None, None, None)
-                    } else {
-                        let cleaned_predicate = cleaned_predicate.unwrap();
-
+                    if let Some(cleaned_predicate) = cleaned_predicate {
                         // Convert LogicalExpr to RenderExpr
                         let render_expr = RenderExpr::try_from(cleaned_predicate).map_err(|e| {
                             RenderBuildError::UnsupportedFeature(format!(
@@ -2530,7 +2525,10 @@ pub fn extract_ctes_with_context(
                             rel_sql_rendered,
                             Some(mapped_categorized),
                         )
-                    } // End of else block for cleaned_predicate.is_none()
+                    } else {
+                        log::info!("🔧 WHERE predicate contained only label expressions - cleared");
+                        (None, None, None, None)
+                    }
                 } else {
                     (None, None, None, None)
                 };
