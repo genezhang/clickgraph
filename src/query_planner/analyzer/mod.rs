@@ -138,8 +138,10 @@ mod unwind_tuple_enricher;
 mod variable_resolver;
 mod vlp_transitivity_check;
 
-// PatternResolver module and configuration
-mod pattern_resolver;
+// Combination-limit configuration shared by TypeInference (Phase 2 untyped
+// expansion). The former `pattern_resolver` module that owned these limits
+// was deleted after its functionality was absorbed into TypeInference
+// (see `type_inference.rs`).
 mod pattern_resolver_config;
 mod scoping_with_collapse;
 
@@ -182,40 +184,10 @@ pub fn initial_analyzing(
         plan
     };
 
-    // Step 2.1: Pattern Resolver - enumerate type combinations for remaining untyped nodes
-    // Step 2.1: PatternResolver - DEPRECATED (merged into TypeInference)
-    //
-    // PatternResolver functionality has been fully absorbed into UnifiedTypeInference.
-    // TypeInference now handles BOTH:
-    // - Filter→GraphRel patterns with WHERE constraints (Phase 1)
-    // - Untyped node discovery and UNION generation (Phase 2)
-    //
-    // Key improvements over old PatternResolver:
-    // - Direction validation: check_relationship_exists_with_direction()
-    // - Undirected optimization: optimize_undirected_pattern()
-    // - Filters invalid branches like (Post)-[AUTHORED]->(User)
-    //
-    // Removed: February 16, 2026
-    // See: src/query_planner/analyzer/type_inference.rs (lines 2100-2450)
-    /*
-    log::info!("🔍 ANALYZER: Running PatternResolver (handle ambiguous types)");
-    use crate::query_planner::analyzer::pattern_resolver::PatternResolver;
-    let pattern_resolver = PatternResolver::new();
-    let plan = match pattern_resolver.analyze_with_graph_schema(
-        plan.clone(),
-        plan_ctx,
-        current_graph_schema,
-    ) {
-        Ok(transformed_plan) => transformed_plan.get_plan(),
-        Err(e) => {
-            log::warn!(
-                "⚠️  PatternResolver failed: {:?}, continuing with original plan",
-                e
-            );
-            plan
-        }
-    };
-    */
+    // PatternResolver was a separate Step 2.1 pass that fanned untyped
+    // nodes into UNION branches. Deprecated on 2026-02-16 and merged into
+    // TypeInference (Phase 2: untyped-node UNION generation with direction
+    // validation and undirected optimization the old pass lacked).
 
     check_plan_size(&plan, "TypeInference")?;
 
