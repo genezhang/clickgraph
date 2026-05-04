@@ -2397,6 +2397,9 @@ fn rewrite_bridge_in_expr(
     }
 }
 
+// `items_after_test_module` is allowed here: helper fns sit after this
+// test block; reordering would just shuffle code for no behavioural gain.
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;

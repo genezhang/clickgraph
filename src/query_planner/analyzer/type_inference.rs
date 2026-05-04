@@ -1505,7 +1505,7 @@ impl TypeInference {
             let regular_props = property_accesses.get(var_name);
             let nc_props = null_check_accesses.get(var_name);
             if regular_props.is_some() || nc_props.is_some() {
-                let has_regular = regular_props.map_or(false, |p| !p.is_empty());
+                let has_regular = regular_props.is_some_and(|p| !p.is_empty());
                 if has_regular {
                     // Prune using regular ∪ null_check with ANY semantics
                     let all_props: HashSet<&String> = regular_props

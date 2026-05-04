@@ -4299,6 +4299,11 @@ fn extract_referenced_aliases_from_expr(expr: &RenderExpr, refs: &mut HashSet<St
     }
 }
 
+// `items_after_test_module` is allowed here: this file's test module sits
+// in the middle and a couple of small helpers (`get_graph_rel_from_plan`,
+// `build_format_row_json`) follow it. Reordering would shuffle ~360 lines
+// for no behavioural gain.
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5002,10 +5007,9 @@ fn build_format_row_json(
                     // CTE columns (prefixed with node_alias_, like a_code) keep their
                     // original table alias (the CTE JOIN alias)
                     let is_cte_column = col_name.starts_with(&cte_col_prefix);
-                    let table_alias = if table_alias_override.is_some() && !is_cte_column {
-                        table_alias_override.unwrap()
-                    } else {
-                        &prop_access.table_alias.0
+                    let table_alias = match table_alias_override {
+                        Some(override_alias) if !is_cte_column => override_alias,
+                        _ => &prop_access.table_alias.0,
                     };
                     let col_expr = format!("{}.{}", table_alias, col_name);
                     // Use prefixed alias to avoid collision (e.g., _s_city, _e_city)

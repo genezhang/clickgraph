@@ -4690,7 +4690,7 @@ fn rewrite_render_expr_aliases(
         }
         RenderExpr::OperatorApplicationExp(op) => {
             RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: op
                     .operands
                     .iter()
@@ -4737,7 +4737,7 @@ fn remap_select_item_aliases(
             // Check if the column alias starts with a source alias
             // Sort by key for deterministic iteration (HashMap order is non-deterministic)
             let mut sorted_mapping: Vec<_> = alias_mapping.iter().collect();
-            sorted_mapping.sort_by_key(|(k, _)| k.clone());
+            sorted_mapping.sort_by(|a, b| a.0.cmp(b.0));
             for (source_alias, output_alias) in sorted_mapping {
                 // Handle dot format: "u.name"
                 let prefix_dot = format!("{}.", source_alias);

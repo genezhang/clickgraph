@@ -2645,6 +2645,10 @@ pub fn extract_from(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<FromTa
     Ok(view_ref_to_from_table(from_ref))
 }
 
+// `items_after_test_module` is allowed here: this 17K-line module's
+// test block sits in the middle and many helpers follow. Reordering
+// would shuffle thousands of lines for no behavioural gain.
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -10065,10 +10069,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             }
 
                             // Try to find the ID column from schema
-                            if let Ok(graph_schema) =
+                            if let Some(graph_schema) =
                                 crate::server::query_context::get_current_schema()
-                                    .ok_or(())
-                                    .and_then(|s| Ok(s))
                             {
                                 // Look up table for this alias from plan_ctx
                                 let label = plan_ctx.and_then(|ctx| {
@@ -10943,15 +10945,11 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                         {
                                             // The pattern table's current ON references old FROM (e.g., t3.PostId = post.id)
                                             // Rewrite to reference CTE column instead (e.g., t3.PersonId = friend.p6_friend_id)
-                                            with_cte_render.joins.0[pidx].joining_on = cte_join
-                                                .joining_on
-                                                .iter()
-                                                .map(|op| {
-                                                    // Swap: CTE operand stays, pattern operand stays, but reorder
-                                                    // so pattern alias is on the left side for readability
-                                                    op.clone()
-                                                })
-                                                .collect();
+                                            // Reuse CTE join's ON predicates verbatim — the CTE
+                                            // operand stays, and the pattern operand was already
+                                            // ordered for readability when the join was built.
+                                            with_cte_render.joins.0[pidx].joining_on =
+                                                cte_join.joining_on.clone();
                                             with_cte_render.joins.0[pidx].join_type =
                                                 super::JoinType::Left;
                                         }
@@ -12537,7 +12535,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
                                 // Rewrite Union branch SELECT items to use CTE column names
                                 // Use scope-based rewriting (replaces removed rewrite_cte_expression)
-                                if let Some(ref scope) = scope {
+                                if let Some(scope) = scope {
                                     use super::variable_scope::rewrite_render_expr;
                                     for item in branch.select.items.iter_mut() {
                                         rewrite_render_expr(&mut item.expression, scope);
@@ -17550,7 +17548,7 @@ fn find_pc_cte_join_column(
                     .select
                     .items
                     .iter()
-                    .any(|item| item.col_alias.as_ref().map_or(false, |ca| ca.0 == var_name));
+                    .any(|item| item.col_alias.as_ref().is_some_and(|ca| ca.0 == var_name));
 
                 // Condition 2: FROM ViewScan has a bare column matching var_name
                 let has_bare_column = if let LogicalPlan::ViewScan(ref scan) = from.source.as_ref()
@@ -17807,7 +17805,7 @@ fn rewrite_logical_expr_aliases(
         }
         LogicalExpr::OperatorApplicationExp(op) => LogicalExpr::OperatorApplicationExp(
             crate::query_planner::logical_expr::OperatorApplication {
-                operator: op.operator.clone(),
+                operator: op.operator,
                 operands: op
                     .operands
                     .iter()

@@ -740,14 +740,14 @@ pub fn transform_row(
                                 "Swapped path nodes for undirected pattern (nodes now: {} -> {})",
                                 path.nodes[0]
                                     .labels
-                                    .iter()
-                                    .next()
-                                    .unwrap_or(&"?".to_string()),
+                                    .first()
+                                    .map(String::as_str)
+                                    .unwrap_or("?"),
                                 path.nodes[1]
                                     .labels
-                                    .iter()
-                                    .next()
-                                    .unwrap_or(&"?".to_string())
+                                    .first()
+                                    .map(String::as_str)
+                                    .unwrap_or("?")
                             );
                         }
                         // Also swap the relationship's start/end node element IDs

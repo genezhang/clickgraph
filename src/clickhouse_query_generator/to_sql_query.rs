@@ -2338,7 +2338,7 @@ fn build_union_inner_select(select: &SelectItems) -> (String, Vec<String>) {
             let property_part = &col_sql[dot_pos + 1..];
             non_agg_items
                 .iter()
-                .find(|i| i.col_alias.as_ref().map_or(false, |a| a.0 == property_part))
+                .find(|i| i.col_alias.as_ref().is_some_and(|a| a.0 == property_part))
                 .map(|item| item.expression.to_sql())
                 .unwrap_or_else(|| col_sql.clone())
         } else {
@@ -3037,7 +3037,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
     // The outer SELECT references specific named aliases (personId, etc.)
     // which are never duplicated — only the node property expansions collide.
     {
-        fn disambiguate_select_aliases(items: &mut Vec<crate::render_plan::SelectItem>) {
+        fn disambiguate_select_aliases(items: &mut [crate::render_plan::SelectItem]) {
             let mut counts: std::collections::HashMap<String, usize> =
                 std::collections::HashMap::new();
             for item in items.iter_mut() {
