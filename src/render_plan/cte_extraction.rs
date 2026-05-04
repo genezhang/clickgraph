@@ -3747,12 +3747,11 @@ pub fn extract_ctes_with_context(
                     // Detect weight CTE for weighted shortest path
                     // Check task-local QueryContext (set by build_chained_with_match_cte_plan)
                     let weight_cte_config = if graph_rel.shortest_path_mode.is_some() {
-                        crate::server::query_context::get_weight_cte_config().map(|wc| {
+                        crate::server::query_context::get_weight_cte_config().inspect(|wc| {
                             log::info!(
                                 "🏋️ Detected weight CTE '{}' for weighted shortest path",
                                 wc.cte_name
                             );
-                            wc
                         })
                     } else {
                         None
