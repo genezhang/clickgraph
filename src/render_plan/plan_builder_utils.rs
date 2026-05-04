@@ -12535,7 +12535,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 if let Some(scope) = scope {
                                     use super::variable_scope::rewrite_render_expr;
                                     for item in branch.select.items.iter_mut() {
-                                        rewrite_render_expr(&mut item.expression, scope);
+                                        rewrite_render_expr(&item.expression, scope);
                                     }
                                     log::info!(
                                         "🔧 build_chained_with_match_cte_plan: Rewrote Union branch SELECT via scope for CTE"

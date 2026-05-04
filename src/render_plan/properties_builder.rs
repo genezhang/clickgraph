@@ -13,6 +13,11 @@ use crate::render_plan::plan_builder_utils::extract_sorted_properties;
 /// Result type for properties builder operations
 pub type PropertiesBuilderResult<T> = Result<T, RenderBuildError>;
 
+/// `(properties, optional table alias override)` returned by property lookups.
+/// `properties` is a list of `(cypher_name, column_name)` pairs; the optional alias is
+/// `Some(rel_alias)` for denormalized nodes whose properties live on a relationship table.
+pub type ResolvedProperties = (Vec<(String, String)>, Option<String>);
+
 /// Trait for extracting property information from logical plans
 pub trait PropertiesBuilder {
     /// Get all properties for an alias, returning both properties and the actual table alias to use.
@@ -21,7 +26,7 @@ pub trait PropertiesBuilder {
     fn get_properties_with_table_alias(
         &self,
         alias: &str,
-    ) -> PropertiesBuilderResult<(Vec<(String, String)>, Option<String>)>;
+    ) -> PropertiesBuilderResult<ResolvedProperties>;
 
     /// Get properties with PlanCtx for coupled edge alias resolution.
     /// For coupled edges, uses the unified_alias from PatternSchemaContext.
@@ -29,14 +34,14 @@ pub trait PropertiesBuilder {
         &self,
         alias: &str,
         plan_ctx: Option<&PlanCtx>,
-    ) -> PropertiesBuilderResult<(Vec<(String, String)>, Option<String>)>;
+    ) -> PropertiesBuilderResult<ResolvedProperties>;
 }
 
 impl PropertiesBuilder for LogicalPlan {
     fn get_properties_with_table_alias(
         &self,
         alias: &str,
-    ) -> PropertiesBuilderResult<(Vec<(String, String)>, Option<String>)> {
+    ) -> PropertiesBuilderResult<ResolvedProperties> {
         match self {
             LogicalPlan::GraphNode(node) => {
                 // Check if this node's alias matches
@@ -441,7 +446,7 @@ impl PropertiesBuilder for LogicalPlan {
         &self,
         alias: &str,
         plan_ctx: Option<&PlanCtx>,
-    ) -> PropertiesBuilderResult<(Vec<(String, String)>, Option<String>)> {
+    ) -> PropertiesBuilderResult<ResolvedProperties> {
         // First, get properties using the standard method
         let (properties, initial_table_alias) = self.get_properties_with_table_alias(alias)?;
 

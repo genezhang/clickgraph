@@ -50,6 +50,10 @@ use crate::{
     },
 };
 
+/// Per-CTE entity-type map: CTE name → (alias → (is_rel, optional labels)).
+/// Tracks node/relationship label info across WITH boundaries for property resolution.
+pub type CteEntityTypes = HashMap<String, HashMap<String, (bool, Option<Vec<String>>)>>;
+
 #[derive(Debug, Clone)]
 pub struct PlanCtx {
     alias_table_ctx_map: HashMap<String, TableCtx>,
@@ -93,7 +97,7 @@ pub struct PlanCtx {
     /// Example: "with_tag_cte_1" → {"tag" → (false, ["Tag"])}
     /// This preserves node/relationship type information across WITH boundaries,
     /// enabling property resolution after WITH (e.g., `WITH tag ... RETURN tag.name`)
-    cte_entity_types: HashMap<String, HashMap<String, (bool, Option<Vec<String>>)>>,
+    cte_entity_types: CteEntityTypes,
     /// Property requirements tracking for optimization
     /// Populated by PropertyRequirementsAnalyzer pass (root-to-leaf traversal)
     /// Consumed by property expansion in renderer to prune unnecessary columns

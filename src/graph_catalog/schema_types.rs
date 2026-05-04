@@ -24,6 +24,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::str::FromStr;
 
 use crate::server::models::SqlDialect;
 
@@ -57,31 +58,31 @@ pub enum SchemaType {
     Uuid,
 }
 
-impl SchemaType {
-    /// Parse a type string from YAML configuration
-    ///
-    /// Case-insensitive and supports common aliases for convenience.
-    ///
-    /// # Supported aliases
-    ///
-    /// - `integer`: int, long, Integer, INT
-    /// - `float`: double, decimal, Float, FLOAT
-    /// - `string`: text, String, TEXT
-    /// - `boolean`: bool, Boolean, BOOL
-    /// - `datetime`: timestamp, DateTime, TIMESTAMP
-    /// - `date`: Date, DATE
-    /// - `uuid`: UUID
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let t = SchemaType::from_str("int")?;
-    /// assert_eq!(t, SchemaType::Integer);
-    ///
-    /// let t = SchemaType::from_str("Integer")?;
-    /// assert_eq!(t, SchemaType::Integer);
-    /// ```
-    pub fn from_str(s: &str) -> Result<Self, String> {
+/// Parse a type string from YAML configuration.
+///
+/// Case-insensitive and supports common aliases for convenience.
+///
+/// # Supported aliases
+///
+/// - `integer`: int, long, Integer, INT
+/// - `float`: double, decimal, Float, FLOAT
+/// - `string`: text, String, TEXT
+/// - `boolean`: bool, Boolean, BOOL
+/// - `datetime`: timestamp, DateTime, TIMESTAMP
+/// - `date`: Date, DATE
+/// - `uuid`: UUID
+///
+/// # Example
+///
+/// ```ignore
+/// use std::str::FromStr;
+/// let t = SchemaType::from_str("int")?;
+/// assert_eq!(t, SchemaType::Integer);
+/// ```
+impl FromStr for SchemaType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().trim() {
             "integer" | "int" | "long" => Ok(SchemaType::Integer),
             "float" | "double" | "decimal" => Ok(SchemaType::Float),
@@ -96,7 +97,9 @@ impl SchemaType {
             )),
         }
     }
+}
 
+impl SchemaType {
     /// Return the Nullable ClickHouse type string (e.g., "Nullable(Int64)").
     /// Used for TCK schemas where missing properties must return NULL.
     pub fn to_nullable_clickhouse_type(&self) -> String {

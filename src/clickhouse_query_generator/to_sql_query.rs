@@ -2699,6 +2699,10 @@ fn ensure_database_prefix(table_name: &str) -> String {
     table_name.to_string()
 }
 
+/// Per-VLP-CTE alias info: `cte_name → (start_alias, end_alias, path_variable)`.
+type VlpAliasInfo =
+    std::collections::HashMap<String, (Option<String>, Option<String>, Option<String>)>;
+
 /// Rewrite VLP variable references inside CTE bodies.
 ///
 /// When a WITH CTE body references a VLP CTE (e.g., FROM vlp_person_friend),
@@ -2710,10 +2714,8 @@ fn ensure_database_prefix(table_name: &str) -> String {
 /// JOINs to each union branch, rewriting with the correct VLP alias mapping
 /// for that direction.
 fn rewrite_vlp_in_cte_bodies(plan: &mut RenderPlan) {
-    use std::collections::HashMap;
-
     // Collect VLP CTE alias info: cte_name → (start_alias, end_alias, path_variable)
-    let vlp_info: HashMap<String, (Option<String>, Option<String>, Option<String>)> = plan
+    let vlp_info: VlpAliasInfo = plan
         .ctes
         .0
         .iter()
@@ -2750,10 +2752,7 @@ fn rewrite_vlp_in_cte_bodies(plan: &mut RenderPlan) {
 /// Rewrite VLP references in a single CTE body's RenderPlan.
 /// If the body's FROM is a VLP CTE, rewrites filters and JOIN conditions.
 /// For undirected VLP (with union branches), clones filters/JOINs to each branch.
-fn rewrite_cte_body_vlp_refs(
-    plan: &mut RenderPlan,
-    vlp_info: &std::collections::HashMap<String, (Option<String>, Option<String>, Option<String>)>,
-) {
+fn rewrite_cte_body_vlp_refs(plan: &mut RenderPlan, vlp_info: &VlpAliasInfo) {
     let from_name = match plan.from.0.as_ref() {
         Some(f) => f.name.clone(),
         None => return,

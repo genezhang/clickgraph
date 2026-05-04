@@ -27,7 +27,7 @@ use crate::{
     },
 };
 
-use super::{PlanCtx, TableCtx};
+use super::{CteEntityTypes, PlanCtx, TableCtx};
 
 /// Builder for PlanCtx with fluent API.
 ///
@@ -48,7 +48,7 @@ pub struct PlanCtxBuilder {
     optional_aliases: HashSet<String>,
     cte_counter: usize,
     cte_columns: HashMap<String, HashMap<String, String>>,
-    cte_entity_types: HashMap<String, HashMap<String, (bool, Option<Vec<String>>)>>,
+    cte_entity_types: CteEntityTypes,
     property_requirements: Option<PropertyRequirements>,
     pattern_contexts: HashMap<String, Arc<PatternSchemaContext>>,
     vlp_endpoints: HashMap<String, VlpEndpointInfo>,
