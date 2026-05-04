@@ -1227,7 +1227,7 @@ fn rewrite_render_expr_for_cte_with_context(
 
 /// Extract a JOIN condition from a filter expression.
 /// Looks for equality patterns between CTE aliases and other tables.
-#[allow(clippy::only_used_in_recursion)] // cte_alias / cte_schemas forwarded through recursion
+#[allow(clippy::only_used_in_recursion)] // Some context parameters are intentionally threaded through recursive descent (notably `cte_schemas`).
 fn extract_cte_join_condition_from_filter(
     filter_expr: &RenderExpr,
     cte_alias: &str,
