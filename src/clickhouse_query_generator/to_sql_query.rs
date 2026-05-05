@@ -2236,6 +2236,27 @@ fn collect_nested_aggregate_args(expr: &RenderExpr, agg_arg_cols: &mut Vec<Strin
     }
 }
 
+/// Path-materialization metadata column aliases.
+///
+/// These are constants emitted by VLP UNION branches so the Bolt result
+/// transformer can reconstruct a Path. They have no role in aggregation —
+/// when an outer SELECT applies `COUNT(*)`/`COUNT(p)` over a UNION of VLP
+/// branches, projecting these constants alongside the aggregate violates
+/// ClickHouse's "non-aggregate column not in GROUP BY" rule (Code 215).
+fn is_path_metadata_alias(alias: &str) -> bool {
+    matches!(
+        alias,
+        "_rel_properties"
+            | "_start_properties"
+            | "_end_properties"
+            | "__rel_type__"
+            | "__start_label__"
+            | "__end_label__"
+            | "__start_id__"
+            | "__end_id__"
+    )
+}
+
 /// Build a SELECT clause for UNION inner branches in the aggregation case.
 /// Returns (inner_select_sql, agg_arg_columns) where agg_arg_columns lists
 /// the SQL text of property-access expressions extracted from aggregate arguments.
@@ -2251,6 +2272,12 @@ fn build_union_inner_select(select: &SelectItems) -> (String, Vec<String>) {
             // Skip ALL __order_col items: ORDER BY is handled by outer query
             if let Some(alias) = &item.col_alias {
                 if alias.0.starts_with("__order_col") {
+                    return false;
+                }
+                // Skip path-materialization metadata: projecting these
+                // alongside the outer aggregate trips ClickHouse's
+                // NOT_AN_AGGREGATE check (Code 215).
+                if is_path_metadata_alias(&alias.0) {
                     return false;
                 }
             }
@@ -2417,6 +2444,11 @@ fn build_outer_aggregate_select(select: &SelectItems, agg_arg_cols: &[String]) -
         .filter(|item| {
             if let Some(alias) = &item.col_alias {
                 if alias.0.starts_with("__order_col") {
+                    return false;
+                }
+                // Path-materialization metadata never grouped/aggregated
+                // (see is_path_metadata_alias for rationale)
+                if is_path_metadata_alias(&alias.0) {
                     return false;
                 }
             }
