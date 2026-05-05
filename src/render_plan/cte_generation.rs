@@ -194,64 +194,31 @@ impl CteGenerationContext {
         self
     }
 
-    // 🔧 DEPRECATED: Keep for compatibility during migration
-    #[deprecated(note = "Use with_properties() instead - immutable builder pattern")]
-    pub(crate) fn set_properties(
-        &mut self,
-        left_alias: &str,
-        right_alias: &str,
-        properties: Vec<NodeProperty>,
-    ) {
-        let key = format!("{}-{}", left_alias, right_alias);
-        self.variable_length_properties.insert(key, properties);
-    }
-
     pub(crate) fn get_filter(&self) -> Option<&RenderExpr> {
         self.filter_expr.as_ref()
     }
 
-    // 🆕 IMMUTABLE: Returns new context
     pub(crate) fn with_filter(mut self, filter: RenderExpr) -> Self {
         self.filter_expr = Some(filter);
         self
-    }
-
-    // 🔧 DEPRECATED: Keep for compatibility
-    #[deprecated(note = "Use with_filter() instead")]
-    pub(crate) fn set_filter(&mut self, filter: RenderExpr) {
-        self.filter_expr = Some(filter);
     }
 
     pub(crate) fn get_start_cypher_alias(&self) -> Option<&str> {
         self.start_cypher_alias.as_deref()
     }
 
-    // 🆕 IMMUTABLE: Returns new context
     pub(crate) fn with_start_cypher_alias(mut self, alias: String) -> Self {
         self.start_cypher_alias = Some(alias);
         self
-    }
-
-    // 🔧 DEPRECATED: Keep for compatibility
-    #[deprecated(note = "Use with_start_cypher_alias() instead")]
-    pub(crate) fn set_start_cypher_alias(&mut self, alias: String) {
-        self.start_cypher_alias = Some(alias);
     }
 
     pub(crate) fn get_end_cypher_alias(&self) -> Option<&str> {
         self.end_cypher_alias.as_deref()
     }
 
-    // 🆕 IMMUTABLE: Returns new context
     pub(crate) fn with_end_cypher_alias(mut self, alias: String) -> Self {
         self.end_cypher_alias = Some(alias);
         self
-    }
-
-    // 🔧 DEPRECATED: Keep for compatibility
-    #[deprecated(note = "Use with_end_cypher_alias() instead")]
-    pub(crate) fn set_end_cypher_alias(&mut self, alias: String) {
-        self.end_cypher_alias = Some(alias);
     }
 
     /// Store fixed-length path inline JOINs for later retrieval

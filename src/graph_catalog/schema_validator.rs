@@ -8,36 +8,12 @@
 //! - ID columns have compatible types for graph operations
 //!
 //! Note: Some methods and fields are reserved for future online schema validation.
-#![allow(dead_code)]
-
-//! # Example
-//!
-//! ```ignore
-//! use brahmand::graph_catalog::{SchemaValidator, NodeViewMapping};
-//! use clickhouse::Client;
-//!
-//! async fn validate_mapping(client: Client) {
-//!     let mut validator = SchemaValidator::new(client);
-//!
-//!     let mapping = NodeViewMapping {
-//!         source_table: "users".to_string(),
-//!         id_column: "user_id".to_string(),
-//!         property_mappings: [
-//!             ("name".to_string(), "full_name".to_string())
-//!         ].into_iter().collect(),
-//!         label: "User".to_string(),
-//!         filter_condition: None,
-//!     };
-//!
-//!     // Validates table existence and column compatibility
-//!     validator.validate_node_mapping(&mapping).await.unwrap();
-//! }
-//! ```
 //!
 //! # Schema Caching
 //!
 //! The validator caches table schemas to minimize database queries. Cache is
 //! maintained per validator instance and is cleared when the instance is dropped.
+#![allow(dead_code)]
 
 use clickhouse::Client;
 use std::collections::HashMap;

@@ -195,16 +195,11 @@ impl JoinContext {
     // Reference Resolution (KEY METHOD for VLP+chained patterns)
     // ========================================================================
 
-    /// Backward compatibility alias for [`VLP_CTE_FROM_ALIAS`].
-    /// Prefer using the module-level constant directly.
-    #[deprecated(since = "0.6.2", note = "Use VLP_CTE_FROM_ALIAS constant instead")]
-    pub const VLP_CTE_DEFAULT_ALIAS: &'static str = VLP_CTE_FROM_ALIAS;
-
     /// Get the proper (table_alias, column) for a JOIN condition.
     ///
     /// This is the key method that fixes VLP+chained patterns:
     /// - For regular nodes: returns (alias, column) unchanged
-    /// - For VLP endpoints: returns (VLP_CTE_DEFAULT_ALIAS, position_column) e.g., ("t", "end_id")
+    /// - For VLP endpoints: returns (VLP_CTE_FROM_ALIAS, position_column) e.g., ("t", "end_id")
     ///
     /// # Example
     /// ```ignore
