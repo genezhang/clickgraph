@@ -36,13 +36,13 @@ start_server() {
     cd /home/gz/clickgraph
     cargo build --release --bin clickgraph > /dev/null 2>&1
     
-    nohup ./target/release/clickgraph --http-port 8080 --disable-bolt > /tmp/clickgraph_test.log 2>&1 &
+    nohup ./target/release/clickgraph --http-port 7475 --disable-bolt > /tmp/clickgraph_test.log 2>&1 &
     SERVER_PID=$!
     
     # Wait for server to be ready
     echo "Waiting for server to start (PID: $SERVER_PID)..."
     for i in {1..10}; do
-        if curl -s -X POST http://localhost:8080/health > /dev/null 2>&1; then
+        if curl -s -X POST http://localhost:7475/health > /dev/null 2>&1; then
             echo -e "${GREEN}✓ Server ready${NC}"
             return 0
         fi

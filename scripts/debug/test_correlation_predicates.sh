@@ -14,7 +14,7 @@ export RUST_LOG=info
 echo "=== Testing Correlation Predicate Extraction ==="
 echo ""
 
-# Kill any existing clickgraph process on port 8080
+# Kill any existing clickgraph process on port 7475
 pkill -f "target/release/clickgraph" || true
 sleep 1
 
@@ -31,7 +31,7 @@ sleep 3
 echo "Sending test query with correlation predicate..."
 QUERY='MATCH (src:IP)-[dns:REQUESTED]->(d:Domain) WITH src.ip as source_ip, d.name as domain MATCH (src2:IP)-[conn:ACCESSED]->(dest:IP) WHERE src2.ip = source_ip RETURN DISTINCT source_ip, domain, dest.ip as dest_ip ORDER BY source_ip, domain'
 
-curl -s -X POST http://localhost:8080/query \
+curl -s -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d "{\"query\": \"$QUERY\"}" > /tmp/query_result.json
 

@@ -3,11 +3,11 @@
 
 set -e
 
-CLICKGRAPH_URL="${CLICKGRAPH_URL:-http://localhost:8080}"
+CLICKGRAPH_URL="${CLICKGRAPH_URL:-http://localhost:7475}"
 
 echo "Waiting for ClickGraph server..."
 for i in {1..30}; do
-    if curl -s http://localhost:8080/health > /dev/null 2>&1; then
+    if curl -s http://localhost:7475/health > /dev/null 2>&1; then
         echo "✅ Server is ready!"
         break
     fi

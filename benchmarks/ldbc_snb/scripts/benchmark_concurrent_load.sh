@@ -4,7 +4,7 @@
 
 set -e
 
-CLICKGRAPH_URL="${CLICKGRAPH_URL:-http://localhost:8080}"
+CLICKGRAPH_URL="${CLICKGRAPH_URL:-http://localhost:7475}"
 SCHEMA_NAME="${SCHEMA_NAME:-ldbc_snb}"
 SCALE_FACTOR="${SCALE_FACTOR:-sf10}"
 TEST_DURATION="${TEST_DURATION:-30}"  # seconds
@@ -26,7 +26,7 @@ echo "=========================================="
 echo ""
 
 # Check server is running
-if ! curl -s http://localhost:8080/health > /dev/null 2>&1; then
+if ! curl -s http://localhost:7475/health > /dev/null 2>&1; then
     echo "❌ ClickGraph server is not running"
     echo "Start with:"
     echo "  export CLICKHOUSE_URL='http://localhost:8123' CLICKHOUSE_USER='default' CLICKHOUSE_PASSWORD='default' CLICKHOUSE_DATABASE='ldbc' GRAPH_CONFIG_PATH='./benchmarks/ldbc_snb/schemas/ldbc_snb.yaml'"

@@ -14,7 +14,7 @@ struct Cli {
     http_host: String,
 
     /// HTTP server port
-    #[arg(long, default_value_t = 8080)]
+    #[arg(long, default_value_t = 7475)]
     http_port: u16,
 
     /// Disable Bolt protocol server (enabled by default)

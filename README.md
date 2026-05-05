@@ -86,7 +86,7 @@ ClickGraph service runs as a lightweight stateless query translator alongside Cl
 flowchart LR
     Clients["Graph Clients<br/><br/>HTTP/REST<br/>Bolt Protocol<br/>(Neo4j tools)"]
 
-    ClickGraph["ClickGraph<br/><br/>Cypher -> SQL<br/>Translator<br/><br/>:8080 (HTTP)<br/>:7687 (Bolt)"]
+    ClickGraph["ClickGraph<br/><br/>Cypher -> SQL<br/>Translator<br/><br/>:7475 (HTTP)<br/>:7687 (Bolt)"]
 
     ClickHouse["ClickHouse<br/><br/>Columnar Storage<br/>Query Engine"]
 
@@ -135,7 +135,7 @@ docker-compose up -d clickhouse-service
 docker run -d \
   --name clickgraph \
   --network clickgraph_default \
-  -p 8080:8080 \
+  -p 7475:7475 \
   -p 7687:7687 \
   -e CLICKHOUSE_URL="http://clickhouse-service:8123" \
   -e CLICKHOUSE_USER="test_user" \
@@ -176,7 +176,7 @@ cargo run --bin clickgraph
 
 ```bash
 # HTTP API
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query": "MATCH (u:User) RETURN u.full_name LIMIT 5"}'
 
@@ -235,7 +235,7 @@ cargo build --release -p clickgraph-tool
 **`clickgraph-client` — interactive REPL** (connects to a running server):
 ```bash
 cargo build --release -p clickgraph-client
-./target/release/clickgraph-client  # connects to http://localhost:8080
+./target/release/clickgraph-client  # connects to http://localhost:7475
 ```
 
 ---

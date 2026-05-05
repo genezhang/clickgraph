@@ -11,7 +11,7 @@ export CLICKHOUSE_USER=default
 export CLICKHOUSE_PASSWORD=""
 export CLICKHOUSE_DATABASE=test_zeek
 export GRAPH_CONFIG_PATH=./tests/fixtures/schemas/zeek_merged_test.yaml
-RUST_LOG=debug target/release/clickgraph --http-port 8080 > /tmp/clickgraph.log 2>&1 &
+RUST_LOG=debug target/release/clickgraph --http-port 7475 > /tmp/clickgraph.log 2>&1 &
 SERVER_PID=$!
 
 echo "Server starting (PID: $SERVER_PID)..."
@@ -32,7 +32,7 @@ echo ""
 echo "=== Testing Cross-Branch Pattern ==="
 echo "Query: MATCH (srcip:IP)-[:REQUESTED]->(d:Domain), (srcip)-[:ACCESSED]->(dest:IP) WHERE srcip.ip = '192.168.1.10' RETURN srcip.ip, d.name, dest.ip"
 
-curl -s -X POST http://localhost:8080/query \
+curl -s -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (srcip:IP)-[:REQUESTED]->(d:Domain), (srcip)-[:ACCESSED]->(dest:IP) WHERE srcip.ip = '"'"'192.168.1.10'"'"' RETURN srcip.ip, d.name, dest.ip"

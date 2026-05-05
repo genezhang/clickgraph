@@ -25,7 +25,7 @@ echo ""
 
 # First check SQL generation
 echo "=== Generated SQL (sql_only=true) ==="
-curl -s -X POST http://localhost:8080/query \
+curl -s -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d "{\"query\": \"$QUERY\", \"sql_only\": true}" | python3 -m json.tool
 
@@ -34,7 +34,7 @@ echo ""
 
 # Now try actual execution
 echo "=== Query Execution ==="
-curl -s -X POST http://localhost:8080/query \
+curl -s -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d "{\"query\": \"$QUERY\"}" | python3 -m json.tool
 

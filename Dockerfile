@@ -61,15 +61,15 @@ RUN chown -R clickgraph:clickgraph /app && \
 USER clickgraph
 
 # Expose ports
-EXPOSE 8080 7687
+EXPOSE 7475 7687
 
 # Health check using wget (smaller than curl)
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:7475/health || exit 1
 
 # Default environment variables (can be overridden)
 ENV CLICKGRAPH_HOST=0.0.0.0 \
-    CLICKGRAPH_PORT=8080 \
+    CLICKGRAPH_PORT=7475 \
     CLICKGRAPH_BOLT_HOST=0.0.0.0 \
     CLICKGRAPH_BOLT_PORT=7687 \
     CLICKGRAPH_BOLT_ENABLED=true \

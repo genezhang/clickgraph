@@ -23,7 +23,7 @@ services:
       dockerfile: Dockerfile.test
     container_name: clickgraph-test
     ports:
-      - "8080:8080"
+      - "7475:7475"
       - "7687:7687"
     environment:
       GRAPH_CONFIG_PATH: /app/schemas/test/unified_test_schema.yaml
@@ -37,7 +37,7 @@ services:
     depends_on:
       clickhouse-test:
         condition: service_healthy
-    command: ["--http-port", "8080", "--bolt-port", "7687"]
+    command: ["--http-port", "7475", "--bolt-port", "7687"]
 
 networks:
   default:

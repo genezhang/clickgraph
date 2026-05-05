@@ -14,7 +14,7 @@ echo ""
 echo "Query: MATCH ()-[:FOLLOWS]->(b:User) RETURN b.name LIMIT 5"
 echo ""
 
-curl -s -X POST http://localhost:8080/query \
+curl -s -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query":"MATCH ()-[:FOLLOWS]->(b:User) RETURN b.name LIMIT 5"}' | jq .
 

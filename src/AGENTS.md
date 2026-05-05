@@ -94,7 +94,7 @@ Uses `clap` for CLI argument parsing:
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--http-host` | `0.0.0.0` | HTTP server bind address |
-| `--http-port` | `8080` | HTTP server port |
+| `--http-port` | `7475` | HTTP server port |
 | `--disable-bolt` | `false` | Disable Bolt protocol server |
 | `--bolt-host` | `0.0.0.0` | Bolt server bind address |
 | `--bolt-port` | `7687` | Bolt server port |
@@ -127,7 +127,7 @@ Uses `clap` for CLI argument parsing:
 | Variable | Default | Maps to |
 |----------|---------|---------|
 | `CLICKGRAPH_HOST` | `0.0.0.0` | `http_host` |
-| `CLICKGRAPH_PORT` | `8080` | `http_port` |
+| `CLICKGRAPH_PORT` | `7475` | `http_port` |
 | `CLICKGRAPH_BOLT_HOST` | `0.0.0.0` | `bolt_host` |
 | `CLICKGRAPH_BOLT_PORT` | `7687` | `bolt_port` |
 | `CLICKGRAPH_BOLT_ENABLED` | `true` | `bolt_enabled` |

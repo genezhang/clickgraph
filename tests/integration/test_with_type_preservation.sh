@@ -10,7 +10,7 @@
 
 set -e
 
-BASE_URL="http://localhost:8080"
+BASE_URL="http://localhost:7475"
 
 echo "🧪 Test 1: Simple WITH preserves node type"
 RESULT=$(curl -s -X POST "$BASE_URL/query" \

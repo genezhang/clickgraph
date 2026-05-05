@@ -16,10 +16,10 @@ export CLICKHOUSE_PASSWORD="test_pass"
 export GRAPH_CONFIG_PATH="schemas/test/unified_test_multi_schema.yaml"
 
 echo "1️⃣  Checking for existing ClickGraph processes..."
-# Check if HTTP port 8080 is in use
-HTTP_PID=$(lsof -ti:8080 2>/dev/null || true)
+# Check if HTTP port 7475 is in use
+HTTP_PID=$(lsof -ti:7475 2>/dev/null || true)
 if [ -n "$HTTP_PID" ]; then
-  echo "   Found process on port 8080 (PID: $HTTP_PID)"
+  echo "   Found process on port 7475 (PID: $HTTP_PID)"
   echo "   Stopping old ClickGraph..."
   kill $HTTP_PID 2>/dev/null || true
   sleep 2
@@ -51,7 +51,7 @@ echo "   Waiting for ClickGraph to compile and start..."
 MAX_WAIT=120
 ELAPSED=0
 while [ $ELAPSED -lt $MAX_WAIT ]; do
-    if curl -s http://localhost:8080/health > /dev/null 2>&1; then
+    if curl -s http://localhost:7475/health > /dev/null 2>&1; then
         echo "✅ ClickGraph running and responding"
         break
     fi
@@ -78,7 +78,7 @@ fi
 echo ""
 
 echo "4️⃣  Testing procedures via HTTP..."
-LABEL_COUNT=$(curl -s -X POST http://localhost:8080/query \
+LABEL_COUNT=$(curl -s -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query":"CALL db.labels()"}' | jq -r '.count // "ERROR"')
 

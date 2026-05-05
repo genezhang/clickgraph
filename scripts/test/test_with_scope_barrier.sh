@@ -6,7 +6,7 @@
 set -e
 
 CLICKGRAPH_BIN="${CLICKGRAPH_BIN:-./target/debug/clickgraph}"
-SERVER_PORT="${SERVER_PORT:-8080}"
+SERVER_PORT="${SERVER_PORT:-7475}"
 GRAPH_CONFIG="${GRAPH_CONFIG_PATH:-./benchmarks/social_network/schemas/social_benchmark.yaml}"
 
 echo "=== Test: WITH Scope Barrier (OpenCypher Semantics) ==="

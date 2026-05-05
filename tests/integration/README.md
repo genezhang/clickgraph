@@ -28,7 +28,7 @@ cargo run --bin clickgraph
 
 ```bash
 # Default values work for docker-compose setup
-export CLICKGRAPH_URL="http://localhost:8080"
+export CLICKGRAPH_URL="http://localhost:7475"
 export CLICKHOUSE_HOST="localhost"
 export CLICKHOUSE_PORT="8123"
 export CLICKHOUSE_USER="test_user"

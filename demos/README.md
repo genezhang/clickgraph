@@ -125,7 +125,7 @@ Each demo folder contains:
 If ports are in use:
 ```bash
 # Check what's using ports
-netstat -tlnp | grep -E '7474|7687|8080|8888'
+netstat -tlnp | grep -E '7474|7687|7475|8888'
 
 # Change ports in docker-compose.yml
 # Example: "7475:7474" instead of "7474:7474"

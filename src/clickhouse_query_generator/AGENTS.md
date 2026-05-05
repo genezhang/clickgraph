@@ -499,7 +499,7 @@ cargo test function_registry          # Registry tests
 
 ### Manual Smoke Test (browser expand pattern):
 ```bash
-curl -X POST localhost:8080/query -H "Content-Type: application/json" \
+curl -X POST localhost:7475/query -H "Content-Type: application/json" \
   -d '{"query": "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE a.user_id = 1 RETURN b.name", "sql_only": true}'
 ```
 

@@ -24,4 +24,4 @@ COPY --from=builder /build/target/release/clickgraph /app/clickgraph
 
 # Default command
 ENTRYPOINT ["/app/clickgraph"]
-CMD ["--http-port", "8080"]
+CMD ["--http-port", "7475"]

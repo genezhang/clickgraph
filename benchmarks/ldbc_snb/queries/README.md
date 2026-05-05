@@ -92,7 +92,7 @@ The `adapted/` directory contains **simplified versions** of LDBC queries:
 ### For Benchmark Testing (use official)
 ```bash
 # Run official IC1 query
-cat official/interactive/complex-1.cypher | curl -X POST http://localhost:8080/query \
+cat official/interactive/complex-1.cypher | curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d @- # (with parameter substitution)
 ```

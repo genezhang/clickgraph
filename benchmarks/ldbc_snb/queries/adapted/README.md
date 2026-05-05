@@ -45,7 +45,7 @@ export CLICKHOUSE_DATABASE="ldbc_snb"
 export GRAPH_CONFIG_PATH="./benchmarks/ldbc_snb/schemas/ldbc_schema.yaml"
 
 # Test query (example)
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "<query_content>",

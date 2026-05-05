@@ -266,25 +266,25 @@ export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.y
 cargo run --bin clickgraph
 
 # Health check
-curl http://localhost:8080/health
+curl http://localhost:7475/health
 
 # Query
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query":"MATCH (u:User) RETURN u.name LIMIT 5"}'
 
 # SQL-only (no execution)
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query":"MATCH (u:User) RETURN u.name", "sql_only": true}'
 
 # Graph format (structured nodes/edges/stats)
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query":"MATCH (u:User)-[r:FOLLOWS]->(f:User) RETURN u, r, f LIMIT 5", "format": "Graph"}'
 
 # SQL generation endpoint (structured response)
-curl -X POST http://localhost:8080/query/sql \
+curl -X POST http://localhost:7475/query/sql \
   -H "Content-Type: application/json" \
   -d '{"query":"MATCH (u:User) RETURN u.name"}'
 ```

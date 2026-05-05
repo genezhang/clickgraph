@@ -3,7 +3,7 @@
 # These test the most commonly broken features after refactoring
 # Note: We don't use 'set -e' to run all tests and report comprehensive results
 
-CLICKGRAPH_URL="${CLICKGRAPH_URL:-http://localhost:8080}"
+CLICKGRAPH_URL="${CLICKGRAPH_URL:-http://localhost:7475}"
 SCHEMA="${SCHEMA:-social_benchmark}"
 
 echo "🔥 Running Critical Smoke Tests..."

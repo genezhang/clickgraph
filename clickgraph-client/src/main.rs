@@ -9,7 +9,7 @@ use std::collections::HashMap;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long, default_value = "http://localhost:8080")]
+    #[arg(short, long, default_value = "http://localhost:7475")]
     url: String,
 }
 

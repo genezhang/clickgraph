@@ -89,14 +89,14 @@ Make sure ClickGraph server and ClickHouse are running:
 
 ```bash
 # Check ClickGraph is running
-curl http://localhost:8080/health
+curl http://localhost:7475/health
 
 # Set environment variables (if needed)
 export CLICKHOUSE_HOST="localhost"
 export CLICKHOUSE_PORT="8123"
 export CLICKHOUSE_USER="default"
 export CLICKHOUSE_PASSWORD="default"
-export CLICKGRAPH_URL="http://localhost:8080"
+export CLICKGRAPH_URL="http://localhost:7475"
 ```
 
 ### Setup All Suites
@@ -169,7 +169,7 @@ export CLICKHOUSE_USER="default"
 export CLICKHOUSE_PASSWORD="default"
 export CLICKHOUSE_HOST="localhost"
 export CLICKHOUSE_PORT="8123"
-export CLICKGRAPH_URL="http://localhost:8080"
+export CLICKGRAPH_URL="http://localhost:7475"
 
 # Run pytest
 pytest tests/integration/ -v
@@ -299,7 +299,7 @@ export CLICKHOUSE_PASSWORD="default"
 
 **Solution**: Make sure ClickGraph server is running:
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:7475/health
 ```
 
 ### Tables already exist errors
@@ -314,7 +314,7 @@ python suite_manager.py setup <suite_name>
 
 **Solution**: Make sure the schema is loaded:
 ```bash
-curl http://localhost:8080/schemas | jq '.schemas[] | .name'
+curl http://localhost:7475/schemas | jq '.schemas[] | .name'
 ```
 
 ## Integration with pytest

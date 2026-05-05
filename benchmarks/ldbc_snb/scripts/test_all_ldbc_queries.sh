@@ -11,7 +11,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Configuration
-CLICKGRAPH_URL="http://localhost:8080"
+CLICKGRAPH_URL="http://localhost:7475"
 QUERY_BASE="benchmarks/ldbc_snb/queries/official"
 RESULTS_FILE="benchmarks/ldbc_snb/test_results_$(date +%Y%m%d_%H%M%S).json"
 

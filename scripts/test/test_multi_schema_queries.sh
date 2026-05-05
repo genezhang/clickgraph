@@ -1,7 +1,7 @@
 #!/bin/bash
 # Test queries for all 6 schemas in unified_test_multi_schema.yaml
 
-SERVER_URL="${CLICKGRAPH_URL:-http://localhost:8080}"
+SERVER_URL="${CLICKGRAPH_URL:-http://localhost:7475}"
 
 echo "=== Multi-Schema Query Test Suite ==="
 echo "Server: $SERVER_URL"

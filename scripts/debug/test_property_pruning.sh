@@ -15,7 +15,7 @@
 set -e
 
 # Configuration
-CLICKGRAPH_URL="${CLICKGRAPH_URL:-http://localhost:8080}"
+CLICKGRAPH_URL="${CLICKGRAPH_URL:-http://localhost:7475}"
 GRAPH_CONFIG_PATH="${GRAPH_CONFIG_PATH:-./benchmarks/social_network/schemas/social_benchmark.yaml}"
 
 echo "🧪 Property Pruning Validation Tests"

@@ -89,7 +89,7 @@ See [KNOWN_ISSUES.md](KNOWN_ISSUES.md) for details.
 Cypher → Parser → Logical Plan → Optimizer → SQL Generator → ClickHouse → Results
 ```
 
-**Modules**: `open_cypher_parser/` (AST), `query_planner/` (planning + analysis), `render_plan/` (SQL rendering), `graph_catalog/` (YAML schemas), `server/` (HTTP:8080 + Bolt:7687)
+**Modules**: `open_cypher_parser/` (AST), `query_planner/` (planning + analysis), `render_plan/` (SQL rendering), `graph_catalog/` (YAML schemas), `server/` (HTTP:7475 + Bolt:7687)
 
 ## Documentation
 

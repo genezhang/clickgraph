@@ -20,7 +20,7 @@ bash scripts/test/setup_all_test_data.sh
 # 2. Start server with reduced logging (redirected to file)
 RUST_LOG=error GRAPH_CONFIG_PATH="./schemas/test/unified_test_multi_schema.yaml" \
 CLICKHOUSE_URL="http://localhost:8123" CLICKHOUSE_USER="test_user" CLICKHOUSE_PASSWORD="test_pass" \
-nohup ./target/release/clickgraph --http-port 8080 > /tmp/clickgraph.log 2>&1 &
+nohup ./target/release/clickgraph --http-port 7475 > /tmp/clickgraph.log 2>&1 &
 
 # 3. Run tests in background with output to file
 nohup pytest tests/integration/ -q --tb=no > /tmp/pytest_results.txt 2>&1 &
@@ -59,13 +59,13 @@ CLICKHOUSE_URL="http://localhost:8123" \
 CLICKHOUSE_USER="test_user" \
 CLICKHOUSE_PASSWORD="test_pass" \
 GRAPH_CONFIG_PATH="./schemas/test/unified_test_multi_schema.yaml" \
-target/debug/clickgraph --http-port 8080 &
+target/debug/clickgraph --http-port 7475 &
 
 # Wait for server to start
 sleep 3
 
 # 3. Test manually (multi-schema config loads 6 schemas automatically)
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query":"USE social_benchmark MATCH (u:User) RETURN u.name LIMIT 3"}'
   
@@ -181,7 +181,7 @@ export CLICKHOUSE_USER="test_user"
 export CLICKHOUSE_PASSWORD="test_pass"
 
 # ClickGraph server (for manual testing)
-export CLICKGRAPH_URL="http://localhost:8080"
+export CLICKGRAPH_URL="http://localhost:7475"
 
 # Graph schema (for testing - multi-schema config)
 export GRAPH_CONFIG_PATH="./schemas/test/unified_test_multi_schema.yaml"
