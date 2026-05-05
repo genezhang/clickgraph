@@ -107,6 +107,12 @@ pub struct GraphResultBuilder {
     seen_edges: HashSet<String>,
 }
 
+impl Default for GraphResultBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GraphResultBuilder {
     pub fn new() -> Self {
         Self {

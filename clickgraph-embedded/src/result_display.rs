@@ -97,7 +97,7 @@ pub fn format_value(val: &Value) -> String {
                 return format_packed_edge_value(m);
             }
             let mut pairs: Vec<_> = m.iter().collect();
-            pairs.sort_by_key(|(k, _)| k.clone());
+            pairs.sort_by_key(|(k, _)| (*k).clone());
             let s: Vec<String> = pairs
                 .iter()
                 .map(|(k, v)| format!("{}: {}", k, format_map_value(v)))
@@ -359,7 +359,7 @@ pub fn format_json_value(v: &serde_json::Value) -> String {
         }
         serde_json::Value::Object(m) => {
             let mut pairs: Vec<_> = m.iter().collect();
-            pairs.sort_by_key(|(k, _)| k.clone());
+            pairs.sort_by_key(|(k, _)| (*k).clone());
             let s: Vec<String> = pairs
                 .iter()
                 .map(|(k, v)| format!("{k}: {}", format_json_value(v)))
@@ -500,7 +500,7 @@ pub fn format_rel_from_cols(cols_and_vals: &[(String, Value)], rel_type: &str) -
 
     let mut props: Vec<(String, String)> = cols_and_vals
         .iter()
-        .filter(|(col, _)| !INTERNAL_FIELDS.iter().any(|f| col.as_str() == *f))
+        .filter(|(col, _)| !INTERNAL_FIELDS.contains(&col.as_str()))
         .map(|(col, val)| (col.clone(), format_value(val)))
         .filter(|(_, v)| is_visible_prop_str(v))
         .collect();

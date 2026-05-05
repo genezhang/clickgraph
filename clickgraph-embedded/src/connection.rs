@@ -21,6 +21,9 @@ use super::write_helpers;
 /// Default maximum CTE recursion depth for Cypher→SQL translation.
 const DEFAULT_MAX_CTE_DEPTH: u32 = 100;
 
+/// One pending edge insertion: `(from_raw_id, to_raw_id, properties)`.
+type PendingEdge = (String, String, HashMap<String, Value>);
+
 /// A connection to an embedded ClickGraph database.
 ///
 /// # Example
@@ -222,8 +225,7 @@ impl<'db> Connection<'db> {
         }
 
         // Group edges by type, extracting raw IDs from element_id strings
-        let mut edges_by_type: HashMap<String, Vec<(String, String, HashMap<String, Value>)>> =
-            HashMap::new();
+        let mut edges_by_type: HashMap<String, Vec<PendingEdge>> = HashMap::new();
         for edge in graph.edges() {
             let (_, from_raw_id) = parse_element_id(&edge.from_id).ok_or_else(|| {
                 EmbeddedError::Validation(format!("Invalid from element_id: {}", edge.from_id))
@@ -267,7 +269,7 @@ impl<'db> Connection<'db> {
     ) -> Result<String, EmbeddedError> {
         let node_schema = self.get_node_schema(label)?;
         let id_columns = node_schema.node_id.id.columns();
-        let id_col_strs: Vec<&str> = id_columns.iter().copied().collect();
+        let id_col_strs: Vec<&str> = id_columns.to_vec();
         let property_mappings =
             write_helpers::extract_property_mappings(&node_schema.property_mappings);
         write_helpers::validate_properties(&properties, &property_mappings, &id_col_strs)?;
@@ -476,7 +478,7 @@ impl<'db> Connection<'db> {
         }
         let node_schema = self.get_node_schema(label)?;
         let id_columns = node_schema.node_id.id.columns();
-        let id_col_strs: Vec<&str> = id_columns.iter().copied().collect();
+        let id_col_strs: Vec<&str> = id_columns.to_vec();
         let id_key = id_columns.first().copied().unwrap_or("id");
         let property_mappings =
             write_helpers::extract_property_mappings(&node_schema.property_mappings);
@@ -636,7 +638,7 @@ impl<'db> Connection<'db> {
         let node_schema = self.get_node_schema(label)?;
         write_helpers::check_writable(&node_schema.source, label)?;
         let id_columns = node_schema.node_id.id.columns();
-        let id_col_strs: Vec<&str> = id_columns.iter().copied().collect();
+        let id_col_strs: Vec<&str> = id_columns.to_vec();
         let property_mappings =
             write_helpers::extract_property_mappings(&node_schema.property_mappings);
         write_helpers::validate_properties(&filters, &property_mappings, &id_col_strs)?;
@@ -688,7 +690,7 @@ impl<'db> Connection<'db> {
         let node_schema = self.get_node_schema(label)?;
         write_helpers::check_writable(&node_schema.source, label)?;
         let id_columns = node_schema.node_id.id.columns();
-        let id_col_strs: Vec<&str> = id_columns.iter().copied().collect();
+        let id_col_strs: Vec<&str> = id_columns.to_vec();
         let property_mappings =
             write_helpers::extract_property_mappings(&node_schema.property_mappings);
         let (transformed_json, line_count) =
@@ -755,7 +757,7 @@ impl<'db> Connection<'db> {
         let node_schema = self.get_node_schema(label)?;
         write_helpers::check_writable(&node_schema.source, label)?;
         let id_columns = node_schema.node_id.id.columns();
-        let id_col_strs: Vec<&str> = id_columns.iter().copied().collect();
+        let id_col_strs: Vec<&str> = id_columns.to_vec();
         let property_mappings =
             write_helpers::extract_property_mappings(&node_schema.property_mappings);
         let sql = write_helpers::build_import_file_sql(
