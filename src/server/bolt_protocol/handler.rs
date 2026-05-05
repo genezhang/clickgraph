@@ -368,6 +368,121 @@ fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>
         offset2 += replacement.len() as isize - full_match.as_str().len() as isize;
     }
 
+    // Pass 2.5: collapse Neo4j-Browser's de-duplication CASE pattern to a bare
+    // alias. Browser emits:
+    //   CASE WHEN elementId(o) IN $existingNodeIds THEN null ELSE o END AS o
+    // intending null for nodes already on the canvas. But under CASE, our SQL
+    // generator only projects the alias's id column (not the full property set
+    // needed to materialize a Node), so Browser never receives a real neighbor
+    // Node and click-to-expand can't render new circles. Simplifying to bare
+    // `o AS o` always returns the full Node; Browser de-dupes client-side via
+    // its own existingNodeIds tracking, so duplicates are harmless.
+    let re_dedupe_case = Regex::new(
+        r"(?i)CASE\s+WHEN\s+(?:elementId|id)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s+IN\s+\$[A-Za-z_][A-Za-z0-9_]*\s+THEN\s+null\s+ELSE\s+([A-Za-z_][A-Za-z0-9_]*)\s+END(\s+AS\s+([A-Za-z_][A-Za-z0-9_]*))?",
+    )
+    .expect("regex for Browser dedupe-CASE collapse must compile");
+    let snapshot = result.clone();
+    let mut offset_dc: isize = 0;
+    for cap in re_dedupe_case.captures_iter(&snapshot) {
+        let full_match = cap.get(0).unwrap();
+        let match_start = full_match.start();
+        let inner_alias = &cap[1];
+        let else_alias = &cap[2];
+        // Only collapse when the WHEN-target and ELSE-branch refer to the same
+        // alias — that's Browser's specific de-duplication shape. Anything else
+        // is a user CASE we must not touch.
+        if !inner_alias.eq_ignore_ascii_case(else_alias) {
+            continue;
+        }
+        if is_inside_string(&snapshot, match_start) {
+            continue;
+        }
+        let replacement = if let Some(out_alias) = cap.get(4) {
+            // Preserve the explicit `AS <alias>` — also require it match.
+            if !out_alias.as_str().eq_ignore_ascii_case(else_alias) {
+                continue;
+            }
+            format!("{} AS {}", else_alias, out_alias.as_str())
+        } else {
+            else_alias.to_string()
+        };
+        let adjusted_start = (match_start as isize + offset_dc) as usize;
+        let adjusted_end = adjusted_start + full_match.as_str().len();
+        result.replace_range(adjusted_start..adjusted_end, &replacement);
+        offset_dc += replacement.len() as isize - full_match.as_str().len() as isize;
+    }
+
+    // Pass 3: rewrite `elementId(alias) IN $param` / `elementId(alias) = $param`
+    // to `id(alias) IN [int_list]` / `id(alias) = int`. Modern Neo4j Browser
+    // switches to elementId-mode (and emits these predicates) whenever the
+    // first node in its canvas has an elementId containing `-` — which is
+    // always true given our Browser-compat sentinel. Browser passes our
+    // element_id strings (e.g., `"User:1-"`) through; we decode them with
+    // parse_node_element_id and re-encode through compute_deterministic_id so
+    // the existing id-rewriter pipeline (further downstream in the planner)
+    // handles the rest.
+    let re_elem_id = Regex::new(
+        r"(?i)\belementId\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*(IN|=)\s*\$([A-Za-z_][A-Za-z0-9_]*)",
+    )
+    .expect("regex for elementId() parameter substitution must compile");
+
+    let snapshot = result.clone();
+    let mut offset3: isize = 0;
+    for cap in re_elem_id.captures_iter(&snapshot) {
+        let full_match = cap.get(0).unwrap();
+        let match_start = full_match.start();
+        let alias = &cap[1];
+        let op = &cap[2];
+        let param_name = &cap[3];
+
+        if is_inside_string(&snapshot, match_start) {
+            continue;
+        }
+
+        let elem_strings: Vec<&str> = match parameters.get(param_name) {
+            Some(Value::Array(arr)) => arr.iter().filter_map(Value::as_str).collect(),
+            Some(Value::String(s)) => vec![s.as_str()],
+            _ => continue,
+        };
+
+        // Decode each element_id string into the integer the id-rewriter
+        // expects. parse_node_element_id strips the trailing `-` sentinel for
+        // us. compute_deterministic_id is the same function used to assign
+        // Node.id field values, so the round-trip is exact.
+        use crate::graph_catalog::element_id::parse_node_element_id;
+        use crate::server::bolt_protocol::id_mapper::IdMapper;
+        let mut encoded_ints: Vec<String> = Vec::with_capacity(elem_strings.len());
+        for s in &elem_strings {
+            let label_id_pair = parse_node_element_id(s);
+            let canonical = match label_id_pair {
+                Ok((label, ids)) => {
+                    let id_part = ids.join("|");
+                    format!("{}:{}", label, id_part)
+                }
+                Err(_) => continue,
+            };
+            encoded_ints.push(IdMapper::compute_deterministic_id(&canonical).to_string());
+        }
+
+        let replacement = match op.to_uppercase().as_str() {
+            "IN" => format!("id({}) IN [{}]", alias, encoded_ints.join(", ")),
+            "=" => {
+                if encoded_ints.len() == 1 {
+                    format!("id({}) = {}", alias, encoded_ints[0])
+                } else {
+                    // Shouldn't happen for `=`, but be defensive: degrade to IN.
+                    format!("id({}) IN [{}]", alias, encoded_ints.join(", "))
+                }
+            }
+            _ => continue,
+        };
+
+        let adjusted_start = (match_start as isize + offset3) as usize;
+        let adjusted_end = adjusted_start + full_match.as_str().len();
+        result.replace_range(adjusted_start..adjusted_end, &replacement);
+        offset3 += replacement.len() as isize - full_match.as_str().len() as isize;
+    }
+
     log::debug!(
         "🔧 Parameter substitution: {} parameters processed",
         parameters.len()
@@ -2900,6 +3015,61 @@ mod tests {
         // Unrelated user query — must NOT match
         let user = "MATCH (p:Person) RETURN p.name".to_uppercase();
         assert!(!is_browser_count_union(&user));
+    }
+
+    #[test]
+    fn rewrites_browser_elementid_to_id() {
+        let mut params: HashMap<String, Value> = HashMap::new();
+        // Element IDs as Browser would send them (with the trailing `-` sentinel
+        // our generators emit).
+        params.insert(
+            "nodeIds".to_string(),
+            serde_json::json!(["Post:1-", "Post:2-"]),
+        );
+        params.insert("targetId".to_string(), serde_json::json!("User:5-"));
+
+        // IN with a list — should rewrite to id() with two encoded ints.
+        let q = "MATCH (a)-[r]-(o) WHERE elementId(a) IN $nodeIds RETURN r, o";
+        let out = substitute_cypher_parameters(q, &params);
+        assert!(out.contains("id(a) IN ["), "got: {}", out);
+        assert!(!out.contains("elementId"), "got: {}", out);
+        assert!(!out.contains("$nodeIds"), "got: {}", out);
+
+        // = with a single string — should rewrite to id() = <int>
+        let q = "MATCH (n) WHERE elementId(n) = $targetId RETURN n";
+        let out = substitute_cypher_parameters(q, &params);
+        assert!(out.contains("id(n) = "), "got: {}", out);
+        assert!(!out.contains("elementId"), "got: {}", out);
+
+        // Unknown parameter — leave untouched (avoid masking errors)
+        let q = "MATCH (n) WHERE elementId(n) IN $unknown RETURN n";
+        let out = substitute_cypher_parameters(q, &params);
+        assert_eq!(out, q);
+    }
+
+    #[test]
+    fn collapses_browser_dedupe_case_pattern() {
+        let params: HashMap<String, Value> = HashMap::new();
+
+        // Browser's dedupe-CASE — should collapse to bare alias `o AS o`.
+        let q = "RETURN r, CASE WHEN elementId(o) IN $existingNodeIds THEN null ELSE o END AS o";
+        let out = substitute_cypher_parameters(q, &params);
+        assert_eq!(out, "RETURN r, o AS o");
+
+        // id() variant — also collapsed
+        let q = "RETURN CASE WHEN id(x) IN $foo THEN null ELSE x END AS x";
+        let out = substitute_cypher_parameters(q, &params);
+        assert_eq!(out, "RETURN x AS x");
+
+        // Different aliases (not Browser's pattern) — must NOT collapse
+        let q = "RETURN CASE WHEN elementId(a) IN $foo THEN null ELSE b END AS c";
+        let out = substitute_cypher_parameters(q, &params);
+        assert!(out.contains("CASE"), "got: {}", out);
+
+        // No AS clause — collapse to bare alias
+        let q = "RETURN CASE WHEN elementId(o) IN $foo THEN null ELSE o END";
+        let out = substitute_cypher_parameters(q, &params);
+        assert_eq!(out, "RETURN o");
     }
 
     #[test]
