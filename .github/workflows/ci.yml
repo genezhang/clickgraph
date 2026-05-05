@@ -25,10 +25,10 @@ jobs:
         components: rustfmt, clippy
 
     - name: Code format check
-      run: cargo fmt -- --check
+      run: cargo fmt --all -- --check
 
     - name: Lint
-      run: cargo clippy
+      run: cargo clippy --all-targets -- -D warnings
 
     - name: Build
       run: cargo build --verbose
