@@ -1,6 +1,6 @@
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 
 query = {
     'query': 'MATCH (u:User) RETURN CASE u.age WHEN 25 THEN "young" ELSE "other" END LIMIT 1'

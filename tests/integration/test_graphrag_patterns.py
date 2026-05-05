@@ -15,7 +15,7 @@ class TestGraphRAGPatterns:
     @pytest.fixture(autouse=True)
     def setup(self, verify_clickgraph_running):
         """Ensure ClickGraph is running."""
-        self.base_url = "http://localhost:8080"
+        self.base_url = "http://localhost:7475"
         self.schema_name = "social_integration"
 
     def query(self, cypher: str, parameters: Dict = None) -> Dict[str, Any]:
@@ -276,7 +276,7 @@ class TestEdgeConstraints:
 
     @pytest.fixture(autouse=True)
     def setup(self, verify_clickgraph_running):
-        self.base_url = "http://localhost:8080"
+        self.base_url = "http://localhost:7475"
         self.schema_name = "social_integration"
 
     def query(self, cypher: str) -> Dict[str, Any]:
@@ -303,7 +303,7 @@ class TestPerformance:
 
     @pytest.fixture(autouse=True)
     def setup(self, verify_clickgraph_running):
-        self.base_url = "http://localhost:8080"
+        self.base_url = "http://localhost:7475"
         self.schema_name = "social_integration"
 
     def query(self, cypher: str) -> Dict[str, Any]:

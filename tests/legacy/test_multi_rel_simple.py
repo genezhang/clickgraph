@@ -3,7 +3,7 @@
 
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 import json
 
 # Test query with single relationship first (to verify ViewScan fix works)

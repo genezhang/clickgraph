@@ -1,7 +1,7 @@
 #!/bin/bash
 # Test pattern comprehension SQL generation via HTTP API
 
-URL="http://localhost:8080/query"
+URL="http://localhost:7475/query"
 
 echo "=== Pattern Comprehension SQL Generation Test ==="
 echo

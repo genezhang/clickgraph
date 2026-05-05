@@ -481,10 +481,10 @@ mod tests {
 
     #[test]
     fn test_dest_http() {
-        let result = resolve_destination("http://localhost:8080/sink", "CSVWithNames").unwrap();
+        let result = resolve_destination("http://localhost:7475/sink", "CSVWithNames").unwrap();
         assert_eq!(
             result,
-            "INSERT INTO FUNCTION url('http://localhost:8080/sink', 'CSVWithNames')"
+            "INSERT INTO FUNCTION url('http://localhost:7475/sink', 'CSVWithNames')"
         );
     }
 

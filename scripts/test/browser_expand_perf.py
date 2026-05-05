@@ -12,7 +12,7 @@ Usage:
     python scripts/test/browser_expand_perf.py --node-id 100  # Test specific node
 
 Requirements:
-    - ClickGraph running on localhost:8080 or CLICKGRAPH_URL
+    - ClickGraph running on localhost:7475 or CLICKGRAPH_URL
     - ClickHouse with social_benchmark schema
     - requests library
 """
@@ -41,7 +41,7 @@ class BrowserExpandTester:
     
     def __init__(self, base_url: str = None):
         self.base_url = base_url or os.getenv(
-            "CLICKGRAPH_URL", "http://localhost:8080"
+            "CLICKGRAPH_URL", "http://localhost:7475"
         )
         self.results = []
     
@@ -251,11 +251,11 @@ Examples:
   %(prog)s --iterations 20 --benchmark
   
   # Test with specific ClickGraph URL
-  %(prog)s --url http://remote-host:8080
+  %(prog)s --url http://remote-host:7475
         """
     )
     
-    parser.add_argument("--url", help="ClickGraph base URL (default: localhost:8080)")
+    parser.add_argument("--url", help="ClickGraph base URL (default: localhost:7475)")
     parser.add_argument("--iterations", type=int, default=1, help="Iterations per test")
     parser.add_argument("--sql-only", action="store_true", help="Show SQL only")
     parser.add_argument("--benchmark", action="store_true", help="Run benchmarks with stats")

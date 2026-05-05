@@ -1,6 +1,6 @@
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 
 # Test WHERE clause with property mapping
 print('Test 3 - WHERE clause with property:')

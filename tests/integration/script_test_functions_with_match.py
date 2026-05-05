@@ -4,7 +4,7 @@ Test Neo4j functions in actual graph queries (not standalone RETURN)
 """
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 
 API_URL = f"{CLICKGRAPH_URL}/query"
 

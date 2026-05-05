@@ -446,7 +446,7 @@ export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.y
 cargo run --bin clickgraph
 
 # Test basic query planning (sql_only skips ClickHouse execution)
-curl -X POST localhost:8080/query \
+curl -X POST localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query":"MATCH (u:User)-[:FOLLOWS]->(f:User) RETURN u.name, f.name LIMIT 5", "sql_only": true}'
 ```

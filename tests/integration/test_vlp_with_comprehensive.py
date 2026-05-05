@@ -13,7 +13,7 @@ import pytest
 import requests
 
 
-def query_api(query: str, schema_name: str = "social_integration", port: int = 8080) -> dict:
+def query_api(query: str, schema_name: str = "social_integration", port: int = 7475) -> dict:
     """Execute a Cypher query against the API."""
     response = requests.post(
         f"http://localhost:{port}/query",

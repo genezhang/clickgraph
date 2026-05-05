@@ -504,6 +504,6 @@ echo "  export GRAPH_CONFIG_PATH='./schemas/test/unified_test_multi_schema.yaml'
 echo "  cargo run --bin clickgraph"
 echo ""
 echo "Then test with:"
-echo "  curl -s http://localhost:8080/schemas | jq"
-echo "  curl -X POST http://localhost:8080/query -H 'Content-Type: application/json' \\"
+echo "  curl -s http://localhost:7475/schemas | jq"
+echo "  curl -X POST http://localhost:7475/query -H 'Content-Type: application/json' \\"
 echo "    -d '{\"query\":\"USE social_benchmark MATCH (u:User) RETURN u.name LIMIT 5\"}'"

@@ -132,7 +132,7 @@ impl SchemaDiscovery {
         let help = format!(
             "Review tables and columns above, then create your schema.\n\
 To generate YAML draft:\n\
-curl -X POST http://localhost:8080/schemas/draft -H 'Content-Type: application/json' -d '{{\n\
+curl -X POST http://localhost:7475/schemas/draft -H 'Content-Type: application/json' -d '{{\n\
   \"database\": \"{}\",\n\
   \"schema_name\": \"my_graph\",\n\
   \"nodes\": [{{\"table\": \"users\", \"label\": \"User\", \"node_id\": \"user_id\"}}],\n\

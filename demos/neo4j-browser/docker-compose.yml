@@ -70,7 +70,7 @@ services:
       # Reasonable CTE depth for demo queries
       CLICKGRAPH_MAX_CTE_DEPTH: "500"
     ports:
-      - "8080:8080"
+      - "7475:7475"
       - "7687:7687"
     volumes:
       - ./social_demo.yaml:/app/demos/neo4j-browser/social_demo.yaml:ro

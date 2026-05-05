@@ -36,7 +36,7 @@ sleep 3
 # Check if server is responding
 echo ""
 echo "Checking if server started successfully..."
-if curl -s http://localhost:8080/health > /dev/null 2>&1; then
+if curl -s http://localhost:7475/health > /dev/null 2>&1; then
     echo "✅ SUCCESS: Server started without CLICKHOUSE_DATABASE env var!"
     echo "   Database defaulted to 'default' as expected"
 else

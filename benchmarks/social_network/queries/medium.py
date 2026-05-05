@@ -8,7 +8,7 @@ import json
 import time
 from statistics import mean, median, stdev
 
-SERVER_URL = "http://localhost:8080/query"
+SERVER_URL = "http://localhost:7475/query"
 
 BENCHMARK_QUERIES = [
     {

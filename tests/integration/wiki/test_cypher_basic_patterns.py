@@ -25,7 +25,7 @@ import requests
 from typing import Dict, Any
 
 # Test configuration
-BASE_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+BASE_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 QUERY_ENDPOINT = f"{BASE_URL}/query"
 
 

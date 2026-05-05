@@ -15,7 +15,7 @@ The fix ensures:
 
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 import sys
 
 def test_query(name, query, expected_rows, expected_contains=None):

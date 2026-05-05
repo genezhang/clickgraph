@@ -4,7 +4,7 @@
 
 set -e
 
-BASE_URL="http://localhost:8080/query"
+BASE_URL="http://localhost:7475/query"
 QUERY_DIR="/home/gz/clickgraph/benchmarks/ldbc_snb/queries/official/interactive"
 
 echo "Testing IC queries with WITH + aggregation patterns"

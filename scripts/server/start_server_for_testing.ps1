@@ -21,7 +21,7 @@ $job = Start-Job -ScriptBlock {
     Set-Location $path
     
     # Run the server
-    cargo run --bin clickgraph -- --http-port 8080 --disable-bolt
+    cargo run --bin clickgraph -- --http-port 7475 --disable-bolt
 } -ArgumentList $env:CLICKHOUSE_URL, $env:CLICKHOUSE_USER, $env:CLICKHOUSE_PASSWORD, $env:CLICKHOUSE_DATABASE, $PWD
 
 Write-Host "✓ Server job started with ID: $($job.Id)" -ForegroundColor Green

@@ -15,7 +15,7 @@ from typing import Dict, List, Tuple, Optional
 from datetime import datetime
 
 # Configuration
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 BASE_DIR = Path(__file__).parent.parent
 RESULTS_DIR = BASE_DIR / "results" / "official_sql"
 DATABASE = "ldbc_snb"  # Schema name in ClickGraph

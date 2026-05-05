@@ -13,7 +13,7 @@ Uses the denormalized_flights schema for denorm patterns.
 import requests
 import sys
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = "http://localhost:7475"
 
 def load_schema(schema_path: str, schema_name: str):
     """Load a schema file."""

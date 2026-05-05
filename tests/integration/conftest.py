@@ -24,7 +24,7 @@ from typing import Dict, Any, List
 
 
 # Configuration
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 CLICKHOUSE_HOST = os.getenv("CLICKHOUSE_HOST", "localhost")
 CLICKHOUSE_PORT = int(os.getenv("CLICKHOUSE_PORT", "8123"))
 CLICKHOUSE_USER = os.getenv("CLICKHOUSE_USER", "test_user")
@@ -65,7 +65,7 @@ def clickhouse_conn(clickhouse_client):
 
 @pytest.fixture
 def clickgraph_client():
-    """HTTP client for ClickGraph server at localhost:8080."""
+    """HTTP client for ClickGraph server at localhost:7475."""
     class ClickGraphClient:
         def __init__(self, base_url=CLICKGRAPH_URL):
             self.base_url = base_url

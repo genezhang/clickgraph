@@ -12,7 +12,7 @@ import sys
 import os
 from pathlib import Path
 
-SERVER_PORT = 8080
+SERVER_PORT = 7475
 SERVER_URL = f"http://localhost:{SERVER_PORT}"
 PID_FILE = Path("server.pid")
 

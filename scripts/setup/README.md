@@ -153,7 +153,7 @@ RETURN ip.ip, domain.domain
 
 ### Check Loaded Schemas
 ```bash
-curl -s http://localhost:8080/schemas | jq
+curl -s http://localhost:7475/schemas | jq
 ```
 
 Expected output:
@@ -174,17 +174,17 @@ Expected output:
 ### Test Individual Schema
 ```bash
 # social_benchmark
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query":"USE social_benchmark MATCH (u:User) RETURN u.name, u.country"}'
 
 # test_fixtures
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query":"USE test_fixtures MATCH (u:TestUser)-[:MEMBER_OF]->(g:TestGroup) RETURN u.name, g.name"}'
 
 # ldbc_snb
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query":"USE ldbc_snb MATCH (p:Person) RETURN p.firstName, p.lastName"}'
 ```

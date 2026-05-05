@@ -14,7 +14,7 @@ set -e
 
 CLICKGRAPH_BIN="${CLICKGRAPH_BIN:-./target/release/clickgraph}"
 SCHEMA="${GRAPH_CONFIG_PATH:-./benchmarks/social_network/schemas/social_benchmark.yaml}"
-PORT="${PORT:-8080}"
+PORT="${PORT:-7475}"
 
 echo "🔍 Property Pruning Manual Validation"
 echo "======================================"

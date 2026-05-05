@@ -10,7 +10,7 @@ import requests
 import json
 import sys
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = "http://localhost:7475"
 
 # Simple test schema with array-valued property
 TEST_SCHEMA = {

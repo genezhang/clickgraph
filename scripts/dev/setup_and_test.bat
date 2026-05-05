@@ -88,7 +88,7 @@ echo Waiting for server to start...
 timeout /t 3 /nobreak >nul
 
 :check_server
-curl -s http://localhost:8080/health >nul 2>&1
+curl -s http://localhost:7475/health >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
     timeout /t 1 /nobreak >nul
     goto check_server
@@ -98,7 +98,7 @@ echo ✓ ClickGraph server is ready
 REM Step 6: Load schema
 echo.
 echo [6/6] Loading test schema...
-curl -s -X POST http://localhost:8080/schemas/load ^
+curl -s -X POST http://localhost:7475/schemas/load ^
   -H "Content-Type: application/json" ^
   -d "{\"schema_path\": \"tests/integration/test_integration.yaml\", \"schema_name\": \"test_integration\"}"
 echo.

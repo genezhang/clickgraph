@@ -1,6 +1,6 @@
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 import json
 
 query = 'MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE b.name = "David Lee" RETURN a.name, b.name'

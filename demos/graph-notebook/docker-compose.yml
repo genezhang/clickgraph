@@ -45,11 +45,11 @@ services:
       CLICKGRAPH_MAX_CTE_DEPTH: "500"
     ports:
       - "7687:7687"
-      - "8080:8080"
+      - "7475:7475"
     volumes:
       - ../neo4j-browser/social_demo.yaml:/app/demos/neo4j-browser/social_demo.yaml:ro
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:7475/health"]
       interval: 10s
       timeout: 5s
       retries: 5

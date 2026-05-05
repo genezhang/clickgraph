@@ -70,7 +70,7 @@ export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.y
 cargo run --bin clickgraph
 
 # Debug generated SQL without executing
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query":"MATCH (n) RETURN n","sql_only":true}'
 

@@ -355,14 +355,14 @@ graph TD
 import requests
 
 # Test 1: Basic query
-response = requests.post('http://localhost:8080/query', json={
+response = requests.post('http://localhost:7475/query', json={
     'query': 'OPTIONAL MATCH (a)-[:REL]->(b) RETURN a, b',
     'sql_only': True
 })
 print("Generated SQL:", response.json()['generated_sql'])
 
 # Test 2: Execute query
-response = requests.post('http://localhost:8080/query', json={
+response = requests.post('http://localhost:7475/query', json={
     'query': 'OPTIONAL MATCH (a)-[:REL]->(b) RETURN a.name, b.name'
 })
 print("Rows returned:", len(response.json()['rows']))
@@ -419,7 +419,7 @@ import requests
 
 @pytest.fixture
 def server_url():
-    return "http://localhost:8080"
+    return "http://localhost:7475"
 
 def test_optional_match_returns_nulls(server_url):
     """Test that OPTIONAL MATCH returns NULL for non-matches"""
@@ -511,7 +511,7 @@ debug!("Processing optional match: {:?}", pattern);
 **Purpose**: See generated SQL without executing
 
 ```python
-response = requests.post('http://localhost:8080/query', json={
+response = requests.post('http://localhost:7475/query', json={
     'query': 'OPTIONAL MATCH (a)-[:REL]->(b) RETURN a',
     'sql_only': True
 })
@@ -537,10 +537,10 @@ print(response.json()['generated_sql'])
 **Testing Pattern**:
 ```bash
 # Test 1: Basic
-python -c "import requests; print(requests.post('http://localhost:8080/query', json={'query':'MATCH (a)-[*2]->(b) RETURN a'}).json())"
+python -c "import requests; print(requests.post('http://localhost:7475/query', json={'query':'MATCH (a)-[*2]->(b) RETURN a'}).json())"
 
 # Test 2: With filters  
-python -c "import requests; print(requests.post('http://localhost:8080/query', json={'query':'MATCH (a)-[*1..3]->(b) WHERE b.age>25 RETURN a'}).json())"
+python -c "import requests; print(requests.post('http://localhost:7475/query', json={'query':'MATCH (a)-[*1..3]->(b) WHERE b.age>25 RETURN a'}).json())"
 ```
 
 #### 4.4 Compare Expected vs Actual SQL
@@ -744,7 +744,7 @@ Demonstrates:
 import requests
 
 # Example 1
-response = requests.post('http://localhost:8080/query', json={
+response = requests.post('http://localhost:7475/query', json={
     'query': 'MATCH (a)-[*1..3]->(b) RETURN a.name'
 })
 print(response.json())

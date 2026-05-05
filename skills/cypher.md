@@ -41,7 +41,7 @@ cg --schema <path> --clickhouse "$CG_CLICKHOUSE_URL" query "<generated cypher>"
 
 If ClickHouse is not configured, present the Cypher and SQL and suggest how to run it:
 - `cg query --clickhouse http://localhost:8123 "<cypher>"`
-- Via ClickGraph server: `curl -X POST http://localhost:8080/query -d '{"query": "<cypher>"}'`
+- Via ClickGraph server: `curl -X POST http://localhost:7475/query -d '{"query": "<cypher>"}'`
 
 ## Notes
 

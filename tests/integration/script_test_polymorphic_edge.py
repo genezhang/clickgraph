@@ -10,7 +10,7 @@ This test validates that ClickGraph correctly generates filter clauses for polym
 
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 import json
 import sys
 

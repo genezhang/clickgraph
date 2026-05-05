@@ -26,7 +26,7 @@ print("\nExpected (after fix): Return nodes with country, skip empty relationshi
 print("Previous behavior: Would error with 'Relationship type '' not found'")
 print("\nSending query...")
 
-r = requests.post("http://localhost:8080/query", json={"query": query})
+r = requests.post("http://localhost:7475/query", json={"query": query})
 print(f"\nStatus: {r.status_code}")
 print(f"Response: {r.text[:500]}")
 

@@ -5,7 +5,7 @@ Test multi-clause JOIN ordering
 import requests
 import json
 
-CLICKGRAPH_URL = "http://localhost:8080"
+CLICKGRAPH_URL = "http://localhost:7475"
 
 def test_query(cypher_query, schema_name="test_graph_schema"):
     """Execute a Cypher query and print the generated SQL."""

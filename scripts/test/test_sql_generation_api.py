@@ -7,7 +7,7 @@ Tests POST /query/sql functionality
 import requests
 import json
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = "http://localhost:7475"
 
 def test_simple_query():
     """Test basic query without RBAC"""

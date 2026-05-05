@@ -26,7 +26,7 @@ import argparse
 from typing import Optional
 
 # ClickGraph server endpoint
-CLICKGRAPH_URL = "http://localhost:8080"
+CLICKGRAPH_URL = "http://localhost:7475"
 SCHEMA_NAME = "ontime_flights"
 
 # Benchmark queries adapted from PuppyGraph

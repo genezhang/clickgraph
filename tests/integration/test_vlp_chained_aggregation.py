@@ -19,7 +19,7 @@ import pytest
 import requests
 import re
 
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 SCHEMA_NAME = "social_integration"
 
 

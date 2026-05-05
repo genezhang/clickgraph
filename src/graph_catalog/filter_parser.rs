@@ -8,7 +8,7 @@
 ///
 /// Examples:
 /// - `ts >= now() - INTERVAL 7 DAY`
-/// - `proto = 'tcp' AND port IN (80, 443, 8080)`
+/// - `proto = 'tcp' AND port IN (80, 443, 7475)`
 /// - `status IS NOT NULL AND active = true`
 use nom::{
     branch::alt,
@@ -600,8 +600,8 @@ mod tests {
 
     #[test]
     fn test_in_expression() {
-        let filter = SchemaFilter::new("port IN (80, 443, 8080)").unwrap();
-        assert_eq!(filter.to_sql("t").unwrap(), "t.port IN (80, 443, 8080)");
+        let filter = SchemaFilter::new("port IN (80, 443, 7475)").unwrap();
+        assert_eq!(filter.to_sql("t").unwrap(), "t.port IN (80, 443, 7475)");
     }
 
     #[test]

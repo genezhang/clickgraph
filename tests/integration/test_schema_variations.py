@@ -19,7 +19,7 @@ import pytest
 import requests
 from typing import Dict, Any
 
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 
 
 class SchemaTestConfig:

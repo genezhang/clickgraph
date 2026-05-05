@@ -15,7 +15,7 @@
 set -e
 
 # Default values
-HTTP_PORT=8080
+HTTP_PORT=7475
 BOLT_PORT=7687
 CONFIG_PATH="schemas/test/unified_test_multi_schema.yaml"  # Multi-schema config with 6 isolated schemas
 DATABASE="brahmand"  # Changed: Most tests use brahmand database
@@ -97,7 +97,7 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             echo "Usage: $0 [options]"
             echo "Options:"
-            echo "  -p, --http-port PORT          HTTP port (default: 8080)"
+            echo "  -p, --http-port PORT          HTTP port (default: 7475)"
             echo "  -b, --bolt-port PORT          Bolt port (default: 7687)"
             echo "  -c, --config PATH             Config file path (default: social_network.yaml)"
             echo "  -d, --database NAME           Database name (default: social)"

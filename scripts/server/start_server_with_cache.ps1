@@ -50,5 +50,5 @@ Write-Host "`n To check server output:" -ForegroundColor Cyan
 Write-Host "   Receive-Job -Id $($job.Id) -Keep" -ForegroundColor Gray
 Write-Host "`n To stop server:" -ForegroundColor Cyan
 Write-Host "   Stop-Job -Id $($job.Id); Remove-Job -Id $($job.Id)" -ForegroundColor Gray
-Write-Host "`n Server should be running on http://localhost:8080" -ForegroundColor Green
+Write-Host "`n Server should be running on http://localhost:7475" -ForegroundColor Green
 Write-Host ""

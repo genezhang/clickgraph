@@ -20,7 +20,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 CATEGORY="${1:-all}"
-SERVER_PORT=8080
+SERVER_PORT=7475
 SERVER_URL="http://localhost:${SERVER_PORT}"
 
 echo -e "${BLUE}========================================${NC}"

@@ -48,7 +48,7 @@ securityContext:
 service:
   type: ClusterIP
   http:
-    port: 8080
+    port: 7475
   bolt:
     port: 7687
   metrics:
@@ -139,7 +139,7 @@ env:
   - name: RUST_LOG
     value: "info"
   - name: HTTP_PORT
-    value: "8080"
+    value: "7475"
   - name: BOLT_PORT
     value: "7687"
   - name: HTTP_ENABLED

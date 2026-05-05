@@ -16,7 +16,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TESTS_DIR="$PROJECT_ROOT/tests/integration"
 TEST_FILE="test_with_cte_node_expansion.py"
 
-CLICKGRAPH_URL="${CLICKGRAPH_URL:-http://localhost:8080}"
+CLICKGRAPH_URL="${CLICKGRAPH_URL:-http://localhost:7475}"
 CLICKHOUSE_URL="${CLICKHOUSE_URL:-http://localhost:8123}"
 CLICKHOUSE_USER="${CLICKHOUSE_USER:-test_user}"
 CLICKHOUSE_PASSWORD="${CLICKHOUSE_PASSWORD:-test_pass}"
@@ -66,7 +66,7 @@ Options:
     -h, --help              Show this help message
 
 Environment Variables:
-    CLICKGRAPH_URL          ClickGraph server URL (default: http://localhost:8080)
+    CLICKGRAPH_URL          ClickGraph server URL (default: http://localhost:7475)
     CLICKHOUSE_URL          ClickHouse URL (default: http://localhost:8123)
     CLICKHOUSE_USER         ClickHouse user (default: test_user)
     CLICKHOUSE_PASSWORD     ClickHouse password (default: test_pass)

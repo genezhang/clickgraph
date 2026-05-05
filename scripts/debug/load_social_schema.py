@@ -4,7 +4,7 @@ import requests
 with open('schemas/examples/social_network.yaml', 'r', encoding='utf-8') as f:
     schema_yaml = f.read()
 
-response = requests.post('http://localhost:8080/schemas/load', json={
+response = requests.post('http://localhost:7475/schemas/load', json={
     'schema_name': 'social_network',
     'config_content': schema_yaml
 })

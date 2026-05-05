@@ -112,7 +112,7 @@ class TestCountRelationships:
         import os
         import requests
         
-        _base = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+        _base = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
         # Test relationship with non-existent type
         response = requests.post(
             f"{_base}/query",

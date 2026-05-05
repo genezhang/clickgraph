@@ -9,7 +9,7 @@ param(
     [string]$Query = "MATCH (u:User) RETURN u.name LIMIT 3"
 )
 
-$SERVER_PORT = 8080
+$SERVER_PORT = 7475
 $SERVER_PID_FILE = "server.pid"
 
 function Start-Server {
@@ -76,7 +76,7 @@ function Stop-Server {
         Write-Host "⚠️  No PID file found" -ForegroundColor Yellow
     }
     
-    # Kill any orphaned processes on port 8080
+    # Kill any orphaned processes on port 7475
     $processes = Get-NetTCPConnection -LocalPort $SERVER_PORT -ErrorAction SilentlyContinue
     foreach ($proc in $processes) {
         Stop-Process -Id $proc.OwningProcess -Force -ErrorAction SilentlyContinue

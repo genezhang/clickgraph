@@ -377,7 +377,7 @@ Scale Factor Examples:
     # Print next steps
     log("")
     log("Next Steps:")
-    log("1. Load schema: curl -X POST http://localhost:8080/schemas/load \\")
+    log("1. Load schema: curl -X POST http://localhost:7475/schemas/load \\")
     log("                     -H 'Content-Type: application/json' \\")
     log("                     -d '{\"schema_file\": \"social_network_benchmark.yaml\"}'")
     log("")

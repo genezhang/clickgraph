@@ -5,7 +5,7 @@ Verifies that LEFT JOIN works correctly with view-based table names.
 """
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 import json
 
 def test_query(query, description):
@@ -37,7 +37,7 @@ def test_query(query, description):
             return False
             
     except requests.exceptions.ConnectionError:
-        print(f"[FAIL] FAILED: Could not connect to ClickGraph server at http://localhost:8080")
+        print(f"[FAIL] FAILED: Could not connect to ClickGraph server at http://localhost:7475")
         print(f"   Make sure the server is running with: .\\start_server_new_window.bat")
         return False
     except Exception as e:

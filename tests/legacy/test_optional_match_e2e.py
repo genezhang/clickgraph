@@ -7,7 +7,7 @@ null values correctly for unmatched patterns.
 
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 import json
 import sys
 
@@ -170,7 +170,7 @@ def main():
     except requests.exceptions.RequestException:
         print(f"\n[FAIL] Server is not running at {SERVER_URL}")
         print("Please start the server with:")
-        print("  cargo run --bin brahmand -- --http-port 8080")
+        print("  cargo run --bin brahmand -- --http-port 7475")
         sys.exit(1)
     
     # Run tests

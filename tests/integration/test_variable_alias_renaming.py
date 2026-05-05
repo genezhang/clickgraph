@@ -13,7 +13,7 @@ from pathlib import Path
 
 # Test configuration
 SCHEMA_PATH = "./schemas/test/social_integration.yaml"
-CLICKGRAPH_PORT = 8080
+CLICKGRAPH_PORT = 7475
 BASE_URL = f"http://localhost:{CLICKGRAPH_PORT}"
 
 

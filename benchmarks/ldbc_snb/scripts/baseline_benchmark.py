@@ -8,7 +8,7 @@ import json
 import time
 from datetime import datetime
 
-BASE_URL = "http://localhost:8080/query"
+BASE_URL = "http://localhost:7475/query"
 
 # Use actual IDs from SF10 dataset
 QUERIES = {

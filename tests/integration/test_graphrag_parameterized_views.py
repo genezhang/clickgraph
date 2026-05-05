@@ -27,7 +27,7 @@ import requests
 import os
 import clickhouse_connect
 
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 BASE_URL = f"{CLICKGRAPH_URL}"
 
 # ============================================================================

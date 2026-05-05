@@ -10,4 +10,4 @@ echo Starting ClickGraph with test schema...
 echo GRAPH_CONFIG_PATH=%GRAPH_CONFIG_PATH%
 echo.
 
-target\release\clickgraph.exe --http-port 8080 --disable-bolt
+target\release\clickgraph.exe --http-port 7475 --disable-bolt

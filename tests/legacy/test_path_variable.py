@@ -4,7 +4,7 @@ Test path variable SQL generation
 """
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 import json
 import sys
 
@@ -72,7 +72,7 @@ def test_query(query_obj):
             print(response.text)
             
     except requests.exceptions.ConnectionError:
-        print("[FAIL] Error: Could not connect to server on http://localhost:8080")
+        print("[FAIL] Error: Could not connect to server on http://localhost:7475")
         print("   Make sure the ClickGraph server is running:")
         print("   cargo run --bin brahmand")
         sys.exit(1)

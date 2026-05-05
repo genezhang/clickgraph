@@ -98,7 +98,7 @@ Measures execution time for all supported LDBC queries.
 export SCALE_FACTOR="sf10"
 export WARMUP_RUNS=1
 export BENCHMARK_RUNS=3
-export CLICKGRAPH_URL="http://localhost:8080"
+export CLICKGRAPH_URL="http://localhost:7475"
 export SCHEMA_NAME="ldbc_snb"
 ```
 
@@ -140,7 +140,7 @@ Measures QPS (queries per second) and latency under concurrent load.
 export SCALE_FACTOR="sf10"
 export TEST_DURATION=30  # seconds per test
 export CONNECTION_COUNTS="1 2 4 8 16 32"
-export CLICKGRAPH_URL="http://localhost:8080"
+export CLICKGRAPH_URL="http://localhost:7475"
 export SCHEMA_NAME="ldbc_snb"
 ```
 

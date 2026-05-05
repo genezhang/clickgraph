@@ -6,7 +6,7 @@ Tests the 10 benchmark queries after all bug fixes
 import requests
 import json
 
-SERVER_URL = "http://localhost:8080"
+SERVER_URL = "http://localhost:7475"
 
 BENCHMARK_QUERIES = [
     {

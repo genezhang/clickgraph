@@ -11,7 +11,7 @@ import os
 import json
 import sys
 
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 SERVER_URL = f"{CLICKGRAPH_URL}"
 
 class TestResult:

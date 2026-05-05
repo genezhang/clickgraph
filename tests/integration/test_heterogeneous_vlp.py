@@ -24,7 +24,7 @@ class TestHeterogeneousMultiTypeVLP:
     @pytest.fixture(autouse=True)
     def setup(self, verify_clickgraph_running):
         """Ensure ClickGraph is running."""
-        self.base_url = "http://localhost:8080"
+        self.base_url = "http://localhost:7475"
         self.schema_name = "social_integration"
 
     def query(self, cypher, parameters=None):
@@ -114,7 +114,7 @@ class TestWorkaroundForHeterogeneousVLP:
     @pytest.fixture(autouse=True)
     def setup(self, verify_clickgraph_running):
         """Ensure ClickGraph is running."""
-        self.base_url = "http://localhost:8080"
+        self.base_url = "http://localhost:7475"
         self.schema_name = "social_integration"
 
     def query(self, cypher, parameters=None):

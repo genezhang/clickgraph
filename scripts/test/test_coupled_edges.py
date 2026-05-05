@@ -28,7 +28,7 @@ def run_query(query: str, schema_path: str = "./schemas/examples/zeek_dns_log.ya
     import requests
     
     response = requests.post(
-        "http://localhost:8080/query",
+        "http://localhost:7475/query",
         json={"query": query, "sql_only": True},
         timeout=5
     )
@@ -96,7 +96,7 @@ def test_non_coupled_still_joins():
     try:
         import requests
         response = requests.post(
-            "http://localhost:8080/query",
+            "http://localhost:7475/query",
             json={"query": query, "sql_only": True},
             timeout=5
         )
@@ -130,7 +130,7 @@ def main():
     # Check if server is running
     try:
         import requests
-        response = requests.get("http://localhost:8080/health", timeout=2)
+        response = requests.get("http://localhost:7475/health", timeout=2)
         if response.status_code != 200:
             print(f"{RED}Server not healthy. Please start with GRAPH_CONFIG_PATH=./schemas/examples/zeek_dns_log.yaml{RESET}")
             return 1

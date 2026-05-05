@@ -26,7 +26,7 @@ import requests
 import json
 
 # Get server configuration from environment
-CLICKGRAPH_SERVER = os.getenv('CLICKGRAPH_SERVER', 'http://localhost:8080')
+CLICKGRAPH_SERVER = os.getenv('CLICKGRAPH_SERVER', 'http://localhost:7475')
 GRAPH_CONFIG_PATH = os.getenv('GRAPH_CONFIG_PATH', './schemas/test/social_integration.yaml')
 
 def query_clickgraph(cypher: str, schema_path: str = GRAPH_CONFIG_PATH) -> Dict[str, Any]:

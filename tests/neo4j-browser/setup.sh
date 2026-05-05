@@ -77,8 +77,8 @@ else
 fi
 
 # Check ClickGraph
-if curl -s http://localhost:8080/health > /dev/null 2>&1; then
-    echo "✓ ClickGraph HTTP: http://localhost:8080"
+if curl -s http://localhost:7475/health > /dev/null 2>&1; then
+    echo "✓ ClickGraph HTTP: http://localhost:7475"
     echo "✓ ClickGraph Bolt: bolt://localhost:7687"
 else
     echo "⚠️  ClickGraph: Not responding (check logs: docker logs clickgraph-dev)"

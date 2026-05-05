@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 RESULTS_DIR = Path("/tmp/clickgraph_v1_v2_compare")
 
 

@@ -67,7 +67,7 @@ services:
       # Default is 100, increase if you get "CTE depth limit exceeded" errors
       CLICKGRAPH_MAX_CTE_DEPTH: "1000"
     ports:
-      - "8080:8080"
+      - "7475:7475"
       - "7687:7687"
     volumes:
       - ./benchmarks:/app/benchmarks:ro

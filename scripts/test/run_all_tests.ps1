@@ -134,10 +134,10 @@ if (-not $Quick) {
     # Check if server is running
     $serverRunning = $false
     try {
-        $response = Invoke-WebRequest -Uri "http://localhost:8080/health" -TimeoutSec 2 -ErrorAction SilentlyContinue
+        $response = Invoke-WebRequest -Uri "http://localhost:7475/health" -TimeoutSec 2 -ErrorAction SilentlyContinue
         $serverRunning = $true
     } catch {
-        Write-Host "[WARN] Server not running on port 8080. Starting server..." -ForegroundColor Yellow
+        Write-Host "[WARN] Server not running on port 7475. Starting server..." -ForegroundColor Yellow
         $serverJob = Start-Job -ScriptBlock {
             Set-Location $using:PWD
             $env:CLICKHOUSE_URL = "http://localhost:8123"
@@ -158,7 +158,7 @@ if (-not $Quick) {
             Start-Sleep -Seconds 2
             $waited += 2
             try {
-                $response = Invoke-WebRequest -Uri "http://localhost:8080/health" -TimeoutSec 2 -ErrorAction SilentlyContinue
+                $response = Invoke-WebRequest -Uri "http://localhost:7475/health" -TimeoutSec 2 -ErrorAction SilentlyContinue
                 $serverReady = $true
                 Write-Host "[OK] Server responding after $waited seconds (Job ID: $($serverJob.Id))" -ForegroundColor Green
                 break

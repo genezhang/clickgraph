@@ -520,7 +520,7 @@ def run_test(schema_name: str, test: TestCase, sql_only: bool = False) -> dict:
         }
     
     try:
-        url = f"http://localhost:8080/query/sql"
+        url = f"http://localhost:7475/query/sql"
         payload = {
             "query": cypher,
             "schema_name": schema["name"],
@@ -547,7 +547,7 @@ def run_test(schema_name: str, test: TestCase, sql_only: bool = False) -> dict:
     except requests.exceptions.ConnectionError:
         return {
             "status": "error",
-            "error": "Cannot connect to ClickGraph server on port 8080",
+            "error": "Cannot connect to ClickGraph server on port 7475",
         }
     except Exception as e:
         return {

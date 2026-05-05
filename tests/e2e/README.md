@@ -81,7 +81,7 @@ $env:CLICKHOUSE_DATABASE="default"
 $env:RUST_LOG="info"
 
 # Start server
-cargo run --release --bin clickgraph -- --http-port 8080
+cargo run --release --bin clickgraph -- --http-port 7475
 
 # Or use background job (Windows)
 $job = Start-Job -ScriptBlock { 
@@ -89,7 +89,7 @@ $job = Start-Job -ScriptBlock {
     $env:CLICKHOUSE_URL="http://localhost:8123"
     $env:CLICKHOUSE_USER="test_user"  
     $env:CLICKHOUSE_PASSWORD="test_pass"
-    & ".\target\release\clickgraph.exe" --http-port 8080 
+    & ".\target\release\clickgraph.exe" --http-port 7475 
 }
 ```
 
@@ -258,7 +258,7 @@ docker exec clickhouse clickhouse-client --query "DROP DATABASE test_my_feature"
 cargo run --release --bin clickgraph
 
 # Or check if already running
-curl http://localhost:8080/health
+curl http://localhost:7475/health
 ```
 
 ### "Failed to setup test bucket"
@@ -279,7 +279,7 @@ curl http://localhost:8080/health
 
 ## Environment Variables
 
-- `CLICKGRAPH_URL` - Server URL (default: `http://localhost:8080`)
+- `CLICKGRAPH_URL` - Server URL (default: `http://localhost:7475`)
 - `CLICKHOUSE_HOST` - ClickHouse host (default: `localhost`)
 - `CLICKHOUSE_PORT` - ClickHouse port (default: `8123`)
 - `CLICKHOUSE_USER` - ClickHouse username (default: `test_user`)

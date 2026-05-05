@@ -168,7 +168,7 @@ The graph visualization will automatically render!
 **Problem**: `ConnectionRefusedError: [Errno 111] Connection refused`
 
 **Solution**:
-1. Verify ClickGraph is running: `curl http://localhost:8080/health`
+1. Verify ClickGraph is running: `curl http://localhost:7475/health`
 2. Check Bolt port: `netstat -tlnp | grep 7687`
 3. Ensure Neo4j compatibility mode is enabled
 

@@ -11,7 +11,7 @@ We'll test our current implementation and document expected behavior.
 
 import requests
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = "http://localhost:7475"
 
 def query(cypher, sql_only=True):
     """Execute a Cypher query."""

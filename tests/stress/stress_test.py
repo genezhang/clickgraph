@@ -656,8 +656,8 @@ async def run_stress_test(args):
 
 def main():
     parser = argparse.ArgumentParser(description="ClickGraph Server Stress Test")
-    parser.add_argument("--server", default="http://localhost:8080",
-                        help="Server base URL (default: http://localhost:8080)")
+    parser.add_argument("--server", default="http://localhost:7475",
+                        help="Server base URL (default: http://localhost:7475)")
     parser.add_argument("--duration", type=int, default=3600,
                         help="Test duration in seconds (default: 3600)")
     parser.add_argument("--concurrency", type=int, default=20,

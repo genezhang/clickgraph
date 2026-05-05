@@ -191,7 +191,7 @@ class TestDenormalizedPropertyAccess:
         schema_name = denormalized_flights_graph["schema_name"]
         
         response = requests.post(
-            "http://localhost:8080/query",
+            "http://localhost:7475/query",
             json={"query": f"USE {schema_name} {query}", "sql_only": True}
         )
         response.raise_for_status()

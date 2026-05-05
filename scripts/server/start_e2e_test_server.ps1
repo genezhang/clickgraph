@@ -18,8 +18,8 @@ $env:RUST_LOG = "info"
 
 # Check if server is already running
 try {
-    $response = Invoke-RestMethod -Method GET -Uri "http://localhost:8080/health" -TimeoutSec 2 -ErrorAction SilentlyContinue
-    Write-Host "✓ Server already running on port 8080" -ForegroundColor Green
+    $response = Invoke-RestMethod -Method GET -Uri "http://localhost:7475/health" -TimeoutSec 2 -ErrorAction SilentlyContinue
+    Write-Host "✓ Server already running on port 7475" -ForegroundColor Green
     Write-Host ""
     exit 0
 }
@@ -54,7 +54,7 @@ $job = Start-Job -ScriptBlock {
     Set-Location $working_dir
     
     # Run the server
-    & ".\target\release\clickgraph.exe" --http-port 8080
+    & ".\target\release\clickgraph.exe" --http-port 7475
 } -ArgumentList $env:CLICKHOUSE_URL, $env:CLICKHOUSE_USER, $env:CLICKHOUSE_PASSWORD, $env:CLICKHOUSE_DATABASE, $env:GRAPH_CONFIG_PATH, $env:RUST_LOG, $PWD
 
 Write-Host "✓ Server job started (Job ID: $($job.Id))" -ForegroundColor Green
@@ -69,7 +69,7 @@ $serverReady = $false
 while ($attempt -lt $maxAttempts -and -not $serverReady) {
     Start-Sleep -Milliseconds 500
     try {
-        $response = Invoke-RestMethod -Method GET -Uri "http://localhost:8080/health" -TimeoutSec 2 -ErrorAction SilentlyContinue
+        $response = Invoke-RestMethod -Method GET -Uri "http://localhost:7475/health" -TimeoutSec 2 -ErrorAction SilentlyContinue
         $serverReady = $true
     }
     catch {
@@ -84,7 +84,7 @@ if ($serverReady) {
     Write-Host "✓ Server is ready!" -ForegroundColor Green
     Write-Host ""
     Write-Host "Server Details:"
-    Write-Host "  URL: http://localhost:8080"
+    Write-Host "  URL: http://localhost:7475"
     Write-Host "  Job ID: $($job.Id)"
     Write-Host "  Database: social"
     Write-Host "  Config: social_network.yaml"

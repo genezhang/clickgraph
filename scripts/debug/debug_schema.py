@@ -2,7 +2,7 @@ import requests
 import json
 
 # Check what the social_network schema actually contains
-r = requests.get('http://localhost:8080/schemas')
+r = requests.get('http://localhost:7475/schemas')
 schemas = r.json()['schemas']
 
 print("Available schemas:")
@@ -11,7 +11,7 @@ for schema in schemas:
 
 # Try to query and see what happens
 print("\nTesting social_network schema query...")
-r = requests.post('http://localhost:8080/query', json={
+r = requests.post('http://localhost:7475/query', json={
     'query': 'MATCH (u:User) RETURN u LIMIT 1',
     'schema_name': 'social_network',
     'sql_only': True

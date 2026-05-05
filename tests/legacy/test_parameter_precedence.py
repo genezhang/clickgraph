@@ -6,7 +6,7 @@ Tests what happens when both 'graph' and 'nodeLabels' are specified.
 
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 import json
 
 def test_parameter_precedence():

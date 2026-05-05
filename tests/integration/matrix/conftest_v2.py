@@ -100,7 +100,7 @@ SCHEMAS = {
 # TEST INFRASTRUCTURE
 # ============================================================================
 
-SERVER_URL = os.environ.get("CLICKGRAPH_URL", "http://localhost:8080")
+SERVER_URL = os.environ.get("CLICKGRAPH_URL", "http://localhost:7475")
 
 def execute_query(query: str, params: Optional[Dict] = None, schema_name: Optional[str] = None) -> Dict:
     """Execute a Cypher query and return the result."""

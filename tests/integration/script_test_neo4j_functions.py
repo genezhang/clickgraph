@@ -4,7 +4,7 @@ Test script for Neo4j function support
 """
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 import json
 
 API_URL = f"{CLICKGRAPH_URL}/query"

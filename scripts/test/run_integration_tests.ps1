@@ -8,7 +8,7 @@ $env:CLICKHOUSE_USER = "test_user"
 $env:CLICKHOUSE_PASSWORD = "test_pass"
 
 # ClickGraph API endpoint
-$env:CLICKGRAPH_URL = "http://localhost:8080"
+$env:CLICKGRAPH_URL = "http://localhost:7475"
 
 Write-Host "🔧 Integration Test Environment Setup" -ForegroundColor Cyan
 Write-Host "  ClickHouse: ${env:CLICKHOUSE_USER}@${env:CLICKHOUSE_HOST}:${env:CLICKHOUSE_PORT}" -ForegroundColor Gray

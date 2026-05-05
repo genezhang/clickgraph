@@ -10,7 +10,7 @@ import time
 from typing import Dict, List, Optional
 from datetime import datetime
 
-BASE_URL = "http://localhost:8080/query"
+BASE_URL = "http://localhost:7475/query"
 
 # Test parameters (will use actual LDBC parameters once data is loaded)
 DEFAULT_PARAMS = {

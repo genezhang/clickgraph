@@ -2,7 +2,7 @@
 # LDBC SNB Interactive v1 - Test Queries for ClickGraph
 # Tests basic graph queries against the loaded LDBC data
 
-CLICKGRAPH_URL="${CLICKGRAPH_URL:-http://localhost:8080}"
+CLICKGRAPH_URL="${CLICKGRAPH_URL:-http://localhost:7475}"
 
 query() {
     local name=$1

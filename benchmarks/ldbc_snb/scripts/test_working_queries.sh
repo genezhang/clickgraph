@@ -5,7 +5,7 @@
 set -e
 
 # Configuration
-CLICKGRAPH_URL="${CLICKGRAPH_URL:-http://localhost:8080}"
+CLICKGRAPH_URL="${CLICKGRAPH_URL:-http://localhost:7475}"
 SCHEMA_NAME="${SCHEMA_NAME:-ldbc_snb}"
 SCALE_FACTOR="${SCALE_FACTOR:-sf0.003}"
 

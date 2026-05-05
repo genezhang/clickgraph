@@ -17,7 +17,7 @@ import sys
 from typing import Dict, List, Tuple
 
 # Server endpoint
-SERVER_URL = "http://localhost:8080"
+SERVER_URL = "http://localhost:7475"
 
 # Test queries that benefit from property pruning
 BENCHMARK_QUERIES = [

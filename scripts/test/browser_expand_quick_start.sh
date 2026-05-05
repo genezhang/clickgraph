@@ -22,12 +22,12 @@ fi
 echo "  ✓ ClickHouse OK (port 18123)"
 
 echo "  - Checking ClickGraph HTTP..."
-if ! curl -s http://localhost:8080/health > /dev/null 2>&1; then
-    echo "  ⚠ ClickGraph not running on port 8080"
-    echo "    Start with: ./target/release/clickgraph --http-port 8080 --bolt-port 7687"
+if ! curl -s http://localhost:7475/health > /dev/null 2>&1; then
+    echo "  ⚠ ClickGraph not running on port 7475"
+    echo "    Start with: ./target/release/clickgraph --http-port 7475 --bolt-port 7687"
     sleep 2
 fi
-echo "  ✓ ClickGraph HTTP OK (port 8080)"
+echo "  ✓ ClickGraph HTTP OK (port 7475)"
 echo ""
 
 # ===== Step 2: Show options =====

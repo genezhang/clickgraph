@@ -9,7 +9,7 @@ import time
 import os
 import sys
 
-SERVER_PORT = 8080
+SERVER_PORT = 7475
 
 def main():
     print("[INFO] Starting server with visible logs to see full SQL...\n")

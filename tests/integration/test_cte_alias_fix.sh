@@ -10,7 +10,7 @@ echo "🧪 Testing CTE alias conflict fix (multiple recursive CTEs)..."
 
 # Test 1: Bidirectional variable-length path generates two recursive CTEs
 echo "Test 1: Bidirectional path (shortestPath) generates nested WITH RECURSIVE..."
-RESPONSE=$(curl -s -X POST http://localhost:8080/query \
+RESPONSE=$(curl -s -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH path = (p1:Person {id: 933})-[:KNOWS*1..2]-(p2:Person {id: 10995116277782}) RETURN count(path)",
@@ -57,7 +57,7 @@ fi
 # Test 2: Query executes without "Unknown table expression identifier" error
 echo ""
 echo "Test 2: Query executes without CTE alias conflicts..."
-RESPONSE=$(curl -s -X POST http://localhost:8080/query \
+RESPONSE=$(curl -s -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH (p1:Person {id: 933})-[:KNOWS*1..1]->(p2:Person) RETURN p2.id LIMIT 1",
@@ -75,7 +75,7 @@ fi
 # Test 3: Verify no "recursive2" errors (ClickHouse limitation)
 echo ""
 echo "Test 3: No multiple recursive CTEs in same WITH block..."
-RESPONSE=$(curl -s -X POST http://localhost:8080/query \
+RESPONSE=$(curl -s -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{
     "query": "MATCH path = (p1:Person {id: 933})-[:KNOWS*1..2]-(p2:Person {id: 10995116277782}) RETURN count(path)",

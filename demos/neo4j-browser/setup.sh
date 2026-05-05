@@ -62,7 +62,7 @@ else
     echo "⚠️  Neo4j Browser: Still starting (check logs: docker logs neo4j-demo)"
 fi
 
-if curl -s http://localhost:8080/health > /dev/null 2>&1; then
+if curl -s http://localhost:7475/health > /dev/null 2>&1; then
     echo "✓ ClickGraph: Ready (Bolt: bolt://localhost:7687)"
 else
     echo "⚠️  ClickGraph: Still starting (check logs: docker logs clickgraph-demo)"

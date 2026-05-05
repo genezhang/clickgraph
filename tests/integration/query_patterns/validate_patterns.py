@@ -7,7 +7,7 @@ Adapts queries based on what's in the schema.
 
 Usage:
     # First, check what schema is loaded
-    curl http://localhost:8080/schema/info
+    curl http://localhost:7475/schema/info
     
     # Then run tests against it
     python3 tests/integration/query_patterns/validate_patterns.py
@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 
 # Configuration
-CLICKGRAPH_URL = "http://localhost:8080"
+CLICKGRAPH_URL = "http://localhost:7475"
 TIMEOUT = 30
 
 

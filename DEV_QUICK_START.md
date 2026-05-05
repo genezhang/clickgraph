@@ -138,7 +138,7 @@ cg --schema benchmarks/social_network/schemas/social_benchmark.yaml \
    validate "MATCH (n:User)-[:FOLLOWS]->(f) RETURN f.name"
 
 # Option 2: Via server (if already running)
-curl -X POST http://localhost:8080/query \
+curl -X POST http://localhost:7475/query \
   -H "Content-Type: application/json" \
   -d '{"query":"MATCH (n) RETURN n","sql_only":true}'
 ```

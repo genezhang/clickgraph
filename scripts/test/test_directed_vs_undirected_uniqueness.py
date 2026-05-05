@@ -7,7 +7,7 @@ Question: Does ClickGraph enforce full pairwise uniqueness (a != c) for directed
 import requests
 import json
 
-CLICKGRAPH_URL = "http://localhost:8080/query"
+CLICKGRAPH_URL = "http://localhost:7475/query"
 
 def test_query(query_name, cypher_query):
     print(f"\n{'='*80}")

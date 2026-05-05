@@ -36,7 +36,7 @@ services:
       CLICKHOUSE_DATABASE: "social"
       RUST_LOG: "info"
     ports:
-      - "8080:8080"
+      - "7475:7475"
     volumes:
       - ./schemas:/app/schemas:ro
 

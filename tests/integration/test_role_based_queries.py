@@ -11,7 +11,7 @@ Tests that verify:
 import pytest
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 

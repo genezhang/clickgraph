@@ -23,7 +23,7 @@ Write-Host "   RUST_LOG            = $env:RUST_LOG"
 Write-Host ""
 
 # Start the server
-Write-Host " Starting server on port 8080 (DEBUG BUILD)..." -ForegroundColor Yellow
+Write-Host " Starting server on port 7475 (DEBUG BUILD)..." -ForegroundColor Yellow
 Write-Host " (Press Ctrl+C to stop)" -ForegroundColor Gray
 Write-Host ""
 

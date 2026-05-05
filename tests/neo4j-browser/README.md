@@ -42,7 +42,7 @@ sleep 30
 # Terminal 2: Start ClickGraph (ensure ClickHouse is running first)
 cd /home/gene/clickgraph
 export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml"
-./target/release/clickgraph --http-port 8080 --bolt-port 7687
+./target/release/clickgraph --http-port 7475 --bolt-port 7687
 ```
 
 ### 3. Launch Neo4j Browser
@@ -118,7 +118,7 @@ Neo4j Browser (http://7474)
          ↓
    Neo4j Bolt Driver
          ↓
-  ClickGraph Server (8080)
+  ClickGraph Server (7475)
          ↓
   ClickHouse (18123)
          ↓
@@ -220,7 +220,7 @@ docker logs neo4j-clickgraph
 
 ```bash
 # Verify ClickGraph server is running
-curl http://localhost:8080/health
+curl http://localhost:7475/health
 
 # Check ClickGraph logs
 docker logs clickgraph-dev
@@ -231,7 +231,7 @@ curl http://localhost:18123/ping
 
 ### "Bolt connection failed"
 
-1. Ensure ClickGraph server is running (port 8080)
+1. Ensure ClickGraph server is running (port 7475)
 2. Check firewall: `netstat -tlnp | grep 7687`
 3. Verify Neo4j can reach ClickGraph: `docker network ls`
 
@@ -262,7 +262,7 @@ python3 setup_unified_direct.py --scale 5000
 
 # Terminal 3: Start ClickGraph
 export GRAPH_CONFIG_PATH="./benchmarks/social_network/schemas/social_benchmark.yaml"
-./target/release/clickgraph --http-port 8080 --bolt-port 7687
+./target/release/clickgraph --http-port 7475 --bolt-port 7687
 
 # Terminal 4: Start Neo4j (installed locally or docker run)
 docker run --rm -d \

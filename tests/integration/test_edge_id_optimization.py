@@ -6,7 +6,7 @@ Verifies that single-column edge_id avoids tuple() overhead
 import pytest
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 import json
 
 BASE_URL = f"{CLICKGRAPH_URL}"
@@ -103,7 +103,7 @@ if __name__ == "__main__":
     print("\nPurpose: Verify single-column edge_id avoids tuple() overhead")
     print("Schema: social_integration (with follow_id added)")
     print("\nPrerequisites:")
-    print("1. ClickGraph server running on port 8080")
+    print("1. ClickGraph server running on port 7475")
     print("2. Benchmark data loaded with edge_id columns")
     print("3. Run: scripts/setup/add_edge_ids_benchmark.sql")
     

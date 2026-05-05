@@ -9,7 +9,7 @@ before refactoring the property resolution logic.
 
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 import json
 import sys
 
@@ -253,7 +253,7 @@ if __name__ == "__main__":
         print(f"\n❌ Server is not running: {e}")
         print("Please start the server with:")
         print("  export GRAPH_CONFIG_PATH=schemas/test/social_integration.yaml")
-        print("  cargo run --bin clickgraph -- --http-port 8080 --disable-bolt")
+        print("  cargo run --bin clickgraph -- --http-port 7475 --disable-bolt")
         sys.exit(1)
     
     # Run tests

@@ -30,7 +30,7 @@ class QueryTest:
     expected_to_fail: bool = False
 
 class WikiDocValidator:
-    def __init__(self, clickgraph_url: str = "http://localhost:8080"):
+    def __init__(self, clickgraph_url: str = "http://localhost:7475"):
         self.clickgraph_url = clickgraph_url
         self.results = []
         
@@ -266,7 +266,7 @@ def main():
     
     parser = argparse.ArgumentParser(description='Validate Wiki documentation Cypher queries')
     parser.add_argument('--docs-dir', default='docs/wiki', help='Documentation directory')
-    parser.add_argument('--url', default='http://localhost:8080', help='ClickGraph URL')
+    parser.add_argument('--url', default='http://localhost:7475', help='ClickGraph URL')
     parser.add_argument('--output', default='docs/WIKI_VALIDATION_REPORT.md', help='Output report file')
     parser.add_argument('--json', help='Output JSON results file')
     

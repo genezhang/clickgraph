@@ -88,7 +88,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             http_host: "0.0.0.0".to_string(),
-            http_port: 8080,
+            http_port: 7475,
             bolt_host: "0.0.0.0".to_string(),
             bolt_port: 7687,
             bolt_enabled: true,
@@ -109,7 +109,7 @@ impl ServerConfig {
     pub fn from_env() -> Result<Self, ConfigError> {
         let config = Self {
             http_host: env::var("CLICKGRAPH_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
-            http_port: parse_env_var("CLICKGRAPH_PORT", "8080")?,
+            http_port: parse_env_var("CLICKGRAPH_PORT", "7475")?,
             bolt_host: env::var("CLICKGRAPH_BOLT_HOST").unwrap_or_else(|_| "0.0.0.0".to_string()),
             bolt_port: parse_env_var("CLICKGRAPH_BOLT_PORT", "7687")?,
             bolt_enabled: parse_env_var("CLICKGRAPH_BOLT_ENABLED", "true")?,
@@ -224,7 +224,7 @@ mod tests {
     fn test_default_config() {
         let config = ServerConfig::default();
         assert!(config.validate().is_ok());
-        assert_eq!(config.http_port, 8080);
+        assert_eq!(config.http_port, 7475);
         assert_eq!(config.bolt_port, 7687);
         assert!(config.bolt_enabled);
     }

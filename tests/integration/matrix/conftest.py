@@ -23,7 +23,7 @@ from enum import Enum, auto
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-CLICKGRAPH_URL = os.environ.get("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.environ.get("CLICKGRAPH_URL", "http://localhost:7475")
 
 
 class SchemaType(Enum):

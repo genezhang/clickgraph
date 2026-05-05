@@ -20,7 +20,7 @@ from typing import Optional, List, Dict, Any
 import requests
 
 # ClickGraph server configuration
-CLICKGRAPH_URL = "http://localhost:8080"
+CLICKGRAPH_URL = "http://localhost:7475"
 SCHEMA_PATH = "./benchmarks/ldbc_snb/schemas/ldbc_snb_datagen.yaml"
 
 @dataclass
