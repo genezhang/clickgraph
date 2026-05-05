@@ -421,8 +421,12 @@ fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>
     // parse_node_element_id and re-encode through compute_deterministic_id so
     // the existing id-rewriter pipeline (further downstream in the planner)
     // handles the rest.
+    // `\b(?:AND|WHERE)\s+(?:NOT\s+)?` optionally captures a leading boolean
+    // connector so that, for relationship-id predicates we want to drop, we
+    // can rip the whole conjunct out of the WHERE clause instead of leaving a
+    // dangling "AND". The connector is optional — used when `_lead` matches.
     let re_elem_id = Regex::new(
-        r"(?i)\belementId\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*(IN|=)\s*\$([A-Za-z_][A-Za-z0-9_]*)",
+        r"(?i)(?:(?P<lead>\b(?:AND|WHERE)\s+(?:NOT\s+)?))?\belementId\s*\(\s*(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*\)\s*(?P<op>IN|=)\s*\$(?P<param>[A-Za-z_][A-Za-z0-9_]*)",
     )
     .expect("regex for elementId() parameter substitution must compile");
 
@@ -431,9 +435,10 @@ fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>
     for cap in re_elem_id.captures_iter(&snapshot) {
         let full_match = cap.get(0).unwrap();
         let match_start = full_match.start();
-        let alias = &cap[1];
-        let op = &cap[2];
-        let param_name = &cap[3];
+        let alias = cap.name("alias").unwrap().as_str();
+        let op = cap.name("op").unwrap().as_str();
+        let param_name = cap.name("param").unwrap().as_str();
+        let lead = cap.name("lead").map(|m| m.as_str().to_string());
 
         if is_inside_string(&snapshot, match_start) {
             continue;
@@ -445,36 +450,56 @@ fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>
             _ => continue,
         };
 
-        // Decode each element_id string into the integer the id-rewriter
-        // expects. parse_node_element_id strips the trailing `-` sentinel for
-        // us. compute_deterministic_id is the same function used to assign
-        // Node.id field values, so the round-trip is exact.
-        use crate::graph_catalog::element_id::parse_node_element_id;
-        use crate::server::bolt_protocol::id_mapper::IdMapper;
-        let mut encoded_ints: Vec<String> = Vec::with_capacity(elem_strings.len());
-        for s in &elem_strings {
-            let label_id_pair = parse_node_element_id(s);
-            let canonical = match label_id_pair {
-                Ok((label, ids)) => {
-                    let id_part = ids.join("|");
-                    format!("{}:{}", label, id_part)
-                }
-                Err(_) => continue,
+        // Relationship element_ids contain `->` (e.g., `"FOLLOWS:1->4-"`).
+        // The downstream AST id-rewriter only knows how to translate `id(x)`
+        // for node aliases — it has no path to map an encoded relationship id
+        // back to a real DB column. Generating `id(r) IN [encoded_ints]` ends
+        // up rendering as `r.id = 'value' OR ...` against a non-existent
+        // column, the planner short-circuits to `WHERE false`, and the whole
+        // expand returns zero rows.
+        //
+        // Browser uses this predicate purely for client-side dedup, so it's
+        // safe to drop. If we have a leading `AND/AND NOT/WHERE/WHERE NOT`
+        // captured, drop the entire conjunct; otherwise the user wrote a
+        // standalone `elementId(r) IN ...` and we leave the predicate as a
+        // tautology so the surrounding boolean shape stays valid.
+        let is_rel_param = elem_strings.iter().any(|s| s.contains("->"));
+        if is_rel_param {
+            let adjusted_start = (match_start as isize + offset3) as usize;
+            let adjusted_end = adjusted_start + full_match.as_str().len();
+            let replacement = if lead.is_some() {
+                String::new()
+            } else {
+                "true".to_string()
             };
-            encoded_ints.push(IdMapper::compute_deterministic_id(&canonical).to_string());
+            result.replace_range(adjusted_start..adjusted_end, &replacement);
+            offset3 += replacement.len() as isize - full_match.as_str().len() as isize;
+            continue;
         }
 
-        let replacement = match op.to_uppercase().as_str() {
+        // Decode each element_id string into the integer the id-rewriter
+        // expects. compute_deterministic_id is the same function used to
+        // assign Node.id values, so the round-trip is exact for nodes.
+        use crate::server::bolt_protocol::id_mapper::IdMapper;
+        let encoded_ints: Vec<String> = elem_strings
+            .iter()
+            .map(|s| IdMapper::compute_deterministic_id(s).to_string())
+            .collect();
+
+        let predicate = match op.to_uppercase().as_str() {
             "IN" => format!("id({}) IN [{}]", alias, encoded_ints.join(", ")),
             "=" => {
                 if encoded_ints.len() == 1 {
                     format!("id({}) = {}", alias, encoded_ints[0])
                 } else {
-                    // Shouldn't happen for `=`, but be defensive: degrade to IN.
                     format!("id({}) IN [{}]", alias, encoded_ints.join(", "))
                 }
             }
             _ => continue,
+        };
+        let replacement = match lead.as_deref() {
+            Some(l) => format!("{}{}", l, predicate),
+            None => predicate,
         };
 
         let adjusted_start = (match_start as isize + offset3) as usize;
@@ -3027,8 +3052,12 @@ mod tests {
             serde_json::json!(["Post:1-", "Post:2-"]),
         );
         params.insert("targetId".to_string(), serde_json::json!("User:5-"));
+        params.insert(
+            "existingRelationshipIds".to_string(),
+            serde_json::json!(["FOLLOWS:1->4-", "AUTHORED:1->2-"]),
+        );
 
-        // IN with a list — should rewrite to id() with two encoded ints.
+        // IN with a list of node element_ids — rewrite to id() with two encoded ints.
         let q = "MATCH (a)-[r]-(o) WHERE elementId(a) IN $nodeIds RETURN r, o";
         let out = substitute_cypher_parameters(q, &params);
         assert!(out.contains("id(a) IN ["), "got: {}", out);
@@ -3045,6 +3074,22 @@ mod tests {
         let q = "MATCH (n) WHERE elementId(n) IN $unknown RETURN n";
         let out = substitute_cypher_parameters(q, &params);
         assert_eq!(out, q);
+
+        // Relationship element_ids (contain `->`) inside a connected `AND NOT`
+        // conjunct — drop the entire conjunct (including the leading `AND NOT`).
+        let q = "MATCH (a)-[r]-(o) WHERE elementId(a) IN $nodeIds AND NOT elementId(r) IN $existingRelationshipIds RETURN r";
+        let out = substitute_cypher_parameters(q, &params);
+        assert!(!out.contains("elementId"), "got: {}", out);
+        assert!(!out.contains("AND NOT"), "got: {}", out);
+        // First predicate (node-shaped) still rewritten to id()
+        assert!(out.contains("id(a) IN ["), "got: {}", out);
+
+        // Relationship element_ids in a leading `WHERE NOT` — drop the conjunct.
+        let q = "MATCH ()-[r]-() WHERE NOT elementId(r) IN $existingRelationshipIds RETURN r";
+        let out = substitute_cypher_parameters(q, &params);
+        assert!(!out.contains("elementId"), "got: {}", out);
+        // The `WHERE NOT ...` should be entirely gone.
+        assert!(!out.contains("WHERE NOT"), "got: {}", out);
     }
 
     #[test]

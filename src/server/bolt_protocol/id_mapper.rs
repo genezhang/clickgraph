@@ -214,6 +214,13 @@ impl IdMapper {
         const ID_MASK: i64 = (1i64 << ID_BITS) - 1; // 0x7FFFFFFFFFFF (47 bits)
         const MAX_LABEL_CODE: u8 = (1 << LABEL_BITS) - 1; // 63
 
+        // Strip the trailing `-` Neo4j-Browser-compat sentinel so the id_value
+        // portion stays the unadorned id (e.g., `"User:1-"` → label `User`,
+        // id_value `1`, not `"1-"`). Without this strip, a numeric id like `1`
+        // would fail integer parse and fall back to a hash, breaking the
+        // round-trip with id-rewriter callers.
+        let element_id = element_id.trim_end_matches('-');
+
         // Parse "Label:id_value" format
         let (label, id_part) = if let Some(colon_pos) = element_id.find(':') {
             (&element_id[..colon_pos], &element_id[colon_pos + 1..])
