@@ -332,6 +332,42 @@ fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>
         }
     }
 
+    // Pass 2: substitute integer parameters in `LIMIT $param` / `SKIP $param`.
+    // Our Cypher parser only accepts integer literals after LIMIT/SKIP — it does
+    // not currently support a Parameter node there. Browser 5.x's expand query
+    // uses `LIMIT $maxNeighbours`, which must be inlined as an integer before
+    // parsing.
+    let re_limit_skip = Regex::new(r"(?i)\b(LIMIT|SKIP)\s+\$([A-Za-z_][A-Za-z0-9_]*)")
+        .expect("regex for LIMIT/SKIP parameter substitution must compile");
+
+    // Re-scan the (possibly already-modified) result string.
+    let snapshot = result.clone();
+    let mut offset2: isize = 0;
+    for cap in re_limit_skip.captures_iter(&snapshot) {
+        let full_match = cap.get(0).unwrap();
+        let match_start = full_match.start();
+        let keyword = &cap[1];
+        let param_name = &cap[2];
+
+        if is_inside_string(&snapshot, match_start) {
+            continue;
+        }
+
+        // LIMIT/SKIP only accept non-negative integers. Any other type is a
+        // user error that the parser will surface; leave it untouched so the
+        // existing error path runs.
+        let int_literal = match parameters.get(param_name) {
+            Some(Value::Number(n)) if n.is_i64() || n.is_u64() => n.to_string(),
+            _ => continue,
+        };
+
+        let replacement = format!("{} {}", keyword, int_literal);
+        let adjusted_start = (match_start as isize + offset2) as usize;
+        let adjusted_end = adjusted_start + full_match.as_str().len();
+        result.replace_range(adjusted_start..adjusted_end, &replacement);
+        offset2 += replacement.len() as isize - full_match.as_str().len() as isize;
+    }
+
     log::debug!(
         "🔧 Parameter substitution: {} parameters processed",
         parameters.len()
@@ -2864,6 +2900,57 @@ mod tests {
         // Unrelated user query — must NOT match
         let user = "MATCH (p:Person) RETURN p.name".to_uppercase();
         assert!(!is_browser_count_union(&user));
+    }
+
+    #[test]
+    fn substitutes_limit_skip_integer_parameters() {
+        let mut params: HashMap<String, Value> = HashMap::new();
+        params.insert("maxNeighbours".to_string(), serde_json::json!(1000));
+        params.insert("page".to_string(), serde_json::json!(20));
+        params.insert("notAnInt".to_string(), serde_json::json!("oops"));
+
+        // LIMIT with integer parameter — substitutes
+        let q = "MATCH (n) RETURN n LIMIT $maxNeighbours";
+        assert_eq!(
+            substitute_cypher_parameters(q, &params),
+            "MATCH (n) RETURN n LIMIT 1000"
+        );
+
+        // SKIP + LIMIT chained
+        let q = "MATCH (n) RETURN n SKIP $page LIMIT $maxNeighbours";
+        assert_eq!(
+            substitute_cypher_parameters(q, &params),
+            "MATCH (n) RETURN n SKIP 20 LIMIT 1000"
+        );
+
+        // Non-integer parameter — leave untouched, parser will surface the error
+        let q = "MATCH (n) RETURN n LIMIT $notAnInt";
+        assert_eq!(substitute_cypher_parameters(q, &params), q);
+
+        // Missing parameter — leave untouched
+        let q = "MATCH (n) RETURN n LIMIT $unknownParam";
+        assert_eq!(substitute_cypher_parameters(q, &params), q);
+
+        // Browser 5.x expand query — full integration: id() params + LIMIT
+        let mut full_params: HashMap<String, Value> = HashMap::new();
+        full_params.insert("nodeIds".to_string(), serde_json::json!([42]));
+        full_params.insert("existingRelationshipIds".to_string(), serde_json::json!([]));
+        full_params.insert("existingNodeIds".to_string(), serde_json::json!([1, 2, 3]));
+        full_params.insert("maxNeighbours".to_string(), serde_json::json!(1000));
+        let q =
+            "MATCH (a)-[r]-(o) WHERE id(a) IN $nodeIds AND NOT id(r) IN $existingRelationshipIds \
+                 RETURN r, CASE WHEN id(o) IN $existingNodeIds THEN null ELSE o END AS o \
+                 LIMIT $maxNeighbours";
+        let out = substitute_cypher_parameters(q, &full_params);
+        assert!(out.contains("id(a) IN [42]"), "got: {}", out);
+        assert!(out.contains("id(r) IN []"), "got: {}", out);
+        assert!(out.contains("id(o) IN [1, 2, 3]"), "got: {}", out);
+        assert!(out.ends_with("LIMIT 1000"), "got: {}", out);
+        assert!(
+            !out.contains("$"),
+            "all params should be substituted, got: {}",
+            out
+        );
     }
 
     #[test]
