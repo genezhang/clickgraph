@@ -1198,6 +1198,59 @@ pub(crate) fn transform_to_relationship(
     let from_node_label = &resolved_from_label;
     let to_node_label = &resolved_to_label;
 
+    // Detect when the SQL's `start_id`/`end_id` projection is reversed from the
+    // schema's natural from→to direction. This happens for undirected matches
+    // like `(a)-[r]-(o)` where `a` is bound to the schema's *to-side* (e.g.,
+    // expanding from a Post yields LIKED rows whose SQL projects start_id =
+    // post_id and end_id = user_id, but LIKED's schema is User→Post).
+    //
+    // The other alias's label gets projected as `<alias>.__label__` (e.g.,
+    // `o.__label__`). If that label matches the schema's from_label (and the
+    // schema's from/to labels differ), then the *o-side* is the schema's
+    // from-side and the projection is reversed: we must source from_id values
+    // from end_id and to_id values from start_id. Otherwise the constructed
+    // node element_ids pair the wrong labels with the wrong ids (e.g.,
+    // producing "User:1" where 1 is actually a post_id).
+    let projection_reversed = if resolved_from_label != resolved_to_label {
+        row.iter().any(|(key, value)| {
+            // Match any `<other_alias>.__label__` column where alias is not us.
+            if let Some(rest) = key.strip_suffix(".__label__") {
+                if rest != var_name {
+                    let label = value_to_string(value);
+                    return label.as_deref() == Some(&resolved_from_label[..]);
+                }
+            }
+            false
+        })
+    } else {
+        false
+    };
+    // start_type/end_type may have been left in properties by the non-polymorphic
+    // branch above; clean them up so they don't leak as relationship properties.
+    properties.remove("start_type");
+    properties.remove("end_type");
+
+    let (from_fallback_a, from_fallback_b) = if projection_reversed {
+        ("end_id", "to_id")
+    } else {
+        ("start_id", "from_id")
+    };
+    let (to_fallback_a, to_fallback_b) = if projection_reversed {
+        ("start_id", "from_id")
+    } else {
+        ("end_id", "to_id")
+    };
+    let from_composite_prefix = if projection_reversed {
+        "to_id_"
+    } else {
+        "from_id_"
+    };
+    let to_composite_prefix = if projection_reversed {
+        "from_id_"
+    } else {
+        "to_id_"
+    };
+
     // Extract from_id values using relationship's FK columns (e.g., follower_id, followed_id)
     let from_rel_id_columns = rel_schema.from_id.columns();
     let from_id_values: Vec<String> = from_rel_id_columns
@@ -1207,11 +1260,11 @@ pub(crate) fn transform_to_relationship(
             // First try: FK column from relationship schema (e.g., follower_id)
             properties
                 .get(*col_name)
-                // Second try: generic CTE column names
-                .or_else(|| properties.get("start_id"))
-                .or_else(|| properties.get("from_id"))
+                // Second try: generic CTE column names (direction-aware)
+                .or_else(|| properties.get(from_fallback_a))
+                .or_else(|| properties.get(from_fallback_b))
                 // Third try: composite variants
-                .or_else(|| properties.get(&format!("from_id_{}", i + 1)))
+                .or_else(|| properties.get(&format!("{}{}", from_composite_prefix, i + 1)))
                 .and_then(value_to_string)
                 .ok_or_else(|| {
                     format!(
@@ -1231,11 +1284,11 @@ pub(crate) fn transform_to_relationship(
             // First try: FK column from relationship schema (e.g., followed_id)
             properties
                 .get(*col_name)
-                // Second try: generic CTE column names
-                .or_else(|| properties.get("end_id"))
-                .or_else(|| properties.get("to_id"))
+                // Second try: generic CTE column names (direction-aware)
+                .or_else(|| properties.get(to_fallback_a))
+                .or_else(|| properties.get(to_fallback_b))
                 // Third try: composite variants
-                .or_else(|| properties.get(&format!("to_id_{}", i + 1)))
+                .or_else(|| properties.get(&format!("{}{}", to_composite_prefix, i + 1)))
                 .and_then(value_to_string)
                 .ok_or_else(|| {
                     format!(
