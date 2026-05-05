@@ -3693,8 +3693,8 @@ impl ToSql for FilterItems {
 /// ARRAY JOIN for ClickHouse - maps from Cypher UNWIND clauses
 /// Supports multiple UNWIND for cartesian product
 ///
-/// Example: UNWIND [1,2] AS x UNWIND [10,20] AS y
-/// Generates: ARRAY JOIN [1,2] AS x ARRAY JOIN [10,20] AS y
+/// Example: `UNWIND [1,2] AS x UNWIND [10,20] AS y`
+/// Generates: `ARRAY JOIN [1,2] AS x ARRAY JOIN [10,20] AS y`
 impl ToSql for ArrayJoinItem {
     fn to_sql(&self) -> String {
         if self.0.is_empty() {

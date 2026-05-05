@@ -269,8 +269,8 @@ impl BoltMessage {
 
     /// Extract authentication token from HELLO message
     /// Bolt 4.x can send either:
-    /// - 1 field: combined auth+metadata in field[0]
-    /// - 2 fields: metadata in field[0], auth in field[1]
+    /// - 1 field: combined auth+metadata in `field[0]`
+    /// - 2 fields: metadata in `field[0]`, auth in `field[1]`
     pub fn extract_auth_token(&self) -> Option<HashMap<String, Value>> {
         if self.signature == signatures::HELLO {
             if self.fields.len() >= 2 {
@@ -301,8 +301,8 @@ impl BoltMessage {
     /// Extract database name from HELLO message extra metadata
     /// Neo4j 4.0+ clients can specify database using "db" or "database" field
     /// Bolt 4.x can send either:
-    /// - 1 field: combined auth+metadata in field[0] (check for "db"/"database" key)
-    /// - 2 fields: metadata in field[0], auth in field[1]
+    /// - 1 field: combined auth+metadata in `field[0]` (check for "db"/"database" key)
+    /// - 2 fields: metadata in `field[0]`, auth in `field[1]`
     pub fn extract_database(&self) -> Option<String> {
         if self.signature == signatures::HELLO && !self.fields.is_empty() {
             if let BoltValue::Json(Value::Object(extra_map)) = &self.fields[0] {

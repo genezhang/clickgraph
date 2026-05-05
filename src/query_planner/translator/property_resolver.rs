@@ -31,10 +31,10 @@ pub enum NodePosition {
 /// CRITICAL: For denormalized patterns, the same node alias can appear in
 /// multiple edges with different roles! We track the edge_alias to distinguish:
 ///
-/// Example: MATCH (a)-[f]->(b)-[g]->(c)
+/// Example: `MATCH (a)-[f]->(b)-[g]->(c)`
 ///   Node 'b' has TWO mappings:
-///   - (b, f) → TO position, maps b.city → f.DestCityName
-///   - (b, g) → FROM position, maps b.city → g.OriginCityName
+///   - `(b, f)` → TO position, maps `b.city → f.DestCityName`
+///   - `(b, g)` → FROM position, maps `b.city → g.OriginCityName`
 #[derive(Debug, Clone)]
 pub struct AliasMapping {
     /// SQL table alias (e.g., "f", "u1", "flights_cte")
@@ -94,8 +94,8 @@ pub struct PropertyResolver {
 
     /// Graph-to-SQL alias mapping
     ///
-    /// Key: (node_alias, edge_alias_opt) - composite key for denormalized multi-hop
-    /// Value: Vec<AliasMapping> to support multiple roles for same node
+    /// Key: `(node_alias, edge_alias_opt)` - composite key for denormalized multi-hop
+    /// Value: `Vec<AliasMapping>` to support multiple roles for same node
     /// Examples:
     ///
     /// - Standard: "u" → [AliasMapping{sql_alias: "u1", ...}]

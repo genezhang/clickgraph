@@ -727,17 +727,17 @@ pub enum RenderExpr {
     /// Used in duration({days: 5}), point({x: 1, y: 2}), etc.
     MapLiteral(Vec<(String, RenderExpr)>),
 
-    /// Pattern count: pre-rendered SQL for size((n)-[:REL]->())
+    /// Pattern count: pre-rendered SQL for `size((n)-[:REL]->())`
     PatternCount(PatternCount),
 
-    /// Array subscript: array[index]
+    /// Array subscript: `array[index]`
     /// Access element at specified index (1-based in Cypher, 0-based in ClickHouse)
     ArraySubscript {
         array: Box<RenderExpr>,
         index: Box<RenderExpr>,
     },
 
-    /// Array slicing: array[from..to]
+    /// Array slicing: `array[from..to]`
     /// Extract subarray from index 'from' to 'to' (0-based, inclusive in Cypher)
     ArraySlicing {
         array: Box<RenderExpr>,

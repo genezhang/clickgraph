@@ -46,7 +46,7 @@ pub struct IdFunctionTransformer<'a> {
     schema: Option<&'a crate::graph_catalog::GraphSchema>,
     /// Extracted label constraints for UNION pruning (variable → set of labels)
     pub label_constraints: HashMap<String, HashSet<String>>,
-    /// ID values grouped by variable and label: variable → label → [id_values]
+    /// ID values grouped by variable and label: `variable → label → [id_values]`
     pub id_values_by_label: HashMap<String, HashMap<String, Vec<String>>>,
 }
 

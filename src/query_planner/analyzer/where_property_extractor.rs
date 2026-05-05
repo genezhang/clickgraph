@@ -23,15 +23,15 @@ impl WherePropertyExtractor {
     /// Returns: HashMap mapping alias → set of property names
     ///
     /// # Examples
-    /// ```
-    /// // WHERE n.bytes_sent > 100
-    /// // Returns: {"n": {"bytes_sent"}}
+    /// ```text
+    /// WHERE n.bytes_sent > 100
+    /// Returns: {"n": {"bytes_sent"}}
     ///
-    /// // WHERE n.x = 1 AND n.y = 2
-    /// // Returns: {"n": {"x", "y"}}
+    /// WHERE n.x = 1 AND n.y = 2
+    /// Returns: {"n": {"x", "y"}}
     ///
-    /// // WHERE n.x > 1 OR r.y < 10
-    /// // Returns: {"n": {"x"}, "r": {"y"}}
+    /// WHERE n.x > 1 OR r.y < 10
+    /// Returns: {"n": {"x"}, "r": {"y"}}
     /// ```
     pub fn extract_property_references(
         where_clause: &WhereClause,

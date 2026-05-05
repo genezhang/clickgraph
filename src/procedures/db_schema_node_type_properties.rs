@@ -4,10 +4,10 @@
 //! Used by Neodash for richer schema introspection.
 //!
 //! Output columns:
-//! - nodeType: String (e.g., ":`User`")
-//! - nodeLabels: Vec<String> (e.g., ["User"])
+//! - nodeType: String (e.g., `":`User`"`)
+//! - nodeLabels: `Vec<String>` (e.g., `["User"]`)
 //! - propertyName: String (e.g., "name")
-//! - propertyTypes: Vec<String> (e.g., ["String"])
+//! - propertyTypes: `Vec<String>` (e.g., `["String"]`)
 //! - mandatory: bool (true if property always exists)
 
 use crate::graph_catalog::graph_schema::GraphSchema;

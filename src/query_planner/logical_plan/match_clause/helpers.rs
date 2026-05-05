@@ -255,7 +255,7 @@ pub fn compute_rel_node_labels(
 
 /// Compute left/right connection aliases based on relationship direction.
 ///
-/// Similar to `compute_rel_node_labels` but for string aliases rather than Option<String> labels.
+/// Similar to `compute_rel_node_labels` but for string aliases rather than `Option<String>` labels.
 /// Used to determine which node alias serves as the "from" and "to" connection for JOIN generation.
 ///
 /// # Arguments

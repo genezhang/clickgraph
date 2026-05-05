@@ -153,21 +153,21 @@ pub struct PlanCtx {
     status_messages: Vec<(StatusLevel, String)>,
 
     /// Node type combinations for simple untyped node queries
-    /// Map: node_alias → Vec<label>
-    /// Example: {"n": ["User", "Post", "ZeekLog"]}
+    /// Map: `node_alias → Vec<label>`
+    /// Example: `{"n": ["User", "Post", "ZeekLog"]}`
     /// Used when a simple node query like `MATCH (n) RETURN n` can match multiple node types
     /// CTE generation will create UNION of all node tables
     node_combinations: HashMap<String, Vec<String>>,
 
     /// Pattern type combinations for untyped relationship patterns
-    /// Map: (from_alias, to_alias) → Vec<TypeCombination>
-    /// Example: {("a", "b"): [(User, FOLLOWS, User), (User, AUTHORED, Post), ...]}
+    /// Map: `(from_alias, to_alias) → Vec<TypeCombination>`
+    /// Example: `{("a", "b"): [(User, FOLLOWS, User), (User, AUTHORED, Post), ...]}`
     /// Used when pattern inference finds ambiguous nodes that could match multiple types
     /// CTE generation will create UNION of all valid pattern combinations
     pattern_combinations: HashMap<(String, String), Vec<TypeCombination>>,
 
     /// Connected pattern group combinations (optimization - WIP)
-    /// Map: group_id → Vec<GroupCombination>
+    /// Map: `group_id → Vec<GroupCombination>`
     /// Example: {"a_b_c": [GroupCombination{...}, ...]}
     /// Used when multiple patterns share variables (e.g., `(a)-[r1]->(b)-[r2]->(c)` shares `b`)
     /// Each GroupCombination assigns types to all patterns in the group consistently

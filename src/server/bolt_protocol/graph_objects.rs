@@ -123,7 +123,7 @@ impl Path {
         }
     }
 
-    /// Create a simple single-hop path: (start)-[rel]->(end)
+    /// Create a simple single-hop path: `(start)-[rel]->(end)`
     pub fn single_hop(start_node: Node, relationship: Relationship, end_node: Node) -> Self {
         // For a single hop path: node[0] -> rel[0] -> node[1]
         // Indices: [1, 1] means "go to node 1 via relationship with index 1"
@@ -142,7 +142,7 @@ impl Path {
     ///
     /// # Returns
     ///
-    /// A Vec<u8> containing the packstream-encoded bytes
+    /// A `Vec<u8>` containing the packstream-encoded bytes
     pub fn to_packstream(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
 
@@ -235,7 +235,7 @@ impl Node {
     ///
     /// # Returns
     ///
-    /// A Vec<u8> containing the packstream-encoded bytes
+    /// A `Vec<u8>` containing the packstream-encoded bytes
     pub fn to_packstream(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
 
@@ -301,7 +301,7 @@ impl Relationship {
     ///
     /// # Returns
     ///
-    /// A Vec<u8> containing the packstream-encoded bytes
+    /// A `Vec<u8>` containing the packstream-encoded bytes
     pub fn to_packstream(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
 
@@ -343,7 +343,7 @@ impl Relationship {
     ///
     /// # Returns
     ///
-    /// A Vec<u8> containing the packstream-encoded bytes
+    /// A `Vec<u8>` containing the packstream-encoded bytes
     pub fn to_unbound_packstream(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
 
