@@ -94,6 +94,136 @@ fn is_browser_labels_bundle(query_upper: &str) -> bool {
     has_all_three && has_collect_slice && union_count >= 2
 }
 
+/// Map Browser-issued read-only SHOW commands to the canonical Neo4j-5.x
+/// field schema. Returns `Some(fields)` if the query matches a stubbed shape
+/// (we always reply with zero rows). `None` means "fall through to the normal
+/// pipeline."
+///
+/// The `query_upper` argument is expected to already be uppercased and trimmed.
+/// Tolerates trailing semicolons and `YIELD *`/extra suffixes — Browser
+/// commonly appends those. We deliberately accept a substring rather than an
+/// exact match so older Browser variants with different suffixes also stub.
+fn browser_show_stub_fields(query_upper: &str) -> Option<&'static [&'static str]> {
+    let q = query_upper.trim_end_matches(';').trim();
+    let starts = |head: &str| q == head || q.starts_with(&format!("{} ", head));
+
+    if starts("SHOW INDEXES") || starts("SHOW INDEX") || starts("SHOW ALL INDEXES") {
+        // Neo4j 5.x SHOW INDEXES schema
+        return Some(&[
+            "id",
+            "name",
+            "state",
+            "populationPercent",
+            "type",
+            "entityType",
+            "labelsOrTypes",
+            "properties",
+            "indexProvider",
+            "owningConstraint",
+            "lastRead",
+            "readCount",
+        ]);
+    }
+    if starts("SHOW CONSTRAINTS") || starts("SHOW CONSTRAINT") || starts("SHOW ALL CONSTRAINTS") {
+        return Some(&[
+            "id",
+            "name",
+            "type",
+            "entityType",
+            "labelsOrTypes",
+            "properties",
+            "ownedIndex",
+            "propertyType",
+        ]);
+    }
+    if starts("SHOW PROCEDURES") || starts("SHOW PROCEDURE") || starts("SHOW ALL PROCEDURES") {
+        return Some(&[
+            "name",
+            "description",
+            "mode",
+            "worksOnSystem",
+            "signature",
+            "argumentDescription",
+            "returnDescription",
+            "admin",
+            "rolesExecution",
+            "rolesBoostedExecution",
+            "option",
+        ]);
+    }
+    if starts("SHOW FUNCTIONS")
+        || starts("SHOW FUNCTION")
+        || starts("SHOW ALL FUNCTIONS")
+        || starts("SHOW BUILT IN FUNCTIONS")
+        || starts("SHOW USER DEFINED FUNCTIONS")
+    {
+        return Some(&[
+            "name",
+            "category",
+            "description",
+            "signature",
+            "isBuiltIn",
+            "argumentDescription",
+            "returnDescription",
+            "aggregating",
+            "rolesExecution",
+            "rolesBoostedExecution",
+        ]);
+    }
+    if starts("SHOW CURRENT USER") {
+        return Some(&[
+            "user",
+            "roles",
+            "passwordChangeRequired",
+            "suspended",
+            "home",
+        ]);
+    }
+    if starts("SHOW USERS") || starts("SHOW USER") {
+        return Some(&[
+            "user",
+            "roles",
+            "passwordChangeRequired",
+            "suspended",
+            "home",
+        ]);
+    }
+    if starts("SHOW ROLES")
+        || starts("SHOW ROLE")
+        || starts("SHOW POPULATED ROLES")
+        || starts("SHOW ALL ROLES")
+    {
+        return Some(&["role"]);
+    }
+    if starts("SHOW PRIVILEGES")
+        || starts("SHOW PRIVILEGE")
+        || starts("SHOW USER PRIVILEGES")
+        || starts("SHOW ROLE PRIVILEGES")
+        || starts("SHOW ALL PRIVILEGES")
+    {
+        return Some(&["access", "action", "resource", "graph", "segment", "role"]);
+    }
+    if starts("SHOW SERVERS") || starts("SHOW SERVER") {
+        return Some(&["name", "address", "state", "health", "hosting"]);
+    }
+    if starts("SHOW SETTINGS") || starts("SHOW SETTING") {
+        return Some(&["name", "value", "isDynamic", "defaultValue", "description"]);
+    }
+    if starts("SHOW TRANSACTIONS") || starts("SHOW TRANSACTION") {
+        return Some(&[
+            "database",
+            "transactionId",
+            "currentQueryId",
+            "username",
+            "currentQuery",
+            "startTime",
+            "status",
+            "elapsedTime",
+        ]);
+    }
+    None
+}
+
 /// Pattern detection: `id(alias) IN $paramName` or `id(alias) = $paramName`
 /// Substitute Cypher parameters into query string, keeping encoded IDs intact
 /// This replaces $paramName with actual values so parser sees literals
@@ -1073,6 +1203,33 @@ impl BoltHandler {
             );
             result_metadata.insert("result_consumed_after".to_string(), serde_json::json!(-1));
 
+            return Ok(vec![BoltMessage::success(result_metadata)]);
+        }
+
+        // Stub SHOW commands Browser issues on connect to populate sidebars.
+        // We don't manage indexes, procedures, functions, users, or roles — but
+        // returning the canonical Neo4j-5.x field schema with zero rows keeps
+        // Browser happy. Each shape gets the field list Browser's schema
+        // validator expects; missing fields surface as "Invalid record".
+        if let Some(fields) = browser_show_stub_fields(&query_upper) {
+            log::info!(
+                "Stubbing {} with empty result set",
+                query_upper
+                    .split_whitespace()
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+
+            {
+                let mut context = lock_context!(self.context);
+                context.set_state(ConnectionState::Streaming);
+            }
+            self.cached_results = Some(vec![]);
+
+            let mut result_metadata = HashMap::new();
+            result_metadata.insert("fields".to_string(), serde_json::json!(fields));
+            result_metadata.insert("result_consumed_after".to_string(), serde_json::json!(-1));
             return Ok(vec![BoltMessage::success(result_metadata)]);
         }
 
@@ -2707,6 +2864,39 @@ mod tests {
         // Unrelated user query — must NOT match
         let user = "MATCH (p:Person) RETURN p.name".to_uppercase();
         assert!(!is_browser_count_union(&user));
+    }
+
+    #[test]
+    fn browser_show_stub_dispatches_each_command() {
+        // Each shape Browser issues should resolve to a stubbed field schema.
+        for q in [
+            "SHOW INDEXES",
+            "SHOW INDEXES YIELD *",
+            "SHOW CONSTRAINTS;",
+            "SHOW PROCEDURES",
+            "SHOW FUNCTIONS",
+            "SHOW BUILT IN FUNCTIONS",
+            "SHOW CURRENT USER",
+            "SHOW USERS",
+            "SHOW ROLES",
+            "SHOW PRIVILEGES",
+            "SHOW SERVERS",
+            "SHOW SETTINGS",
+            "SHOW TRANSACTIONS",
+        ] {
+            assert!(
+                browser_show_stub_fields(&q.to_uppercase()).is_some(),
+                "expected stub fields for {:?}",
+                q
+            );
+        }
+
+        // SHOW DATABASES is handled by the dedicated block higher up — it must
+        // NOT be stubbed here, otherwise it would shadow the real implementation.
+        assert!(browser_show_stub_fields("SHOW DATABASES").is_none());
+
+        // Unrelated user query — must NOT match.
+        assert!(browser_show_stub_fields("MATCH (N) RETURN N").is_none());
     }
 
     #[test]
