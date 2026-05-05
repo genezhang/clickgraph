@@ -35,7 +35,7 @@ pub struct CteGenerationContext {
     fixed_length_joins: HashMap<String, (String, String, Vec<super::Join>)>,
     /// Variable length specification for the path pattern
     pub spec: VariableLengthSpec,
-    /// Path variable name (e.g., "p" in MATCH p = (a)-[*]->(b))
+    /// Path variable name (e.g., "p" in `MATCH p = (a)-[*]->(b)`)
     pub path_variable: Option<String>,
     /// Shortest path mode for shortestPath() and allShortestPaths()
     pub shortest_path_mode: Option<ShortestPathMode>,
@@ -43,7 +43,7 @@ pub struct CteGenerationContext {
     pub relationship_types: Option<Vec<String>>,
     /// Edge ID identifier from schema (for RETURN relationships(p))
     pub edge_id: Option<Identifier>,
-    /// Relationship Cypher alias (e.g., "r" in (a)-[r*]->(b))
+    /// Relationship Cypher alias (e.g., "r" in `(a)-[r*]->(b)`)
     pub relationship_cypher_alias: Option<String>,
     /// Start node label (for polymorphic heterogeneous paths)
     pub start_node_label: Option<String>,
@@ -53,7 +53,7 @@ pub struct CteGenerationContext {
     pub is_optional: bool,
 
     /// **NEW (Feb 2026)**: Multi-type pattern combinations for UNION generation
-    /// Map: (from_alias, to_alias) → Vec<TypeCombination>
+    /// Map: `(from_alias, to_alias) → Vec<TypeCombination>`
     /// When set, CTE generation creates UNION of all pattern combinations
     pub pattern_combinations:
         Option<HashMap<(String, String), Vec<crate::query_planner::plan_ctx::TypeCombination>>>,

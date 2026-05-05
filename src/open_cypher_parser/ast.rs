@@ -25,7 +25,7 @@ pub enum CypherStatement<'a> {
     /// Standalone procedure call (e.g., CALL db.labels())
     ProcedureCall(StandaloneProcedureCall<'a>),
     /// COPY TO statement for exporting query results
-    /// Syntax: COPY (<cypher>) TO '<destination>' [FORMAT <fmt>] [(options)]
+    /// Syntax: `COPY (<cypher>) TO '<destination>' [FORMAT <fmt>] [(options)]`
     CopyTo(CopyToStatement<'a>),
 }
 
@@ -592,26 +592,26 @@ pub enum Expression<'a> {
     /// Used in ClickHouse array functions like arrayFilter, arrayMap
     /// Example: x -> x > 5, (x, y) -> x + y
     Lambda(LambdaExpression<'a>),
-    /// Pattern comprehension: [(pattern) WHERE condition | projection]
+    /// Pattern comprehension: `[(pattern) WHERE condition | projection]`
     /// Returns a list of projected values from matched patterns
-    /// Example: [(user)-[:FOLLOWS]->(follower) WHERE follower.active | follower.name]
+    /// Example: `[(user)-[:FOLLOWS]->(follower) WHERE follower.active | follower.name]`
     PatternComprehension(PatternComprehension<'a>),
-    /// List comprehension: [x IN list WHERE cond | expr]
+    /// List comprehension: `[x IN list WHERE cond | expr]`
     /// Filters and/or transforms a list
-    /// Example: [x IN range(1,10) WHERE x > 5 | x * 2]
-    /// Example: [p IN posts WHERE (p)-[:HAS_TAG]->()]
+    /// Example: `[x IN range(1,10) WHERE x > 5 | x * 2]`
+    /// Example: `[p IN posts WHERE (p)-[:HAS_TAG]->()]`
     ListComprehension(ListComprehension<'a>),
-    /// Array subscript: array[index]
+    /// Array subscript: `array[index]`
     /// Access element at specified index (1-based in Cypher)
-    /// Example: labels(n)[1], list[0], [1,2,3][2]
+    /// Example: `labels(n)[1]`, `list[0]`, `[1,2,3][2]`
     ArraySubscript {
         array: Box<Expression<'a>>,
         index: Box<Expression<'a>>,
     },
-    /// Array slicing: array[from..to]
+    /// Array slicing: `array[from..to]`
     /// Extract subarray from index 'from' to 'to' (inclusive, 0-based in Cypher)
-    /// Both bounds are optional: [..3], [2..], [..]
-    /// Example: list[0..5], collect(n)[..10], [1,2,3,4,5][2..4]
+    /// Both bounds are optional: `[..3]`, `[2..]`, `[..]`
+    /// Example: `list[0..5]`, `collect(n)[..10]`, `[1,2,3,4,5][2..4]`
     ArraySlicing {
         array: Box<Expression<'a>>,
         from: Option<Box<Expression<'a>>>,
@@ -633,9 +633,12 @@ pub struct LambdaExpression<'a> {
 }
 
 /// EXISTS subquery: checks if a pattern exists
+///
 /// Examples:
-///   EXISTS { (u)-[:FOLLOWS]->(:User) }
-///   EXISTS { MATCH (u)-[:FOLLOWS]->(f) WHERE f.active = true }
+/// ```text
+/// EXISTS { (u)-[:FOLLOWS]->(:User) }
+/// EXISTS { MATCH (u)-[:FOLLOWS]->(f) WHERE f.active = true }
+/// ```
 #[derive(Debug, PartialEq, Clone)]
 pub struct ExistsSubquery<'a> {
     /// The pattern to check for existence
@@ -664,14 +667,18 @@ pub struct ReduceExpression<'a> {
 }
 
 /// Pattern comprehension: generates a list from pattern matches
-/// Syntax: [(pattern) WHERE condition | projection]
+///
+/// Syntax: `[(pattern) WHERE condition | projection]`
+///
 /// Examples:
-///   [(user)-[:FOLLOWS]->(f) | f.name] => ['Alice', 'Bob', 'Charlie']
-///   [(a)-[:KNOWS]->(b) WHERE b.age > 25 | b.name] => ['Dave', 'Eve']
-///   [(n)-[r]->(m) | r.weight] => [1.5, 2.0, 3.7]
+/// ```text
+/// [(user)-[:FOLLOWS]->(f) | f.name] => ['Alice', 'Bob', 'Charlie']
+/// [(a)-[:KNOWS]->(b) WHERE b.age > 25 | b.name] => ['Dave', 'Eve']
+/// [(n)-[r]->(m) | r.weight] => [1.5, 2.0, 3.7]
+/// ```
 #[derive(Debug, PartialEq, Clone)]
 pub struct PatternComprehension<'a> {
-    /// The graph pattern to match (e.g., (user)-[:FOLLOWS]->(follower))
+    /// The graph pattern to match (e.g., `(user)-[:FOLLOWS]->(follower)`)
     pub pattern: Box<PathPattern<'a>>,
     /// Optional WHERE clause for filtering matches
     pub where_clause: Option<Box<Expression<'a>>>,
@@ -680,13 +687,17 @@ pub struct PatternComprehension<'a> {
 }
 
 /// List comprehension: filters and/or transforms a list
-/// Syntax: [variable IN list WHERE condition | projection]
+///
+/// Syntax: `[variable IN list WHERE condition | projection]`
 /// The WHERE clause and projection are both optional.
 /// When projection is None, returns the variable itself (identity filter).
+///
 /// Examples:
-///   [x IN range(1,10) WHERE x > 5] => [6, 7, 8, 9, 10]
-///   [x IN [1,2,3] | x * 2] => [2, 4, 6]
-///   [p IN posts WHERE (p)-[:HAS_TAG]->()]
+/// ```text
+/// [x IN range(1,10) WHERE x > 5] => [6, 7, 8, 9, 10]
+/// [x IN [1,2,3] | x * 2] => [2, 4, 6]
+/// [p IN posts WHERE (p)-[:HAS_TAG]->()]
+/// ```
 #[derive(Debug, PartialEq, Clone)]
 pub struct ListComprehension<'a> {
     /// The iteration variable name (e.g., "x", "p")

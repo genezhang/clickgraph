@@ -5,7 +5,7 @@
 //! **Low-level (parser only):** Parse a Cypher CREATE block into structured
 //! [`ParsedCreate`] data that you can inspect or transform before loading.
 //!
-//! **High-level (connection helper):** Use [`Connection::load_cypher_create`]
+//! **High-level (connection helper):** Use [`Connection::load_cypher_create`](crate::Connection::load_cypher_create)
 //! to parse and insert data in one call, returning [`LoadStats`].
 //!
 //! # Supported syntax
@@ -127,7 +127,7 @@ pub struct ParsedCreate {
     pub edges: Vec<ParsedEdge>,
 }
 
-/// Statistics returned by [`Connection::load_cypher_create`].
+/// Statistics returned by [`Connection::load_cypher_create`](crate::Connection::load_cypher_create).
 #[derive(Debug, Default, Clone)]
 pub struct LoadStats {
     /// Number of nodes inserted.

@@ -3,7 +3,7 @@
 //! The `QueryExecutor` trait abstracts over different SQL execution backends:
 //! - [`remote::RemoteClickHouseExecutor`] — wraps the existing `RoleConnectionPool`
 //!   for remote ClickHouse server connections.
-//! - [`chdb_embedded::ChdbExecutor`] — in-process chdb for embedded deployments
+//! - `chdb_embedded::ChdbExecutor` — in-process chdb for embedded deployments
 //!   (requires the `embedded` feature).
 
 use async_trait::async_trait;

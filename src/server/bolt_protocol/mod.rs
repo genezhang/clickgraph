@@ -6,7 +6,7 @@
 //! existing Neo4j ecosystem tools.
 //!
 //! Reference: Neo4j Bolt Protocol Specification v4.4
-//! https://7687.org/bolt/bolt-protocol-message-specification-4.html
+//! <https://7687.org/bolt/bolt-protocol-message-specification-4.html>
 
 use crate::executor::QueryExecutor;
 use std::collections::HashMap;

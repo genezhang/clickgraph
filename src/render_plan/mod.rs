@@ -117,7 +117,7 @@ pub struct RenderPlan {
     pub union: UnionItems,
     /// Fixed path information for simple (non-VLP) path patterns
     /// Contains path variable name and hop count for queries like:
-    /// MATCH p = (a)-[:T]->(b) RETURN length(p)
+    /// `MATCH p = (a)-[:T]->(b) RETURN length(p)`
     pub fixed_path_info: Option<FixedPathMetadata>,
     /// Flag indicating this is a multi-label node scan (labelless MATCH (n))
     /// When true, the SELECT items should NOT be overwritten by Projection
@@ -138,7 +138,7 @@ pub struct RenderPlan {
 pub struct FixedPathMetadata {
     /// Path variable name from Cypher (e.g., "p")
     pub path_variable: String,
-    /// Number of relationships/hops in the path (e.g., 1 for (a)-[r]->(b))
+    /// Number of relationships/hops in the path (e.g., 1 for `(a)-[r]->(b)`)
     pub hop_count: u32,
     /// List of node table aliases in order: [start_alias, intermediate1, ..., end_alias]
     pub node_aliases: Vec<String>,
@@ -247,8 +247,8 @@ pub enum JoinType {
 /// ARRAY JOIN items for ClickHouse
 /// Maps from Cypher UNWIND clauses (supports multiple for cartesian product)
 ///
-/// Example: UNWIND [1,2] AS x UNWIND [10,20] AS y
-/// Generates: ARRAY JOIN [1,2] AS x ARRAY JOIN [10,20] AS y
+/// Example: `UNWIND [1,2] AS x UNWIND [10,20] AS y`
+/// Generates: `ARRAY JOIN [1,2] AS x ARRAY JOIN [10,20] AS y`
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Default)]
 pub struct ArrayJoinItem(pub Vec<ArrayJoin>);
 

@@ -8,24 +8,24 @@
 //! | Pass | Purpose |
 //! |------|---------|
 //! | [`CartesianJoinExtraction`] | Extract CROSS JOINs from disconnected patterns |
-//! | [`FilterIntoGraphRel`] | Embed filters into GraphRel nodes |
-//! | [`ProjectionPushDown`] | Eliminate unused columns early |
-//! | [`CleanupViewScanFilters`] | Remove redundant filters on ViewScans |
-//! | [`FilterPushDown`] | Push filters closer to scans |
-//! | [`ViewOptimizer`] | Schema-aware view optimizations |
-//! | [`TrivialWithElimination`] | Remove unnecessary WITH clauses |
-//! | [`CollectUnwindElimination`] | Optimize collect/unwind sequences |
+//! | `FilterIntoGraphRel` | Embed filters into GraphRel nodes |
+//! | `ProjectionPushDown` | Eliminate unused columns early |
+//! | `CleanupViewScanFilters` | Remove redundant filters on ViewScans |
+//! | `FilterPushDown` | Push filters closer to scans |
+//! | `ViewOptimizer` | Schema-aware view optimizations |
+//! | `TrivialWithElimination` | Remove unnecessary WITH clauses |
+//! | `CollectUnwindElimination` | Optimize collect/unwind sequences |
 //!
 //! # Execution Order
 //!
 //! Passes are applied in a specific order for correctness across
 //! [`initial_optimization`] and [`final_optimization`]:
 //! 1. [`CartesianJoinExtraction`]
-//! 2. [`FilterIntoGraphRel`]
-//! 3. [`ProjectionPushDown`]
-//! 4. [`CleanupViewScanFilters`]
-//! 5. [`FilterPushDown`]
-//! 6. [`ViewOptimizer`]
+//! 2. `FilterIntoGraphRel`
+//! 3. `ProjectionPushDown`
+//! 4. `CleanupViewScanFilters`
+//! 5. `FilterPushDown`
+//! 6. `ViewOptimizer`
 //!
 //! # Usage
 //!

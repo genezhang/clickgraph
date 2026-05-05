@@ -91,7 +91,7 @@ pub struct VlpEndpointInfo {
     pub start_id_col: String,
     /// End node ID column name
     pub end_id_col: String,
-    /// Path variable name (e.g., "p" in MATCH p = (a)-[*]->(b))
+    /// Path variable name (e.g., "p" in `MATCH p = (a)-[*]->(b)`)
     pub path_variable: Option<String>,
 }
 

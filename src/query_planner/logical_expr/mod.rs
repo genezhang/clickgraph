@@ -47,7 +47,7 @@ pub enum LogicalExpr {
 
     Star,
 
-    /// Table Alias (e.g. (p)-[f:Follow]-(u), p, f and u are table alias expr).
+    /// Table Alias (e.g. `(p)-[f:Follow]-(u)`, p, f and u are table alias expr).
     TableAlias(TableAlias),
 
     ColumnAlias(ColumnAlias),
@@ -103,7 +103,7 @@ pub enum LogicalExpr {
         label: String,
     },
 
-    /// Pattern count: size((n)-[:REL]->())
+    /// Pattern count: `size((n)-[:REL]->())`
     /// Counts the number of matches for a relationship pattern
     /// Generates a correlated COUNT(*) subquery
     PatternCount(PatternCount),
@@ -113,23 +113,23 @@ pub enum LogicalExpr {
     /// Example: x -> x > 5
     Lambda(LambdaExpr),
 
-    /// Pattern comprehension: [(pattern) WHERE condition | projection]
+    /// Pattern comprehension: `[(pattern) WHERE condition | projection]`
     /// Returns a list of projected values from matched patterns
     /// Will be rewritten to OPTIONAL MATCH + collect() during query planning
     PatternComprehension(PatternComprehensionExpr),
 
-    /// Array subscript: array[index]
+    /// Array subscript: `array[index]`
     /// Access element at specified index (1-based in Cypher, converted to 0-based for ClickHouse)
-    /// Example: labels(n)[1], list[0], [1,2,3][2]
+    /// Example: `labels(n)[1]`, `list[0]`, `[1,2,3][2]`
     ArraySubscript {
         array: Box<LogicalExpr>,
         index: Box<LogicalExpr>,
     },
 
-    /// Array slicing: array[from..to]
+    /// Array slicing: `array[from..to]`
     /// Extract subarray from index 'from' to 'to' (0-based, inclusive in Cypher)
-    /// Both bounds are optional: [..3], [2..], [..]
-    /// Example: list[0..5], collect(n)[..10], [1,2,3,4,5][2..4]
+    /// Both bounds are optional: `[..3]`, `[2..]`, `[..]`
+    /// Example: `list[0..5]`, `collect(n)[..10]`, `[1,2,3,4,5][2..4]`
     ArraySlicing {
         array: Box<LogicalExpr>,
         from: Option<Box<LogicalExpr>>,
@@ -149,7 +149,7 @@ pub enum LogicalExpr {
 }
 
 /// Pattern count for size() on patterns
-/// Represents size((n)-[:REL]->()) which counts pattern matches
+/// Represents `size((n)-[:REL]->())` which counts pattern matches
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct PatternCount {
     /// The pattern to count
@@ -191,10 +191,14 @@ pub struct LambdaExpr {
 }
 
 /// Pattern comprehension: returns list of values from pattern matches
-/// Example: [(user)-[:FOLLOWS]->(follower) WHERE follower.active | follower.name]
+///
+/// Example: `[(user)-[:FOLLOWS]->(follower) WHERE follower.active | follower.name]`
+///
 /// This will be rewritten during query planning to:
-///   OPTIONAL MATCH (user)-[:FOLLOWS]->(follower) WHERE follower.active
-///   RETURN collect(follower.name)
+/// ```text
+/// OPTIONAL MATCH (user)-[:FOLLOWS]->(follower) WHERE follower.active
+/// RETURN collect(follower.name)
+/// ```
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct PatternComprehensionExpr {
     /// The graph pattern to match
@@ -884,7 +888,7 @@ mod tests {
 impl LogicalExpr {
     /// Check if this expression contains correlated subqueries (NOT PathPattern or EXISTS)
     /// Such expressions must go in WHERE clause, not JOIN ON (ClickHouse limitation)
-    /// Returns true for patterns like: NOT (a)-[:REL]-(b) or EXISTS((a)-[:REL]-(b))
+    /// Returns true for patterns like: `NOT (a)-[:REL]-(b)` or `EXISTS((a)-[:REL]-(b))`
     pub fn contains_not_path_pattern(&self) -> bool {
         match self {
             LogicalExpr::OperatorApplicationExp(op_app) => {

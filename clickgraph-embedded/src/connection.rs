@@ -366,7 +366,7 @@ impl<'db> Connection<'db> {
     /// - Directed edges: `(n)-[:KNOWS {since: 2020}]->(m)`
     /// - Multi-statement blocks (multiple CREATE statements in one string)
     ///
-    /// Returns [`LoadStats`] with counts of nodes and edges inserted.
+    /// Returns [`LoadStats`](crate::cypher_loader::LoadStats) with counts of nodes and edges inserted.
     ///
     /// # Notes
     ///

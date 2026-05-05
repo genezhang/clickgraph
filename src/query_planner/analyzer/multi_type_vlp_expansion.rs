@@ -14,13 +14,13 @@
 //! ```
 //!
 //! Valid 1-hop paths:
-//! - User-[FOLLOWS]->User
-//! - User-[AUTHORED]->Post
+//! - `User-[FOLLOWS]->User`
+//! - `User-[AUTHORED]->Post`
 //!
 //! Valid 2-hop paths:
-//! - User-[FOLLOWS]->User-[FOLLOWS]->User
-//! - User-[FOLLOWS]->User-[AUTHORED]->Post
-//! - User-[AUTHORED]->Post-[?]->??? (check schema for edges from Post)
+//! - `User-[FOLLOWS]->User-[FOLLOWS]->User`
+//! - `User-[FOLLOWS]->User-[AUTHORED]->Post`
+//! - `User-[AUTHORED]->Post-[?]->???` (check schema for edges from Post)
 //!
 //! Invalid paths are filtered out based on schema constraints.
 

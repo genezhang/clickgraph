@@ -43,24 +43,24 @@ pub struct PatternNodeInfo {
 }
 
 /// Metadata about an edge (relationship) in the MATCH pattern graph.
-/// Represents a single relationship pattern like -[r:TYPE]->
+/// Represents a single relationship pattern like `-[r:TYPE]->`
 #[derive(Debug, Clone)]
 pub struct PatternEdgeInfo {
     /// Edge variable alias (e.g., "r", "follows", "t1")
     pub alias: String,
-    /// Relationship types (e.g., ["FOLLOWS"], or ["FOLLOWS", "FRIENDS"] for [:FOLLOWS|FRIENDS])
+    /// Relationship types (e.g., `["FOLLOWS"]`, or `["FOLLOWS", "FRIENDS"]` for `[:FOLLOWS|FRIENDS]`)
     pub rel_types: Vec<String>,
-    /// Source node variable (e.g., "a" in (a)-[r]->(b))
+    /// Source node variable (e.g., "a" in `(a)-[r]->(b)`)
     pub from_node: String,
-    /// Target node variable (e.g., "b" in (a)-[r]->(b))
+    /// Target node variable (e.g., "b" in `(a)-[r]->(b)`)
     pub to_node: String,
     /// Whether this edge's properties are referenced in the query
     pub is_referenced: bool,
-    /// Whether this is a variable-length path (e.g., *1..3, *)
+    /// Whether this is a variable-length path (e.g., `*1..3`, `*`)
     pub is_vlp: bool,
     /// Whether this is a shortest path pattern
     pub is_shortest_path: bool,
-    /// Direction: Outgoing (-[r]->), Incoming (<-[r]-), Either (-[r]-)
+    /// Direction: Outgoing (`-[r]->`), Incoming (`<-[r]-`), Either (`-[r]-`)
     pub direction: Direction,
     /// Whether this edge is part of an OPTIONAL MATCH
     pub is_optional: bool,

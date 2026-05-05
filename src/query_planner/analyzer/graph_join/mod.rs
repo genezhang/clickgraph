@@ -23,7 +23,7 @@
 //!
 //! ## Key Types
 //!
-//! - [`GraphJoinInference`] - Main analyzer pass implementing [`AnalyzerPass`]
+//! - [`GraphJoinInference`] - Main analyzer pass implementing `AnalyzerPass`
 //! - [`JoinContext`] - Tracks joined tables during traversal (re-exported from join_context)
 //! - [`VlpEndpointInfo`] - Variable-length path endpoint information
 //! - [`PatternGraphMetadata`] - Complete metadata for a MATCH clause

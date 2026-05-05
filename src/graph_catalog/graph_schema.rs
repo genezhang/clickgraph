@@ -285,14 +285,14 @@ pub struct RelationshipSchema {
     ///
     /// Two variants:
     /// 1. Self-referencing: edge table = from_node table = to_node table
-    ///    Example: fs_objects.parent_id → fs_objects.object_id
-    ///    Query: (child:Object)-[:PARENT]->(parent:Object)
-    ///    SQL:   child.parent_id = parent.object_id
+    ///    - Example: `fs_objects.parent_id → fs_objects.object_id`
+    ///    - Query: `(child:Object)-[:PARENT]->(parent:Object)`
+    ///    - SQL:   `child.parent_id = parent.object_id`
     ///
     /// 2. Non-self-referencing: edge table = from_node table ≠ to_node table
-    ///    Example: orders.customer_id → customers.customer_id
-    ///    Query: (o:Order)-[:PLACED_BY]->(c:Customer)
-    ///    SQL:   o.customer_id = c.customer_id
+    ///    - Example: `orders.customer_id → customers.customer_id`
+    ///    - Query: `(o:Order)-[:PLACED_BY]->(c:Customer)`
+    ///    - SQL:   `o.customer_id = c.customer_id`
     ///
     /// Detection: edge table matches from_node OR to_node table, with no
     /// denormalized node properties (from_node_properties/to_node_properties).
@@ -1491,8 +1491,8 @@ impl GraphSchema {
     ///
     /// Example (Zeek DNS log):
     ///
-    /// - REQUESTED: (IP)-[:REQUESTED]->(Domain)  from dns_log
-    /// - RESOLVED_TO: (Domain)-[:RESOLVED_TO]->(ResolvedIP)  from dns_log
+    /// - REQUESTED: `(IP)-[:REQUESTED]->(Domain)`  from dns_log
+    /// - RESOLVED_TO: `(Domain)-[:RESOLVED_TO]->(ResolvedIP)`  from dns_log
     ///
     /// These are coupled because:
     ///
@@ -1500,7 +1500,7 @@ impl GraphSchema {
     /// - Coupling node: Domain (REQUESTED.to_node == RESOLVED_TO.from_node)
     ///
     /// IMPORTANT: Same edge type twice is NOT coupled - each hop is a different row!
-    /// For example: (a)-[r1:FLIGHT]->(b)-[r2:FLIGHT]->(c) requires joining two flight rows.
+    /// For example: `(a)-[r1:FLIGHT]->(b)-[r2:FLIGHT]->(c)` requires joining two flight rows.
     pub fn are_edges_coupled(&self, edge1_type: &str, edge2_type: &str) -> bool {
         // CRITICAL FIX: Same edge type is NEVER coupled!
         // Multi-hop on same edge type means different rows, must JOIN.
@@ -1535,7 +1535,7 @@ impl GraphSchema {
     /// Returns Some(CoupledEdgeInfo) if edges are coupled,
     /// where the coupling node connects them (same value in the same row)
     ///
-    /// For pattern: (a)-[e1]->(b)-[e2]->(c)
+    /// For pattern: `(a)-[e1]->(b)-[e2]->(c)`
     /// If e1 and e2 are coupled, returns Some(info) with coupling_node = "b"
     ///
     /// IMPORTANT: Same edge type twice is NOT coupled - each hop is a different row!

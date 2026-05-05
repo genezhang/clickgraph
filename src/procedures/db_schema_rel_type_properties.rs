@@ -6,7 +6,7 @@
 //! Output columns:
 //! - relType: String (e.g., ":`FOLLOWS`")
 //! - propertyName: String (e.g., "since")
-//! - propertyTypes: Vec<String> (e.g., ["DateTime"])
+//! - propertyTypes: `Vec<String>` (e.g., `["DateTime"]`)
 //! - mandatory: bool (true if property always exists)
 
 use crate::graph_catalog::graph_schema::GraphSchema;

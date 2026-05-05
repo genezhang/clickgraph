@@ -151,7 +151,7 @@ pub enum ClickHouseExpr {
         right: Box<ClickHouseExpr>,
     },
 
-    /// Array indexing: tags[1]
+    /// Array indexing: `tags[1]`
     ArrayIndex {
         array: Box<ClickHouseExpr>,
         index: Box<ClickHouseExpr>,

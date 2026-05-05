@@ -35,7 +35,7 @@ type AnalyzerResult<T> = Result<T, AnalyzerError>;
 // Resolved table info passed by caller
 // =============================================================================
 
-/// All resolved names for one (a)-[r]->(b) pattern.
+/// All resolved names for one `(a)-[r]->(b)` pattern.
 /// Caller resolves CTE vs base-table names before calling generate_pattern_joins.
 pub struct ResolvedTables<'a> {
     pub left_alias: &'a str,
@@ -53,7 +53,7 @@ pub struct ResolvedTables<'a> {
 // Step 1: Generate joins for one pattern — schema decides WHAT joins
 // =============================================================================
 
-/// Generate joins for a single (a)-[r]->(b) pattern based on JoinStrategy.
+/// Generate joins for a single `(a)-[r]->(b)` pattern based on JoinStrategy.
 ///
 /// Anchor-aware: if a node is already available (from a prior pattern), no FROM
 /// marker is generated for it. The edge table anchors on whichever node is available.

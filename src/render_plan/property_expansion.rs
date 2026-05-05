@@ -96,7 +96,7 @@ pub struct ExpandedProperty {
 /// - Defaults to all properties if no requirements for this alias
 ///
 /// # Examples
-/// ```ignore
+/// ```text
 /// // Without pruning (all properties):
 /// expand_alias_properties_core("p", props, "person_id", None, false, None)
 /// → [person_id, firstName, lastName, age, ...]  // All 50 columns
@@ -279,7 +279,7 @@ pub fn expand_alias_to_projection_items_unified(
 /// Vector of SelectItems with RenderExpr expressions (pruned if requirements provided)
 ///
 /// # Examples
-/// ```ignore
+/// ```text
 /// // Without pruning (current behavior):
 /// expand_alias_to_select_items_unified("p", props, "id", None, false, Dot, None)
 /// → 200 SelectItems (all columns)

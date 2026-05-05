@@ -40,12 +40,12 @@ use std::collections::{HashMap, HashSet};
 ///
 /// # Example
 ///
-/// ```ignore
-/// // WHERE id(a) IN [281474976710657, 281474976710658]
-/// // Returns: {"a": {"User"}}
+/// ```text
+/// WHERE id(a) IN [281474976710657, 281474976710658]
+/// Returns: {"a": {"User"}}
 ///
-/// // WHERE id(a) = 281474976710657 AND id(b) = 844424930131969
-/// // Returns: {"a": {"User"}, "b": {"Post"}}
+/// WHERE id(a) = 281474976710657 AND id(b) = 844424930131969
+/// Returns: {"a": {"User"}, "b": {"Post"}}
 /// ```
 pub fn extract_labels_from_id_where<'a>(
     where_clause: &ast::WhereClause<'a>,

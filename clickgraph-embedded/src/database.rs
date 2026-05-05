@@ -351,6 +351,7 @@ fn build_runtime() -> Result<tokio::runtime::Runtime, EmbeddedError> {
         .map_err(|e| EmbeddedError::Query(format!("Failed to create runtime: {}", e)))
 }
 
+#[cfg(feature = "embedded")]
 fn pseudo_random_suffix() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
