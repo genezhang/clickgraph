@@ -762,6 +762,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is a literal formatting test input, not π
     fn test_format_value_float_frac() {
         assert_eq!(format_value(&Value::Float64(3.14)), "3.14");
     }

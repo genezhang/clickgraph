@@ -10,6 +10,8 @@
 //! **Note**: chdb supports only one session per process, so all tests share
 //! a single `Database` via `LazyLock`.
 
+#![cfg(feature = "embedded")]
+
 use std::process::Command;
 use std::sync::LazyLock;
 
