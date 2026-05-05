@@ -77,13 +77,13 @@ impl CgConfig {
 
         // ClickHouse user: explicit CLI/env > config file > "default"
         let ch_user = ch_user
-            .or_else(|| file_cfg.clickhouse.user.as_deref())
+            .or(file_cfg.clickhouse.user.as_deref())
             .unwrap_or("default")
             .to_string();
 
         // ClickHouse password: explicit CLI/env > config file > ""
         let ch_password = ch_password
-            .or_else(|| file_cfg.clickhouse.password.as_deref())
+            .or(file_cfg.clickhouse.password.as_deref())
             .unwrap_or("")
             .to_string();
 

@@ -15,6 +15,8 @@
 //! **Note**: chdb supports only one session per process, so all tests share
 //! a single `Database` via `LazyLock`.
 
+#![cfg(feature = "embedded")]
+
 use std::sync::LazyLock;
 
 use clickgraph_embedded::{Connection, Database, SystemConfig};

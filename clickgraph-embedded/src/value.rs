@@ -217,6 +217,40 @@ impl From<JsonValue> for Value {
     }
 }
 
+impl std::fmt::Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Null => write!(f, "NULL"),
+            Value::Bool(b) => write!(f, "{}", b),
+            Value::Int64(n) => write!(f, "{}", n),
+            Value::Float64(n) => write!(f, "{}", n),
+            Value::String(s) | Value::Date(s) | Value::Timestamp(s) | Value::UUID(s) => {
+                write!(f, "{}", s)
+            }
+            Value::List(items) => {
+                write!(f, "[")?;
+                for (i, v) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", v)?;
+                }
+                write!(f, "]")
+            }
+            Value::Map(pairs) => {
+                write!(f, "{{")?;
+                for (i, (k, v)) in pairs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", k, v)?;
+                }
+                write!(f, "}}")
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,6 +452,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is a literal SQL-formatting test input, not π
     fn test_sql_literal_int64_and_float64() {
         assert_eq!(Value::Int64(42).to_sql_literal().unwrap(), "42");
         assert_eq!(Value::Int64(-1).to_sql_literal().unwrap(), "-1");
@@ -470,39 +505,5 @@ mod tests {
     fn test_sql_literal_list_and_map_return_err() {
         assert!(Value::List(vec![]).to_sql_literal().is_err());
         assert!(Value::Map(vec![]).to_sql_literal().is_err());
-    }
-}
-
-impl std::fmt::Display for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Value::Null => write!(f, "NULL"),
-            Value::Bool(b) => write!(f, "{}", b),
-            Value::Int64(n) => write!(f, "{}", n),
-            Value::Float64(n) => write!(f, "{}", n),
-            Value::String(s) | Value::Date(s) | Value::Timestamp(s) | Value::UUID(s) => {
-                write!(f, "{}", s)
-            }
-            Value::List(items) => {
-                write!(f, "[")?;
-                for (i, v) in items.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", v)?;
-                }
-                write!(f, "]")
-            }
-            Value::Map(pairs) => {
-                write!(f, "{{")?;
-                for (i, (k, v)) in pairs.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}: {}", k, v)?;
-                }
-                write!(f, "}}")
-            }
-        }
     }
 }
