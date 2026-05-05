@@ -803,6 +803,77 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
             }
         }
 
+        // Inject schema-natural relationship FK projections for 1-hop multi-type
+        // VLP queries. The CTE projects `r_from_id` / `r_to_id` columns whose
+        // values are the natural from→to direction regardless of which CTE
+        // branch (Outgoing/Incoming) produced the row. result_transformer uses
+        // these to construct a canonical relationship element_id, which fixes
+        // duplicate edges in Browser when the same edge appears in two
+        // expansions from different endpoints (the same-label-relationship
+        // direction issue that label-matching reversal detection can't
+        // distinguish).
+        //
+        // We detect "this is a 1-hop relationship-VLP query" by finding a
+        // SELECT item whose col_alias starts with "<relvar>." and whose
+        // rewritten expression is `t.start_id` — i.e., a relationship's
+        // start_id projection. The relvar name comes from the col_alias prefix.
+        let mut rel_var_name: Option<String> = None;
+        {
+            use crate::graph_catalog::expression_parser::PropertyValue;
+            for item in plan.select.items.iter() {
+                if let Some(ref col_alias) = item.col_alias {
+                    if col_alias.0.ends_with(".start_id") {
+                        if let RenderExpr::Column(Column(PropertyValue::Column(col))) =
+                            &item.expression
+                        {
+                            if col == "t.start_id" {
+                                let rv = col_alias.0.trim_end_matches(".start_id").to_string();
+                                if !rv.is_empty() {
+                                    rel_var_name = Some(rv);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(rv) = rel_var_name {
+            use crate::graph_catalog::expression_parser::PropertyValue;
+            use crate::render_plan::render_expr::ColumnAlias;
+            use crate::render_plan::SelectItem;
+            // Only inject if the CTE actually exposes these columns (1-hop case).
+            // The multi-type VLP CTE projects them when hop_count == 1; check by
+            // looking at the FROM CTE name pattern.
+            let from_is_multi_type_vlp = plan
+                .from
+                .0
+                .as_ref()
+                .is_some_and(|f| f.name.starts_with("vlp_multi_type_"));
+            if from_is_multi_type_vlp {
+                let already_injected = plan.select.items.iter().any(|item| {
+                    item.col_alias
+                        .as_ref()
+                        .is_some_and(|ca| ca.0 == format!("{}.r_from_id", rv))
+                });
+                if !already_injected {
+                    plan.select.items.push(SelectItem {
+                        expression: RenderExpr::Column(Column(PropertyValue::Column(
+                            "t.r_from_id".to_string(),
+                        ))),
+                        col_alias: Some(ColumnAlias(format!("{}.r_from_id", rv))),
+                    });
+                    plan.select.items.push(SelectItem {
+                        expression: RenderExpr::Column(Column(PropertyValue::Column(
+                            "t.r_to_id".to_string(),
+                        ))),
+                        col_alias: Some(ColumnAlias(format!("{}.r_to_id", rv))),
+                    });
+                    log::info!("🔧 Injected r_from_id/r_to_id projections for rel '{}'", rv);
+                }
+            }
+        }
+
         // 🔧 BUG FIX: Also rewrite GROUP BY expressions for VLP queries
         // The GROUP BY clause may contain Cypher aliases (e.g., a.full_name)
         // that need to be rewritten to use VLP CTE columns (e.g., t.start_name)

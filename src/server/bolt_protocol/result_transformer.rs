@@ -1094,6 +1094,9 @@ pub(crate) fn transform_to_relationship(
         // Save start_id and end_id before parsing
         let start_id = properties.get("start_id").cloned();
         let end_id = properties.get("end_id").cloned();
+        // Also preserve schema-natural FK projections (1-hop multi-type VLP).
+        let r_from_id = properties.get("r_from_id").cloned();
+        let r_to_id = properties.get("r_to_id").cloned();
 
         if let Some(props_value) = properties.get("properties") {
             if let Some(json_str) = extract_first_from_array(props_value) {
@@ -1122,6 +1125,12 @@ pub(crate) fn transform_to_relationship(
         }
         if let Some(eid) = end_id {
             properties.insert("end_id".to_string(), eid);
+        }
+        if let Some(v) = r_from_id {
+            properties.insert("r_from_id".to_string(), v);
+        }
+        if let Some(v) = r_to_id {
+            properties.insert("r_to_id".to_string(), v);
         }
         rel_type_str
     } else {
@@ -1198,6 +1207,25 @@ pub(crate) fn transform_to_relationship(
     let from_node_label = &resolved_from_label;
     let to_node_label = &resolved_to_label;
 
+    // Prefer schema-natural FK projections when the SQL gen provided them.
+    // The multi-type VLP CTE projects `r_from_id` / `r_to_id` for 1-hop
+    // queries; these carry the schema's natural from→to direction regardless
+    // of which CTE branch (Outgoing/Incoming) the row came from. When
+    // present, they make element_id construction direction-canonical, which
+    // dedupes same-label directed relationships across expansions from
+    // either endpoint (e.g., FOLLOWS:9->17 from User:9's expand and from
+    // User:17's expand both yield the same element_id).
+    let canonical_from = properties
+        .get("r_from_id")
+        .and_then(value_to_string)
+        .filter(|s| !s.is_empty());
+    let canonical_to = properties
+        .get("r_to_id")
+        .and_then(value_to_string)
+        .filter(|s| !s.is_empty());
+    properties.remove("r_from_id");
+    properties.remove("r_to_id");
+
     // Detect when the SQL's `start_id`/`end_id` projection is reversed from the
     // schema's natural from→to direction. This happens for undirected matches
     // like `(a)-[r]-(o)` where `a` is bound to the schema's *to-side* (e.g.,
@@ -1253,51 +1281,60 @@ pub(crate) fn transform_to_relationship(
 
     // Extract from_id values using relationship's FK columns (e.g., follower_id, followed_id)
     let from_rel_id_columns = rel_schema.from_id.columns();
-    let from_id_values: Vec<String> = from_rel_id_columns
-        .iter()
-        .enumerate()
-        .map(|(i, col_name)| {
-            // First try: FK column from relationship schema (e.g., follower_id)
-            properties
-                .get(*col_name)
-                // Second try: generic CTE column names (direction-aware)
-                .or_else(|| properties.get(from_fallback_a))
-                .or_else(|| properties.get(from_fallback_b))
-                // Third try: composite variants
-                .or_else(|| properties.get(&format!("{}{}", from_composite_prefix, i + 1)))
-                .and_then(value_to_string)
-                .ok_or_else(|| {
-                    format!(
-                        "Missing from_id column '{}' for relationship '{}'",
-                        col_name, var_name
-                    )
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let from_id_values: Vec<String> = if let Some(ref s) = canonical_from {
+        // Schema-natural projection wins; composite ids are pipe-joined.
+        s.split('|').map(|p| p.to_string()).collect()
+    } else {
+        from_rel_id_columns
+            .iter()
+            .enumerate()
+            .map(|(i, col_name)| {
+                // First try: FK column from relationship schema (e.g., follower_id)
+                properties
+                    .get(*col_name)
+                    // Second try: generic CTE column names (direction-aware)
+                    .or_else(|| properties.get(from_fallback_a))
+                    .or_else(|| properties.get(from_fallback_b))
+                    // Third try: composite variants
+                    .or_else(|| properties.get(&format!("{}{}", from_composite_prefix, i + 1)))
+                    .and_then(value_to_string)
+                    .ok_or_else(|| {
+                        format!(
+                            "Missing from_id column '{}' for relationship '{}'",
+                            col_name, var_name
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
 
     // Extract to_id values using relationship's FK columns
     let to_rel_id_columns = rel_schema.to_id.columns();
-    let to_id_values: Vec<String> = to_rel_id_columns
-        .iter()
-        .enumerate()
-        .map(|(i, col_name)| {
-            // First try: FK column from relationship schema (e.g., followed_id)
-            properties
-                .get(*col_name)
-                // Second try: generic CTE column names (direction-aware)
-                .or_else(|| properties.get(to_fallback_a))
-                .or_else(|| properties.get(to_fallback_b))
-                // Third try: composite variants
-                .or_else(|| properties.get(&format!("{}{}", to_composite_prefix, i + 1)))
-                .and_then(value_to_string)
-                .ok_or_else(|| {
-                    format!(
-                        "Missing to_id column '{}' for relationship '{}'",
-                        col_name, var_name
-                    )
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let to_id_values: Vec<String> = if let Some(ref s) = canonical_to {
+        s.split('|').map(|p| p.to_string()).collect()
+    } else {
+        to_rel_id_columns
+            .iter()
+            .enumerate()
+            .map(|(i, col_name)| {
+                // First try: FK column from relationship schema (e.g., followed_id)
+                properties
+                    .get(*col_name)
+                    // Second try: generic CTE column names (direction-aware)
+                    .or_else(|| properties.get(to_fallback_a))
+                    .or_else(|| properties.get(to_fallback_b))
+                    // Third try: composite variants
+                    .or_else(|| properties.get(&format!("{}{}", to_composite_prefix, i + 1)))
+                    .and_then(value_to_string)
+                    .ok_or_else(|| {
+                        format!(
+                            "Missing to_id column '{}' for relationship '{}'",
+                            col_name, var_name
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
 
     // Join composite IDs with pipe separator
     let from_id_str = from_id_values.join("|");

@@ -700,6 +700,14 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         // Collect (alias, node_type) for all nodes in the path (start + each hop target)
         let mut path_node_aliases: Vec<(String, String)> =
             vec![(start_alias_sql.clone(), start_type.clone())];
+        // Per-hop schema-natural FK projection info: (rel_alias, from_fk_column,
+        // to_fk_column). Used to project `r_from_id` / `r_to_id` columns whose
+        // values are the schema's natural from/to ids regardless of whether
+        // the SQL traversal is Outgoing (a is from-side) or Incoming (a is
+        // to-side) — without this, same-label directed relationships like
+        // FOLLOWS get inconsistent element_ids depending on which endpoint
+        // initiated the expand.
+        let mut hop_rel_fk_info: Vec<(String, String, String)> = Vec::new();
 
         for (hop_idx, hop) in hops.iter().enumerate() {
             let hop_num = hop_idx + 1;
@@ -760,6 +768,23 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 if let Some(ref rel_filters) = self.rel_filters {
                     let rel_filter = rel_filters.replace("rel.", &format!("{}.", end_node_alias));
                     where_clauses.push(rel_filter);
+                }
+
+                // FK-edge: rel "alias" is the end node table itself.
+                // Composite-id rels would need joining; skip if either side is
+                // composite (callers fall back to start_id/end_id via the
+                // existing reversal-detection path).
+                if let (Some(f), Some(t)) = (
+                    from_col.columns().first().copied(),
+                    to_col.columns().first().copied(),
+                ) {
+                    if !from_col.is_composite() && !to_col.is_composite() {
+                        hop_rel_fk_info.push((
+                            end_node_alias.clone(),
+                            f.to_string(),
+                            t.to_string(),
+                        ));
+                    }
                 }
             } else {
                 // Standard pattern: separate relationship table and target node table
@@ -825,6 +850,16 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 );
                 log::info!("   Standard path node JOIN: {}", node_join_sql);
                 from_clauses.push(node_join_sql);
+
+                // Standard pattern: rel_alias is the relationship table.
+                if let (Some(f), Some(t)) = (
+                    from_col.columns().first().copied(),
+                    to_col.columns().first().copied(),
+                ) {
+                    if !from_col.is_composite() && !to_col.is_composite() {
+                        hop_rel_fk_info.push((rel_alias.clone(), f.to_string(), t.to_string()));
+                    }
+                }
             }
 
             // Update current_alias for next hop
@@ -883,6 +918,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             hop_count,
             &path.hops,
             &path_node_aliases,
+            &hop_rel_fk_info,
         );
 
         // Assemble final SQL
@@ -909,6 +945,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
     /// - `hop_count`: Number of hops in the path (for length(p) function)
     /// - `path_relationships`: Array of relationship types (for relationships(p) function)
     /// - `rel_properties`: JSON array of relationship properties for each hop
+    #[allow(clippy::too_many_arguments)]
     fn generate_select_items(
         &self,
         node_alias: &str,
@@ -917,6 +954,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         hop_count: usize,
         hops: &[crate::query_planner::analyzer::multi_type_vlp_expansion::PathHop],
         path_node_aliases: &[(String, String)],
+        hop_rel_fk_info: &[(String, String, String)],
     ) -> Vec<String> {
         log::debug!(
             "generate_select_items for node_type='{}', node_alias='{}'",
@@ -1026,6 +1064,21 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         // Add start type discriminator (needed for outer SELECT when start node is the returned variable)
         let start_type_value = &hops[0].from_node_type;
         items.push(format!("'{}' AS start_type", start_type_value));
+
+        // For 1-hop paths, project the schema-natural from/to FK values from
+        // the relationship table. These let the result_transformer build a
+        // canonical relationship element_id ("FOLLOWS:9->17") regardless of
+        // which CTE branch (Outgoing or Incoming) produced the row, which is
+        // what fixes "duplicate edges" in Browser for same-label directed
+        // relationships like FOLLOWS where label-matching reversal detection
+        // can't distinguish from-side from to-side. Multi-hop paths skip this
+        // since paths don't have a single relationship to identify.
+        if hop_count == 1 {
+            if let Some((rel_alias, from_fk, to_fk)) = hop_rel_fk_info.first() {
+                items.push(format!("toString({}.{}) AS r_from_id", rel_alias, from_fk));
+                items.push(format!("toString({}.{}) AS r_to_id", rel_alias, to_fk));
+            }
+        }
 
         // 🔧 PROPERTY SELECTION FIX: Use property requirements to determine selection mode
         // Instead of always using JSON, check what's actually needed:
