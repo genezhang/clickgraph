@@ -1,6 +1,6 @@
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 
 # Test basic single-hop query first
 print("=== Testing single-hop FOLLOWS from Alice ===")

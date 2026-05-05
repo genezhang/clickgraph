@@ -14,7 +14,7 @@ LIMIT 5
 print(f"Testing query:\n{query}\n")
 
 response = requests.post(
-    "http://localhost:8080/query",
+    "http://localhost:7475/query",
     json={
         "query": query,
         "sql_only": True

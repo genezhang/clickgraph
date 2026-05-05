@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
-CLICKGRAPH_URL = "http://localhost:8080/query"
+CLICKGRAPH_URL = "http://localhost:7475/query"
 GRAPH_NAME = "ldbc_snb"
 
 @dataclass

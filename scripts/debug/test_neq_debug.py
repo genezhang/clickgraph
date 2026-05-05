@@ -9,7 +9,7 @@ import json
 
 def test_query(query):
     """Send query to ClickGraph server and return response"""
-    url = "http://localhost:8080/query"
+    url = "http://localhost:7475/query"
     headers = {"Content-Type": "application/json"}
     data = {"query": query}
     

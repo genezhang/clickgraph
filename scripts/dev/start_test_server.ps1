@@ -15,11 +15,11 @@ $env:CLICKHOUSE_DATABASE = "test_integration"
 $env:GRAPH_CONFIG_PATH = "schemas/test/test_integration_schema.yaml"
 $env:RUST_LOG = "info"
 $env:CLICKGRAPH_HOST = "0.0.0.0"
-$env:CLICKGRAPH_PORT = "8080"
+$env:CLICKGRAPH_PORT = "7475"
 $env:CLICKGRAPH_MAX_CTE_DEPTH = "100"
 
 Write-Host "Config:" -ForegroundColor Cyan
-Write-Host "  HTTP Port: 8080" -ForegroundColor Gray
+Write-Host "  HTTP Port: 7475" -ForegroundColor Gray
 Write-Host "  Database: test_integration" -ForegroundColor Gray
 Write-Host "  Schema: schemas/test/test_integration_schema.yaml" -ForegroundColor Gray
 Write-Host "  ClickHouse: http://localhost:8123" -ForegroundColor Gray
@@ -58,7 +58,7 @@ while ($waited -lt $maxWait) {
     $waited++
     
     try {
-        $response = Invoke-WebRequest -Uri "http://localhost:8080/health" -ErrorAction SilentlyContinue -TimeoutSec 1
+        $response = Invoke-WebRequest -Uri "http://localhost:7475/health" -ErrorAction SilentlyContinue -TimeoutSec 1
         if ($response.StatusCode -eq 200) {
             $ready = $true
             break

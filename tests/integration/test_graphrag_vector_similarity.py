@@ -31,7 +31,7 @@ import os
 import clickhouse_connect
 import numpy as np
 
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 BASE_URL = f"{CLICKGRAPH_URL}"
 
 # Embedding dimension - using 128 for reasonable test performance

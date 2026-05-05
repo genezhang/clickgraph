@@ -1,6 +1,6 @@
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 
 # Test just FRIENDS_WITH to see if it works
 query = {'query': 'MATCH (a:User)-[:FRIENDS_WITH]->(b:User) RETURN a.name, b.name'}

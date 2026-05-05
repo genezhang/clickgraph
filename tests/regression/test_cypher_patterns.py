@@ -15,7 +15,7 @@ Categories:
 Usage:
     python3 tests/regression/test_cypher_patterns.py
     
-Set CLICKGRAPH_URL environment variable if not localhost:8080
+Set CLICKGRAPH_URL environment variable if not localhost:7475
 """
 
 import json
@@ -26,7 +26,7 @@ from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 from enum import Enum
 
-CLICKGRAPH_URL = os.environ.get("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.environ.get("CLICKGRAPH_URL", "http://localhost:7475")
 
 
 class QueryTestStatus(Enum):

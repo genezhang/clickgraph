@@ -123,7 +123,7 @@ Write-Host ""
 
 Test-Step "HTTP health check endpoint" {
     try {
-        $response = Invoke-WebRequest -Uri "http://localhost:8080/schemas" -UseBasicParsing -TimeoutSec 10
+        $response = Invoke-WebRequest -Uri "http://localhost:7475/schemas" -UseBasicParsing -TimeoutSec 10
         if ($response.StatusCode -ne 200) {
             throw "HTTP endpoint returned status $($response.StatusCode)"
         }
@@ -139,7 +139,7 @@ Test-Step "Query endpoint with simple Cypher" {
     } | ConvertTo-Json
     
     try {
-        $response = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/query" `
+        $response = Invoke-RestMethod -Method POST -Uri "http://localhost:7475/query" `
             -ContentType "application/json" `
             -Body $query `
             -TimeoutSec 10
@@ -163,7 +163,7 @@ Test-Step "Query endpoint with simple Cypher" {
 
 Test-Step "Load schema from API" {
     try {
-        $response = Invoke-RestMethod -Method GET -Uri "http://localhost:8080/schemas" `
+        $response = Invoke-RestMethod -Method GET -Uri "http://localhost:7475/schemas" `
             -TimeoutSec 10
         
         Write-Host "   Schemas available: $($response.schemas.Count)" -ForegroundColor Gray
@@ -182,7 +182,7 @@ Test-Step "SQL-only mode endpoint" {
     } | ConvertTo-Json
     
     try {
-        $response = Invoke-RestMethod -Method POST -Uri "http://localhost:8080/query/sql" `
+        $response = Invoke-RestMethod -Method POST -Uri "http://localhost:7475/query/sql" `
             -ContentType "application/json" `
             -Body $query `
             -TimeoutSec 10
@@ -205,14 +205,14 @@ Write-Host ""
 Write-Host "=== Phase 4: Port Availability ===" -ForegroundColor Magenta
 Write-Host ""
 
-Test-Step "HTTP port (8080) is accessible" {
+Test-Step "HTTP port (7475) is accessible" {
     $tcpClient = New-Object System.Net.Sockets.TcpClient
     try {
-        $tcpClient.Connect("localhost", 8080)
+        $tcpClient.Connect("localhost", 7475)
         if (-not $tcpClient.Connected) {
-            throw "Port 8080 not accepting connections"
+            throw "Port 7475 not accepting connections"
         }
-        Write-Host "   Port 8080: Open and accepting connections" -ForegroundColor Gray
+        Write-Host "   Port 7475: Open and accepting connections" -ForegroundColor Gray
     } finally {
         $tcpClient.Close()
     }

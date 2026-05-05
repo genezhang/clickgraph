@@ -9,7 +9,7 @@ import json
 import time
 import os
 
-BASE_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+BASE_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 
 def load_schema():
     """Load the social network demo schema"""

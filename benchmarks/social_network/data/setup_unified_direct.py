@@ -573,7 +573,7 @@ Connection:
     log("")
     log("Next Steps:")
     log("1. Load schema into ClickGraph:")
-    log("   curl -X POST http://localhost:8080/schemas/load \\")
+    log("   curl -X POST http://localhost:7475/schemas/load \\")
     log("        -H 'Content-Type: application/json' \\")
     log("        -d '{\"schema_file\": \"social_benchmark.yaml\"}'")
     log("")

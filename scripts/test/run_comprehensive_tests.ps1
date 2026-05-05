@@ -87,7 +87,7 @@ Start-Sleep -Seconds 15
 $serverReady = $false
 for ($i = 0; $i -lt 10; $i++) {
     try {
-        $health = Invoke-RestMethod -Uri "http://localhost:8080/health" -Method GET -TimeoutSec 2 -ErrorAction Stop
+        $health = Invoke-RestMethod -Uri "http://localhost:7475/health" -Method GET -TimeoutSec 2 -ErrorAction Stop
         if ($health.status -eq "healthy") {
             $serverReady = $true
             Write-Host "SUCCESS: Server ready (version $($health.version))" -ForegroundColor Green

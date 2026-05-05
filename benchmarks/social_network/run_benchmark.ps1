@@ -39,7 +39,7 @@ $env:RUST_LOG = "warn"
 Start-Process -FilePath ".\target\release\clickgraph.exe" -WindowStyle Hidden
 Start-Sleep -Seconds 3
 
-$health = Invoke-RestMethod -Uri "http://localhost:8080/health" -ErrorAction SilentlyContinue
+$health = Invoke-RestMethod -Uri "http://localhost:7475/health" -ErrorAction SilentlyContinue
 if ($health.status -ne "healthy") { Log "❌ Server failed to start"; exit 1 }
 Log "✅ Server running"
 

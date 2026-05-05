@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 from datetime import datetime
 
-BASE_URL = "http://localhost:8080/query"
+BASE_URL = "http://localhost:7475/query"
 QUERY_DIR = Path("/home/gz/clickgraph/benchmarks/ldbc_snb/queries/official")
 
 def iso_to_epoch(iso_date: str) -> int:

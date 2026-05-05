@@ -18,7 +18,7 @@ import os
 import sys
 import requests
 
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 
 # Use the zeek_merged_test schema (loaded by test_zeek_merged.py fixture)
 SCHEMA_NAME = "zeek_merged_test"

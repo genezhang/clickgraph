@@ -16,7 +16,7 @@ import pytest
 import requests
 import os
 
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 
 
 def execute_query(cypher_query, sql_only=False, schema_name="social_integration"):

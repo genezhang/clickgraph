@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from datetime import datetime
 
-BASE_URL = "http://localhost:8080/query"
+BASE_URL = "http://localhost:7475/query"
 QUERY_DIR = Path("/home/gz/clickgraph/benchmarks/ldbc_snb/queries/official/interactive")
 
 def load_query(filename: str) -> str:

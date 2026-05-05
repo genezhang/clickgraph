@@ -13,7 +13,7 @@ import pytest
 import requests
 import os
 
-BASE_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+BASE_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 
 
 def execute_query(cypher_query: str, sql_only: bool = False):

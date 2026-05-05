@@ -7,7 +7,7 @@ MATCH (c:Customer)-[:PURCHASED|PLACED_ORDER|ORDER_CONTAINS|REVIEWED]->(target) R
 
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 import json
 import sys
 
@@ -70,7 +70,7 @@ def test_multiple_relationships():
             return False
 
     except requests.exceptions.ConnectionError:
-        print("[FAIL] Connection Error: Is ClickGraph server running on localhost:8080?")
+        print("[FAIL] Connection Error: Is ClickGraph server running on localhost:7475?")
         return False
     except Exception as e:
         print(f"[FAIL] Unexpected Error: {e}")
@@ -127,7 +127,7 @@ def test_three_relationships():
             return False
 
     except requests.exceptions.ConnectionError:
-        print("[FAIL] Connection Error: Is ClickGraph server running on localhost:8080?")
+        print("[FAIL] Connection Error: Is ClickGraph server running on localhost:7475?")
         return False
     except Exception as e:
         print(f"[FAIL] Unexpected Error: {e}")

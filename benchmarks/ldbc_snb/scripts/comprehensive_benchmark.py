@@ -19,7 +19,7 @@ from typing import Dict, List, Tuple
 from datetime import datetime
 from pathlib import Path
 
-BASE_URL = "http://localhost:8080/query"
+BASE_URL = "http://localhost:7475/query"
 QUERY_DIR = Path("/home/gz/clickgraph/benchmarks/ldbc_snb/queries/official")
 
 # Convert ISO8601 dates to epoch milliseconds for ClickHouse

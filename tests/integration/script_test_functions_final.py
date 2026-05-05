@@ -4,7 +4,7 @@ Load schema and test Neo4j functions with actual graph data
 """
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 import json
 
 API_URL = f"{CLICKGRAPH_URL}"

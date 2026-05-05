@@ -13,7 +13,7 @@ def test_query(desc, query):
     print('='*80)
     
     cmd = [
-        'curl', '-s', '-X', 'POST', 'http://localhost:8080/query',
+        'curl', '-s', '-X', 'POST', 'http://localhost:7475/query',
         '-H', 'Content-Type: application/json',
         '-d', json.dumps({'query': query, 'sql_only': True})
     ]

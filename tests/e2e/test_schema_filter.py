@@ -11,7 +11,7 @@ import json
 import sys
 import os
 
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 ENDPOINT = f"{CLICKGRAPH_URL}/query"
 HEADERS = {"Content-Type": "application/json"}
 
@@ -108,7 +108,7 @@ def main():
     
     # Check server health
     try:
-        resp = requests.get("http://localhost:8080/health", timeout=2)
+        resp = requests.get("http://localhost:7475/health", timeout=2)
         if resp.status_code != 200:
             print("Server not responding correctly. Start with:")
             print("GRAPH_CONFIG_PATH=./tests/fixtures/schemas/filter_test.yaml cargo run")

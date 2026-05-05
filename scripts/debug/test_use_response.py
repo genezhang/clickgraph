@@ -1,6 +1,6 @@
 import requests
 
-r = requests.post('http://localhost:8080/query', json={
+r = requests.post('http://localhost:7475/query', json={
     'query': 'USE social_network MATCH (u:User) RETURN count(u) as user_count',
     'schema_name': 'ecommerce'
 })

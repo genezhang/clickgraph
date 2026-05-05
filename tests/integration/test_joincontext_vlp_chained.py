@@ -16,7 +16,7 @@ This is achieved via JoinContext tracking VLP endpoints and marking them
 so subsequent JOINs use CTE references.
 
 Test dependencies:
-- ClickGraph server running on localhost:8080
+- ClickGraph server running on localhost:7475
 - social_integration schema loaded
 - test_integration.users_test and test_integration.posts_test tables populated
 """
@@ -26,7 +26,7 @@ import pytest
 import requests
 
 # Test configuration
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080") + "/query"
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475") + "/query"
 TIMEOUT = 30
 
 def query_api(cypher: str, sql_only: bool = False) -> dict:

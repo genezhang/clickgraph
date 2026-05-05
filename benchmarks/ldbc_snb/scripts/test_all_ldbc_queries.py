@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Dict, Optional, Tuple
 
 # Configuration
-CLICKGRAPH_URL = "http://localhost:8080"
+CLICKGRAPH_URL = "http://localhost:7475"
 QUERY_BASE = Path("benchmarks/ldbc_snb/queries/official")
 SCHEMA_NAME = "ldbc_snb"
 

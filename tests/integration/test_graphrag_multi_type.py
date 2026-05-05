@@ -60,7 +60,7 @@ class TestMultiTypeRecursivePatterns:
         import requests
         
         response = requests.post(
-            "http://localhost:8080/query",
+            "http://localhost:7475/query",
             json={
                 "query": """
                     USE social_integration
@@ -490,7 +490,7 @@ class TestMultiTypePropertyExtraction:
         
         # Single-type VLP should use direct column access
         response = requests.post(
-            "http://localhost:8080/query",
+            "http://localhost:7475/query",
             json={
                 "query": """
                     USE social_integration
@@ -514,7 +514,7 @@ class TestMultiTypePropertyExtraction:
         
         # Multi-type VLP SHOULD use JSON_VALUE
         response_multi = requests.post(
-            "http://localhost:8080/query",
+            "http://localhost:7475/query",
             json={
                 "query": """
                     USE social_integration
@@ -542,7 +542,7 @@ class TestMultiTypePropertyExtraction:
         import requests
         
         response = requests.post(
-            "http://localhost:8080/query",
+            "http://localhost:7475/query",
             json={
                 "query": """
                     USE social_integration

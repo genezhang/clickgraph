@@ -96,7 +96,7 @@ while ($attempt -lt $maxAttempts -and -not $serverReady) {
     Start-Sleep -Seconds 1
     $attempt++
     try {
-        $response = Invoke-WebRequest -Uri "http://localhost:8080/health" -Method GET -TimeoutSec 2 -ErrorAction Stop
+        $response = Invoke-WebRequest -Uri "http://localhost:7475/health" -Method GET -TimeoutSec 2 -ErrorAction Stop
         if ($response.StatusCode -eq 200) {
             $serverReady = $true
             Write-Host "  ✅ Server is ready! (took $attempt seconds)" -ForegroundColor Green

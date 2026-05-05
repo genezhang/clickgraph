@@ -7,7 +7,7 @@ OPTIONAL MATCH queries.
 
 Requirements:
 - ClickHouse running on localhost:8123 with test_user/test_pass
-- ClickGraph server running on localhost:8080
+- ClickGraph server running on localhost:7475
 - Tables 'users' and 'friendships' already created in 'brahmand' database
 
 Note: This approach uses Cypher CREATE TABLE commands to register the schema,
@@ -17,7 +17,7 @@ which is the current supported method. YAML-only views are not yet fully support
 import requests
 import json
 
-SERVER_URL = "http://localhost:8080"
+SERVER_URL = "http://localhost:7475"
 
 def send_query(cypher_query):
     """Send a Cypher query to the ClickGraph server"""

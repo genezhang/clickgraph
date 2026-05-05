@@ -19,7 +19,7 @@ from typing import Dict, Any, Optional
 import requests
 
 # Configuration
-CLICKGRAPH_URL = "http://localhost:8080"
+CLICKGRAPH_URL = "http://localhost:7475"
 QUERY_ENDPOINT = f"{CLICKGRAPH_URL}/query"
 
 # Color codes for terminal output

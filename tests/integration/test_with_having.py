@@ -8,7 +8,7 @@ import os
 import requests
 import json
 
-SERVER_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+SERVER_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 
 def execute_test_query(description, query, expected_keywords=None):
     """Test a Cypher query and check for expected SQL keywords"""

@@ -14,7 +14,7 @@ Schema: social_integration (User, Post, FOLLOWS, AUTHORED, LIKED)
 import pytest
 import requests
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = "http://localhost:7475"
 SCHEMA_NAME = "social_integration"
 
 def query(cypher_query, schema_name=SCHEMA_NAME):

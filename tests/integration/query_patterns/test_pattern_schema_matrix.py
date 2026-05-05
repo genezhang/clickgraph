@@ -11,7 +11,7 @@ import requests
 import os
 
 
-CLICKGRAPH_URL = os.environ.get("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.environ.get("CLICKGRAPH_URL", "http://localhost:7475")
 
 
 def execute_query(query: str, schema_name: str = None) -> dict:

@@ -19,7 +19,7 @@ CLICKHOUSE_USER = "test_user"
 CLICKHOUSE_PASSWORD = "test_pass"
 CLICKHOUSE_DB = "brahmand"
 
-CLICKGRAPH_HTTP_URL = "http://localhost:8080"
+CLICKGRAPH_HTTP_URL = "http://localhost:7475"
 
 def print_section(title):
     print(f"\n{'='*60}")
@@ -395,7 +395,7 @@ def main():
     print("\n" + "="*60)
     print("  ClickGraph SET ROLE RBAC Test Suite")
     print("="*60)
-    print("\n⚠️  NOTE: This test requires ClickGraph server running on port 8080")
+    print("\n⚠️  NOTE: This test requires ClickGraph server running on port 7475")
     print("    Start with: cargo run --release --bin clickgraph")
     
     # Setup

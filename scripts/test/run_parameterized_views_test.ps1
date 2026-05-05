@@ -43,7 +43,7 @@ if (-not $SkipServerStart) {
     Write-Host "[4/5] Starting server..." -ForegroundColor Yellow
     
     & ".\scripts\server\start_server_background.ps1" `
-        -HttpPort 8080 `
+        -HttpPort 7475 `
         -ConfigPath "schemas/test/multi_tenant.yaml" `
         -Database "brahmand" `
         -ClickHouseUrl "http://localhost:8123" `
@@ -62,7 +62,7 @@ if (-not $SkipServerStart) {
         Start-Sleep -Seconds 1
         
         try {
-            $health = Invoke-WebRequest -Uri "http://localhost:8080/health" -TimeoutSec 2 -ErrorAction SilentlyContinue
+            $health = Invoke-WebRequest -Uri "http://localhost:7475/health" -TimeoutSec 2 -ErrorAction SilentlyContinue
             if ($health.StatusCode -eq 200) {
                 $ready = $true
             }

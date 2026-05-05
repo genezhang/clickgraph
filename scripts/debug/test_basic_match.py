@@ -4,7 +4,7 @@
 import requests
 import json
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = "http://localhost:7475"
 
 def query(cypher):
     """Execute a Cypher query and return the result."""

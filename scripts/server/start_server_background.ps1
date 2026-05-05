@@ -10,7 +10,7 @@
 #   .\start_server_background.ps1 -HttpHost "127.0.0.1" -BoltHost "127.0.0.1"  # Secure binding
 
 param(
-    [int]$HttpPort = 8080,
+    [int]$HttpPort = 7475,
     [int]$BoltPort = 7687,
     [string]$ConfigPath = "social_network.yaml",
     [string]$Database = "social",

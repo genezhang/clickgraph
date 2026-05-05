@@ -28,7 +28,7 @@ $job = Start-Job -ScriptBlock {
     $env:RUST_LOG = "info"
     
     # Run the server (this will keep running in the background job)
-    .\target\release\clickgraph.exe --http-port 8080 --bolt-port 7687
+    .\target\release\clickgraph.exe --http-port 7475 --bolt-port 7687
 } -ArgumentList $PWD, "http://localhost:8123", "default", "", "brahmand", ".\benchmarks\schemas\social_benchmark.yaml"
 
 # Wait for server to start
@@ -40,7 +40,7 @@ $jobState = (Get-Job -Id $job.Id).State
 if ($jobState -eq "Running") {
     Write-Host "Server started successfully!" -ForegroundColor Green
     Write-Host "  Job ID: $($job.Id)" -ForegroundColor Cyan
-    Write-Host "  HTTP API: http://localhost:8080" -ForegroundColor Cyan
+    Write-Host "  HTTP API: http://localhost:7475" -ForegroundColor Cyan
     Write-Host "  Bolt Protocol: bolt://localhost:7687" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "To view server output:" -ForegroundColor Yellow

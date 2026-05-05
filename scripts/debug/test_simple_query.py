@@ -13,7 +13,7 @@ print("Testing simple MATCH query...")
 print(f"Query: {query}")
 
 response = requests.post(
-    "http://localhost:8080/query",
+    "http://localhost:7475/query",
     json={"query": query},
     headers={"Content-Type": "application/json"}
 )

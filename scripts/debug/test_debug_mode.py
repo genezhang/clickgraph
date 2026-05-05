@@ -13,7 +13,7 @@ payload = {
     "debug": True
 }
 
-response = requests.post("http://localhost:8080/query", json=payload)
+response = requests.post("http://localhost:7475/query", json=payload)
 print(f"Status: {response.status_code}\n")
 
 result = response.json()

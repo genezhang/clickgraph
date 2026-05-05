@@ -36,7 +36,7 @@ import os
 # Configuration
 # ---------------------------------------------------------------------------
 
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 SCHEMA_YAML_PATH = os.path.join(
     os.path.dirname(__file__), "..", "..", "schemas", "test", "schema_variations.yaml"
 )

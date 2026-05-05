@@ -8,7 +8,7 @@ OpenCypher spec requirement:
 import requests
 import json
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = "http://localhost:7475"
 
 def test_undirected_single_hop():
     """Test undirected single-hop pattern."""

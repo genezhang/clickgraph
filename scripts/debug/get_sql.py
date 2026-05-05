@@ -11,7 +11,7 @@ query = sys.argv[1]
 
 # POST to /query with sql_only flag
 response = requests.post(
-    'http://localhost:8080/query',
+    'http://localhost:7475/query',
     json={"query": query},
     headers={'X-SQL-Only': 'true'}  # Try custom header
 )

@@ -17,7 +17,7 @@ payload = {
 
 # Send POST request
 response = requests.post(
-    'http://localhost:8080/schemas/load',
+    'http://localhost:7475/schemas/load',
     json=payload
 )
 

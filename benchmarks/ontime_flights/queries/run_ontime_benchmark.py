@@ -21,7 +21,7 @@ CLICKHOUSE_USER = "test_user"
 CLICKHOUSE_PASSWORD = "test_pass"
 
 # ClickGraph connection (for SQL generation verification)
-CLICKGRAPH_URL = "http://localhost:8080"
+CLICKGRAPH_URL = "http://localhost:7475"
 
 ITERATIONS = 5
 YEARS = [2021, 2022, 2023]

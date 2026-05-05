@@ -9,7 +9,7 @@ need edge context to resolve properties correctly.
 import pytest
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 import json
 
 BASE_URL = f"{CLICKGRAPH_URL}"

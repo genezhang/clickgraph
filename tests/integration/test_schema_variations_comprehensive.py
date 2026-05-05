@@ -31,7 +31,7 @@ import json
 
 
 # Server endpoint
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 
 
 def query_clickgraph(cypher_query, schema_name="social_integration", variables=None):

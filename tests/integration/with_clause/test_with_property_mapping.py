@@ -9,7 +9,7 @@ based on the schema configuration.
 import pytest
 import requests
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = "http://localhost:7475"
 
 
 def check_query(query: str, expected_patterns: list, forbidden_patterns: list = None) -> tuple[bool, str]:

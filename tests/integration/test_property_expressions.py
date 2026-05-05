@@ -15,7 +15,7 @@ import pytest
 import requests
 import os
 
-BASE_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+BASE_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 
 # Schema for property expression tests
 PROPERTY_EXPR_SCHEMA = "property_expressions"

@@ -11,7 +11,7 @@ import pytest
 import requests
 import os
 
-BASE_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+BASE_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 
 
 class TestPropertyFilteringNodes:

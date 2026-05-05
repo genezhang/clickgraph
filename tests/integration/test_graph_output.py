@@ -11,7 +11,7 @@ import pytest
 import requests
 import os
 
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 
 
 def query_graph(cypher: str, schema: str = "social_integration", **extra_fields):

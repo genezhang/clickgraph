@@ -8,7 +8,7 @@ cartesian products using multiple ARRAY JOIN clauses in ClickHouse.
 import pytest
 import requests
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = "http://localhost:7475"
 
 
 def execute_query(query: str, sql_only: bool = False):

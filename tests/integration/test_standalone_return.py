@@ -4,7 +4,7 @@ Quick test for standalone RETURN queries (no MATCH clause)
 import requests
 import json
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = "http://localhost:7475"
 
 def execute_query(query, parameters=None, description=""):
     """Execute a query and print results"""

@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 
 # Configuration
-CLICKGRAPH_URL = "http://localhost:8080"
+CLICKGRAPH_URL = "http://localhost:7475"
 SCHEMA_NAME = "ldbc_snb"
 BASE_DIR = Path(__file__).parent.parent
 QUERIES_DIR = BASE_DIR / "queries" / "official"

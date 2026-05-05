@@ -63,7 +63,7 @@ class CypherTranslationBenchmark:
         try:
             result = subprocess.run([
                 "curl", "-s", "-X", "POST",
-                "http://localhost:8080/query",
+                "http://localhost:7475/query",
                 "-H", "Content-Type: application/json",
                 "-d", json.dumps({"query": query, "sql_only": True})
             ], capture_output=True, text=True, timeout=30)

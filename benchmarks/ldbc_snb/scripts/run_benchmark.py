@@ -21,7 +21,7 @@ except ImportError:
     sys.exit(1)
 
 # Default ClickGraph endpoint
-CLICKGRAPH_URL = os.environ.get("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.environ.get("CLICKGRAPH_URL", "http://localhost:7475")
 
 # Sample parameters for testing
 SAMPLE_PARAMS = {

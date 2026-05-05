@@ -5,7 +5,7 @@ import pytest
 import requests
 import json
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = "http://localhost:7475"
 
 def test_union_all_simple():
     """Test simple UNION ALL with two queries"""

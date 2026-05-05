@@ -5,7 +5,7 @@ Test script to reproduce the property mapping issue in multi-variable queries.
 
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 import json
 
 def test_property_mapping():

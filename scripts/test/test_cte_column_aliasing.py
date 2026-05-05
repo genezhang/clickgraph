@@ -7,7 +7,7 @@ import requests
 import json
 import sys
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = "http://localhost:7475"
 
 def test_cte_column_aliasing():
     """Test CTE column aliasing with WITH node + aggregation"""

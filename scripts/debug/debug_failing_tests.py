@@ -5,7 +5,7 @@ import requests
 import json
 import sys
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = "http://localhost:7475"
 
 def load_schema():
     """Load the test schema"""

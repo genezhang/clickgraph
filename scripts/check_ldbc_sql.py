@@ -6,7 +6,7 @@ import requests
 import json
 from pathlib import Path
 
-BASE_URL = "http://localhost:8080/query"
+BASE_URL = "http://localhost:7475/query"
 QUERY_DIR = Path("/home/gz/clickgraph/benchmarks/ldbc_snb/queries/official")
 
 # Queries that were previously failing

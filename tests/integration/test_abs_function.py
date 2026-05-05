@@ -4,7 +4,7 @@ Test abs() function in WHERE clause
 import requests
 import json
 
-BASE_URL = "http://localhost:8080"
+BASE_URL = "http://localhost:7475"
 
 # First, load the schema
 schema_yaml = """

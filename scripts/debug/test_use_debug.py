@@ -5,7 +5,7 @@ query = {
     "schema_name": "ecommerce"
 }
 
-response = requests.post("http://localhost:8080/query", json=query)
+response = requests.post("http://localhost:7475/query", json=query)
 print(f"Status: {response.status_code}")
 print(f"Headers: {response.headers}")
 print(f"Text: '{response.text}'")

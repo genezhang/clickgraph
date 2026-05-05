@@ -10,7 +10,7 @@ param(
 )
 
 $ServerJobName = "ClickGraph_Regression_Server"
-$ServerPort = 8080
+$ServerPort = 7475
 
 function Start-RegressionServer {
     Write-Host "🚀 Starting ClickGraph regression test server..." -ForegroundColor Cyan
@@ -32,7 +32,7 @@ function Start-RegressionServer {
     $env:CLICKHOUSE_DATABASE = "brahmand"
     $env:GRAPH_CONFIG_PATH = ".\benchmarks\schemas\social_benchmark.yaml"
     $env:RUST_LOG = "info"
-    $env:HTTP_PORT = "8080"
+    $env:HTTP_PORT = "7475"
     $env:BOLT_PORT = "7687"
     
     Write-Host "📝 Environment configuration:" -ForegroundColor Gray

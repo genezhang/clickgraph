@@ -20,7 +20,7 @@ import os
 import pytest
 import requests
 import os
-CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:8080")
+CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 import yaml
 
 BASE_URL = f"{CLICKGRAPH_URL}"
