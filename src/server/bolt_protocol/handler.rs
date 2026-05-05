@@ -62,6 +62,38 @@ fn bolt_value_to_string(value: &BoltValue) -> String {
     }
 }
 
+/// Detect Browser 5.x's bundled count query:
+///   `MATCH (n) RETURN count(n) AS result UNION ALL MATCH ()-[r]->() RETURN count(r) AS result`
+///
+/// Older Browser versions issue these as two separate queries which flow through
+/// the normal pipeline correctly. The bundled UNION ALL form crashes our SQL
+/// generator, so it gets intercepted in `handle_run`. Tolerant of whitespace and
+/// trailing semicolons; case-insensitive.
+fn is_browser_count_union(query_upper: &str) -> bool {
+    let normalized: String = query_upper.split_whitespace().collect::<Vec<_>>().join(" ");
+    normalized.contains("MATCH (N) RETURN COUNT(N)")
+        && normalized.contains("UNION ALL")
+        && normalized.contains("MATCH ()-[R]->()")
+        && normalized.contains("COUNT(R)")
+}
+
+/// Detect Browser 5.x's bundled metadata query:
+///   `CALL db.labels() YIELD label RETURN COLLECT(label)[..$itemLimit] AS result`
+///   `UNION ALL CALL db.relationshipTypes() YIELD ... RETURN COLLECT(...)[..$itemLimit] ...`
+///   `UNION ALL CALL db.propertyKeys() YIELD ... RETURN COLLECT(...)[..$itemLimit] ...`
+///
+/// The slice expression in RETURN is unsupported by our procedure RETURN evaluator.
+/// Older Browser versions issued each `CALL db.<x>()` separately — those still
+/// flow through the normal procedure executor unchanged.
+fn is_browser_labels_bundle(query_upper: &str) -> bool {
+    let has_all_three = query_upper.contains("DB.LABELS")
+        && query_upper.contains("DB.RELATIONSHIPTYPES")
+        && query_upper.contains("DB.PROPERTYKEYS");
+    let has_collect_slice = query_upper.contains("COLLECT(") && query_upper.contains("[..");
+    let union_count = query_upper.matches("UNION ALL").count();
+    has_all_three && has_collect_slice && union_count >= 2
+}
+
 /// Pattern detection: `id(alias) IN $paramName` or `id(alias) = $paramName`
 /// Substitute Cypher parameters into query string, keeping encoded IDs intact
 /// This replaces $paramName with actual values so parser sees literals
@@ -1041,6 +1073,171 @@ impl BoltHandler {
             );
             result_metadata.insert("result_consumed_after".to_string(), serde_json::json!(-1));
 
+            return Ok(vec![BoltMessage::success(result_metadata)]);
+        }
+
+        // Intercept Browser 5.x's bundled count query. Older Browsers issued two
+        // separate queries that already work — those still flow through normally;
+        // only the UNION ALL form is short-circuited because our SQL generator
+        // can't handle UNION ALL of two count(*) projections over disjoint sets.
+        if is_browser_count_union(&query_upper) {
+            log::info!("Detected Browser count(n) UNION ALL count(r) query — short-circuiting");
+
+            let effective_schema = schema_name.as_deref().unwrap_or("default").to_string();
+            let schema_guard = crate::server::GLOBAL_SCHEMAS
+                .get()
+                .ok_or_else(|| BoltError::internal("Schema registry not initialized"))?;
+            let schemas = schema_guard.read().await;
+            let schema = schemas
+                .get(&effective_schema)
+                .ok_or_else(|| BoltError::internal("Schema not found"))?;
+
+            // Distinct underlying tables — polymorphic schemas can map several labels
+            // (or rel composite keys) onto a single physical table; counting that
+            // table once is correct.
+            let node_tables: std::collections::BTreeSet<String> = schema
+                .all_node_schemas()
+                .values()
+                .map(|n| n.full_table_name())
+                .collect();
+            let rel_tables: std::collections::BTreeSet<String> = schema
+                .get_relationships_schemas()
+                .values()
+                .map(|r| r.full_table_name())
+                .collect();
+            drop(schemas);
+
+            let count_branch = |tables: &std::collections::BTreeSet<String>| -> String {
+                if tables.is_empty() {
+                    "SELECT toUInt64(0) AS result".to_string()
+                } else {
+                    let inner: Vec<String> = tables
+                        .iter()
+                        .map(|t| format!("SELECT count(*) AS c FROM {}", t))
+                        .collect();
+                    format!(
+                        "SELECT sum(c) AS result FROM ({})",
+                        inner.join(" UNION ALL ")
+                    )
+                }
+            };
+            let combined_sql = format!(
+                "{} UNION ALL {}",
+                count_branch(&node_tables),
+                count_branch(&rel_tables),
+            );
+            log::debug!("Browser count UNION SQL: {}", combined_sql);
+
+            match self
+                .executor
+                .execute_json(&combined_sql, role.as_deref())
+                .await
+            {
+                Ok(rows) => {
+                    let bolt_rows: Vec<Vec<BoltValue>> = rows
+                        .into_iter()
+                        .map(|row| {
+                            let val = row
+                                .get("result")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Number(0.into()));
+                            vec![BoltValue::Json(val)]
+                        })
+                        .collect();
+
+                    {
+                        let mut context = lock_context!(self.context);
+                        context.set_state(ConnectionState::Streaming);
+                    }
+                    self.cached_results = Some(bolt_rows);
+
+                    let mut result_metadata = HashMap::new();
+                    result_metadata.insert("fields".to_string(), serde_json::json!(["result"]));
+                    result_metadata
+                        .insert("result_consumed_after".to_string(), serde_json::json!(-1));
+                    return Ok(vec![BoltMessage::success(result_metadata)]);
+                }
+                Err(e) => {
+                    log::error!("Browser count UNION execution failed: {}", e);
+                    return Ok(vec![BoltMessage::failure(
+                        "Neo.ClientError.Statement.ExecutionFailed".to_string(),
+                        format!("count(n)/count(r) execution failed: {}", e),
+                    )]);
+                }
+            }
+        }
+
+        // Intercept Browser 5.x's bundled metadata query
+        // (db.labels + db.relationshipTypes + db.propertyKeys, each wrapped in a
+        // COLLECT(...)[..$itemLimit] slice). The slice in RETURN isn't supported
+        // by our procedure RETURN evaluator. Old Browsers' separate CALLs flow
+        // through the normal procedure executor unchanged.
+        if is_browser_labels_bundle(&query_upper) {
+            log::info!("Detected Browser labels/types/propertyKeys bundle — short-circuiting");
+
+            let effective_schema = schema_name.as_deref().unwrap_or("default").to_string();
+            let schema_guard = crate::server::GLOBAL_SCHEMAS
+                .get()
+                .ok_or_else(|| BoltError::internal("Schema registry not initialized"))?;
+            let schemas = schema_guard.read().await;
+            let schema = schemas
+                .get(&effective_schema)
+                .ok_or_else(|| BoltError::internal("Schema not found"))?;
+
+            let collect_column = |records: Vec<HashMap<String, serde_json::Value>>,
+                                  key: &str|
+             -> Vec<serde_json::Value> {
+                records
+                    .into_iter()
+                    .filter_map(|r| r.get(key).cloned())
+                    .collect()
+            };
+
+            let labels = collect_column(
+                crate::procedures::db_labels::execute(schema).map_err(BoltError::query_error)?,
+                "label",
+            );
+            let rel_types = collect_column(
+                crate::procedures::db_relationship_types::execute(schema)
+                    .map_err(BoltError::query_error)?,
+                "relationshipType",
+            );
+            let prop_keys = collect_column(
+                crate::procedures::db_property_keys::execute(schema)
+                    .map_err(BoltError::query_error)?,
+                "propertyKey",
+            );
+            drop(schemas);
+
+            // `$itemLimit` was substituted into the query text by
+            // `substitute_cypher_parameters`, but the parameters map is still
+            // intact — read it directly. Default to no slice if absent.
+            let limit = parameters
+                .get("itemLimit")
+                .and_then(|v| v.as_i64())
+                .filter(|n| *n >= 0)
+                .map(|n| n as usize)
+                .unwrap_or(usize::MAX);
+            let take = |mut v: Vec<serde_json::Value>| -> serde_json::Value {
+                v.truncate(limit);
+                serde_json::Value::Array(v)
+            };
+
+            let bolt_rows: Vec<Vec<BoltValue>> = vec![
+                vec![BoltValue::Json(take(labels))],
+                vec![BoltValue::Json(take(rel_types))],
+                vec![BoltValue::Json(take(prop_keys))],
+            ];
+
+            {
+                let mut context = lock_context!(self.context);
+                context.set_state(ConnectionState::Streaming);
+            }
+            self.cached_results = Some(bolt_rows);
+
+            let mut result_metadata = HashMap::new();
+            result_metadata.insert("fields".to_string(), serde_json::json!(["result"]));
+            result_metadata.insert("result_consumed_after".to_string(), serde_json::json!(-1));
             return Ok(vec![BoltMessage::success(result_metadata)]);
         }
 
@@ -2489,6 +2686,48 @@ mod tests {
         ) -> Result<String, ExecutorError> {
             Ok(String::new())
         }
+    }
+
+    #[test]
+    fn browser_count_union_pattern_matcher() {
+        // Browser 5.x bundled form — should match
+        let new = "MATCH (n) RETURN count(n) AS result UNION ALL MATCH ()-[r]->() RETURN count(r) AS result".to_uppercase();
+        assert!(is_browser_count_union(&new));
+
+        // Same with extra whitespace and trailing semicolon — should still match
+        let messy = "  MATCH (n)\n  RETURN count(n) AS result\nUNION ALL\nMATCH ()-[r]->() RETURN count(r) AS result;".to_uppercase();
+        assert!(is_browser_count_union(&messy));
+
+        // Old-Browser separate query — must NOT match (flows through normal path)
+        let old_node = "MATCH (n) RETURN count(n) AS result".to_uppercase();
+        assert!(!is_browser_count_union(&old_node));
+        let old_rel = "MATCH ()-[r]->() RETURN count(r) AS result".to_uppercase();
+        assert!(!is_browser_count_union(&old_rel));
+
+        // Unrelated user query — must NOT match
+        let user = "MATCH (p:Person) RETURN p.name".to_uppercase();
+        assert!(!is_browser_count_union(&user));
+    }
+
+    #[test]
+    fn browser_labels_bundle_pattern_matcher() {
+        // Browser 5.x bundled form (post parameter substitution) — should match
+        let bundled = "CALL db.labels() YIELD label RETURN COLLECT(label)[..1000] AS result \
+            UNION ALL CALL db.relationshipTypes() YIELD relationshipType RETURN COLLECT(relationshipType)[..1000] AS result \
+            UNION ALL CALL db.propertyKeys() YIELD propertyKey RETURN COLLECT(propertyKey)[..1000] AS result".to_uppercase();
+        assert!(is_browser_labels_bundle(&bundled));
+
+        // Old-Browser separate calls — must NOT match
+        let old = "CALL db.labels()".to_uppercase();
+        assert!(!is_browser_labels_bundle(&old));
+
+        // Two of the three procedures — must NOT match (incomplete bundle)
+        let two = "CALL db.labels() UNION ALL CALL db.relationshipTypes()".to_uppercase();
+        assert!(!is_browser_labels_bundle(&two));
+
+        // All three but no slice — must NOT match (different shape, falls through)
+        let no_slice = "CALL db.labels() UNION ALL CALL db.relationshipTypes() UNION ALL CALL db.propertyKeys()".to_uppercase();
+        assert!(!is_browser_labels_bundle(&no_slice));
     }
 
     fn create_test_handler() -> BoltHandler {
