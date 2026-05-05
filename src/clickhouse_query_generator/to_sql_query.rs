@@ -2239,10 +2239,13 @@ fn collect_nested_aggregate_args(expr: &RenderExpr, agg_arg_cols: &mut Vec<Strin
 /// Path-materialization metadata column aliases.
 ///
 /// These are constants emitted by VLP UNION branches so the Bolt result
-/// transformer can reconstruct a Path. They have no role in aggregation —
-/// when an outer SELECT applies `COUNT(*)`/`COUNT(p)` over a UNION of VLP
-/// branches, projecting these constants alongside the aggregate violates
-/// ClickHouse's "non-aggregate column not in GROUP BY" rule (Code 215).
+/// transformer can reconstruct a Path. When a user query mixes path
+/// projection with aggregation (`RETURN p, COUNT(*)`), these belong in
+/// GROUP BY and the SELECT — Cypher's implicit grouping carries them.
+/// But for `RETURN COUNT(*)` / `RETURN COUNT(p)` (no path projected,
+/// no GROUP BY), they leak into the outer SELECT alongside the aggregate
+/// without grouping, violating ClickHouse's "non-aggregate column not in
+/// GROUP BY" rule (Code 215).
 fn is_path_metadata_alias(alias: &str) -> bool {
     matches!(
         alias,
@@ -2261,7 +2264,17 @@ fn is_path_metadata_alias(alias: &str) -> bool {
 /// Returns (inner_select_sql, agg_arg_columns) where agg_arg_columns lists
 /// the SQL text of property-access expressions extracted from aggregate arguments.
 /// The outer SELECT should backtick-escape these references in its aggregates.
-fn build_union_inner_select(select: &SelectItems) -> (String, Vec<String>) {
+///
+/// When `drop_path_metadata` is true, path-materialization metadata aliases
+/// (constants emitted by VLP branches for Bolt path reconstruction) are
+/// excluded from the inner SELECT. This is set when the outer aggregate has
+/// no GROUP BY — in that case the metadata columns would trip Code 215.
+/// For `RETURN p, COUNT(*)` (implicit grouping by `p`), GROUP BY is non-empty
+/// and the metadata columns must survive so the path can be rebuilt.
+fn build_union_inner_select(
+    select: &SelectItems,
+    drop_path_metadata: bool,
+) -> (String, Vec<String>) {
     let non_agg_items: Vec<&SelectItem> = select
         .items
         .iter()
@@ -2274,10 +2287,7 @@ fn build_union_inner_select(select: &SelectItems) -> (String, Vec<String>) {
                 if alias.0.starts_with("__order_col") {
                     return false;
                 }
-                // Skip path-materialization metadata: projecting these
-                // alongside the outer aggregate trips ClickHouse's
-                // NOT_AN_AGGREGATE check (Code 215).
-                if is_path_metadata_alias(&alias.0) {
+                if drop_path_metadata && is_path_metadata_alias(&alias.0) {
                     return false;
                 }
             }
@@ -2422,7 +2432,15 @@ fn collect_property_access_sql(expr: &RenderExpr, out: &mut Vec<String>) {
 /// Non-aggregate items reference their inner-branch alias via backticks.
 /// Aggregate items rewrite property-access arguments to backtick-escaped
 /// column aliases so they reference the inner projection.
-fn build_outer_aggregate_select(select: &SelectItems, agg_arg_cols: &[String]) -> String {
+///
+/// `drop_path_metadata` mirrors [`build_union_inner_select`] — set when the
+/// outer aggregate has no GROUP BY, so VLP path-materialization constants
+/// don't leak into the outer projection and trigger Code 215.
+fn build_outer_aggregate_select(
+    select: &SelectItems,
+    agg_arg_cols: &[String],
+    drop_path_metadata: bool,
+) -> String {
     // Build expression→alias map for non-aggregate SELECT items.
     // This maps raw expression SQL (e.g., "n.answers") to the output alias
     // (e.g., "n.resolved_ip") so aggregate expressions can reference the correct
@@ -2446,9 +2464,7 @@ fn build_outer_aggregate_select(select: &SelectItems, agg_arg_cols: &[String]) -
                 if alias.0.starts_with("__order_col") {
                     return false;
                 }
-                // Path-materialization metadata never grouped/aggregated
-                // (see is_path_metadata_alias for rationale)
-                if is_path_metadata_alias(&alias.0) {
+                if drop_path_metadata && is_path_metadata_alias(&alias.0) {
                     return false;
                 }
             }
@@ -3136,9 +3152,16 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
             .iter()
             .any(|item| render_expr_contains_aggregate(&item.expression));
 
+        // Aggregate without GROUP BY = no implicit grouping by path → VLP
+        // path-materialization metadata constants must not appear in the
+        // inner/outer SELECT (would trip ClickHouse Code 215). With GROUP BY,
+        // the user is grouping (e.g. `RETURN p, COUNT(*)`) and metadata
+        // columns must survive so Bolt can reconstruct the path.
+        let drop_path_metadata = has_aggregation && plan.group_by.0.is_empty();
+
         // Pre-compute inner SELECT and aggregate arg columns for aggregation+UNION case
         let (inner_select_sql, agg_arg_cols) = if has_aggregation {
-            let (sql, cols) = build_union_inner_select(&plan.select);
+            let (sql, cols) = build_union_inner_select(&plan.select, drop_path_metadata);
             (Some(sql), cols)
         } else {
             (None, vec![])
@@ -3177,7 +3200,11 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                         .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
                         .collect();
 
-                    sql.push_str(&build_outer_aggregate_select(&plan.select, &agg_arg_cols));
+                    sql.push_str(&build_outer_aggregate_select(
+                        &plan.select,
+                        &agg_arg_cols,
+                        drop_path_metadata,
+                    ));
                 } else {
                     // Without aggregation: select column aliases from the subquery.
                     // Exclude ORDER BY helper columns (__order_col_N) from the outer
@@ -3345,7 +3372,8 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                                     merged_select.items.push(outer_item.clone());
                                 }
                             }
-                            let (branch_inner, _) = build_union_inner_select(&merged_select);
+                            let (branch_inner, _) =
+                                build_union_inner_select(&merged_select, drop_path_metadata);
                             branch_sql.push_str(&branch_inner);
                         } else if needs_swap {
                             // Swap t.start_id ↔ t.end_id and start_* ↔ end_* in SELECT
@@ -3883,10 +3911,14 @@ impl ToSql for Cte {
                         if has_aggregation && has_custom_select && plan.from.0.is_some() {
                             // Aggregate + UNION: inner branches project raw columns,
                             // outer SELECT applies aggregation over the __union subquery
+                            let drop_path_metadata = !has_group_by;
                             let (inner_select_sql, agg_arg_cols) =
-                                build_union_inner_select(&plan.select);
-                            let outer_select =
-                                build_outer_aggregate_select(&plan.select, &agg_arg_cols);
+                                build_union_inner_select(&plan.select, drop_path_metadata);
+                            let outer_select = build_outer_aggregate_select(
+                                &plan.select,
+                                &agg_arg_cols,
+                                drop_path_metadata,
+                            );
 
                             cte_body.push_str(&format!("SELECT {} FROM (\n", outer_select));
 
