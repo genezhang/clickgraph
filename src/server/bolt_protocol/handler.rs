@@ -943,73 +943,70 @@ impl BoltHandler {
             // Use shared SHOW DATABASES implementation
             let databases_result = crate::procedures::show_databases::execute_show_databases();
 
-            let databases: Vec<Vec<BoltValue>> =
-                match databases_result {
-                    Ok(db_list) => db_list
-                        .into_iter()
-                        .map(|db| {
-                            vec![
-                                BoltValue::Json(db.get("name").cloned().unwrap_or_else(|| {
-                                    serde_json::Value::String("default".to_string())
-                                })),
-                                BoltValue::Json(db.get("type").cloned().unwrap_or_else(|| {
-                                    serde_json::Value::String("system".to_string())
-                                })),
-                                BoltValue::Json(db.get("access").cloned().unwrap_or_else(|| {
-                                    serde_json::Value::String("read".to_string())
-                                })),
-                                BoltValue::Json(db.get("role").cloned().unwrap_or_else(|| {
-                                    serde_json::Value::String("admin".to_string())
-                                })),
-                                BoltValue::Json(
-                                    db.get("writer")
-                                        .cloned()
-                                        .unwrap_or_else(|| serde_json::Value::Bool(true)),
-                                ),
-                                BoltValue::Json(
-                                    db.get("default")
-                                        .cloned()
-                                        .unwrap_or_else(|| serde_json::Value::Bool(false)),
-                                ),
-                                BoltValue::Json(
-                                    db.get("home")
-                                        .cloned()
-                                        .unwrap_or_else(|| serde_json::Value::Bool(false)),
-                                ),
-                                BoltValue::Json(
-                                    db.get("aliases")
-                                        .cloned()
-                                        .unwrap_or_else(|| serde_json::Value::Array(vec![])),
-                                ),
-                                BoltValue::Json(
-                                    db.get("constituents")
-                                        .cloned()
-                                        .unwrap_or_else(|| serde_json::Value::Array(vec![])),
-                                ),
-                                BoltValue::Json(serde_json::Value::String(
-                                    "00000000-0000-0000-0000-000000000000".to_string(),
-                                )),
-                            ]
-                        })
-                        .collect(),
-                    Err(e) => {
-                        log::error!("Failed to execute SHOW DATABASES: {}", e);
-                        vec![vec![
-                            BoltValue::Json(serde_json::Value::String("default".to_string())),
-                            BoltValue::Json(serde_json::Value::String("system".to_string())),
-                            BoltValue::Json(serde_json::Value::String("read".to_string())),
-                            BoltValue::Json(serde_json::Value::String("admin".to_string())),
-                            BoltValue::Json(serde_json::json!(true)),
-                            BoltValue::Json(serde_json::json!(true)),
-                            BoltValue::Json(serde_json::json!(true)),
-                            BoltValue::Json(serde_json::json!([])),
-                            BoltValue::Json(serde_json::json!([])),
-                            BoltValue::Json(serde_json::Value::String(
-                                "00000000-0000-0000-0000-000000000000".to_string(),
-                            )),
-                        ]]
-                    }
-                };
+            // Field order must match the `fields` metadata sent in the SUCCESS reply
+            // below. Neo4j Browser validates each row against a schema keyed off
+            // those field names, so missing or out-of-order entries surface as
+            // "Invalid database record received from the server".
+            let databases: Vec<Vec<BoltValue>> = match databases_result {
+                Ok(db_list) => db_list
+                    .into_iter()
+                    .map(|db| {
+                        let get_str =
+                            |key: &str, default: &str| {
+                                BoltValue::Json(db.get(key).cloned().unwrap_or_else(|| {
+                                    serde_json::Value::String(default.to_string())
+                                }))
+                            };
+                        let get_bool = |key: &str, default: bool| {
+                            BoltValue::Json(
+                                db.get(key)
+                                    .cloned()
+                                    .unwrap_or(serde_json::Value::Bool(default)),
+                            )
+                        };
+                        let get_arr = |key: &str| {
+                            BoltValue::Json(
+                                db.get(key)
+                                    .cloned()
+                                    .unwrap_or_else(|| serde_json::Value::Array(vec![])),
+                            )
+                        };
+                        vec![
+                            get_str("name", "default"),
+                            get_str("type", "standard"),
+                            get_arr("aliases"),
+                            get_str("access", "read-write"),
+                            get_str("address", "localhost:7687"),
+                            get_str("role", "primary"),
+                            get_bool("writer", true),
+                            get_str("requestedStatus", "online"),
+                            get_str("currentStatus", "online"),
+                            get_str("statusMessage", ""),
+                            get_bool("default", false),
+                            get_bool("home", false),
+                            get_arr("constituents"),
+                        ]
+                    })
+                    .collect(),
+                Err(e) => {
+                    log::error!("Failed to execute SHOW DATABASES: {}", e);
+                    vec![vec![
+                        BoltValue::Json(serde_json::Value::String("default".to_string())),
+                        BoltValue::Json(serde_json::Value::String("standard".to_string())),
+                        BoltValue::Json(serde_json::json!([])),
+                        BoltValue::Json(serde_json::Value::String("read-write".to_string())),
+                        BoltValue::Json(serde_json::Value::String("localhost:7687".to_string())),
+                        BoltValue::Json(serde_json::Value::String("primary".to_string())),
+                        BoltValue::Json(serde_json::json!(true)),
+                        BoltValue::Json(serde_json::Value::String("online".to_string())),
+                        BoltValue::Json(serde_json::Value::String("online".to_string())),
+                        BoltValue::Json(serde_json::Value::String("".to_string())),
+                        BoltValue::Json(serde_json::json!(true)),
+                        BoltValue::Json(serde_json::json!(true)),
+                        BoltValue::Json(serde_json::json!([])),
+                    ]]
+                }
+            };
 
             log::info!("📊 Returning {} databases via Bolt", databases.len());
 
@@ -1029,14 +1026,17 @@ impl BoltHandler {
                 serde_json::json!([
                     "name",
                     "type",
+                    "aliases",
                     "access",
+                    "address",
                     "role",
                     "writer",
+                    "requestedStatus",
+                    "currentStatus",
+                    "statusMessage",
                     "default",
                     "home",
-                    "aliases",
-                    "constituents",
-                    "storeUuid"
+                    "constituents"
                 ]),
             );
             result_metadata.insert("result_consumed_after".to_string(), serde_json::json!(-1));
