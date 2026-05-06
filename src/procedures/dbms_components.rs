@@ -22,11 +22,26 @@ use std::collections::HashMap;
 pub fn execute(
     _schema: &crate::graph_catalog::graph_schema::GraphSchema,
 ) -> Result<Vec<HashMap<String, serde_json::Value>>, String> {
-    let version = env!("CARGO_PKG_VERSION");
+    // When CLICKGRAPH_NEO4J_COMPAT_MODE=true (set for Neo4j Browser / Neo4j
+    // driver clients), masquerade as Neo4j Kernel — Browser's version check
+    // applies a strict Neo4j semver parser that rejects suffixes like
+    // `-dev`, so reporting `ClickGraph/0.6.6-dev` surfaces as
+    // "Failed to check Neo4j version. Invalid version: ".
+    let compat = std::env::var("CLICKGRAPH_NEO4J_COMPAT_MODE")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
 
     let mut record = HashMap::new();
-    record.insert("name".to_string(), serde_json::json!("ClickGraph"));
-    record.insert("versions".to_string(), serde_json::json!([version]));
+    if compat {
+        record.insert("name".to_string(), serde_json::json!("Neo4j Kernel"));
+        record.insert("versions".to_string(), serde_json::json!(["5.8.0"]));
+    } else {
+        record.insert("name".to_string(), serde_json::json!("ClickGraph"));
+        record.insert(
+            "versions".to_string(),
+            serde_json::json!([env!("CARGO_PKG_VERSION")]),
+        );
+    }
     record.insert("edition".to_string(), serde_json::json!("community"));
 
     Ok(vec![record])
@@ -40,6 +55,8 @@ mod tests {
 
     #[test]
     fn test_dbms_components_response_format() {
+        // Default (non-compat): native ClickGraph identity
+        std::env::remove_var("CLICKGRAPH_NEO4J_COMPAT_MODE");
         let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
 
         let results = execute(&schema).expect("Should succeed");
@@ -67,6 +84,7 @@ mod tests {
 
     #[test]
     fn test_dbms_components_version_present() {
+        std::env::remove_var("CLICKGRAPH_NEO4J_COMPAT_MODE");
         let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
 
         let results = execute(&schema).expect("Should succeed");

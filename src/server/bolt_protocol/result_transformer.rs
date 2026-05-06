@@ -34,7 +34,9 @@
 
 use crate::{
     graph_catalog::{
-        element_id::{generate_node_element_id, generate_relationship_element_id},
+        element_id::{
+            generate_node_element_id, generate_relationship_element_id, parse_node_element_id,
+        },
         graph_schema::GraphSchema,
     },
     query_planner::{
@@ -1094,6 +1096,9 @@ pub(crate) fn transform_to_relationship(
         // Save start_id and end_id before parsing
         let start_id = properties.get("start_id").cloned();
         let end_id = properties.get("end_id").cloned();
+        // Also preserve schema-natural FK projections (1-hop multi-type VLP).
+        let r_from_id = properties.get("r_from_id").cloned();
+        let r_to_id = properties.get("r_to_id").cloned();
 
         if let Some(props_value) = properties.get("properties") {
             if let Some(json_str) = extract_first_from_array(props_value) {
@@ -1122,6 +1127,12 @@ pub(crate) fn transform_to_relationship(
         }
         if let Some(eid) = end_id {
             properties.insert("end_id".to_string(), eid);
+        }
+        if let Some(v) = r_from_id {
+            properties.insert("r_from_id".to_string(), v);
+        }
+        if let Some(v) = r_to_id {
+            properties.insert("r_to_id".to_string(), v);
         }
         rel_type_str
     } else {
@@ -1198,53 +1209,134 @@ pub(crate) fn transform_to_relationship(
     let from_node_label = &resolved_from_label;
     let to_node_label = &resolved_to_label;
 
+    // Prefer schema-natural FK projections when the SQL gen provided them.
+    // The multi-type VLP CTE projects `r_from_id` / `r_to_id` for 1-hop
+    // queries; these carry the schema's natural from→to direction regardless
+    // of which CTE branch (Outgoing/Incoming) the row came from. When
+    // present, they make element_id construction direction-canonical, which
+    // dedupes same-label directed relationships across expansions from
+    // either endpoint (e.g., FOLLOWS:9->17 from User:9's expand and from
+    // User:17's expand both yield the same element_id).
+    let canonical_from = properties
+        .get("r_from_id")
+        .and_then(value_to_string)
+        .filter(|s| !s.is_empty());
+    let canonical_to = properties
+        .get("r_to_id")
+        .and_then(value_to_string)
+        .filter(|s| !s.is_empty());
+    properties.remove("r_from_id");
+    properties.remove("r_to_id");
+
+    // Detect when the SQL's `start_id`/`end_id` projection is reversed from the
+    // schema's natural from→to direction. This happens for undirected matches
+    // like `(a)-[r]-(o)` where `a` is bound to the schema's *to-side* (e.g.,
+    // expanding from a Post yields LIKED rows whose SQL projects start_id =
+    // post_id and end_id = user_id, but LIKED's schema is User→Post).
+    //
+    // The other alias's label gets projected as `<alias>.__label__` (e.g.,
+    // `o.__label__`). If that label matches the schema's from_label (and the
+    // schema's from/to labels differ), then the *o-side* is the schema's
+    // from-side and the projection is reversed: we must source from_id values
+    // from end_id and to_id values from start_id. Otherwise the constructed
+    // node element_ids pair the wrong labels with the wrong ids (e.g.,
+    // producing "User:1" where 1 is actually a post_id).
+    let projection_reversed = if resolved_from_label != resolved_to_label {
+        row.iter().any(|(key, value)| {
+            // Match any `<other_alias>.__label__` column where alias is not us.
+            if let Some(rest) = key.strip_suffix(".__label__") {
+                if rest != var_name {
+                    let label = value_to_string(value);
+                    return label.as_deref() == Some(&resolved_from_label[..]);
+                }
+            }
+            false
+        })
+    } else {
+        false
+    };
+    // start_type/end_type may have been left in properties by the non-polymorphic
+    // branch above; clean them up so they don't leak as relationship properties.
+    properties.remove("start_type");
+    properties.remove("end_type");
+
+    let (from_fallback_a, from_fallback_b) = if projection_reversed {
+        ("end_id", "to_id")
+    } else {
+        ("start_id", "from_id")
+    };
+    let (to_fallback_a, to_fallback_b) = if projection_reversed {
+        ("start_id", "from_id")
+    } else {
+        ("end_id", "to_id")
+    };
+    let from_composite_prefix = if projection_reversed {
+        "to_id_"
+    } else {
+        "from_id_"
+    };
+    let to_composite_prefix = if projection_reversed {
+        "from_id_"
+    } else {
+        "to_id_"
+    };
+
     // Extract from_id values using relationship's FK columns (e.g., follower_id, followed_id)
     let from_rel_id_columns = rel_schema.from_id.columns();
-    let from_id_values: Vec<String> = from_rel_id_columns
-        .iter()
-        .enumerate()
-        .map(|(i, col_name)| {
-            // First try: FK column from relationship schema (e.g., follower_id)
-            properties
-                .get(*col_name)
-                // Second try: generic CTE column names
-                .or_else(|| properties.get("start_id"))
-                .or_else(|| properties.get("from_id"))
-                // Third try: composite variants
-                .or_else(|| properties.get(&format!("from_id_{}", i + 1)))
-                .and_then(value_to_string)
-                .ok_or_else(|| {
-                    format!(
-                        "Missing from_id column '{}' for relationship '{}'",
-                        col_name, var_name
-                    )
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let from_id_values: Vec<String> = if let Some(ref s) = canonical_from {
+        // Schema-natural projection wins; composite ids are pipe-joined.
+        s.split('|').map(|p| p.to_string()).collect()
+    } else {
+        from_rel_id_columns
+            .iter()
+            .enumerate()
+            .map(|(i, col_name)| {
+                // First try: FK column from relationship schema (e.g., follower_id)
+                properties
+                    .get(*col_name)
+                    // Second try: generic CTE column names (direction-aware)
+                    .or_else(|| properties.get(from_fallback_a))
+                    .or_else(|| properties.get(from_fallback_b))
+                    // Third try: composite variants
+                    .or_else(|| properties.get(&format!("{}{}", from_composite_prefix, i + 1)))
+                    .and_then(value_to_string)
+                    .ok_or_else(|| {
+                        format!(
+                            "Missing from_id column '{}' for relationship '{}'",
+                            col_name, var_name
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
 
     // Extract to_id values using relationship's FK columns
     let to_rel_id_columns = rel_schema.to_id.columns();
-    let to_id_values: Vec<String> = to_rel_id_columns
-        .iter()
-        .enumerate()
-        .map(|(i, col_name)| {
-            // First try: FK column from relationship schema (e.g., followed_id)
-            properties
-                .get(*col_name)
-                // Second try: generic CTE column names
-                .or_else(|| properties.get("end_id"))
-                .or_else(|| properties.get("to_id"))
-                // Third try: composite variants
-                .or_else(|| properties.get(&format!("to_id_{}", i + 1)))
-                .and_then(value_to_string)
-                .ok_or_else(|| {
-                    format!(
-                        "Missing to_id column '{}' for relationship '{}'",
-                        col_name, var_name
-                    )
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let to_id_values: Vec<String> = if let Some(ref s) = canonical_to {
+        s.split('|').map(|p| p.to_string()).collect()
+    } else {
+        to_rel_id_columns
+            .iter()
+            .enumerate()
+            .map(|(i, col_name)| {
+                // First try: FK column from relationship schema (e.g., followed_id)
+                properties
+                    .get(*col_name)
+                    // Second try: generic CTE column names (direction-aware)
+                    .or_else(|| properties.get(to_fallback_a))
+                    .or_else(|| properties.get(to_fallback_b))
+                    // Third try: composite variants
+                    .or_else(|| properties.get(&format!("{}{}", to_composite_prefix, i + 1)))
+                    .and_then(value_to_string)
+                    .ok_or_else(|| {
+                        format!(
+                            "Missing to_id column '{}' for relationship '{}'",
+                            col_name, var_name
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
 
     // Join composite IDs with pipe separator
     let from_id_str = from_id_values.join("|");
@@ -2296,8 +2388,16 @@ fn find_relationship_in_row_with_type(
     let start_id = generate_id_from_element_id(start_element_id);
     let end_id = generate_id_from_element_id(end_element_id);
 
-    // Generate relationship element_id from type and node element_ids
-    let rel_element_id = format!("{}:{}->{}", rel_type, start_element_id, end_element_id);
+    // Generate relationship element_id using bare scalar IDs extracted from the
+    // node element_ids. This matches the canonical format used everywhere else
+    // (e.g., `LIKED:2->43-`) so Browser dedupes correctly across expansions.
+    let from_bare_id = parse_node_element_id(start_element_id)
+        .map(|(_, ids)| ids.join("|"))
+        .unwrap_or_else(|_| start_element_id.to_string());
+    let to_bare_id = parse_node_element_id(end_element_id)
+        .map(|(_, ids)| ids.join("|"))
+        .unwrap_or_else(|_| end_element_id.to_string());
+    let rel_element_id = generate_relationship_element_id(rel_type, &from_bare_id, &to_bare_id);
     let rel_id = generate_id_from_element_id(&rel_element_id);
 
     // Remove internal from_id/to_id keys from properties (FK columns, not user properties)
@@ -2349,8 +2449,15 @@ fn create_relationship_with_type(
     start_element_id: &str,
     end_element_id: &str,
 ) -> Relationship {
-    // Generate element_id and derive all integer IDs from element_ids
-    let element_id = format!("{}:{}->{}", rel_type, start_element_id, end_element_id);
+    // Generate element_id using bare scalar IDs extracted from the node
+    // element_ids — same canonical format used elsewhere (`LIKED:2->43-`).
+    let from_bare_id = parse_node_element_id(start_element_id)
+        .map(|(_, ids)| ids.join("|"))
+        .unwrap_or_else(|_| start_element_id.to_string());
+    let to_bare_id = parse_node_element_id(end_element_id)
+        .map(|(_, ids)| ids.join("|"))
+        .unwrap_or_else(|_| end_element_id.to_string());
+    let element_id = generate_relationship_element_id(rel_type, &from_bare_id, &to_bare_id);
     let id = generate_id_from_element_id(&element_id);
     let start_node_id = generate_id_from_element_id(start_element_id);
     let end_node_id = generate_id_from_element_id(end_element_id);
@@ -2523,6 +2630,20 @@ mod tests {
         };
 
         assert_eq!(get_field_name(&proj_item), "n");
+    }
+
+    #[test]
+    fn test_create_relationship_with_type_uses_canonical_format() {
+        // Regression: create_relationship_with_type used to format the
+        // element_id as `LIKED:User:2-->Post:43-` (full node element_ids
+        // pasted in). Other code paths produced the canonical
+        // `LIKED:2->43-` form, so Browser saw them as two distinct edges
+        // and drew duplicate links between the same pair. Lock in the
+        // canonical bare-id format here.
+        let rel = create_relationship_with_type("LIKED", "User:2-", "Post:43-");
+        assert_eq!(rel.element_id, "LIKED:2->43-");
+        assert_eq!(rel.start_node_element_id, "User:2-");
+        assert_eq!(rel.end_node_element_id, "Post:43-");
     }
 
     #[test]

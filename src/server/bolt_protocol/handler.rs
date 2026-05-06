@@ -62,6 +62,168 @@ fn bolt_value_to_string(value: &BoltValue) -> String {
     }
 }
 
+/// Detect Browser 5.x's bundled count query:
+///   `MATCH (n) RETURN count(n) AS result UNION ALL MATCH ()-[r]->() RETURN count(r) AS result`
+///
+/// Older Browser versions issue these as two separate queries which flow through
+/// the normal pipeline correctly. The bundled UNION ALL form crashes our SQL
+/// generator, so it gets intercepted in `handle_run`. Tolerant of whitespace and
+/// trailing semicolons; case-insensitive.
+fn is_browser_count_union(query_upper: &str) -> bool {
+    let normalized: String = query_upper.split_whitespace().collect::<Vec<_>>().join(" ");
+    normalized.contains("MATCH (N) RETURN COUNT(N)")
+        && normalized.contains("UNION ALL")
+        && normalized.contains("MATCH ()-[R]->()")
+        && normalized.contains("COUNT(R)")
+}
+
+/// Detect Browser 5.x's bundled metadata query:
+///   `CALL db.labels() YIELD label RETURN COLLECT(label)[..$itemLimit] AS result`
+///   `UNION ALL CALL db.relationshipTypes() YIELD ... RETURN COLLECT(...)[..$itemLimit] ...`
+///   `UNION ALL CALL db.propertyKeys() YIELD ... RETURN COLLECT(...)[..$itemLimit] ...`
+///
+/// The slice expression in RETURN is unsupported by our procedure RETURN evaluator.
+/// Older Browser versions issued each `CALL db.<x>()` separately — those still
+/// flow through the normal procedure executor unchanged.
+fn is_browser_labels_bundle(query_upper: &str) -> bool {
+    let has_all_three = query_upper.contains("DB.LABELS")
+        && query_upper.contains("DB.RELATIONSHIPTYPES")
+        && query_upper.contains("DB.PROPERTYKEYS");
+    let has_collect_slice = query_upper.contains("COLLECT(") && query_upper.contains("[..");
+    let union_count = query_upper.matches("UNION ALL").count();
+    has_all_three && has_collect_slice && union_count >= 2
+}
+
+/// Map Browser-issued read-only SHOW commands to the canonical Neo4j-5.x
+/// field schema. Returns `Some(fields)` if the query matches a stubbed shape
+/// (we always reply with zero rows). `None` means "fall through to the normal
+/// pipeline."
+///
+/// The `query_upper` argument is expected to already be uppercased and trimmed.
+/// Tolerates trailing semicolons and `YIELD *`/extra suffixes — Browser
+/// commonly appends those. We deliberately accept a substring rather than an
+/// exact match so older Browser variants with different suffixes also stub.
+fn browser_show_stub_fields(query_upper: &str) -> Option<&'static [&'static str]> {
+    let q = query_upper.trim_end_matches(';').trim();
+    let starts = |head: &str| q == head || q.starts_with(&format!("{} ", head));
+
+    if starts("SHOW INDEXES") || starts("SHOW INDEX") || starts("SHOW ALL INDEXES") {
+        // Neo4j 5.x SHOW INDEXES schema
+        return Some(&[
+            "id",
+            "name",
+            "state",
+            "populationPercent",
+            "type",
+            "entityType",
+            "labelsOrTypes",
+            "properties",
+            "indexProvider",
+            "owningConstraint",
+            "lastRead",
+            "readCount",
+        ]);
+    }
+    if starts("SHOW CONSTRAINTS") || starts("SHOW CONSTRAINT") || starts("SHOW ALL CONSTRAINTS") {
+        return Some(&[
+            "id",
+            "name",
+            "type",
+            "entityType",
+            "labelsOrTypes",
+            "properties",
+            "ownedIndex",
+            "propertyType",
+        ]);
+    }
+    if starts("SHOW PROCEDURES") || starts("SHOW PROCEDURE") || starts("SHOW ALL PROCEDURES") {
+        return Some(&[
+            "name",
+            "description",
+            "mode",
+            "worksOnSystem",
+            "signature",
+            "argumentDescription",
+            "returnDescription",
+            "admin",
+            "rolesExecution",
+            "rolesBoostedExecution",
+            "option",
+        ]);
+    }
+    if starts("SHOW FUNCTIONS")
+        || starts("SHOW FUNCTION")
+        || starts("SHOW ALL FUNCTIONS")
+        || starts("SHOW BUILT IN FUNCTIONS")
+        || starts("SHOW USER DEFINED FUNCTIONS")
+    {
+        return Some(&[
+            "name",
+            "category",
+            "description",
+            "signature",
+            "isBuiltIn",
+            "argumentDescription",
+            "returnDescription",
+            "aggregating",
+            "rolesExecution",
+            "rolesBoostedExecution",
+        ]);
+    }
+    if starts("SHOW CURRENT USER") {
+        return Some(&[
+            "user",
+            "roles",
+            "passwordChangeRequired",
+            "suspended",
+            "home",
+        ]);
+    }
+    if starts("SHOW USERS") || starts("SHOW USER") {
+        return Some(&[
+            "user",
+            "roles",
+            "passwordChangeRequired",
+            "suspended",
+            "home",
+        ]);
+    }
+    if starts("SHOW ROLES")
+        || starts("SHOW ROLE")
+        || starts("SHOW POPULATED ROLES")
+        || starts("SHOW ALL ROLES")
+    {
+        return Some(&["role"]);
+    }
+    if starts("SHOW PRIVILEGES")
+        || starts("SHOW PRIVILEGE")
+        || starts("SHOW USER PRIVILEGES")
+        || starts("SHOW ROLE PRIVILEGES")
+        || starts("SHOW ALL PRIVILEGES")
+    {
+        return Some(&["access", "action", "resource", "graph", "segment", "role"]);
+    }
+    if starts("SHOW SERVERS") || starts("SHOW SERVER") {
+        return Some(&["name", "address", "state", "health", "hosting"]);
+    }
+    if starts("SHOW SETTINGS") || starts("SHOW SETTING") {
+        return Some(&["name", "value", "isDynamic", "defaultValue", "description"]);
+    }
+    if starts("SHOW TRANSACTIONS") || starts("SHOW TRANSACTION") {
+        return Some(&[
+            "database",
+            "transactionId",
+            "currentQueryId",
+            "username",
+            "currentQuery",
+            "startTime",
+            "status",
+            "elapsedTime",
+        ]);
+    }
+    None
+}
+
 /// Pattern detection: `id(alias) IN $paramName` or `id(alias) = $paramName`
 /// Substitute Cypher parameters into query string, keeping encoded IDs intact
 /// This replaces $paramName with actual values so parser sees literals
@@ -168,6 +330,182 @@ fn substitute_cypher_parameters(query: &str, parameters: &HashMap<String, Value>
             // Update offset for subsequent replacements
             offset += replacement.len() as isize - full_match.as_str().len() as isize;
         }
+    }
+
+    // Pass 2: substitute integer parameters in `LIMIT $param` / `SKIP $param`.
+    // Our Cypher parser only accepts integer literals after LIMIT/SKIP — it does
+    // not currently support a Parameter node there. Browser 5.x's expand query
+    // uses `LIMIT $maxNeighbours`, which must be inlined as an integer before
+    // parsing.
+    let re_limit_skip = Regex::new(r"(?i)\b(LIMIT|SKIP)\s+\$([A-Za-z_][A-Za-z0-9_]*)")
+        .expect("regex for LIMIT/SKIP parameter substitution must compile");
+
+    // Re-scan the (possibly already-modified) result string.
+    let snapshot = result.clone();
+    let mut offset2: isize = 0;
+    for cap in re_limit_skip.captures_iter(&snapshot) {
+        let full_match = cap.get(0).unwrap();
+        let match_start = full_match.start();
+        let keyword = &cap[1];
+        let param_name = &cap[2];
+
+        if is_inside_string(&snapshot, match_start) {
+            continue;
+        }
+
+        // LIMIT/SKIP only accept non-negative integers. Any other type is a
+        // user error that the parser will surface; leave it untouched so the
+        // existing error path runs.
+        let int_literal = match parameters.get(param_name) {
+            Some(Value::Number(n)) if n.is_i64() || n.is_u64() => n.to_string(),
+            _ => continue,
+        };
+
+        let replacement = format!("{} {}", keyword, int_literal);
+        let adjusted_start = (match_start as isize + offset2) as usize;
+        let adjusted_end = adjusted_start + full_match.as_str().len();
+        result.replace_range(adjusted_start..adjusted_end, &replacement);
+        offset2 += replacement.len() as isize - full_match.as_str().len() as isize;
+    }
+
+    // Pass 2.5: collapse Neo4j-Browser's de-duplication CASE pattern to a bare
+    // alias. Browser emits:
+    //   CASE WHEN elementId(o) IN $existingNodeIds THEN null ELSE o END AS o
+    // intending null for nodes already on the canvas. But under CASE, our SQL
+    // generator only projects the alias's id column (not the full property set
+    // needed to materialize a Node), so Browser never receives a real neighbor
+    // Node and click-to-expand can't render new circles. Simplifying to bare
+    // `o AS o` always returns the full Node; Browser de-dupes client-side via
+    // its own existingNodeIds tracking, so duplicates are harmless.
+    let re_dedupe_case = Regex::new(
+        r"(?i)CASE\s+WHEN\s+(?:elementId|id)\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s+IN\s+\$[A-Za-z_][A-Za-z0-9_]*\s+THEN\s+null\s+ELSE\s+([A-Za-z_][A-Za-z0-9_]*)\s+END(\s+AS\s+([A-Za-z_][A-Za-z0-9_]*))?",
+    )
+    .expect("regex for Browser dedupe-CASE collapse must compile");
+    let snapshot = result.clone();
+    let mut offset_dc: isize = 0;
+    for cap in re_dedupe_case.captures_iter(&snapshot) {
+        let full_match = cap.get(0).unwrap();
+        let match_start = full_match.start();
+        let inner_alias = &cap[1];
+        let else_alias = &cap[2];
+        // Only collapse when the WHEN-target and ELSE-branch refer to the same
+        // alias — that's Browser's specific de-duplication shape. Anything else
+        // is a user CASE we must not touch.
+        if !inner_alias.eq_ignore_ascii_case(else_alias) {
+            continue;
+        }
+        if is_inside_string(&snapshot, match_start) {
+            continue;
+        }
+        let replacement = if let Some(out_alias) = cap.get(4) {
+            // Preserve the explicit `AS <alias>` — also require it match.
+            if !out_alias.as_str().eq_ignore_ascii_case(else_alias) {
+                continue;
+            }
+            format!("{} AS {}", else_alias, out_alias.as_str())
+        } else {
+            else_alias.to_string()
+        };
+        let adjusted_start = (match_start as isize + offset_dc) as usize;
+        let adjusted_end = adjusted_start + full_match.as_str().len();
+        result.replace_range(adjusted_start..adjusted_end, &replacement);
+        offset_dc += replacement.len() as isize - full_match.as_str().len() as isize;
+    }
+
+    // Pass 3: rewrite `elementId(alias) IN $param` / `elementId(alias) = $param`
+    // to `id(alias) IN [int_list]` / `id(alias) = int`. Modern Neo4j Browser
+    // switches to elementId-mode (and emits these predicates) whenever the
+    // first node in its canvas has an elementId containing `-` — which is
+    // always true given our Browser-compat sentinel. Browser passes our
+    // element_id strings (e.g., `"User:1-"`) through; we decode them with
+    // parse_node_element_id and re-encode through compute_deterministic_id so
+    // the existing id-rewriter pipeline (further downstream in the planner)
+    // handles the rest.
+    // `\b(?:AND|WHERE)\s+(?:NOT\s+)?` optionally captures a leading boolean
+    // connector so that, for relationship-id predicates we want to drop, we
+    // can rip the whole conjunct out of the WHERE clause instead of leaving a
+    // dangling "AND". The connector is optional — used when `_lead` matches.
+    let re_elem_id = Regex::new(
+        r"(?i)(?:(?P<lead>\b(?:AND|WHERE)\s+(?:NOT\s+)?))?\belementId\s*\(\s*(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*\)\s*(?P<op>IN|=)\s*\$(?P<param>[A-Za-z_][A-Za-z0-9_]*)",
+    )
+    .expect("regex for elementId() parameter substitution must compile");
+
+    let snapshot = result.clone();
+    let mut offset3: isize = 0;
+    for cap in re_elem_id.captures_iter(&snapshot) {
+        let full_match = cap.get(0).unwrap();
+        let match_start = full_match.start();
+        let alias = cap.name("alias").unwrap().as_str();
+        let op = cap.name("op").unwrap().as_str();
+        let param_name = cap.name("param").unwrap().as_str();
+        let lead = cap.name("lead").map(|m| m.as_str().to_string());
+
+        if is_inside_string(&snapshot, match_start) {
+            continue;
+        }
+
+        let elem_strings: Vec<&str> = match parameters.get(param_name) {
+            Some(Value::Array(arr)) => arr.iter().filter_map(Value::as_str).collect(),
+            Some(Value::String(s)) => vec![s.as_str()],
+            _ => continue,
+        };
+
+        // Relationship element_ids contain `->` (e.g., `"FOLLOWS:1->4-"`).
+        // The downstream AST id-rewriter only knows how to translate `id(x)`
+        // for node aliases — it has no path to map an encoded relationship id
+        // back to a real DB column. Generating `id(r) IN [encoded_ints]` ends
+        // up rendering as `r.id = 'value' OR ...` against a non-existent
+        // column, the planner short-circuits to `WHERE false`, and the whole
+        // expand returns zero rows.
+        //
+        // Browser uses this predicate purely for client-side dedup, so it's
+        // safe to drop. If we have a leading `AND/AND NOT/WHERE/WHERE NOT`
+        // captured, drop the entire conjunct; otherwise the user wrote a
+        // standalone `elementId(r) IN ...` and we leave the predicate as a
+        // tautology so the surrounding boolean shape stays valid.
+        let is_rel_param = elem_strings.iter().any(|s| s.contains("->"));
+        if is_rel_param {
+            let adjusted_start = (match_start as isize + offset3) as usize;
+            let adjusted_end = adjusted_start + full_match.as_str().len();
+            let replacement = if lead.is_some() {
+                String::new()
+            } else {
+                "true".to_string()
+            };
+            result.replace_range(adjusted_start..adjusted_end, &replacement);
+            offset3 += replacement.len() as isize - full_match.as_str().len() as isize;
+            continue;
+        }
+
+        // Decode each element_id string into the integer the id-rewriter
+        // expects. compute_deterministic_id is the same function used to
+        // assign Node.id values, so the round-trip is exact for nodes.
+        use crate::server::bolt_protocol::id_mapper::IdMapper;
+        let encoded_ints: Vec<String> = elem_strings
+            .iter()
+            .map(|s| IdMapper::compute_deterministic_id(s).to_string())
+            .collect();
+
+        let predicate = match op.to_uppercase().as_str() {
+            "IN" => format!("id({}) IN [{}]", alias, encoded_ints.join(", ")),
+            "=" => {
+                if encoded_ints.len() == 1 {
+                    format!("id({}) = {}", alias, encoded_ints[0])
+                } else {
+                    format!("id({}) IN [{}]", alias, encoded_ints.join(", "))
+                }
+            }
+            _ => continue,
+        };
+        let replacement = match lead.as_deref() {
+            Some(l) => format!("{}{}", l, predicate),
+            None => predicate,
+        };
+
+        let adjusted_start = (match_start as isize + offset3) as usize;
+        let adjusted_end = adjusted_start + full_match.as_str().len();
+        result.replace_range(adjusted_start..adjusted_end, &replacement);
+        offset3 += replacement.len() as isize - full_match.as_str().len() as isize;
     }
 
     log::debug!(
@@ -943,73 +1281,70 @@ impl BoltHandler {
             // Use shared SHOW DATABASES implementation
             let databases_result = crate::procedures::show_databases::execute_show_databases();
 
-            let databases: Vec<Vec<BoltValue>> =
-                match databases_result {
-                    Ok(db_list) => db_list
-                        .into_iter()
-                        .map(|db| {
-                            vec![
-                                BoltValue::Json(db.get("name").cloned().unwrap_or_else(|| {
-                                    serde_json::Value::String("default".to_string())
-                                })),
-                                BoltValue::Json(db.get("type").cloned().unwrap_or_else(|| {
-                                    serde_json::Value::String("system".to_string())
-                                })),
-                                BoltValue::Json(db.get("access").cloned().unwrap_or_else(|| {
-                                    serde_json::Value::String("read".to_string())
-                                })),
-                                BoltValue::Json(db.get("role").cloned().unwrap_or_else(|| {
-                                    serde_json::Value::String("admin".to_string())
-                                })),
-                                BoltValue::Json(
-                                    db.get("writer")
-                                        .cloned()
-                                        .unwrap_or_else(|| serde_json::Value::Bool(true)),
-                                ),
-                                BoltValue::Json(
-                                    db.get("default")
-                                        .cloned()
-                                        .unwrap_or_else(|| serde_json::Value::Bool(false)),
-                                ),
-                                BoltValue::Json(
-                                    db.get("home")
-                                        .cloned()
-                                        .unwrap_or_else(|| serde_json::Value::Bool(false)),
-                                ),
-                                BoltValue::Json(
-                                    db.get("aliases")
-                                        .cloned()
-                                        .unwrap_or_else(|| serde_json::Value::Array(vec![])),
-                                ),
-                                BoltValue::Json(
-                                    db.get("constituents")
-                                        .cloned()
-                                        .unwrap_or_else(|| serde_json::Value::Array(vec![])),
-                                ),
-                                BoltValue::Json(serde_json::Value::String(
-                                    "00000000-0000-0000-0000-000000000000".to_string(),
-                                )),
-                            ]
-                        })
-                        .collect(),
-                    Err(e) => {
-                        log::error!("Failed to execute SHOW DATABASES: {}", e);
-                        vec![vec![
-                            BoltValue::Json(serde_json::Value::String("default".to_string())),
-                            BoltValue::Json(serde_json::Value::String("system".to_string())),
-                            BoltValue::Json(serde_json::Value::String("read".to_string())),
-                            BoltValue::Json(serde_json::Value::String("admin".to_string())),
-                            BoltValue::Json(serde_json::json!(true)),
-                            BoltValue::Json(serde_json::json!(true)),
-                            BoltValue::Json(serde_json::json!(true)),
-                            BoltValue::Json(serde_json::json!([])),
-                            BoltValue::Json(serde_json::json!([])),
-                            BoltValue::Json(serde_json::Value::String(
-                                "00000000-0000-0000-0000-000000000000".to_string(),
-                            )),
-                        ]]
-                    }
-                };
+            // Field order must match the `fields` metadata sent in the SUCCESS reply
+            // below. Neo4j Browser validates each row against a schema keyed off
+            // those field names, so missing or out-of-order entries surface as
+            // "Invalid database record received from the server".
+            let databases: Vec<Vec<BoltValue>> = match databases_result {
+                Ok(db_list) => db_list
+                    .into_iter()
+                    .map(|db| {
+                        let get_str =
+                            |key: &str, default: &str| {
+                                BoltValue::Json(db.get(key).cloned().unwrap_or_else(|| {
+                                    serde_json::Value::String(default.to_string())
+                                }))
+                            };
+                        let get_bool = |key: &str, default: bool| {
+                            BoltValue::Json(
+                                db.get(key)
+                                    .cloned()
+                                    .unwrap_or(serde_json::Value::Bool(default)),
+                            )
+                        };
+                        let get_arr = |key: &str| {
+                            BoltValue::Json(
+                                db.get(key)
+                                    .cloned()
+                                    .unwrap_or_else(|| serde_json::Value::Array(vec![])),
+                            )
+                        };
+                        vec![
+                            get_str("name", "default"),
+                            get_str("type", "standard"),
+                            get_arr("aliases"),
+                            get_str("access", "read-write"),
+                            get_str("address", "localhost:7687"),
+                            get_str("role", "primary"),
+                            get_bool("writer", true),
+                            get_str("requestedStatus", "online"),
+                            get_str("currentStatus", "online"),
+                            get_str("statusMessage", ""),
+                            get_bool("default", false),
+                            get_bool("home", false),
+                            get_arr("constituents"),
+                        ]
+                    })
+                    .collect(),
+                Err(e) => {
+                    log::error!("Failed to execute SHOW DATABASES: {}", e);
+                    vec![vec![
+                        BoltValue::Json(serde_json::Value::String("default".to_string())),
+                        BoltValue::Json(serde_json::Value::String("standard".to_string())),
+                        BoltValue::Json(serde_json::json!([])),
+                        BoltValue::Json(serde_json::Value::String("read-write".to_string())),
+                        BoltValue::Json(serde_json::Value::String("localhost:7687".to_string())),
+                        BoltValue::Json(serde_json::Value::String("primary".to_string())),
+                        BoltValue::Json(serde_json::json!(true)),
+                        BoltValue::Json(serde_json::Value::String("online".to_string())),
+                        BoltValue::Json(serde_json::Value::String("online".to_string())),
+                        BoltValue::Json(serde_json::Value::String("".to_string())),
+                        BoltValue::Json(serde_json::json!(true)),
+                        BoltValue::Json(serde_json::json!(true)),
+                        BoltValue::Json(serde_json::json!([])),
+                    ]]
+                }
+            };
 
             log::info!("📊 Returning {} databases via Bolt", databases.len());
 
@@ -1029,18 +1364,257 @@ impl BoltHandler {
                 serde_json::json!([
                     "name",
                     "type",
+                    "aliases",
                     "access",
+                    "address",
                     "role",
                     "writer",
+                    "requestedStatus",
+                    "currentStatus",
+                    "statusMessage",
                     "default",
                     "home",
-                    "aliases",
-                    "constituents",
-                    "storeUuid"
+                    "constituents"
                 ]),
             );
             result_metadata.insert("result_consumed_after".to_string(), serde_json::json!(-1));
 
+            return Ok(vec![BoltMessage::success(result_metadata)]);
+        }
+
+        // Intercept `CALL dbms.components()` — Browser calls this on connect to
+        // discover the Neo4j version and refuses to load if the response is
+        // missing or empty ("Invalid version: "). We respond with the version
+        // we already advertise via server_agent ("Neo4j/5.8.0" in compat mode).
+        let q_norm = query_upper.trim_end_matches(';').trim();
+        let is_dbms_components = q_norm == "CALL DBMS.COMPONENTS()"
+            || q_norm.starts_with("CALL DBMS.COMPONENTS() ")
+            || q_norm.starts_with("CALL DBMS.COMPONENTS()YIELD")
+            || q_norm == "CALL DBMS.COMPONENTS"
+            || q_norm.starts_with("CALL DBMS.COMPONENTS ");
+        if is_dbms_components {
+            log::info!("🔍 Stubbing CALL dbms.components()");
+
+            // Strip "Neo4j/" prefix from server_agent if present, leaving just
+            // the version string (e.g., "5.8.0"). Falls back to "5.8.0" if the
+            // agent string isn't in the expected form.
+            let version = self
+                .config
+                .server_agent
+                .strip_prefix("Neo4j/")
+                .unwrap_or("5.8.0")
+                .to_string();
+
+            let row: Vec<BoltValue> = vec![
+                BoltValue::Json(serde_json::Value::String("Neo4j Kernel".to_string())),
+                BoltValue::Json(serde_json::json!([version])),
+                BoltValue::Json(serde_json::Value::String("community".to_string())),
+            ];
+
+            {
+                let mut context = lock_context!(self.context);
+                context.set_state(ConnectionState::Streaming);
+            }
+            self.cached_results = Some(vec![row]);
+
+            let mut result_metadata = HashMap::new();
+            result_metadata.insert(
+                "fields".to_string(),
+                serde_json::json!(["name", "versions", "edition"]),
+            );
+            result_metadata.insert("result_consumed_after".to_string(), serde_json::json!(-1));
+            return Ok(vec![BoltMessage::success(result_metadata)]);
+        }
+
+        // Stub SHOW commands Browser issues on connect to populate sidebars.
+        // We don't manage indexes, procedures, functions, users, or roles — but
+        // returning the canonical Neo4j-5.x field schema with zero rows keeps
+        // Browser happy. Each shape gets the field list Browser's schema
+        // validator expects; missing fields surface as "Invalid record".
+        if let Some(fields) = browser_show_stub_fields(&query_upper) {
+            log::info!(
+                "Stubbing {} with empty result set",
+                query_upper
+                    .split_whitespace()
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+
+            {
+                let mut context = lock_context!(self.context);
+                context.set_state(ConnectionState::Streaming);
+            }
+            self.cached_results = Some(vec![]);
+
+            let mut result_metadata = HashMap::new();
+            result_metadata.insert("fields".to_string(), serde_json::json!(fields));
+            result_metadata.insert("result_consumed_after".to_string(), serde_json::json!(-1));
+            return Ok(vec![BoltMessage::success(result_metadata)]);
+        }
+
+        // Intercept Browser 5.x's bundled count query. Older Browsers issued two
+        // separate queries that already work — those still flow through normally;
+        // only the UNION ALL form is short-circuited because our SQL generator
+        // can't handle UNION ALL of two count(*) projections over disjoint sets.
+        if is_browser_count_union(&query_upper) {
+            log::info!("Detected Browser count(n) UNION ALL count(r) query — short-circuiting");
+
+            let effective_schema = schema_name.as_deref().unwrap_or("default").to_string();
+            let schema_guard = crate::server::GLOBAL_SCHEMAS
+                .get()
+                .ok_or_else(|| BoltError::internal("Schema registry not initialized"))?;
+            let schemas = schema_guard.read().await;
+            let schema = schemas
+                .get(&effective_schema)
+                .ok_or_else(|| BoltError::internal("Schema not found"))?;
+
+            // Distinct underlying tables — polymorphic schemas can map several labels
+            // (or rel composite keys) onto a single physical table; counting that
+            // table once is correct.
+            let node_tables: std::collections::BTreeSet<String> = schema
+                .all_node_schemas()
+                .values()
+                .map(|n| n.full_table_name())
+                .collect();
+            let rel_tables: std::collections::BTreeSet<String> = schema
+                .get_relationships_schemas()
+                .values()
+                .map(|r| r.full_table_name())
+                .collect();
+            drop(schemas);
+
+            let count_branch = |tables: &std::collections::BTreeSet<String>| -> String {
+                if tables.is_empty() {
+                    "SELECT toUInt64(0) AS result".to_string()
+                } else {
+                    let inner: Vec<String> = tables
+                        .iter()
+                        .map(|t| format!("SELECT count(*) AS c FROM {}", t))
+                        .collect();
+                    format!(
+                        "SELECT sum(c) AS result FROM ({})",
+                        inner.join(" UNION ALL ")
+                    )
+                }
+            };
+            let combined_sql = format!(
+                "{} UNION ALL {}",
+                count_branch(&node_tables),
+                count_branch(&rel_tables),
+            );
+            log::debug!("Browser count UNION SQL: {}", combined_sql);
+
+            match self
+                .executor
+                .execute_json(&combined_sql, role.as_deref())
+                .await
+            {
+                Ok(rows) => {
+                    let bolt_rows: Vec<Vec<BoltValue>> = rows
+                        .into_iter()
+                        .map(|row| {
+                            let val = row
+                                .get("result")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Number(0.into()));
+                            vec![BoltValue::Json(val)]
+                        })
+                        .collect();
+
+                    {
+                        let mut context = lock_context!(self.context);
+                        context.set_state(ConnectionState::Streaming);
+                    }
+                    self.cached_results = Some(bolt_rows);
+
+                    let mut result_metadata = HashMap::new();
+                    result_metadata.insert("fields".to_string(), serde_json::json!(["result"]));
+                    result_metadata
+                        .insert("result_consumed_after".to_string(), serde_json::json!(-1));
+                    return Ok(vec![BoltMessage::success(result_metadata)]);
+                }
+                Err(e) => {
+                    log::error!("Browser count UNION execution failed: {}", e);
+                    return Ok(vec![BoltMessage::failure(
+                        "Neo.ClientError.Statement.ExecutionFailed".to_string(),
+                        format!("count(n)/count(r) execution failed: {}", e),
+                    )]);
+                }
+            }
+        }
+
+        // Intercept Browser 5.x's bundled metadata query
+        // (db.labels + db.relationshipTypes + db.propertyKeys, each wrapped in a
+        // COLLECT(...)[..$itemLimit] slice). The slice in RETURN isn't supported
+        // by our procedure RETURN evaluator. Old Browsers' separate CALLs flow
+        // through the normal procedure executor unchanged.
+        if is_browser_labels_bundle(&query_upper) {
+            log::info!("Detected Browser labels/types/propertyKeys bundle — short-circuiting");
+
+            let effective_schema = schema_name.as_deref().unwrap_or("default").to_string();
+            let schema_guard = crate::server::GLOBAL_SCHEMAS
+                .get()
+                .ok_or_else(|| BoltError::internal("Schema registry not initialized"))?;
+            let schemas = schema_guard.read().await;
+            let schema = schemas
+                .get(&effective_schema)
+                .ok_or_else(|| BoltError::internal("Schema not found"))?;
+
+            let collect_column = |records: Vec<HashMap<String, serde_json::Value>>,
+                                  key: &str|
+             -> Vec<serde_json::Value> {
+                records
+                    .into_iter()
+                    .filter_map(|r| r.get(key).cloned())
+                    .collect()
+            };
+
+            let labels = collect_column(
+                crate::procedures::db_labels::execute(schema).map_err(BoltError::query_error)?,
+                "label",
+            );
+            let rel_types = collect_column(
+                crate::procedures::db_relationship_types::execute(schema)
+                    .map_err(BoltError::query_error)?,
+                "relationshipType",
+            );
+            let prop_keys = collect_column(
+                crate::procedures::db_property_keys::execute(schema)
+                    .map_err(BoltError::query_error)?,
+                "propertyKey",
+            );
+            drop(schemas);
+
+            // `$itemLimit` was substituted into the query text by
+            // `substitute_cypher_parameters`, but the parameters map is still
+            // intact — read it directly. Default to no slice if absent.
+            let limit = parameters
+                .get("itemLimit")
+                .and_then(|v| v.as_i64())
+                .filter(|n| *n >= 0)
+                .map(|n| n as usize)
+                .unwrap_or(usize::MAX);
+            let take = |mut v: Vec<serde_json::Value>| -> serde_json::Value {
+                v.truncate(limit);
+                serde_json::Value::Array(v)
+            };
+
+            let bolt_rows: Vec<Vec<BoltValue>> = vec![
+                vec![BoltValue::Json(take(labels))],
+                vec![BoltValue::Json(take(rel_types))],
+                vec![BoltValue::Json(take(prop_keys))],
+            ];
+
+            {
+                let mut context = lock_context!(self.context);
+                context.set_state(ConnectionState::Streaming);
+            }
+            self.cached_results = Some(bolt_rows);
+
+            let mut result_metadata = HashMap::new();
+            result_metadata.insert("fields".to_string(), serde_json::json!(["result"]));
+            result_metadata.insert("result_consumed_after".to_string(), serde_json::json!(-1));
             return Ok(vec![BoltMessage::success(result_metadata)]);
         }
 
@@ -2489,6 +3063,207 @@ mod tests {
         ) -> Result<String, ExecutorError> {
             Ok(String::new())
         }
+    }
+
+    #[test]
+    fn browser_count_union_pattern_matcher() {
+        // Browser 5.x bundled form — should match
+        let new = "MATCH (n) RETURN count(n) AS result UNION ALL MATCH ()-[r]->() RETURN count(r) AS result".to_uppercase();
+        assert!(is_browser_count_union(&new));
+
+        // Same with extra whitespace and trailing semicolon — should still match
+        let messy = "  MATCH (n)\n  RETURN count(n) AS result\nUNION ALL\nMATCH ()-[r]->() RETURN count(r) AS result;".to_uppercase();
+        assert!(is_browser_count_union(&messy));
+
+        // Old-Browser separate query — must NOT match (flows through normal path)
+        let old_node = "MATCH (n) RETURN count(n) AS result".to_uppercase();
+        assert!(!is_browser_count_union(&old_node));
+        let old_rel = "MATCH ()-[r]->() RETURN count(r) AS result".to_uppercase();
+        assert!(!is_browser_count_union(&old_rel));
+
+        // Unrelated user query — must NOT match
+        let user = "MATCH (p:Person) RETURN p.name".to_uppercase();
+        assert!(!is_browser_count_union(&user));
+    }
+
+    #[test]
+    fn rewrites_browser_elementid_to_id() {
+        let mut params: HashMap<String, Value> = HashMap::new();
+        // Element IDs as Browser would send them (with the trailing `-` sentinel
+        // our generators emit).
+        params.insert(
+            "nodeIds".to_string(),
+            serde_json::json!(["Post:1-", "Post:2-"]),
+        );
+        params.insert("targetId".to_string(), serde_json::json!("User:5-"));
+        params.insert(
+            "existingRelationshipIds".to_string(),
+            serde_json::json!(["FOLLOWS:1->4-", "AUTHORED:1->2-"]),
+        );
+
+        // IN with a list of node element_ids — rewrite to id() with two encoded ints.
+        let q = "MATCH (a)-[r]-(o) WHERE elementId(a) IN $nodeIds RETURN r, o";
+        let out = substitute_cypher_parameters(q, &params);
+        assert!(out.contains("id(a) IN ["), "got: {}", out);
+        assert!(!out.contains("elementId"), "got: {}", out);
+        assert!(!out.contains("$nodeIds"), "got: {}", out);
+
+        // = with a single string — should rewrite to id() = <int>
+        let q = "MATCH (n) WHERE elementId(n) = $targetId RETURN n";
+        let out = substitute_cypher_parameters(q, &params);
+        assert!(out.contains("id(n) = "), "got: {}", out);
+        assert!(!out.contains("elementId"), "got: {}", out);
+
+        // Unknown parameter — leave untouched (avoid masking errors)
+        let q = "MATCH (n) WHERE elementId(n) IN $unknown RETURN n";
+        let out = substitute_cypher_parameters(q, &params);
+        assert_eq!(out, q);
+
+        // Relationship element_ids (contain `->`) inside a connected `AND NOT`
+        // conjunct — drop the entire conjunct (including the leading `AND NOT`).
+        let q = "MATCH (a)-[r]-(o) WHERE elementId(a) IN $nodeIds AND NOT elementId(r) IN $existingRelationshipIds RETURN r";
+        let out = substitute_cypher_parameters(q, &params);
+        assert!(!out.contains("elementId"), "got: {}", out);
+        assert!(!out.contains("AND NOT"), "got: {}", out);
+        // First predicate (node-shaped) still rewritten to id()
+        assert!(out.contains("id(a) IN ["), "got: {}", out);
+
+        // Relationship element_ids in a leading `WHERE NOT` — drop the conjunct.
+        let q = "MATCH ()-[r]-() WHERE NOT elementId(r) IN $existingRelationshipIds RETURN r";
+        let out = substitute_cypher_parameters(q, &params);
+        assert!(!out.contains("elementId"), "got: {}", out);
+        // The `WHERE NOT ...` should be entirely gone.
+        assert!(!out.contains("WHERE NOT"), "got: {}", out);
+    }
+
+    #[test]
+    fn collapses_browser_dedupe_case_pattern() {
+        let params: HashMap<String, Value> = HashMap::new();
+
+        // Browser's dedupe-CASE — should collapse to bare alias `o AS o`.
+        let q = "RETURN r, CASE WHEN elementId(o) IN $existingNodeIds THEN null ELSE o END AS o";
+        let out = substitute_cypher_parameters(q, &params);
+        assert_eq!(out, "RETURN r, o AS o");
+
+        // id() variant — also collapsed
+        let q = "RETURN CASE WHEN id(x) IN $foo THEN null ELSE x END AS x";
+        let out = substitute_cypher_parameters(q, &params);
+        assert_eq!(out, "RETURN x AS x");
+
+        // Different aliases (not Browser's pattern) — must NOT collapse
+        let q = "RETURN CASE WHEN elementId(a) IN $foo THEN null ELSE b END AS c";
+        let out = substitute_cypher_parameters(q, &params);
+        assert!(out.contains("CASE"), "got: {}", out);
+
+        // No AS clause — collapse to bare alias
+        let q = "RETURN CASE WHEN elementId(o) IN $foo THEN null ELSE o END";
+        let out = substitute_cypher_parameters(q, &params);
+        assert_eq!(out, "RETURN o");
+    }
+
+    #[test]
+    fn substitutes_limit_skip_integer_parameters() {
+        let mut params: HashMap<String, Value> = HashMap::new();
+        params.insert("maxNeighbours".to_string(), serde_json::json!(1000));
+        params.insert("page".to_string(), serde_json::json!(20));
+        params.insert("notAnInt".to_string(), serde_json::json!("oops"));
+
+        // LIMIT with integer parameter — substitutes
+        let q = "MATCH (n) RETURN n LIMIT $maxNeighbours";
+        assert_eq!(
+            substitute_cypher_parameters(q, &params),
+            "MATCH (n) RETURN n LIMIT 1000"
+        );
+
+        // SKIP + LIMIT chained
+        let q = "MATCH (n) RETURN n SKIP $page LIMIT $maxNeighbours";
+        assert_eq!(
+            substitute_cypher_parameters(q, &params),
+            "MATCH (n) RETURN n SKIP 20 LIMIT 1000"
+        );
+
+        // Non-integer parameter — leave untouched, parser will surface the error
+        let q = "MATCH (n) RETURN n LIMIT $notAnInt";
+        assert_eq!(substitute_cypher_parameters(q, &params), q);
+
+        // Missing parameter — leave untouched
+        let q = "MATCH (n) RETURN n LIMIT $unknownParam";
+        assert_eq!(substitute_cypher_parameters(q, &params), q);
+
+        // Browser 5.x expand query — full integration: id() params + LIMIT
+        let mut full_params: HashMap<String, Value> = HashMap::new();
+        full_params.insert("nodeIds".to_string(), serde_json::json!([42]));
+        full_params.insert("existingRelationshipIds".to_string(), serde_json::json!([]));
+        full_params.insert("existingNodeIds".to_string(), serde_json::json!([1, 2, 3]));
+        full_params.insert("maxNeighbours".to_string(), serde_json::json!(1000));
+        let q =
+            "MATCH (a)-[r]-(o) WHERE id(a) IN $nodeIds AND NOT id(r) IN $existingRelationshipIds \
+                 RETURN r, CASE WHEN id(o) IN $existingNodeIds THEN null ELSE o END AS o \
+                 LIMIT $maxNeighbours";
+        let out = substitute_cypher_parameters(q, &full_params);
+        assert!(out.contains("id(a) IN [42]"), "got: {}", out);
+        assert!(out.contains("id(r) IN []"), "got: {}", out);
+        assert!(out.contains("id(o) IN [1, 2, 3]"), "got: {}", out);
+        assert!(out.ends_with("LIMIT 1000"), "got: {}", out);
+        assert!(
+            !out.contains("$"),
+            "all params should be substituted, got: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn browser_show_stub_dispatches_each_command() {
+        // Each shape Browser issues should resolve to a stubbed field schema.
+        for q in [
+            "SHOW INDEXES",
+            "SHOW INDEXES YIELD *",
+            "SHOW CONSTRAINTS;",
+            "SHOW PROCEDURES",
+            "SHOW FUNCTIONS",
+            "SHOW BUILT IN FUNCTIONS",
+            "SHOW CURRENT USER",
+            "SHOW USERS",
+            "SHOW ROLES",
+            "SHOW PRIVILEGES",
+            "SHOW SERVERS",
+            "SHOW SETTINGS",
+            "SHOW TRANSACTIONS",
+        ] {
+            assert!(
+                browser_show_stub_fields(&q.to_uppercase()).is_some(),
+                "expected stub fields for {:?}",
+                q
+            );
+        }
+
+        // SHOW DATABASES is handled by the dedicated block higher up — it must
+        // NOT be stubbed here, otherwise it would shadow the real implementation.
+        assert!(browser_show_stub_fields("SHOW DATABASES").is_none());
+
+        // Unrelated user query — must NOT match.
+        assert!(browser_show_stub_fields("MATCH (N) RETURN N").is_none());
+    }
+
+    #[test]
+    fn browser_labels_bundle_pattern_matcher() {
+        // Browser 5.x bundled form (post parameter substitution) — should match
+        let bundled = "CALL db.labels() YIELD label RETURN COLLECT(label)[..1000] AS result \
+            UNION ALL CALL db.relationshipTypes() YIELD relationshipType RETURN COLLECT(relationshipType)[..1000] AS result \
+            UNION ALL CALL db.propertyKeys() YIELD propertyKey RETURN COLLECT(propertyKey)[..1000] AS result".to_uppercase();
+        assert!(is_browser_labels_bundle(&bundled));
+
+        // Old-Browser separate calls — must NOT match
+        let old = "CALL db.labels()".to_uppercase();
+        assert!(!is_browser_labels_bundle(&old));
+
+        // Two of the three procedures — must NOT match (incomplete bundle)
+        let two = "CALL db.labels() UNION ALL CALL db.relationshipTypes()".to_uppercase();
+        assert!(!is_browser_labels_bundle(&two));
+
+        // All three but no slice — must NOT match (different shape, falls through)
+        let no_slice = "CALL db.labels() UNION ALL CALL db.relationshipTypes() UNION ALL CALL db.propertyKeys()".to_uppercase();
+        assert!(!is_browser_labels_bundle(&no_slice));
     }
 
     fn create_test_handler() -> BoltHandler {
