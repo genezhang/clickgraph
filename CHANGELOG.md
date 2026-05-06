@@ -1,4 +1,4 @@
-## [0.6.7-dev] - 2026-05-04
+## [0.6.7-dev] - 2026-05-06
 
 ### 🚀 Features
 
@@ -19,7 +19,17 @@
 
 - **TCK 100%** (PR #273): All 402 read scenarios passing — fixed list indexing (negative indices + out-of-range → null), type validation, step-regex parsing, and DELETE detection regressions.
 
+- **Default HTTP port 7475** (#310): Changed from `8080` to `7475` to align with Neo4j Browser conventions (Neo4j HTTP is `7474`, ClickGraph sits one above) and avoid conflict with the common dev port. CLI / env override unchanged.
+
 ### 🧹 Infrastructure
+
+- **CI zero-warning enforcement** (#307): `cargo clippy --all-targets -- -D warnings` and `cargo fmt --all -- --check` now run as required CI checks, locking in the zero-warning state achieved by the cleanup arc (#287–#306).
+
+- **Per-crate clippy cleanup** (#305, #306): Cleared the remaining warnings in `clickgraph-embedded` (9 sites) and `clickgraph-tool` so every workspace crate now lints clean.
+
+- **Workspace MSRV alignment** (#308): Bumped `clickgraph-client`'s MSRV from 1.70 → 1.85 to match the workspace; removes the only outlier and lets `rust-toolchain` be a single value.
+
+- **Test-tree cleanup** (#309): Deleted 5 orphan test directories and 5 unused deprecated items flagged by clippy/dead-code analysis.
 
 - **Clippy zero-warnings** (PRs #287–#302, 16 PRs): The `cargo clippy --all-targets` count went from 68 to 0. Highlights:
   - Dropped the **`pattern_resolver` module** (#287): superseded by `TypeInference` since the unified type-inference pass landed; ~1,400 lines of dead code removed.
@@ -33,6 +43,10 @@
 
 ### 🐛 Bug Fixes
 
+- **Neo4j Browser 5.x compatibility** (#312): Browser 5.x's connect flow now lands cleanly. (a) `CALL dbms.components()` is intercepted in the Bolt handler and answered with the canonical `(name, versions, edition)` shape — without it Browser shows "Failed to check Neo4j version. Invalid version: ". (b) Browser's bundled `count(n) UNION ALL count(r)` and `db.labels() / db.relationshipTypes() / db.propertyKeys()` queries are short-circuited (the SQL generator can't UNION-ALL disjoint count projections). (c) ~12 read-only `SHOW` commands Browser issues to populate sidebars (`SHOW INDEXES`, `SHOW CONSTRAINTS`, `SHOW PROCEDURES`, `SHOW FUNCTIONS`, …) are stubbed with the canonical Neo4j 5.x field schema and zero rows. (d) Iterative click-to-expand is stable across canvas growth: relationship `element_id` generation is now unified across all code paths (canonical `Type:from->to-` form), so the same logical edge dedupes correctly across expansions from either endpoint. (e) Same-label directed relationships (e.g., `FOLLOWS:User→User`) carry schema-natural FK direction via new `r_from_id`/`r_to_id` projections from the multi-type VLP CTE, so expanding from either end produces an identical `element_id`. (f) Browser-compat trailing `-` sentinel on element_ids switches Browser into elementId-mode, preventing the legacy `parseInt → NaN → 0` collapse where every node ended up with id 0.
+
+- **shortestPath / allShortestPaths + COUNT regression** (#311): Several path-aggregation queries that regressed during the write-path landing are restored; test-stack glue cleanup.
+
 - **Browser expand regression** (#268): three root-cause fixes for Neo4j Browser node-expand path.
 - **FFI memory cap** (#271): `max_memory_usage_bytes` exposed in FFI `SystemConfig`.
 - **TCK list & equality semantics** (#273): list indexing (`l[i]` / `l[-i]` / out-of-range), type validation, regex-based step parsing, DELETE detection.
@@ -40,11 +54,16 @@
 ### 🔒 Security
 
 - **`rustls-webpki`** 0.103.10 → 0.103.13 (#274) — RUSTSEC-2026-0098 / 0099 / 0104.
+- **Audit dispositioning** — `cargo audit` is clean (0 vulnerabilities). Three transitive-only `unsound`/`unmaintained` warnings are explicitly dispositioned in `deny.toml`:
+  - **RUSTSEC-2025-0134** (`rustls-pemfile` unmaintained): pulled by `chdb-rust → reqwest 0.11`; functioning code path, upstream upgrade pending.
+  - **RUSTSEC-2026-0097** (`rand` 0.8.5 / 0.9.2 unsound): only triggers when a custom global logger calls `rand::rng()` during init. ClickGraph does not install such a logger, so the unsound pattern cannot be reached. Transitive via `tungstenite 0.21` and `quinn-proto`.
+- `cargo deny` and `cargo audit` continue to gate every PR via CI (workflow added in #178).
 
 ### 📚 Documentation
 
 - **Embedded-writes design plan** (#275, #276): `docs/design/embedded-writes.md` with phase decomposition, ID-generation strategy, and counter design.
 - **`motivation.md`** (#272): project motivation document.
+- **rustdoc broken-link sweep** (#304): fixed all 113 `--no-deps` rustdoc warnings; `cargo doc` is now warning-clean.
 
 ---
 
