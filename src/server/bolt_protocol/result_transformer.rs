@@ -34,7 +34,9 @@
 
 use crate::{
     graph_catalog::{
-        element_id::{generate_node_element_id, generate_relationship_element_id},
+        element_id::{
+            generate_node_element_id, generate_relationship_element_id, parse_node_element_id,
+        },
         graph_schema::GraphSchema,
     },
     query_planner::{
@@ -2386,8 +2388,16 @@ fn find_relationship_in_row_with_type(
     let start_id = generate_id_from_element_id(start_element_id);
     let end_id = generate_id_from_element_id(end_element_id);
 
-    // Generate relationship element_id from type and node element_ids
-    let rel_element_id = format!("{}:{}->{}", rel_type, start_element_id, end_element_id);
+    // Generate relationship element_id using bare scalar IDs extracted from the
+    // node element_ids. This matches the canonical format used everywhere else
+    // (e.g., `LIKED:2->43-`) so Browser dedupes correctly across expansions.
+    let from_bare_id = parse_node_element_id(start_element_id)
+        .map(|(_, ids)| ids.join("|"))
+        .unwrap_or_else(|_| start_element_id.to_string());
+    let to_bare_id = parse_node_element_id(end_element_id)
+        .map(|(_, ids)| ids.join("|"))
+        .unwrap_or_else(|_| end_element_id.to_string());
+    let rel_element_id = generate_relationship_element_id(rel_type, &from_bare_id, &to_bare_id);
     let rel_id = generate_id_from_element_id(&rel_element_id);
 
     // Remove internal from_id/to_id keys from properties (FK columns, not user properties)
@@ -2439,8 +2449,15 @@ fn create_relationship_with_type(
     start_element_id: &str,
     end_element_id: &str,
 ) -> Relationship {
-    // Generate element_id and derive all integer IDs from element_ids
-    let element_id = format!("{}:{}->{}", rel_type, start_element_id, end_element_id);
+    // Generate element_id using bare scalar IDs extracted from the node
+    // element_ids — same canonical format used elsewhere (`LIKED:2->43-`).
+    let from_bare_id = parse_node_element_id(start_element_id)
+        .map(|(_, ids)| ids.join("|"))
+        .unwrap_or_else(|_| start_element_id.to_string());
+    let to_bare_id = parse_node_element_id(end_element_id)
+        .map(|(_, ids)| ids.join("|"))
+        .unwrap_or_else(|_| end_element_id.to_string());
+    let element_id = generate_relationship_element_id(rel_type, &from_bare_id, &to_bare_id);
     let id = generate_id_from_element_id(&element_id);
     let start_node_id = generate_id_from_element_id(start_element_id);
     let end_node_id = generate_id_from_element_id(end_element_id);
@@ -2613,6 +2630,20 @@ mod tests {
         };
 
         assert_eq!(get_field_name(&proj_item), "n");
+    }
+
+    #[test]
+    fn test_create_relationship_with_type_uses_canonical_format() {
+        // Regression: create_relationship_with_type used to format the
+        // element_id as `LIKED:User:2-->Post:43-` (full node element_ids
+        // pasted in). Other code paths produced the canonical
+        // `LIKED:2->43-` form, so Browser saw them as two distinct edges
+        // and drew duplicate links between the same pair. Lock in the
+        // canonical bare-id format here.
+        let rel = create_relationship_with_type("LIKED", "User:2-", "Post:43-");
+        assert_eq!(rel.element_id, "LIKED:2->43-");
+        assert_eq!(rel.start_node_element_id, "User:2-");
+        assert_eq!(rel.end_node_element_id, "Post:43-");
     }
 
     #[test]
