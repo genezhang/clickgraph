@@ -1,6 +1,6 @@
 # ClickGraph Status
 
-*Updated: May 4, 2026*
+*Updated: May 6, 2026*
 
 ## Current Version: v0.6.7-dev
 
@@ -53,7 +53,7 @@ Supports server mode, embedded (in-process chdb), remote ClickHouse, and SQL-onl
 - **Property pruning**: Untyped queries skip tables missing referenced properties (10x–50x speedup)
 - **Multi-schema**: USE clause, per-request schema selection, GLOBAL_SCHEMAS registry
 - **Multi-tenancy**: Parameterized views with `tenant_id`, session commands (`CALL sys.set`)
-- **Neo4j Bolt v5.8**: Browser click-to-expand, schema procedures, session commands, EXPLAIN handling
+- **Neo4j Bolt v5.8**: Browser click-to-expand, schema procedures, session commands, EXPLAIN handling. Browser 5.x compat (v0.6.7+): `CALL dbms.components()` answered with canonical `(name, versions, edition)`; bundled `count(n) UNION ALL count(r)` and `db.labels()/relationshipTypes()/propertyKeys()` queries short-circuited; ~12 read-only `SHOW` commands stubbed with the canonical 5.x field schema; element_id format unified across all paths so iterative click-to-expand dedupes correctly across endpoints.
 - **Schema variations**: Standard, denormalized, FK-edge, polymorphic, composite ID, multi-tenant
 - **Query cache**: Keyed by query + schema + tenant_id + view_parameters
 - **LLM-powered schema discovery**: Interactive schema generation from natural language via Anthropic/OpenAI
