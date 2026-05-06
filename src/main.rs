@@ -1,4 +1,9 @@
-#[cfg(feature = "jemalloc")]
+// jemalloc is only available on non-MSVC targets — Cargo.toml gates the dep
+// with `[target.'cfg(not(target_env = "msvc"))'.dependencies]`. Mirror the
+// guard here so Windows MSVC builds use the system allocator. Without this,
+// the default `jemalloc` feature is on for Windows but the crate isn't,
+// producing E0433 ("unresolved module `tikv_jemallocator`").
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
