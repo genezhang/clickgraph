@@ -64,12 +64,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      # We ship only the `clickgraph` server and `clickgraph-client` REPL as
+      # release artifacts. Building `--workspace` would pull in `clickgraph-ffi`
+      # and `clickgraph-tck`, which both enable the `embedded` feature on
+      # `clickgraph-embedded` → pulls in `chdb-rust` → requires `libchdb`, which
+      # has no Windows binary. Cargo feature unification means any single
+      # workspace crate enabling `embedded` infects the whole graph, so we use
+      # explicit `-p` flags to scope the build to just the shipped binaries.
       - name: Build & cross-compile binaries
         uses: houseabsolute/actions-rust-cross@v1
         with:
           command: build
           target: ${{ matrix.target }}
-          args: "--locked --release --workspace"
+          args: "--locked --release -p clickgraph -p clickgraph-client"
           strip: true
 
       - name: Package artifacts (Unix)
