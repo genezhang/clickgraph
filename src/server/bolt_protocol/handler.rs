@@ -1382,6 +1382,50 @@ impl BoltHandler {
             return Ok(vec![BoltMessage::success(result_metadata)]);
         }
 
+        // Intercept `CALL dbms.components()` — Browser calls this on connect to
+        // discover the Neo4j version and refuses to load if the response is
+        // missing or empty ("Invalid version: "). We respond with the version
+        // we already advertise via server_agent ("Neo4j/5.8.0" in compat mode).
+        let q_norm = query_upper.trim_end_matches(';').trim();
+        let is_dbms_components = q_norm == "CALL DBMS.COMPONENTS()"
+            || q_norm.starts_with("CALL DBMS.COMPONENTS() ")
+            || q_norm.starts_with("CALL DBMS.COMPONENTS()YIELD")
+            || q_norm == "CALL DBMS.COMPONENTS"
+            || q_norm.starts_with("CALL DBMS.COMPONENTS ");
+        if is_dbms_components {
+            log::info!("🔍 Stubbing CALL dbms.components()");
+
+            // Strip "Neo4j/" prefix from server_agent if present, leaving just
+            // the version string (e.g., "5.8.0"). Falls back to "5.8.0" if the
+            // agent string isn't in the expected form.
+            let version = self
+                .config
+                .server_agent
+                .strip_prefix("Neo4j/")
+                .unwrap_or("5.8.0")
+                .to_string();
+
+            let row: Vec<BoltValue> = vec![
+                BoltValue::Json(serde_json::Value::String("Neo4j Kernel".to_string())),
+                BoltValue::Json(serde_json::json!([version])),
+                BoltValue::Json(serde_json::Value::String("community".to_string())),
+            ];
+
+            {
+                let mut context = lock_context!(self.context);
+                context.set_state(ConnectionState::Streaming);
+            }
+            self.cached_results = Some(vec![row]);
+
+            let mut result_metadata = HashMap::new();
+            result_metadata.insert(
+                "fields".to_string(),
+                serde_json::json!(["name", "versions", "edition"]),
+            );
+            result_metadata.insert("result_consumed_after".to_string(), serde_json::json!(-1));
+            return Ok(vec![BoltMessage::success(result_metadata)]);
+        }
+
         // Stub SHOW commands Browser issues on connect to populate sidebars.
         // We don't manage indexes, procedures, functions, users, or roles — but
         // returning the canonical Neo4j-5.x field schema with zero rows keeps
