@@ -13,13 +13,17 @@
 
 pub(crate) mod clickhouse;
 
-/// Returns the dialect-specific name and casting syntax for built-in SQL
-/// functions used by `render_plan` and downstream emission helpers.
+/// Returns the dialect-specific name for built-in SQL functions used by
+/// `render_plan` and downstream emission helpers.
 ///
-/// Methods returning `&'static str` give the canonical function name —
-/// callers compose `name(args...)` themselves. Methods returning `String`
-/// emit a complete fragment because the *shape* differs between dialects
-/// (e.g. ClickHouse `toInt64(x)` vs Spark SQL `CAST(x AS BIGINT)`).
+/// All methods return `&'static str`. IR construction sites use the bare
+/// name (it's later wrapped as `name(args)` by the SQL emitter); raw
+/// SQL emission sites compose `format!("{name}({args})", ...)` directly.
+/// This shape works for ClickHouse function-call syntax and for the
+/// function-call cast aliases Spark/Databricks also accepts (`string(x)`,
+/// `bigint(x)`, etc.). If a dialect ever needs full `CAST(x AS T)` syntax
+/// or a structural rewrite (e.g. `arrayJoin` → `LATERAL VIEW explode`),
+/// that becomes a dedicated method then — not a global redesign.
 pub(crate) trait FunctionMapper: Send + Sync {
     /// Collect into a list aggregate. CH: `groupArray`. Spark: `collect_list`.
     fn collect_list(&self) -> &'static str;
@@ -31,9 +35,9 @@ pub(crate) trait FunctionMapper: Send + Sync {
     fn count_if(&self) -> &'static str;
 
     /// Count of array elements matching a predicate.
-    /// CH: `arrayCount`. Spark: requires `size(filter(...))` wrapping —
-    /// the helper [`array_count_call`](Self::array_count_call) takes care
-    /// of the dialect difference.
+    /// CH: `arrayCount`. Spark needs structural rewriting to
+    /// `size(filter(...))` — the planned Databricks emitter handles this
+    /// at the call site once dialect is plumbed through (Phase 1).
     fn array_count(&self) -> &'static str;
 
     /// Extract JSON field as a string. CH: `JSONExtractString`.
@@ -55,9 +59,12 @@ pub(crate) trait FunctionMapper: Send + Sync {
 
 /// The default function mapper for the current build.
 ///
-/// `pub(crate)` because the trait is internal; once dialect selection is
-/// plumbed through `render_plan` (Phase 1), call sites will receive the
-/// mapper from the active emitter rather than this static accessor.
+/// The `FunctionMapper` trait itself is `pub(crate)` rather than using
+/// the sealed-supertrait pattern: external code can't name the trait,
+/// so it can't implement it either, and the simpler visibility rule is
+/// enough for now. Once dialect selection is plumbed through
+/// `render_plan` (Phase 1), call sites will receive the mapper from the
+/// active emitter rather than this static accessor.
 pub(crate) fn current_function_mapper() -> &'static dyn FunctionMapper {
     static CLICKHOUSE: clickhouse::ClickhouseFunctionMapper = clickhouse::ClickhouseFunctionMapper;
     &CLICKHOUSE
