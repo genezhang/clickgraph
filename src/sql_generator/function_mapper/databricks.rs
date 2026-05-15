@@ -3,10 +3,11 @@
 //! This is the second consumer of the [`FunctionMapper`] trait, added as
 //! Phase 1.0 of the DeltaGraph refactor. Its purpose is to validate the
 //! shape of the trait by exercising every method against a real second
-//! dialect. The Databricks SQL emitter itself is not yet wired in;
-//! `current_function_mapper()` still returns ClickHouse. Phase 1.1 will
-//! plumb the dialect through call sites so this mapper gets used at
-//! emission time.
+//! dialect. Phase 1.1 wired the dialect through the rendering pipeline
+//! via the task-local `QueryContext`: `current_function_mapper()` now
+//! reads from there and defaults to ClickHouse outside a scope. The
+//! Databricks SQL emitter itself (`DatabricksEmitter::emit`) still isn't
+//! implemented — that's Phase 1.2.
 //!
 //! ### Spelling references
 //! - <https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-functions-builtin>
@@ -14,12 +15,14 @@
 //!
 //! ### Known structural gap: `array_count`
 //!
-//! ClickHouse's `arrayCount(arr, x -> pred)` has no equivalent single
-//! function in Spark — the idiom is `size(filter(arr, x -> pred))`.
-//! That's a *structural* rewrite, not a name swap, so
+//! ClickHouse's `arrayCount(x -> pred, arr)` (predicate first) has no
+//! equivalent single function in Spark — the idiom is
+//! `size(filter(arr, x -> pred))` (arg order reversed, and wrapped in
+//! `size`). That's a *structural* rewrite, not a name swap, so
 //! `FunctionMapper::array_count(&self) -> &'static str` can't express
 //! it. This method panics; the two call sites in
-//! `plan_builder_utils.rs` branch on dialect and build the
+//! `plan_builder_utils.rs` go through the helper
+//! `emit_array_count_call` which branches on dialect and builds the
 //! `size(filter(...))` form directly when running against Databricks
 //! (added in Phase 1.1).
 //!
@@ -55,10 +58,14 @@ impl FunctionMapper for DatabricksFunctionMapper {
 
     fn array_count(&self) -> &'static str {
         // Structural mismatch — see module docs. No single function name.
+        // Phase 1.1 resolved this at the call sites via
+        // `emit_array_count_call` in `plan_builder_utils.rs`; the panic
+        // stays as a tripwire for any future caller that doesn't go
+        // through the helper.
         unimplemented!(
-            "DatabricksFunctionMapper::array_count: Spark has no `arrayCount(arr, pred)`; \
-             use `size(filter(arr, pred))` at the call site. This panics so callers can't \
-             silently emit broken SQL — Phase 1.1 will rework the API or the call site."
+            "DatabricksFunctionMapper::array_count: Spark has no `arrayCount(pred, arr)`; \
+             use `size(filter(arr, pred))` at the call site (see emit_array_count_call). \
+             This panics so callers can't silently emit broken SQL."
         );
     }
 
@@ -137,7 +144,7 @@ mod tests {
     /// `size(filter(...))` directly when Databricks is active, so they
     /// never reach this method.
     #[test]
-    #[should_panic(expected = "Spark has no `arrayCount")]
+    #[should_panic(expected = "Spark has no `arrayCount(pred, arr)`")]
     fn databricks_array_count_panics() {
         let m = for_dialect(SqlDialect::Databricks);
         m.array_count();

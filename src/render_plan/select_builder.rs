@@ -28,6 +28,23 @@ use crate::render_plan::SelectItem;
 use crate::sql_generator::function_mapper::current_function_mapper;
 use crate::utils::cte_column_naming::{cte_column_name, parse_cte_column};
 
+/// Build the second argument to a `JSONExtractString` / `get_json_object`
+/// call.
+///
+/// ClickHouse's `JSONExtractString(json, 'field')` takes a bare field name.
+/// Databricks/Spark's `get_json_object(json, '$.field')` requires JSONPath.
+/// Function name comes from `FunctionMapper::json_extract_string`; the
+/// argument shape is a call-site choice, handled here.
+///
+/// Dialect is read from the task-local `QueryContext`; outside a scope this
+/// defaults to ClickHouse (bare name).
+fn json_extract_field_arg(col_name: &str) -> String {
+    match crate::server::query_context::get_current_dialect() {
+        crate::sql_generator::SqlDialect::Databricks => format!("$.{}", col_name),
+        _ => col_name.to_string(),
+    }
+}
+
 /// SelectBuilder trait for extracting SELECT items from logical plans
 pub trait SelectBuilder {
     /// Extract SELECT items from the logical plan
@@ -915,19 +932,9 @@ impl SelectBuilder for LogicalPlan {
                                     );
 
                                     // Extract property from JSON blob.
-                                    // ClickHouse: `JSONExtractString(json_column, 'property_name')`
-                                    // Databricks: `get_json_object(json_column, '$.property_name')`
-                                    // Same call shape, but Spark needs the field encoded as a
-                                    // JSONPath. Function name comes from the mapper; the JSONPath
-                                    // prefix is a call-site choice (see
-                                    // `sql_generator::function_mapper::databricks` module docs).
-                                    let field_arg =
-                                        match crate::server::query_context::get_current_dialect() {
-                                            crate::sql_generator::SqlDialect::Databricks => {
-                                                format!("$.{}", col_name)
-                                            }
-                                            _ => col_name.to_string(),
-                                        };
+                                    // CH:        JSONExtractString(json, 'name')
+                                    // Databricks: get_json_object(json, '$.name')
+                                    // See `json_extract_field_arg` for the argument rewrite.
                                     select_items.push(SelectItem {
                                         expression: RenderExpr::ScalarFnCall(ScalarFnCall {
                                             name: current_function_mapper()
@@ -943,7 +950,9 @@ impl SelectBuilder for LogicalPlan {
                                                         position
                                                     )),
                                                 }),
-                                                RenderExpr::Literal(Literal::String(field_arg)),
+                                                RenderExpr::Literal(Literal::String(
+                                                    json_extract_field_arg(col_name),
+                                                )),
                                             ],
                                         }),
                                         col_alias: item
@@ -2500,5 +2509,33 @@ impl LogicalPlan {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Outside a task-local scope (or with default ClickHouse dialect), the
+    /// JSON-extract argument is the bare field name — matching CH's
+    /// `JSONExtractString(json, 'name')` shape.
+    #[test]
+    fn json_extract_field_arg_defaults_to_bare_name() {
+        assert_eq!(json_extract_field_arg("OriginCityName"), "OriginCityName");
+    }
+
+    /// Inside a Databricks task-local scope, the argument becomes a JSONPath
+    /// (`$.field`) — matching `get_json_object(json, '$.name')`.
+    #[tokio::test]
+    async fn json_extract_field_arg_databricks_uses_jsonpath() {
+        use crate::server::query_context::{with_query_context, QueryContext};
+        use crate::sql_generator::SqlDialect;
+
+        let ctx = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        let arg = with_query_context(ctx, async { json_extract_field_arg("OriginCityName") }).await;
+        assert_eq!(arg, "$.OriginCityName");
     }
 }
