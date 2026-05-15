@@ -78,6 +78,13 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// Empty `Array(Int64)` literal with explicit cast. CH:
     /// `CAST([] AS Array(Int64))`. Spark: `CAST(array() AS ARRAY<BIGINT>)`.
     fn empty_int64_array_cast(&self) -> &'static str;
+
+    /// Array literal with the given comma-separated elements. CH:
+    /// `[a, b, c]`. Spark: `array(a, b, c)`. Empty input (`""`) yields
+    /// `[]` / `array()` respectively. Returned as `String` because the
+    /// elements aren't known to the trait — callers join their own
+    /// rendered expressions and pass them here.
+    fn array_literal(&self, elems: &str) -> String;
 }
 
 /// Returns the function mapper for the active SQL dialect, read from the

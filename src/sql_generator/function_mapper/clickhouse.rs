@@ -53,4 +53,8 @@ impl FunctionMapper for ClickhouseFunctionMapper {
     fn empty_int64_array_cast(&self) -> &'static str {
         "CAST([] AS Array(Int64))"
     }
+
+    fn array_literal(&self, elems: &str) -> String {
+        format!("[{elems}]")
+    }
 }

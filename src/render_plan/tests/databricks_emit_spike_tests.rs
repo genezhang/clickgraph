@@ -20,14 +20,11 @@
 //! flip cleanly. Run `print_databricks_vlp_sql` with `--nocapture` to
 //! see the full output. The remaining gaps for Phase 1.3+:
 //!
-//! 1. **Array-literal syntax**. Generated SQL contains
-//!    `[start_node.id, end_node.id]` and `concat(vp.path_nodes,
-//!    [end_node.id])`. CH supports `[a, b]`; Spark requires
-//!    `array(a, b)`. These literals are spelled directly in the
-//!    rendering layer (not routed through `FunctionMapper`). Fix
-//!    candidate: add `FunctionMapper::array_literal_open/close()` or a
-//!    helper `emit_array_literal(elems)` mirroring the pattern from
-//!    Phase 0.4b.
+//! 1. **Array-literal syntax (Phase 1.3, done).** `format!("[{...}]")`
+//!    sites in the rendering layer now go through
+//!    `FunctionMapper::array_literal(&elems)`, so Spark sees
+//!    `array(a, b)` and CH sees `[a, b]`. Asserted by
+//!    `vlp_under_databricks_dialect_emits_spark_spellings` below.
 //!
 //! 2. **Identifier / alias quoting**. The output uses `AS "b.id"` for
 //!    aliases with dots. CH treats `"…"` as a quoted identifier; Spark
@@ -40,7 +37,7 @@
 //!    field on `FunctionMapping` in
 //!    `emitters/clickhouse/function_registry.rs`, not `FunctionMapper`.
 //!    So `collect(n.name)` still emits `groupArray(...)` under
-//!    Databricks dialect. Phase 1.3 should make the registry
+//!    Databricks dialect. A follow-up phase should make the registry
 //!    dialect-aware (or split into per-dialect registries).
 //!
 //! 4. **Type names in non-routed CASTs**. The current spike doesn't
@@ -48,10 +45,9 @@
 //!    various rendering paths.
 //!
 //! What this means for the abstraction: Phase 0.1–1.1 was about routing
-//! the *function name* layer. The remaining work is routing the
-//! *syntactic layer* — array literals, identifier quoting, type names.
-//! All three lend themselves to the same pattern (FunctionMapper-style
-//! method or call-site helper) so the path is clear, not blocked.
+//! the *function name* layer; Phase 1.3 extended the same pattern to
+//! the *array literal* shape. The remaining work — identifier quoting
+//! and aggregate registry — fits the same shape, so the path is clear.
 
 use crate::{
     clickhouse_query_generator,
@@ -194,11 +190,21 @@ async fn vlp_under_clickhouse_dialect_emits_ch_spellings() {
         sql.contains("CAST([] AS Array(String))"),
         "expected CH empty-array cast in VLP CTE; got:\n{sql}"
     );
+    // The VLP recursive case builds `[end_id]` to append onto path_nodes.
+    // Under CH dialect this stays as bracket-syntax array literal.
+    assert!(
+        sql.contains("arrayConcat(vp.path_nodes, [") || sql.contains("[toString("),
+        "expected CH bracket-style array literal in VLP path append; got:\n{sql}"
+    );
     // Spark spellings must NOT appear under CH dialect.
     assert!(!sql.contains("ARRAY<STRING>"), "CH SQL leaked Spark type");
     assert!(
         !sql.contains("array_contains"),
         "CH SQL leaked Spark function name"
+    );
+    assert!(
+        !sql.contains("array(toString("),
+        "CH SQL leaked Spark array() literal"
     );
 }
 
@@ -261,5 +267,20 @@ async fn vlp_under_databricks_dialect_emits_spark_spellings() {
     assert!(
         !sql.contains("CAST([] AS Array(String))"),
         "Databricks SQL leaked CH empty-array cast; got:\n{sql}"
+    );
+
+    // Phase 1.3: array literals now route through FunctionMapper.
+    // The VLP recursive case builds `array(end_id)` to append onto
+    // path_nodes under Databricks dialect (CH builds `[end_id]`).
+    assert!(
+        sql.contains("concat(vp.path_nodes, array("),
+        "expected Spark `array(...)` literal in VLP path append; got:\n{sql}"
+    );
+    // No bracket-style array literals should leak into Databricks SQL.
+    // (We allow `[` to appear in other contexts like `Array(String)`
+    // type names inside CH-only output, but those shouldn't show up here.)
+    assert!(
+        !sql.contains(", [toString(") && !sql.contains("vp.path_nodes, ["),
+        "Databricks SQL leaked CH bracket-style array literal; got:\n{sql}"
     );
 }

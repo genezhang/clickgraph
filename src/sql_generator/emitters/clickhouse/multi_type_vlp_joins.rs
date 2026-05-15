@@ -295,13 +295,14 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             format!("CAST({}, '{}')", default, ch_type)
         };
 
+        let empty_str_arr = crate::sql_generator::function_mapper::current_function_mapper()
+            .empty_string_array_cast();
         format!(
-            "SELECT '' AS end_type, {} AS end_id, {} AS start_id, '' AS start_type, \
+            "SELECT '' AS end_type, {end_id_sql} AS end_id, {start_id_sql} AS start_id, '' AS start_type, \
              '{{}}' AS end_properties, '{{}}' AS start_properties, \
-             0 AS hop_count, CAST([], 'Array(String)') AS path_relationships, \
-             CAST([], 'Array(String)') AS rel_properties, \
-             CAST([], 'Array(String)') AS path_nodes WHERE 0 = 1",
-            end_id_sql, start_id_sql
+             0 AS hop_count, {empty_str_arr} AS path_relationships, \
+             {empty_str_arr} AS rel_properties, \
+             {empty_str_arr} AS path_nodes WHERE 0 = 1"
         )
     }
 
@@ -625,8 +626,10 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         // hop_count = 0
         items.push("0 AS hop_count".to_string());
         // empty path arrays
-        items.push("CAST([], 'Array(String)') AS path_relationships".to_string());
-        items.push("CAST([], 'Array(String)') AS rel_properties".to_string());
+        let empty_str_arr = crate::sql_generator::function_mapper::current_function_mapper()
+            .empty_string_array_cast();
+        items.push(format!("{empty_str_arr} AS path_relationships"));
+        items.push(format!("{empty_str_arr} AS rel_properties"));
         // path_nodes = [start_id] for zero-hop path
         let path_node_id_sql = if let Ok(id) = self.get_node_id_column(start_type) {
             let id_sql = id.to_sql_native(&start_alias_sql);
@@ -638,7 +641,11 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         } else {
             format!("toString({}.id)", start_alias_sql)
         };
-        items.push(format!("[{}] AS path_nodes", path_node_id_sql));
+        items.push(format!(
+            "{} AS path_nodes",
+            crate::sql_generator::function_mapper::current_function_mapper()
+                .array_literal(&path_node_id_sql)
+        ));
 
         let mut sql = format!(
             "SELECT {}\nFROM {} {}",
@@ -1370,7 +1377,11 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
             .iter()
             .map(|hop| format!("'{}'", hop.rel_type))
             .collect();
-        items.push(format!("[{}] AS path_relationships", rel_types.join(", ")));
+        items.push(format!(
+            "{} AS path_relationships",
+            crate::sql_generator::function_mapper::current_function_mapper()
+                .array_literal(&rel_types.join(", "))
+        ));
 
         // 🔧 FIX: Add rel_properties for RETURN r support
         // Generate array of JSON objects containing relationship properties for each hop
@@ -1440,7 +1451,11 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 }
             })
             .collect();
-        items.push(format!("[{}] AS rel_properties", rel_props.join(", ")));
+        items.push(format!(
+            "{} AS rel_properties",
+            crate::sql_generator::function_mapper::current_function_mapper()
+                .array_literal(&rel_props.join(", "))
+        ));
 
         // Add path_nodes for nodes(p) function support
         // Build array of all node IDs in the path: [start_id, intermediate..., end_id]
@@ -1461,7 +1476,11 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 }
             })
             .collect();
-        items.push(format!("[{}] AS path_nodes", path_node_exprs.join(", ")));
+        items.push(format!(
+            "{} AS path_nodes",
+            crate::sql_generator::function_mapper::current_function_mapper()
+                .array_literal(&path_node_exprs.join(", "))
+        ));
 
         items
     }

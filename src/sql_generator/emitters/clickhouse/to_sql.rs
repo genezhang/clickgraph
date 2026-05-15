@@ -58,8 +58,11 @@ fn flatten_list_addition_operands_logical(
         _ => {
             let sql = ToSql::to_sql(expr)?;
             if is_known_scalar_logical(expr) {
-                // Wrap scalar as single-element array for arrayConcat compatibility
-                Ok(vec![format!("[{}]", sql)])
+                // Wrap scalar as single-element array for arrayConcat/concat compatibility
+                Ok(vec![
+                    crate::sql_generator::function_mapper::current_function_mapper()
+                        .array_literal(&sql),
+                ])
             } else {
                 Ok(vec![sql])
             }

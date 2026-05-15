@@ -63,6 +63,14 @@ fn emit_cycle_check(id_expr: &str) -> String {
     format!("NOT {array_contains}(vp.path_nodes, {id_expr})")
 }
 
+/// Emit a dialect-correct array literal. CH: `[a, b]`. Spark: `array(a, b)`.
+/// Thin shorthand over `FunctionMapper::array_literal` — VLP code builds
+/// these in many places (path_nodes, path_relationships, scalar→array
+/// wrappers for arrayConcat).
+fn arr(elems: &str) -> String {
+    current_function_mapper().array_literal(elems)
+}
+
 /// Property to include in the CTE (column name and which node it belongs to)
 #[derive(Debug, Clone)]
 pub struct NodeProperty {
@@ -660,25 +668,29 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // For now, return the first relationship type if available, otherwise a placeholder
         if let Some(ref types) = self.relationship_types {
             if let Some(first_type) = types.first() {
-                format!("['{}'] as path_relationships", first_type)
+                format!(
+                    "{} as path_relationships",
+                    arr(&format!("'{}'", first_type))
+                )
             } else {
-                "[] as path_relationships".to_string()
+                format!("{} as path_relationships", arr(""))
             }
         } else {
-            "[] as path_relationships".to_string()
+            format!("{} as path_relationships", arr(""))
         }
     }
 
     /// Get relationship type array for appending in recursive case
     fn get_relationship_type_array(&self) -> String {
+        let mapper = crate::sql_generator::function_mapper::current_function_mapper();
         if let Some(ref types) = self.relationship_types {
             if let Some(first_type) = types.first() {
-                format!("['{}']", first_type)
+                mapper.array_literal(&format!("'{}'", first_type))
             } else {
-                "[]".to_string()
+                mapper.array_literal("")
             }
         } else {
-            "[]".to_string()
+            mapper.array_literal("")
         }
     }
 
@@ -1230,17 +1242,19 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // IMPORTANT: Use FROM+WHERE to read BFS hop level instead of scalar subqueries.
         // Scalar subqueries referencing recursive CTEs inside other CTEs cause ClickHouse
         // to hang (CTE inlining re-evaluates the entire recursion chain).
+        let target_nodes_arr = arr(target_id.as_str());
+        let source_scalar_arr = arr(&format!("ew.{source}"));
         let recon_sql = format!(
             "{recon_cte} AS (\n    \
              SELECT CAST({target_id} AS Int64) AS node_id,\n           \
              bfs_target.hop AS remaining,\n           \
-             CAST([{target_id}] AS Array(Int64)) AS path_nodes,\n           \
+             CAST({target_nodes_arr} AS Array(Int64)) AS path_nodes,\n           \
              toFloat64(0) AS total_weight\n    \
              FROM {bfs_cte} AS bfs_target\n    \
              WHERE bfs_target.node_id = CAST({target_id} AS Int64)\n    \
              UNION ALL\n    \
              SELECT ew.{source} AS node_id, pr.remaining - 1 AS remaining,\n           \
-             {ac}([ew.{source}], pr.path_nodes) AS path_nodes,\n           \
+             {ac}({source_scalar_arr}, pr.path_nodes) AS path_nodes,\n           \
              pr.total_weight + ew.{weight} AS total_weight\n    \
              FROM {recon_cte} pr\n    \
              JOIN {weight_cte} ew ON ew.{target_col} = pr.node_id\n    \
@@ -1737,8 +1751,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
             format!("{empty_str_arr} as path_relationships"), // Minimal placeholder when path data not needed
             // Add path_nodes for UNWIND nodes(p) support - for zero hop, just the start node
             format!(
-                "[{}.{}] as path_nodes",
-                self.start_node_alias, self.start_node_id_column
+                "{} as path_nodes",
+                arr(&format!(
+                    "{}.{}",
+                    self.start_node_alias, self.start_node_id_column
+                ))
             ),
         ];
 
@@ -1871,12 +1888,15 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 (Identifier::Single(_), Identifier::Single(_))
                 | (Identifier::Composite(_), Identifier::Composite(_)) => {
                     format!(
-                        "[{}, {}] as path_nodes",
-                        emit_id_expr(&self.start_node_alias, &start_id_identifier),
-                        emit_id_expr(&self.end_node_alias, &end_id_identifier),
+                        "{} as path_nodes",
+                        arr(&format!(
+                            "{}, {}",
+                            emit_id_expr(&self.start_node_alias, &start_id_identifier),
+                            emit_id_expr(&self.end_node_alias, &end_id_identifier),
+                        ))
                     )
                 }
-                _ => "[] as path_nodes".to_string(),
+                _ => format!("{} as path_nodes", arr("")),
             };
 
             // Build property selections
@@ -2037,9 +2057,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
     fn generate_multi_hop_base_case(&self, hop_count: u32) -> String {
         // This is a simplified version - in practice, we'd need to handle
         // different relationship types and intermediate node types
+        let empty_arr = arr("");
         format!(
-            "    -- Multi-hop base case for {} hops (simplified)\n    SELECT NULL as start_id, NULL as end_id, {} as hop_count, [] as path_relationships\n    WHERE false  -- Placeholder",
-            hop_count, hop_count
+            "    -- Multi-hop base case for {hop_count} hops (simplified)\n    SELECT NULL as start_id, NULL as end_id, {hop_count} as hop_count, {empty_arr} as path_relationships\n    WHERE false  -- Placeholder"
         )
     }
     /// Generate weighted base case using pre-computed edge weight CTE
@@ -2061,8 +2081,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let empty_str_arr = current_function_mapper().empty_string_array_cast();
         let path_rel_expr = format!("{empty_str_arr} AS path_relationships");
+        let path_nodes_arr = arr(&format!("ew.{}, ew.{}", wc.source_column, wc.target_column));
         format!(
-            "    SELECT\n        ew.{source} AS start_id,\n        ew.{target} AS end_id,\n        1 AS hop_count,\n        ew.{weight} AS total_weight,\n        [ew.{source}, ew.{target}] AS path_nodes,\n        {path_rel_expr} \n    FROM {cte} ew{where_clause}",
+            "    SELECT\n        ew.{source} AS start_id,\n        ew.{target} AS end_id,\n        1 AS hop_count,\n        ew.{weight} AS total_weight,\n        {path_nodes_arr} AS path_nodes,\n        {path_rel_expr} \n    FROM {cte} ew{where_clause}",
             source = wc.source_column,
             target = wc.target_column,
             weight = wc.weight_column,
@@ -2087,9 +2108,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
             format!("{empty_str_arr} AS path_relationships")
         };
         let cycle_pred = emit_cycle_check(&format!("ew.{}", wc.target_column));
+        let target_scalar_arr = arr(&format!("ew.{}", wc.target_column));
 
         format!(
-            "    SELECT\n        vp.start_id,\n        ew.{target} AS end_id,\n        vp.hop_count + 1 AS hop_count,\n        vp.total_weight + ew.{weight} AS total_weight,\n        {ac}(vp.path_nodes, [ew.{target}]) AS path_nodes,\n        {path_rel_col}\n    FROM {cte_name} vp\n    JOIN {weight_cte} ew ON ew.{source} = vp.end_id\n    WHERE vp.hop_count < {max_hops}\n      AND {cycle_pred}",
+            "    SELECT\n        vp.start_id,\n        ew.{target} AS end_id,\n        vp.hop_count + 1 AS hop_count,\n        vp.total_weight + ew.{weight} AS total_weight,\n        {ac}(vp.path_nodes, {target_scalar_arr}) AS path_nodes,\n        {path_rel_col}\n    FROM {cte_name} vp\n    JOIN {weight_cte} ew ON ew.{source} = vp.end_id\n    WHERE vp.hop_count < {max_hops}\n      AND {cycle_pred}",
             target = wc.target_column,
             weight = wc.weight_column,
             source = wc.source_column,
@@ -2149,8 +2171,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         // end_id selection (composite-aware) and path_nodes extension
         let end_id_selection = format!("{end_id_expr_str} as end_id");
-        let path_nodes_selection =
-            format!("{ac}(vp.path_nodes, [{end_id_expr_str}]) as path_nodes");
+        let path_nodes_selection = format!(
+            "{ac}(vp.path_nodes, {}) as path_nodes",
+            arr(&end_id_expr_str)
+        );
 
         // Build property selections for recursive case
         let mut select_items = vec![
@@ -2402,8 +2426,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
         }
         // Track intermediate node IDs in path_nodes
         select_items.push(format!(
-            "{ac}(vp.path_nodes, [intermediate_node.{}]) as path_nodes",
-            intermediate_id_col
+            "{ac}(vp.path_nodes, {}) as path_nodes",
+            arr(&format!("intermediate_node.{}", intermediate_id_col))
         ));
 
         // Add properties: start properties pass through, end properties NOT available yet
@@ -2477,9 +2501,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
     fn generate_fk_edge_base_case(&self, hop_count: u32) -> String {
         if hop_count != 1 {
             // Multi-hop base case not yet supported for FK-edge
+            let empty_arr = arr("");
             return format!(
-                "    -- Multi-hop base case for {} hops (FK-edge - not yet supported)\n    SELECT NULL as start_id, NULL as end_id, {} as hop_count, [] as path_relationships, [] as path_nodes\n    WHERE false",
-                hop_count, hop_count
+                "    -- Multi-hop base case for {hop_count} hops (FK-edge - not yet supported)\n    SELECT NULL as start_id, NULL as end_id, {hop_count} as hop_count, {empty_arr} as path_relationships, {empty_arr} as path_nodes\n    WHERE false"
             );
         }
 
@@ -2502,11 +2526,14 @@ impl<'a> VariableLengthCteGenerator<'a> {
             select_items.push(format!("{empty_str_arr} as path_relationships"));
         }
         select_items.push(format!(
-            "[{}.{}, {}.{}] as path_nodes",
-            self.start_node_alias,
-            self.start_node_id_column,
-            self.end_node_alias,
-            self.end_node_id_column
+            "{} as path_nodes",
+            arr(&format!(
+                "{}.{}, {}.{}",
+                self.start_node_alias,
+                self.start_node_id_column,
+                self.end_node_alias,
+                self.end_node_id_column
+            ))
         ));
 
         // Add properties for start and end nodes
@@ -2630,8 +2657,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
         }
         // APPEND the new node to path_nodes
         select_items.push(format!(
-            "{ac}(vp.path_nodes, [{}.{}]) as path_nodes",
-            "new_end", self.end_node_id_column
+            "{ac}(vp.path_nodes, {}) as path_nodes",
+            arr(&format!("new_end.{}", self.end_node_id_column))
         ));
 
         // Add properties: start properties from CTE, end properties from new joined node
@@ -2716,8 +2743,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
         }
         // PREPEND the new node to path_nodes
         select_items.push(format!(
-            "{ac}([{}.{}], vp.path_nodes) as path_nodes",
-            "new_start", self.start_node_id_column
+            "{ac}({}, vp.path_nodes) as path_nodes",
+            arr(&format!("new_start.{}", self.start_node_id_column))
         ));
 
         // Add properties: end properties from CTE, start properties from new joined node
@@ -2796,9 +2823,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         if hop_count != 1 {
             // Multi-hop base case not yet supported for denormalized
+            let empty_arr = arr("");
             return format!(
-                "    -- Multi-hop base case for {} hops (denormalized - not yet supported)\n    SELECT NULL as start_id, NULL as end_id, {} as hop_count, [] as path_relationships, [] as path_nodes\n    WHERE false",
-                hop_count, hop_count
+                "    -- Multi-hop base case for {hop_count} hops (denormalized - not yet supported)\n    SELECT NULL as start_id, NULL as end_id, {hop_count} as hop_count, {empty_arr} as path_relationships, {empty_arr} as path_nodes\n    WHERE false"
             );
         }
 
@@ -2821,11 +2848,14 @@ impl<'a> VariableLengthCteGenerator<'a> {
             select_items.push(format!("{empty_str_arr} as path_relationships"));
         }
         select_items.push(format!(
-            "[{}.{}, {}.{}] as path_nodes",
-            self.relationship_alias,
-            self.relationship_from_column,
-            self.relationship_alias,
-            self.relationship_to_column
+            "{} as path_nodes",
+            arr(&format!(
+                "{}.{}, {}.{}",
+                self.relationship_alias,
+                self.relationship_from_column,
+                self.relationship_alias,
+                self.relationship_to_column
+            ))
         ));
 
         // Generate JSON property blobs for start and end nodes (denormalized)
@@ -2939,7 +2969,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     }
                 })
                 .unwrap_or_else(|| "'{}'".to_string());
-            select_items.push(format!("[{}] AS rel_properties", rel_props_json));
+            select_items.push(format!(
+                "{} AS rel_properties",
+                crate::sql_generator::function_mapper::current_function_mapper()
+                    .array_literal(&rel_props_json)
+            ));
         }
 
         // Add start_type and end_type discriminators for transform_vlp_path()
@@ -3046,8 +3080,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
             select_items.push(format!("{empty_str_arr} as path_relationships"));
         }
         select_items.push(format!(
-            "{ac}(vp.path_nodes, [{}.{}]) as path_nodes",
-            self.relationship_alias, self.relationship_to_column
+            "{ac}(vp.path_nodes, {}) as path_nodes",
+            arr(&format!(
+                "{}.{}",
+                self.relationship_alias, self.relationship_to_column
+            ))
         ));
 
         // Add denormalized properties as JSON blobs matching base case columns.
@@ -3117,8 +3154,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 })
                 .unwrap_or_else(|| "'{}'".to_string());
             select_items.push(format!(
-                "{ac}(vp.rel_properties, [{}]) as rel_properties",
-                rel_props_json
+                "{ac}(vp.rel_properties, {}) as rel_properties",
+                arr(&rel_props_json)
             ));
 
             // start_type / end_type: carry forward from CTE
@@ -3227,9 +3264,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
     fn generate_mixed_base_case(&self, hop_count: u32) -> String {
         if hop_count != 1 {
             // Multi-hop base case not yet supported for mixed
+            let empty_arr = arr("");
             return format!(
-                "    -- Multi-hop base case for {} hops (mixed - not yet supported)\n    SELECT NULL as start_id, NULL as end_id, {} as hop_count, [] as path_relationships, [] as path_nodes\n    WHERE false",
-                hop_count, hop_count
+                "    -- Multi-hop base case for {hop_count} hops (mixed - not yet supported)\n    SELECT NULL as start_id, NULL as end_id, {hop_count} as hop_count, {empty_arr} as path_relationships, {empty_arr} as path_nodes\n    WHERE false"
             );
         }
 
@@ -3268,8 +3305,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
             select_items.push(format!("{empty_str_arr} as path_relationships"));
         }
         select_items.push(format!(
-            "[{}, {}] as path_nodes",
-            start_id_expr, end_id_expr
+            "{} as path_nodes",
+            arr(&format!("{}, {}", start_id_expr, end_id_expr))
         ));
 
         // Add properties for non-denormalized nodes
@@ -3398,8 +3435,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
         }
         // path_nodes always maintained for cycle detection
         select_items.push(format!(
-            "{ac}(vp.path_nodes, [{}]) as path_nodes",
-            end_id_expr
+            "{ac}(vp.path_nodes, {}) as path_nodes",
+            arr(&end_id_expr)
         ));
 
         // Add properties - start from CTE, end from joined node (if not denorm)
