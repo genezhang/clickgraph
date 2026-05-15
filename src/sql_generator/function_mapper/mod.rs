@@ -6,10 +6,14 @@
 //! Phase 1 can swap in a Databricks/Spark SQL implementation without
 //! grepping for string literals across the planner.
 //!
-//! ## Phase 0.2 status
-//! Only `ClickhouseFunctionMapper` is implemented. `current_function_mapper`
-//! returns it unconditionally; Phase 1 will replace this with a dialect-aware
-//! accessor once the dialect is plumbed through call sites.
+//! ## Status
+//! Two mappers ship: `ClickhouseFunctionMapper` (production) and
+//! `DatabricksFunctionMapper` (Phase 1.0 spike — exercised by unit tests
+//! but not yet reached from emission). `current_function_mapper()`
+//! still returns ClickHouse unconditionally because the dialect isn't
+//! plumbed through call sites yet; use [`for_dialect`] when you need
+//! an explicit one. Phase 1.1 will route call sites through
+//! [`for_dialect`] with the active dialect.
 
 pub(crate) mod clickhouse;
 pub(crate) mod databricks;

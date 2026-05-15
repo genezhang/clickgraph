@@ -48,8 +48,8 @@ pub enum SqlDialect {
     SQLite,
 
     /// Databricks SQL Warehouse / Spark SQL. The emitter is not yet
-    /// implemented — `emitter_for(Databricks)` will panic. The
-    /// [`FunctionMapper`] (see [`function_mapper::for_dialect`]) IS
+    /// implemented — `emitter_for(SqlDialect::Databricks)` will panic.
+    /// The [`FunctionMapper`] (see [`function_mapper::for_dialect`]) IS
     /// implemented and locked in by unit tests.
     ///
     /// [`FunctionMapper`]: function_mapper::FunctionMapper

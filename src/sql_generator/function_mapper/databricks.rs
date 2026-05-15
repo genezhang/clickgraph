@@ -12,16 +12,25 @@
 //! - <https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-functions-builtin>
 //! - Apache Spark SQL function reference
 //!
-//! ### Known structural gap: `array_count`
-//! ClickHouse has `arrayCount(arr, x -> pred)`. Spark/Databricks has no
-//! equivalent single function — the idiom is `size(filter(arr, x -> pred))`.
-//! That's a *structural* rewrite, not a name swap, so the current
-//! `FunctionMapper::array_count(&self) -> &'static str` API cannot express
-//! it. Calling `array_count()` on this mapper panics with a TODO. Phase 1.1
-//! will either widen the trait (`array_count_call(&self, arr, pred) -> String`)
-//! or rewrite the single call site to build `size(filter(...))` at the
-//! emission boundary. The panic documents the gap so callers can't
-//! accidentally produce broken SQL.
+//! ### Known structural gaps (panic with TODO until Phase 1.1)
+//!
+//! **`array_count`**: ClickHouse's `arrayCount(arr, x -> pred)` has no
+//! equivalent single function in Spark — the idiom is
+//! `size(filter(arr, x -> pred))`. That's a *structural* rewrite, not a
+//! name swap, so `FunctionMapper::array_count(&self) -> &'static str`
+//! can't express it.
+//!
+//! **`json_extract_string`**: CH's `JSONExtractString(blob, 'field')` takes
+//! a bare field name; Spark's `get_json_object(blob, '$.field')` takes a
+//! JSONPath. Same name shape but the second argument needs structural
+//! rewriting. Returning `"get_json_object"` would silently emit broken
+//! SQL.
+//!
+//! Both panic with a TODO so callers can't accidentally produce wrong
+//! output. Phase 1.1 will pick a strategy — likely widening the call
+//! sites in `select_builder.rs` and `plan_builder_utils.rs` rather than
+//! widening the trait, since each gap has only one call site and the
+//! structural choice belongs there.
 
 use super::FunctionMapper;
 
@@ -54,7 +63,17 @@ impl FunctionMapper for DatabricksFunctionMapper {
     }
 
     fn json_extract_string(&self) -> &'static str {
-        "get_json_object"
+        // Structural mismatch — see module docs. CH passes the property as a
+        // bare field name (`'OriginCityName'`); Spark's `get_json_object`
+        // wants a JSONPath (`'$.OriginCityName'`). The call site builds the
+        // function args, so it must do the rewrite. Panicking here prevents
+        // silent breakage if a future caller forgets.
+        unimplemented!(
+            "DatabricksFunctionMapper::json_extract_string: Spark's `get_json_object` \
+             requires a JSONPath argument (`$.field`) but the existing call site passes a \
+             bare field name. Phase 1.1 must rewrite the argument at the call site before \
+             this mapping can be used."
+        );
     }
 
     fn cast_int64(&self) -> &'static str {
@@ -106,7 +125,6 @@ mod tests {
         assert_eq!(m.collect_list(), "collect_list");
         assert_eq!(m.array_element(), "element_at");
         assert_eq!(m.count_if(), "count_if");
-        assert_eq!(m.json_extract_string(), "get_json_object");
         assert_eq!(m.cast_int64(), "bigint");
         assert_eq!(m.cast_uint8(), "tinyint");
         assert_eq!(m.cast_string(), "string");
@@ -127,6 +145,16 @@ mod tests {
     fn databricks_array_count_panics() {
         let m = for_dialect(SqlDialect::Databricks);
         m.array_count();
+    }
+
+    /// Documented structural gap: `get_json_object` needs a JSONPath
+    /// argument; the call site passes a bare field name. Phase 1.1 must
+    /// rewrite the argument before the mapping can be used.
+    #[test]
+    #[should_panic(expected = "requires a JSONPath argument")]
+    fn databricks_json_extract_string_panics() {
+        let m = for_dialect(SqlDialect::Databricks);
+        m.json_extract_string();
     }
 
     /// `current_function_mapper()` still returns ClickHouse — Phase 1.1
