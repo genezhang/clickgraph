@@ -26,6 +26,43 @@ fn get_default_max_hops() -> u32 {
     DEFAULT_MAX_HOPS
 }
 
+/// Emit a SQL expression that materializes a node's ID, composite-aware.
+///
+/// Returns the bare expression (no `AS` clause). Single-column IDs render as
+/// `alias.col` (quoted); composite IDs collapse into a pipe-joined string via
+/// `concat(toString(alias.c1), '|', toString(alias.c2), ...)` so they can be
+/// stored in `path_nodes` and used for `has()` cycle checks.
+fn emit_id_expr(table_alias: &str, id: &Identifier) -> String {
+    match id {
+        Identifier::Single(col) => format!(
+            "{}.{}",
+            table_alias,
+            crate::clickhouse_query_generator::quote_identifier(col)
+        ),
+        Identifier::Composite(cols) => {
+            let cast_str = current_function_mapper().cast_string();
+            let parts: Vec<String> = cols
+                .iter()
+                .map(|c| {
+                    format!(
+                        "{cast_str}({}.{})",
+                        table_alias,
+                        crate::clickhouse_query_generator::quote_identifier(c)
+                    )
+                })
+                .collect();
+            format!("concat({}, '|', {})", parts[0], parts[1..].join(", '|', "))
+        }
+    }
+}
+
+/// Emit the recursive-CTE cycle-check predicate: `NOT array_contains(vp.path_nodes, id)`.
+/// `id_expr` should be the bare ID expression (typically from [`emit_id_expr`]).
+fn emit_cycle_check(id_expr: &str) -> String {
+    let array_contains = current_function_mapper().array_contains();
+    format!("NOT {array_contains}(vp.path_nodes, {id_expr})")
+}
+
 /// Property to include in the CTE (column name and which node it belongs to)
 #[derive(Debug, Clone)]
 pub struct NodeProperty {
@@ -1842,104 +1879,29 @@ impl<'a> VariableLengthCteGenerator<'a> {
             let start_id_identifier = parse_id_cols(&self.start_node_id_column);
             let end_id_identifier = parse_id_cols(&self.end_node_id_column);
 
-            // Generate start_id selection with composite ID support
-            let start_id_selection = match &start_id_identifier {
-                Identifier::Single(col) => {
-                    format!(
-                        "{}.{} as start_id",
-                        self.start_node_alias,
-                        crate::clickhouse_query_generator::quote_identifier(col)
-                    )
-                }
-                Identifier::Composite(cols) => {
-                    let concat_parts: Vec<String> = cols
-                        .iter()
-                        .map(|c| {
-                            format!(
-                                "toString({}.{})",
-                                self.start_node_alias,
-                                crate::clickhouse_query_generator::quote_identifier(c)
-                            )
-                        })
-                        .collect();
-                    format!(
-                        "concat({}, '|', {}) as start_id",
-                        concat_parts[0],
-                        concat_parts[1..].join(", '|', ")
-                    )
-                }
-            };
+            // Generate start_id / end_id selections (composite-aware)
+            let start_id_selection = format!(
+                "{} as start_id",
+                emit_id_expr(&self.start_node_alias, &start_id_identifier)
+            );
+            let end_id_selection = format!(
+                "{} as end_id",
+                emit_id_expr(&self.end_node_alias, &end_id_identifier)
+            );
 
-            // Generate end_id selection with composite ID support
-            let end_id_selection = match &end_id_identifier {
-                Identifier::Single(col) => {
-                    format!(
-                        "{}.{} as end_id",
-                        self.end_node_alias,
-                        crate::clickhouse_query_generator::quote_identifier(col)
-                    )
-                }
-                Identifier::Composite(cols) => {
-                    let concat_parts: Vec<String> = cols
-                        .iter()
-                        .map(|c| {
-                            format!(
-                                "toString({}.{})",
-                                self.end_node_alias,
-                                crate::clickhouse_query_generator::quote_identifier(c)
-                            )
-                        })
-                        .collect();
-                    format!(
-                        "concat({}, '|', {}) as end_id",
-                        concat_parts[0],
-                        concat_parts[1..].join(", '|', ")
-                    )
-                }
-            };
-
-            // Generate path_nodes selection with composite ID support
+            // path_nodes: only emit a proper 2-element array when start and end
+            // ID shapes match (both Single or both Composite); preserve the
+            // pre-existing defensive fallback for mismatched shapes.
             let path_nodes_selection = match (&start_id_identifier, &end_id_identifier) {
-                (Identifier::Single(start_col), Identifier::Single(end_col)) => {
+                (Identifier::Single(_), Identifier::Single(_))
+                | (Identifier::Composite(_), Identifier::Composite(_)) => {
                     format!(
-                        "[{}.{}, {}.{}] as path_nodes",
-                        self.start_node_alias, start_col, self.end_node_alias, end_col
+                        "[{}, {}] as path_nodes",
+                        emit_id_expr(&self.start_node_alias, &start_id_identifier),
+                        emit_id_expr(&self.end_node_alias, &end_id_identifier),
                     )
                 }
-                (Identifier::Composite(start_cols), Identifier::Composite(end_cols)) => {
-                    // For composite IDs, store pipe-joined strings
-                    let start_concat: Vec<String> = start_cols
-                        .iter()
-                        .map(|c| {
-                            format!(
-                                "toString({}.{})",
-                                self.start_node_alias,
-                                crate::clickhouse_query_generator::quote_identifier(c)
-                            )
-                        })
-                        .collect();
-                    let end_concat: Vec<String> = end_cols
-                        .iter()
-                        .map(|c| {
-                            format!(
-                                "toString({}.{})",
-                                self.end_node_alias,
-                                crate::clickhouse_query_generator::quote_identifier(c)
-                            )
-                        })
-                        .collect();
-                    format!(
-                        "[concat({}, '|', {}), concat({}, '|', {})] as path_nodes",
-                        start_concat[0],
-                        start_concat[1..].join(", '|', "),
-                        end_concat[0],
-                        end_concat[1..].join(", '|', ")
-                    )
-                }
-                _ => {
-                    // Mixed case - shouldn't happen for normal patterns
-                    "[] as path_nodes".to_string()
-                }
+                _ => "[] as path_nodes".to_string(),
             };
 
             // Build property selections
@@ -2143,16 +2105,16 @@ impl<'a> VariableLengthCteGenerator<'a> {
     ) -> String {
         let fmap = current_function_mapper();
         let ac = fmap.array_concat();
-        let ah = fmap.array_contains();
         let empty_str_arr = fmap.empty_string_array_cast();
         let path_rel_col = if self.needs_path_data() {
             format!("{ac}(vp.path_relationships, {empty_str_arr}) AS path_relationships")
         } else {
             format!("{empty_str_arr} AS path_relationships")
         };
+        let cycle_pred = emit_cycle_check(&format!("ew.{}", wc.target_column));
 
         format!(
-            "    SELECT\n        vp.start_id,\n        ew.{target} AS end_id,\n        vp.hop_count + 1 AS hop_count,\n        vp.total_weight + ew.{weight} AS total_weight,\n        {ac}(vp.path_nodes, [ew.{target}]) AS path_nodes,\n        {path_rel_col}\n    FROM {cte_name} vp\n    JOIN {weight_cte} ew ON ew.{source} = vp.end_id\n    WHERE vp.hop_count < {max_hops}\n      AND NOT {ah}(vp.path_nodes, ew.{target})",
+            "    SELECT\n        vp.start_id,\n        ew.{target} AS end_id,\n        vp.hop_count + 1 AS hop_count,\n        vp.total_weight + ew.{weight} AS total_weight,\n        {ac}(vp.path_nodes, [ew.{target}]) AS path_nodes,\n        {path_rel_col}\n    FROM {cte_name} vp\n    JOIN {weight_cte} ew ON ew.{source} = vp.end_id\n    WHERE vp.hop_count < {max_hops}\n      AND {cycle_pred}",
             target = wc.target_column,
             weight = wc.weight_column,
             source = wc.source_column,
@@ -2204,68 +2166,16 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let parse_id_cols = Identifier::from_comma_separated;
         let fmap = current_function_mapper();
         let ac = fmap.array_concat();
-        let ah = fmap.array_contains();
         let empty_str_arr = fmap.empty_string_array_cast();
 
         // Parse end node ID identifier
         let end_id_identifier = parse_id_cols(&self.end_node_id_column);
+        let end_id_expr_str = emit_id_expr(&self.end_node_alias, &end_id_identifier);
 
-        // Generate end_id selection with composite ID support
-        let end_id_selection = match &end_id_identifier {
-            Identifier::Single(col) => {
-                format!(
-                    "{}.{} as end_id",
-                    self.end_node_alias,
-                    crate::clickhouse_query_generator::quote_identifier(col)
-                )
-            }
-            Identifier::Composite(cols) => {
-                let concat_parts: Vec<String> = cols
-                    .iter()
-                    .map(|c| {
-                        format!(
-                            "toString({}.{})",
-                            self.end_node_alias,
-                            crate::clickhouse_query_generator::quote_identifier(c)
-                        )
-                    })
-                    .collect();
-                format!(
-                    "concat({}, '|', {}) as end_id",
-                    concat_parts[0],
-                    concat_parts[1..].join(", '|', ")
-                )
-            }
-        };
-
-        // Generate path_nodes selection with composite ID support
-        let path_nodes_selection = match &end_id_identifier {
-            Identifier::Single(col) => {
-                format!(
-                    "{ac}(vp.path_nodes, [{}.{}]) as path_nodes",
-                    self.end_node_alias,
-                    crate::clickhouse_query_generator::quote_identifier(col)
-                )
-            }
-            Identifier::Composite(cols) => {
-                // For composite IDs, store the pipe-joined string in path_nodes
-                let concat_parts: Vec<String> = cols
-                    .iter()
-                    .map(|c| {
-                        format!(
-                            "toString({}.{})",
-                            self.end_node_alias,
-                            crate::clickhouse_query_generator::quote_identifier(c)
-                        )
-                    })
-                    .collect();
-                format!(
-                    "{ac}(vp.path_nodes, [concat({}, '|', {})]) as path_nodes",
-                    concat_parts[0],
-                    concat_parts[1..].join(", '|', ")
-                )
-            }
-        };
+        // end_id selection (composite-aware) and path_nodes extension
+        let end_id_selection = format!("{end_id_expr_str} as end_id");
+        let path_nodes_selection =
+            format!("{ac}(vp.path_nodes, [{end_id_expr_str}]) as path_nodes");
 
         // Build property selections for recursive case
         let mut select_items = vec![
@@ -2347,7 +2257,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
-            format!("NOT {ah}(vp.path_nodes, {})", end_id_for_cycle),
+            emit_cycle_check(&end_id_for_cycle),
         ];
 
         // Add polymorphic edge filter if this is a polymorphic edge table
@@ -2496,7 +2406,6 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let fmap = current_function_mapper();
         let ac = fmap.array_concat();
-        let ah = fmap.array_contains();
         let empty_str_arr = fmap.empty_string_array_cast();
 
         // Build property selections for recursive case
@@ -2537,10 +2446,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Node-uniqueness cycle prevention
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
-            format!(
-                "NOT {ah}(vp.path_nodes, intermediate_node.{})",
-                intermediate_id_col
-            ),
+            emit_cycle_check(&format!("intermediate_node.{}", intermediate_id_col)),
         ];
 
         // Add polymorphic edge filter for INTERMEDIATE hops (e.g., member_type = 'Group')
@@ -2731,7 +2637,6 @@ impl<'a> VariableLengthCteGenerator<'a> {
     fn generate_fk_edge_recursive_append(&self, max_hops: u32, cte_name: &str) -> String {
         let fmap = current_function_mapper();
         let ac = fmap.array_concat();
-        let ah = fmap.array_contains();
         let empty_str_arr = fmap.empty_string_array_cast();
         // Build property selections
         // start_id stays the same (notes.txt), end_id becomes new_end
@@ -2771,10 +2676,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
-            format!(
-                "NOT {ah}(vp.path_nodes, new_end.{})",
-                self.end_node_id_column
-            ),
+            emit_cycle_check(&format!("new_end.{}", self.end_node_id_column)),
         ];
 
         // Add edge constraints if defined in schema
@@ -2821,7 +2723,6 @@ impl<'a> VariableLengthCteGenerator<'a> {
     fn generate_fk_edge_recursive_prepend(&self, max_hops: u32, cte_name: &str) -> String {
         let fmap = current_function_mapper();
         let ac = fmap.array_concat();
-        let ah = fmap.array_contains();
         let empty_str_arr = fmap.empty_string_array_cast();
         // Build property selections
         // The NEW start_id is new_start, end_id stays the same (root)
@@ -2861,10 +2762,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
-            format!(
-                "NOT {ah}(vp.path_nodes, new_start.{})",
-                self.start_node_id_column
-            ),
+            emit_cycle_check(&format!("new_start.{}", self.start_node_id_column)),
         ];
 
         // Add edge constraints if defined in schema
@@ -3154,7 +3052,6 @@ impl<'a> VariableLengthCteGenerator<'a> {
     fn generate_denormalized_recursive_case(&self, max_hops: u32, cte_name: &str) -> String {
         let fmap = current_function_mapper();
         let ac = fmap.array_concat();
-        let ah = fmap.array_contains();
         let empty_str_arr = fmap.empty_string_array_cast();
         // Build SELECT clause with denormalized properties
         let mut select_items = vec![
@@ -3282,10 +3179,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let select_clause = select_items.join(",\n        ");
 
-        let cycle_check = format!(
-            "NOT {ah}(vp.path_nodes, {}.{})",
+        let cycle_check = emit_cycle_check(&format!(
+            "{}.{}",
             self.relationship_alias, self.relationship_to_column
-        );
+        ));
 
         let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_check];
 
@@ -3500,7 +3397,6 @@ impl<'a> VariableLengthCteGenerator<'a> {
     fn generate_mixed_recursive_case(&self, max_hops: u32, cte_name: &str) -> String {
         let fmap = current_function_mapper();
         let ac = fmap.array_concat();
-        let ah = fmap.array_contains();
         let empty_str_arr = fmap.empty_string_array_cast();
         // End ID expression based on denormalization
         let end_id_expr = if self.end_is_denormalized {
@@ -3581,7 +3477,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             )
         };
 
-        let cycle_check = format!("NOT {ah}(vp.path_nodes, {})", end_id_expr);
+        let cycle_check = emit_cycle_check(&end_id_expr);
 
         let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_check];
 
