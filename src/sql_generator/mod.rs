@@ -46,7 +46,15 @@ pub enum SqlDialect {
 
     #[serde(rename = "sqlite")]
     SQLite,
-    // Databricks,  // planned — see docs/design/DELTAGRAPH_PLAN.md
+
+    /// Databricks SQL Warehouse / Spark SQL. The emitter is not yet
+    /// implemented — `emitter_for(Databricks)` will panic. The
+    /// [`FunctionMapper`] (see [`function_mapper::for_dialect`]) IS
+    /// implemented and locked in by unit tests.
+    ///
+    /// [`FunctionMapper`]: function_mapper::FunctionMapper
+    #[serde(rename = "databricks")]
+    Databricks,
 }
 
 impl SqlDialect {
@@ -58,6 +66,7 @@ impl SqlDialect {
             SqlDialect::DuckDB => "duckdb",
             SqlDialect::MySQL => "mysql",
             SqlDialect::SQLite => "sqlite",
+            SqlDialect::Databricks => "databricks",
         }
     }
 

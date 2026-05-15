@@ -12,6 +12,7 @@
 //! accessor once the dialect is plumbed through call sites.
 
 pub(crate) mod clickhouse;
+pub(crate) mod databricks;
 
 /// Returns the dialect-specific name for built-in SQL functions used by
 /// `render_plan` and downstream emission helpers.
@@ -81,9 +82,28 @@ pub(crate) trait FunctionMapper: Send + Sync {
 /// the sealed-supertrait pattern: external code can't name the trait,
 /// so it can't implement it either, and the simpler visibility rule is
 /// enough for now. Once dialect selection is plumbed through
-/// `render_plan` (Phase 1), call sites will receive the mapper from the
+/// `render_plan` (Phase 1.1), call sites will receive the mapper from the
 /// active emitter rather than this static accessor.
 pub(crate) fn current_function_mapper() -> &'static dyn FunctionMapper {
+    for_dialect(crate::sql_generator::SqlDialect::ClickHouse)
+}
+
+/// Returns the function mapper for an explicit dialect.
+///
+/// `current_function_mapper()` delegates here with `ClickHouse`; Phase 1.1
+/// will route call sites through this accessor with the active dialect once
+/// it's plumbed through the rendering pipeline. Unsupported dialects panic
+/// at the boundary rather than silently falling back, matching
+/// `emitter_for`.
+pub(crate) fn for_dialect(
+    dialect: crate::sql_generator::SqlDialect,
+) -> &'static dyn FunctionMapper {
+    use crate::sql_generator::SqlDialect;
     static CLICKHOUSE: clickhouse::ClickhouseFunctionMapper = clickhouse::ClickhouseFunctionMapper;
-    &CLICKHOUSE
+    static DATABRICKS: databricks::DatabricksFunctionMapper = databricks::DatabricksFunctionMapper;
+    match dialect {
+        SqlDialect::ClickHouse => &CLICKHOUSE,
+        SqlDialect::Databricks => &DATABRICKS,
+        d => unimplemented!("FunctionMapper for dialect {:?} is not yet implemented", d),
+    }
 }
