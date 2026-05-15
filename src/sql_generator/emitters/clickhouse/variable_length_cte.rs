@@ -774,32 +774,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// Used for node-uniqueness cycle detection in path_nodes arrays.
     fn build_end_node_id_expr(&self) -> String {
         let end_id_identifier = Identifier::from_comma_separated(&self.end_node_id_column);
-        match &end_id_identifier {
-            Identifier::Single(col) => {
-                format!(
-                    "{}.{}",
-                    self.end_node_alias,
-                    crate::clickhouse_query_generator::quote_identifier(col)
-                )
-            }
-            Identifier::Composite(cols) => {
-                let concat_parts: Vec<String> = cols
-                    .iter()
-                    .map(|c| {
-                        format!(
-                            "toString({}.{})",
-                            self.end_node_alias,
-                            crate::clickhouse_query_generator::quote_identifier(c)
-                        )
-                    })
-                    .collect();
-                format!(
-                    "concat({}, '|', {})",
-                    concat_parts[0],
-                    concat_parts[1..].join(", '|', ")
-                )
-            }
-        }
+        emit_id_expr(&self.end_node_alias, &end_id_identifier)
     }
 
     /// Extract target node ID value from end_node_filters for early termination in recursive case.
