@@ -20,6 +20,7 @@ use crate::query_planner::logical_plan::LogicalPlan;
 use crate::render_plan::cte_generation::CteGenerationContext;
 use crate::render_plan::cte_manager::CteManager;
 use crate::render_plan::expression_utils::{flatten_addition_operands, has_string_operand};
+use crate::sql_generator::function_mapper::current_function_mapper;
 use crate::utils::cte_column_naming::cte_column_name;
 use crate::utils::cte_naming::generate_cte_name;
 
@@ -1197,12 +1198,13 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
             let list_sql = render_expr_to_sql_string(&reduce.list, alias_mapping);
             let expr_sql = render_expr_to_sql_string(&reduce.expression, alias_mapping);
 
-            // Wrap numeric init values in toInt64() to prevent type mismatch
+            // Wrap numeric init values in a 64-bit integer cast to prevent
+            // type mismatch.
             let init_cast = if matches!(
                 *reduce.initial_value,
                 RenderExpr::Literal(Literal::Integer(_))
             ) {
-                format!("toInt64({})", init_sql)
+                format!("{}({})", current_function_mapper().cast_int64(), init_sql)
             } else {
                 init_sql
             };
@@ -4086,22 +4088,27 @@ pub fn extract_ctes_with_context(
                         };
 
                         // Generate start_id and end_id expressions for composite support
+                        let cast_str = current_function_mapper().cast_string();
                         let start_id_expr = match from_node_id {
-                            Identifier::Single(col) => format!("toString({from_table}.{col})"),
+                            Identifier::Single(col) => {
+                                format!("{cast_str}({from_table}.{col})")
+                            }
                             Identifier::Composite(cols) => {
                                 let parts: Vec<String> = cols
                                     .iter()
-                                    .map(|c| format!("toString({from_table}.{c})"))
+                                    .map(|c| format!("{cast_str}({from_table}.{c})"))
                                     .collect();
                                 format!("concat({})", parts.join(", '|', "))
                             }
                         };
                         let end_id_expr = match to_node_id {
-                            Identifier::Single(col) => format!("toString({to_table}.{col})"),
+                            Identifier::Single(col) => {
+                                format!("{cast_str}({to_table}.{col})")
+                            }
                             Identifier::Composite(cols) => {
                                 let parts: Vec<String> = cols
                                     .iter()
-                                    .map(|c| format!("toString({to_table}.{c})"))
+                                    .map(|c| format!("{cast_str}({to_table}.{c})"))
                                     .collect();
                                 format!("concat({})", parts.join(", '|', "))
                             }

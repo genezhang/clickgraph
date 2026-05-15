@@ -16,6 +16,7 @@ use crate::render_plan::RenderPlan;
 use serde::{Deserialize, Serialize};
 
 pub(crate) mod clickhouse;
+pub(crate) mod function_mapper;
 
 /// SQL dialect for query generation.
 ///

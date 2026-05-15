@@ -25,6 +25,7 @@ use crate::render_plan::render_expr::{
     TableAlias as RenderTableAlias,
 };
 use crate::render_plan::SelectItem;
+use crate::sql_generator::function_mapper::current_function_mapper;
 use crate::utils::cte_column_naming::{cte_column_name, parse_cte_column};
 
 /// SelectBuilder trait for extracting SELECT items from logical plans
@@ -913,11 +914,13 @@ impl SelectBuilder for LogicalPlan {
                                         cypher_alias, col_name, position, cte_alias
                                     );
 
-                                    // Extract property from JSON blob using JSONExtractString
-                                    // JSONExtractString(json_column, 'property_name')
+                                    // Extract property from JSON blob.
+                                    // ClickHouse: `JSONExtractString(json_column, 'property_name')`.
                                     select_items.push(SelectItem {
                                         expression: RenderExpr::ScalarFnCall(ScalarFnCall {
-                                            name: "JSONExtractString".to_string(),
+                                            name: current_function_mapper()
+                                                .json_extract_string()
+                                                .to_string(),
                                             args: vec![
                                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                                     table_alias: RenderTableAlias(
@@ -2130,16 +2133,18 @@ impl LogicalPlan {
                         col_alias: Some(ColumnAlias("_rel_properties".to_string())),
                     });
 
-                    // Extract relationship type from array (first element)
+                    // Extract relationship type from array (first element).
+                    // Both ClickHouse `arrayElement` and Spark `element_at` are
+                    // 1-indexed.
                     select_items.push(SelectItem {
                         expression: RenderExpr::ScalarFnCall(ScalarFnCall {
-                            name: "arrayElement".to_string(),
+                            name: current_function_mapper().array_element().to_string(),
                             args: vec![
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: RenderTableAlias(cte_alias.clone()),
                                     column: PropertyValue::Column("path_relationships".to_string()),
                                 }),
-                                RenderExpr::Literal(Literal::Integer(1)), // ClickHouse arrays are 1-indexed
+                                RenderExpr::Literal(Literal::Integer(1)),
                             ],
                         }),
                         col_alias: Some(ColumnAlias("__rel_type__".to_string())),

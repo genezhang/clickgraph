@@ -30,6 +30,7 @@ use crate::query_planner::{
     },
     logical_plan::ProjectionItem,
 };
+use crate::sql_generator::function_mapper::current_function_mapper;
 
 use super::render_expr::{
     AggregateFnCall as RenderAggregateFnCall, ColumnAlias as RenderColumnAlias,
@@ -524,22 +525,24 @@ pub fn expand_collect_to_group_array(
         })
         .collect();
 
+    let collect_list = current_function_mapper().collect_list().to_string();
     if prop_exprs.len() == 1 {
-        // Single property: groupArray(prop) — no tuple needed.
-        // Avoids Array(Tuple(T)) vs Array(T) type mismatch when the collected
-        // array is later concatenated with another groupArray(prop) result.
+        // Single property: collect-list aggregate of the bare property — no
+        // tuple needed. Avoids `Array(Tuple(T))` vs `Array(T)` type mismatch
+        // when the collected array is later concatenated with another
+        // collect-list result.
         LogicalExpr::AggregateFnCall(AggregateFnCall {
-            name: "groupArray".to_string(),
+            name: collect_list,
             args: prop_exprs,
         })
     } else {
-        // Multiple properties: groupArray(tuple(prop1, prop2, ...))
+        // Multiple properties: collect-list over tuple(prop1, prop2, ...).
         let tuple_expr = LogicalExpr::ScalarFnCall(ScalarFnCall {
             name: "tuple".to_string(),
             args: prop_exprs,
         });
         LogicalExpr::AggregateFnCall(AggregateFnCall {
-            name: "groupArray".to_string(),
+            name: collect_list,
             args: vec![tuple_expr],
         })
     }
