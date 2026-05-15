@@ -50,6 +50,7 @@ use crate::query_planner::logical_expr::{Direction, LogicalExpr};
 use crate::query_planner::logical_plan::{GraphNode, GraphRel, LogicalPlan};
 use crate::query_planner::plan_ctx::PlanCtx;
 use crate::render_plan::plan_builder::RenderPlanBuilder;
+use crate::sql_generator::function_mapper::current_function_mapper;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -7045,12 +7046,13 @@ fn try_flatten_head_collect_map_literal(
                 if let Some(s) = scope {
                     prop_access = super::variable_scope::rewrite_render_expr(&prop_access, s);
                 }
+                let mapper = current_function_mapper();
                 let group_array = RenderExpr::AggregateFnCall(AggregateFnCall {
-                    name: "groupArray".to_string(),
+                    name: mapper.collect_list().to_string(),
                     args: vec![prop_access],
                 });
                 let head_expr = RenderExpr::ScalarFnCall(ScalarFnCall {
-                    name: "arrayElement".to_string(),
+                    name: mapper.array_element().to_string(),
                     args: vec![group_array, RenderExpr::Literal(Literal::Integer(1))],
                 });
 
@@ -7072,12 +7074,13 @@ fn try_flatten_head_collect_map_literal(
                 if let Some(s) = scope {
                     val_expr = super::variable_scope::rewrite_render_expr(&val_expr, s);
                 }
+                let mapper = current_function_mapper();
                 let group_array = RenderExpr::AggregateFnCall(AggregateFnCall {
-                    name: "groupArray".to_string(),
+                    name: mapper.collect_list().to_string(),
                     args: vec![val_expr],
                 });
                 let head_expr = RenderExpr::ScalarFnCall(ScalarFnCall {
-                    name: "arrayElement".to_string(),
+                    name: mapper.array_element().to_string(),
                     args: vec![group_array, RenderExpr::Literal(Literal::Integer(1))],
                 });
 
@@ -10634,8 +10637,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                         if agg.name == "count"
                                                             && !agg.args.is_empty()
                                                         {
-                                                            log::info!("🔧 OPTIONAL MATCH CTE body restructuring: converting count() to countIf() with WHERE filter");
-                                                            agg.name = "countIf".to_string();
+                                                            log::info!("🔧 OPTIONAL MATCH CTE body restructuring: converting count() to count-if with WHERE filter");
+                                                            agg.name = current_function_mapper()
+                                                                .count_if()
+                                                                .to_string();
                                                             agg.args.push(where_clone.clone());
                                                         }
                                                     }
@@ -11165,8 +11170,9 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 // Result: forward + reverse edges materialized, weight CTE's
                 // expensive multi-table join evaluated exactly once.
                 let bidi_cte_name = format!("bidi_{}", cte_name);
+                let cast_u8 = current_function_mapper().cast_uint8();
                 let bidi_sql = format!(
-                    "SELECT source, target, weight, toUInt8(0) AS __depth FROM {cte} \
+                    "SELECT source, target, weight, {cast_u8}(0) AS __depth FROM {cte} \
                      UNION ALL \
                      SELECT target AS source, source AS target, weight, __depth + 1 \
                      FROM {bidi} WHERE __depth = 0",
@@ -12299,7 +12305,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                         items.push(RenderExpr::Literal(Literal::String("|".to_string())));
                                                     }
                                                     items.push(RenderExpr::ScalarFnCall(ScalarFnCall {
-                                                        name: "toString".to_string(),
+                                                        name: current_function_mapper().cast_string().to_string(),
                                                         args: vec![RenderExpr::Column(Column(
                                                             crate::graph_catalog::expression_parser::PropertyValue::Column(
                                                                 format!("{}.{}", cte_alias, cte_col)
@@ -12320,7 +12326,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                 // Single ID: toString() to match the String type of
                                                 // start_id / end_id stored in the VLP CTE
                                                 RenderExpr::ScalarFnCall(ScalarFnCall {
-                                                    name: "toString".to_string(),
+                                                    name: current_function_mapper().cast_string().to_string(),
                                                     args: vec![RenderExpr::Column(Column(
                                                         crate::graph_catalog::expression_parser::PropertyValue::Column(
                                                             format!("{}.{}", cte_alias, id_col_name)
@@ -12334,7 +12340,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                         // VLP start_id/end_id may be UInt64 or String depending on
                                         // generation path, and rhs_expr already uses toString().
                                         let lhs_expr = RenderExpr::ScalarFnCall(ScalarFnCall {
-                                            name: "toString".to_string(),
+                                            name: current_function_mapper().cast_string().to_string(),
                                             args: vec![RenderExpr::Column(Column(
                                                 crate::graph_catalog::expression_parser::PropertyValue::Column(
                                                     format!("{}.{}", from_alias, vlp_id_col)
@@ -12494,7 +12500,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                 operator: Operator::Equal,
                                                 operands: vec![
                                                     RenderExpr::ScalarFnCall(ScalarFnCall {
-                                                        name: "toString".to_string(),
+                                                        name: current_function_mapper().cast_string().to_string(),
                                                         args: vec![RenderExpr::Column(Column(
                                                             crate::graph_catalog::expression_parser::PropertyValue::Column(
                                                                 format!("{}.{}", from_alias, vlp_id_col)
@@ -12502,7 +12508,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                         ))],
                                                     }),
                                                     RenderExpr::ScalarFnCall(ScalarFnCall {
-                                                        name: "toString".to_string(),
+                                                        name: current_function_mapper().cast_string().to_string(),
                                                         args: vec![RenderExpr::Column(Column(
                                                             crate::graph_catalog::expression_parser::PropertyValue::Column(
                                                                 format!("{}.{}", cte_alias, id_col_name)
@@ -16175,10 +16181,15 @@ fn generate_list_comp_array_count(
         where_str
     );
 
-    let result = format!("arrayCount(x -> x IN ({}), {})", inner_select, list_col);
+    let result = format!(
+        "{}(x -> x IN ({}), {})",
+        current_function_mapper().array_count(),
+        inner_select,
+        list_col
+    );
 
     log::info!(
-        "🔧 arrayCount expression: {}",
+        "🔧 array-count expression: {}",
         &result[..result.len().min(300)]
     );
 
@@ -16228,12 +16239,15 @@ fn generate_list_comp_array_count_tuple_fallback(
     );
 
     let result = format!(
-        "arrayCount(x -> {} IN ({}), {})",
-        lambda_tuple, inner_select, list_col
+        "{}(x -> {} IN ({}), {})",
+        current_function_mapper().array_count(),
+        lambda_tuple,
+        inner_select,
+        list_col
     );
 
     log::info!(
-        "🔧 arrayCount tuple fallback: {}",
+        "🔧 array-count tuple fallback: {}",
         &result[..result.len().min(300)]
     );
 
@@ -17430,7 +17444,7 @@ pub(super) fn build_id_render_expr(
                     items.push(RenderExpr::Literal(Literal::String("|".to_string())));
                 }
                 items.push(RenderExpr::ScalarFnCall(ScalarFnCall {
-                    name: "toString".to_string(),
+                    name: current_function_mapper().cast_string().to_string(),
                     args: vec![RenderExpr::PropertyAccessExp(PropertyAccess {
                         table_alias: TableAlias(alias.to_string()),
                         column: PropertyValue::Column(col.to_string()),

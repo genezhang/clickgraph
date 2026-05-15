@@ -16,6 +16,7 @@ use crate::query_planner::logical_expr::{
     TableAlias as LogicalTableAlias,
 };
 use crate::query_planner::logical_plan::LogicalPlan;
+use crate::sql_generator::function_mapper::current_function_mapper;
 
 use super::errors::RenderBuildError;
 
@@ -1005,12 +1006,13 @@ impl TryFrom<LogicalExpr> for RenderExpr {
                         });
 
                 if has_non_literal && !all_non_literal_are_aliases {
+                    let cast_str = current_function_mapper().cast_string().to_string();
                     RenderExpr::List(
                         items
                             .into_iter()
                             .map(|e| {
                                 RenderExpr::ScalarFnCall(ScalarFnCall {
-                                    name: "toString".to_string(),
+                                    name: cast_str.clone(),
                                     args: vec![e],
                                 })
                             })

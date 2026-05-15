@@ -31,6 +31,7 @@ use crate::render_plan::expression_utils::{
 // Note: Direction import commented out until Issue #1 (Undirected Multi-Hop SQL) is fixed
 // use crate::query_planner::logical_expr::Direction;
 use crate::query_planner::logical_plan::LogicalPlan;
+use crate::sql_generator::function_mapper::current_function_mapper;
 use std::collections::HashSet;
 
 /// Recursively rewrite TableAlias references that are in `with_aliases` to reference the CTE.
@@ -2766,11 +2767,12 @@ pub(super) fn normalize_union_branches(
                         let fixed_expr =
                             fix_invalid_table_aliases(&item.expression, &valid_aliases, &plan);
 
-                        // Wrap the expression in toString() for type compatibility
+                        // Wrap the expression in a string cast for type
+                        // compatibility across UNION branches.
                         SelectItem {
                             expression: RenderExpr::ScalarFnCall(
                                 super::render_expr::ScalarFnCall {
-                                    name: "toString".to_string(),
+                                    name: current_function_mapper().cast_string().to_string(),
                                     args: vec![fixed_expr],
                                 },
                             ),
