@@ -5,16 +5,12 @@
 //! Later phases move the real logic into this module and reduce
 //! `clickhouse_query_generator` to a deprecated re-export.
 
-use super::{Dialect, SqlEmitter};
+use super::SqlEmitter;
 use crate::render_plan::RenderPlan;
 
-pub struct ClickhouseEmitter;
+pub(crate) struct ClickhouseEmitter;
 
 impl SqlEmitter for ClickhouseEmitter {
-    fn dialect(&self) -> Dialect {
-        Dialect::ClickHouse
-    }
-
     fn emit(&self, plan: RenderPlan, max_cte_depth: u32) -> String {
         crate::clickhouse_query_generator::generate_sql(plan, max_cte_depth)
     }
