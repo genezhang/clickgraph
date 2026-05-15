@@ -37,4 +37,20 @@ impl FunctionMapper for ClickhouseFunctionMapper {
     fn cast_string(&self) -> &'static str {
         "toString"
     }
+
+    fn array_concat(&self) -> &'static str {
+        "arrayConcat"
+    }
+
+    fn array_contains(&self) -> &'static str {
+        "has"
+    }
+
+    fn empty_string_array_cast(&self) -> &'static str {
+        "CAST([] AS Array(String))"
+    }
+
+    fn empty_int64_array_cast(&self) -> &'static str {
+        "CAST([] AS Array(Int64))"
+    }
 }

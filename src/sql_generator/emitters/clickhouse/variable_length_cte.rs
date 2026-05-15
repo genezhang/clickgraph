@@ -3,6 +3,7 @@ use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::join_context::VLP_END_ID_COLUMN;
 use crate::query_planner::logical_plan::VariableLengthSpec;
 use crate::render_plan::Cte;
+use crate::sql_generator::function_mapper::current_function_mapper;
 
 // ===== VLP Performance and Safety Constants =====
 
@@ -1038,6 +1039,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let rel_table = self.format_table_name(&self.relationship_table);
         let from_col = &self.relationship_from_column;
         let to_col = &self.relationship_to_column;
+        let fmap = current_function_mapper();
+        let empty_str_arr = fmap.empty_string_array_cast();
+        let empty_i64_arr = fmap.empty_int64_array_cast();
 
         // Extract start and target IDs from filters
         let start_id = self
@@ -1123,8 +1127,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
                  CASE WHEN countIf(node_id = {target}) > 0\n            \
                  THEN minIf(toUInt16(hop), node_id = {target})\n            \
                  ELSE NULL END AS hop_count,\n        \
-                 CAST([] AS Array(String)) AS path_relationships,\n        \
-                 CAST([] AS Array(Int64)) AS path_nodes\n    \
+                 {empty_str_arr} AS path_relationships,\n        \
+                 {empty_i64_arr} AS path_nodes\n    \
                  FROM {bfs_cte}\n)",
                 name = self.cte_name,
                 start_id = start_id,
@@ -1138,8 +1142,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
                  {start_id} AS start_id,\n        \
                  node_id AS end_id,\n        \
                  min(toUInt16(hop)) AS hop_count,\n        \
-                 CAST([] AS Array(String)) AS path_relationships,\n        \
-                 CAST([] AS Array(Int64)) AS path_nodes\n    \
+                 {empty_str_arr} AS path_relationships,\n        \
+                 {empty_i64_arr} AS path_nodes\n    \
                  FROM {bfs_cte}\n    \
                  WHERE node_id != {start_id}\n    \
                  GROUP BY node_id\n)",
@@ -1193,6 +1197,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let bfs_cte = format!("{}_bfs", self.cte_name);
         let recon_cte = format!("{}_recon", self.cte_name);
+        let fmap = current_function_mapper();
+        let ac = fmap.array_concat();
+        let empty_str_arr = fmap.empty_string_array_cast();
 
         // CTE 1: BFS — lightweight frontier with global dedup
         let bfs_sql = format!(
@@ -1221,7 +1228,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
              WHERE bfs_target.node_id = CAST({target_id} AS Int64)\n    \
              UNION ALL\n    \
              SELECT ew.{source} AS node_id, pr.remaining - 1 AS remaining,\n           \
-             arrayConcat([ew.{source}], pr.path_nodes) AS path_nodes,\n           \
+             {ac}([ew.{source}], pr.path_nodes) AS path_nodes,\n           \
              pr.total_weight + ew.{weight} AS total_weight\n    \
              FROM {recon_cte} pr\n    \
              JOIN {weight_cte} ew ON ew.{target_col} = pr.node_id\n    \
@@ -1236,7 +1243,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             "{name} AS (\n    \
              SELECT {start_id} AS start_id, {target_id} AS end_id,\n           \
              toUInt16(length(path_nodes) - 1) AS hop_count,\n           \
-             total_weight, path_nodes, CAST([] AS Array(String)) AS path_relationships\n    \
+             total_weight, path_nodes, {empty_str_arr} AS path_relationships\n    \
              FROM {recon_cte} WHERE remaining = 0\n    \
              ORDER BY total_weight ASC LIMIT 1\n)",
             name = self.cte_name,
@@ -1509,6 +1516,9 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let min_hops = self.spec.effective_min_hops();
         let max_hops = self.spec.max_hops.unwrap_or(DEFAULT_MAX_HOPS);
+        let fmap = current_function_mapper();
+        let empty_str_arr = fmap.empty_string_array_cast();
+        let empty_i64_arr = fmap.empty_int64_array_cast();
 
         crate::debug_print!("    🔸 Generating heterogeneous polymorphic SQL (two-phase):");
         crate::debug_print!(
@@ -1647,8 +1657,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 r.node_id as start_id,\n\
                 {end_table}.{end_id} as end_id,\n\
                 r.depth + 1 as hop_count,\n\
-                CAST([] AS Array(String)) as path_relationships,\n\
-                CAST([] AS Array(Int64)) as path_nodes{props_clause}\n\
+                {empty_str_arr} as path_relationships,\n\
+                {empty_i64_arr} as path_nodes{props_clause}\n\
             FROM {reachable_cte} r\n\
             JOIN {rel_table} {rel} ON r.node_id = {rel}.{from_col}\n\
             JOIN {end_table} {end} ON {rel}.{to_col} = {end}.{end_id}\n\
@@ -1680,6 +1690,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // we need to handle properties carefully: end properties may not exist on
         // the start table (or vice versa). We collect column names available on
         // the start table and use NULL/empty for missing end columns.
+        let empty_str_arr = current_function_mapper().empty_string_array_cast();
         let cross_type = self.start_node_table != self.end_node_table;
         let start_table_columns: std::collections::HashSet<String> = if cross_type {
             let mut cols: std::collections::HashSet<String> = self
@@ -1711,7 +1722,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 self.start_node_id_column // Same node for self-loop
             ),
             "0 as hop_count".to_string(), // Zero hops
-            "CAST([] AS Array(String)) as path_relationships".to_string(), // Minimal placeholder when path data not needed
+            format!("{empty_str_arr} as path_relationships"), // Minimal placeholder when path data not needed
             // Add path_nodes for UNWIND nodes(p) support - for zero hop, just the start node
             format!(
                 "[{}.{}] as path_nodes",
@@ -1825,6 +1836,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         if hop_count == 1 {
             // Parse comma-separated column string to Identifier
             let parse_id_cols = Identifier::from_comma_separated;
+            let empty_str_arr = current_function_mapper().empty_string_array_cast();
 
             // Parse ID identifiers
             let start_id_identifier = parse_id_cols(&self.start_node_id_column);
@@ -1939,7 +1951,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             if self.needs_path_data() {
                 select_items.push(self.generate_relationship_type_for_hop(1));
             } else {
-                select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
+                select_items.push(format!("{empty_str_arr} as path_relationships"));
             }
             select_items.push(path_nodes_selection);
 
@@ -2110,7 +2122,8 @@ impl<'a> VariableLengthCteGenerator<'a> {
             format!("\n    WHERE {}", where_conditions.join(" AND "))
         };
 
-        let path_rel_expr = "CAST([] AS Array(String)) AS path_relationships";
+        let empty_str_arr = current_function_mapper().empty_string_array_cast();
+        let path_rel_expr = format!("{empty_str_arr} AS path_relationships");
         format!(
             "    SELECT\n        ew.{source} AS start_id,\n        ew.{target} AS end_id,\n        1 AS hop_count,\n        ew.{weight} AS total_weight,\n        [ew.{source}, ew.{target}] AS path_nodes,\n        {path_rel_expr} \n    FROM {cte} ew{where_clause}",
             source = wc.source_column,
@@ -2128,14 +2141,18 @@ impl<'a> VariableLengthCteGenerator<'a> {
         max_hops: u32,
         cte_name: &str,
     ) -> String {
+        let fmap = current_function_mapper();
+        let ac = fmap.array_concat();
+        let ah = fmap.array_contains();
+        let empty_str_arr = fmap.empty_string_array_cast();
         let path_rel_col = if self.needs_path_data() {
-            "arrayConcat(vp.path_relationships, []) AS path_relationships"
+            format!("{ac}(vp.path_relationships, []) AS path_relationships")
         } else {
-            "CAST([] AS Array(String)) AS path_relationships"
+            format!("{empty_str_arr} AS path_relationships")
         };
 
         format!(
-            "    SELECT\n        vp.start_id,\n        ew.{target} AS end_id,\n        vp.hop_count + 1 AS hop_count,\n        vp.total_weight + ew.{weight} AS total_weight,\n        arrayConcat(vp.path_nodes, [ew.{target}]) AS path_nodes,\n        {path_rel_col}\n    FROM {cte_name} vp\n    JOIN {weight_cte} ew ON ew.{source} = vp.end_id\n    WHERE vp.hop_count < {max_hops}\n      AND NOT has(vp.path_nodes, ew.{target})",
+            "    SELECT\n        vp.start_id,\n        ew.{target} AS end_id,\n        vp.hop_count + 1 AS hop_count,\n        vp.total_weight + ew.{weight} AS total_weight,\n        {ac}(vp.path_nodes, [ew.{target}]) AS path_nodes,\n        {path_rel_col}\n    FROM {cte_name} vp\n    JOIN {weight_cte} ew ON ew.{source} = vp.end_id\n    WHERE vp.hop_count < {max_hops}\n      AND NOT {ah}(vp.path_nodes, ew.{target})",
             target = wc.target_column,
             weight = wc.weight_column,
             source = wc.source_column,
@@ -2185,6 +2202,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Standard case: both nodes have their own tables
         // Parse comma-separated column string to Identifier
         let parse_id_cols = Identifier::from_comma_separated;
+        let fmap = current_function_mapper();
+        let ac = fmap.array_concat();
+        let ah = fmap.array_contains();
+        let empty_str_arr = fmap.empty_string_array_cast();
 
         // Parse end node ID identifier
         let end_id_identifier = parse_id_cols(&self.end_node_id_column);
@@ -2221,7 +2242,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let path_nodes_selection = match &end_id_identifier {
             Identifier::Single(col) => {
                 format!(
-                    "arrayConcat(vp.path_nodes, [{}.{}]) as path_nodes",
+                    "{ac}(vp.path_nodes, [{}.{}]) as path_nodes",
                     self.end_node_alias,
                     crate::clickhouse_query_generator::quote_identifier(col)
                 )
@@ -2239,7 +2260,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     })
                     .collect();
                 format!(
-                    "arrayConcat(vp.path_nodes, [concat({}, '|', {})]) as path_nodes",
+                    "{ac}(vp.path_nodes, [concat({}, '|', {})]) as path_nodes",
                     concat_parts[0],
                     concat_parts[1..].join(", '|', ")
                 )
@@ -2254,11 +2275,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
         ];
         if self.needs_path_data() {
             select_items.push(format!(
-                "arrayConcat(vp.path_relationships, {}) as path_relationships",
+                "{ac}(vp.path_relationships, {}) as path_relationships",
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
+            select_items.push(format!("{empty_str_arr} as path_relationships"));
         }
         select_items.push(path_nodes_selection);
 
@@ -2326,7 +2347,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
-            format!("NOT has(vp.path_nodes, {})", end_id_for_cycle),
+            format!("NOT {ah}(vp.path_nodes, {})", end_id_for_cycle),
         ];
 
         // Add polymorphic edge filter if this is a polymorphic edge table
@@ -2473,6 +2494,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
             intermediate_table
         );
 
+        let fmap = current_function_mapper();
+        let ac = fmap.array_concat();
+        let ah = fmap.array_contains();
+        let empty_str_arr = fmap.empty_string_array_cast();
+
         // Build property selections for recursive case
         // Note: For heterogeneous polymorphic paths, we track intermediate nodes in path
         // End properties are not available until the final join (in the outer SELECT)
@@ -2484,15 +2510,15 @@ impl<'a> VariableLengthCteGenerator<'a> {
         ];
         if self.needs_path_data() {
             select_items.push(format!(
-                "arrayConcat(vp.path_relationships, {}) as path_relationships",
+                "{ac}(vp.path_relationships, {}) as path_relationships",
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
+            select_items.push(format!("{empty_str_arr} as path_relationships"));
         }
         // Track intermediate node IDs in path_nodes
         select_items.push(format!(
-            "arrayConcat(vp.path_nodes, [intermediate_node.{}]) as path_nodes",
+            "{ac}(vp.path_nodes, [intermediate_node.{}]) as path_nodes",
             intermediate_id_col
         ));
 
@@ -2512,7 +2538,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
             format!(
-                "NOT has(vp.path_nodes, intermediate_node.{})",
+                "NOT {ah}(vp.path_nodes, intermediate_node.{})",
                 intermediate_id_col
             ),
         ];
@@ -2576,6 +2602,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             );
         }
 
+        let empty_str_arr = current_function_mapper().empty_string_array_cast();
         // Build property selections
         let mut select_items = vec![
             format!(
@@ -2591,7 +2618,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         if self.needs_path_data() {
             select_items.push(self.generate_relationship_type_for_hop(1));
         } else {
-            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
+            select_items.push(format!("{empty_str_arr} as path_relationships"));
         }
         select_items.push(format!(
             "[{}.{}, {}.{}] as path_nodes",
@@ -2702,6 +2729,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// APPEND expansion: Find ancestors by following parent_id chain
     /// Used when start_node has a filter (e.g., WHERE child.name = 'notes.txt')
     fn generate_fk_edge_recursive_append(&self, max_hops: u32, cte_name: &str) -> String {
+        let fmap = current_function_mapper();
+        let ac = fmap.array_concat();
+        let ah = fmap.array_contains();
+        let empty_str_arr = fmap.empty_string_array_cast();
         // Build property selections
         // start_id stays the same (notes.txt), end_id becomes new_end
         let mut select_items = vec![
@@ -2711,15 +2742,15 @@ impl<'a> VariableLengthCteGenerator<'a> {
         ];
         if self.needs_path_data() {
             select_items.push(format!(
-                "arrayConcat(vp.path_relationships, {}) as path_relationships",
+                "{ac}(vp.path_relationships, {}) as path_relationships",
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
+            select_items.push(format!("{empty_str_arr} as path_relationships"));
         }
         // APPEND the new node to path_nodes
         select_items.push(format!(
-            "arrayConcat(vp.path_nodes, [{}.{}]) as path_nodes",
+            "{ac}(vp.path_nodes, [{}.{}]) as path_nodes",
             "new_end", self.end_node_id_column
         ));
 
@@ -2741,7 +2772,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
             format!(
-                "NOT has(vp.path_nodes, new_end.{})",
+                "NOT {ah}(vp.path_nodes, new_end.{})",
                 self.end_node_id_column
             ),
         ];
@@ -2788,6 +2819,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// PREPEND expansion: Find descendants by finding nodes whose parent_id points to current
     /// Used when end_node has a filter (e.g., WHERE parent.name = 'root')
     fn generate_fk_edge_recursive_prepend(&self, max_hops: u32, cte_name: &str) -> String {
+        let fmap = current_function_mapper();
+        let ac = fmap.array_concat();
+        let ah = fmap.array_contains();
+        let empty_str_arr = fmap.empty_string_array_cast();
         // Build property selections
         // The NEW start_id is new_start, end_id stays the same (root)
         let mut select_items = vec![
@@ -2797,15 +2832,15 @@ impl<'a> VariableLengthCteGenerator<'a> {
         ];
         if self.needs_path_data() {
             select_items.push(format!(
-                "arrayConcat({}, vp.path_relationships) as path_relationships",
+                "{ac}({}, vp.path_relationships) as path_relationships",
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
+            select_items.push(format!("{empty_str_arr} as path_relationships"));
         }
         // PREPEND the new node to path_nodes
         select_items.push(format!(
-            "arrayConcat([{}.{}], vp.path_nodes) as path_nodes",
+            "{ac}([{}.{}], vp.path_nodes) as path_nodes",
             "new_start", self.start_node_id_column
         ));
 
@@ -2827,7 +2862,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", max_hops),
             format!(
-                "NOT has(vp.path_nodes, new_start.{})",
+                "NOT {ah}(vp.path_nodes, new_start.{})",
                 self.start_node_id_column
             ),
         ];
@@ -2894,6 +2929,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             );
         }
 
+        let empty_str_arr = current_function_mapper().empty_string_array_cast();
         // Build SELECT clause with denormalized properties
         let mut select_items = vec![
             format!(
@@ -2909,7 +2945,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         if self.needs_path_data() {
             select_items.push(self.generate_relationship_type_for_hop(1));
         } else {
-            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
+            select_items.push(format!("{empty_str_arr} as path_relationships"));
         }
         select_items.push(format!(
             "[{}.{}, {}.{}] as path_nodes",
@@ -3116,6 +3152,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
     /// Generate recursive case for denormalized edges
     /// For denormalized: JOIN rel_table only (no node tables in between)
     fn generate_denormalized_recursive_case(&self, max_hops: u32, cte_name: &str) -> String {
+        let fmap = current_function_mapper();
+        let ac = fmap.array_concat();
+        let ah = fmap.array_contains();
+        let empty_str_arr = fmap.empty_string_array_cast();
         // Build SELECT clause with denormalized properties
         let mut select_items = vec![
             "vp.start_id".to_string(),
@@ -3127,14 +3167,14 @@ impl<'a> VariableLengthCteGenerator<'a> {
         ];
         if self.needs_path_data() {
             select_items.push(format!(
-                "arrayConcat(vp.path_relationships, {}) as path_relationships",
+                "{ac}(vp.path_relationships, {}) as path_relationships",
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
+            select_items.push(format!("{empty_str_arr} as path_relationships"));
         }
         select_items.push(format!(
-            "arrayConcat(vp.path_nodes, [{}.{}]) as path_nodes",
+            "{ac}(vp.path_nodes, [{}.{}]) as path_nodes",
             self.relationship_alias, self.relationship_to_column
         ));
 
@@ -3205,7 +3245,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 })
                 .unwrap_or_else(|| "'{}'".to_string());
             select_items.push(format!(
-                "arrayConcat(vp.rel_properties, [{}]) as rel_properties",
+                "{ac}(vp.rel_properties, [{}]) as rel_properties",
                 rel_props_json
             ));
 
@@ -3243,7 +3283,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let select_clause = select_items.join(",\n        ");
 
         let cycle_check = format!(
-            "NOT has(vp.path_nodes, {}.{})",
+            "NOT {ah}(vp.path_nodes, {}.{})",
             self.relationship_alias, self.relationship_to_column
         );
 
@@ -3321,6 +3361,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             );
         }
 
+        let empty_str_arr = current_function_mapper().empty_string_array_cast();
         // Determine start_id and end_id based on which side is denormalized
         let start_id_expr = if self.start_is_denormalized {
             // Start is denorm: ID comes from relationship table from_col
@@ -3352,7 +3393,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         if self.needs_path_data() {
             select_items.push(self.generate_relationship_type_for_hop(1));
         } else {
-            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
+            select_items.push(format!("{empty_str_arr} as path_relationships"));
         }
         select_items.push(format!(
             "[{}, {}] as path_nodes",
@@ -3457,6 +3498,10 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
     /// Generate recursive case for mixed patterns
     fn generate_mixed_recursive_case(&self, max_hops: u32, cte_name: &str) -> String {
+        let fmap = current_function_mapper();
+        let ac = fmap.array_concat();
+        let ah = fmap.array_contains();
+        let empty_str_arr = fmap.empty_string_array_cast();
         // End ID expression based on denormalization
         let end_id_expr = if self.end_is_denormalized {
             format!(
@@ -3474,15 +3519,15 @@ impl<'a> VariableLengthCteGenerator<'a> {
         ];
         if self.needs_path_data() {
             select_items.push(format!(
-                "arrayConcat(vp.path_relationships, {}) as path_relationships",
+                "{ac}(vp.path_relationships, {}) as path_relationships",
                 self.get_relationship_type_array()
             ));
         } else {
-            select_items.push("CAST([] AS Array(String)) as path_relationships".to_string());
+            select_items.push(format!("{empty_str_arr} as path_relationships"));
         }
         // path_nodes always maintained for cycle detection
         select_items.push(format!(
-            "arrayConcat(vp.path_nodes, [{}]) as path_nodes",
+            "{ac}(vp.path_nodes, [{}]) as path_nodes",
             end_id_expr
         ));
 
@@ -3536,7 +3581,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             )
         };
 
-        let cycle_check = format!("NOT has(vp.path_nodes, {})", end_id_expr);
+        let cycle_check = format!("NOT {ah}(vp.path_nodes, {})", end_id_expr);
 
         let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_check];
 
