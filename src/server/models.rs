@@ -44,47 +44,12 @@ pub enum OutputFormat {
     Graph,
 }
 
-/// SQL dialect for query generation
-/// Currently only ClickHouse is supported, but this enum lays the foundation
-/// for future multi-database support (PostgreSQL, DuckDB, MySQL, etc.)
-#[derive(Debug, Default, Serialize, Deserialize, PartialEq, Clone)]
-#[serde(rename_all = "lowercase")]
-pub enum SqlDialect {
-    #[serde(rename = "clickhouse")]
-    #[default]
-    ClickHouse,
-
-    // Future supported databases (not yet implemented - will return UnsupportedDialectError)
-    #[serde(rename = "postgresql")]
-    PostgreSQL,
-
-    #[serde(rename = "duckdb")]
-    DuckDB,
-
-    #[serde(rename = "mysql")]
-    MySQL,
-
-    #[serde(rename = "sqlite")]
-    SQLite,
-}
-
-impl SqlDialect {
-    /// Get the string representation of the dialect
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            SqlDialect::ClickHouse => "clickhouse",
-            SqlDialect::PostgreSQL => "postgresql",
-            SqlDialect::DuckDB => "duckdb",
-            SqlDialect::MySQL => "mysql",
-            SqlDialect::SQLite => "sqlite",
-        }
-    }
-
-    /// Check if this dialect is currently supported (only ClickHouse in v0.5.1)
-    pub fn is_supported(&self) -> bool {
-        matches!(self, SqlDialect::ClickHouse)
-    }
-}
+/// SQL dialect for query generation.
+///
+/// Re-exported from `crate::sql_generator` — the canonical home, since the
+/// SQL layer and `graph_catalog::schema_types` both depend on it independently
+/// of the HTTP API.
+pub use crate::sql_generator::SqlDialect;
 
 impl From<OutputFormat> for String {
     fn from(value: OutputFormat) -> Self {
