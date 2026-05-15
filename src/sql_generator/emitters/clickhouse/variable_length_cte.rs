@@ -2146,7 +2146,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let ah = fmap.array_contains();
         let empty_str_arr = fmap.empty_string_array_cast();
         let path_rel_col = if self.needs_path_data() {
-            format!("{ac}(vp.path_relationships, []) AS path_relationships")
+            format!("{ac}(vp.path_relationships, {empty_str_arr}) AS path_relationships")
         } else {
             format!("{empty_str_arr} AS path_relationships")
         };
