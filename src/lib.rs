@@ -34,3 +34,4 @@ pub mod procedures;
 pub mod query_planner;
 pub mod render_plan;
 pub mod server;
+pub mod sql_generator;
