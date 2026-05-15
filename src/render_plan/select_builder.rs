@@ -915,7 +915,19 @@ impl SelectBuilder for LogicalPlan {
                                     );
 
                                     // Extract property from JSON blob.
-                                    // ClickHouse: `JSONExtractString(json_column, 'property_name')`.
+                                    // ClickHouse: `JSONExtractString(json_column, 'property_name')`
+                                    // Databricks: `get_json_object(json_column, '$.property_name')`
+                                    // Same call shape, but Spark needs the field encoded as a
+                                    // JSONPath. Function name comes from the mapper; the JSONPath
+                                    // prefix is a call-site choice (see
+                                    // `sql_generator::function_mapper::databricks` module docs).
+                                    let field_arg =
+                                        match crate::server::query_context::get_current_dialect() {
+                                            crate::sql_generator::SqlDialect::Databricks => {
+                                                format!("$.{}", col_name)
+                                            }
+                                            _ => col_name.to_string(),
+                                        };
                                     select_items.push(SelectItem {
                                         expression: RenderExpr::ScalarFnCall(ScalarFnCall {
                                             name: current_function_mapper()
@@ -931,9 +943,7 @@ impl SelectBuilder for LogicalPlan {
                                                         position
                                                     )),
                                                 }),
-                                                RenderExpr::Literal(Literal::String(
-                                                    col_name.to_string(),
-                                                )),
+                                                RenderExpr::Literal(Literal::String(field_arg)),
                                             ],
                                         }),
                                         col_alias: item

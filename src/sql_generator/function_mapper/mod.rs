@@ -80,16 +80,20 @@ pub(crate) trait FunctionMapper: Send + Sync {
     fn empty_int64_array_cast(&self) -> &'static str;
 }
 
-/// The default function mapper for the current build.
+/// Returns the function mapper for the active SQL dialect, read from the
+/// task-local [`QueryContext`].
 ///
-/// The `FunctionMapper` trait itself is `pub(crate)` rather than using
-/// the sealed-supertrait pattern: external code can't name the trait,
-/// so it can't implement it either, and the simpler visibility rule is
-/// enough for now. Once dialect selection is plumbed through
-/// `render_plan` (Phase 1.1), call sites will receive the mapper from the
-/// active emitter rather than this static accessor.
+/// Outside a task-local scope (notably unit tests), this defaults to
+/// ClickHouse — matching the historical hard-coded behavior so existing
+/// tests don't need to opt in to a context.
+///
+/// The trait itself stays `pub(crate)`: external code can't name it, so
+/// it can't implement it either, and the simpler visibility rule is
+/// enough for now.
+///
+/// [`QueryContext`]: crate::server::query_context::QueryContext
 pub(crate) fn current_function_mapper() -> &'static dyn FunctionMapper {
-    for_dialect(crate::sql_generator::SqlDialect::ClickHouse)
+    for_dialect(crate::server::query_context::get_current_dialect())
 }
 
 /// Returns the function mapper for an explicit dialect.

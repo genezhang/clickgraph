@@ -12,25 +12,25 @@
 //! - <https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-functions-builtin>
 //! - Apache Spark SQL function reference
 //!
-//! ### Known structural gaps (panic with TODO until Phase 1.1)
+//! ### Known structural gap: `array_count`
 //!
-//! **`array_count`**: ClickHouse's `arrayCount(arr, x -> pred)` has no
-//! equivalent single function in Spark — the idiom is
-//! `size(filter(arr, x -> pred))`. That's a *structural* rewrite, not a
-//! name swap, so `FunctionMapper::array_count(&self) -> &'static str`
-//! can't express it.
+//! ClickHouse's `arrayCount(arr, x -> pred)` has no equivalent single
+//! function in Spark — the idiom is `size(filter(arr, x -> pred))`.
+//! That's a *structural* rewrite, not a name swap, so
+//! `FunctionMapper::array_count(&self) -> &'static str` can't express
+//! it. This method panics; the two call sites in
+//! `plan_builder_utils.rs` branch on dialect and build the
+//! `size(filter(...))` form directly when running against Databricks
+//! (added in Phase 1.1).
 //!
-//! **`json_extract_string`**: CH's `JSONExtractString(blob, 'field')` takes
-//! a bare field name; Spark's `get_json_object(blob, '$.field')` takes a
-//! JSONPath. Same name shape but the second argument needs structural
-//! rewriting. Returning `"get_json_object"` would silently emit broken
-//! SQL.
+//! ### Resolved gap (Phase 1.1): `json_extract_string`
 //!
-//! Both panic with a TODO so callers can't accidentally produce wrong
-//! output. Phase 1.1 will pick a strategy — likely widening the call
-//! sites in `select_builder.rs` and `plan_builder_utils.rs` rather than
-//! widening the trait, since each gap has only one call site and the
-//! structural choice belongs there.
+//! CH's `JSONExtractString(blob, 'field')` takes a bare field name;
+//! Spark's `get_json_object(blob, '$.field')` takes a JSONPath. The
+//! mapper returns `"get_json_object"`; the call site in
+//! `select_builder.rs` prepends `$.` to the field name when the active
+//! dialect is Databricks. The mapper-level structural gap is gone —
+//! only the *argument shape* differs, and that lives at the call site.
 
 use super::FunctionMapper;
 
@@ -63,17 +63,10 @@ impl FunctionMapper for DatabricksFunctionMapper {
     }
 
     fn json_extract_string(&self) -> &'static str {
-        // Structural mismatch — see module docs. CH passes the property as a
-        // bare field name (`'OriginCityName'`); Spark's `get_json_object`
-        // wants a JSONPath (`'$.OriginCityName'`). The call site builds the
-        // function args, so it must do the rewrite. Panicking here prevents
-        // silent breakage if a future caller forgets.
-        unimplemented!(
-            "DatabricksFunctionMapper::json_extract_string: Spark's `get_json_object` \
-             requires a JSONPath argument (`$.field`) but the existing call site passes a \
-             bare field name. Phase 1.1 must rewrite the argument at the call site before \
-             this mapping can be used."
-        );
+        // The function name is a clean swap; the *argument* needs JSONPath
+        // shape (`$.field` instead of `field`). The call site in
+        // `select_builder.rs` does that rewrite — see Phase 1.1 module docs.
+        "get_json_object"
     }
 
     fn cast_int64(&self) -> &'static str {
@@ -125,6 +118,7 @@ mod tests {
         assert_eq!(m.collect_list(), "collect_list");
         assert_eq!(m.array_element(), "element_at");
         assert_eq!(m.count_if(), "count_if");
+        assert_eq!(m.json_extract_string(), "get_json_object");
         assert_eq!(m.cast_int64(), "bigint");
         assert_eq!(m.cast_uint8(), "tinyint");
         assert_eq!(m.cast_string(), "string");
@@ -138,8 +132,10 @@ mod tests {
     }
 
     /// Documented structural gap: `array_count` has no clean Spark mapping.
-    /// The panic is intentional — Phase 1.1 must either widen the trait or
-    /// rewrite the single call site to build `size(filter(...))` directly.
+    /// The panic is intentional — the two call sites in
+    /// `plan_builder_utils.rs` branch on dialect and build
+    /// `size(filter(...))` directly when Databricks is active, so they
+    /// never reach this method.
     #[test]
     #[should_panic(expected = "Spark has no `arrayCount")]
     fn databricks_array_count_panics() {
@@ -147,23 +143,34 @@ mod tests {
         m.array_count();
     }
 
-    /// Documented structural gap: `get_json_object` needs a JSONPath
-    /// argument; the call site passes a bare field name. Phase 1.1 must
-    /// rewrite the argument before the mapping can be used.
+    /// Outside a task-local scope `current_function_mapper()` defaults to
+    /// ClickHouse — the historical hardcoded behavior. Tests that don't
+    /// opt into a context keep emitting CH SQL.
     #[test]
-    #[should_panic(expected = "requires a JSONPath argument")]
-    fn databricks_json_extract_string_panics() {
-        let m = for_dialect(SqlDialect::Databricks);
-        m.json_extract_string();
-    }
-
-    /// `current_function_mapper()` still returns ClickHouse — Phase 1.1
-    /// hasn't plumbed dialect through call sites yet.
-    #[test]
-    fn current_mapper_still_clickhouse() {
+    fn current_mapper_defaults_to_clickhouse_outside_scope() {
         assert_eq!(
             super::super::current_function_mapper().cast_string(),
             "toString"
         );
+    }
+
+    /// Inside a task-local scope with `dialect: Databricks`,
+    /// `current_function_mapper()` returns the Databricks mapper. This is
+    /// the Phase 1.1 plumbing — once Phase 1.2's emitter sets the dialect
+    /// in the context, every `current_function_mapper()` call site flips
+    /// to Databricks spellings automatically.
+    #[tokio::test]
+    async fn current_mapper_follows_task_local_dialect() {
+        use crate::server::query_context::{with_query_context, QueryContext};
+
+        let ctx = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        let s = with_query_context(ctx, async {
+            super::super::current_function_mapper().cast_string()
+        })
+        .await;
+        assert_eq!(s, "string");
     }
 }

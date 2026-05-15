@@ -36,11 +36,21 @@ use std::future::Future;
 use std::sync::Arc;
 
 use crate::graph_catalog::graph_schema::GraphSchema;
+use crate::sql_generator::SqlDialect;
 
 /// Per-query context holding all query-scoped state
 /// This replaces multiple scattered task_local!/thread_local! declarations
 #[derive(Debug, Clone, Default)]
 pub struct QueryContext {
+    /// SQL dialect to target for this query. Drives both function-name
+    /// mapping ([`crate::sql_generator::function_mapper::for_dialect`]) and
+    /// the few structural rewrites that can't be expressed as a name swap
+    /// (e.g. `arrayCount` → `size(filter(...))` for Databricks/Spark).
+    ///
+    /// Defaults to ClickHouse so call sites outside a task-local scope —
+    /// notably unit tests — keep emitting CH SQL unchanged.
+    pub dialect: SqlDialect,
+
     /// Schema name for this query (from USE clause or request parameter)
     pub schema_name: Option<String>,
 
@@ -138,6 +148,26 @@ where
     F: Future<Output = R>,
 {
     QUERY_CONTEXT.scope(RefCell::new(context), f).await
+}
+
+// ============================================================================
+// DIALECT ACCESSORS
+// ============================================================================
+
+/// Get the SQL dialect for the current query.
+/// Returns [`SqlDialect::ClickHouse`] when called outside a task-local
+/// scope (e.g. unit tests), matching the historical hard-coded behavior.
+pub fn get_current_dialect() -> SqlDialect {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().dialect)
+        .unwrap_or_default()
+}
+
+/// Set the SQL dialect for the current query (typically once at entry).
+pub fn set_current_dialect(dialect: SqlDialect) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().dialect = dialect;
+    });
 }
 
 // ============================================================================
