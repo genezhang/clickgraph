@@ -24,7 +24,6 @@ macro_rules! debug_println {
 
 pub mod utils;
 
-pub mod clickhouse_query_generator;
 pub mod config;
 pub mod executor;
 pub mod graph_catalog;
@@ -35,3 +34,9 @@ pub mod query_planner;
 pub mod render_plan;
 pub mod server;
 pub mod sql_generator;
+
+/// Deprecated path for the ClickHouse SQL emitter — the code now lives at
+/// `crate::sql_generator::emitters::clickhouse` (Phase 0.3 of the
+/// DeltaGraph refactor). Kept as a transparent re-export for one release
+/// cycle so existing call sites don't churn.
+pub use crate::sql_generator::emitters::clickhouse as clickhouse_query_generator;
