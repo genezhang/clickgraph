@@ -1,3 +1,4 @@
+mod databricks_emit_spike_tests;
 mod denormalized_property_tests;
 mod multiple_relationship_tests;
 mod polymorphic_edge_tests;

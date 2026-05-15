@@ -16,6 +16,7 @@ use crate::render_plan::RenderPlan;
 use serde::{Deserialize, Serialize};
 
 pub(crate) mod clickhouse;
+pub(crate) mod databricks;
 pub(crate) mod emitters;
 pub(crate) mod function_mapper;
 
@@ -90,8 +91,10 @@ pub(crate) trait SqlEmitter: Send + Sync {
 /// No heap allocation: each emitter is a zero-sized type held in a `static`.
 pub(crate) fn emitter_for(dialect: SqlDialect) -> &'static dyn SqlEmitter {
     static CLICKHOUSE: clickhouse::ClickhouseEmitter = clickhouse::ClickhouseEmitter;
+    static DATABRICKS: databricks::DatabricksEmitter = databricks::DatabricksEmitter;
     match dialect {
         SqlDialect::ClickHouse => &CLICKHOUSE,
+        SqlDialect::Databricks => &DATABRICKS,
         d => unimplemented!("SQL emitter for dialect {:?} is not yet implemented", d),
     }
 }
