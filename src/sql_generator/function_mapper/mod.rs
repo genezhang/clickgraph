@@ -55,6 +55,24 @@ pub(crate) trait FunctionMapper: Send + Sync {
 
     /// Cast to string. CH: `toString`. Spark: `string` (function-call alias).
     fn cast_string(&self) -> &'static str;
+
+    /// Concatenate two arrays. CH: `arrayConcat`. Spark: `concat`
+    /// (overloaded for arrays).
+    fn array_concat(&self) -> &'static str;
+
+    /// Test array membership. CH: `has`. Spark: `array_contains`.
+    /// Used for cycle detection in VLP recursive CTEs.
+    fn array_contains(&self) -> &'static str;
+
+    /// Empty `Array(String)` literal with explicit cast. CH:
+    /// `CAST([] AS Array(String))`. Spark: `CAST(array() AS ARRAY<STRING>)`.
+    /// Returned as a full snippet (not a function name) because the array
+    /// literal syntax and the element-type spelling both diverge.
+    fn empty_string_array_cast(&self) -> &'static str;
+
+    /// Empty `Array(Int64)` literal with explicit cast. CH:
+    /// `CAST([] AS Array(Int64))`. Spark: `CAST(array() AS ARRAY<BIGINT>)`.
+    fn empty_int64_array_cast(&self) -> &'static str;
 }
 
 /// The default function mapper for the current build.
