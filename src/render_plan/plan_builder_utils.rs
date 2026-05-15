@@ -2668,6 +2668,40 @@ mod tests {
         );
     }
 
+    /// `emit_array_count_call` outside a task-local scope defaults to
+    /// ClickHouse — matching the pre-Phase-1.1 hardcoded behavior.
+    #[test]
+    fn emit_array_count_call_defaults_to_clickhouse() {
+        let sql = emit_array_count_call("x", "x IN (SELECT id FROM t)", "vp.path_nodes");
+        assert_eq!(
+            sql,
+            "arrayCount(x -> x IN (SELECT id FROM t), vp.path_nodes)"
+        );
+    }
+
+    /// When the task-local dialect is Databricks, the helper builds the
+    /// `size(filter(arr, x -> pred))` structural rewrite — Spark has no
+    /// `arrayCount` equivalent. Note `filter` reverses arg order (arr,
+    /// predicate) vs CH's (predicate, arr).
+    #[tokio::test]
+    async fn emit_array_count_call_databricks_uses_size_filter() {
+        use crate::server::query_context::{with_query_context, QueryContext};
+        use crate::sql_generator::SqlDialect;
+
+        let ctx = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        let sql = with_query_context(ctx, async {
+            emit_array_count_call("x", "x IN (SELECT id FROM t)", "vp.path_nodes")
+        })
+        .await;
+        assert_eq!(
+            sql,
+            "size(filter(vp.path_nodes, x -> x IN (SELECT id FROM t)))"
+        );
+    }
+
     /// Regression test: build_cte_column_map must use real column names from expressions,
     /// not CTE alias names like p1_a_user_id. When the FROM is a base table (e.g., social.users),
     /// correlated subqueries must reference `a.user_id`, not `a.p1_a_user_id`.
@@ -16181,12 +16215,7 @@ fn generate_list_comp_array_count(
         where_str
     );
 
-    let result = format!(
-        "{}(x -> x IN ({}), {})",
-        current_function_mapper().array_count(),
-        inner_select,
-        list_col
-    );
+    let result = emit_array_count_call("x", &format!("x IN ({})", inner_select), &list_col);
 
     log::info!(
         "🔧 array-count expression: {}",
@@ -16194,6 +16223,25 @@ fn generate_list_comp_array_count(
     );
 
     Some(result)
+}
+
+/// Emit an `arrayCount(lambda_var -> predicate, array)` call for the active
+/// dialect.
+///
+/// ClickHouse: `arrayCount(x -> pred, arr)` — single function, predicate-first.
+/// Databricks/Spark: `size(filter(arr, x -> pred))` — structural rewrite.
+/// Calling `FunctionMapper::array_count()` on the Databricks mapper panics;
+/// see `sql_generator::function_mapper::databricks` module docs.
+fn emit_array_count_call(lambda_var: &str, predicate: &str, array: &str) -> String {
+    match crate::server::query_context::get_current_dialect() {
+        crate::sql_generator::SqlDialect::Databricks => {
+            format!("size(filter({array}, {lambda_var} -> {predicate}))")
+        }
+        _ => format!(
+            "{}({lambda_var} -> {predicate}, {array})",
+            current_function_mapper().array_count()
+        ),
+    }
 }
 
 /// Fallback: generate arrayCount with the original tuple-based approach.
@@ -16238,12 +16286,10 @@ fn generate_list_comp_array_count_tuple_fallback(
         where_str
     );
 
-    let result = format!(
-        "{}(x -> {} IN ({}), {})",
-        current_function_mapper().array_count(),
-        lambda_tuple,
-        inner_select,
-        list_col
+    let result = emit_array_count_call(
+        "x",
+        &format!("{} IN ({})", lambda_tuple, inner_select),
+        list_col,
     );
 
     log::info!(
