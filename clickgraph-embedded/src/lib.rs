@@ -51,6 +51,8 @@ pub use cypher_loader::LoadStats;
 #[cfg(feature = "embedded")]
 pub use database::StorageCredentials;
 pub use database::{Database, RemoteConfig, SystemConfig};
+#[cfg(feature = "databricks")]
+pub use database::{DatabricksConfig, DatabricksSqlExecutor};
 pub use error::EmbeddedError;
 pub use export::{ExportFormat, ExportOptions};
 pub use graph_result::{GraphEdge, GraphNode, GraphResult, GraphResultBuilder, StoreStats};

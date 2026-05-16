@@ -100,13 +100,15 @@ impl<'db> Connection<'db> {
     pub fn query_to_sql(&self, cypher: &str) -> Result<String, EmbeddedError> {
         use clickgraph::clickhouse_query_generator::cypher_to_sql;
         use clickgraph::server::query_context::{
-            set_current_schema, with_query_context, QueryContext,
+            set_current_dialect, set_current_schema, with_query_context, QueryContext,
         };
         let schema = Arc::clone(&self.schema);
         let cypher = cypher.to_string();
+        let dialect = self.db.dialect;
         self.db.runtime.block_on(async move {
             let context = QueryContext::new(None);
             with_query_context(context, async move {
+                set_current_dialect(dialect);
                 set_current_schema(Arc::clone(&schema));
                 cypher_to_sql(&cypher, &schema, 100).map_err(EmbeddedError::Query)
             })
@@ -1118,12 +1120,14 @@ impl<'db> Connection<'db> {
     ) -> Result<QueryResult, EmbeddedError> {
         use clickgraph::clickhouse_query_generator::cypher_to_sql;
         use clickgraph::server::query_context::{
-            set_current_schema, with_query_context, QueryContext,
+            set_current_dialect, set_current_schema, with_query_context, QueryContext,
         };
         let schema = Arc::clone(&self.schema);
         let executor = Arc::clone(executor);
         let cypher = cypher.to_string();
+        let dialect = self.db.dialect;
         with_query_context(QueryContext::new(None), async move {
+            set_current_dialect(dialect);
             set_current_schema(Arc::clone(&schema));
             let compile_start = Instant::now();
             let final_sql = cypher_to_sql(&cypher, &schema, DEFAULT_MAX_CTE_DEPTH)
@@ -1172,12 +1176,14 @@ impl<'db> Connection<'db> {
     ) -> Result<GraphResult, EmbeddedError> {
         use clickgraph::clickhouse_query_generator::cypher_to_sql_with_metadata;
         use clickgraph::server::query_context::{
-            set_current_schema, with_query_context, QueryContext,
+            set_current_dialect, set_current_schema, with_query_context, QueryContext,
         };
         let schema = Arc::clone(&self.schema);
         let executor = Arc::clone(executor);
         let cypher = cypher.to_string();
+        let dialect = self.db.dialect;
         with_query_context(QueryContext::new(None), async move {
+            set_current_dialect(dialect);
             set_current_schema(Arc::clone(&schema));
             let (sql, logical_plan, plan_ctx) =
                 cypher_to_sql_with_metadata(&cypher, &schema, DEFAULT_MAX_CTE_DEPTH)
@@ -1807,6 +1813,7 @@ graph_schema:
                 .build()
                 .unwrap(),
             executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::EmbeddedChdb,
+            dialect: clickgraph::sql_generator::SqlDialect::ClickHouse,
         }
     }
 
@@ -1862,6 +1869,7 @@ graph_schema:
                 .build()
                 .unwrap(),
             executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::EmbeddedChdb,
+            dialect: clickgraph::sql_generator::SqlDialect::ClickHouse,
         };
         (db, captured)
     }
@@ -1897,6 +1905,7 @@ graph_schema:
                 .build()
                 .unwrap(),
             executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::EmbeddedChdb,
+            dialect: clickgraph::sql_generator::SqlDialect::ClickHouse,
         }
     }
 

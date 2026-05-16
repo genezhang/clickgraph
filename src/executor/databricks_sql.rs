@@ -42,7 +42,11 @@ use super::{ExecutorError, QueryExecutor};
 /// `hostname` is the workspace host (no scheme, no trailing slash) —
 /// e.g. `dbc-abc123-def4.cloud.databricks.com`. `warehouse_id` is the
 /// SQL Warehouse target; `token` is a personal access token.
-#[derive(Debug, Clone)]
+///
+/// `Debug` is implemented manually to redact the PAT — matching how
+/// `RemoteConfig` redacts its password. Logging a `DatabricksConfig`
+/// via `{:?}` is safe and will print `********` in place of the token.
+#[derive(Clone)]
 pub struct DatabricksConfig {
     pub hostname: String,
     pub warehouse_id: String,
@@ -82,6 +86,23 @@ impl DatabricksConfig {
             schema: None,
             base_url: None,
         }
+    }
+}
+
+impl std::fmt::Debug for DatabricksConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Redact the PAT — matches RemoteConfig's password redaction.
+        // Anything reachable via `{:?}` (logs, panics, error chains) must
+        // not leak the token.
+        f.debug_struct("DatabricksConfig")
+            .field("hostname", &self.hostname)
+            .field("warehouse_id", &self.warehouse_id)
+            .field("token", &"********")
+            .field("wait_timeout", &self.wait_timeout)
+            .field("catalog", &self.catalog)
+            .field("schema", &self.schema)
+            .field("base_url", &self.base_url)
+            .finish()
     }
 }
 
@@ -501,6 +522,26 @@ mod tests {
         assert!(StatementState::Failed.is_terminal());
         assert!(StatementState::Canceled.is_terminal());
         assert!(StatementState::Closed.is_terminal());
+    }
+
+    #[test]
+    fn debug_redacts_token() {
+        // Critical: anything that reaches `{:?}` must NOT contain the
+        // raw PAT. This matches RemoteConfig's password redaction.
+        let c = DatabricksConfig::new(
+            "ws.cloud.databricks.com",
+            "wh-1",
+            "dapi-SECRET-TOKEN-MUST-NOT-LEAK",
+        );
+        let s = format!("{c:?}");
+        assert!(!s.contains("SECRET"), "token leaked into Debug output: {s}");
+        assert!(
+            s.contains("********"),
+            "expected `********` in redacted Debug; got: {s}"
+        );
+        // The other fields should still be visible for triage.
+        assert!(s.contains("ws.cloud.databricks.com"));
+        assert!(s.contains("wh-1"));
     }
 
     #[test]

@@ -11,11 +11,14 @@ use async_trait::async_trait;
 use clickgraph::executor::chdb_embedded::ChdbExecutor;
 #[cfg(feature = "embedded")]
 pub use clickgraph::executor::chdb_embedded::StorageCredentials;
+#[cfg(feature = "databricks")]
+pub use clickgraph::executor::databricks_sql::{DatabricksConfig, DatabricksSqlExecutor};
 use clickgraph::executor::remote::RemoteClickHouseExecutor;
 use clickgraph::executor::{ExecutorError, QueryExecutor};
 use clickgraph::graph_catalog::config::GraphSchemaConfig;
 use clickgraph::graph_catalog::graph_schema::GraphSchema;
 use clickgraph::server::connection_pool::RoleConnectionPool;
+use clickgraph::sql_generator::SqlDialect;
 
 use super::error::EmbeddedError;
 
@@ -119,6 +122,11 @@ pub struct Database {
     /// guard (Phase 3 of the embedded-writes plan) to gate Cypher write
     /// clauses to the embedded chdb path only.
     pub(crate) executor_kind: clickgraph::query_planner::write_guard::ExecutorKind,
+    /// SQL dialect this database emits. `Connection::query_*` paths
+    /// stamp this onto the per-query `QueryContext` so that the shared
+    /// renderer routes through the right `FunctionMapper`. Default
+    /// `ClickHouse`; `new_databricks()` sets it to `Databricks`.
+    pub(crate) dialect: SqlDialect,
 }
 
 impl Database {
@@ -209,6 +217,7 @@ impl Database {
             schema,
             runtime,
             executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::EmbeddedChdb,
+            dialect: SqlDialect::ClickHouse,
         })
     }
 
@@ -232,6 +241,35 @@ impl Database {
             schema: Arc::new(graph_schema),
             runtime,
             executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::Remote,
+            dialect: SqlDialect::ClickHouse,
+        })
+    }
+
+    /// Open a database connected to a Databricks SQL Warehouse.
+    ///
+    /// Cypher is translated to Spark SQL locally (via the dialect-aware
+    /// renderer landed in Phase 1.x) and executed against the warehouse
+    /// over the Statement Execution API. Use `Connection::query_remote()`
+    /// to run queries — the same path used for the ClickHouse remote
+    /// executor; the dialect is selected via `Database::dialect`.
+    ///
+    /// Available only with the `databricks` feature enabled.
+    #[cfg(feature = "databricks")]
+    pub fn new_databricks(
+        schema_path: impl AsRef<Path>,
+        config: DatabricksConfig,
+    ) -> Result<Self, EmbeddedError> {
+        let graph_schema = load_graph_schema(schema_path.as_ref())?;
+        let runtime = build_runtime()?;
+        let executor = DatabricksSqlExecutor::new(config)
+            .map_err(|e| EmbeddedError::Executor(format!("Databricks executor: {e}")))?;
+        Ok(Database {
+            executor: Arc::new(NullExecutor),
+            remote_executor: Some(Arc::new(executor) as Arc<dyn QueryExecutor>),
+            schema: Arc::new(graph_schema),
+            runtime,
+            executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::Remote,
+            dialect: SqlDialect::Databricks,
         })
     }
 
@@ -282,6 +320,7 @@ impl Database {
             // guard rejects writes here — tests that need writes should
             // construct a chdb-backed Database via `new` instead.
             executor_kind: clickgraph::query_planner::write_guard::ExecutorKind::SqlOnly,
+            dialect: SqlDialect::ClickHouse,
         })
     }
 
