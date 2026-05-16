@@ -157,7 +157,8 @@ fn render_expr_inline(expr: &crate::render_plan::render_expr::RenderExpr) -> Str
         RenderExpr::Raw(raw) => raw.clone(),
         RenderExpr::List(items) => {
             let parts = items.iter().map(render_expr_inline).collect::<Vec<_>>();
-            format!("[{}]", parts.join(", "))
+            crate::sql_generator::function_mapper::current_function_mapper()
+                .array_literal(&parts.join(", "))
         }
         RenderExpr::ScalarFnCall(fn_call) => {
             let args = fn_call

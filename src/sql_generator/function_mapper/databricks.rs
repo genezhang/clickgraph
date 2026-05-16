@@ -110,6 +110,10 @@ impl FunctionMapper for DatabricksFunctionMapper {
     fn empty_int64_array_cast(&self) -> &'static str {
         "CAST(array() AS ARRAY<BIGINT>)"
     }
+
+    fn array_literal(&self, elems: &str) -> String {
+        format!("array({elems})")
+    }
 }
 
 #[cfg(test)]
@@ -136,6 +140,8 @@ mod tests {
             "CAST(array() AS ARRAY<STRING>)"
         );
         assert_eq!(m.empty_int64_array_cast(), "CAST(array() AS ARRAY<BIGINT>)");
+        assert_eq!(m.array_literal(""), "array()");
+        assert_eq!(m.array_literal("a, b"), "array(a, b)");
     }
 
     /// Documented structural gap: `array_count` has no clean Spark mapping.

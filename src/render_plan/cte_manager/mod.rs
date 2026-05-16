@@ -23,6 +23,27 @@ use crate::render_plan::cte_generation::CteGenerationContext;
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::filter_pipeline::CategorizedFilters;
 
+/// Dialect-correct array literal. CH: `[a, b]`. Spark: `array(a, b)`.
+/// Thin shorthand over `FunctionMapper::array_literal` — CTE generation
+/// builds these in many places (path_edges, path_nodes).
+fn arr(elems: &str) -> String {
+    crate::sql_generator::function_mapper::current_function_mapper().array_literal(elems)
+}
+
+/// `arrayConcat(arr_expr, [scalar])` — appends a single scalar onto an
+/// array. Goes through `FunctionMapper` for both the function name
+/// (`arrayConcat` / `concat`) and the array literal shape (`[x]` /
+/// `array(x)`).
+fn arr_append(arr_expr: &str, scalar: &str) -> String {
+    let mapper = crate::sql_generator::function_mapper::current_function_mapper();
+    format!(
+        "{}({}, {})",
+        mapper.array_concat(),
+        arr_expr,
+        mapper.array_literal(scalar)
+    )
+}
+
 /// Unified error type for CTE operations
 #[derive(Debug, thiserror::Error)]
 pub enum CteError {
@@ -726,15 +747,21 @@ impl FkEdgeCteStrategy {
             ),
             "1 as hop_count".to_string(),
             format!(
-                "[{}.{}] as path_edges",
-                self.pattern_ctx.left_node_alias, self.fk_column
+                "{} as path_edges",
+                arr(&format!(
+                    "{}.{}",
+                    self.pattern_ctx.left_node_alias, self.fk_column
+                ))
             ), // FK column represents the edge
             format!(
-                "[{}.{}, {}.{}] as path_nodes",
-                self.pattern_ctx.left_node_alias,
-                self.id_column,
-                self.pattern_ctx.right_node_alias,
-                self.id_column
+                "{} as path_nodes",
+                arr(&format!(
+                    "{}.{}, {}.{}",
+                    self.pattern_ctx.left_node_alias,
+                    self.id_column,
+                    self.pattern_ctx.right_node_alias,
+                    self.id_column
+                ))
             ),
         ];
 
@@ -788,12 +815,18 @@ impl FkEdgeCteStrategy {
             ),
             format!("{}.hop_count + 1 as hop_count", cte_name),
             format!(
-                "arrayConcat({}.path_edges, [{}.{}]) as path_edges",
-                cte_name, self.pattern_ctx.left_node_alias, self.fk_column
+                "{} as path_edges",
+                arr_append(
+                    &format!("{}.path_edges", cte_name),
+                    &format!("{}.{}", self.pattern_ctx.left_node_alias, self.fk_column),
+                )
             ),
             format!(
-                "arrayConcat({}.path_nodes, [{}.{}]) as path_nodes",
-                cte_name, self.pattern_ctx.right_node_alias, self.id_column
+                "{} as path_nodes",
+                arr_append(
+                    &format!("{}.path_nodes", cte_name),
+                    &format!("{}.{}", self.pattern_ctx.right_node_alias, self.id_column),
+                )
             ),
         ];
 
@@ -1009,15 +1042,18 @@ impl TraditionalCteStrategy {
             ),
             "1 as hop_count".to_string(),
             format!(
-                "[{}.{}] as path_edges",
-                self.pattern_ctx.rel_alias, rel_from_col
+                "{} as path_edges",
+                arr(&format!("{}.{}", self.pattern_ctx.rel_alias, rel_from_col))
             ), // Simplified edge tracking
             format!(
-                "[{}.{}, {}.{}] as path_nodes",
-                self.pattern_ctx.left_node_alias,
-                start_id_col,
-                self.pattern_ctx.right_node_alias,
-                end_id_col
+                "{} as path_nodes",
+                arr(&format!(
+                    "{}.{}, {}.{}",
+                    self.pattern_ctx.left_node_alias,
+                    start_id_col,
+                    self.pattern_ctx.right_node_alias,
+                    end_id_col
+                ))
             ),
         ];
 
@@ -1077,12 +1113,12 @@ impl TraditionalCteStrategy {
             ),
             format!("{}.hop_count + 1 as hop_count", cte_name),
             format!(
-                "arrayConcat({}.path_edges, [{}]) as path_edges",
-                cte_name, rel_from_col
+                "{} as path_edges",
+                arr_append(&format!("{}.path_edges", cte_name), &rel_from_col)
             ),
             format!(
-                "arrayConcat({}.path_nodes, [{}]) as path_nodes",
-                cte_name, end_id_col
+                "{} as path_nodes",
+                arr_append(&format!("{}.path_nodes", cte_name), &end_id_col)
             ),
         ];
 
@@ -1585,12 +1621,18 @@ impl DenormalizedCteStrategy {
             format!("{}.{} as end_id", self.pattern_ctx.rel_alias, self.to_col),
             "1 as hop_count".to_string(),
             format!(
-                "[{}.{}] as path_edges",
-                self.pattern_ctx.rel_alias, self.from_col
+                "{} as path_edges",
+                arr(&format!("{}.{}", self.pattern_ctx.rel_alias, self.from_col))
             ), // Simplified edge tracking
             format!(
-                "[{}.{}, {}.{}] as path_nodes",
-                self.pattern_ctx.rel_alias, self.from_col, self.pattern_ctx.rel_alias, self.to_col
+                "{} as path_nodes",
+                arr(&format!(
+                    "{}.{}, {}.{}",
+                    self.pattern_ctx.rel_alias,
+                    self.from_col,
+                    self.pattern_ctx.rel_alias,
+                    self.to_col
+                ))
             ),
         ];
 
@@ -1628,8 +1670,8 @@ impl DenormalizedCteStrategy {
             format!("next.{} as start_id", self.from_col),
             format!("next.{} as end_id", self.to_col),
             "vp.hop_count + 1".to_string(),
-            format!("arrayConcat(vp.path_edges, [next.{}])", self.from_col), // Extend edge path array
-            format!("arrayConcat(vp.path_nodes, [next.{}])", self.to_col), // Extend node path array
+            arr_append("vp.path_edges", &format!("next.{}", self.from_col)), // Extend edge path array
+            arr_append("vp.path_nodes", &format!("next.{}", self.to_col)), // Extend node path array
         ];
 
         // Add properties from the next table occurrence
@@ -1912,12 +1954,15 @@ impl MixedAccessCteStrategy {
             format!("{}.end_id", embedded_node_alias),
             "1 as hop_count".to_string(),
             format!(
-                "[{}.{}] as path_edges",
-                self.pattern_ctx.rel_alias, self.join_col
+                "{} as path_edges",
+                arr(&format!("{}.{}", self.pattern_ctx.rel_alias, self.join_col))
             ), // Edge represented by join column
             format!(
-                "[{}.start_id, {}.end_id] as path_nodes",
-                joined_node_alias, embedded_node_alias
+                "{} as path_nodes",
+                arr(&format!(
+                    "{}.start_id, {}.end_id",
+                    joined_node_alias, embedded_node_alias
+                ))
             ),
         ];
 
@@ -1999,12 +2044,12 @@ impl MixedAccessCteStrategy {
             format!("{}.{}", embedded_node_alias, VLP_END_ID_COLUMN),
             format!("{}.hop_count + 1 as hop_count", cte_name),
             format!(
-                "arrayConcat({}.path_edges, [{}]) as path_edges",
-                cte_name, self.join_col
+                "{} as path_edges",
+                arr_append(&format!("{}.path_edges", cte_name), &self.join_col)
             ),
             format!(
-                "arrayConcat({}.path_nodes, [{}]) as path_nodes",
-                cte_name, VLP_END_ID_COLUMN
+                "{} as path_nodes",
+                arr_append(&format!("{}.path_nodes", cte_name), VLP_END_ID_COLUMN)
             ),
         ];
 
@@ -2328,12 +2373,18 @@ impl EdgeToEdgeCteStrategy {
             format!("{}.{} as end_id", self.pattern_ctx.rel_alias, self.to_col),
             "1 as hop_count".to_string(),
             format!(
-                "[{}.{}] as path_edges",
-                self.pattern_ctx.rel_alias, self.from_col
+                "{} as path_edges",
+                arr(&format!("{}.{}", self.pattern_ctx.rel_alias, self.from_col))
             ), // Simplified edge tracking
             format!(
-                "[{}.{}, {}.{}] as path_nodes",
-                self.pattern_ctx.rel_alias, self.from_col, self.pattern_ctx.rel_alias, self.to_col
+                "{} as path_nodes",
+                arr(&format!(
+                    "{}.{}, {}.{}",
+                    self.pattern_ctx.rel_alias,
+                    self.from_col,
+                    self.pattern_ctx.rel_alias,
+                    self.to_col
+                ))
             ),
         ];
 
@@ -2572,10 +2623,19 @@ impl CoupledCteStrategy {
             format!("{}.{} as start_id", self.unified_alias, self.from_col),
             format!("{}.{} as end_id", self.unified_alias, self.to_col),
             "1 as hop_count".to_string(), // For coupled edges, each row represents 1 "logical" hop
-            format!("[{}.{}] as path_edges", self.unified_alias, self.from_col),
             format!(
-                "[{}.{}, {}.{}] as path_nodes",
-                self.unified_alias, self.from_col, self.unified_alias, self.to_col
+                "{} as path_edges",
+                crate::sql_generator::function_mapper::current_function_mapper()
+                    .array_literal(&format!("{}.{}", self.unified_alias, self.from_col))
+            ),
+            format!(
+                "{} as path_nodes",
+                crate::sql_generator::function_mapper::current_function_mapper().array_literal(
+                    &format!(
+                        "{}.{}, {}.{}",
+                        self.unified_alias, self.from_col, self.unified_alias, self.to_col
+                    )
+                )
             ),
         ];
 

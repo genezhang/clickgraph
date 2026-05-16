@@ -281,8 +281,11 @@ fn flatten_list_addition_operands(expr: &RenderExpr) -> Vec<String> {
         _ => {
             let sql = expr.to_sql();
             if is_known_scalar(expr) {
-                // Wrap scalar as single-element array for arrayConcat compatibility
-                vec![format!("[{}]", sql)]
+                // Wrap scalar as single-element array for arrayConcat/concat compatibility
+                vec![
+                    crate::sql_generator::function_mapper::current_function_mapper()
+                        .array_literal(&sql),
+                ]
             } else {
                 vec![sql]
             }
@@ -4459,9 +4462,8 @@ impl RenderExpr {
                     .map(|e| e.to_sql())
                     .collect::<Vec<_>>()
                     .join(", ");
-                // Use array literal syntax [...] for ClickHouse
-                // This works for both ARRAY JOIN (UNWIND) and IN clauses
-                format!("[{}]", inner)
+                crate::sql_generator::function_mapper::current_function_mapper()
+                    .array_literal(&inner)
             }
             RenderExpr::ScalarFnCall(fn_call) => {
                 // Check for special functions that need custom handling
@@ -5147,7 +5149,8 @@ impl RenderExpr {
 
                 let render_result = |expr: &RenderExpr| -> String {
                     if has_list_branch && matches!(expr, RenderExpr::Literal(Literal::Null)) {
-                        "[]".to_string()
+                        crate::sql_generator::function_mapper::current_function_mapper()
+                            .array_literal("")
                     } else {
                         expr.to_sql()
                     }
@@ -5169,7 +5172,8 @@ impl RenderExpr {
                         .map(|e| render_result(e))
                         .unwrap_or_else(|| {
                             if has_list_branch {
-                                "[]".to_string()
+                                crate::sql_generator::function_mapper::current_function_mapper()
+                                    .array_literal("")
                             } else {
                                 "NULL".to_string()
                             }

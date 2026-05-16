@@ -746,7 +746,8 @@ fn render_rhs_to_sql(expr: &LogicalExpr, as_string: bool) -> String {
                 .iter()
                 .map(|i| render_rhs_to_sql(i, as_string))
                 .collect();
-            format!("[{}]", rendered.join(", "))
+            crate::sql_generator::function_mapper::current_function_mapper()
+                .array_literal(&rendered.join(", "))
         }
         _ => {
             // Fallback: try to render via RenderExpr conversion and SQL generation
