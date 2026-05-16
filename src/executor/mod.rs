@@ -5,6 +5,8 @@
 //!   for remote ClickHouse server connections.
 //! - `chdb_embedded::ChdbExecutor` — in-process chdb for embedded deployments
 //!   (requires the `embedded` feature).
+//! - `databricks_sql::DatabricksSqlExecutor` — Databricks SQL Warehouse
+//!   Statement Execution API client (requires the `databricks` feature).
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -18,6 +20,9 @@ pub mod chdb_embedded;
 #[cfg(feature = "embedded")]
 pub mod data_loader;
 pub mod source_resolver;
+
+#[cfg(feature = "databricks")]
+pub mod databricks_sql;
 
 /// Backend-agnostic SQL execution interface.
 ///
