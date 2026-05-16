@@ -2,6 +2,15 @@
 
 ### 🚀 Features
 
+- **DeltaGraph: Databricks SQL Warehouse support** (PRs #316–#333): A second SQL dialect alongside ClickHouse, plumbed through the existing renderer and executor stack so Cypher can target Databricks/Spark without forking the engine. Phased rollout:
+  - **Phase 1.0–1.5** (#316–#326) — `SqlDialect` enum, `FunctionMapper` trait, dialect-aware function registry. ClickHouse spellings (`groupArray`, `toInt64`, `toFloat64`, `toString`, `toUInt16`, `Array(Int64)` casts) routed through the mapper so Spark equivalents (`collect_list`, `bigint`, `double`, `string`, `int`, `ARRAY<BIGINT>`) drop in without touching call sites.
+  - **Phase 1.6–1.7** (#327, #328) — VLP / BFS shortestPath dialect routing; `cast_uint16` widened to `int` to be safe for the unbounded `CLICKGRAPH_VLP_MAX_HOPS` ceiling.
+  - **Phase 2.1–2.2** (#329–#331) — `DatabricksSqlExecutor` over reqwest using the Statement Execution API (submit / poll / INLINE JSON_ARRAY). PAT bearer auth with `Debug` redaction (`"********"`). `Database::new_databricks(schema, DatabricksConfig)` + `set_current_dialect` plumbing across `query_to_sql`, `query_with_executor_async`, `query_graph_async`. 3 wiremock-based e2e tests in `clickgraph-embedded`.
+  - **Phase 4.2** (#332) — `cg --dialect [clickhouse|databricks]` global flag (+ `CG_DIALECT` env, `dialect = "…"` config.toml key). `Database::sql_only_with_dialect` constructor narrowed to validated dialects (rejects unimplemented PostgreSQL/DuckDB/MySQL/SQLite with `EmbeddedError::Validation`). 7 integration tests.
+  - **Phase 4.4** (#333) — `clickgraph-ffi` `databricks` cargo feature exposes `DatabricksConfig` + `Database::open_databricks` to Go / Python (and any future UniFFI consumer). Default builds unchanged; distributions targeting Databricks build the cdylib with `--features databricks` before regenerating language bindings.
+
+  `MERGE`, full LDBC validation against a live warehouse, OAuth M2M auth, and external-link result chunks are still pending. Plan: [`docs/design/DELTAGRAPH_PLAN.md`](docs/design/DELTAGRAPH_PLAN.md).
+
 - **Cypher writes in embedded mode** (PRs #275–#286): `CREATE`, `SET`, `DELETE` / `DETACH DELETE`, and `REMOVE` against ClickGraph-managed nodes, translated to ClickHouse lightweight `INSERT` / `UPDATE` / `DELETE`. Server / remote / sql_only modes reject writes upstream via the new `write_guard` admission check; `source:`-backed nodes/edges remain read-only. Phased rollout:
   - **Phase 0** (#275, #276) — design lock; chose lightweight `UPDATE` over rewrite for `SET`.
   - **Phase 1** (#277) — `Create` / `Update` / `Delete` `LogicalPlan` variants + builder + write_guard.
