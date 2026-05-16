@@ -4578,7 +4578,7 @@ impl RenderExpr {
                         // Return ClickHouse function with transformed args
                         format!(
                             "{}({})",
-                            mapping.clickhouse_name,
+                            mapping.name_for(crate::server::query_context::get_current_dialect()),
                             transformed_args.join(", ")
                         )
                     }
@@ -4635,7 +4635,7 @@ impl RenderExpr {
                         };
                         format!(
                             "{}({})",
-                            mapping.clickhouse_name,
+                            mapping.name_for(crate::server::query_context::get_current_dialect()),
                             transformed_args.join(", ")
                         )
                     }

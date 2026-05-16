@@ -331,10 +331,10 @@ pub fn translate_scalar_function(
                 args_sql
             };
 
-            // Generate ClickHouse function call
+            // Generate function call using the dialect-appropriate name
             Ok(format!(
                 "{}({})",
-                mapping.clickhouse_name,
+                mapping.name_for(crate::server::query_context::get_current_dialect()),
                 transformed_args.join(", ")
             ))
         }
