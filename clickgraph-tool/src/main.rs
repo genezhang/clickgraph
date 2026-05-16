@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 mod commands;
 mod config;
@@ -7,6 +7,23 @@ mod llm;
 mod schema_fmt;
 
 use config::CgConfig;
+
+#[derive(Copy, Clone, Debug, ValueEnum, Default)]
+#[clap(rename_all = "lowercase")]
+pub enum DialectArg {
+    #[default]
+    Clickhouse,
+    Databricks,
+}
+
+impl DialectArg {
+    pub fn to_sql_dialect(self) -> clickgraph_embedded::SqlDialect {
+        match self {
+            DialectArg::Clickhouse => clickgraph_embedded::SqlDialect::ClickHouse,
+            DialectArg::Databricks => clickgraph_embedded::SqlDialect::Databricks,
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -34,6 +51,10 @@ struct Cli {
     /// ClickHouse database to query
     #[arg(long, env = "CG_CLICKHOUSE_DATABASE", global = true)]
     ch_database: Option<String>,
+
+    /// Target SQL dialect for Cypher translation
+    #[arg(long, env = "CG_DIALECT", global = true, value_enum)]
+    dialect: Option<DialectArg>,
 
     #[command(subcommand)]
     command: Commands,
@@ -145,6 +166,7 @@ async fn main() -> Result<()> {
         cli.ch_user.as_deref(),
         cli.ch_password.as_deref(),
         &cli.ch_database,
+        cli.dialect,
     )?;
 
     match cli.command {

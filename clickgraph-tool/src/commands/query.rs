@@ -6,6 +6,7 @@ use clickgraph_embedded::{
 };
 
 use crate::config::CgConfig;
+use crate::DialectArg;
 
 /// `cg sql` — translate Cypher to SQL and print it.
 pub fn run_sql(cypher: &str, cfg: &CgConfig) -> Result<()> {
@@ -24,7 +25,8 @@ pub fn run_validate(cypher: &str, cfg: &CgConfig) -> Result<()> {
 /// Translate Cypher → SQL using sql_only mode (no executor needed).
 fn translate(cypher: &str, cfg: &CgConfig) -> Result<String> {
     let path = cfg.require_schema()?;
-    let db = Database::sql_only(path).map_err(|e| anyhow!("{}", e))?;
+    let db = Database::sql_only_with_dialect(path, cfg.dialect.to_sql_dialect())
+        .map_err(|e| anyhow!("{}", e))?;
     let conn = Connection::new(&db).map_err(|e| anyhow!("{}", e))?;
     conn.query_to_sql(cypher).map_err(|e| anyhow!("{}", e))
 }
@@ -35,6 +37,14 @@ pub async fn run_query(cypher: &str, sql_only: bool, format: &str, cfg: &CgConfi
 
     if sql_only {
         return run_sql(cypher, cfg);
+    }
+
+    if matches!(cfg.dialect, DialectArg::Databricks) {
+        return Err(anyhow!(
+            "`cg query --dialect databricks` execution is not yet wired up — use `--sql-only` \
+             (or `cg sql --dialect databricks <query>`) to print Spark SQL, or run that SQL \
+             against a Databricks SQL Warehouse separately."
+        ));
     }
 
     let ch_url = cfg

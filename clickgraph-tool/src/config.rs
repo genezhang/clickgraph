@@ -1,6 +1,8 @@
 use anyhow::Result;
 use serde::Deserialize;
 
+use crate::DialectArg;
+
 /// Runtime configuration for cg, resolved from (priority order):
 /// 1. CLI flags / env vars
 /// 2. ~/.config/cg/config.toml
@@ -12,6 +14,7 @@ pub struct CgConfig {
     pub ch_user: String,
     pub ch_password: String,
     pub ch_database: Option<String>,
+    pub dialect: DialectArg,
     pub llm: LlmConfig,
 }
 
@@ -31,6 +34,8 @@ struct FileConfig {
     schema: FileSchemaSection,
     #[serde(default)]
     clickhouse: FileClickHouseSection,
+    #[serde(default)]
+    dialect: Option<String>,
     #[serde(default)]
     llm: FileLlmSection,
 }
@@ -64,6 +69,7 @@ impl CgConfig {
         ch_user: Option<&str>,
         ch_password: Option<&str>,
         ch_database: &Option<String>,
+        dialect: Option<DialectArg>,
     ) -> Result<Self> {
         let file_cfg = load_file_config();
 
@@ -114,12 +120,17 @@ impl CgConfig {
                 .or(file_cfg.llm.max_tokens),
         };
 
+        let dialect = dialect
+            .or_else(|| file_cfg.dialect.as_deref().and_then(parse_dialect))
+            .unwrap_or_default();
+
         Ok(CgConfig {
             schema_path,
             clickhouse_url,
             ch_user,
             ch_password,
             ch_database,
+            dialect,
             llm,
         })
     }
@@ -131,6 +142,14 @@ impl CgConfig {
                 "No schema file specified. Use --schema <file> or set CG_SCHEMA env var."
             )
         })
+    }
+}
+
+fn parse_dialect(s: &str) -> Option<DialectArg> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "clickhouse" | "ch" => Some(DialectArg::Clickhouse),
+        "databricks" | "spark" => Some(DialectArg::Databricks),
+        _ => None,
     }
 }
 

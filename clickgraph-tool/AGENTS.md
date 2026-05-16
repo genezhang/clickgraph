@@ -21,6 +21,19 @@ cg schema discover --clickhouse <url> --database <db> --out <file>  # LLM-assist
 cg schema diff <old.yaml> <new.yaml>                  # Node/relationship diff
 ```
 
+### Dialect (`--dialect`, `CG_DIALECT`)
+
+```
+cg --dialect databricks sql      --schema <file> "<cypher>"  # Emit Spark SQL
+cg --dialect databricks validate --schema <file> "<cypher>"  # Plan under Spark dialect
+cg --dialect databricks query    --schema <file> --sql-only "<cypher>"  # Spark SQL via query path
+```
+
+Values: `clickhouse` (default) or `databricks`. Currently used by the SQL-emission
+paths (`sql`, `validate`, `query --sql-only`); executing against Databricks via
+`cg query` (without `--sql-only`) is not yet wired — use `--sql-only` and pipe
+into your warehouse.
+
 ## Architecture
 
 ```

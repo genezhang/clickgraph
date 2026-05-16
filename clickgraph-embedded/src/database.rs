@@ -335,6 +335,21 @@ impl Database {
         let graph_schema = load_graph_schema(schema_path.as_ref())?;
         Self::from_executor(Arc::new(graph_schema), Arc::new(NullExecutor))
     }
+
+    /// Open a database in SQL-only mode with a chosen `SqlDialect`.
+    ///
+    /// Same as [`sql_only`](Self::sql_only) but the resulting `Database`
+    /// emits SQL for the requested dialect (e.g. Databricks/Spark) instead
+    /// of the default ClickHouse spellings. Used by `cg --dialect …` to
+    /// translate without needing a live warehouse.
+    pub fn sql_only_with_dialect(
+        schema_path: impl AsRef<Path>,
+        dialect: SqlDialect,
+    ) -> Result<Self, EmbeddedError> {
+        let mut db = Self::sql_only(schema_path)?;
+        db.dialect = dialect;
+        Ok(db)
+    }
 }
 
 /// A no-op executor for SQL-only mode. Returns an error if execution is attempted.
