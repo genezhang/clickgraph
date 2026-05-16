@@ -90,11 +90,15 @@ impl FunctionMapper for DatabricksFunctionMapper {
     }
 
     fn cast_uint16(&self) -> &'static str {
-        // Same widening pattern as cast_uint8: Spark has no unsigned
-        // 16-bit type, so widen to signed smallint (16-bit). The BFS
-        // hop counters that hit this method top out at the configured
-        // max_hops (typically <100), so the signed range is plenty.
-        "smallint"
+        // Spark has no unsigned 16-bit type. Widening to signed
+        // smallint (16-bit, max 32767) is conceptually closest but
+        // unsafe in this codebase: `max_hops` is a `u32` overridable
+        // via `CLICKGRAPH_VLP_MAX_HOPS` with no upper bound, so a
+        // signed 16-bit cast could wrap. Widen to signed `int`
+        // (32-bit) instead — it matches the actual u32 source range
+        // (modulo the high bit, which no realistic hop count reaches)
+        // and removes the overflow tripwire entirely.
+        "int"
     }
 
     fn cast_float64(&self) -> &'static str {
@@ -158,7 +162,7 @@ mod tests {
         assert_eq!(m.json_extract_string(), "get_json_object");
         assert_eq!(m.cast_int64(), "bigint");
         assert_eq!(m.cast_uint8(), "tinyint");
-        assert_eq!(m.cast_uint16(), "smallint");
+        assert_eq!(m.cast_uint16(), "int");
         assert_eq!(m.cast_float64(), "double");
         assert_eq!(m.cast_string(), "string");
         assert_eq!(m.array_concat(), "concat");

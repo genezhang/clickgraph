@@ -59,9 +59,12 @@ pub(crate) trait FunctionMapper: Send + Sync {
     fn cast_uint8(&self) -> &'static str;
 
     /// Cast to 16-bit unsigned integer. CH: `toUInt16`. Spark has no
-    /// unsigned integer — Databricks widens to `smallint` (signed
-    /// 16-bit). Used by the BFS shortestPath path for hop counts,
-    /// which always fit (max hops capped well below 32K).
+    /// unsigned integer — Databricks widens to `int` (signed 32-bit),
+    /// not `smallint`, because `max_hops` is a `u32` overridable via
+    /// `CLICKGRAPH_VLP_MAX_HOPS` with no upper bound. The conceptually
+    /// closest type would be `smallint`, but its 32K signed range
+    /// could wrap; `int` matches the actual source-side capacity and
+    /// removes the overflow tripwire.
     fn cast_uint16(&self) -> &'static str;
 
     /// Cast to 64-bit float. CH: `toFloat64`. Spark: `double`

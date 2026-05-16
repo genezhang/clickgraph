@@ -72,9 +72,11 @@
 //!    reconstruction (`generate_weighted_bfs_reconstruction_sql`) used
 //!    a mix of `CAST(... AS Int64)`, `CAST(... AS Array(Int64))`, and
 //!    `toFloat64(0)`. Three new mapper methods cover this surface:
-//!    - `cast_uint16()` (CH: `toUInt16`, Spark: `smallint` — widening
-//!      since Spark has no unsigned types, same pattern as
-//!      `cast_uint8` for `toUInt8`)
+//!    - `cast_uint16()` (CH: `toUInt16`, Spark: `int` — widening
+//!      since Spark has no unsigned types. `smallint` would be the
+//!      conceptual match but `max_hops` is `u32` and unbounded via
+//!      `CLICKGRAPH_VLP_MAX_HOPS`, so we widen to `int` to remove
+//!      any wrap risk.)
 //!    - `cast_float64()` (CH: `toFloat64`, Spark: `double`)
 //!    - `int64_array_cast(expr)` (CH: `CAST({expr} AS Array(Int64))`,
 //!      Spark: `CAST({expr} AS ARRAY<BIGINT>)`)
@@ -585,9 +587,13 @@ async fn reduce_init_under_databricks_uses_bigint_cast() {
 /// optimization in `generate_bfs_shortest_path_sql`, which previously
 /// hard-coded `toUInt16(...)` casts for the hop counter. Under
 /// Databricks dialect, those now route through
-/// `FunctionMapper::cast_uint16()` and emit Spark's `smallint(...)`.
+/// `FunctionMapper::cast_uint16()` and emit Spark's `int(...)`. We
+/// widen to `int` instead of the conceptually-closer `smallint`
+/// because `max_hops` is a `u32` overridable via
+/// `CLICKGRAPH_VLP_MAX_HOPS` with no upper bound — a signed 16-bit
+/// cast could wrap.
 #[tokio::test]
-async fn shortestpath_bfs_under_databricks_uses_smallint_hop() {
+async fn shortestpath_bfs_under_databricks_uses_int_hop() {
     let ctx = QueryContext {
         dialect: SqlDialect::Databricks,
         ..QueryContext::default()
@@ -600,13 +606,21 @@ async fn shortestpath_bfs_under_databricks_uses_smallint_hop() {
     })
     .await;
 
+    // The BFS path wraps the hop counter in `cast_uint16()`. Under
+    // Databricks that emits `int(...)` (Spark function-call cast).
+    // Assert the call shape rather than bare `int(` since that could
+    // arise from many idioms.
     assert!(
-        sql.contains("smallint("),
-        "expected Spark `smallint(...)` hop cast in BFS shortestPath SQL; got:\n{sql}"
+        sql.contains("int(0)") || sql.contains("int(hop)"),
+        "expected Spark `int(0)`/`int(hop)` hop cast in BFS shortestPath SQL; got:\n{sql}"
     );
     assert!(
         !sql.contains("toUInt16("),
         "Databricks BFS SQL leaked CH `toUInt16`; got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("smallint("),
+        "Databricks BFS SQL emitted `smallint` — should widen to `int` per Phase 1.7 docs; got:\n{sql}"
     );
 }
 
@@ -628,10 +642,6 @@ async fn shortestpath_bfs_under_clickhouse_uses_uint16_hop() {
     assert!(
         sql.contains("toUInt16("),
         "expected CH `toUInt16(...)` hop cast in BFS shortestPath SQL; got:\n{sql}"
-    );
-    assert!(
-        !sql.contains("smallint("),
-        "CH BFS SQL leaked Spark `smallint`; got:\n{sql}"
     );
 }
 
