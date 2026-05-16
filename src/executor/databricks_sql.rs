@@ -56,6 +56,12 @@ pub struct DatabricksConfig {
     /// warehouse default.
     pub catalog: Option<String>,
     pub schema: Option<String>,
+    /// Override the request base URL. When `None`, the executor sends
+    /// to `https://{hostname}`; integration tests set this to a
+    /// `wiremock::MockServer::uri()` so the same code paths run against
+    /// a localhost mock without touching the network. Production code
+    /// should leave this unset.
+    pub base_url: Option<String>,
 }
 
 impl DatabricksConfig {
@@ -74,6 +80,7 @@ impl DatabricksConfig {
             wait_timeout: Duration::from_secs(30),
             catalog: None,
             schema: None,
+            base_url: None,
         }
     }
 }
@@ -97,14 +104,22 @@ impl DatabricksSqlExecutor {
         Ok(Self { config, client })
     }
 
+    fn base_url(&self) -> String {
+        self.config
+            .base_url
+            .clone()
+            .unwrap_or_else(|| format!("https://{}", self.config.hostname))
+    }
+
     fn submit_url(&self) -> String {
-        format!("https://{}/api/2.0/sql/statements", self.config.hostname)
+        format!("{}/api/2.0/sql/statements", self.base_url())
     }
 
     fn status_url(&self, statement_id: &str) -> String {
         format!(
-            "https://{}/api/2.0/sql/statements/{}",
-            self.config.hostname, statement_id
+            "{}/api/2.0/sql/statements/{}",
+            self.base_url(),
+            statement_id
         )
     }
 
@@ -486,5 +501,188 @@ mod tests {
         assert!(StatementState::Failed.is_terminal());
         assert!(StatementState::Canceled.is_terminal());
         assert!(StatementState::Closed.is_terminal());
+    }
+
+    #[test]
+    fn base_url_override_replaces_hostname_derivation() {
+        // wiremock-based integration tests rely on `base_url` to point
+        // at a localhost mock server. If this regression-test fails
+        // (e.g. someone reintroduces the hard-coded `https://` prefix),
+        // every integration test in this module silently bypasses
+        // the mock and hits the real internet. Lock the contract.
+        let mut c = cfg();
+        c.base_url = Some("http://127.0.0.1:12345".into());
+        let exec = DatabricksSqlExecutor::new(c).expect("client builds");
+        assert_eq!(
+            exec.submit_url(),
+            "http://127.0.0.1:12345/api/2.0/sql/statements"
+        );
+        assert_eq!(
+            exec.status_url("stmt-x"),
+            "http://127.0.0.1:12345/api/2.0/sql/statements/stmt-x"
+        );
+    }
+}
+
+/// Integration tests against a `wiremock::MockServer`. These exercise
+/// the full submit → poll → parse flow without touching the network:
+/// the executor's `base_url` is pointed at a localhost mock that
+/// serves canned JSON responses. Kept in a separate module so the
+/// unit tests above stay synchronous and dependency-free.
+#[cfg(test)]
+mod wiremock_tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::matchers::{bearer_token, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn cfg_for(server: &MockServer) -> DatabricksConfig {
+        let mut c = DatabricksConfig::new("ignored-host", "wh-1234", "dapi-test");
+        c.base_url = Some(server.uri());
+        // Sleep between polls would slow tests down — keep at the
+        // default; we control how many polls happen via mock fixtures.
+        c
+    }
+
+    fn manifest_with_columns(cols: &[&str]) -> Value {
+        let cols: Vec<Value> = cols.iter().map(|n| json!({ "name": n })).collect();
+        json!({ "schema": { "columns": cols } })
+    }
+
+    #[tokio::test]
+    async fn submit_returns_succeeded_inline_in_one_call() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/2.0/sql/statements"))
+            .and(bearer_token("dapi-test"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "statement_id": "stmt-001",
+                "status": { "state": "SUCCEEDED" },
+                "manifest": manifest_with_columns(&["id", "name"]),
+                "result": { "data_array": [[1, "alice"], [2, "bob"]] }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let exec = DatabricksSqlExecutor::new(cfg_for(&server)).expect("client builds");
+        let rows = exec
+            .execute_json("SELECT id, name FROM users", None)
+            .await
+            .expect("execute_json");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["id"], json!(1));
+        assert_eq!(rows[1]["name"], json!("bob"));
+    }
+
+    #[tokio::test]
+    async fn submit_pending_then_poll_succeeded() {
+        let server = MockServer::start().await;
+        // Submit returns PENDING — no manifest or result yet.
+        Mock::given(method("POST"))
+            .and(path("/api/2.0/sql/statements"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "statement_id": "stmt-002",
+                "status": { "state": "PENDING" }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // Poll returns SUCCEEDED with the actual result. Assert bearer
+        // auth on the GET too: Databricks requires authentication on
+        // every Statement Execution API call, including status reads.
+        Mock::given(method("GET"))
+            .and(path("/api/2.0/sql/statements/stmt-002"))
+            .and(bearer_token("dapi-test"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "statement_id": "stmt-002",
+                "status": { "state": "SUCCEEDED" },
+                "manifest": manifest_with_columns(&["x"]),
+                "result": { "data_array": [[42]] }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let exec = DatabricksSqlExecutor::new(cfg_for(&server)).expect("client builds");
+        let rows = exec
+            .execute_json("SELECT 42", None)
+            .await
+            .expect("execute_json");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["x"], json!(42));
+    }
+
+    #[tokio::test]
+    async fn failed_state_surfaces_error_code_and_message() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/2.0/sql/statements"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "statement_id": "stmt-003",
+                "status": {
+                    "state": "FAILED",
+                    "error": {
+                        "error_code": "INVALID_SQL_SYNTAX",
+                        "message": "unexpected token at line 1"
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let exec = DatabricksSqlExecutor::new(cfg_for(&server)).expect("client builds");
+        let err = exec
+            .execute_json("SELEC 1", None)
+            .await
+            .expect_err("should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("INVALID_SQL_SYNTAX") && msg.contains("unexpected token"),
+            "expected error code + message; got {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_401_becomes_remote_error_with_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/2.0/sql/statements"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_string("{\"error_code\":\"PERMISSION_DENIED\"}"),
+            )
+            .mount(&server)
+            .await;
+
+        let exec = DatabricksSqlExecutor::new(cfg_for(&server)).expect("client builds");
+        let err = exec
+            .execute_json("SELECT 1", None)
+            .await
+            .expect_err("should fail");
+        match err {
+            ExecutorError::Remote { status, body } => {
+                assert_eq!(status, 401);
+                assert!(body.contains("PERMISSION_DENIED"), "body: {body}");
+            }
+            other => panic!("expected Remote error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_text_rejects_format() {
+        // Doesn't hit the wire — `execute_text` errors out before any
+        // HTTP call. Test it here so the rejection path is exercised
+        // in the same module that documents the policy.
+        let server = MockServer::start().await;
+        let exec = DatabricksSqlExecutor::new(cfg_for(&server)).expect("client builds");
+        let err = exec
+            .execute_text("SELECT 1", "Pretty", None)
+            .await
+            .expect_err("should reject");
+        assert!(
+            matches!(err, ExecutorError::UnsupportedFormat(ref f) if f == "Pretty"),
+            "expected UnsupportedFormat(\"Pretty\"), got {err:?}"
+        );
     }
 }
