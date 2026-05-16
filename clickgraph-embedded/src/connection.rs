@@ -1176,12 +1176,14 @@ impl<'db> Connection<'db> {
     ) -> Result<GraphResult, EmbeddedError> {
         use clickgraph::clickhouse_query_generator::cypher_to_sql_with_metadata;
         use clickgraph::server::query_context::{
-            set_current_schema, with_query_context, QueryContext,
+            set_current_dialect, set_current_schema, with_query_context, QueryContext,
         };
         let schema = Arc::clone(&self.schema);
         let executor = Arc::clone(executor);
         let cypher = cypher.to_string();
+        let dialect = self.db.dialect;
         with_query_context(QueryContext::new(None), async move {
+            set_current_dialect(dialect);
             set_current_schema(Arc::clone(&schema));
             let (sql, logical_plan, plan_ctx) =
                 cypher_to_sql_with_metadata(&cypher, &schema, DEFAULT_MAX_CTE_DEPTH)

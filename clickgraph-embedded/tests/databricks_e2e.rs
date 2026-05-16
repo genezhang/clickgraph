@@ -58,15 +58,20 @@ fn cfg_for(server: &MockServer) -> DatabricksConfig {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn query_remote_against_databricks_mock_returns_rows_and_uses_spark_dialect() {
+async fn query_remote_against_databricks_mock_returns_rows() {
+    // End-to-end happy path: assert that columns, row count, AND
+    // individual cell values all flow correctly through the
+    // Spark-JSON → `Value` conversion that
+    // `clickgraph-embedded::Connection` does after `execute_json`
+    // hands back the mocked response.
+    //
+    // (SQL-side dialect verification — that the request body uses
+    // Spark spellings — lives in
+    // `databricks_database_emits_spark_sql_for_collect` below. Here
+    // we only check the request/response wiring.)
     let server = MockServer::start().await;
     let schema_file = write_schema_to_tempfile();
 
-    // Match a POST that has the Spark-style backtick alias quoting in
-    // its `statement` field. This is the load-bearing assertion that
-    // the dialect plumbing actually flipped — under the CH dialect the
-    // emitted SQL would use double-quoted aliases (`AS "..."`), which
-    // would NOT match here.
     Mock::given(method("POST"))
         .and(path("/api/2.0/sql/statements"))
         .and(bearer_token("dapi-token"))
@@ -111,6 +116,80 @@ async fn query_remote_against_databricks_mock_returns_rows_and_uses_spark_dialec
     let (cols, rows) = result;
     assert_eq!(cols, vec!["u.user_id", "u.name"]);
     assert_eq!(rows.len(), 2);
+
+    // Cell-level assertions — guard the JSON→Value conversion path.
+    // Without these a regression that mis-typed cells (e.g., int→string)
+    // would only break downstream consumers, not this test.
+    use clickgraph_embedded::Value;
+    assert_eq!(rows[0][0], Value::Int64(1));
+    assert_eq!(rows[0][1], Value::String("alice".to_string()));
+    assert_eq!(rows[1][0], Value::Int64(2));
+    assert_eq!(rows[1][1], Value::String("bob".to_string()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn query_remote_graph_under_databricks_uses_spark_dialect() {
+    // Regression guard for the dialect plumbing in `query_graph_async`:
+    // Connection::query_remote_graph() goes through a different
+    // codepath than query_remote() — if it doesn't stamp the dialect
+    // on the QueryContext, generated SQL falls back to ClickHouse
+    // even when the Database is Databricks-backed.
+    let server = MockServer::start().await;
+    let schema_file = write_schema_to_tempfile();
+
+    Mock::given(method("POST"))
+        .and(path("/api/2.0/sql/statements"))
+        .and(body_partial_json(json!({ "warehouse_id": "wh-test" })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "statement_id": "stmt-graph",
+            "status": { "state": "SUCCEEDED" },
+            "manifest": { "schema": { "columns": [
+                { "name": "u" }
+            ]}},
+            "result": { "data_array": [] }
+        })))
+        .mount(&server)
+        .await;
+
+    tokio::task::spawn_blocking({
+        let path = schema_file.path().to_path_buf();
+        let config = cfg_for(&server);
+        move || {
+            let db = Database::new_databricks(path, config).expect("Database::new_databricks");
+            let conn = Connection::new(&db).expect("Connection::new");
+            // A plain node return is enough — it flows through
+            // query_remote_graph → query_graph_async (the second path
+            // that needed dialect plumbing) and emits `AS` clauses
+            // for the projected columns. Under Spark those use
+            // backtick quoting; under CH double quotes. The body
+            // inspection below pins which one we got.
+            let _ = conn
+                .query_remote_graph("MATCH (u:User) RETURN u")
+                .expect("query_remote_graph");
+        }
+    })
+    .await
+    .expect("spawn_blocking");
+
+    let received = server.received_requests().await.expect("received_requests");
+    let body_json: serde_json::Value =
+        serde_json::from_slice(&received[0].body).expect("body json");
+    let sql = body_json["statement"]
+        .as_str()
+        .expect("statement is a string");
+
+    // Spark uses backtick alias quoting; CH uses double quotes.
+    // Either form proves SQL was generated; the choice of quotes
+    // proves the dialect actually flipped in query_graph_async.
+    assert!(
+        sql.contains("AS `"),
+        "expected Spark backtick alias quoting in query_remote_graph SQL — \
+         dialect plumbing missing in query_graph_async? got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("AS \""),
+        "query_remote_graph leaked CH double-quoted aliases; got:\n{sql}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
