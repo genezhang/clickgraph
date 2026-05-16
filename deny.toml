@@ -28,6 +28,11 @@ allow = [
     "Zlib",
     "CC0-1.0",
     "OpenSSL",
+    # CDLA-Permissive-2.0: used by webpki-roots v1.0.6 (the bundled root-CA
+    # trust store pulled in via reqwest+rustls under the `databricks`
+    # feature). OSI-approved permissive license intended for data
+    # distribution; appropriate for a static cert bundle.
+    "CDLA-Permissive-2.0",
 ]
 # Confidence threshold for license detection (0.0 - 1.0)
 confidence-threshold = 0.8
