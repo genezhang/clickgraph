@@ -51,18 +51,27 @@
 //!    `toString`) in `function_registry`. Phase 1.6 added
 //!    `databricks_name: Some("bigint" | "double" | "string")` to those
 //!    registry entries so Spark sees its function-call cast aliases.
-//!    Additionally, the four ad-hoc `format!("toInt64({})", ...)` call
-//!    sites in `to_sql.rs` and `to_sql_query.rs` (reduce/arrayFold init,
-//!    `is_vlp_path_is_null` rewrite) now route through
-//!    `FunctionMapper::cast_int64()`. Asserted by
-//!    `tointeger_under_databricks_emits_bigint` and
-//!    `tostring_under_databricks_emits_string` below. The wider gap —
-//!    explicit `CAST(x AS T)` syntax (e.g. `CAST(... AS Array(Int64))`,
-//!    `toUInt16(...)`, `toFloat64(0)`) in the weighted-BFS
-//!    shortestPath path — remains unrouted; the simple VLP spike query
-//!    doesn't reach that code, and adding new mapper methods for those
-//!    specific casts can wait until a shortestPath query gets
-//!    exercised under Databricks.
+//!    Asserted by `tointeger_under_databricks_emits_bigint`,
+//!    `tofloat_under_databricks_emits_double`, and
+//!    `tostring_under_databricks_emits_string` below (each with a CH
+//!    baseline).
+//!
+//!    Additionally, the four ad-hoc `format!("toInt64({})", ...)`
+//!    call sites in `to_sql.rs` and `to_sql_query.rs` (reduce/arrayFold
+//!    init, `is_vlp_path_is_null` rewrite) now route through
+//!    `FunctionMapper::cast_int64()`. The reduce/arrayFold init path is
+//!    asserted by `reduce_init_under_databricks_uses_bigint_cast`;
+//!    the `is_vlp_path_is_null` rewrite isn't reached by the current
+//!    spike-test query plans (the rewrite fires for `CASE path IS NULL`
+//!    style queries), but the routing is mechanical and consistent
+//!    with the asserted sites.
+//!
+//!    The wider gap — explicit `CAST(x AS T)` syntax (e.g.
+//!    `CAST(... AS Array(Int64))`, `toUInt16(...)`, `toFloat64(0)`) in
+//!    the weighted-BFS shortestPath path — remains unrouted; the
+//!    simple VLP spike query doesn't reach that code, and adding new
+//!    mapper methods for those specific casts can wait until a
+//!    shortestPath query gets exercised under Databricks.
 //!
 //! With Phase 1.6 done, every syntactic-layer gap that the Phase 1.2
 //! spike reaches has a dialect-aware abstraction in place. Adding
@@ -479,6 +488,105 @@ async fn tointeger_under_clickhouse_emits_to_int64() {
     assert!(
         !sql.contains("bigint("),
         "CH SQL leaked Spark `bigint`; got:\n{sql}"
+    );
+}
+
+/// Phase 1.6: `toFloat(x)` under Databricks emits Spark's `double(x)`
+/// (function-call cast alias). The CH side keeps `toFloat64(x)`.
+#[tokio::test]
+async fn tofloat_under_databricks_emits_double() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (a:User) RETURN toFloat(a.id) AS f")
+    })
+    .await;
+
+    assert!(
+        sql.contains("double("),
+        "expected Spark `double(...)` for Cypher `toFloat()`; got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("toFloat64("),
+        "Databricks SQL leaked CH `toFloat64`; got:\n{sql}"
+    );
+}
+
+/// CH baseline for `toFloat` — guards against the CH side silently
+/// flipping to Spark spellings.
+#[tokio::test]
+async fn tofloat_under_clickhouse_emits_to_float64() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::ClickHouse,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (a:User) RETURN toFloat(a.id) AS f")
+    })
+    .await;
+
+    assert!(
+        sql.contains("toFloat64("),
+        "expected CH `toFloat64(...)` for Cypher `toFloat()`; got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("double("),
+        "CH SQL leaked Spark `double`; got:\n{sql}"
+    );
+}
+
+/// Phase 1.6: the ad-hoc `format!("toInt64({})", init)` wrapper around
+/// integer-literal `reduce()` initial values now routes through
+/// `FunctionMapper::cast_int64()`. Under Databricks dialect, the
+/// arrayFold init should be wrapped in `bigint(0)` instead of
+/// `toInt64(0)`. This exercises both consumer sites
+/// (`to_sql.rs::ReduceExpr` and `to_sql_query.rs::ReduceExpr`) — they
+/// route the same way and at least one is reached by this query plan.
+#[tokio::test]
+async fn reduce_init_under_databricks_uses_bigint_cast() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (a:User) RETURN reduce(s = 0, x IN [1, 2, 3] | s + x) AS total")
+    })
+    .await;
+
+    // ClickHouse emits arrayFold(... , bigint(0)) under Spark routing.
+    // The literal `0` argument to reduce() is the only int-literal init
+    // here, so the bigint cast must appear and `toInt64` must not.
+    assert!(
+        sql.contains("bigint("),
+        "expected Spark `bigint(...)` wrapping reduce init; got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("toInt64("),
+        "Databricks SQL leaked CH `toInt64` reduce-init wrapper; got:\n{sql}"
+    );
+}
+
+/// CH baseline for the reduce-init cast path.
+#[tokio::test]
+async fn reduce_init_under_clickhouse_uses_to_int64_cast() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::ClickHouse,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (a:User) RETURN reduce(s = 0, x IN [1, 2, 3] | s + x) AS total")
+    })
+    .await;
+
+    assert!(
+        sql.contains("toInt64("),
+        "expected CH `toInt64(...)` wrapping reduce init; got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("bigint("),
+        "CH SQL leaked Spark `bigint` reduce-init wrapper; got:\n{sql}"
     );
 }
 
