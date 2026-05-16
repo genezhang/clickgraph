@@ -588,9 +588,12 @@ mod wiremock_tests {
             .expect(1)
             .mount(&server)
             .await;
-        // Poll returns SUCCEEDED with the actual result.
+        // Poll returns SUCCEEDED with the actual result. Assert bearer
+        // auth on the GET too: Databricks requires authentication on
+        // every Statement Execution API call, including status reads.
         Mock::given(method("GET"))
             .and(path("/api/2.0/sql/statements/stmt-002"))
+            .and(bearer_token("dapi-test"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "statement_id": "stmt-002",
                 "status": { "state": "SUCCEEDED" },
