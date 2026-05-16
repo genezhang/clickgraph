@@ -353,12 +353,14 @@ impl ToSql for LogicalExpr {
                 let list_sql = reduce.list.to_sql()?;
                 let expr_sql = reduce.expression.to_sql()?;
 
-                // Wrap numeric init values in toInt64() to prevent type mismatch
+                // Wrap numeric init values in a 64-bit-int cast to prevent
+                // type mismatch when the lambda returns a wider type.
                 let init_cast = if matches!(
                     *reduce.initial_value,
                     LogicalExpr::Literal(Literal::Integer(_))
                 ) {
-                    format!("toInt64({})", init_sql)
+                    let fmap = crate::sql_generator::function_mapper::current_function_mapper();
+                    format!("{}({})", fmap.cast_int64(), init_sql)
                 } else {
                     init_sql
                 };

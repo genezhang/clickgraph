@@ -45,14 +45,27 @@
 //!    Databricks-incompatible entries should set `databricks_name`
 //!    explicitly as they get exercised by future test coverage.
 //!
-//! 4. **Type names in non-routed CASTs**. The current spike doesn't
-//!    exercise these but they exist — `UInt32`, `Float64`, etc., in
-//!    various rendering paths. These are scattered through render
-//!    plan helpers; an audit pass would catch them, but most queries
-//!    that need them haven't been written yet.
+//! 4. **Type-cast function names (Phase 1.6, done).** Cypher's type
+//!    conversion functions — `toInteger`, `toFloat`, `toString` — were
+//!    hard-coded to their ClickHouse spellings (`toInt64`, `toFloat64`,
+//!    `toString`) in `function_registry`. Phase 1.6 added
+//!    `databricks_name: Some("bigint" | "double" | "string")` to those
+//!    registry entries so Spark sees its function-call cast aliases.
+//!    Additionally, the four ad-hoc `format!("toInt64({})", ...)` call
+//!    sites in `to_sql.rs` and `to_sql_query.rs` (reduce/arrayFold init,
+//!    `is_vlp_path_is_null` rewrite) now route through
+//!    `FunctionMapper::cast_int64()`. Asserted by
+//!    `tointeger_under_databricks_emits_bigint` and
+//!    `tostring_under_databricks_emits_string` below. The wider gap —
+//!    explicit `CAST(x AS T)` syntax (e.g. `CAST(... AS Array(Int64))`,
+//!    `toUInt16(...)`, `toFloat64(0)`) in the weighted-BFS
+//!    shortestPath path — remains unrouted; the simple VLP spike query
+//!    doesn't reach that code, and adding new mapper methods for those
+//!    specific casts can wait until a shortestPath query gets
+//!    exercised under Databricks.
 //!
-//! With Phase 1.5 done, every syntactic-layer gap identified in the
-//! Phase 1.2 spike has a dialect-aware abstraction in place. Adding
+//! With Phase 1.6 done, every syntactic-layer gap that the Phase 1.2
+//! spike reaches has a dialect-aware abstraction in place. Adding
 //! new Databricks-incompatible patterns is now a localized change at
 //! the trait/registry, not a search-and-replace across the codebase.
 
@@ -418,5 +431,80 @@ async fn aggregation_under_clickhouse_keeps_double_quoted_alias_refs() {
     assert!(
         sql.contains("AS \""),
         "expected CH double-quoted alias in aggregation SQL; got:\n{sql}"
+    );
+}
+
+/// Phase 1.6: Cypher's type-conversion functions now route through the
+/// function_registry's dialect-aware `name_for(...)` accessor. Under
+/// Databricks dialect, `toInteger(x)` must emit Spark's function-call
+/// cast alias `bigint(x)` (not CH's `toInt64(x)`).
+#[tokio::test]
+async fn tointeger_under_databricks_emits_bigint() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (a:User) RETURN toInteger(a.id) AS i")
+    })
+    .await;
+
+    assert!(
+        sql.contains("bigint("),
+        "expected Spark `bigint(...)` for Cypher `toInteger()`; got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("toInt64("),
+        "Databricks SQL leaked CH `toInt64`; got:\n{sql}"
+    );
+}
+
+/// CH baseline for `toInteger` — guards against the CH side silently
+/// flipping to Spark spellings.
+#[tokio::test]
+async fn tointeger_under_clickhouse_emits_to_int64() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::ClickHouse,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (a:User) RETURN toInteger(a.id) AS i")
+    })
+    .await;
+
+    assert!(
+        sql.contains("toInt64("),
+        "expected CH `toInt64(...)` for Cypher `toInteger()`; got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("bigint("),
+        "CH SQL leaked Spark `bigint`; got:\n{sql}"
+    );
+}
+
+/// Phase 1.6: `toString(x)` under Databricks emits Spark's `string(x)`
+/// (function-call cast alias). The CH side keeps `toString(x)`.
+#[tokio::test]
+async fn tostring_under_databricks_emits_string() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (a:User) RETURN toString(a.id) AS s")
+    })
+    .await;
+
+    // Spark gets `string(x)`. CH would emit `toString(x)`. Be tolerant
+    // of `string(` appearing elsewhere — assert it shows up in a call
+    // shape (followed by `(` or part of `string(a`) and CH `toString`
+    // does NOT appear.
+    assert!(
+        sql.contains("string("),
+        "expected Spark `string(...)` for Cypher `toString()`; got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("toString("),
+        "Databricks SQL leaked CH `toString`; got:\n{sql}"
     );
 }

@@ -1607,12 +1607,15 @@ pub(crate) fn rewrite_expr_for_vlp(
                     // - No path: VLP CTE returns 0 rows → minOrNull() returns NULL → ifNull gives -1
                     // - Path exists: VLP CTE returns 1 row → minOrNull() returns hop_count
                     // Note: ClickHouse min() returns 0 for empty sets (not NULL), so minOrNull is required.
-                    // toInt64() wraps minOrNull to avoid type mismatch (UInt64 vs Int64(-1)).
+                    // The 64-bit-int cast wraps minOrNull to avoid type mismatch (UInt64 vs Int64(-1)).
+                    let cast64 = crate::sql_generator::function_mapper::current_function_mapper()
+                        .cast_int64()
+                        .to_string();
                     return RenderExpr::ScalarFnCall(ScalarFnCall {
                         name: "ifNull".to_string(),
                         args: vec![
                             RenderExpr::ScalarFnCall(ScalarFnCall {
-                                name: "toInt64".to_string(),
+                                name: cast64.clone(),
                                 args: vec![RenderExpr::AggregateFnCall(AggregateFnCall {
                                     name: "minOrNull".to_string(),
                                     args: vec![RenderExpr::Column(Column(PropertyValue::Column(
@@ -1621,7 +1624,7 @@ pub(crate) fn rewrite_expr_for_vlp(
                                 })],
                             }),
                             RenderExpr::ScalarFnCall(ScalarFnCall {
-                                name: "toInt64".to_string(),
+                                name: cast64,
                                 args: vec![RenderExpr::Literal(Literal::Integer(-1))],
                             }),
                         ],
@@ -5241,12 +5244,14 @@ impl RenderExpr {
                 let list_sql = reduce.list.to_sql();
                 let expr_sql = reduce.expression.to_sql();
 
-                // Wrap numeric init values in toInt64() to prevent type mismatch
+                // Wrap numeric init values in a 64-bit-int cast to prevent
+                // type mismatch when the lambda returns a wider type.
                 let init_cast = if matches!(
                     *reduce.initial_value,
                     RenderExpr::Literal(Literal::Integer(_))
                 ) {
-                    format!("toInt64({})", init_sql)
+                    let fmap = crate::sql_generator::function_mapper::current_function_mapper();
+                    format!("{}({})", fmap.cast_int64(), init_sql)
                 } else {
                     init_sql
                 };
