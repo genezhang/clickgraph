@@ -86,13 +86,17 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// rendered expressions and pass them here.
     fn array_literal(&self, elems: &str) -> String;
 
-    /// Quote a column alias for an `AS` clause. CH: `"name"` (also
-    /// accepts backticks but the existing pipeline emits double quotes
-    /// here historically). Spark: `` `name` `` — Spark parses `"name"`
-    /// as a string literal, so backticks are mandatory. The bare
-    /// `quote_identifier` helper in `common.rs` is a separate concern
-    /// (it already uses backticks for both dialects since both accept
-    /// them for column refs).
+    /// Quote a column alias / aliased identifier. Used for both `AS`
+    /// clauses and references to those aliases elsewhere in the query
+    /// (e.g., GROUP BY, aggregate args after an inner-query rewrite).
+    /// CH: `"name"` (also accepts backticks but the existing pipeline
+    /// emits double quotes here historically). Spark: `` `name` `` —
+    /// Spark parses `"name"` as a string literal, so backticks are
+    /// mandatory. Each impl is responsible for escaping its own
+    /// delimiter inside `name` (CH doubles `"`, Spark doubles `` ` ``).
+    /// The bare `quote_identifier` helper in `common.rs` is a separate
+    /// concern — it already uses backticks for both dialects since
+    /// both accept them for plain column refs.
     fn quote_alias(&self, name: &str) -> String;
 }
 

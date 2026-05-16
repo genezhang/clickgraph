@@ -117,9 +117,12 @@ impl FunctionMapper for DatabricksFunctionMapper {
 
     fn quote_alias(&self, name: &str) -> String {
         // Spark parses `"foo"` as a string literal — backticks are the
-        // only valid identifier quote. `quote_identifier` uses backticks
-        // for both dialects so this stays consistent with that.
-        format!("`{name}`")
+        // only valid identifier quote. Spark escapes `` ` `` inside a
+        // backtick-quoted identifier by doubling it. Aliases inferred
+        // from raw return text can contain backticks, so escape before
+        // wrapping. `quote_identifier` uses backticks for both dialects
+        // so this stays consistent with that.
+        format!("`{}`", name.replace('`', "``"))
     }
 }
 
@@ -150,6 +153,9 @@ mod tests {
         assert_eq!(m.array_literal(""), "array()");
         assert_eq!(m.array_literal("a, b"), "array(a, b)");
         assert_eq!(m.quote_alias("b.id"), "`b.id`");
+        // Embedded backticks must be doubled, not left raw — otherwise
+        // an alias like `` x`y `` would prematurely close the quote.
+        assert_eq!(m.quote_alias("x`y"), "`x``y`");
     }
 
     /// Documented structural gap: `array_count` has no clean Spark mapping.

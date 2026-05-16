@@ -308,3 +308,56 @@ async fn vlp_under_databricks_dialect_emits_spark_spellings() {
         "Databricks SQL leaked CH double-quoted alias; got:\n{sql}"
     );
 }
+
+/// Aggregation path — exercises `build_outer_aggregate_select` and the
+/// `extract_outer_aggregation_info` rewrite where ColumnAlias references
+/// in GROUP BY / aggregate args get quoted via `quote_alias`. The plain
+/// VLP test above only covers the final-SELECT `AS` path, so this test
+/// guards the references-side routing from silently regressing back to
+/// double-quoted identifiers.
+#[tokio::test]
+async fn aggregation_under_databricks_uses_backtick_alias_refs() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN b.id AS bid, count(a) AS ct")
+    })
+    .await;
+
+    // The aggregate result alias `ct` should emit `AS ` + backticks.
+    // Non-aggregate alias `bid` likewise. No double-quoted aliases.
+    assert!(
+        !sql.contains("AS \""),
+        "Databricks aggregation SQL leaked CH double-quoted alias; got:\n{sql}"
+    );
+    // Spot-check that at least one backtick alias appears in the AS
+    // position. The exact site varies by plan shape, so use a
+    // tolerant pattern.
+    assert!(
+        sql.contains("AS `"),
+        "expected Spark backtick alias in aggregation SQL; got:\n{sql}"
+    );
+}
+
+/// CH baseline for the aggregation path — guards against the CH side
+/// silently flipping to backticks when we touch this code in the future.
+#[tokio::test]
+async fn aggregation_under_clickhouse_keeps_double_quoted_alias_refs() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::ClickHouse,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN b.id AS bid, count(a) AS ct")
+    })
+    .await;
+
+    // CH historically emits double-quoted aliases here. Verify both
+    // sites still produce the existing shape.
+    assert!(
+        sql.contains("AS \""),
+        "expected CH double-quoted alias in aggregation SQL; got:\n{sql}"
+    );
+}
