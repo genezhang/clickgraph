@@ -157,6 +157,31 @@ pub struct RemoteConfig {
 }
 
 // ---------------------------------------------------------------------------
+// DatabricksConfig — connection details for a Databricks SQL Warehouse
+//                    (Phase 4.4: DeltaGraph dialect through FFI bindings)
+// ---------------------------------------------------------------------------
+
+/// Connection parameters for a Databricks SQL Warehouse.
+///
+/// All execution flows through the Statement Execution API at
+/// `https://{hostname}/api/2.0/sql/statements`. The hostname is the
+/// workspace host (e.g. `dbc-abc123-456d.cloud.databricks.com`); the
+/// warehouse_id identifies the SQL warehouse compute. The token is a
+/// PAT (Personal Access Token) starting with `dapi…`.
+///
+/// Optional `base_url_override` lets tests and dev workflows point at a
+/// mock or proxy instead of the real workspace — leave it `None` in
+/// production.
+#[cfg(feature = "databricks")]
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct DatabricksConfig {
+    pub hostname: String,
+    pub warehouse_id: String,
+    pub token: String,
+    pub base_url_override: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // GraphNode / GraphEdge / GraphResult — structured graph output
 // ---------------------------------------------------------------------------
 
@@ -470,6 +495,37 @@ impl Database {
         Ok(Arc::new(Connection {
             db: Arc::clone(&self.inner),
             query_timeout_ms: std::sync::atomic::AtomicU64::new(0),
+        }))
+    }
+}
+
+#[cfg(feature = "databricks")]
+#[uniffi::export]
+impl Database {
+    /// Open a database backed by a Databricks SQL Warehouse.
+    ///
+    /// Cypher is translated locally to Spark SQL (via the dialect-aware
+    /// renderer landed in Phase 1.x) and executed against the warehouse
+    /// over the Statement Execution API. Use `Connection.query_remote()`
+    /// — the same remote path the ClickHouse executor uses; the dialect
+    /// is selected by `Database::dialect`.
+    ///
+    /// Available only when the upstream `databricks` feature is enabled.
+    #[uniffi::constructor]
+    pub fn open_databricks(
+        schema_path: String,
+        config: DatabricksConfig,
+    ) -> Result<Arc<Self>, ClickGraphError> {
+        let mut rust_config = clickgraph_embedded::DatabricksConfig::new(
+            &config.hostname,
+            &config.warehouse_id,
+            &config.token,
+        );
+        rust_config.base_url = config.base_url_override;
+        let db = RustDatabase::new_databricks(&schema_path, rust_config)
+            .map_err(|e| ClickGraphError::DatabaseError { msg: e.to_string() })?;
+        Ok(Arc::new(Database {
+            inner: Arc::new(db),
         }))
     }
 }
