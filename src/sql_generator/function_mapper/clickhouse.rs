@@ -34,6 +34,14 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         "toUInt8"
     }
 
+    fn cast_uint16(&self) -> &'static str {
+        "toUInt16"
+    }
+
+    fn cast_float64(&self) -> &'static str {
+        "toFloat64"
+    }
+
     fn cast_string(&self) -> &'static str {
         "toString"
     }
@@ -52,6 +60,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
 
     fn empty_int64_array_cast(&self) -> &'static str {
         "CAST([] AS Array(Int64))"
+    }
+
+    fn int64_array_cast(&self, expr: &str) -> String {
+        format!("CAST({expr} AS Array(Int64))")
     }
 
     fn array_literal(&self, elems: &str) -> String {

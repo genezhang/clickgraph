@@ -66,14 +66,29 @@
 //!    style queries), but the routing is mechanical and consistent
 //!    with the asserted sites.
 //!
-//!    The wider gap — explicit `CAST(x AS T)` syntax (e.g.
-//!    `CAST(... AS Array(Int64))`, `toUInt16(...)`, `toFloat64(0)`) in
-//!    the weighted-BFS shortestPath path — remains unrouted; the
-//!    simple VLP spike query doesn't reach that code, and adding new
-//!    mapper methods for those specific casts can wait until a
-//!    shortestPath query gets exercised under Databricks.
+//! 5. **BFS shortestPath casts (Phase 1.7, done).** The lightweight
+//!    `generate_bfs_shortest_path_sql` path emitted hard-coded
+//!    `toUInt16(...)` for the hop counter, and the heavier weighted
+//!    reconstruction (`generate_weighted_bfs_reconstruction_sql`) used
+//!    a mix of `CAST(... AS Int64)`, `CAST(... AS Array(Int64))`, and
+//!    `toFloat64(0)`. Three new mapper methods cover this surface:
+//!    - `cast_uint16()` (CH: `toUInt16`, Spark: `int` — widening
+//!      since Spark has no unsigned types. `smallint` would be the
+//!      conceptual match but `max_hops` is `u32` and unbounded via
+//!      `CLICKGRAPH_VLP_MAX_HOPS`, so we widen to `int` to remove
+//!      any wrap risk.)
+//!    - `cast_float64()` (CH: `toFloat64`, Spark: `double`)
+//!    - `int64_array_cast(expr)` (CH: `CAST({expr} AS Array(Int64))`,
+//!      Spark: `CAST({expr} AS ARRAY<BIGINT>)`)
 //!
-//! With Phase 1.6 done, every syntactic-layer gap that the Phase 1.2
+//!    The lighter BFS path is asserted by
+//!    `shortestpath_bfs_under_databricks_uses_smallint_hop` and its
+//!    CH baseline. The weighted reconstruction path needs a `weight:`
+//!    keyword and isn't reached by any current spike-test schema, so
+//!    it relies on mechanical consistency with the unweighted path
+//!    plus the unit test for `int64_array_cast` in `databricks.rs`.
+//!
+//! With Phase 1.7 done, every syntactic-layer gap that the Phase 1.2
 //! spike reaches has a dialect-aware abstraction in place. Adding
 //! new Databricks-incompatible patterns is now a localized change at
 //! the trait/registry, not a search-and-replace across the codebase.
@@ -565,6 +580,68 @@ async fn reduce_init_under_databricks_uses_bigint_cast() {
     assert!(
         !sql.contains("toInt64("),
         "Databricks SQL leaked CH `toInt64` reduce-init wrapper; got:\n{sql}"
+    );
+}
+
+/// Phase 1.7: `shortestPath()` with bounded endpoints hits the BFS
+/// optimization in `generate_bfs_shortest_path_sql`, which previously
+/// hard-coded `toUInt16(...)` casts for the hop counter. Under
+/// Databricks dialect, those now route through
+/// `FunctionMapper::cast_uint16()` and emit Spark's `int(...)`. We
+/// widen to `int` instead of the conceptually-closer `smallint`
+/// because `max_hops` is a `u32` overridable via
+/// `CLICKGRAPH_VLP_MAX_HOPS` with no upper bound — a signed 16-bit
+/// cast could wrap.
+#[tokio::test]
+async fn shortestpath_bfs_under_databricks_uses_int_hop() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql(
+            "MATCH p = shortestPath((a:User {id: 1})-[:FOLLOWS*]-(b:User {id: 2})) \
+             RETURN length(p) AS hops",
+        )
+    })
+    .await;
+
+    // The BFS path wraps the hop counter in `cast_uint16()`. Under
+    // Databricks that emits `int(...)` (Spark function-call cast).
+    // Assert the call shape rather than bare `int(` since that could
+    // arise from many idioms.
+    assert!(
+        sql.contains("int(0)") || sql.contains("int(hop)"),
+        "expected Spark `int(0)`/`int(hop)` hop cast in BFS shortestPath SQL; got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("toUInt16("),
+        "Databricks BFS SQL leaked CH `toUInt16`; got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("smallint("),
+        "Databricks BFS SQL emitted `smallint` — should widen to `int` per Phase 1.7 docs; got:\n{sql}"
+    );
+}
+
+/// CH baseline for the BFS shortestPath hop cast.
+#[tokio::test]
+async fn shortestpath_bfs_under_clickhouse_uses_uint16_hop() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::ClickHouse,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql(
+            "MATCH p = shortestPath((a:User {id: 1})-[:FOLLOWS*]-(b:User {id: 2})) \
+             RETURN length(p) AS hops",
+        )
+    })
+    .await;
+
+    assert!(
+        sql.contains("toUInt16("),
+        "expected CH `toUInt16(...)` hop cast in BFS shortestPath SQL; got:\n{sql}"
     );
 }
 

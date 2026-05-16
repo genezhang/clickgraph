@@ -1066,6 +1066,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let fmap = current_function_mapper();
         let empty_str_arr = fmap.empty_string_array_cast();
         let empty_i64_arr = fmap.empty_int64_array_cast();
+        let cast_u16 = fmap.cast_uint16();
 
         // Extract start and target IDs from filters
         let start_id = self
@@ -1130,7 +1131,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Build BFS CTE
         let bfs_cte_sql = format!(
             "{bfs_cte} AS (\n    \
-             SELECT {start_id} AS node_id, toUInt16(0) AS hop\n    \
+             SELECT {start_id} AS node_id, {cast_u16}(0) AS hop\n    \
              UNION ALL\n{forward}{reverse}\n)",
             bfs_cte = bfs_cte_name,
             start_id = start_id,
@@ -1149,7 +1150,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                  {start_id} AS start_id,\n        \
                  {target} AS end_id,\n        \
                  CASE WHEN countIf(node_id = {target}) > 0\n            \
-                 THEN minIf(toUInt16(hop), node_id = {target})\n            \
+                 THEN minIf({cast_u16}(hop), node_id = {target})\n            \
                  ELSE NULL END AS hop_count,\n        \
                  {empty_str_arr} AS path_relationships,\n        \
                  {empty_i64_arr} AS path_nodes\n    \
@@ -1165,7 +1166,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 "{name} AS (\n    SELECT\n        \
                  {start_id} AS start_id,\n        \
                  node_id AS end_id,\n        \
-                 min(toUInt16(hop)) AS hop_count,\n        \
+                 min({cast_u16}(hop)) AS hop_count,\n        \
                  {empty_str_arr} AS path_relationships,\n        \
                  {empty_i64_arr} AS path_nodes\n    \
                  FROM {bfs_cte}\n    \
@@ -1224,18 +1225,21 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let fmap = current_function_mapper();
         let ac = fmap.array_concat();
         let empty_str_arr = fmap.empty_string_array_cast();
+        let cast_i64 = fmap.cast_int64();
+        let cast_u16 = fmap.cast_uint16();
+        let cast_f64 = fmap.cast_float64();
 
         // CTE 1: BFS — lightweight frontier with global dedup
         let bfs_sql = format!(
             "{bfs_cte} AS (\n    \
-             SELECT CAST({start_id} AS Int64) AS node_id, toUInt16(0) AS hop\n    \
+             SELECT {cast_i64}({start_id}) AS node_id, {cast_u16}(0) AS hop\n    \
              UNION ALL\n    \
              SELECT DISTINCT ew.{target_col} AS node_id, b.hop + 1 AS hop\n    \
              FROM {bfs_cte} b\n    \
              JOIN {weight_cte} ew ON ew.{source} = b.node_id\n    \
              WHERE b.hop < {max_hops}\n      \
              AND ew.{target_col} NOT IN (SELECT node_id FROM {bfs_cte})\n      \
-             AND b.node_id != CAST({target_id} AS Int64)\n)"
+             AND b.node_id != {cast_i64}({target_id})\n)"
         );
 
         // CTE 2: Backward reconstruction — walk from target to source
@@ -1244,14 +1248,15 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // to hang (CTE inlining re-evaluates the entire recursion chain).
         let target_nodes_arr = arr(target_id.as_str());
         let source_scalar_arr = arr(&format!("ew.{source}"));
+        let path_nodes_cast = fmap.int64_array_cast(&target_nodes_arr);
         let recon_sql = format!(
             "{recon_cte} AS (\n    \
-             SELECT CAST({target_id} AS Int64) AS node_id,\n           \
+             SELECT {cast_i64}({target_id}) AS node_id,\n           \
              bfs_target.hop AS remaining,\n           \
-             CAST({target_nodes_arr} AS Array(Int64)) AS path_nodes,\n           \
-             toFloat64(0) AS total_weight\n    \
+             {path_nodes_cast} AS path_nodes,\n           \
+             {cast_f64}(0) AS total_weight\n    \
              FROM {bfs_cte} AS bfs_target\n    \
-             WHERE bfs_target.node_id = CAST({target_id} AS Int64)\n    \
+             WHERE bfs_target.node_id = {cast_i64}({target_id})\n    \
              UNION ALL\n    \
              SELECT ew.{source} AS node_id, pr.remaining - 1 AS remaining,\n           \
              {ac}({source_scalar_arr}, pr.path_nodes) AS path_nodes,\n           \
@@ -1268,7 +1273,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
         let result_sql = format!(
             "{name} AS (\n    \
              SELECT {start_id} AS start_id, {target_id} AS end_id,\n           \
-             toUInt16(length(path_nodes) - 1) AS hop_count,\n           \
+             {cast_u16}(length(path_nodes) - 1) AS hop_count,\n           \
              total_weight, path_nodes, {empty_str_arr} AS path_relationships\n    \
              FROM {recon_cte} WHERE remaining = 0\n    \
              ORDER BY total_weight ASC LIMIT 1\n)",

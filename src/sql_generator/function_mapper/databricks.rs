@@ -89,6 +89,22 @@ impl FunctionMapper for DatabricksFunctionMapper {
         "tinyint"
     }
 
+    fn cast_uint16(&self) -> &'static str {
+        // Spark has no unsigned 16-bit type. Widening to signed
+        // smallint (16-bit, max 32767) is conceptually closest but
+        // unsafe in this codebase: `max_hops` is a `u32` overridable
+        // via `CLICKGRAPH_VLP_MAX_HOPS` with no upper bound, so a
+        // signed 16-bit cast could wrap. Widen to signed `int`
+        // (32-bit) instead — it matches the actual u32 source range
+        // (modulo the high bit, which no realistic hop count reaches)
+        // and removes the overflow tripwire entirely.
+        "int"
+    }
+
+    fn cast_float64(&self) -> &'static str {
+        "double"
+    }
+
     fn cast_string(&self) -> &'static str {
         "string"
     }
@@ -109,6 +125,10 @@ impl FunctionMapper for DatabricksFunctionMapper {
 
     fn empty_int64_array_cast(&self) -> &'static str {
         "CAST(array() AS ARRAY<BIGINT>)"
+    }
+
+    fn int64_array_cast(&self, expr: &str) -> String {
+        format!("CAST({expr} AS ARRAY<BIGINT>)")
     }
 
     fn array_literal(&self, elems: &str) -> String {
@@ -142,6 +162,8 @@ mod tests {
         assert_eq!(m.json_extract_string(), "get_json_object");
         assert_eq!(m.cast_int64(), "bigint");
         assert_eq!(m.cast_uint8(), "tinyint");
+        assert_eq!(m.cast_uint16(), "int");
+        assert_eq!(m.cast_float64(), "double");
         assert_eq!(m.cast_string(), "string");
         assert_eq!(m.array_concat(), "concat");
         assert_eq!(m.array_contains(), "array_contains");
@@ -150,6 +172,7 @@ mod tests {
             "CAST(array() AS ARRAY<STRING>)"
         );
         assert_eq!(m.empty_int64_array_cast(), "CAST(array() AS ARRAY<BIGINT>)");
+        assert_eq!(m.int64_array_cast("x"), "CAST(x AS ARRAY<BIGINT>)");
         assert_eq!(m.array_literal(""), "array()");
         assert_eq!(m.array_literal("a, b"), "array(a, b)");
         assert_eq!(m.quote_alias("b.id"), "`b.id`");
