@@ -29,10 +29,7 @@ cg --dialect databricks validate --schema <file> "<cypher>"  # Plan under Spark 
 cg --dialect databricks query    --schema <file> --sql-only "<cypher>"  # Spark SQL via query path
 ```
 
-Values: `clickhouse` (default) or `databricks`. Currently used by the SQL-emission
-paths (`sql`, `validate`, `query --sql-only`); executing against Databricks via
-`cg query` (without `--sql-only`) is not yet wired — use `--sql-only` and pipe
-into your warehouse.
+Values: `clickhouse` (default) or `databricks`.
 
 The dialect can also be set in `~/.config/cg/config.toml` as a top-level key:
 
@@ -43,6 +40,42 @@ dialect = "databricks"   # or "clickhouse"
 Precedence: `--dialect` flag > `CG_DIALECT` env > `config.toml` > default
 (`clickhouse`). An unrecognized config-file value warns to stderr and falls
 back to the default rather than failing silently.
+
+#### Executing against Databricks (`cg query --dialect databricks`)
+
+Building `cg` with `--features databricks` compiles in the Databricks SQL
+Warehouse executor (forwards to `clickgraph-embedded/databricks` →
+`clickgraph/databricks`). Without that feature the SQL-emission paths
+(`sql`, `validate`, `query --sql-only`) still work, but
+`cg query --dialect databricks` (without `--sql-only`) returns a rebuild
+error pointing at `--features databricks` or `--sql-only`.
+
+Credentials and overrides:
+
+| Setting        | Env (preferred)        | Env (fallback)       | `config.toml` key       |
+|----------------|------------------------|----------------------|-------------------------|
+| Workspace host | `CG_DATABRICKS_HOST`   | `DATABRICKS_HOST`    | `[databricks].hostname` |
+| Warehouse ID   | `CG_DATABRICKS_WAREHOUSE_ID` | `DATABRICKS_WAREHOUSE_ID` | `[databricks].warehouse_id` |
+| PAT token      | `CG_DATABRICKS_TOKEN`  | `DATABRICKS_TOKEN`   | `[databricks].token`    |
+| Catalog        | `CG_DATABRICKS_CATALOG` | `DATABRICKS_CATALOG` | `[databricks].catalog`  |
+| Schema         | `CG_DATABRICKS_SCHEMA` | `DATABRICKS_SCHEMA`  | `[databricks].schema`   |
+| Base URL (mock) | `CG_DATABRICKS_BASE_URL` | —                  | `[databricks].base_url` |
+
+The PAT token is **only** read from env or `config.toml` — it is never
+accepted on the command line, where it would leak via `ps` and shell
+history. The `*_BASE_URL` override exists for integration tests pointing
+at a `wiremock` server; production deployments leave it unset.
+
+Build and run:
+
+```bash
+cargo build -p clickgraph-tool --features databricks --release
+export DATABRICKS_HOST="dbc-abc123-def4.cloud.databricks.com"
+export DATABRICKS_WAREHOUSE_ID="abc123def456"
+export DATABRICKS_TOKEN="dapi-..."
+cg --schema schema.yaml --dialect databricks \
+   query "MATCH (u:User) RETURN u.name LIMIT 10"
+```
 
 ## Architecture
 

@@ -40,11 +40,7 @@ pub async fn run_query(cypher: &str, sql_only: bool, format: &str, cfg: &CgConfi
     }
 
     if matches!(cfg.dialect, DialectArg::Databricks) {
-        return Err(anyhow!(
-            "`cg query --dialect databricks` execution is not yet wired up — use `--sql-only` \
-             (or `cg sql --dialect databricks <query>`) to print Spark SQL, or run that SQL \
-             against a Databricks SQL Warehouse separately."
-        ));
+        return run_query_databricks(cypher, format, cfg).await;
     }
 
     let ch_url = cfg
@@ -80,6 +76,77 @@ pub async fn run_query(cypher: &str, sql_only: bool, format: &str, cfg: &CgConfi
     }
 
     Ok(())
+}
+
+// ── Databricks execution ────────────────────────────────────────────────────
+//
+// `databricks` is a non-default `cg` build feature. When it is off, calling
+// `cg query --dialect databricks` (without `--sql-only`) returns a clear
+// rebuild error rather than a confusing ClickHouse-URL error. When it is on,
+// the same call routes through `clickgraph-embedded::Database::new_databricks`
+// and `Connection::query_remote` — the SQL is translated under the Spark
+// dialect by the dialect-aware renderer and POSTed to the Statement Execution
+// API. We keep the words "--sql-only" in the off-feature error so users who
+// only need translation get a single working command without rebuilding.
+
+#[cfg(feature = "databricks")]
+async fn run_query_databricks(cypher: &str, format: &str, cfg: &CgConfig) -> Result<()> {
+    let path = cfg.require_schema()?;
+    let host = cfg.databricks.hostname.as_deref().ok_or_else(|| {
+        anyhow!(
+            "Databricks hostname not set. Provide DATABRICKS_HOST (or CG_DATABRICKS_HOST), \
+             or a [databricks] section in ~/.config/cg/config.toml."
+        )
+    })?;
+    let warehouse_id = cfg.databricks.warehouse_id.as_deref().ok_or_else(|| {
+        anyhow!(
+            "Databricks warehouse_id not set. Provide DATABRICKS_WAREHOUSE_ID \
+             (or CG_DATABRICKS_WAREHOUSE_ID), or a [databricks] section in \
+             ~/.config/cg/config.toml."
+        )
+    })?;
+    let token = cfg.databricks.token.as_deref().ok_or_else(|| {
+        anyhow!(
+            "Databricks token not set. Provide DATABRICKS_TOKEN (or CG_DATABRICKS_TOKEN), \
+             or a [databricks] section in ~/.config/cg/config.toml. The token is never \
+             accepted on the command line."
+        )
+    })?;
+
+    let mut dbc = clickgraph_embedded::DatabricksConfig::new(host, warehouse_id, token);
+    dbc.catalog = cfg.databricks.catalog.clone();
+    dbc.schema = cfg.databricks.schema.clone();
+    dbc.base_url = cfg.databricks.base_url.clone();
+
+    let schema_path = path.to_string();
+    let cypher = cypher.to_string();
+    let (col_names, rows) = tokio::task::spawn_blocking(move || {
+        let db = clickgraph_embedded::Database::new_databricks(&schema_path, dbc)
+            .map_err(|e| anyhow!("Failed to open Databricks executor: {}", e))?;
+        let conn = clickgraph_embedded::Connection::new(&db).map_err(|e| anyhow!("{}", e))?;
+        let result = conn.query_remote(&cypher).map_err(|e| anyhow!("{}", e))?;
+        let col_names: Vec<String> = result.get_column_names().to_vec();
+        let rows: Vec<Vec<Value>> = result.map(|row| row.values().to_vec()).collect();
+        Ok::<_, anyhow::Error>((col_names, rows))
+    })
+    .await??;
+
+    match format {
+        "json" => print_json(&col_names, &rows)?,
+        "pretty" => print_json_pretty(&col_names, &rows)?,
+        _ => print_table(&col_names, &rows),
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "databricks"))]
+async fn run_query_databricks(_cypher: &str, _format: &str, _cfg: &CgConfig) -> Result<()> {
+    Err(anyhow!(
+        "`cg query --dialect databricks` requires the `databricks` build feature. \
+         Rebuild cg with `cargo install clickgraph-tool --features databricks` \
+         (or `cargo build -p clickgraph-tool --features databricks`). \
+         You can also use `--sql-only` to print Spark SQL without executing."
+    ))
 }
 
 // ── Output formatters ────────────────────────────────────────────────────────

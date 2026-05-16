@@ -16,6 +16,12 @@ pub struct CgConfig {
     pub ch_database: Option<String>,
     pub dialect: DialectArg,
     pub llm: LlmConfig,
+    // Only read by the `databricks`-feature execution path; populated
+    // unconditionally so users see the same warnings/parsing regardless
+    // of which build they have, and the resolved struct is identical
+    // across feature combinations.
+    #[cfg_attr(not(feature = "databricks"), allow(dead_code))]
+    pub databricks: DatabricksClientConfig,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -25,6 +31,27 @@ pub struct LlmConfig {
     pub api_key: Option<String>,
     pub base_url: Option<String>,
     pub max_tokens: Option<u32>,
+}
+
+/// Databricks SQL Warehouse credentials and overrides for
+/// `cg query --dialect databricks` (the actual executor lives in
+/// `clickgraph-embedded` behind the `databricks` feature). Resolution
+/// precedence is `CG_DATABRICKS_*` > `DATABRICKS_*` > `[databricks]`
+/// section of `~/.config/cg/config.toml`, mirroring the way other
+/// fields (LLM, ClickHouse) are sourced.
+#[cfg_attr(not(feature = "databricks"), allow(dead_code))]
+#[derive(Debug, Default, Clone)]
+pub struct DatabricksClientConfig {
+    pub hostname: Option<String>,
+    pub warehouse_id: Option<String>,
+    pub token: Option<String>,
+    pub catalog: Option<String>,
+    pub schema: Option<String>,
+    /// Override the request base URL. Production users leave this
+    /// unset (the executor sends to `https://{hostname}`); integration
+    /// tests point this at a `wiremock` URL so the same code paths run
+    /// against a localhost mock.
+    pub base_url: Option<String>,
 }
 
 /// Config file format (~/.config/cg/config.toml)
@@ -38,6 +65,8 @@ struct FileConfig {
     dialect: Option<String>,
     #[serde(default)]
     llm: FileLlmSection,
+    #[serde(default)]
+    databricks: FileDatabricksSection,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -60,6 +89,16 @@ struct FileLlmSection {
     api_key: Option<String>,
     base_url: Option<String>,
     max_tokens: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct FileDatabricksSection {
+    hostname: Option<String>,
+    warehouse_id: Option<String>,
+    token: Option<String>,
+    catalog: Option<String>,
+    schema: Option<String>,
+    base_url: Option<String>,
 }
 
 impl CgConfig {
@@ -137,6 +176,37 @@ impl CgConfig {
             },
         };
 
+        // Databricks resolution: CG_DATABRICKS_* > DATABRICKS_* > config
+        // file. The bare `DATABRICKS_*` names match the databricks-cli /
+        // databricks-sql-python convention so users can reuse the same
+        // env vars they already have set; CG_-prefixed variants exist for
+        // callers who want to scope the override to cg alone.
+        let databricks = DatabricksClientConfig {
+            hostname: std::env::var("CG_DATABRICKS_HOST")
+                .ok()
+                .or_else(|| std::env::var("DATABRICKS_HOST").ok())
+                .or(file_cfg.databricks.hostname),
+            warehouse_id: std::env::var("CG_DATABRICKS_WAREHOUSE_ID")
+                .ok()
+                .or_else(|| std::env::var("DATABRICKS_WAREHOUSE_ID").ok())
+                .or(file_cfg.databricks.warehouse_id),
+            token: std::env::var("CG_DATABRICKS_TOKEN")
+                .ok()
+                .or_else(|| std::env::var("DATABRICKS_TOKEN").ok())
+                .or(file_cfg.databricks.token),
+            catalog: std::env::var("CG_DATABRICKS_CATALOG")
+                .ok()
+                .or_else(|| std::env::var("DATABRICKS_CATALOG").ok())
+                .or(file_cfg.databricks.catalog),
+            schema: std::env::var("CG_DATABRICKS_SCHEMA")
+                .ok()
+                .or_else(|| std::env::var("DATABRICKS_SCHEMA").ok())
+                .or(file_cfg.databricks.schema),
+            base_url: std::env::var("CG_DATABRICKS_BASE_URL")
+                .ok()
+                .or(file_cfg.databricks.base_url),
+        };
+
         Ok(CgConfig {
             schema_path,
             clickhouse_url,
@@ -145,6 +215,7 @@ impl CgConfig {
             ch_database,
             dialect,
             llm,
+            databricks,
         })
     }
 
