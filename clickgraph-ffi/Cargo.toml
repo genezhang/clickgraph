@@ -11,6 +11,13 @@ license = "Apache-2.0"
 crate-type = ["cdylib"]
 name = "clickgraph_ffi"
 
+[features]
+default = []
+# Forwards to clickgraph-embedded/databricks (which forwards to
+# clickgraph/databricks). When enabled, the FFI cdylib exposes
+# `Database::open_databricks(...)` and the `DatabricksConfig` record.
+databricks = ["clickgraph-embedded/databricks"]
+
 [dependencies]
 clickgraph-embedded = { path = "../clickgraph-embedded", features = ["embedded"] }
 uniffi = "0.29"

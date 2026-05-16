@@ -48,6 +48,8 @@ It exposes `nodes() → Vec<GraphNode>`, `edges() → Vec<GraphEdge>`,
 `node_count()`, `edge_count()`. `GraphNode` and `GraphEdge` are UniFFI records.
 `StoreStats` is a record with `nodes_stored` and `edges_stored` counts.
 `RemoteConfig` is a record for configuring remote ClickHouse connections.
+`DatabricksConfig` (behind the `databricks` cargo feature) is the analogue for
+Databricks SQL Warehouses; expose via `Database::open_databricks(...)`.
 
 ### Error Mapping
 `ClickGraphError` is a UniFFI-exported enum with variants:
@@ -76,3 +78,23 @@ All map from `EmbeddedError` via `From` impl.
 4. Regenerate Go: `uniffi-bindgen-go ...`
 5. Regenerate Python: `uniffi-bindgen generate --library ... --language python`
 6. Update language-specific wrapper classes if needed
+
+### Feature-Gated Surface (Databricks)
+
+When the FFI is built with `--features databricks`, the cdylib additionally
+exports `DatabricksConfig` and `Database.open_databricks(schema, config)`.
+Distributions targeting Databricks users should:
+
+```bash
+cargo build -p clickgraph-ffi --release --features databricks
+uniffi-bindgen generate --library target/release/libclickgraph_ffi.so \
+    --language python -o clickgraph-py/clickgraph/
+# (mv clickgraph_ffi.py _ffi.py per existing convention)
+uniffi-bindgen-go --library target/release/libclickgraph_ffi.so \
+    --out-dir clickgraph-go/clickgraph_ffi/
+```
+
+If you skip `--features databricks` at build time, the resulting `_ffi.py` /
+Go bindings simply won't carry the Databricks symbols — callers will hit
+`AttributeError` / undefined method, not a runtime crash. Pre-built wheels &
+Go modules should always be built with the feature on.
