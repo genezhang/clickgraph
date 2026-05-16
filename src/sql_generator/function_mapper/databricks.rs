@@ -89,6 +89,18 @@ impl FunctionMapper for DatabricksFunctionMapper {
         "tinyint"
     }
 
+    fn cast_uint16(&self) -> &'static str {
+        // Same widening pattern as cast_uint8: Spark has no unsigned
+        // 16-bit type, so widen to signed smallint (16-bit). The BFS
+        // hop counters that hit this method top out at the configured
+        // max_hops (typically <100), so the signed range is plenty.
+        "smallint"
+    }
+
+    fn cast_float64(&self) -> &'static str {
+        "double"
+    }
+
     fn cast_string(&self) -> &'static str {
         "string"
     }
@@ -109,6 +121,10 @@ impl FunctionMapper for DatabricksFunctionMapper {
 
     fn empty_int64_array_cast(&self) -> &'static str {
         "CAST(array() AS ARRAY<BIGINT>)"
+    }
+
+    fn int64_array_cast(&self, expr: &str) -> String {
+        format!("CAST({expr} AS ARRAY<BIGINT>)")
     }
 
     fn array_literal(&self, elems: &str) -> String {
@@ -142,6 +158,8 @@ mod tests {
         assert_eq!(m.json_extract_string(), "get_json_object");
         assert_eq!(m.cast_int64(), "bigint");
         assert_eq!(m.cast_uint8(), "tinyint");
+        assert_eq!(m.cast_uint16(), "smallint");
+        assert_eq!(m.cast_float64(), "double");
         assert_eq!(m.cast_string(), "string");
         assert_eq!(m.array_concat(), "concat");
         assert_eq!(m.array_contains(), "array_contains");
@@ -150,6 +168,7 @@ mod tests {
             "CAST(array() AS ARRAY<STRING>)"
         );
         assert_eq!(m.empty_int64_array_cast(), "CAST(array() AS ARRAY<BIGINT>)");
+        assert_eq!(m.int64_array_cast("x"), "CAST(x AS ARRAY<BIGINT>)");
         assert_eq!(m.array_literal(""), "array()");
         assert_eq!(m.array_literal("a, b"), "array(a, b)");
         assert_eq!(m.quote_alias("b.id"), "`b.id`");

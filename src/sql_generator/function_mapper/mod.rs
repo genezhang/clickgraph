@@ -58,6 +58,16 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// `tinyint` (signed) since the values used here fit.
     fn cast_uint8(&self) -> &'static str;
 
+    /// Cast to 16-bit unsigned integer. CH: `toUInt16`. Spark has no
+    /// unsigned integer — Databricks widens to `smallint` (signed
+    /// 16-bit). Used by the BFS shortestPath path for hop counts,
+    /// which always fit (max hops capped well below 32K).
+    fn cast_uint16(&self) -> &'static str;
+
+    /// Cast to 64-bit float. CH: `toFloat64`. Spark: `double`
+    /// (function-call cast alias).
+    fn cast_float64(&self) -> &'static str;
+
     /// Cast to string. CH: `toString`. Spark: `string` (function-call alias).
     fn cast_string(&self) -> &'static str;
 
@@ -78,6 +88,14 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// Empty `Array(Int64)` literal with explicit cast. CH:
     /// `CAST([] AS Array(Int64))`. Spark: `CAST(array() AS ARRAY<BIGINT>)`.
     fn empty_int64_array_cast(&self) -> &'static str;
+
+    /// Wrap an arbitrary expression in an `Array(Int64)` cast. CH:
+    /// `CAST({expr} AS Array(Int64))`. Spark: `CAST({expr} AS ARRAY<BIGINT>)`.
+    /// Used by the BFS shortestPath reconstruction path where
+    /// `path_nodes` accumulators need an explicit array element type.
+    /// Distinct from [`empty_int64_array_cast`] because the inner
+    /// expression isn't always an empty literal.
+    fn int64_array_cast(&self, expr: &str) -> String;
 
     /// Array literal with the given comma-separated elements. CH:
     /// `[a, b, c]`. Spark: `array(a, b, c)`. Empty input (`""`) yields
