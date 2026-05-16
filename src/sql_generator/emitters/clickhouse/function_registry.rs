@@ -36,11 +36,32 @@ pub struct FunctionMapping {
     /// Neo4j function name (lowercase for lookup)
     #[allow(dead_code)]
     pub neo4j_name: &'static str,
-    /// ClickHouse function name
+    /// ClickHouse function name. Also used as the fallback for any
+    /// dialect that doesn't override (most SQL aggregates and scalar
+    /// functions are spelled the same across dialects).
     pub clickhouse_name: &'static str,
+    /// Databricks / Spark SQL name when it differs from the CH name.
+    /// `None` means "use `clickhouse_name`" — appropriate for the many
+    /// ANSI-shaped functions (count, sum, min, max, etc.). Setting this
+    /// to `Some(...)` is how Phase 1.5 routes a registry entry through
+    /// the dialect layer.
+    pub databricks_name: Option<&'static str>,
     /// Optional argument transformation function
     /// Takes SQL string args, returns transformed SQL string args
     pub arg_transform: Option<ArgTransform>,
+}
+
+impl FunctionMapping {
+    /// Returns the function name for the given dialect, falling back to
+    /// `clickhouse_name` when the dialect has no explicit override.
+    pub fn name_for(&self, dialect: crate::sql_generator::SqlDialect) -> &'static str {
+        match dialect {
+            crate::sql_generator::SqlDialect::Databricks => {
+                self.databricks_name.unwrap_or(self.clickhouse_name)
+            }
+            _ => self.clickhouse_name,
+        }
+    }
 }
 
 /// Get function mapping for a Neo4j function name
@@ -61,6 +82,7 @@ lazy_static::lazy_static! {
         m.insert("datetime", FunctionMapping {
             neo4j_name: "datetime",
             clickhouse_name: "parseDateTime64BestEffort",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 if args.is_empty() {
                     // datetime() with no args returns current timestamp
@@ -78,6 +100,7 @@ lazy_static::lazy_static! {
         m.insert("tounixtimestampmillis", FunctionMapping {
             neo4j_name: "toUnixTimestampMillis",
             clickhouse_name: "toUnixTimestamp64Milli",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 if args.is_empty() {
                     // No args: return current time in milliseconds
@@ -93,6 +116,7 @@ lazy_static::lazy_static! {
         m.insert("date", FunctionMapping {
             neo4j_name: "date",
             clickhouse_name: "toDate",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 if args.is_empty() {
                     vec!["today()".to_string()]
@@ -106,6 +130,7 @@ lazy_static::lazy_static! {
         m.insert("timestamp", FunctionMapping {
             neo4j_name: "timestamp",
             clickhouse_name: "toUnixTimestamp",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 if args.is_empty() {
                     vec!["now()".to_string()]
@@ -121,6 +146,7 @@ lazy_static::lazy_static! {
         m.insert("toupper", FunctionMapping {
             neo4j_name: "toUpper",
             clickhouse_name: "upper",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -128,6 +154,7 @@ lazy_static::lazy_static! {
         m.insert("tolower", FunctionMapping {
             neo4j_name: "toLower",
             clickhouse_name: "lower",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -135,6 +162,7 @@ lazy_static::lazy_static! {
         m.insert("trim", FunctionMapping {
             neo4j_name: "trim",
             clickhouse_name: "trim",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 // ClickHouse: trim(BOTH str)
                 vec![format!("BOTH {}", args[0])]
@@ -146,6 +174,7 @@ lazy_static::lazy_static! {
         m.insert("substring", FunctionMapping {
             neo4j_name: "substring",
             clickhouse_name: "substring",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 if args.len() == 2 {
                     // substring(str, start) - take rest of string
@@ -163,6 +192,7 @@ lazy_static::lazy_static! {
         m.insert("size", FunctionMapping {
             neo4j_name: "size",
             clickhouse_name: "length",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -170,6 +200,7 @@ lazy_static::lazy_static! {
         m.insert("split", FunctionMapping {
             neo4j_name: "split",
             clickhouse_name: "splitByChar",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 if args.len() >= 2 {
                     // Swap: split(str, delim) -> splitByChar(delim, str)
@@ -184,6 +215,7 @@ lazy_static::lazy_static! {
         m.insert("replace", FunctionMapping {
             neo4j_name: "replace",
             clickhouse_name: "replaceAll",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -191,6 +223,7 @@ lazy_static::lazy_static! {
         m.insert("reverse", FunctionMapping {
             neo4j_name: "reverse",
             clickhouse_name: "reverse",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -198,6 +231,7 @@ lazy_static::lazy_static! {
         m.insert("left", FunctionMapping {
             neo4j_name: "left",
             clickhouse_name: "substring",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 if args.len() >= 2 {
                     vec![args[0].clone(), "1".to_string(), args[1].clone()]
@@ -211,6 +245,7 @@ lazy_static::lazy_static! {
         m.insert("right", FunctionMapping {
             neo4j_name: "right",
             clickhouse_name: "substring",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 if args.len() >= 2 {
                     vec![args[0].clone(), format!("-({})", args[1])]
@@ -226,6 +261,7 @@ lazy_static::lazy_static! {
         m.insert("abs", FunctionMapping {
             neo4j_name: "abs",
             clickhouse_name: "abs",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -233,6 +269,7 @@ lazy_static::lazy_static! {
         m.insert("ceil", FunctionMapping {
             neo4j_name: "ceil",
             clickhouse_name: "ceil",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -240,6 +277,7 @@ lazy_static::lazy_static! {
         m.insert("floor", FunctionMapping {
             neo4j_name: "floor",
             clickhouse_name: "floor",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -247,6 +285,7 @@ lazy_static::lazy_static! {
         m.insert("round", FunctionMapping {
             neo4j_name: "round",
             clickhouse_name: "round",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -254,6 +293,7 @@ lazy_static::lazy_static! {
         m.insert("sqrt", FunctionMapping {
             neo4j_name: "sqrt",
             clickhouse_name: "sqrt",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -261,6 +301,7 @@ lazy_static::lazy_static! {
         m.insert("rand", FunctionMapping {
             neo4j_name: "rand",
             clickhouse_name: "rand",
+            databricks_name: None,
             arg_transform: Some(|_args| {
                 // Neo4j rand() returns 0.0-1.0
                 // ClickHouse rand() returns UInt32
@@ -272,6 +313,7 @@ lazy_static::lazy_static! {
         m.insert("sign", FunctionMapping {
             neo4j_name: "sign",
             clickhouse_name: "sign",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -281,6 +323,7 @@ lazy_static::lazy_static! {
         m.insert("head", FunctionMapping {
             neo4j_name: "head",
             clickhouse_name: "arrayElement",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 if !args.is_empty() {
                     vec![args[0].clone(), "1".to_string()]
@@ -294,6 +337,7 @@ lazy_static::lazy_static! {
         m.insert("tail", FunctionMapping {
             neo4j_name: "tail",
             clickhouse_name: "arraySlice",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 if !args.is_empty() {
                     vec![args[0].clone(), "2".to_string()]
@@ -307,6 +351,7 @@ lazy_static::lazy_static! {
         m.insert("last", FunctionMapping {
             neo4j_name: "last",
             clickhouse_name: "arrayElement",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 if !args.is_empty() {
                     vec![args[0].clone(), "-1".to_string()]
@@ -320,6 +365,7 @@ lazy_static::lazy_static! {
         m.insert("range", FunctionMapping {
             neo4j_name: "range",
             clickhouse_name: "range",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -329,6 +375,7 @@ lazy_static::lazy_static! {
         m.insert("tointeger", FunctionMapping {
             neo4j_name: "toInteger",
             clickhouse_name: "toInt64",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -336,6 +383,7 @@ lazy_static::lazy_static! {
         m.insert("tofloat", FunctionMapping {
             neo4j_name: "toFloat",
             clickhouse_name: "toFloat64",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -343,6 +391,7 @@ lazy_static::lazy_static! {
         m.insert("tostring", FunctionMapping {
             neo4j_name: "toString",
             clickhouse_name: "toString",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -350,6 +399,7 @@ lazy_static::lazy_static! {
         m.insert("toboolean", FunctionMapping {
             neo4j_name: "toBoolean",
             clickhouse_name: "if",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 if !args.is_empty() {
                     vec![args[0].clone(), "1".to_string(), "0".to_string()]
@@ -361,10 +411,14 @@ lazy_static::lazy_static! {
 
         // ===== AGGREGATION FUNCTIONS =====
 
-        // collect() -> groupArray() [collect elements into array]
+        // collect() -> groupArray() (CH) / collect_list() (Spark/Databricks)
+        // First Phase 1.5 entry to actually exercise `databricks_name` —
+        // the dialect-aware accessor falls back to `clickhouse_name` for
+        // every other entry (most aggregates are spelled the same).
         m.insert("collect", FunctionMapping {
             neo4j_name: "collect",
             clickhouse_name: "groupArray",
+            databricks_name: Some("collect_list"),
             arg_transform: None,
         });
 
@@ -374,6 +428,7 @@ lazy_static::lazy_static! {
         m.insert("sin", FunctionMapping {
             neo4j_name: "sin",
             clickhouse_name: "sin",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -381,6 +436,7 @@ lazy_static::lazy_static! {
         m.insert("cos", FunctionMapping {
             neo4j_name: "cos",
             clickhouse_name: "cos",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -388,6 +444,7 @@ lazy_static::lazy_static! {
         m.insert("tan", FunctionMapping {
             neo4j_name: "tan",
             clickhouse_name: "tan",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -395,6 +452,7 @@ lazy_static::lazy_static! {
         m.insert("asin", FunctionMapping {
             neo4j_name: "asin",
             clickhouse_name: "asin",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -402,6 +460,7 @@ lazy_static::lazy_static! {
         m.insert("acos", FunctionMapping {
             neo4j_name: "acos",
             clickhouse_name: "acos",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -409,6 +468,7 @@ lazy_static::lazy_static! {
         m.insert("atan", FunctionMapping {
             neo4j_name: "atan",
             clickhouse_name: "atan",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -416,6 +476,7 @@ lazy_static::lazy_static! {
         m.insert("atan2", FunctionMapping {
             neo4j_name: "atan2",
             clickhouse_name: "atan2",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -425,6 +486,7 @@ lazy_static::lazy_static! {
         m.insert("exp", FunctionMapping {
             neo4j_name: "exp",
             clickhouse_name: "exp",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -432,6 +494,7 @@ lazy_static::lazy_static! {
         m.insert("log", FunctionMapping {
             neo4j_name: "log",
             clickhouse_name: "log",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -439,6 +502,7 @@ lazy_static::lazy_static! {
         m.insert("log10", FunctionMapping {
             neo4j_name: "log10",
             clickhouse_name: "log10",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -446,6 +510,7 @@ lazy_static::lazy_static! {
         m.insert("pi", FunctionMapping {
             neo4j_name: "pi",
             clickhouse_name: "pi",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -453,6 +518,7 @@ lazy_static::lazy_static! {
         m.insert("e", FunctionMapping {
             neo4j_name: "e",
             clickhouse_name: "e",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -460,6 +526,7 @@ lazy_static::lazy_static! {
         m.insert("pow", FunctionMapping {
             neo4j_name: "pow",
             clickhouse_name: "pow",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -469,6 +536,7 @@ lazy_static::lazy_static! {
         m.insert("ltrim", FunctionMapping {
             neo4j_name: "lTrim",
             clickhouse_name: "trimLeft",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -476,6 +544,7 @@ lazy_static::lazy_static! {
         m.insert("rtrim", FunctionMapping {
             neo4j_name: "rTrim",
             clickhouse_name: "trimRight",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -485,6 +554,7 @@ lazy_static::lazy_static! {
         m.insert("stdev", FunctionMapping {
             neo4j_name: "stDev",
             clickhouse_name: "stddevSamp",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -492,6 +562,7 @@ lazy_static::lazy_static! {
         m.insert("stdevp", FunctionMapping {
             neo4j_name: "stDevP",
             clickhouse_name: "stddevPop",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -502,6 +573,7 @@ lazy_static::lazy_static! {
         m.insert("percentilecont", FunctionMapping {
             neo4j_name: "percentileCont",
             clickhouse_name: "median",  // median = quantile(0.5), closest simple equivalent
+            databricks_name: None,
             arg_transform: Some(|args| {
                 // percentileCont(expr, 0.5) -> median(expr)
                 // For other percentiles, user needs to use quantile directly
@@ -517,6 +589,7 @@ lazy_static::lazy_static! {
         m.insert("percentiledisc", FunctionMapping {
             neo4j_name: "percentileDisc",
             clickhouse_name: "median",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 if !args.is_empty() {
                     vec![args[0].clone()]
@@ -532,6 +605,7 @@ lazy_static::lazy_static! {
         m.insert("coalesce", FunctionMapping {
             neo4j_name: "coalesce",
             clickhouse_name: "coalesce",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -539,6 +613,7 @@ lazy_static::lazy_static! {
         m.insert("nullif", FunctionMapping {
             neo4j_name: "nullIf",
             clickhouse_name: "nullIf",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -548,6 +623,7 @@ lazy_static::lazy_static! {
         m.insert("keys", FunctionMapping {
             neo4j_name: "keys",
             clickhouse_name: "mapKeys",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -560,6 +636,7 @@ lazy_static::lazy_static! {
         m.insert("gds.similarity.cosine", FunctionMapping {
             neo4j_name: "gds.similarity.cosine",
             clickhouse_name: "cosineDistance",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 // Wrap in (1 - distance) to convert distance to similarity
                 if args.len() >= 2 {
@@ -575,6 +652,7 @@ lazy_static::lazy_static! {
         m.insert("gds.similarity.euclidean", FunctionMapping {
             neo4j_name: "gds.similarity.euclidean",
             clickhouse_name: "L2Distance",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 if args.len() >= 2 {
                     vec![format!("1 / (1 + L2Distance({}, {}))", args[0], args[1])]
@@ -589,6 +667,7 @@ lazy_static::lazy_static! {
         m.insert("gds.similarity.euclideandistance", FunctionMapping {
             neo4j_name: "gds.similarity.euclideanDistance",
             clickhouse_name: "L2Distance",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -597,6 +676,7 @@ lazy_static::lazy_static! {
         m.insert("vector.similarity.cosine", FunctionMapping {
             neo4j_name: "vector.similarity.cosine",
             clickhouse_name: "cosineDistance",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 if args.len() >= 2 {
                     vec![format!("1 - cosineDistance({}, {})", args[0], args[1])]
@@ -625,6 +705,7 @@ lazy_static::lazy_static! {
         m.insert("all", FunctionMapping {
             neo4j_name: "all",
             clickhouse_name: "arrayAll",
+            databricks_name: None,
             arg_transform: None, // Requires special handling for predicate syntax
         });
 
@@ -632,6 +713,7 @@ lazy_static::lazy_static! {
         m.insert("any", FunctionMapping {
             neo4j_name: "any",
             clickhouse_name: "arrayExists",
+            databricks_name: None,
             arg_transform: None, // Requires special handling for predicate syntax
         });
 
@@ -639,6 +721,7 @@ lazy_static::lazy_static! {
         m.insert("none", FunctionMapping {
             neo4j_name: "none",
             clickhouse_name: "arrayExists",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 // Will need to wrap with NOT in the caller
                 args.to_vec()
@@ -650,6 +733,7 @@ lazy_static::lazy_static! {
         m.insert("single", FunctionMapping {
             neo4j_name: "single",
             clickhouse_name: "arrayCount",
+            databricks_name: None,
             arg_transform: None, // Caller needs to add = 1
         });
 
@@ -657,6 +741,7 @@ lazy_static::lazy_static! {
         m.insert("isempty", FunctionMapping {
             neo4j_name: "isEmpty",
             clickhouse_name: "empty",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -671,6 +756,7 @@ lazy_static::lazy_static! {
         m.insert("localdatetime", FunctionMapping {
             neo4j_name: "localdatetime",
             clickhouse_name: "now64",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 if args.is_empty() {
                     vec!["3".to_string()] // millisecond precision
@@ -684,6 +770,7 @@ lazy_static::lazy_static! {
         m.insert("localtime", FunctionMapping {
             neo4j_name: "localtime",
             clickhouse_name: "toTime",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 if args.is_empty() {
                     vec!["now()".to_string()]
@@ -711,6 +798,7 @@ lazy_static::lazy_static! {
         m.insert("year", FunctionMapping {
             neo4j_name: "year",
             clickhouse_name: "toYear",
+            databricks_name: None,
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
@@ -718,6 +806,7 @@ lazy_static::lazy_static! {
         m.insert("month", FunctionMapping {
             neo4j_name: "month",
             clickhouse_name: "toMonth",
+            databricks_name: None,
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
@@ -725,6 +814,7 @@ lazy_static::lazy_static! {
         m.insert("day", FunctionMapping {
             neo4j_name: "day",
             clickhouse_name: "toDayOfMonth",
+            databricks_name: None,
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
@@ -732,6 +822,7 @@ lazy_static::lazy_static! {
         m.insert("hour", FunctionMapping {
             neo4j_name: "hour",
             clickhouse_name: "toHour",
+            databricks_name: None,
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
@@ -739,6 +830,7 @@ lazy_static::lazy_static! {
         m.insert("minute", FunctionMapping {
             neo4j_name: "minute",
             clickhouse_name: "toMinute",
+            databricks_name: None,
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
@@ -746,6 +838,7 @@ lazy_static::lazy_static! {
         m.insert("second", FunctionMapping {
             neo4j_name: "second",
             clickhouse_name: "toSecond",
+            databricks_name: None,
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
@@ -753,6 +846,7 @@ lazy_static::lazy_static! {
         m.insert("dayofweek", FunctionMapping {
             neo4j_name: "dayOfWeek",
             clickhouse_name: "toDayOfWeek",
+            databricks_name: None,
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
@@ -760,6 +854,7 @@ lazy_static::lazy_static! {
         m.insert("dayofyear", FunctionMapping {
             neo4j_name: "dayOfYear",
             clickhouse_name: "toDayOfYear",
+            databricks_name: None,
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
@@ -767,6 +862,7 @@ lazy_static::lazy_static! {
         m.insert("quarter", FunctionMapping {
             neo4j_name: "quarter",
             clickhouse_name: "toQuarter",
+            databricks_name: None,
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
@@ -774,6 +870,7 @@ lazy_static::lazy_static! {
         m.insert("week", FunctionMapping {
             neo4j_name: "week",
             clickhouse_name: "toISOWeek",
+            databricks_name: None,
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
@@ -783,6 +880,7 @@ lazy_static::lazy_static! {
         m.insert("startswith", FunctionMapping {
             neo4j_name: "startsWith",
             clickhouse_name: "startsWith",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -790,6 +888,7 @@ lazy_static::lazy_static! {
         m.insert("endswith", FunctionMapping {
             neo4j_name: "endsWith",
             clickhouse_name: "endsWith",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -798,6 +897,7 @@ lazy_static::lazy_static! {
         m.insert("contains", FunctionMapping {
             neo4j_name: "contains",
             clickhouse_name: "position",
+            databricks_name: None,
             arg_transform: Some(|args| {
                 // contains(str, search) -> position(str, search) > 0
                 // Caller needs to handle the > 0 comparison
@@ -809,6 +909,7 @@ lazy_static::lazy_static! {
         m.insert("normalize", FunctionMapping {
             neo4j_name: "normalize",
             clickhouse_name: "normalizeUTF8NFC",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -817,6 +918,7 @@ lazy_static::lazy_static! {
         m.insert("valuetype", FunctionMapping {
             neo4j_name: "valueType",
             clickhouse_name: "toTypeName",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -826,6 +928,7 @@ lazy_static::lazy_static! {
         m.insert("avg", FunctionMapping {
             neo4j_name: "avg",
             clickhouse_name: "avg",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -833,6 +936,7 @@ lazy_static::lazy_static! {
         m.insert("sum", FunctionMapping {
             neo4j_name: "sum",
             clickhouse_name: "sum",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -840,6 +944,7 @@ lazy_static::lazy_static! {
         m.insert("min", FunctionMapping {
             neo4j_name: "min",
             clickhouse_name: "min",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -847,6 +952,7 @@ lazy_static::lazy_static! {
         m.insert("max", FunctionMapping {
             neo4j_name: "max",
             clickhouse_name: "max",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -854,6 +960,7 @@ lazy_static::lazy_static! {
         m.insert("count", FunctionMapping {
             neo4j_name: "count",
             clickhouse_name: "count",
+            databricks_name: None,
             arg_transform: None,
         });
 
@@ -877,6 +984,7 @@ lazy_static::lazy_static! {
         m.insert("id", FunctionMapping {
             neo4j_name: "id",
             clickhouse_name: "toInt64",  // toInt64(0) = 0 placeholder
+            databricks_name: None,
             arg_transform: Some(|_args| {
                 // Return 0 as placeholder - actual ID computed from element_id at result time
                 vec!["0".to_string()]

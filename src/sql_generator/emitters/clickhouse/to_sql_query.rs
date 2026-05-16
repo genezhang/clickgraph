@@ -4575,10 +4575,10 @@ impl RenderExpr {
                             args_sql
                         };
 
-                        // Return ClickHouse function with transformed args
+                        // Return dialect-appropriate function with transformed args
                         format!(
                             "{}({})",
-                            mapping.clickhouse_name,
+                            mapping.name_for(crate::server::query_context::get_current_dialect()),
                             transformed_args.join(", ")
                         )
                     }
@@ -4623,7 +4623,11 @@ impl RenderExpr {
                     }
                 }
 
-                // Check if we have a Neo4j -> ClickHouse mapping for aggregate functions
+                // Check if we have a Cypher -> SQL mapping for aggregate functions.
+                // Registry entries default to the CH spelling (most ANSI aggregates
+                // are identical across dialects); entries that opt in via
+                // `databricks_name: Some(...)` get a Spark-specific name back from
+                // `mapping.name_for(dialect)`.
                 let fn_name_lower = agg.name.to_lowercase();
                 match get_function_mapping(&fn_name_lower) {
                     Some(mapping) => {
@@ -4635,7 +4639,7 @@ impl RenderExpr {
                         };
                         format!(
                             "{}({})",
-                            mapping.clickhouse_name,
+                            mapping.name_for(crate::server::query_context::get_current_dialect()),
                             transformed_args.join(", ")
                         )
                     }

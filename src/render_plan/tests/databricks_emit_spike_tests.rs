@@ -33,22 +33,28 @@
 //!    Spark parses double quotes as string literals, so backticks are
 //!    mandatory there. Asserted by the spellings test below.
 //!
-//! 3. **Aggregate functions via function_registry**. Functions like
-//!    Cypher `collect()` are mapped via the hardcoded `clickhouse_name`
-//!    field on `FunctionMapping` in
-//!    `emitters/clickhouse/function_registry.rs`, not `FunctionMapper`.
-//!    So `collect(n.name)` still emits `groupArray(...)` under
-//!    Databricks dialect. A follow-up phase should make the registry
-//!    dialect-aware (or split into per-dialect registries).
+//! 3. **Aggregate functions via function_registry (Phase 1.5, done).**
+//!    `FunctionMapping` now carries an optional `databricks_name` and
+//!    a `name_for(dialect)` accessor. Consumer sites in `to_sql.rs`,
+//!    `function_translator.rs`, and `to_sql_query.rs` (2 sites) all
+//!    route through it. The `collect` entry is the first to opt in:
+//!    CH gets `groupArray`, Spark gets `collect_list`. Asserted by
+//!    `collect_under_databricks_emits_collect_list` below. Other
+//!    entries default to `clickhouse_name` for both dialects (most
+//!    ANSI-shaped aggregates: count, sum, min, max, avg, ...). New
+//!    Databricks-incompatible entries should set `databricks_name`
+//!    explicitly as they get exercised by future test coverage.
 //!
 //! 4. **Type names in non-routed CASTs**. The current spike doesn't
 //!    exercise these but they exist — `UInt32`, `Float64`, etc., in
-//!    various rendering paths.
+//!    various rendering paths. These are scattered through render
+//!    plan helpers; an audit pass would catch them, but most queries
+//!    that need them haven't been written yet.
 //!
-//! What this means for the abstraction: Phase 0.1–1.1 was about routing
-//! the *function name* layer; Phase 1.3 routed array-literal shape;
-//! Phase 1.4 routed identifier quoting. The remaining work — aggregate
-//! registry routing and CAST type names — fits the same shape.
+//! With Phase 1.5 done, every syntactic-layer gap identified in the
+//! Phase 1.2 spike has a dialect-aware abstraction in place. Adding
+//! new Databricks-incompatible patterns is now a localized change at
+//! the trait/registry, not a search-and-replace across the codebase.
 
 use crate::{
     clickhouse_query_generator,
@@ -338,6 +344,59 @@ async fn aggregation_under_databricks_uses_backtick_alias_refs() {
     assert!(
         sql.contains("AS `"),
         "expected Spark backtick alias in aggregation SQL; got:\n{sql}"
+    );
+}
+
+/// Phase 1.5: aggregate function_registry is dialect-aware. Under
+/// Databricks dialect, Cypher `collect()` must emit Spark's
+/// `collect_list(...)` (not CH's `groupArray(...)`). The `cypher_to_sql`
+/// helper in this file goes through `generate_sql` → `to_sql_query.rs`,
+/// which covers the aggregate-rendering path that calls
+/// `mapping.name_for(dialect)`. The `to_sql.rs` and
+/// `function_translator.rs` consumer sites are routed the same way
+/// (verified by reading them) but aren't reached by this particular
+/// test pipeline.
+#[tokio::test]
+async fn collect_under_databricks_emits_collect_list() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN collect(b.id) AS ids")
+    })
+    .await;
+
+    assert!(
+        sql.contains("collect_list("),
+        "expected Spark `collect_list(...)` for Cypher `collect()`; got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("groupArray("),
+        "Databricks SQL leaked CH `groupArray`; got:\n{sql}"
+    );
+}
+
+/// CH baseline for the collect path — guards against silently flipping
+/// the CH side to Spark spellings.
+#[tokio::test]
+async fn collect_under_clickhouse_emits_group_array() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::ClickHouse,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN collect(b.id) AS ids")
+    })
+    .await;
+
+    assert!(
+        sql.contains("groupArray("),
+        "expected CH `groupArray(...)` for Cypher `collect()`; got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("collect_list("),
+        "CH SQL leaked Spark `collect_list`; got:\n{sql}"
     );
 }
 

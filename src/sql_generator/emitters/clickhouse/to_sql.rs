@@ -156,7 +156,7 @@ impl ToSql for LogicalExpr {
                     };
                     Ok(format!(
                         "{}({})",
-                        mapping.clickhouse_name,
+                        mapping.name_for(crate::server::query_context::get_current_dialect()),
                         transformed_args.join(", ")
                     ))
                 } else {
