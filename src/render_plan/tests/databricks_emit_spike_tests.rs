@@ -349,9 +349,13 @@ async fn aggregation_under_databricks_uses_backtick_alias_refs() {
 
 /// Phase 1.5: aggregate function_registry is dialect-aware. Under
 /// Databricks dialect, Cypher `collect()` must emit Spark's
-/// `collect_list(...)` (not CH's `groupArray(...)`). This test
-/// exercises the `FunctionMapping::name_for(dialect)` path through
-/// the consumer sites in `to_sql.rs` and `to_sql_query.rs`.
+/// `collect_list(...)` (not CH's `groupArray(...)`). The `cypher_to_sql`
+/// helper in this file goes through `generate_sql` → `to_sql_query.rs`,
+/// which covers the aggregate-rendering path that calls
+/// `mapping.name_for(dialect)`. The `to_sql.rs` and
+/// `function_translator.rs` consumer sites are routed the same way
+/// (verified by reading them) but aren't reached by this particular
+/// test pipeline.
 #[tokio::test]
 async fn collect_under_databricks_emits_collect_list() {
     let ctx = QueryContext {
