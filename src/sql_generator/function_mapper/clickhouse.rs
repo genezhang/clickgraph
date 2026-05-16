@@ -57,4 +57,8 @@ impl FunctionMapper for ClickhouseFunctionMapper {
     fn array_literal(&self, elems: &str) -> String {
         format!("[{elems}]")
     }
+
+    fn quote_alias(&self, name: &str) -> String {
+        format!("\"{name}\"")
+    }
 }

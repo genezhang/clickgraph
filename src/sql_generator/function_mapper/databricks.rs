@@ -114,6 +114,13 @@ impl FunctionMapper for DatabricksFunctionMapper {
     fn array_literal(&self, elems: &str) -> String {
         format!("array({elems})")
     }
+
+    fn quote_alias(&self, name: &str) -> String {
+        // Spark parses `"foo"` as a string literal — backticks are the
+        // only valid identifier quote. `quote_identifier` uses backticks
+        // for both dialects so this stays consistent with that.
+        format!("`{name}`")
+    }
 }
 
 #[cfg(test)]
@@ -142,6 +149,7 @@ mod tests {
         assert_eq!(m.empty_int64_array_cast(), "CAST(array() AS ARRAY<BIGINT>)");
         assert_eq!(m.array_literal(""), "array()");
         assert_eq!(m.array_literal("a, b"), "array(a, b)");
+        assert_eq!(m.quote_alias("b.id"), "`b.id`");
     }
 
     /// Documented structural gap: `array_count` has no clean Spark mapping.

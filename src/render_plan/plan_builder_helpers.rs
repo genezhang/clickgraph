@@ -3456,7 +3456,10 @@ pub(super) fn extract_outer_aggregation_info(
         .map(|item| {
             let expr: RenderExpr = match &item.expression {
                 crate::query_planner::logical_expr::LogicalExpr::ColumnAlias(alias) => {
-                    RenderExpr::Raw(format!("\"{}\"", alias.0))
+                    RenderExpr::Raw(
+                        crate::sql_generator::function_mapper::current_function_mapper()
+                            .quote_alias(&alias.0),
+                    )
                 }
                 crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(agg) => {
                     let args: Vec<RenderExpr> = agg
@@ -3467,7 +3470,11 @@ pub(super) fn extract_outer_aggregation_info(
                                 RenderExpr::Raw("*".to_string())
                             }
                             crate::query_planner::logical_expr::LogicalExpr::ColumnAlias(alias) => {
-                                RenderExpr::Raw(format!("\"{}\"", alias.0))
+                                RenderExpr::Raw(
+                                    crate::sql_generator::function_mapper::current_function_mapper(
+                                    )
+                                    .quote_alias(&alias.0),
+                                )
                             }
                             other => other
                                 .clone()
@@ -3496,9 +3503,10 @@ pub(super) fn extract_outer_aggregation_info(
         .expressions
         .iter()
         .map(|expr| match expr {
-            crate::query_planner::logical_expr::LogicalExpr::ColumnAlias(alias) => {
-                RenderExpr::Raw(format!("\"{}\"", alias.0))
-            }
+            crate::query_planner::logical_expr::LogicalExpr::ColumnAlias(alias) => RenderExpr::Raw(
+                crate::sql_generator::function_mapper::current_function_mapper()
+                    .quote_alias(&alias.0),
+            ),
             other => other
                 .clone()
                 .try_into()

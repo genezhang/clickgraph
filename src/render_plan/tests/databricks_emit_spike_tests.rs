@@ -26,11 +26,12 @@
 //!    `array(a, b)` and CH sees `[a, b]`. Asserted by
 //!    `vlp_under_databricks_dialect_emits_spark_spellings` below.
 //!
-//! 2. **Identifier / alias quoting**. The output uses `AS "b.id"` for
-//!    aliases with dots. CH treats `"…"` as a quoted identifier; Spark
-//!    treats `"…"` as a string literal and requires backticks. Need a
-//!    dialect-aware `quote_alias` helper, distinct from the existing
-//!    `quote_identifier` which is already CH-shaped.
+//! 2. **Identifier / alias quoting (Phase 1.4, done).** `AS "alias"`
+//!    sites in the rendering layer now route through
+//!    `FunctionMapper::quote_alias(&name)`, so Spark sees
+//!    `` AS `b.id` `` and CH sees `AS "b.id"` (existing behavior).
+//!    Spark parses double quotes as string literals, so backticks are
+//!    mandatory there. Asserted by the spellings test below.
 //!
 //! 3. **Aggregate functions via function_registry**. Functions like
 //!    Cypher `collect()` are mapped via the hardcoded `clickhouse_name`
@@ -45,9 +46,9 @@
 //!    various rendering paths.
 //!
 //! What this means for the abstraction: Phase 0.1–1.1 was about routing
-//! the *function name* layer; Phase 1.3 extended the same pattern to
-//! the *array literal* shape. The remaining work — identifier quoting
-//! and aggregate registry — fits the same shape, so the path is clear.
+//! the *function name* layer; Phase 1.3 routed array-literal shape;
+//! Phase 1.4 routed identifier quoting. The remaining work — aggregate
+//! registry routing and CAST type names — fits the same shape.
 
 use crate::{
     clickhouse_query_generator,
@@ -206,6 +207,18 @@ async fn vlp_under_clickhouse_dialect_emits_ch_spellings() {
         !sql.contains("array(toString("),
         "CH SQL leaked Spark array() literal"
     );
+
+    // Phase 1.4: alias quoting. CH keeps historical double-quote form
+    // for `AS` clauses. Backticks must NOT appear in the AS position
+    // (they may appear elsewhere from `quote_identifier`).
+    assert!(
+        sql.contains("AS \"b.id\""),
+        "expected CH double-quoted alias `AS \"b.id\"`; got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("AS `b.id`"),
+        "CH SQL leaked Spark backtick alias quoting; got:\n{sql}"
+    );
 }
 
 /// Dump the Databricks output for visual inspection. Always passes —
@@ -282,5 +295,16 @@ async fn vlp_under_databricks_dialect_emits_spark_spellings() {
     assert!(
         !sql.contains(", [toString(") && !sql.contains("vp.path_nodes, ["),
         "Databricks SQL leaked CH bracket-style array literal; got:\n{sql}"
+    );
+
+    // Phase 1.4: alias quoting. Spark parses double-quoted identifiers
+    // as string literals, so the `AS` clause must use backticks.
+    assert!(
+        sql.contains("AS `b.id`"),
+        "expected Spark backtick alias `AS `b.id``; got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("AS \"b.id\""),
+        "Databricks SQL leaked CH double-quoted alias; got:\n{sql}"
     );
 }

@@ -85,6 +85,15 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// elements aren't known to the trait — callers join their own
     /// rendered expressions and pass them here.
     fn array_literal(&self, elems: &str) -> String;
+
+    /// Quote a column alias for an `AS` clause. CH: `"name"` (also
+    /// accepts backticks but the existing pipeline emits double quotes
+    /// here historically). Spark: `` `name` `` — Spark parses `"name"`
+    /// as a string literal, so backticks are mandatory. The bare
+    /// `quote_identifier` helper in `common.rs` is a separate concern
+    /// (it already uses backticks for both dialects since both accept
+    /// them for column refs).
+    fn quote_alias(&self, name: &str) -> String;
 }
 
 /// Returns the function mapper for the active SQL dialect, read from the
