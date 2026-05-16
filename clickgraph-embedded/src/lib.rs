@@ -46,6 +46,7 @@ pub mod result_display;
 pub mod value;
 pub(crate) mod write_helpers;
 
+pub use clickgraph::sql_generator::SqlDialect;
 pub use connection::Connection;
 pub use cypher_loader::LoadStats;
 #[cfg(feature = "embedded")]

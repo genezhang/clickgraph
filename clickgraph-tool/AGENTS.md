@@ -21,6 +21,29 @@ cg schema discover --clickhouse <url> --database <db> --out <file>  # LLM-assist
 cg schema diff <old.yaml> <new.yaml>                  # Node/relationship diff
 ```
 
+### Dialect (`--dialect`, `CG_DIALECT`)
+
+```
+cg --dialect databricks sql      --schema <file> "<cypher>"  # Emit Spark SQL
+cg --dialect databricks validate --schema <file> "<cypher>"  # Plan under Spark dialect
+cg --dialect databricks query    --schema <file> --sql-only "<cypher>"  # Spark SQL via query path
+```
+
+Values: `clickhouse` (default) or `databricks`. Currently used by the SQL-emission
+paths (`sql`, `validate`, `query --sql-only`); executing against Databricks via
+`cg query` (without `--sql-only`) is not yet wired — use `--sql-only` and pipe
+into your warehouse.
+
+The dialect can also be set in `~/.config/cg/config.toml` as a top-level key:
+
+```toml
+dialect = "databricks"   # or "clickhouse"
+```
+
+Precedence: `--dialect` flag > `CG_DIALECT` env > `config.toml` > default
+(`clickhouse`). An unrecognized config-file value warns to stderr and falls
+back to the default rather than failing silently.
+
 ## Architecture
 
 ```

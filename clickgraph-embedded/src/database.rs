@@ -335,6 +335,34 @@ impl Database {
         let graph_schema = load_graph_schema(schema_path.as_ref())?;
         Self::from_executor(Arc::new(graph_schema), Arc::new(NullExecutor))
     }
+
+    /// Open a database in SQL-only mode with a chosen `SqlDialect`.
+    ///
+    /// Same as [`sql_only`](Self::sql_only) but the resulting `Database`
+    /// emits SQL for the requested dialect (e.g. Databricks/Spark) instead
+    /// of the default ClickHouse spellings. Used by `cg --dialect …` to
+    /// translate without needing a live warehouse.
+    ///
+    /// Returns `EmbeddedError::Validation` for dialects whose emitter is
+    /// not yet implemented (PostgreSQL, DuckDB, MySQL, SQLite). Only
+    /// `ClickHouse` and `Databricks` are accepted today.
+    pub fn sql_only_with_dialect(
+        schema_path: impl AsRef<Path>,
+        dialect: SqlDialect,
+    ) -> Result<Self, EmbeddedError> {
+        match dialect {
+            SqlDialect::ClickHouse | SqlDialect::Databricks => {}
+            other => {
+                return Err(EmbeddedError::Validation(format!(
+                    "SqlDialect::{other:?} is not yet implemented for SQL emission; \
+                     supported dialects: ClickHouse, Databricks"
+                )));
+            }
+        }
+        let mut db = Self::sql_only(schema_path)?;
+        db.dialect = dialect;
+        Ok(db)
+    }
 }
 
 /// A no-op executor for SQL-only mode. Returns an error if execution is attempted.
@@ -397,4 +425,59 @@ fn pseudo_random_suffix() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| format!("{}", d.subsec_nanos()))
         .unwrap_or_else(|_| "0".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    const MINIMAL_SCHEMA: &str = r#"
+name: db_test
+graph_schema:
+  nodes:
+    - label: User
+      database: test_db
+      table: users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+  edges: []
+"#;
+
+    fn write_schema() -> tempfile::NamedTempFile {
+        let mut f = tempfile::NamedTempFile::new().expect("tempfile");
+        f.write_all(MINIMAL_SCHEMA.as_bytes()).expect("write");
+        f.flush().expect("flush");
+        f
+    }
+
+    #[test]
+    fn sql_only_with_dialect_accepts_supported_dialects() {
+        let schema = write_schema();
+        let db_ch = Database::sql_only_with_dialect(schema.path(), SqlDialect::ClickHouse);
+        assert!(db_ch.is_ok());
+        let db_dx = Database::sql_only_with_dialect(schema.path(), SqlDialect::Databricks);
+        assert!(db_dx.is_ok());
+    }
+
+    #[test]
+    fn sql_only_with_dialect_rejects_unimplemented_dialects() {
+        // Guards against the runtime panic that `emitter_for(<x>)` would
+        // otherwise produce for not-yet-implemented dialects. Copilot
+        // (PR #332) flagged the original unconditional acceptance.
+        let schema = write_schema();
+        for d in [
+            SqlDialect::PostgreSQL,
+            SqlDialect::DuckDB,
+            SqlDialect::MySQL,
+            SqlDialect::SQLite,
+        ] {
+            match Database::sql_only_with_dialect(schema.path(), d) {
+                Ok(_) => panic!("expected validation error for {d:?}"),
+                Err(EmbeddedError::Validation(_)) => {}
+                Err(e) => panic!("expected Validation error, got {e:?} for {d:?}"),
+            }
+        }
+    }
 }
