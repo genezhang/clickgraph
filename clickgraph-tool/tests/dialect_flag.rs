@@ -127,6 +127,31 @@ fn cg_query_databricks_without_sql_only_errors_clearly() {
 }
 
 #[test]
+fn cg_config_file_unknown_dialect_warns_and_falls_back() {
+    // A typo in `dialect = …` in config.toml previously fell back to
+    // ClickHouse silently. Now `cg` warns on stderr so misconfiguration
+    // is visible. We override the XDG config directory via env so the
+    // user's real config is not touched.
+    let schema = write_schema();
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let cfg_dir = tmp.path().join("cg");
+    std::fs::create_dir_all(&cfg_dir).expect("mkdir");
+    std::fs::write(cfg_dir.join("config.toml"), "dialect = \"sparksql\"\n").expect("cfg");
+
+    Command::cargo_bin("cg")
+        .expect("bin")
+        .env("XDG_CONFIG_HOME", tmp.path())
+        .arg("--schema")
+        .arg(schema.path())
+        .arg("sql")
+        .arg("MATCH (u:User) RETURN u.name")
+        .assert()
+        .success()
+        // Still produces SQL — fall-back is non-fatal.
+        .stderr(predicate::str::contains("sparksql"));
+}
+
+#[test]
 fn cg_query_databricks_sql_only_prints_spark_sql() {
     let schema = write_schema();
     Command::cargo_bin("cg")

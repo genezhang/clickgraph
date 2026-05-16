@@ -34,6 +34,16 @@ paths (`sql`, `validate`, `query --sql-only`); executing against Databricks via
 `cg query` (without `--sql-only`) is not yet wired — use `--sql-only` and pipe
 into your warehouse.
 
+The dialect can also be set in `~/.config/cg/config.toml` as a top-level key:
+
+```toml
+dialect = "databricks"   # or "clickhouse"
+```
+
+Precedence: `--dialect` flag > `CG_DIALECT` env > `config.toml` > default
+(`clickhouse`). An unrecognized config-file value warns to stderr and falls
+back to the default rather than failing silently.
+
 ## Architecture
 
 ```

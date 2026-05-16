@@ -120,9 +120,22 @@ impl CgConfig {
                 .or(file_cfg.llm.max_tokens),
         };
 
-        let dialect = dialect
-            .or_else(|| file_cfg.dialect.as_deref().and_then(parse_dialect))
-            .unwrap_or_default();
+        // Dialect resolution: CLI flag/env wins, then config file. A
+        // present-but-invalid config-file value warns to stderr and falls
+        // back to the default — silent ignore was masking typos.
+        let dialect = match dialect {
+            Some(d) => d,
+            None => match file_cfg.dialect.as_deref() {
+                Some(s) => parse_dialect(s).unwrap_or_else(|| {
+                    eprintln!(
+                        "Warning: ignoring unknown `dialect = \"{s}\"` in config.toml \
+                         (expected `clickhouse` or `databricks`); using default."
+                    );
+                    DialectArg::default()
+                }),
+                None => DialectArg::default(),
+            },
+        };
 
         Ok(CgConfig {
             schema_path,
