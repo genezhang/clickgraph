@@ -2429,7 +2429,11 @@ fn build_union_inner_select(
         sql.push_str("      ");
         sql.push_str(&item.expression.to_sql());
         if let Some(alias) = &item.col_alias {
-            sql.push_str(&format!(" AS \"{}\"", alias.0));
+            sql.push_str(&format!(
+                " AS {}",
+                crate::sql_generator::function_mapper::current_function_mapper()
+                    .quote_alias(&alias.0)
+            ));
         }
         idx += 1;
         if idx < total_items {
@@ -2455,7 +2459,11 @@ fn build_union_inner_select(
         } else {
             col_sql.clone()
         };
-        sql.push_str(&format!("      {} AS \"{}\"", expr_sql, col_sql));
+        sql.push_str(&format!(
+            "      {} AS {}",
+            expr_sql,
+            crate::sql_generator::function_mapper::current_function_mapper().quote_alias(col_sql)
+        ));
         idx += 1;
         if idx < total_items {
             sql.push(',');
@@ -2568,9 +2576,19 @@ fn build_outer_aggregate_select(
                         agg_sql = agg_sql.replace(col_ref, &format!("`{}`", col_ref));
                     }
                 }
-                format!("{} AS \"{}\"", agg_sql, alias_str)
+                format!(
+                    "{} AS {}",
+                    agg_sql,
+                    crate::sql_generator::function_mapper::current_function_mapper()
+                        .quote_alias(&alias_str)
+                )
             } else {
-                format!("`{}` AS \"{}\"", alias_str, alias_str)
+                format!(
+                    "`{}` AS {}",
+                    alias_str,
+                    crate::sql_generator::function_mapper::current_function_mapper()
+                        .quote_alias(&alias_str)
+                )
             }
         })
         .collect();
@@ -3735,17 +3753,17 @@ impl SelectItems {
             // Only add AS clause if the alias differs from the expression
             // (already handled above for matching TableAlias case)
             if let Some(alias) = &item.col_alias {
+                let quoted = crate::sql_generator::function_mapper::current_function_mapper()
+                    .quote_alias(&alias.0);
                 if let RenderExpr::TableAlias(TableAlias(expr_alias)) = &item.expression {
                     // For UNWIND aliases that match OR for aliases that differ, we need the AS clause
                     if expr_alias != &alias.0 || unwind_aliases.contains(expr_alias) {
-                        sql.push_str(" AS \"");
-                        sql.push_str(&alias.0);
-                        sql.push('"');
+                        sql.push_str(" AS ");
+                        sql.push_str(&quoted);
                     }
                 } else {
-                    sql.push_str(" AS \"");
-                    sql.push_str(&alias.0);
-                    sql.push('"');
+                    sql.push_str(" AS ");
+                    sql.push_str(&quoted);
                 }
             }
             if i + 1 < self.items.len() {

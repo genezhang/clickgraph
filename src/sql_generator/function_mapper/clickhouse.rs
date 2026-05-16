@@ -57,4 +57,25 @@ impl FunctionMapper for ClickhouseFunctionMapper {
     fn array_literal(&self, elems: &str) -> String {
         format!("[{elems}]")
     }
+
+    fn quote_alias(&self, name: &str) -> String {
+        // CH escapes `"` inside a double-quoted identifier by doubling it.
+        // Aliases inferred from raw return text can contain quotes
+        // (e.g., `RETURN 'a"b'` derives an alias from the literal),
+        // and naive wrapping would produce malformed SQL.
+        format!("\"{}\"", name.replace('"', "\"\""))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ClickhouseFunctionMapper;
+    use super::FunctionMapper;
+
+    #[test]
+    fn quote_alias_escapes_embedded_double_quotes() {
+        let m = ClickhouseFunctionMapper;
+        assert_eq!(m.quote_alias("b.id"), "\"b.id\"");
+        assert_eq!(m.quote_alias("x\"y"), "\"x\"\"y\"");
+    }
 }
