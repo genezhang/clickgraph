@@ -371,27 +371,27 @@ lazy_static::lazy_static! {
 
         // ===== TYPE CONVERSION FUNCTIONS =====
 
-        // toInteger() -> toInt64()
+        // toInteger() -> toInt64() (CH) / bigint() (Spark)
         m.insert("tointeger", FunctionMapping {
             neo4j_name: "toInteger",
             clickhouse_name: "toInt64",
-            databricks_name: None,
+            databricks_name: Some("bigint"),
             arg_transform: None,
         });
 
-        // toFloat() -> toFloat64()
+        // toFloat() -> toFloat64() (CH) / double() (Spark)
         m.insert("tofloat", FunctionMapping {
             neo4j_name: "toFloat",
             clickhouse_name: "toFloat64",
-            databricks_name: None,
+            databricks_name: Some("double"),
             arg_transform: None,
         });
 
-        // toString() -> toString()
+        // toString() -> toString() (CH) / string() (Spark)
         m.insert("tostring", FunctionMapping {
             neo4j_name: "toString",
             clickhouse_name: "toString",
-            databricks_name: None,
+            databricks_name: Some("string"),
             arg_transform: None,
         });
 
@@ -983,8 +983,8 @@ lazy_static::lazy_static! {
         // The result transformer uses the node's element_id to compute the proper ID.
         m.insert("id", FunctionMapping {
             neo4j_name: "id",
-            clickhouse_name: "toInt64",  // toInt64(0) = 0 placeholder
-            databricks_name: None,
+            clickhouse_name: "toInt64",  // toInt64(0) = 0 placeholder (CH) / bigint(0) (Spark)
+            databricks_name: Some("bigint"),
             arg_transform: Some(|_args| {
                 // Return 0 as placeholder - actual ID computed from element_id at result time
                 vec!["0".to_string()]
