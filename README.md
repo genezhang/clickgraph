@@ -46,7 +46,7 @@ See [CHANGELOG.md](CHANGELOG.md) for complete release history.
 - **Stateless Architecture** - Offloads all query execution to ClickHouse; no extra datastore required
 - **Embedded Mode** - In-process graph queries over Parquet/Iceberg/Delta/S3 via chdb; no ClickHouse server needed (`--features embedded`)
 - **Remote Mode** - Cypher translated locally, executed against external ClickHouse — no chdb required (`Database::new_remote`)
-- **DeltaGraph (Databricks SQL Warehouse)** - Cypher translated to Spark SQL locally and executed against a Databricks SQL Warehouse via the Statement Execution API. Opt-in `--features databricks`; ships the `deltagraph` server binary, `cg --dialect databricks`, and `Database::new_databricks` for embedded/FFI callers. See [docs/deltagraph/QUICKSTART.md](docs/deltagraph/QUICKSTART.md).
+- **DeltaGraph (Databricks SQL Warehouse)** - Cypher translated to Spark SQL locally and executed against a Databricks SQL Warehouse via the Statement Execution API. Opt-in `--features databricks`; ships the `deltagraph` server binary, `cg --dialect databricks`, `Database::new_databricks` (embedded Rust), and `Database::open_databricks` (FFI for Go/Python). See [docs/deltagraph/QUICKSTART.md](docs/deltagraph/QUICKSTART.md).
 - **LLM-powered schema discovery** - `cg schema discover` or `:discover` generates YAML schema from ClickHouse table metadata using Anthropic or OpenAI — no server needed
 - **Variable-Length Paths** - Recursive traversals with `*1..3` syntax using ClickHouse `WITH RECURSIVE` CTEs
 - **Path Functions** - `length(p)`, `nodes(p)`, `relationships(p)` for path analysis
