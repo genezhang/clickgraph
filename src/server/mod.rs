@@ -647,5 +647,101 @@ fn build_databricks_config() -> Result<crate::executor::databricks_sql::Databric
         crate::executor::databricks_sql::DatabricksConfig::new(hostname, warehouse_id, token);
     cfg.catalog = std::env::var("DATABRICKS_CATALOG").ok();
     cfg.schema = std::env::var("DATABRICKS_SCHEMA").ok();
+    // Test-only override for the executor's request base URL. Honored
+    // by the executor (`DatabricksConfig.base_url`) and used by the
+    // deltagraph subprocess test in tests/rust/bin/ to redirect HTTP
+    // at a wiremock URL. Production callers leave this unset — the
+    // executor falls back to `https://{hostname}`.
+    //
+    // Security guardrail: a misconfigured override would otherwise send
+    // the PAT in plaintext to whatever endpoint is named. We accept
+    // either an `https://` URL (any host, real workspaces) or `http://`
+    // restricted to loopback (wiremock-style tests). Anything else is
+    // rejected up front, and any successful override produces a single
+    // `log::warn!` so a stray production setting can't be silent.
+    if let Ok(raw) = std::env::var("DATABRICKS_BASE_URL") {
+        validate_databricks_base_url(&raw)?;
+        log::warn!(
+            "⚠ DATABRICKS_BASE_URL override in use ({raw}); the PAT will be sent there. \
+             This env var is intended for tests against a local mock — unset it for production."
+        );
+        cfg.base_url = Some(raw);
+    }
     Ok(cfg)
+}
+
+/// Reject overrides that would silently leak the PAT to a non-localhost
+/// plaintext endpoint. Loopback HTTP is allowed (wiremock); arbitrary
+/// HTTP is not. Anything that fails to parse or uses a non-http(s)
+/// scheme is rejected with a clear message rather than being passed
+/// through.
+#[cfg(feature = "databricks")]
+fn validate_databricks_base_url(raw: &str) -> Result<(), String> {
+    // Minimal parsing — we don't want to pull in the `url` crate just
+    // for this check. Match `https://...` unconditionally; `http://`
+    // only when the host segment is `localhost` or `127.0.0.1` (with
+    // optional port). Anything else is rejected.
+    if let Some(rest) = raw.strip_prefix("https://") {
+        if rest.is_empty() {
+            return Err("DATABRICKS_BASE_URL is empty after https://".to_string());
+        }
+        return Ok(());
+    }
+    if let Some(rest) = raw.strip_prefix("http://") {
+        let host = rest.split(['/', ':']).next().unwrap_or("");
+        if host == "localhost" || host == "127.0.0.1" {
+            return Ok(());
+        }
+        return Err(format!(
+            "DATABRICKS_BASE_URL rejected: `http://` is only allowed for loopback (localhost, \
+             127.0.0.1) to avoid leaking the PAT in plaintext. For real workspaces use https:// \
+             or unset the variable. Got host={host:?}"
+        ));
+    }
+    Err(format!(
+        "DATABRICKS_BASE_URL rejected: must start with `https://` (or `http://localhost…` for \
+         tests). Got: {raw:?}"
+    ))
+}
+
+#[cfg(all(test, feature = "databricks"))]
+mod databricks_base_url_validation_tests {
+    use super::validate_databricks_base_url;
+
+    #[test]
+    fn accepts_https_for_real_workspaces() {
+        assert!(validate_databricks_base_url("https://dbc-abc-def.cloud.databricks.com").is_ok());
+        assert!(
+            validate_databricks_base_url("https://dbc-abc-def.cloud.databricks.com/api/").is_ok()
+        );
+    }
+
+    #[test]
+    fn accepts_http_for_loopback_tests() {
+        // wiremock + mock server hosts — anything bound to loopback.
+        assert!(validate_databricks_base_url("http://127.0.0.1:55555").is_ok());
+        assert!(validate_databricks_base_url("http://localhost:55555/api/2.0/sql").is_ok());
+    }
+
+    #[test]
+    fn rejects_plaintext_http_to_external_hosts() {
+        // The whole point of the validator: a typo'd
+        // `DATABRICKS_BASE_URL=http://workspace.example.com` would
+        // POST the PAT in plaintext. Block it up front.
+        let err = validate_databricks_base_url("http://workspace.example.com").unwrap_err();
+        assert!(err.contains("loopback"), "got: {err}");
+        let err = validate_databricks_base_url("http://192.168.1.10:8080").unwrap_err();
+        assert!(err.contains("loopback"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_unknown_schemes() {
+        // ftp/gopher/no-scheme — anything that wouldn't reach the
+        // executor's reqwest client cleanly should fail loudly here
+        // rather than producing a confusing runtime error later.
+        assert!(validate_databricks_base_url("workspace.example.com").is_err());
+        assert!(validate_databricks_base_url("ftp://workspace.example.com").is_err());
+        assert!(validate_databricks_base_url("").is_err());
+        assert!(validate_databricks_base_url("https://").is_err());
+    }
 }

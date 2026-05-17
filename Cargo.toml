@@ -118,3 +118,12 @@ path = "tests/rust/e2e/mod.rs"
 name = "deltagraph_bin"
 path = "tests/rust/bin/deltagraph_smoke.rs"
 required-features = ["databricks"]
+
+# Bolt-level boot regression for `deltagraph` (Phase 4.3). Spawns the
+# subprocess against wiremock and completes the Bolt v5 handshake to
+# prove the server boots end-to-end in Databricks mode without
+# tripping any ClickHouse-specific init.
+[[test]]
+name = "deltagraph_bolt_e2e"
+path = "tests/rust/bin/deltagraph_bolt_e2e.rs"
+required-features = ["databricks"]
