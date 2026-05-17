@@ -124,21 +124,30 @@ enum SchemaCommands {
         file: Option<String>,
     },
 
-    /// Discover schema from an existing ClickHouse database using LLM assistance
+    /// Discover schema via LLM assistance. Default targets ClickHouse;
+    /// with `--dialect databricks` targets a Databricks SQL Warehouse
+    /// catalog/schema (requires the `databricks` build feature).
     Discover {
-        /// ClickHouse database to introspect
+        /// Database (ClickHouse) or schema name within a catalog (Databricks)
         #[arg(long)]
         database: String,
 
-        /// ClickHouse URL (falls back to --clickhouse global flag)
+        /// Databricks catalog (required for --dialect databricks;
+        /// falls back to DATABRICKS_CATALOG / CG_DATABRICKS_CATALOG).
+        /// Ignored for ClickHouse.
+        #[arg(long)]
+        catalog: Option<String>,
+
+        /// ClickHouse URL (falls back to --clickhouse global flag).
+        /// Ignored for --dialect databricks.
         #[arg(long, env = "CG_CLICKHOUSE_URL")]
         clickhouse: Option<String>,
 
-        /// ClickHouse user
+        /// ClickHouse user. Ignored for --dialect databricks.
         #[arg(long, env = "CG_CLICKHOUSE_USER", default_value = "default")]
         user: String,
 
-        /// ClickHouse password
+        /// ClickHouse password. Ignored for --dialect databricks.
         #[arg(long, env = "CG_CLICKHOUSE_PASSWORD", default_value = "")]
         password: String,
 
@@ -208,18 +217,29 @@ async fn main() -> Result<()> {
             }
             SchemaCommands::Discover {
                 database,
+                catalog,
                 clickhouse,
                 user,
                 password,
                 out,
             } => {
-                let ch_url = clickhouse
-                    .or_else(|| cfg.clickhouse_url.clone())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("No ClickHouse URL. Use --clickhouse or CG_CLICKHOUSE_URL.")
-                    })?;
+                // For ClickHouse the URL is required; for Databricks it's
+                // unused (the executor reads DATABRICKS_HOST etc.). Resolve
+                // it lazily so a missing CG_CLICKHOUSE_URL doesn't block
+                // the Databricks path.
+                let ch_url = match cfg.dialect {
+                    DialectArg::Clickhouse => clickhouse
+                        .or_else(|| cfg.clickhouse_url.clone())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "No ClickHouse URL. Use --clickhouse or CG_CLICKHOUSE_URL."
+                            )
+                        })?,
+                    DialectArg::Databricks => String::new(),
+                };
                 commands::schema::run_discover(
                     &database,
+                    catalog.as_deref(),
                     &ch_url,
                     &user,
                     &password,

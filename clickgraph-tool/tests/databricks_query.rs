@@ -158,3 +158,38 @@ async fn cg_query_databricks_missing_credentials_errors_clearly() {
     .await
     .expect("cg invocation");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cg_schema_discover_databricks_without_catalog_errors_clearly() {
+    // Phase 3 wiring: `cg schema discover --dialect databricks` should
+    // require either --catalog or DATABRICKS_CATALOG / CG_DATABRICKS_CATALOG.
+    // A missing catalog should fail up front with the named field, not
+    // succeed and then explode with an unhelpful warehouse error.
+    let schema = write_schema();
+    let schema_path = schema.path().to_path_buf();
+    let tmp = tempfile::tempdir().expect("tmpdir");
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("cg")
+            .expect("bin")
+            .env_remove("DATABRICKS_CATALOG")
+            .env_remove("CG_DATABRICKS_CATALOG")
+            .env("DATABRICKS_HOST", "ignored.cloud.databricks.com")
+            .env("DATABRICKS_WAREHOUSE_ID", "wh-test")
+            .env("DATABRICKS_TOKEN", "dapi-test")
+            .env("XDG_CONFIG_HOME", tmp.path())
+            .arg("--schema")
+            .arg(&schema_path)
+            .arg("--dialect")
+            .arg("databricks")
+            .arg("schema")
+            .arg("discover")
+            .arg("--database")
+            .arg("graphs")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("Databricks catalog not set"));
+    })
+    .await
+    .expect("cg invocation");
+}
