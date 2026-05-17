@@ -59,6 +59,16 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { version = "0.6", optional = true }
 
+# `clickgraph` (the default ClickHouse-backed server) is auto-discovered
+# from src/main.rs. `deltagraph` (Databricks-backed) is declared explicitly
+# below because it needs `required-features` to gate it on the optional
+# `databricks` Cargo feature — without that, `cargo build --release` on a
+# default checkout would fail to compile the Databricks-only HTTP client.
+[[bin]]
+name = "deltagraph"
+path = "src/bin/deltagraph.rs"
+required-features = ["databricks"]
+
 [features]
 default = ["jemalloc"]
 jemalloc = ["tikv-jemallocator"]
@@ -81,6 +91,10 @@ serial_test = "3.2"  # For serializing tests that modify global state
 # the tests themselves are gated on `#[cfg(feature = "databricks")]`,
 # so non-databricks builds don't pay the runtime cost.
 wiremock = "0.6"
+# Used by the `deltagraph` binary's smoke test (Phase 4.1) to spawn the
+# compiled bin under `cargo` and assert --help output / startup behavior.
+assert_cmd = "2"
+predicates = "3"
 
 [[test]]
 name = "unit"
@@ -93,3 +107,14 @@ path = "tests/rust/integration/mod.rs"
 [[test]]
 name = "e2e"
 path = "tests/rust/e2e/mod.rs"
+
+# Standalone smoke test for the `deltagraph` binary (Phase 4.1). Spawns
+# the already-built bin via `assert_cmd::Command::cargo_bin` (which
+# resolves the `CARGO_BIN_EXE_deltagraph` env var cargo sets for tests)
+# rather than driving library code. Declared as a top-level [[test]] so
+# it shows up under `cargo test --features databricks` instead of
+# disappearing inside the unit/integration/e2e roots in tests/rust/.
+[[test]]
+name = "deltagraph_bin"
+path = "tests/rust/bin/deltagraph_smoke.rs"
+required-features = ["databricks"]

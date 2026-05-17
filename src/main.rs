@@ -56,6 +56,13 @@ struct Cli {
     #[arg(long)]
     embedded: bool,
 
+    /// Route queries to a Databricks SQL Warehouse instead of ClickHouse.
+    /// Reads DATABRICKS_HOST, DATABRICKS_WAREHOUSE_ID, DATABRICKS_TOKEN
+    /// from the environment. Requires the `databricks` Cargo feature.
+    /// Mutually exclusive with --embedded.
+    #[arg(long)]
+    databricks: bool,
+
     /// Per-query timeout in seconds (0 = no timeout)
     #[arg(long, default_value_t = 300)]
     query_timeout_secs: u64,
@@ -86,6 +93,7 @@ impl From<Cli> for config::CliConfig {
             daemon: cli.daemon,
             neo4j_compat_mode: cli.neo4j_compat_mode,
             embedded: cli.embedded,
+            databricks: cli.databricks,
             query_timeout_secs: cli.query_timeout_secs,
             max_request_body_bytes: cli.max_request_body_bytes,
             max_concurrent_queries: cli.max_concurrent_queries,
