@@ -106,12 +106,14 @@ fn cg_validate_accepts_dialect_flag() {
         .stdout(predicate::str::contains("OK"));
 }
 
+#[cfg(not(feature = "databricks"))]
 #[test]
-fn cg_query_databricks_without_sql_only_errors_clearly() {
-    // Execution against Databricks isn't wired through `cg query` yet
-    // (Phase 4.2 ships the dialect flag only). The user gets a clear
-    // pointer to `--sql-only` or `cg sql --dialect databricks` instead
-    // of a confusing ClickHouse-URL error.
+fn cg_query_databricks_without_databricks_feature_errors_clearly() {
+    // Default `cg` build doesn't include the Databricks executor. The
+    // user gets a clear pointer to rebuild with `--features databricks`
+    // or fall back to `--sql-only`, instead of a confusing
+    // ClickHouse-URL error. The execution-path tests (with the feature
+    // compiled in) live in `tests/databricks_query.rs`.
     let schema = write_schema();
     Command::cargo_bin("cg")
         .expect("bin")
@@ -123,6 +125,7 @@ fn cg_query_databricks_without_sql_only_errors_clearly() {
         .arg("MATCH (u:User) RETURN u.name")
         .assert()
         .failure()
+        .stderr(predicate::str::contains("--features databricks"))
         .stderr(predicate::str::contains("--sql-only"));
 }
 
