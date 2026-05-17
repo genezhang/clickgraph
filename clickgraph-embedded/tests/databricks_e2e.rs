@@ -253,3 +253,130 @@ async fn databricks_database_emits_spark_sql_for_collect() {
         "Databricks-bound SQL leaked CH `groupArray`; got:\n{sql}"
     );
 }
+
+/// DeltaGraph Phase 3.2: a YAML schema with a top-level `catalog:`
+/// field should populate `DatabricksConfig.catalog` when the caller
+/// passes a config with `catalog == None`. The catalog then surfaces
+/// on the Statement Execution submit body, so the warehouse routes the
+/// query against the right Unity Catalog. Caller-supplied catalog (env
+/// / CLI) still wins — that precedence is covered by the second case.
+#[tokio::test(flavor = "multi_thread")]
+async fn yaml_catalog_field_populates_databricks_config_when_unset() {
+    let server = MockServer::start().await;
+
+    // Schema YAML with a top-level `catalog:` field.
+    let yaml = r#"
+name: catalog_yaml_test
+catalog: yaml_catalog_value
+graph_schema:
+  nodes:
+    - label: User
+      database: test_db
+      table: users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: full_name
+"#;
+    let mut schema_file = NamedTempFile::new().expect("tempfile");
+    schema_file.write_all(yaml.as_bytes()).expect("write yaml");
+    schema_file.flush().expect("flush");
+
+    Mock::given(method("POST"))
+        .and(path("/api/2.0/sql/statements"))
+        // Pin the catalog routing: the YAML value must reach the wire.
+        .and(body_partial_json(
+            json!({ "catalog": "yaml_catalog_value" }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "statement_id": "stmt-yaml-cat",
+            "status": { "state": "SUCCEEDED" },
+            "manifest": { "schema": { "columns": [ { "name": "u.user_id" } ]}},
+            "result": { "data_array": [[1]] }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    tokio::task::spawn_blocking({
+        let path = schema_file.path().to_path_buf();
+        let mut config =
+            DatabricksConfig::new("ignored.cloud.databricks.com", "wh-test", "dapi-token");
+        config.base_url = Some(server.uri());
+        // Intentionally leave config.catalog = None so the YAML must
+        // supply it. If the fallback wiring in `new_databricks` is
+        // missing, the submit body won't contain `catalog` and the
+        // wiremock above will 404 the request.
+        assert!(config.catalog.is_none(), "test precondition");
+        move || {
+            let db = Database::new_databricks(path, config).expect("Database::new_databricks");
+            let conn = Connection::new(&db).expect("Connection::new");
+            let _ = conn
+                .query_remote("MATCH (u:User) RETURN u.user_id LIMIT 1")
+                .expect("query_remote");
+        }
+    })
+    .await
+    .expect("spawn_blocking");
+
+    // expect(1) on the Mock already asserts the catalog reached the
+    // submit body. No further checks needed.
+}
+
+/// DeltaGraph Phase 3.2: when the caller supplies a catalog on
+/// `DatabricksConfig`, that catalog wins over the YAML's value. This
+/// preserves the existing env/CLI precedence — config.toml and
+/// `DATABRICKS_CATALOG` shouldn't suddenly start being shadowed.
+#[tokio::test(flavor = "multi_thread")]
+async fn caller_catalog_overrides_yaml_catalog_field() {
+    let server = MockServer::start().await;
+
+    let yaml = r#"
+name: catalog_precedence_test
+catalog: yaml_should_be_overridden
+graph_schema:
+  nodes:
+    - label: User
+      database: test_db
+      table: users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+"#;
+    let mut schema_file = NamedTempFile::new().expect("tempfile");
+    schema_file.write_all(yaml.as_bytes()).expect("write yaml");
+    schema_file.flush().expect("flush");
+
+    Mock::given(method("POST"))
+        .and(path("/api/2.0/sql/statements"))
+        // The caller-supplied catalog must win.
+        .and(body_partial_json(
+            json!({ "catalog": "caller_catalog_wins" }),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "statement_id": "stmt-prec",
+            "status": { "state": "SUCCEEDED" },
+            "manifest": { "schema": { "columns": [ { "name": "u.user_id" } ]}},
+            "result": { "data_array": [[1]] }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    tokio::task::spawn_blocking({
+        let path = schema_file.path().to_path_buf();
+        let mut config =
+            DatabricksConfig::new("ignored.cloud.databricks.com", "wh-test", "dapi-token");
+        config.base_url = Some(server.uri());
+        config.catalog = Some("caller_catalog_wins".to_string());
+        move || {
+            let db = Database::new_databricks(path, config).expect("Database::new_databricks");
+            let conn = Connection::new(&db).expect("Connection::new");
+            let _ = conn
+                .query_remote("MATCH (u:User) RETURN u.user_id LIMIT 1")
+                .expect("query_remote");
+        }
+    })
+    .await
+    .expect("spawn_blocking");
+}

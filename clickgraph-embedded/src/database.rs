@@ -259,9 +259,17 @@ impl Database {
         schema_path: impl AsRef<Path>,
         config: DatabricksConfig,
     ) -> Result<Self, EmbeddedError> {
-        let graph_schema = load_graph_schema(schema_path.as_ref())?;
+        // Parse the raw config so we can read the optional top-level
+        // `catalog:` field (DeltaGraph Phase 3.2). It supplies a catalog
+        // default when `DatabricksConfig.catalog` is unset by env/CLI —
+        // env/CLI still wins to preserve the existing precedence chain.
+        let (graph_schema, schema_catalog) = load_graph_schema_with_catalog(schema_path.as_ref())?;
         let runtime = build_runtime()?;
-        let executor = DatabricksSqlExecutor::new(config)
+        let mut effective_config = config;
+        if effective_config.catalog.is_none() {
+            effective_config.catalog = schema_catalog;
+        }
+        let executor = DatabricksSqlExecutor::new(effective_config)
             .map_err(|e| EmbeddedError::Executor(format!("Databricks executor: {e}")))?;
         Ok(Database {
             executor: Arc::new(NullExecutor),
@@ -394,6 +402,16 @@ impl QueryExecutor for NullExecutor {
 
 /// Load and parse a YAML schema file into a `GraphSchema`.
 fn load_graph_schema(schema_path: &Path) -> Result<GraphSchema, EmbeddedError> {
+    let (schema, _catalog) = load_graph_schema_with_catalog(schema_path)?;
+    Ok(schema)
+}
+
+/// Same as [`load_graph_schema`] but also returns the optional top-level
+/// `catalog:` field from the YAML. Used by the Databricks path to honor
+/// DeltaGraph Phase 3.2 (schema-embedded Unity Catalog default).
+fn load_graph_schema_with_catalog(
+    schema_path: &Path,
+) -> Result<(GraphSchema, Option<String>), EmbeddedError> {
     let yaml_content = std::fs::read_to_string(schema_path).map_err(|e| {
         EmbeddedError::Io(format!(
             "Cannot read schema '{}': {}",
@@ -405,9 +423,11 @@ fn load_graph_schema(schema_path: &Path) -> Result<GraphSchema, EmbeddedError> {
     let schema_config: GraphSchemaConfig = serde_yaml::from_str(&yaml_content)
         .map_err(|e| EmbeddedError::Schema(format!("YAML parse error: {}", e)))?;
 
-    schema_config
+    let catalog = schema_config.catalog.clone();
+    let schema = schema_config
         .to_graph_schema()
-        .map_err(|e| EmbeddedError::Schema(format!("Schema build error: {}", e)))
+        .map_err(|e| EmbeddedError::Schema(format!("Schema build error: {}", e)))?;
+    Ok((schema, catalog))
 }
 
 /// Build a single-threaded Tokio runtime for blocking `Connection` calls.
