@@ -6,7 +6,8 @@
 //!
 //! Gated on `#[cfg(feature = "databricks")]` — without the feature
 //! `cg query --dialect databricks` returns a rebuild error, which is
-//! covered by `dialect_flag::cg_query_databricks_without_sql_only_errors_clearly`.
+//! covered by
+//! `dialect_flag::cg_query_databricks_without_databricks_feature_errors_clearly`.
 //!
 //! No live Databricks needed. A `wiremock` server runs in the test
 //! process and `CG_DATABRICKS_BASE_URL` redirects the executor's HTTP
