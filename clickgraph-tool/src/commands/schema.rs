@@ -264,15 +264,18 @@ async fn run_introspect_databricks(
     use clickgraph::graph_catalog::databricks_probe::DatabricksProbe;
 
     // Catalog precedence: CLI flag > CG_DATABRICKS_CATALOG / DATABRICKS_CATALOG
-    // > config.toml. Errors out up front rather than letting `SHOW TABLES IN`
-    // fail with a less-clear message from the warehouse.
+    // > config.toml > schema YAML's top-level `catalog:` (Phase 3.2). Errors
+    // out up front rather than letting `SHOW TABLES IN` fail with a less-clear
+    // message from the warehouse.
     let catalog = catalog
         .map(str::to_string)
         .or_else(|| cfg.databricks.catalog.clone())
+        .or_else(|| schema_catalog_from_yaml(cfg))
         .ok_or_else(|| {
             anyhow!(
-                "Databricks catalog not set. Pass --catalog, or set \
-                 DATABRICKS_CATALOG / CG_DATABRICKS_CATALOG."
+                "Databricks catalog not set. Pass --catalog, set \
+                 DATABRICKS_CATALOG / CG_DATABRICKS_CATALOG, or add a \
+                 top-level `catalog:` field to the schema YAML."
             )
         })?;
     let host = cfg.databricks.hostname.as_deref().ok_or_else(|| {
@@ -317,4 +320,16 @@ async fn run_introspect_databricks(
          Rebuild cg with `cargo install clickgraph-tool --features databricks` \
          (or use `--dialect clickhouse` against a ClickHouse staging copy)."
     ))
+}
+
+/// Read the optional top-level `catalog:` field from the loaded schema
+/// YAML (DeltaGraph Phase 3.2). Returns `None` if no `--schema` flag
+/// was supplied or the file can't be parsed — we don't want a malformed
+/// YAML here to look like a missing catalog (the caller produces a
+/// clearer error for that).
+#[cfg(feature = "databricks")]
+fn schema_catalog_from_yaml(cfg: &CgConfig) -> Option<String> {
+    let path = cfg.schema_path.as_deref()?;
+    let config = GraphSchemaConfig::from_yaml_file(path).ok()?;
+    config.catalog
 }

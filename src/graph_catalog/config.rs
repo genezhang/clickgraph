@@ -348,6 +348,17 @@ pub struct GraphSchemaConfig {
     /// Optional schema name (used for multi-schema registration)
     #[serde(default)]
     pub name: Option<String>,
+    /// Optional Unity Catalog name (DeltaGraph / Databricks only).
+    ///
+    /// Databricks uses three-tier `catalog.schema.table` naming; the
+    /// per-node `database:` field already covers Spark's "schema". When
+    /// this field is set, it provides the catalog as a default for the
+    /// Databricks executor (overridden by `DatabricksConfig.catalog`
+    /// from env / CLI) and for `cg schema discover --dialect databricks`
+    /// (overridden by `--catalog` / `DATABRICKS_CATALOG`). Ignored by
+    /// the ClickHouse path — ClickHouse is two-tier.
+    #[serde(default)]
+    pub catalog: Option<String>,
     /// Graph schema definition
     pub graph_schema: GraphSchemaDefinition,
 }
@@ -2709,6 +2720,7 @@ graph_schema:
         // Node properties are defined on the NODE, not the edge
         let config = GraphSchemaConfig {
             name: Some("ontime".to_string()),
+            catalog: None,
             graph_schema: GraphSchemaDefinition {
                 nodes: vec![NodeDefinition {
                     label: "Airport".to_string(),
@@ -2786,6 +2798,7 @@ graph_schema:
         // Invalid: denormalized node but missing from_node_properties on NODE definition
         let config = GraphSchemaConfig {
             name: Some("ontime_invalid".to_string()),
+            catalog: None,
             graph_schema: GraphSchemaDefinition {
                 nodes: vec![NodeDefinition {
                     label: "Airport".to_string(),
@@ -2854,6 +2867,7 @@ graph_schema:
     fn test_polymorphic_schema_validation_success() {
         let config = GraphSchemaConfig {
             name: Some("social_poly".to_string()),
+            catalog: None,
             graph_schema: GraphSchemaDefinition {
                 nodes: vec![NodeDefinition {
                     label: "User".to_string(),
@@ -2917,6 +2931,7 @@ graph_schema:
     fn test_polymorphic_schema_validation_missing_type_values() {
         let config = GraphSchemaConfig {
             name: Some("social_invalid".to_string()),
+            catalog: None,
             graph_schema: GraphSchemaDefinition {
                 nodes: vec![NodeDefinition {
                     label: "User".to_string(),
@@ -2981,6 +2996,7 @@ graph_schema:
         // Test fixed-endpoint polymorphic pattern: Group -> User|Group
         let config = GraphSchemaConfig {
             name: Some("group_membership".to_string()),
+            catalog: None,
             graph_schema: GraphSchemaDefinition {
                 nodes: vec![
                     NodeDefinition {
@@ -3072,6 +3088,7 @@ graph_schema:
         // Having both from_label_column AND from_node is invalid
         let config = GraphSchemaConfig {
             name: Some("invalid".to_string()),
+            catalog: None,
             graph_schema: GraphSchemaDefinition {
                 nodes: vec![NodeDefinition {
                     label: "User".to_string(),
@@ -3141,6 +3158,7 @@ graph_schema:
         // Having neither from_label_column NOR from_node is invalid
         let config = GraphSchemaConfig {
             name: Some("invalid".to_string()),
+            catalog: None,
             graph_schema: GraphSchemaDefinition {
                 nodes: vec![NodeDefinition {
                     label: "User".to_string(),
@@ -3442,6 +3460,43 @@ mod zeek_tests {
             !schema.get_relationships_schemas().is_empty(),
             "Should have relationships!"
         );
+    }
+
+    /// DeltaGraph Phase 3.2: the optional `catalog:` field should
+    /// round-trip through YAML deserialization and default to `None`
+    /// when omitted (so existing schemas keep parsing unchanged).
+    #[test]
+    fn test_catalog_field_yaml_roundtrip() {
+        // Present
+        let yaml_with = r#"
+name: example
+catalog: main
+graph_schema:
+  nodes:
+    - label: Person
+      database: graphs
+      table: persons
+      node_id: person_id
+      property_mappings:
+        id: person_id
+"#;
+        let cfg = GraphSchemaConfig::from_yaml_str(yaml_with).expect("parse with catalog");
+        assert_eq!(cfg.catalog.as_deref(), Some("main"));
+
+        // Omitted — must default to None so legacy schemas keep working.
+        let yaml_without = r#"
+name: example
+graph_schema:
+  nodes:
+    - label: Person
+      database: graphs
+      table: persons
+      node_id: person_id
+      property_mappings:
+        id: person_id
+"#;
+        let cfg = GraphSchemaConfig::from_yaml_str(yaml_without).expect("parse without catalog");
+        assert_eq!(cfg.catalog, None);
     }
 }
 

@@ -193,3 +193,96 @@ async fn cg_schema_discover_databricks_without_catalog_errors_clearly() {
     .await
     .expect("cg invocation");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cg_schema_discover_databricks_uses_yaml_catalog_field_when_set() {
+    // DeltaGraph Phase 3.2: a top-level `catalog:` field in the schema
+    // YAML satisfies the catalog requirement when no --catalog flag or
+    // env var is provided. The discover flow drives wiremock for
+    // SHOW TABLES + DESCRIBE TABLE EXTENDED to prove the catalog name
+    // actually propagated all the way to the SQL crossing the wire
+    // (not just past the up-front "catalog not set" check).
+    let server = MockServer::start().await;
+
+    // Schema YAML with embedded catalog. The single empty-table
+    // SHOW TABLES response is enough to exit the discover loop without
+    // requiring DESCRIBE / SELECT mocks.
+    let yaml = r#"
+name: cg_databricks_yaml_cat
+catalog: yaml_cat_main
+graph_schema:
+  nodes:
+    - label: User
+      database: test_db
+      table: users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+"#;
+    let mut schema_file = NamedTempFile::new().expect("tempfile");
+    schema_file.write_all(yaml.as_bytes()).expect("write yaml");
+    schema_file.flush().expect("flush");
+
+    Mock::given(method("POST"))
+        .and(path("/api/2.0/sql/statements"))
+        // Pin the catalog into the SQL — backticked per the probe's
+        // `SHOW TABLES IN \`{catalog}\`.\`{schema}\`` format.
+        .and(wiremock::matchers::body_string_contains(
+            "SHOW TABLES IN `yaml_cat_main`.`graphs`",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "statement_id": "stmt-show-cat",
+            "status": { "state": "SUCCEEDED" },
+            "manifest": { "schema": { "columns": [
+                { "name": "database" },
+                { "name": "tableName" },
+                { "name": "isTemporary" }
+            ]}},
+            "result": { "data_array": [] }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let schema_path = schema_file.path().to_path_buf();
+    let base_url = server.uri();
+    let tmp = tempfile::tempdir().expect("tmpdir");
+    let tmp_path = tmp.path().to_path_buf();
+
+    tokio::task::spawn_blocking(move || {
+        let _ = Command::cargo_bin("cg")
+            .expect("bin")
+            // Scrub catalog from env so YAML is the only source.
+            .env_remove("DATABRICKS_CATALOG")
+            .env_remove("CG_DATABRICKS_CATALOG")
+            .env("DATABRICKS_HOST", "ignored.cloud.databricks.com")
+            .env("DATABRICKS_WAREHOUSE_ID", "wh-yaml-cat")
+            .env("DATABRICKS_TOKEN", "dapi-yaml-cat")
+            .env("CG_DATABRICKS_BASE_URL", &base_url)
+            .env("XDG_CONFIG_HOME", tmp_path)
+            // Skip the LLM step by providing zero tables to discover.
+            // The wiremock returns an empty `data_array`; the probe
+            // still goes through the catalog-resolution code path,
+            // which is what we're pinning.
+            .env("CG_LLM_API_KEY", "skip")
+            .env("CG_LLM_PROVIDER", "anthropic")
+            .arg("--schema")
+            .arg(&schema_path)
+            .arg("--dialect")
+            .arg("databricks")
+            .arg("schema")
+            .arg("discover")
+            .arg("--database")
+            .arg("graphs")
+            // No --catalog flag — YAML must supply it.
+            .assert();
+        // We don't assert success/failure here: empty SHOW TABLES
+        // still passes the discover loop, but the downstream LLM step
+        // may fail because we deliberately stubbed the API key. The
+        // *real* assertion is the wiremock `.expect(1)` — if catalog
+        // resolution were broken, the SQL wouldn't include
+        // `yaml_cat_main` and the mock would 404 the request.
+    })
+    .await
+    .expect("cg invocation");
+}

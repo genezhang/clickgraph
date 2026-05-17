@@ -345,6 +345,7 @@ pub async fn initialize_global_schema(
                 // For database mode, we don't have a view config, so create an empty one
                 let empty_config = GraphSchemaConfig {
                     name: None,
+                    catalog: None,
                     graph_schema: crate::graph_catalog::config::GraphSchemaDefinition {
                         nodes: Vec::new(),
                         relationships: Vec::new(),
@@ -388,6 +389,7 @@ pub async fn initialize_global_schema(
                         let mut view_configs = HashMap::new();
                         let empty_config = GraphSchemaConfig {
                             name: None,
+                            catalog: None,
                             graph_schema: GraphSchemaDefinition {
                                 nodes: Vec::new(),
                                 relationships: Vec::new(),
@@ -439,6 +441,7 @@ pub async fn initialize_global_schema(
         let mut view_configs = HashMap::new();
         let empty_config = GraphSchemaConfig {
             name: None,
+            catalog: None,
             graph_schema: GraphSchemaDefinition {
                 nodes: Vec::new(),
                 relationships: Vec::new(),

@@ -9,11 +9,12 @@ Bolt v5 client connect unchanged.
 This document walks through the manual setup: build, configure, point
 Neo4j Browser at the server, run sample Cypher.
 
-> ⚠️ **Status:** DeltaGraph ships in `v0.6.7-dev`. Phases 1.x–4.3 are
+> ⚠️ **Status:** DeltaGraph ships in `v0.6.7-dev`. Phases 1.x–4.3 and
+> Phase 3 (catalog discovery, including the YAML `catalog:` field) are
 > complete: dialect routing, executor, embedded API, FFI, `cg` CLI,
-> server binary, Bolt e2e. Phase 3 (catalog discovery) and Phase 5
-> (full release) are still ahead. Treat this as an early-adopter path
-> until v0.7.0 lands.
+> server binary, Bolt e2e, `cg schema discover --dialect databricks`.
+> Phase 5 (full release) is still ahead. Treat this as an early-adopter
+> path until v0.7.0 lands.
 
 ## Prerequisites
 
@@ -52,6 +53,26 @@ The server reads these env vars at startup:
 
 The token deliberately has no CLI flag — exposing it on the command
 line would leak via `ps`, shell history, and CI log uploads.
+
+The catalog also has a third source: a top-level `catalog:` field in
+the schema YAML itself.
+
+```yaml
+name: my_graph
+catalog: main           # Unity Catalog name; ignored under --dialect clickhouse
+graph_schema:
+  nodes:
+    - label: User
+      database: graphs  # Spark "schema" within the catalog
+      table: users
+      …
+```
+
+Precedence (highest first): `--catalog` CLI flag → `DATABRICKS_CATALOG`
+or `CG_DATABRICKS_CATALOG` env → `[databricks] catalog = …` in
+config.toml → schema YAML's top-level `catalog:`. Set it in the YAML
+when the schema is permanently tied to one catalog; use env/CLI to
+override per environment (staging vs prod).
 
 ## 3. Start the server
 
