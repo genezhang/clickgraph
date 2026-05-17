@@ -136,41 +136,50 @@ warehouse lifecycle, or rate limiting — those need a live workspace.
 
 ### Recommended local setup
 
-Three viable paths, in increasing order of fidelity:
+**A baseline harness is in-tree at `tests/spark_smoke/`** (PR #343). It
+runs `cg --dialect databricks sql "..."`, ships the SQL into a
+`deltaio/delta-docker:4.1.0` container, executes against seeded Delta
+tables, and asserts on the result rows. Gated by
+`CLICKGRAPH_SPARK_TESTS=1`; skips cleanly without it.
 
-1. **`pyspark` in a pytest harness** — simplest. Spin up a `SparkSession`
-   with Delta jars, submit the SQL produced by
-   `cg --dialect databricks sql "..."`, compare result rows.
-   - Pros: zero infra, runs in CI, integrates with the existing
-     `tests/integration/` pytest layout
-   - Cons: in-process only, no networked-client testing
+```bash
+cargo build --release -p clickgraph-tool --features databricks
+CLICKGRAPH_SPARK_TESTS=1 pytest tests/spark_smoke/ -v
+```
 
-2. **Docker Compose: Spark + Delta + a thin SQL gateway** — `apache/spark`
-   or `bitnami/spark` image, Delta jars wired in, Spark Thrift Server
-   exposing HiveServer2/JDBC.
-   - Pros: out-of-process, exercises a network hop
-   - Cons: Thrift is not the Databricks Statement Execution API; you're
-     testing the SQL, not the executor
+Five smokes ship covering the highest-risk surfaces (flat JOINs,
+`WITH RECURSIVE` VLP, `collect()`→`collect_list`, `OPTIONAL MATCH`
+NULL-safe filter, string-function translation), in ~66s. Growing this
+into the full LDBC sweep called out in §1 is the next concrete step.
 
-3. **Spark Connect (Spark 3.4+)** — gRPC client/server split, closer in
-   spirit to Databricks' remote model.
-   - Pros: most "remote-like" of the three
-   - Cons: still not the Databricks REST API; would need a thin executor
-     variant to drive it
+**Why Spark 4.x rather than DBR-matched 3.5**: upstream Apache Spark 3.5
+doesn't have `WITH RECURSIVE` — only DBR's backport on top of its 3.5
+fork does. The `deltaio/delta-docker:4.1.0` image ships Spark 4.1.1,
+which has recursive CTE natively. Version skew vs DBR is a known harness
+limitation; "passes locally" ≠ "passes on Databricks" and the real
+warehouse remains the source of truth.
 
-For unblocking GA correctness gates, **option 1 (pyspark + pytest) gets us
-the most coverage per hour of work.** A second pass with option 2 would
-add the network-hop dimension if we want it before paying for Databricks
-time.
+If we later want out-of-process / network-hop coverage (still not
+Databricks-fidelity), two alternatives stay on the table:
+
+- **Docker Compose with Spark Thrift Server** — exercises a network hop
+  but still not the Statement Execution API.
+- **Spark Connect (Spark 3.4+)** — gRPC client/server, closer in spirit
+  to Databricks' remote model but needs a thin executor variant to drive.
 
 ### Seeding the local dataset
 
-The LDBC SNB schemas live under `benchmarks/ldbc_snb/schemas/` —
-`ldbc_snb_complete.yaml` is the canonical superset used by the bi /
-complex / short query suites and covers `Person`, `Comment`, `Forum`,
-`Tag`, `Place`, etc. A seed script that materializes the same data
-as both ClickHouse tables and Delta tables off that schema would let
-us run the diff in CI without external dependencies.
+The smoke harness seeds a tiny LDBC slice (5 `Person`, 3 `Place`, plus
+`KNOWS` and `IS_LOCATED_IN` edges) hand-written in
+`tests/spark_smoke/seed_and_query.py` — enough to assert behavior, not
+enough to run the full bi/complex/short suite.
+
+For the full correctness gate the canonical schema is
+`benchmarks/ldbc_snb/schemas/ldbc_snb_complete.yaml`. The remaining
+work is a generator that materializes LDBC SNB sample data as both
+ClickHouse tables (already done elsewhere) and Delta tables off that
+schema, so the same Cypher diff runs on both backends in CI without
+external dependencies.
 
 (`benchmarks/social_network/schemas/social_benchmark.yaml` is a much
 smaller social-graph schema useful for sanity checks during development,
