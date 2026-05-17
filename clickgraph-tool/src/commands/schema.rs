@@ -1,12 +1,14 @@
 use anyhow::{anyhow, Result};
 use clickgraph::graph_catalog::{
-    config::GraphSchemaConfig, llm_prompt, merge_batch_yaml, schema_discovery::SchemaDiscovery,
+    config::GraphSchemaConfig,
+    llm_prompt, merge_batch_yaml,
+    schema_discovery::{IntrospectResponse, SchemaDiscovery},
 };
 
 use crate::{
     config::CgConfig,
     llm::{extract_yaml, LlmClient},
-    schema_fmt,
+    schema_fmt, DialectArg,
 };
 
 /// `cg schema show` — print the loaded schema in a compact, agent-friendly format.
@@ -54,25 +56,44 @@ pub fn run_validate_schema(path: &str) -> Result<()> {
     Ok(())
 }
 
-/// `cg schema discover` — LLM-assisted schema discovery from ClickHouse.
+/// `cg schema discover` — LLM-assisted schema discovery.
+///
+/// Branches on `cfg.dialect`:
+/// - **ClickHouse** (default): introspects via `system.tables`/`system.columns`
+///   through a `clickhouse::Client`.
+/// - **Databricks** (requires the `databricks` build feature on `clickgraph-tool`):
+///   introspects via `SHOW TABLES IN catalog.schema` + `DESCRIBE TABLE EXTENDED`
+///   through the same `DatabricksSqlExecutor` `cg query --dialect databricks`
+///   uses. The `--catalog` flag (or `CG_DATABRICKS_CATALOG` / `DATABRICKS_CATALOG`
+///   env per the precedence in `config.rs`) supplies the catalog; `--database`
+///   reuses the existing flag as the Databricks "schema" name (Spark's two-level
+///   naming inside a catalog).
 pub async fn run_discover(
     database: &str,
+    catalog: Option<&str>,
     ch_url: &str,
     user: &str,
     password: &str,
     out: Option<&str>,
     cfg: &CgConfig,
 ) -> Result<()> {
-    // Build a clickhouse client directly
-    let ch_client = clickhouse::Client::default()
-        .with_url(ch_url)
-        .with_user(user)
-        .with_password(password);
-
-    eprintln!("Introspecting database '{}'...", database);
-    let introspect = SchemaDiscovery::introspect(&ch_client, database)
-        .await
-        .map_err(|e| anyhow!("Introspection failed: {}", e))?;
+    // Discovery prompts feed downstream LLM batches and care only about the
+    // table/column listing — both backends produce the same `IntrospectResponse`
+    // shape, so a single LLM path follows.
+    let (db_label, introspect) = match cfg.dialect {
+        DialectArg::Databricks => run_introspect_databricks(catalog, database, cfg).await?,
+        DialectArg::Clickhouse => {
+            let ch_client = clickhouse::Client::default()
+                .with_url(ch_url)
+                .with_user(user)
+                .with_password(password);
+            eprintln!("Introspecting ClickHouse database '{}'...", database);
+            let resp = SchemaDiscovery::introspect(&ch_client, database)
+                .await
+                .map_err(|e| anyhow!("Introspection failed: {}", e))?;
+            (database.to_string(), resp)
+        }
+    };
 
     eprintln!(
         "Found {} table(s). Generating schema with LLM...",
@@ -80,7 +101,7 @@ pub async fn run_discover(
     );
 
     // Format the discovery prompt(s)
-    let prompt_response = llm_prompt::format_discovery_prompt(database, &introspect.tables);
+    let prompt_response = llm_prompt::format_discovery_prompt(&db_label, &introspect.tables);
 
     let llm = LlmClient::from_config(&cfg.llm)?;
     eprintln!("Using {} model: {}", provider_name(&llm), llm.model);
@@ -224,4 +245,76 @@ fn provider_name(llm: &LlmClient) -> &str {
         crate::llm::LlmProvider::Anthropic => "Anthropic",
         crate::llm::LlmProvider::OpenAI => "OpenAI-compatible",
     }
+}
+
+// ── Databricks introspect path (Phase 3) ─────────────────────────────────────
+//
+// Feature-gated mirror of the ClickHouse path in `run_discover`. With the
+// feature off, the binary still compiles and `cg schema discover --dialect
+// databricks` exits with a clear rebuild error rather than a confusing
+// reqwest/connection trace.
+
+#[cfg(feature = "databricks")]
+async fn run_introspect_databricks(
+    catalog: Option<&str>,
+    schema: &str,
+    cfg: &CgConfig,
+) -> Result<(String, IntrospectResponse)> {
+    use clickgraph::executor::databricks_sql::{DatabricksConfig, DatabricksSqlExecutor};
+    use clickgraph::graph_catalog::databricks_probe::DatabricksProbe;
+
+    // Catalog precedence: CLI flag > CG_DATABRICKS_CATALOG / DATABRICKS_CATALOG
+    // > config.toml. Errors out up front rather than letting `SHOW TABLES IN`
+    // fail with a less-clear message from the warehouse.
+    let catalog = catalog
+        .map(str::to_string)
+        .or_else(|| cfg.databricks.catalog.clone())
+        .ok_or_else(|| {
+            anyhow!(
+                "Databricks catalog not set. Pass --catalog, or set \
+                 DATABRICKS_CATALOG / CG_DATABRICKS_CATALOG."
+            )
+        })?;
+    let host = cfg.databricks.hostname.as_deref().ok_or_else(|| {
+        anyhow!("DATABRICKS_HOST not set — see `cg schema discover --help` for env vars.")
+    })?;
+    let warehouse_id = cfg
+        .databricks
+        .warehouse_id
+        .as_deref()
+        .ok_or_else(|| anyhow!("DATABRICKS_WAREHOUSE_ID not set."))?;
+    let token = cfg.databricks.token.as_deref().ok_or_else(|| {
+        anyhow!(
+            "DATABRICKS_TOKEN not set — provide it via env or [databricks].token in config.toml \
+             (env-only; never accepted on the command line)."
+        )
+    })?;
+
+    let mut dbc = DatabricksConfig::new(host, warehouse_id, token);
+    dbc.catalog = Some(catalog.clone());
+    dbc.schema = Some(schema.to_string());
+    dbc.base_url = cfg.databricks.base_url.clone();
+
+    let executor = DatabricksSqlExecutor::new(dbc)
+        .map_err(|e| anyhow!("Failed to open Databricks executor: {e}"))?;
+
+    let db_label = format!("{catalog}.{schema}");
+    eprintln!("Introspecting Databricks namespace '{db_label}'...");
+    let resp = DatabricksProbe::introspect(&executor, &catalog, schema)
+        .await
+        .map_err(|e| anyhow!("Databricks introspection failed: {e}"))?;
+    Ok((db_label, resp))
+}
+
+#[cfg(not(feature = "databricks"))]
+async fn run_introspect_databricks(
+    _catalog: Option<&str>,
+    _schema: &str,
+    _cfg: &CgConfig,
+) -> Result<(String, IntrospectResponse)> {
+    Err(anyhow!(
+        "`cg schema discover --dialect databricks` requires the `databricks` build feature. \
+         Rebuild cg with `cargo install clickgraph-tool --features databricks` \
+         (or use `--dialect clickhouse` against a ClickHouse staging copy)."
+    ))
 }

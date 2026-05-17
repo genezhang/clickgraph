@@ -12,6 +12,14 @@ pub mod llm_prompt;
 pub mod node_classification;
 pub mod pattern_schema;
 pub mod schema_discovery;
+
+// DeltaGraph Phase 3: schema discovery against a Databricks SQL
+// Warehouse. Mirrors `schema_discovery` but drives the executor over
+// `SHOW TABLES IN catalog.schema` / `DESCRIBE TABLE EXTENDED` rather
+// than ClickHouse's `system.tables` / `system.columns`. Gated on the
+// `databricks` feature so the default build doesn't pull it in.
+#[cfg(feature = "databricks")]
+pub mod databricks_probe;
 pub mod schema_types;
 pub mod schema_validator;
 

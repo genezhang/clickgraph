@@ -290,7 +290,10 @@ curl -X POST http://localhost:7475/schemas/draft -H 'Content-Type: application/j
     }
 
     /// Generate suggestions based on table structure
-    fn generate_suggestions(table_name: &str, columns: &[ColumnMetadata]) -> Vec<Suggestion> {
+    pub(crate) fn generate_suggestions(
+        table_name: &str,
+        columns: &[ColumnMetadata],
+    ) -> Vec<Suggestion> {
         let mut suggestions = Vec::new();
 
         // Check for primary key
