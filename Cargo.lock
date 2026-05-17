@@ -499,6 +499,7 @@ name = "clickgraph"
 version = "0.6.7-dev"
 dependencies = [
  "anyhow",
+ "assert_cmd",
  "async-trait",
  "axum",
  "base64 0.22.1",
@@ -516,6 +517,7 @@ dependencies = [
  "log",
  "mockall",
  "nom 8.0.0",
+ "predicates",
  "regex",
  "reqwest 0.12.24",
  "serde",

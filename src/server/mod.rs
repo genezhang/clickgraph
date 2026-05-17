@@ -165,6 +165,68 @@ pub async fn run_with_config(config: ServerConfig) {
         std::process::exit(1);
     }
 
+    // ── DeltaGraph mode: route reads through a Databricks SQL Warehouse ────────
+    //
+    // Mirrors the embedded branch: when set, we build a Databricks executor
+    // instead of the ClickHouse pool and stash it in AppState behind the
+    // same QueryExecutor trait the read path already uses. AppState's
+    // `clickhouse_client: Option<Client>` stays None — only DDL writes
+    // (gated server-side via write_guard for the Remote executor kind)
+    // consume it, and Databricks ports are read-only in this iteration.
+    #[cfg(feature = "databricks")]
+    if config.databricks {
+        if config.embedded {
+            log::error!("✗ --embedded and --databricks are mutually exclusive.");
+            std::process::exit(1);
+        }
+        log::info!("🧱 DeltaGraph mode: routing queries through a Databricks SQL Warehouse");
+
+        let dbc_config = match build_databricks_config() {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("✗ Databricks configuration error: {e}");
+                std::process::exit(1);
+            }
+        };
+        let dbc_executor =
+            match crate::executor::databricks_sql::DatabricksSqlExecutor::new(dbc_config) {
+                Ok(e) => e,
+                Err(e) => {
+                    log::error!("✗ Failed to create Databricks executor: {e}");
+                    std::process::exit(1);
+                }
+            };
+
+        let _schema_source =
+            match graph_catalog::initialize_global_schema(None, config.validate_schema).await {
+                Ok(source) => source,
+                Err(e) => {
+                    log::error!("✗ Failed to initialize schema: {e}");
+                    std::process::exit(1);
+                }
+            };
+
+        let executor: Arc<dyn QueryExecutor> = Arc::new(dbc_executor);
+        let app_state = AppState {
+            executor,
+            clickhouse_client: None,
+            query_semaphore: make_query_semaphore(&config),
+            config: config.clone(),
+        };
+
+        let cache_config = query_cache::QueryCacheConfig::from_env();
+        let _ = GLOBAL_QUERY_CACHE.set(query_cache::QueryCache::new(cache_config));
+
+        return run_server(app_state, config).await;
+    }
+
+    #[cfg(not(feature = "databricks"))]
+    if config.databricks {
+        log::error!("✗ --databricks flag set but the `databricks` feature is not compiled in.");
+        log::error!("  Recompile with: cargo build --features databricks");
+        std::process::exit(1);
+    }
+
     // ── Remote ClickHouse mode (default) ────────────────────────────────────────
     // Try to create ClickHouse client (optional for YAML-only mode)
     let client_opt = clickhouse_client::try_get_client();
@@ -556,4 +618,30 @@ async fn run_server(app_state: AppState, config: ServerConfig) {
             std::process::exit(1);
         }
     }
+}
+
+/// Resolve a DatabricksConfig from `DATABRICKS_*` env vars. Returns a
+/// human-readable `String` error (vs a typed one) because the caller
+/// just logs it and exits — no upstream needs to discriminate the
+/// failure mode. Used by the `--databricks` server path and by the
+/// `deltagraph` binary's startup.
+#[cfg(feature = "databricks")]
+fn build_databricks_config() -> Result<crate::executor::databricks_sql::DatabricksConfig, String> {
+    let hostname = std::env::var("DATABRICKS_HOST").map_err(|_| {
+        "DATABRICKS_HOST not set — provide the workspace host \
+         (e.g. dbc-abc123-def4.cloud.databricks.com)"
+            .to_string()
+    })?;
+    let warehouse_id = std::env::var("DATABRICKS_WAREHOUSE_ID")
+        .map_err(|_| "DATABRICKS_WAREHOUSE_ID not set".to_string())?;
+    let token = std::env::var("DATABRICKS_TOKEN").map_err(|_| {
+        "DATABRICKS_TOKEN not set — provide a personal access token \
+         (env-only; never accepted as a CLI flag)"
+            .to_string()
+    })?;
+    let mut cfg =
+        crate::executor::databricks_sql::DatabricksConfig::new(hostname, warehouse_id, token);
+    cfg.catalog = std::env::var("DATABRICKS_CATALOG").ok();
+    cfg.schema = std::env::var("DATABRICKS_SCHEMA").ok();
+    Ok(cfg)
 }

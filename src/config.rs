@@ -73,6 +73,13 @@ pub struct ServerConfig {
     /// Requires the `embedded` feature.
     pub embedded: bool,
 
+    /// Execute against a Databricks SQL Warehouse instead of ClickHouse.
+    /// When true, the server reads `DATABRICKS_HOST`, `DATABRICKS_WAREHOUSE_ID`,
+    /// `DATABRICKS_TOKEN` env vars and routes queries through `DatabricksSqlExecutor`
+    /// with Spark SQL emission. Requires the `databricks` feature.
+    /// Mutually exclusive with `embedded`.
+    pub databricks: bool,
+
     /// Per-query timeout in seconds for HTTP requests (covers parsing + planning + execution).
     /// 0 = no timeout. Default: 300 (5 minutes).
     pub query_timeout_secs: u64,
@@ -97,6 +104,7 @@ impl Default for ServerConfig {
             daemon: false,
             neo4j_compat_mode: false,
             embedded: false,
+            databricks: false,
             query_timeout_secs: 300,
             max_request_body_bytes: 1_048_576, // 1 MB
             max_concurrent_queries: 64,
@@ -118,6 +126,7 @@ impl ServerConfig {
             daemon: false, // Environment-based config always runs in foreground
             neo4j_compat_mode: parse_env_var("CLICKGRAPH_NEO4J_COMPAT_MODE", "false")?,
             embedded: parse_env_var("CLICKGRAPH_EMBEDDED", "false")?,
+            databricks: parse_env_var("CLICKGRAPH_DATABRICKS", "false")?,
             query_timeout_secs: parse_env_var("CLICKGRAPH_QUERY_TIMEOUT_SECS", "300")?,
             max_request_body_bytes: parse_env_var("CLICKGRAPH_MAX_REQUEST_BODY_BYTES", "1048576")?,
             max_concurrent_queries: parse_env_var("CLICKGRAPH_MAX_CONCURRENT_QUERIES", "64")?,
@@ -140,6 +149,7 @@ impl ServerConfig {
             neo4j_compat_mode: cli.neo4j_compat_mode,
             daemon: cli.daemon,
             embedded: cli.embedded,
+            databricks: cli.databricks,
             query_timeout_secs: cli.query_timeout_secs,
             max_request_body_bytes: cli.max_request_body_bytes,
             max_concurrent_queries: cli.max_concurrent_queries,
@@ -179,6 +189,7 @@ impl ServerConfig {
         self.neo4j_compat_mode = other.neo4j_compat_mode;
         self.daemon = other.daemon;
         self.embedded = other.embedded;
+        self.databricks = other.databricks;
         self.query_timeout_secs = other.query_timeout_secs;
         self.max_request_body_bytes = other.max_request_body_bytes;
         self.max_concurrent_queries = other.max_concurrent_queries;
@@ -198,6 +209,7 @@ pub struct CliConfig {
     pub neo4j_compat_mode: bool,
     pub daemon: bool,
     pub embedded: bool,
+    pub databricks: bool,
     pub query_timeout_secs: u64,
     pub max_request_body_bytes: usize,
     pub max_concurrent_queries: usize,
