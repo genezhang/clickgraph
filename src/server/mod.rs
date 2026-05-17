@@ -647,5 +647,11 @@ fn build_databricks_config() -> Result<crate::executor::databricks_sql::Databric
         crate::executor::databricks_sql::DatabricksConfig::new(hostname, warehouse_id, token);
     cfg.catalog = std::env::var("DATABRICKS_CATALOG").ok();
     cfg.schema = std::env::var("DATABRICKS_SCHEMA").ok();
+    // Test-only override for the executor's request base URL. Honored
+    // by the executor (`DatabricksConfig.base_url`) and used by the
+    // deltagraph subprocess test in tests/rust/bin/ to redirect HTTP
+    // at a wiremock URL. Production callers leave this unset — the
+    // executor falls back to `https://{hostname}`.
+    cfg.base_url = std::env::var("DATABRICKS_BASE_URL").ok();
     Ok(cfg)
 }
