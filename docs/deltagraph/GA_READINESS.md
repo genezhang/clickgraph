@@ -1,10 +1,11 @@
 # DeltaGraph — GA Readiness Checklist
 
-Engineering port is code-complete through Phase 4 (PRs #316–#341, all merged
-to main). Version stays at **0.6.7-dev**. The bump to **0.7.0 GA** is gated
-on the validation and feature work below — none of which is doable
-autonomously without either a live Databricks workspace or a local Spark
-stand-in.
+Engineering port is code-complete through Phase 4 (engineering PRs #316–#338
+per `CHANGELOG.md`, plus follow-ups #339 / #340 / #341 for CHANGELOG sync,
+optional `catalog:` YAML field, and README mention — all on main). Version
+stays at **0.6.7-dev**. The bump to **0.7.0 GA** is gated on the validation
+and feature work below — none of which is doable autonomously without
+either a live Databricks workspace or a local Spark stand-in.
 
 This doc is the parking spot for that work. Pick it up when an environment
 is available.
@@ -15,7 +16,9 @@ is available.
 
 ### 1. Correctness against a live warehouse
 
-- LDBC SNB sweep (`bi-1..18`, `complex-1..14`, `short-1..7`) on Delta tables
+- LDBC SNB sweep on Delta tables: `bi-1..15`, `bi-17..18`, `complex-1..14`,
+  `short-1..7` (skipping `bi-16` — blocked on `CALL` subqueries, see
+  out-of-scope section below)
 - Result-set diff vs ClickGraph on equivalent seed data — same rows, any
   ordering allowed
 - Locally reproducible with the same seed across both backends
@@ -79,11 +82,23 @@ in QUICKSTART; for GA it must be in.
 - Basic metrics: latency p50/p95, warehouse wait time, polling overhead,
   per-statement bytes
 
+### `MERGE` (write support)
+
+`STATUS.md` and `CHANGELOG.md` both list `MERGE` as pending before
+Databricks GA — i.e. writes are part of the GA scope, planned for v0.7.x.
+(Note: `QUICKSTART.md` currently says writes are "not on the current
+roadmap"; that wording predates the GA-scope decision and should be
+reconciled when MERGE lands.) The embedded ClickHouse path already has
+`CREATE` / `SET` / `DELETE` / `REMOVE`; `MERGE` plus relationship
+`CREATE`, edge-alias `DELETE`, `SET a += {…}` map-merge, and
+`REMOVE a:Label` are the remaining write gaps.
+
 ---
 
 ## GA exit criteria (the actual bar)
 
 1. LDBC SNB suite passes on Databricks with documented per-query times
+   (excluding `bi-16` — see CALL subquery note below)
 2. 24h soak with ≥100 concurrent Bolt sessions — no leaks, no degradation
 3. OAuth M2M + EXTERNAL_LINKS shipped
 4. Documented failure-mode behavior for §4 above
@@ -150,21 +165,28 @@ time.
 
 ### Seeding the local dataset
 
-`benchmarks/social_network/schemas/social_benchmark.yaml` already defines
-the smallest LDBC-style shape we use. A seed script that materializes
-the same data as both ClickHouse tables and Delta tables would let us run
-the diff in CI without external dependencies.
+The LDBC SNB schemas live under `benchmarks/ldbc_snb/schemas/` —
+`ldbc_snb_complete.yaml` is the canonical superset used by the bi /
+complex / short query suites and covers `Person`, `Comment`, `Forum`,
+`Tag`, `Place`, etc. A seed script that materializes the same data
+as both ClickHouse tables and Delta tables off that schema would let
+us run the diff in CI without external dependencies.
+
+(`benchmarks/social_network/schemas/social_benchmark.yaml` is a much
+smaller social-graph schema useful for sanity checks during development,
+but does not cover the LDBC label set and so is not sufficient for the
+correctness gate above.)
 
 ---
 
 ## Out of scope for GA (explicitly)
 
-- **MERGE / write support** — DeltaGraph is read-only by design. QUICKSTART
-  documents this; no committed timeline for changing it.
 - **SQL AST layer (Phase 6)** — optional simplification project, 2–3 weeks,
   not on the GA path.
-- **`CALL` subqueries** — same gap as ClickGraph (LDBC bi-16), inherited
-  from the shared planner.
+- **`CALL` subqueries** — same gap as ClickGraph (LDBC `bi-16`), inherited
+  from the shared planner. This is why `bi-16` is excluded from the
+  correctness gate above; closing it is a planner-level project, not a
+  DeltaGraph-specific item.
 
 ---
 
