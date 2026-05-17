@@ -2,29 +2,34 @@
 
 Skipped unless CLICKGRAPH_SPARK_TESTS=1. Requires:
   - `cg` binary built with `--features databricks`
-    (env CG_BIN overrides path; default `target/release/cg`)
-  - Docker daemon, `deltaio/delta-docker:latest` pullable
+    (env CG_BIN overrides path; resolved via `cargo metadata`)
+  - Docker daemon, image pullable (default pinned via DEFAULT_IMAGE below;
+    override with CG_SPARK_IMAGE)
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
-import json
+# Pinned tag rather than `:latest` so upstream image updates can't silently
+# change the Spark/Delta versions under the GA correctness gate. Bump
+# deliberately when validating against a newer image.
+DEFAULT_IMAGE = "deltaio/delta-docker:4.1.0"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = REPO_ROOT / "benchmarks" / "ldbc_snb" / "schemas" / "ldbc_snb_complete.yaml"
 HARNESS_DIR = Path(__file__).parent
-SEED_SCRIPT = HARNESS_DIR / "seed_and_query.py"
-IMAGE = os.environ.get("CG_SPARK_IMAGE", "deltaio/delta-docker:latest")
+IMAGE = os.environ.get("CG_SPARK_IMAGE", DEFAULT_IMAGE)
 
 
-def _resolve_cg_bin() -> Path | None:
+def _resolve_cg_bin() -> Optional[Path]:
     """CG_BIN env override → cargo metadata target_directory → repo-relative target."""
     env_override = os.environ.get("CG_BIN")
     if env_override:
