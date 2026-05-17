@@ -42,7 +42,8 @@ fn validate_identifier(id: &str) -> Result<&str, String> {
     if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(format!(
             "identifier {id:?} contains characters outside [A-Za-z0-9_]; \
-             quote your name or pass an ASCII alphanumeric one"
+             pass an ASCII alphanumeric/underscore name \
+             (quoted/backticked identifiers are not supported)"
         ));
     }
     Ok(id)
@@ -73,7 +74,7 @@ impl DatabricksProbe {
             let columns = describe_columns(executor, catalog, schema, &table_name).await?;
             // Sample failures are non-fatal — a permission-denied SELECT
             // on a single table shouldn't kill discovery for the rest.
-            let sample = sample_rows(executor, catalog, schema, &table_name)
+            let sample = sample_rows(executor, catalog, schema, &table_name, &columns)
                 .await
                 .unwrap_or_default();
 
@@ -91,7 +92,7 @@ impl DatabricksProbe {
             "Review tables and columns above, then create your schema.\n\
              To generate a YAML draft, point `cg schema discover` (or the LLM-assisted \
              /schemas/draft endpoint) at the same catalog/schema:\n  \
-             cg --schema <yaml> --dialect databricks schema discover --catalog {catalog} --database {schema}"
+             cg --dialect databricks schema discover --catalog {catalog} --database {schema} --out schema.yaml"
         );
 
         Ok(IntrospectResponse {
@@ -132,7 +133,11 @@ async fn list_tables(
                 // Last-resort fallback for forked engines that return
                 // a single-column row without the canonical `tableName`
                 // header (e.g. a ClickHouse-style `Tables_in_<db>`).
+                // Guard with `len() == 1` so a multi-column row from
+                // an unknown engine can't accidentally pick a non-table
+                // field (e.g. `database`) as the table name.
                 row.as_object()
+                    .filter(|m| m.len() == 1)
                     .and_then(|m| m.values().next())
                     .and_then(Value::as_str)
             });
@@ -203,14 +208,42 @@ async fn describe_columns(
 /// JSON object keyed by column name — identical shape to what
 /// [`SchemaDiscovery::get_sample_data`] returns from ClickHouse, so
 /// downstream consumers don't branch on backend.
+///
+/// We explicitly list the discovered columns (capped at
+/// [`SAMPLE_COLUMN_CAP`]) instead of `SELECT *` — wide Delta tables
+/// can have hundreds of columns and complex nested types, and
+/// discovery is meant to be cheap. Each column name is backticked
+/// individually after validation so the SQL is injection-safe even
+/// when `DESCRIBE TABLE EXTENDED` returns an unexpected name.
+const SAMPLE_COLUMN_CAP: usize = 32;
+
 async fn sample_rows(
     executor: &DatabricksSqlExecutor,
     catalog: &str,
     schema: &str,
     table: &str,
+    columns: &[ColumnMetadata],
 ) -> Result<Vec<Value>, String> {
     let table = validate_identifier(table)?;
-    let sql = format!("SELECT * FROM `{catalog}`.`{schema}`.`{table}` LIMIT 3");
+    // Empty column list → no point sampling, return nothing.
+    if columns.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut select_list = String::new();
+    for (i, col) in columns.iter().take(SAMPLE_COLUMN_CAP).enumerate() {
+        // Same identifier discipline as the catalog/schema/table:
+        // refuse anything outside [A-Za-z0-9_] rather than rely on
+        // backtick escaping to make a weird name safe.
+        let col_name = validate_identifier(&col.name)
+            .map_err(|e| format!("sample SELECT column rejected for {table}: {e}"))?;
+        if i > 0 {
+            select_list.push_str(", ");
+        }
+        select_list.push('`');
+        select_list.push_str(col_name);
+        select_list.push('`');
+    }
+    let sql = format!("SELECT {select_list} FROM `{catalog}`.`{schema}`.`{table}` LIMIT 3");
     executor
         .execute_json(&sql, None)
         .await
@@ -328,12 +361,15 @@ mod tests {
             .mount(&server)
             .await;
 
-        // 4. SELECT * FROM ... LIMIT 3 — single matcher serves both
-        // sample queries since we don't care about the per-table data
-        // for the response-shape assertion.
+        // 4. SELECT <cols> FROM ... LIMIT 3 — single matcher serves
+        // both sample queries since we don't care about the per-table
+        // data for the response-shape assertion. We match on the LIMIT
+        // 3 tail (stable across the new explicit-column SELECT and
+        // any future column-cap tweaks) rather than `SELECT *` so
+        // this stays in sync with the change away from `SELECT *`.
         Mock::given(method("POST"))
             .and(path("/api/2.0/sql/statements"))
-            .and(body_string_contains("SELECT * FROM"))
+            .and(body_string_contains("LIMIT 3"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "statement_id": "stmt-sample",
                 "status": { "state": "SUCCEEDED" },
