@@ -170,9 +170,13 @@ pub async fn run_with_config(config: ServerConfig) {
     // Mirrors the embedded branch: when set, we build a Databricks executor
     // instead of the ClickHouse pool and stash it in AppState behind the
     // same QueryExecutor trait the read path already uses. AppState's
-    // `clickhouse_client: Option<Client>` stays None — only DDL writes
-    // (gated server-side via write_guard for the Remote executor kind)
-    // consume it, and Databricks ports are read-only in this iteration.
+    // `clickhouse_client: Option<Client>` stays None, and that None is what
+    // makes the server read-only for this dispatch — `query_handler_inner`
+    // returns 501 NOT_IMPLEMENTED for any DDL when `clickhouse_client` is
+    // absent (same code path the embedded branch already relies on). The
+    // planner-level `write_guard` only kicks in for the embedded crate's
+    // `Database::new_*` constructors, not the server, so we are not
+    // depending on `ExecutorKind` here.
     #[cfg(feature = "databricks")]
     if config.databricks {
         if config.embedded {

@@ -108,11 +108,12 @@ path = "tests/rust/integration/mod.rs"
 name = "e2e"
 path = "tests/rust/e2e/mod.rs"
 
-# Standalone smoke test for the `deltagraph` binary (Phase 4.1). Sits
-# outside tests/rust/ because it spawns a compiled bin via `cargo run`
-# rather than driving library code; cargo's default test discovery
-# would otherwise miss it because tests/rust/ is the explicit root for
-# unit/integration/e2e above.
+# Standalone smoke test for the `deltagraph` binary (Phase 4.1). Spawns
+# the already-built bin via `assert_cmd::Command::cargo_bin` (which
+# resolves the `CARGO_BIN_EXE_deltagraph` env var cargo sets for tests)
+# rather than driving library code. Declared as a top-level [[test]] so
+# it shows up under `cargo test --features databricks` instead of
+# disappearing inside the unit/integration/e2e roots in tests/rust/.
 [[test]]
 name = "deltagraph_bin"
 path = "tests/rust/bin/deltagraph_smoke.rs"
