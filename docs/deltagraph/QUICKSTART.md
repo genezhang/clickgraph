@@ -149,8 +149,10 @@ cg --schema schema.yaml --dialect databricks sql "MATCH (u:User) RETURN u.name L
 ## What's not in this iteration
 
 - **Writes** (`CREATE`, `SET`, `DELETE`, `MERGE`). DeltaGraph is read-only
-  against Databricks for now — embedded chdb is the write target. Phase 5
-  may add limited write support via `INSERT INTO` for Delta tables.
+  against Databricks; embedded chdb is the only write target today.
+  Write support against Delta tables is not on the current roadmap and
+  has no committed timeline — track [the DeltaGraph plan](../design/DELTAGRAPH_PLAN.md)
+  for any change in scope.
 - **OAuth M2M.** PAT is the only supported auth.
 - **External-link result chunks.** Large result sets (>25 MB) currently
   fail with an error from the Statement Execution API. The executor

@@ -27,6 +27,7 @@
 #![cfg(feature = "databricks")]
 
 use std::io::Write;
+use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
@@ -38,11 +39,19 @@ use tokio::time::sleep;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-// Use unusual port range to avoid colliding with a dev server on the
-// default 7475/7687. If a parallel test invocation needs different
-// ports, factor this into an allocator — for one test this is fine.
-const HTTP_PORT: u16 = 17_475;
-const BOLT_PORT: u16 = 17_687;
+/// Ask the OS for a free TCP port on localhost. We bind a
+/// `std::net::TcpListener` to `127.0.0.1:0`, read the assigned port,
+/// then drop the listener. There's a small race where another process
+/// could grab the port between drop and the subprocess binding it —
+/// in practice this is rare on a CI box and beats hard-coding ports
+/// that would collide between parallel test runs or with a dev server
+/// already on the default 7475/7687.
+fn pick_free_port() -> u16 {
+    let listener = StdTcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local_addr").port();
+    drop(listener);
+    port
+}
 
 const TEST_SCHEMA_YAML: &str = r#"
 name: deltagraph_bolt_e2e
@@ -76,10 +85,10 @@ fn write_schema() -> NamedTempFile {
 /// Poll the Bolt port until something accepts a TCP connection or the
 /// deadline expires. A bare `tokio::time::sleep` would race against
 /// slow CI machines; an unbounded loop would mask hung subprocesses.
-async fn wait_for_bolt_listen(deadline: Duration) -> std::io::Result<TcpStream> {
+async fn wait_for_bolt_listen(addr: SocketAddr, deadline: Duration) -> std::io::Result<TcpStream> {
     let start = Instant::now();
     loop {
-        match TcpStream::connect(("127.0.0.1", BOLT_PORT)).await {
+        match TcpStream::connect(addr).await {
             Ok(s) => return Ok(s),
             Err(_) if start.elapsed() < deadline => sleep(Duration::from_millis(100)).await,
             Err(e) => return Err(e),
@@ -93,15 +102,16 @@ async fn wait_for_bolt_listen(deadline: Duration) -> std::io::Result<TcpStream> 
 /// The server replies with 4 bytes — either the chosen version or
 /// zeros if no proposed version is supported.
 async fn bolt_handshake(stream: &mut TcpStream) -> std::io::Result<[u8; 4]> {
-    // Magic + propose [5.4, 5.0, 4.4, 0] — `deltagraph` advertises
-    // through Bolt 5.x, so 5.4 should win. The fallback slots let an
-    // older server (or a future one with narrower support) still pick
-    // something rather than rejecting outright.
+    // Magic + propose four current Bolt 5.x minors. Server's
+    // SUPPORTED_VERSIONS today is 5.8 → 5.0; offering the latest
+    // three keeps the test forward-compatible if 5.0/5.1 are dropped
+    // later, and 4.4 stays as a wide-net fallback. Negotiation picks
+    // the highest version supported by both sides.
     let mut preamble = vec![0x60u8, 0x60, 0xB0, 0x17];
-    preamble.extend_from_slice(&0x0000_0504u32.to_be_bytes()); // 5.4
-    preamble.extend_from_slice(&0x0000_0500u32.to_be_bytes()); // 5.0
+    preamble.extend_from_slice(&0x0000_0508u32.to_be_bytes()); // 5.8
+    preamble.extend_from_slice(&0x0000_0507u32.to_be_bytes()); // 5.7
+    preamble.extend_from_slice(&0x0000_0506u32.to_be_bytes()); // 5.6
     preamble.extend_from_slice(&0x0000_0404u32.to_be_bytes()); // 4.4
-    preamble.extend_from_slice(&0u32.to_be_bytes()); //          empty
     stream.write_all(&preamble).await?;
 
     let mut chosen = [0u8; 4];
@@ -109,16 +119,25 @@ async fn bolt_handshake(stream: &mut TcpStream) -> std::io::Result<[u8; 4]> {
     Ok(chosen)
 }
 
-/// `kill_on_drop(true)` doesn't terminate the spawned process
-/// immediately on `Child` drop — it just sends SIGKILL asynchronously
-/// and forgets. For test cleanup that races a next test that wants the
-/// same ports, we wrap the child so the test can wait for it to exit.
+/// `tokio::process::Child` with `kill_on_drop(true)` sends SIGKILL on
+/// drop but does not reap the process — the kernel keeps a zombie
+/// entry until `wait()` is called. For panic-path cleanup (where the
+/// test's explicit `child.wait().await` is skipped) we hand the child
+/// off to a detached `wait()` task so the OS reclaims the entry and
+/// releases the bound ports immediately rather than at process exit.
+/// `try_current()` is required because the Drop may run after the
+/// `#[tokio::test]` runtime has shut down.
 struct ChildGuard(Option<Child>);
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         if let Some(mut child) = self.0.take() {
             let _ = child.start_kill();
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    let _ = child.wait().await;
+                });
+            }
         }
     }
 }
@@ -143,6 +162,12 @@ async fn deltagraph_boots_and_completes_bolt_handshake() {
     let schema = write_schema();
     let mock_uri = mock.uri();
 
+    // Dynamic ports avoid colliding with a dev `deltagraph`/`clickgraph`
+    // on the default 7475/7687 and let parallel test runs coexist.
+    let http_port = pick_free_port();
+    let bolt_port = pick_free_port();
+    let bolt_addr: SocketAddr = format!("127.0.0.1:{bolt_port}").parse().unwrap();
+
     let child = Command::new(env!("CARGO_BIN_EXE_deltagraph"))
         .env("GRAPH_CONFIG_PATH", schema.path())
         .env("DATABRICKS_HOST", "ignored.cloud.databricks.com")
@@ -153,9 +178,9 @@ async fn deltagraph_boots_and_completes_bolt_handshake() {
         // server boot messages go through env_logger.
         .env("RUST_LOG", "error")
         .arg("--http-port")
-        .arg(HTTP_PORT.to_string())
+        .arg(http_port.to_string())
         .arg("--bolt-port")
-        .arg(BOLT_PORT.to_string())
+        .arg(bolt_port.to_string())
         .arg("--disable-neo4j-compat")
         .kill_on_drop(true)
         .spawn()
@@ -164,7 +189,7 @@ async fn deltagraph_boots_and_completes_bolt_handshake() {
 
     // 10 seconds is generous; on a developer laptop the server is
     // listening in under 1s. CI machines under load can take longer.
-    let mut bolt = wait_for_bolt_listen(Duration::from_secs(10))
+    let mut bolt = wait_for_bolt_listen(bolt_addr, Duration::from_secs(10))
         .await
         .expect("deltagraph did not bind Bolt port within 10s — likely a startup crash");
 
