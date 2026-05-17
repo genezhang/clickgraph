@@ -267,17 +267,20 @@ async fn run_introspect_databricks(
     // > config.toml > schema YAML's top-level `catalog:` (Phase 3.2). Errors
     // out up front rather than letting `SHOW TABLES IN` fail with a less-clear
     // message from the warehouse.
-    let catalog = catalog
+    let catalog = if let Some(c) = catalog
         .map(str::to_string)
         .or_else(|| cfg.databricks.catalog.clone())
-        .or_else(|| schema_catalog_from_yaml(cfg))
-        .ok_or_else(|| {
-            anyhow!(
-                "Databricks catalog not set. Pass --catalog, set \
-                 DATABRICKS_CATALOG / CG_DATABRICKS_CATALOG, or add a \
-                 top-level `catalog:` field to the schema YAML."
-            )
-        })?;
+    {
+        c
+    } else if let Some(c) = schema_catalog_from_yaml(cfg)? {
+        c
+    } else {
+        return Err(anyhow!(
+            "Databricks catalog not set. Pass --catalog, set \
+             DATABRICKS_CATALOG / CG_DATABRICKS_CATALOG, or add a \
+             top-level `catalog:` field to the schema YAML."
+        ));
+    };
     let host = cfg.databricks.hostname.as_deref().ok_or_else(|| {
         anyhow!("DATABRICKS_HOST not set — see `cg schema discover --help` for env vars.")
     })?;
@@ -323,13 +326,27 @@ async fn run_introspect_databricks(
 }
 
 /// Read the optional top-level `catalog:` field from the loaded schema
-/// YAML (DeltaGraph Phase 3.2). Returns `None` if no `--schema` flag
-/// was supplied or the file can't be parsed — we don't want a malformed
-/// YAML here to look like a missing catalog (the caller produces a
-/// clearer error for that).
+/// YAML (DeltaGraph Phase 3.2).
+///
+/// Returns:
+/// - `Ok(None)` if `--schema` wasn't supplied (no YAML to consult).
+/// - `Ok(Some(catalog))` if the YAML parsed and carried a `catalog:`.
+/// - `Ok(None)` if the YAML parsed but had no `catalog:` field.
+/// - `Err(...)` if `--schema` *was* supplied but the file is missing
+///   or doesn't parse. We surface the underlying error rather than
+///   swallow it — otherwise a typo'd path would silently degrade to
+///   "Databricks catalog not set" and the user would never realize
+///   their YAML was the problem.
 #[cfg(feature = "databricks")]
-fn schema_catalog_from_yaml(cfg: &CgConfig) -> Option<String> {
-    let path = cfg.schema_path.as_deref()?;
-    let config = GraphSchemaConfig::from_yaml_file(path).ok()?;
-    config.catalog
+fn schema_catalog_from_yaml(cfg: &CgConfig) -> Result<Option<String>> {
+    let Some(path) = cfg.schema_path.as_deref() else {
+        return Ok(None);
+    };
+    let config = GraphSchemaConfig::from_yaml_file(path).map_err(|e| {
+        anyhow!(
+            "Failed to read schema YAML '{path}' while resolving Databricks catalog \
+             fallback: {e}"
+        )
+    })?;
+    Ok(config.catalog)
 }

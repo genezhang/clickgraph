@@ -68,11 +68,20 @@ graph_schema:
       …
 ```
 
-Precedence (highest first): `--catalog` CLI flag → `DATABRICKS_CATALOG`
-or `CG_DATABRICKS_CATALOG` env → `[databricks] catalog = …` in
-config.toml → schema YAML's top-level `catalog:`. Set it in the YAML
-when the schema is permanently tied to one catalog; use env/CLI to
-override per environment (staging vs prod).
+Precedence (highest first):
+
+| Caller | Precedence (highest → lowest) |
+| --- | --- |
+| `deltagraph` server | `DATABRICKS_CATALOG` env → schema YAML `catalog:` |
+| `cg query --dialect databricks` | `DATABRICKS_CATALOG` / `CG_DATABRICKS_CATALOG` env → `[databricks].catalog` in config.toml → schema YAML `catalog:` |
+| `cg schema discover --dialect databricks` | `--catalog` flag → `DATABRICKS_CATALOG` / `CG_DATABRICKS_CATALOG` env → `[databricks].catalog` in config.toml → schema YAML `catalog:` |
+
+(The `deltagraph` binary has no `--catalog` flag — the server reads
+config from env vars only. The token has no CLI flag at all, for the
+same security reason: env-only.)
+
+Set the catalog in the YAML when the schema is permanently tied to one
+Unity Catalog; use env to override per environment (staging vs prod).
 
 ## 3. Start the server
 

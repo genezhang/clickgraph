@@ -185,13 +185,28 @@ pub async fn run_with_config(config: ServerConfig) {
         }
         log::info!("🧱 DeltaGraph mode: routing queries through a Databricks SQL Warehouse");
 
-        let dbc_config = match build_databricks_config() {
+        let mut dbc_config = match build_databricks_config() {
             Ok(c) => c,
             Err(e) => {
                 log::error!("✗ Databricks configuration error: {e}");
                 std::process::exit(1);
             }
         };
+        // DeltaGraph Phase 3.2: when DATABRICKS_CATALOG was unset, fall
+        // back to the optional top-level `catalog:` field in the schema
+        // YAML pointed to by `GRAPH_CONFIG_PATH`. Env still wins. Errors
+        // are intentionally non-fatal here — `initialize_global_schema`
+        // below is the authoritative loader and will surface any real
+        // parse problem with full diagnostics; we only need the field.
+        if dbc_config.catalog.is_none() {
+            if let Some(yaml_catalog) = read_yaml_catalog_for_server() {
+                log::info!(
+                    "  Using catalog '{yaml_catalog}' from schema YAML \
+                     (DATABRICKS_CATALOG was unset)"
+                );
+                dbc_config.catalog = Some(yaml_catalog);
+            }
+        }
         let dbc_executor =
             match crate::executor::databricks_sql::DatabricksSqlExecutor::new(dbc_config) {
                 Ok(e) => e,
@@ -670,6 +685,23 @@ fn build_databricks_config() -> Result<crate::executor::databricks_sql::Databric
     Ok(cfg)
 }
 
+/// Best-effort lookup of the optional top-level `catalog:` field in the
+/// schema YAML pointed to by `GRAPH_CONFIG_PATH`. Returns `None` if the
+/// env var is unset, the file is missing, or the YAML doesn't parse —
+/// `initialize_global_schema` is called immediately after this and is
+/// the authoritative loader; it will surface any real parse error with
+/// full context, so swallowing the diagnostic here doesn't hide bugs.
+/// We only need the catalog field; the rest of the schema is loaded
+/// downstream.
+#[cfg(feature = "databricks")]
+fn read_yaml_catalog_for_server() -> Option<String> {
+    let path = std::env::var("GRAPH_CONFIG_PATH").ok()?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    let cfg: crate::graph_catalog::config::GraphSchemaConfig =
+        serde_yaml::from_str(&content).ok()?;
+    cfg.catalog
+}
+
 /// Reject overrides that would silently leak the PAT to a non-localhost
 /// plaintext endpoint. Loopback HTTP is allowed (wiremock); arbitrary
 /// HTTP is not. Anything that fails to parse or uses a non-http(s)
@@ -743,5 +775,102 @@ mod databricks_base_url_validation_tests {
         assert!(validate_databricks_base_url("ftp://workspace.example.com").is_err());
         assert!(validate_databricks_base_url("").is_err());
         assert!(validate_databricks_base_url("https://").is_err());
+    }
+}
+
+/// DeltaGraph Phase 3.2 server-side wiring: tests that the optional
+/// `catalog:` field in `GRAPH_CONFIG_PATH`'s YAML is picked up by the
+/// `--databricks` server branch as a fallback when `DATABRICKS_CATALOG`
+/// is unset. The helper itself is intentionally best-effort (returns
+/// `None` on any failure); `initialize_global_schema` is the real
+/// loader so error surfacing happens there.
+///
+/// Each test sets / unsets `GRAPH_CONFIG_PATH` and serializes via a
+/// mutex — env vars are global to the process and concurrent tests
+/// would race.
+#[cfg(all(test, feature = "databricks"))]
+mod yaml_catalog_for_server_tests {
+    use super::read_yaml_catalog_for_server;
+    use std::io::Write;
+    use std::sync::Mutex;
+    use tempfile::NamedTempFile;
+
+    // Serialize env-var manipulation across the tests in this module.
+    // `read_yaml_catalog_for_server` reads `GRAPH_CONFIG_PATH` from the
+    // process env, so concurrent tests would interleave each other's
+    // writes and produce flaky results.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn write_yaml(content: &str) -> NamedTempFile {
+        let mut f = NamedTempFile::new().expect("tempfile");
+        f.write_all(content.as_bytes()).expect("write");
+        f.flush().expect("flush");
+        f
+    }
+
+    #[test]
+    fn returns_catalog_when_yaml_has_field() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let f = write_yaml(
+            r#"
+name: server_test
+catalog: server_yaml_cat
+graph_schema:
+  nodes:
+    - label: User
+      database: graphs
+      table: users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+"#,
+        );
+        unsafe { std::env::set_var("GRAPH_CONFIG_PATH", f.path()) };
+        let got = read_yaml_catalog_for_server();
+        unsafe { std::env::remove_var("GRAPH_CONFIG_PATH") };
+        assert_eq!(got.as_deref(), Some("server_yaml_cat"));
+    }
+
+    #[test]
+    fn returns_none_when_yaml_omits_catalog() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let f = write_yaml(
+            r#"
+name: server_test
+graph_schema:
+  nodes:
+    - label: User
+      database: graphs
+      table: users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+"#,
+        );
+        unsafe { std::env::set_var("GRAPH_CONFIG_PATH", f.path()) };
+        let got = read_yaml_catalog_for_server();
+        unsafe { std::env::remove_var("GRAPH_CONFIG_PATH") };
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn returns_none_when_env_var_unset() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        // Make sure no inherited value leaks in.
+        unsafe { std::env::remove_var("GRAPH_CONFIG_PATH") };
+        assert_eq!(read_yaml_catalog_for_server(), None);
+    }
+
+    #[test]
+    fn returns_none_on_malformed_yaml() {
+        // Best-effort: malformed YAML must not crash or panic. The real
+        // parse error is surfaced later by `initialize_global_schema`
+        // (the authoritative loader), so silent fallback here is safe.
+        let _guard = ENV_LOCK.lock().unwrap();
+        let f = write_yaml("this is :::: not valid yaml ::::");
+        unsafe { std::env::set_var("GRAPH_CONFIG_PATH", f.path()) };
+        let got = read_yaml_catalog_for_server();
+        unsafe { std::env::remove_var("GRAPH_CONFIG_PATH") };
+        assert_eq!(got, None);
     }
 }

@@ -195,6 +195,49 @@ async fn cg_schema_discover_databricks_without_catalog_errors_clearly() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn cg_schema_discover_databricks_surfaces_malformed_yaml_error() {
+    // Address Copilot review on PR #340: a missing or unparseable
+    // `--schema` should NOT degrade to the generic "Databricks catalog
+    // not set" error message — that hides the real bug (typo'd path,
+    // mangled YAML, etc.). The helper now propagates the file/parse
+    // error verbatim. Use a file that exists but contains invalid
+    // YAML so the parse error path is exercised (a nonexistent path
+    // would fail in clap or env handling depending on shell semantics).
+    use std::io::Write;
+    let mut bad = NamedTempFile::new().expect("tempfile");
+    bad.write_all(b"this:::is::: not :: valid :: yaml ::")
+        .expect("write");
+    bad.flush().expect("flush");
+    let bad_path = bad.path().to_path_buf();
+    let tmp = tempfile::tempdir().expect("tmpdir");
+
+    tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("cg")
+            .expect("bin")
+            .env_remove("DATABRICKS_CATALOG")
+            .env_remove("CG_DATABRICKS_CATALOG")
+            .env("DATABRICKS_HOST", "ignored.cloud.databricks.com")
+            .env("DATABRICKS_WAREHOUSE_ID", "wh-test")
+            .env("DATABRICKS_TOKEN", "dapi-test")
+            .env("XDG_CONFIG_HOME", tmp.path())
+            .arg("--schema")
+            .arg(&bad_path)
+            .arg("--dialect")
+            .arg("databricks")
+            .arg("schema")
+            .arg("discover")
+            .arg("--database")
+            .arg("graphs")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("Failed to read schema YAML"))
+            .stderr(predicate::str::contains("Databricks catalog not set").not());
+    })
+    .await
+    .expect("cg invocation");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn cg_schema_discover_databricks_uses_yaml_catalog_field_when_set() {
     // DeltaGraph Phase 3.2: a top-level `catalog:` field in the schema
     // YAML satisfies the catalog requirement when no --catalog flag or
