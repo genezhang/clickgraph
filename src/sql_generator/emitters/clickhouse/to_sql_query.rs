@@ -1603,21 +1603,22 @@ pub(crate) fn rewrite_expr_for_vlp(
             // Rewrite to: ifNull(t.hop_count, toInt64(-1))
             if let Some(ref case_expr) = case.expr {
                 if is_vlp_path_is_null(case_expr, path_variable) {
-                    // Use minOrNull() aggregate so we always get exactly one row:
-                    // - No path: VLP CTE returns 0 rows → minOrNull() returns NULL → ifNull gives -1
-                    // - Path exists: VLP CTE returns 1 row → minOrNull() returns hop_count
-                    // Note: ClickHouse min() returns 0 for empty sets (not NULL), so minOrNull is required.
-                    // The 64-bit-int cast wraps minOrNull to avoid type mismatch (UInt64 vs Int64(-1)).
-                    let cast64 = crate::sql_generator::function_mapper::current_function_mapper()
-                        .cast_int64()
-                        .to_string();
+                    // Use the NULL-on-empty min aggregate so we always get exactly one row:
+                    // - No path: VLP CTE returns 0 rows → returns NULL → ifNull gives -1
+                    // - Path exists: VLP CTE returns 1 row → returns hop_count
+                    // CH: `minOrNull` is required because CH's plain `min` returns 0 for
+                    // empty input; Spark's `min` already returns NULL for empty input,
+                    // so the FunctionMapper resolves this name per dialect.
+                    let fmap = crate::sql_generator::function_mapper::current_function_mapper();
+                    let cast64 = fmap.cast_int64().to_string();
+                    let min_or_null = fmap.min_or_null().to_string();
                     return RenderExpr::ScalarFnCall(ScalarFnCall {
                         name: "ifNull".to_string(),
                         args: vec![
                             RenderExpr::ScalarFnCall(ScalarFnCall {
                                 name: cast64.clone(),
                                 args: vec![RenderExpr::AggregateFnCall(AggregateFnCall {
-                                    name: "minOrNull".to_string(),
+                                    name: min_or_null,
                                     args: vec![RenderExpr::Column(Column(PropertyValue::Column(
                                         "t.hop_count".to_string(),
                                     )))],

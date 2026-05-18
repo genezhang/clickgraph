@@ -39,6 +39,21 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// Conditional count. CH: `countIf`. Spark: `count_if` (DBR 13.1+).
     fn count_if(&self) -> &'static str;
 
+    /// Conditional minimum: minimum of `val` over rows where `cond` is true.
+    /// CH: `minIf(val, cond)`. Spark has no `minIf`, so we rewrite to
+    /// `min(CASE WHEN cond THEN val END)` — `min` ignores NULLs, so rows
+    /// where `cond` is false drop out exactly like `minIf` does. Takes
+    /// pre-rendered SQL fragments because the structural form differs;
+    /// callers paste the result directly into surrounding SQL.
+    fn min_if(&self, val: &str, cond: &str) -> String;
+
+    /// NULL-on-empty minimum. CH: `minOrNull` (CH's bare `min` returns 0
+    /// for an empty input set, not NULL). Spark/ANSI `min` already returns
+    /// NULL for empty input, so this maps to plain `min`. Used by the
+    /// `CASE path IS NULL THEN -1 ELSE length(path) END` VLP rewrite,
+    /// where the "no path" branch must reliably surface as NULL.
+    fn min_or_null(&self) -> &'static str;
+
     /// Count of array elements matching a predicate.
     /// CH: `arrayCount`. Spark needs structural rewriting to
     /// `size(filter(...))` — the planned Databricks emitter handles this

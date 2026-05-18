@@ -18,6 +18,14 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         "countIf"
     }
 
+    fn min_if(&self, val: &str, cond: &str) -> String {
+        format!("minIf({val}, {cond})")
+    }
+
+    fn min_or_null(&self) -> &'static str {
+        "minOrNull"
+    }
+
     fn array_count(&self) -> &'static str {
         "arrayCount"
     }
@@ -93,5 +101,20 @@ mod tests {
         let m = ClickhouseFunctionMapper;
         assert_eq!(m.quote_alias("b.id"), "\"b.id\"");
         assert_eq!(m.quote_alias("x\"y"), "\"x\"\"y\"");
+    }
+
+    #[test]
+    fn min_if_emits_native_clickhouse_form() {
+        let m = ClickhouseFunctionMapper;
+        assert_eq!(
+            m.min_if("toUInt16(hop)", "node_id = 14"),
+            "minIf(toUInt16(hop), node_id = 14)"
+        );
+    }
+
+    #[test]
+    fn min_or_null_uses_clickhouse_specific_name() {
+        let m = ClickhouseFunctionMapper;
+        assert_eq!(m.min_or_null(), "minOrNull");
     }
 }

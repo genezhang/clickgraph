@@ -62,8 +62,7 @@ EXPECTED_FAILURES: dict[str, str] = {
     "bi-17":      "[A] FunctionMapper: `toUnixTimestamp64Milli` leaking in duration-arithmetic path",
     "complex-5":  "[A] FunctionMapper: `countIf(cond, val)` rewritten to `count_if(cond, val)` but Spark `count_if` takes 1 arg",
     "complex-12": "[A] FunctionMapper: `formatRowNoNewline` not mapped (composite-key emission helper)",
-    "complex-13": "[A] FunctionMapper: `minIf(cond, val)` — needs structural rewrite to `min(CASE WHEN cond THEN val END)` on Spark",
-    "complex-14": "[A] FunctionMapper: `minIf` — same as complex-13",
+    "complex-14": "[D] unsupported: query uses GDS (`gds.graph.project.cypher`, `gds.shortestPath.dijkstra.stream`) which we don't translate; once past shortestPath BFS, the trailing `WITH 42 AS dummy` carries through and downstream column refs fail with INVALID_EXTRACT_BASE_FIELD_TYPE",
     "short-2":    "[A] FunctionMapper: `formatRowNoNewline` not mapped",
     # B. Parse errors
     "bi-8":       "[B] PARSE_SYNTAX_ERROR near `ARRAY` — VLP CTE generation",

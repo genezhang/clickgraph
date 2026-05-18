@@ -56,6 +56,21 @@ impl FunctionMapper for DatabricksFunctionMapper {
         "count_if"
     }
 
+    fn min_if(&self, val: &str, cond: &str) -> String {
+        // Spark has no `minIf`. `min` ignores NULLs in ANSI SQL, so a
+        // `CASE WHEN cond THEN val END` (no ELSE → NULL) reproduces
+        // `minIf(val, cond)` exactly: matching rows contribute `val`,
+        // non-matching rows contribute NULL and get dropped by `min`.
+        format!("min(CASE WHEN {cond} THEN {val} END)")
+    }
+
+    fn min_or_null(&self) -> &'static str {
+        // Spark's `min` already returns NULL on empty input (ANSI), so the
+        // CH-only `minOrNull` quirk doesn't apply — plain `min` is the
+        // direct equivalent.
+        "min"
+    }
+
     fn array_count(&self) -> &'static str {
         // Structural mismatch — see module docs. No single function name.
         // Phase 1.1 resolved this at the call sites via
@@ -165,6 +180,11 @@ mod tests {
         assert_eq!(m.collect_list(), "collect_list");
         assert_eq!(m.array_element(), "element_at");
         assert_eq!(m.count_if(), "count_if");
+        assert_eq!(
+            m.min_if("int(hop)", "node_id = 14"),
+            "min(CASE WHEN node_id = 14 THEN int(hop) END)"
+        );
+        assert_eq!(m.min_or_null(), "min");
         assert_eq!(m.json_extract_string(), "get_json_object");
         assert_eq!(m.cast_int64(), "bigint");
         assert_eq!(m.cast_uint8(), "tinyint");
