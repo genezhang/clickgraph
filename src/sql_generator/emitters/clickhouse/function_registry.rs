@@ -873,11 +873,16 @@ lazy_static::lazy_static! {
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
-        // dayOfWeek(datetime) -> CH: toDayOfWeek, Spark: dayofweek
+        // dayOfWeek(datetime) -> CH: toDayOfWeek (1=Monday..7=Sunday, ISO)
+        //                        Spark: dayofweek (1=Sunday..7=Saturday) — different!
+        // Direct name swap would silently shift the result by one day; needs a
+        // structural rewrite like `weekday(x) + 1` to preserve ISO semantics.
+        // Until that lands, fall through to `toDayOfWeek` on Spark so the gap
+        // surfaces as UNRESOLVED_ROUTINE rather than silently-wrong data.
         m.insert("dayofweek", FunctionMapping {
             neo4j_name: "dayOfWeek",
             clickhouse_name: "toDayOfWeek",
-            databricks_name: Some("dayofweek"),
+            databricks_name: None,
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 

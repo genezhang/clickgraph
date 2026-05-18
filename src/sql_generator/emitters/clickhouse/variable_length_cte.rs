@@ -1145,13 +1145,18 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // - hop_count for length(path) → t.hop_count rewriting
         // - NULL hop_count when target not reached → ifNull() pattern works
         let result_select = if let Some(ref target) = target_id {
-            let count_if =
-                crate::sql_generator::function_mapper::current_function_mapper().count_if();
+            // BFS target branch: both countIf and minIf are ClickHouse-only
+            // aggregate forms. Spark has `count_if` (single-arg) but no
+            // `minIf` equivalent — the whole conditional-min pattern needs
+            // a structural rewrite to `min(CASE WHEN cond THEN val END)` to
+            // run on Spark. Until that lands, keep both as CH-native so the
+            // dialect mismatch surfaces as a single UNRESOLVED_ROUTINE rather
+            // than mixed half-translated SQL.
             format!(
                 "{name} AS (\n    SELECT\n        \
                  {start_id} AS start_id,\n        \
                  {target} AS end_id,\n        \
-                 CASE WHEN {count_if}(node_id = {target}) > 0\n            \
+                 CASE WHEN countIf(node_id = {target}) > 0\n            \
                  THEN minIf({cast_u16}(hop), node_id = {target})\n            \
                  ELSE NULL END AS hop_count,\n        \
                  {empty_str_arr} AS path_relationships,\n        \
@@ -1161,7 +1166,6 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 start_id = start_id,
                 target = target,
                 bfs_cte = bfs_cte_name,
-                count_if = count_if,
             )
         } else {
             // No target filter — enumerate all reachable nodes with their min hop
