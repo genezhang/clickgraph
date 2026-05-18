@@ -1145,6 +1145,13 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // - hop_count for length(path) → t.hop_count rewriting
         // - NULL hop_count when target not reached → ifNull() pattern works
         let result_select = if let Some(ref target) = target_id {
+            // BFS target branch: both countIf and minIf are ClickHouse-only
+            // aggregate forms. Spark has `count_if` (single-arg) but no
+            // `minIf` equivalent — the whole conditional-min pattern needs
+            // a structural rewrite to `min(CASE WHEN cond THEN val END)` to
+            // run on Spark. Until that lands, keep both as CH-native so the
+            // dialect mismatch surfaces as a single UNRESOLVED_ROUTINE rather
+            // than mixed half-translated SQL.
             format!(
                 "{name} AS (\n    SELECT\n        \
                  {start_id} AS start_id,\n        \

@@ -1107,17 +1107,22 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                 Operator::ModuloDivision => format!("{} % {}", operands[0], operands[1]),
                 Operator::Exponentiation => format!("POWER({}, {})", operands[0], operands[1]),
                 Operator::In => {
-                    // Check if right operand is a property access (array column)
-                    // Cypher: x IN array_property → ClickHouse: has(array, x)
+                    // Cypher: x IN array_property → CH: has(arr, x), Spark: array_contains(arr, x)
                     if matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_)) {
-                        format!("has({}, {})", operands[1], operands[0])
+                        let contains =
+                            crate::sql_generator::function_mapper::current_function_mapper()
+                                .array_contains();
+                        format!("{}({}, {})", contains, operands[1], operands[0])
                     } else {
                         format!("{} IN {}", operands[0], operands[1])
                     }
                 }
                 Operator::NotIn => {
                     if matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_)) {
-                        format!("NOT has({}, {})", operands[1], operands[0])
+                        let contains =
+                            crate::sql_generator::function_mapper::current_function_mapper()
+                                .array_contains();
+                        format!("NOT {}({}, {})", contains, operands[1], operands[0])
                     } else {
                         format!("{} NOT IN {}", operands[0], operands[1])
                     }

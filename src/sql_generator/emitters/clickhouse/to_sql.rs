@@ -132,11 +132,12 @@ impl ToSql for LogicalExpr {
             LogicalExpr::Column(col) => Ok(col.0.clone()),
             LogicalExpr::Parameter(param) => Ok(format!("${}", param)),
             LogicalExpr::List(items) => {
-                // Use array syntax [...] for Cypher compatibility
-                // ClickHouse arrays support = comparison and work with mixed types via tuple()
+                // Use tuple/struct for comparison to handle mixed types
+                // (date, int, string, etc.). CH=tuple, Spark=struct.
                 let items_sql: Result<Vec<String>, _> = items.iter().map(|e| e.to_sql()).collect();
-                // Use tuple() for comparison to handle mixed types (date, int, string, etc.)
-                Ok(format!("tuple({})", items_sql?.join(", ")))
+                let ctor = crate::sql_generator::function_mapper::current_function_mapper()
+                    .tuple_constructor();
+                Ok(format!("{}({})", ctor, items_sql?.join(", ")))
             }
             LogicalExpr::AggregateFnCall(fn_call) => {
                 let args_sql: Result<Vec<String>, _> =
@@ -260,22 +261,29 @@ impl ToSql for LogicalExpr {
                     Operator::And => Ok(format!("({} AND {})", operands_sql[0], operands_sql[1])),
                     Operator::Or => Ok(format!("({} OR {})", operands_sql[0], operands_sql[1])),
                     Operator::In => {
-                        // Check if right operand is a property access (array column) vs literal list
-                        // Cypher: x IN array_property → ClickHouse: has(array, x)
-                        // Cypher: x IN [1, 2, 3] → ClickHouse: x IN (1, 2, 3)
+                        // Cypher: x IN array_property → CH: has(arr, x), Spark: array_contains(arr, x)
+                        // Cypher: x IN [1, 2, 3]    → standard IN list
                         if matches!(&op.operands[1], LogicalExpr::PropertyAccessExp(_)) {
-                            // Array column membership: use has(array, value)
-                            Ok(format!("has({}, {})", operands_sql[1], operands_sql[0]))
+                            let contains =
+                                crate::sql_generator::function_mapper::current_function_mapper()
+                                    .array_contains();
+                            Ok(format!(
+                                "{}({}, {})",
+                                contains, operands_sql[1], operands_sql[0]
+                            ))
                         } else {
-                            // Literal list: use standard IN
                             Ok(format!("({} IN {})", operands_sql[0], operands_sql[1]))
                         }
                     }
                     Operator::NotIn => {
-                        // Same logic for NOT IN
                         if matches!(&op.operands[1], LogicalExpr::PropertyAccessExp(_)) {
-                            // Array column: NOT has(array, value)
-                            Ok(format!("NOT has({}, {})", operands_sql[1], operands_sql[0]))
+                            let contains =
+                                crate::sql_generator::function_mapper::current_function_mapper()
+                                    .array_contains();
+                            Ok(format!(
+                                "NOT {}({}, {})",
+                                contains, operands_sql[1], operands_sql[0]
+                            ))
                         } else {
                             // Literal list: standard NOT IN
                             Ok(format!("({} NOT IN {})", operands_sql[0], operands_sql[1]))
@@ -380,13 +388,15 @@ impl ToSql for LogicalExpr {
                 if entries.is_empty() {
                     Ok("map()".to_string())
                 } else {
+                    let to_str = crate::sql_generator::function_mapper::current_function_mapper()
+                        .cast_string();
                     let args: Result<Vec<String>, _> = entries
                         .iter()
                         .flat_map(|(k, v)| {
                             let val_result = v.to_sql();
                             vec![
                                 Ok(format!("'{}'", k)),
-                                val_result.map(|val| format!("toString({})", val)),
+                                val_result.map(|val| format!("{}({})", to_str, val)),
                             ]
                         })
                         .collect();

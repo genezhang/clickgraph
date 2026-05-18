@@ -107,6 +107,11 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// rendered expressions and pass them here.
     fn array_literal(&self, elems: &str) -> String;
 
+    /// Tuple / struct constructor for composite-key comparisons (e.g.,
+    /// `tuple(a, b) = tuple(c, d)`). CH: `tuple`. Spark: `struct`.
+    /// Both spellings preserve element-wise ordering and equality.
+    fn tuple_constructor(&self) -> &'static str;
+
     /// Quote a column alias / aliased identifier. Used for both `AS`
     /// clauses and references to those aliases elsewhere in the query
     /// (e.g., GROUP BY, aggregate args after an inner-query rewrite).

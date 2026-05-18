@@ -5011,13 +5011,17 @@ impl RenderExpr {
                     && rendered.len() == 2
                     && matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_))
                 {
-                    return format!("has({}, {})", &rendered[1], &rendered[0]);
+                    let contains = crate::sql_generator::function_mapper::current_function_mapper()
+                        .array_contains();
+                    return format!("{}({}, {})", contains, &rendered[1], &rendered[0]);
                 }
                 if op.operator == Operator::NotIn
                     && rendered.len() == 2
                     && matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_))
                 {
-                    return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
+                    let contains = crate::sql_generator::function_mapper::current_function_mapper()
+                        .array_contains();
+                    return format!("NOT {}({}, {})", contains, &rendered[1], &rendered[0]);
                 }
 
                 // IN/NOT IN with List containing non-constant elements → expand to OR/AND
@@ -5271,11 +5275,13 @@ impl RenderExpr {
                 if entries.is_empty() {
                     "map()".to_string()
                 } else {
+                    let to_str = crate::sql_generator::function_mapper::current_function_mapper()
+                        .cast_string();
                     let args: Vec<String> = entries
                         .iter()
                         .flat_map(|(k, v)| {
                             let val_sql = v.to_sql();
-                            vec![format!("'{}'", k), format!("toString({})", val_sql)]
+                            vec![format!("'{}'", k), format!("{}({})", to_str, val_sql)]
                         })
                         .collect();
                     format!("map({})", args.join(", "))
@@ -5422,13 +5428,17 @@ impl RenderExpr {
                     && rendered.len() == 2
                     && matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_))
                 {
-                    return format!("has({}, {})", &rendered[1], &rendered[0]);
+                    let contains = crate::sql_generator::function_mapper::current_function_mapper()
+                        .array_contains();
+                    return format!("{}({}, {})", contains, &rendered[1], &rendered[0]);
                 }
                 if op.operator == Operator::NotIn
                     && rendered.len() == 2
                     && matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_))
                 {
-                    return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
+                    let contains = crate::sql_generator::function_mapper::current_function_mapper()
+                        .array_contains();
+                    return format!("NOT {}({}, {})", contains, &rendered[1], &rendered[0]);
                 }
 
                 // IN/NOT IN with List containing non-constant elements → expand to OR/AND
@@ -5643,13 +5653,17 @@ impl ToSql for OperatorApplication {
             && rendered.len() == 2
             && matches!(&self.operands[1], RenderExpr::PropertyAccessExp(_))
         {
-            return format!("has({}, {})", &rendered[1], &rendered[0]);
+            let contains =
+                crate::sql_generator::function_mapper::current_function_mapper().array_contains();
+            return format!("{}({}, {})", contains, &rendered[1], &rendered[0]);
         }
         if self.operator == Operator::NotIn
             && rendered.len() == 2
             && matches!(&self.operands[1], RenderExpr::PropertyAccessExp(_))
         {
-            return format!("NOT has({}, {})", &rendered[1], &rendered[0]);
+            let contains =
+                crate::sql_generator::function_mapper::current_function_mapper().array_contains();
+            return format!("NOT {}({}, {})", contains, &rendered[1], &rendered[0]);
         }
 
         // IN/NOT IN with List containing non-constant elements → expand to OR/AND

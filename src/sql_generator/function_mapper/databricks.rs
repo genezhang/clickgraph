@@ -135,6 +135,12 @@ impl FunctionMapper for DatabricksFunctionMapper {
         format!("array({elems})")
     }
 
+    fn tuple_constructor(&self) -> &'static str {
+        // Spark's `struct(a, b, c)` is the analogue of CH's `tuple()`:
+        // element-wise ordering and equality match.
+        "struct"
+    }
+
     fn quote_alias(&self, name: &str) -> String {
         // Spark parses `"foo"` as a string literal — backticks are the
         // only valid identifier quote. Spark escapes `` ` `` inside a
@@ -175,6 +181,7 @@ mod tests {
         assert_eq!(m.int64_array_cast("x"), "CAST(x AS ARRAY<BIGINT>)");
         assert_eq!(m.array_literal(""), "array()");
         assert_eq!(m.array_literal("a, b"), "array(a, b)");
+        assert_eq!(m.tuple_constructor(), "struct");
         assert_eq!(m.quote_alias("b.id"), "`b.id`");
         // Embedded backticks must be doubled, not left raw — otherwise
         // an alias like `` x`y `` would prematurely close the quote.
