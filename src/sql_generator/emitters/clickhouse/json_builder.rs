@@ -277,6 +277,8 @@ pub fn generate_multi_type_union_sql(
             continue;
         }
 
+        let to_str = crate::sql_generator::function_mapper::current_function_mapper().cast_string();
+
         // Get node ID column
         let node_id_col = match &node_schema.node_id.id {
             crate::graph_catalog::config::Identifier::Single(column) => column.clone(),
@@ -286,7 +288,7 @@ pub fn generate_multi_type_union_sql(
                     "concat({})",
                     columns
                         .iter()
-                        .map(|c| format!("toString({})", c))
+                        .map(|c| format!("{}({})", to_str, c))
                         .collect::<Vec<_>>()
                         .join(", '|', ")
                 )
@@ -298,8 +300,8 @@ pub fn generate_multi_type_union_sql(
         let json_props = generate_json_properties_from_schema(node_schema, &node_schema.table_name);
 
         branches.push(format!(
-            "SELECT '{}' as _label, toString({}) as _id, {} as _properties FROM {}",
-            base_label, node_id_col, json_props, table_ref
+            "SELECT '{}' as _label, {}({}) as _id, {} as _properties FROM {}",
+            base_label, to_str, node_id_col, json_props, table_ref
         ));
     }
 

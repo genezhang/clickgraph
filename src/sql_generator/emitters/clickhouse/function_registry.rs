@@ -3,27 +3,47 @@
 /// Maps Neo4j function names to ClickHouse equivalents with optional argument transformations.
 use std::collections::HashMap;
 
-/// Wrap a temporal extraction argument with fromUnixTimestamp64Milli().
+/// Wrap a temporal extraction argument so a downstream `year()`/`month()`/etc.
+/// sees a real DateTime / TIMESTAMP rather than a raw epoch-millis BIGINT.
 ///
 /// Schemas that store timestamps as Int64 epoch milliseconds (e.g., LDBC SNB)
-/// need conversion to DateTime64 before temporal extraction functions (toYear, etc.)
-/// can be applied. This function wraps the first argument unless it already
-/// contains a datetime conversion function (to avoid double-wrapping).
+/// need conversion before extraction. Dialect-aware:
+///   - ClickHouse: `fromUnixTimestamp64Milli(arg)` -> DateTime64
+///   - Databricks: `timestamp_millis(arg)` -> TIMESTAMP
+///
+/// Skips wrapping when the argument is already a datetime expression to
+/// avoid double-conversion.
 fn wrap_epoch_millis_arg(args: &[String]) -> Vec<String> {
+    use crate::server::query_context::get_current_dialect;
+    use crate::sql_generator::SqlDialect;
     if args.is_empty() {
         return args.to_vec();
     }
     let arg = &args[0];
-    // Skip wrapping if argument is already a datetime expression
-    let already_datetime = arg.contains("parseDateTime64BestEffort")
-        || arg.contains("fromUnixTimestamp64Milli")
-        || arg.contains("now64")
-        || arg.contains("now()")
-        || arg.contains("toDateTime");
+    let dialect = get_current_dialect();
+    let already_datetime = match dialect {
+        SqlDialect::Databricks => {
+            arg.contains("timestamp_millis")
+                || arg.contains("to_timestamp")
+                || arg.contains("from_unixtime")
+                || arg.contains("current_timestamp")
+        }
+        _ => {
+            arg.contains("parseDateTime64BestEffort")
+                || arg.contains("fromUnixTimestamp64Milli")
+                || arg.contains("now64")
+                || arg.contains("now()")
+                || arg.contains("toDateTime")
+        }
+    };
     if already_datetime {
         args.to_vec()
     } else {
-        vec![format!("fromUnixTimestamp64Milli({})", arg)]
+        let wrapped = match dialect {
+            SqlDialect::Databricks => format!("timestamp_millis({})", arg),
+            _ => format!("fromUnixTimestamp64Milli({})", arg),
+        };
+        vec![wrapped]
     }
 }
 
@@ -94,21 +114,27 @@ lazy_static::lazy_static! {
             }),
         });
 
-        // toUnixTimestampMillis() -> toUnixTimestamp64Milli(parseDateTime64BestEffort(arg))
-        // Converts datetime string to Unix timestamp in milliseconds (Int64)
-        // For schemas that store dates as Int64 milliseconds (e.g., LDBC)
+        // toUnixTimestampMillis() — datetime string -> epoch millis BIGINT.
+        // CH:    toUnixTimestamp64Milli(parseDateTime64BestEffort(arg, 3))
+        // Spark: unix_millis(to_timestamp(arg))
         m.insert("tounixtimestampmillis", FunctionMapping {
             neo4j_name: "toUnixTimestampMillis",
             clickhouse_name: "toUnixTimestamp64Milli",
-            databricks_name: None,
+            databricks_name: Some("unix_millis"),
             arg_transform: Some(|args| {
+                use crate::server::query_context::get_current_dialect;
+                use crate::sql_generator::SqlDialect;
+                let databricks = matches!(get_current_dialect(), SqlDialect::Databricks);
                 if args.is_empty() {
-                    // No args: return current time in milliseconds
-                    vec!["now64(3)".to_string()]
-                } else {
-                    // Parse string and convert to milliseconds since epoch
-                    vec![format!("parseDateTime64BestEffort({}, 3)", args[0])]
+                    let now = if databricks { "current_timestamp()" } else { "now64(3)" };
+                    return vec![now.to_string()];
                 }
+                let wrapped = if databricks {
+                    format!("to_timestamp({})", args[0])
+                } else {
+                    format!("parseDateTime64BestEffort({}, 3)", args[0])
+                };
+                vec![wrapped]
             }),
         });
 
@@ -793,84 +819,89 @@ lazy_static::lazy_static! {
         // date().year, datetime().month, etc. are property accesses
         // But Neo4j also has explicit functions:
 
-        // year(datetime) -> toYear(fromUnixTimestamp64Milli(datetime))
-        // Wraps argument with fromUnixTimestamp64Milli for epoch-millis Int64 columns
+        // Temporal extraction. Spark's year/month/.../quarter accept a
+        // TIMESTAMP directly; `wrap_epoch_millis_arg` chooses the dialect's
+        // BIGINT→TIMESTAMP wrapper (CH: fromUnixTimestamp64Milli,
+        // Spark: timestamp_millis). Per-component name mapping below; same
+        // name in both dialects when names match.
+
+        // year(datetime) -> CH: toYear, Spark: year
         m.insert("year", FunctionMapping {
             neo4j_name: "year",
             clickhouse_name: "toYear",
-            databricks_name: None,
+            databricks_name: Some("year"),
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
-        // month(datetime) -> toMonth(fromUnixTimestamp64Milli(datetime))
+        // month(datetime) -> CH: toMonth, Spark: month
         m.insert("month", FunctionMapping {
             neo4j_name: "month",
             clickhouse_name: "toMonth",
-            databricks_name: None,
+            databricks_name: Some("month"),
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
-        // day(datetime) -> toDayOfMonth(fromUnixTimestamp64Milli(datetime))
+        // day(datetime) -> CH: toDayOfMonth, Spark: dayofmonth
         m.insert("day", FunctionMapping {
             neo4j_name: "day",
             clickhouse_name: "toDayOfMonth",
-            databricks_name: None,
+            databricks_name: Some("dayofmonth"),
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
-        // hour(datetime) -> toHour(fromUnixTimestamp64Milli(datetime))
+        // hour(datetime) -> CH: toHour, Spark: hour
         m.insert("hour", FunctionMapping {
             neo4j_name: "hour",
             clickhouse_name: "toHour",
-            databricks_name: None,
+            databricks_name: Some("hour"),
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
-        // minute(datetime) -> toMinute(fromUnixTimestamp64Milli(datetime))
+        // minute(datetime) -> CH: toMinute, Spark: minute
         m.insert("minute", FunctionMapping {
             neo4j_name: "minute",
             clickhouse_name: "toMinute",
-            databricks_name: None,
+            databricks_name: Some("minute"),
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
-        // second(datetime) -> toSecond(fromUnixTimestamp64Milli(datetime))
+        // second(datetime) -> CH: toSecond, Spark: second
         m.insert("second", FunctionMapping {
             neo4j_name: "second",
             clickhouse_name: "toSecond",
-            databricks_name: None,
+            databricks_name: Some("second"),
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
-        // dayOfWeek(datetime) -> toDayOfWeek(fromUnixTimestamp64Milli(datetime))
+        // dayOfWeek(datetime) -> CH: toDayOfWeek, Spark: dayofweek
         m.insert("dayofweek", FunctionMapping {
             neo4j_name: "dayOfWeek",
             clickhouse_name: "toDayOfWeek",
-            databricks_name: None,
+            databricks_name: Some("dayofweek"),
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
-        // dayOfYear(datetime) -> toDayOfYear(fromUnixTimestamp64Milli(datetime))
+        // dayOfYear(datetime) -> CH: toDayOfYear, Spark: dayofyear
         m.insert("dayofyear", FunctionMapping {
             neo4j_name: "dayOfYear",
             clickhouse_name: "toDayOfYear",
-            databricks_name: None,
+            databricks_name: Some("dayofyear"),
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
-        // quarter(datetime) -> toQuarter(fromUnixTimestamp64Milli(datetime))
+        // quarter(datetime) -> CH: toQuarter, Spark: quarter
         m.insert("quarter", FunctionMapping {
             neo4j_name: "quarter",
             clickhouse_name: "toQuarter",
-            databricks_name: None,
+            databricks_name: Some("quarter"),
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
-        // week(datetime) -> toISOWeek(fromUnixTimestamp64Milli(datetime))
+        // week(datetime) -> CH: toISOWeek, Spark: weekofyear
         m.insert("week", FunctionMapping {
             neo4j_name: "week",
             clickhouse_name: "toISOWeek",
-            databricks_name: None,
+            databricks_name: Some("weekofyear"),
             arg_transform: Some(wrap_epoch_millis_arg),
         });
 
@@ -961,6 +992,24 @@ lazy_static::lazy_static! {
             neo4j_name: "count",
             clickhouse_name: "count",
             databricks_name: None,
+            arg_transform: None,
+        });
+
+        // anyLast() — internal IR-level aggregate used by property_expansion
+        // to pick a non-deterministic value of a non-grouped column. CH ships
+        // `anyLast`; Spark's `any_value()` (3.4+) has matching semantics.
+        m.insert("anylast", FunctionMapping {
+            neo4j_name: "anyLast",
+            clickhouse_name: "anyLast",
+            databricks_name: Some("any_value"),
+            arg_transform: None,
+        });
+
+        // countIf(predicate) — conditional count. CH: countIf, Spark: count_if (DBR 13.1+).
+        m.insert("countif", FunctionMapping {
+            neo4j_name: "countIf",
+            clickhouse_name: "countIf",
+            databricks_name: Some("count_if"),
             arg_transform: None,
         });
 

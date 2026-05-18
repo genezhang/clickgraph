@@ -520,6 +520,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         let start_alias_sql = format!("{}_1", self.start_alias);
 
         let needs_string_conversion = self.needs_string_conversion_for_end_id();
+        let to_str = crate::sql_generator::function_mapper::current_function_mapper().cast_string();
 
         let mut items = Vec::new();
 
@@ -533,8 +534,8 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                     Identifier::Single(col) => {
                         let quoted = crate::clickhouse_query_generator::quote_identifier(col);
                         format!(
-                            "toString({}.{}) AS {}",
-                            start_alias_sql, quoted, VLP_END_ID_COLUMN
+                            "{}({}.{}) AS {}",
+                            to_str, start_alias_sql, quoted, VLP_END_ID_COLUMN
                         )
                     }
                     Identifier::Composite(cols) => {
@@ -542,7 +543,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                             .iter()
                             .map(|c| {
                                 let q = crate::clickhouse_query_generator::quote_identifier(c);
-                                format!("toString({}.{})", start_alias_sql, q)
+                                format!("{}({}.{})", to_str, start_alias_sql, q)
                             })
                             .collect();
                         format!("concat({}) AS {}", parts.join(", '|', "), VLP_END_ID_COLUMN)
@@ -563,8 +564,8 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                     Identifier::Single(col) => {
                         let quoted = crate::clickhouse_query_generator::quote_identifier(col);
                         format!(
-                            "toString({}.{}) AS {}",
-                            start_alias_sql, quoted, VLP_START_ID_COLUMN
+                            "{}({}.{}) AS {}",
+                            to_str, start_alias_sql, quoted, VLP_START_ID_COLUMN
                         )
                     }
                     Identifier::Composite(cols) => {
@@ -572,7 +573,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                             .iter()
                             .map(|c| {
                                 let q = crate::clickhouse_query_generator::quote_identifier(c);
-                                format!("toString({}.{})", start_alias_sql, q)
+                                format!("{}({}.{})", to_str, start_alias_sql, q)
                             })
                             .collect();
                         format!(
@@ -633,13 +634,13 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         // path_nodes = [start_id] for zero-hop path
         let path_node_id_sql = if let Ok(id) = self.get_node_id_column(start_type) {
             let id_sql = id.to_sql_native(&start_alias_sql);
-            if id_sql.starts_with("toString(") {
+            if id_sql.starts_with(&format!("{}(", to_str)) {
                 id_sql
             } else {
-                format!("toString({})", id_sql)
+                format!("{}({})", to_str, id_sql)
             }
         } else {
-            format!("toString({}.id)", start_alias_sql)
+            format!("{}({}.id)", to_str, start_alias_sql)
         };
         items.push(format!(
             "{} AS path_nodes",
@@ -976,6 +977,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
 
         // Determine if we need String conversion for heterogeneous end types
         let needs_string_conversion = self.needs_string_conversion_for_end_id();
+        let to_str = crate::sql_generator::function_mapper::current_function_mapper().cast_string();
 
         // Add end node ID
         // - For heterogeneous types with incompatible IDs: convert to String
@@ -993,8 +995,8 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                     Identifier::Single(col) => {
                         let quoted_col = crate::clickhouse_query_generator::quote_identifier(col);
                         format!(
-                            "toString({}.{}) AS {}",
-                            node_alias, quoted_col, VLP_END_ID_COLUMN
+                            "{}({}.{}) AS {}",
+                            to_str, node_alias, quoted_col, VLP_END_ID_COLUMN
                         )
                     }
                     Identifier::Composite(cols) => {
@@ -1004,7 +1006,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                             .map(|c| {
                                 let quoted_col =
                                     crate::clickhouse_query_generator::quote_identifier(c);
-                                format!("toString({}.{})", node_alias, quoted_col)
+                                format!("{}({}.{})", to_str, node_alias, quoted_col)
                             })
                             .collect();
                         format!("concat({}) AS {}", parts.join(", '|', "), VLP_END_ID_COLUMN)
@@ -1036,8 +1038,8 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                             let quoted_col =
                                 crate::clickhouse_query_generator::quote_identifier(col);
                             format!(
-                                "toString({}.{}) AS {}",
-                                start_alias_sql, quoted_col, VLP_START_ID_COLUMN
+                                "{}({}.{}) AS {}",
+                                to_str, start_alias_sql, quoted_col, VLP_START_ID_COLUMN
                             )
                         }
                         Identifier::Composite(cols) => {
@@ -1047,7 +1049,7 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                                 .map(|c| {
                                     let quoted_col =
                                         crate::clickhouse_query_generator::quote_identifier(c);
-                                    format!("toString({}.{})", start_alias_sql, quoted_col)
+                                    format!("{}({}.{})", to_str, start_alias_sql, quoted_col)
                                 })
                                 .collect();
                             format!(
@@ -1082,8 +1084,11 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         // since paths don't have a single relationship to identify.
         if hop_count == 1 {
             if let Some((rel_alias, from_fk, to_fk)) = hop_rel_fk_info.first() {
-                items.push(format!("toString({}.{}) AS r_from_id", rel_alias, from_fk));
-                items.push(format!("toString({}.{}) AS r_to_id", rel_alias, to_fk));
+                items.push(format!(
+                    "{}({}.{}) AS r_from_id",
+                    to_str, rel_alias, from_fk
+                ));
+                items.push(format!("{}({}.{}) AS r_to_id", to_str, rel_alias, to_fk));
             }
         }
 
@@ -1465,14 +1470,14 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                 match self.get_node_id_column(ntype) {
                     Ok(id) => {
                         let id_sql = id.to_sql_native(alias);
-                        // Ensure uniform String array — wrap in toString if not already
-                        if id_sql.starts_with("toString(") {
+                        // Ensure uniform String array — wrap if not already cast
+                        if id_sql.starts_with(&format!("{}(", to_str)) {
                             id_sql
                         } else {
-                            format!("toString({})", id_sql)
+                            format!("{}({})", to_str, id_sql)
                         }
                     }
-                    Err(_) => format!("toString({}.id)", alias),
+                    Err(_) => format!("{}({}.id)", to_str, alias),
                 }
             })
             .collect();

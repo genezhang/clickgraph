@@ -162,8 +162,9 @@ impl Identifier {
     /// Generate a pipe-joined SQL expression for use as a string ID.
     /// If alias is non-empty: `toString(alias.col)` / `concat(toString(alias.c1), '|', toString(alias.c2))`
     /// If alias is empty: `toString(col)` / `concat(toString(c1), '|', toString(c2))`
-    /// For single non-composite IDs without alias, just returns the column name (no toString).
+    /// For single non-composite IDs without alias, just returns the column name (no cast).
     pub fn to_pipe_joined_sql(&self, alias: &str) -> String {
+        let to_str = crate::sql_generator::function_mapper::current_function_mapper().cast_string();
         let qualify = |col: &str| -> String {
             let quoted = crate::clickhouse_query_generator::quote_identifier(col);
             if alias.is_empty() {
@@ -177,20 +178,20 @@ impl Identifier {
                 if alias.is_empty() {
                     col.clone()
                 } else {
-                    format!("toString({})", qualify(col))
+                    format!("{}({})", to_str, qualify(col))
                 }
             }
             Identifier::Composite(cols) => {
                 let parts: Vec<String> = cols
                     .iter()
-                    .map(|c| format!("toString({})", qualify(c)))
+                    .map(|c| format!("{}({})", to_str, qualify(c)))
                     .collect();
                 format!("concat({})", parts.join(", '|', "))
             }
         }
     }
 
-    /// Get the ID column as SQL without toString() wrapper
+    /// Get the ID column as SQL without string-cast wrapper.
     /// Used when we need native type comparison (e.g., for WHERE clauses)
     pub fn to_sql_native(&self, alias: &str) -> String {
         match self {
@@ -203,14 +204,16 @@ impl Identifier {
                 }
             }
             Identifier::Composite(cols) => {
-                // For composite IDs, we still need toString for concatenation
+                // For composite IDs, we still need string cast for concatenation
+                let to_str =
+                    crate::sql_generator::function_mapper::current_function_mapper().cast_string();
                 let qualify = |col: &str| {
                     let quoted = crate::clickhouse_query_generator::quote_identifier(col);
                     format!("{}.{}", alias, quoted)
                 };
                 let parts: Vec<String> = cols
                     .iter()
-                    .map(|c| format!("toString({})", qualify(c)))
+                    .map(|c| format!("{}({})", to_str, qualify(c)))
                     .collect();
                 format!("concat({})", parts.join(", '|', "))
             }
@@ -236,12 +239,14 @@ impl Identifier {
                 crate::graph_catalog::expression_parser::PropertyValue::Column(col.clone())
             }
             Identifier::Composite(cols) => {
+                let to_str =
+                    crate::sql_generator::function_mapper::current_function_mapper().cast_string();
                 let parts: Vec<String> = cols
                     .iter()
                     .map(|c| {
                         let quoted =
                             crate::clickhouse_query_generator::quote_identifier(c.as_str());
-                        format!("toString({})", quoted)
+                        format!("{}({})", to_str, quoted)
                     })
                     .collect();
                 crate::graph_catalog::expression_parser::PropertyValue::Expression(format!(

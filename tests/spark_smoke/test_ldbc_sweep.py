@@ -55,28 +55,29 @@ KNOWN_SKIPS: dict[str, str] = {
 #   B. Parse errors — syntax the dialect emitter shouldn't produce on Spark
 #   C. CTE column resolution — alias mismatch between CTE def and downstream ref
 EXPECTED_FAILURES: dict[str, str] = {
-    # A. FunctionMapper gaps
-    "bi-1":      "[A] FunctionMapper: toYear not mapped to Spark `year()`",
-    "bi-2":      "[A] FunctionMapper: anyLast not mapped to Spark `last_value()`/`last()`",
-    "bi-5":      "[A] FunctionMapper: anyLast",
-    "bi-6":      "[A] FunctionMapper: tuple not mapped to Spark `struct()`",
-    "bi-12":     "[A] FunctionMapper: anyLast",
-    "bi-13":     "[A] FunctionMapper: anyLast",
-    "bi-14":     "[A] FunctionMapper: anyLast",
-    "bi-17":     "[A] FunctionMapper: toUnixTimestamp64Milli not mapped to Spark `unix_millis()`",
-    "complex-1": "[A] FunctionMapper: anyLast",
-    "complex-3": "[A] FunctionMapper: `has(array, elem)` not mapped to Spark `array_contains()`",
-    "complex-4": "[A] FunctionMapper: anyLast",
-    "complex-5": "[A] FunctionMapper: anyLast",
-    "complex-7": "[A] FunctionMapper: anyLast",
-    "complex-12": "[A] FunctionMapper: toString not mapped to Spark `cast(... as string)`",
-    "complex-13": "[A] FunctionMapper: countIf not mapped to Spark `count(case when cond then 1 end)`",
-    "complex-14": "[A] FunctionMapper: countIf",
-    "short-2":   "[A] FunctionMapper: toString",
+    # A. FunctionMapper gaps — residual unmapped routines after the
+    #    anyLast / countIf / temporal-extraction / has / toString sweep.
+    "bi-6":       "[A] FunctionMapper: bare `tuple(...)` still emitted (NodeId::sql_tuple / VLP path composite)",
+    "bi-13":      "[A] FunctionMapper: `caseWithExpression` not mapped to Spark CASE",
+    "bi-17":      "[A] FunctionMapper: `toUnixTimestamp64Milli` leaking in duration-arithmetic path",
+    "complex-5":  "[A] FunctionMapper: `countIf(cond, val)` rewritten to `count_if(cond, val)` but Spark `count_if` takes 1 arg",
+    "complex-12": "[A] FunctionMapper: `formatRowNoNewline` not mapped (composite-key emission helper)",
+    "complex-13": "[A] FunctionMapper: `minIf(cond, val)` — needs structural rewrite to `min(CASE WHEN cond THEN val END)` on Spark",
+    "complex-14": "[A] FunctionMapper: `minIf` — same as complex-13",
+    "short-2":    "[A] FunctionMapper: `formatRowNoNewline` not mapped",
     # B. Parse errors
-    "bi-8":       "[B] PARSE_SYNTAX_ERROR near `ARRAY` (line 23) — VLP CTE generation",
-    "complex-10": "[B] PARSE_SYNTAX_ERROR near `\"posts\"` (line 64) — double-quote identifier vs Spark backtick",
-    # C. CTE column resolution
+    "bi-8":       "[B] PARSE_SYNTAX_ERROR near `ARRAY` — VLP CTE generation",
+    "bi-12":      "[B] PARSE_SYNTAX_ERROR — surfaced after FunctionMapper closure",
+    "complex-10": "[B] PARSE_SYNTAX_ERROR near `\"posts\"` — double-quote identifier vs Spark backtick",
+    # C. CTE column resolution (alias mismatch: `with_*_cte_N.col` vs `<scope>.col`)
+    "bi-1":       "[C] CTE alias mismatch",
+    "bi-2":       "[C] CTE alias mismatch",
+    "bi-5":       "[C] CTE alias mismatch",
+    "bi-14":      "[C] CTE alias mismatch",
+    "complex-1":  "[C] CTE alias mismatch",
+    "complex-3":  "[C] CTE alias mismatch",
+    "complex-4":  "[C] CTE alias mismatch",
+    "complex-7":  "[C] CTE alias mismatch",
     "complex-9":  "[C] CTE alias mismatch: with_friend_cte_N.p6_friend_id vs friend.p6_friend_id",
     "complex-11": "[C] CTE alias mismatch: with_friend_cte_N.p6_friend_id vs friend.p6_friend_id",
 }

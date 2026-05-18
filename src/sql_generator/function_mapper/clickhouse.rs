@@ -70,6 +70,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         format!("[{elems}]")
     }
 
+    fn tuple_constructor(&self) -> &'static str {
+        "tuple"
+    }
+
     fn quote_alias(&self, name: &str) -> String {
         // CH escapes `"` inside a double-quoted identifier by doubling it.
         // Aliases inferred from raw return text can contain quotes
