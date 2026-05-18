@@ -54,6 +54,8 @@ KNOWN_SKIPS: dict[str, str] = {
 #   A. FunctionMapper gaps — CH-native fn name leaking into Spark SQL
 #   B. Parse errors — syntax the dialect emitter shouldn't produce on Spark
 #   C. CTE column resolution — alias mismatch between CTE def and downstream ref
+#   D. Unsupported language features — query uses Cypher constructs we don't
+#      translate (GDS procedures, CALL subqueries, etc.); orthogonal to A-C
 EXPECTED_FAILURES: dict[str, str] = {
     # A. FunctionMapper gaps — residual unmapped routines after the
     #    anyLast / countIf / temporal-extraction / has / toString sweep.

@@ -71,6 +71,19 @@ fn arr(elems: &str) -> String {
     current_function_mapper().array_literal(elems)
 }
 
+/// Whether `s` looks like a bare integer literal (digits, optional leading
+/// `-`). Used to scope the Spark BFS anchor cast to numeric IDs — column
+/// references inherit their column's type and string-keyed IDs would break
+/// under a numeric cast, so neither should be wrapped.
+pub(crate) fn is_integer_literal(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    match bytes.first() {
+        Some(b'-') if bytes.len() > 1 => bytes[1..].iter().all(|b| b.is_ascii_digit()),
+        Some(b) if b.is_ascii_digit() => bytes.iter().all(|b| b.is_ascii_digit()),
+        _ => false,
+    }
+}
+
 /// Property to include in the CTE (column name and which node it belongs to)
 #[derive(Debug, Clone)]
 pub struct NodeProperty {
@@ -1159,13 +1172,19 @@ impl<'a> VariableLengthCteGenerator<'a> {
             format!("{forward}{reverse}")
         };
 
-        // Build BFS CTE. On Spark/Databricks the anchor `node_id` literal
-        // would be inferred as `INT` (32-bit), but the recursive branch
+        // Build BFS CTE. On Spark/Databricks a bare integer literal in the
+        // anchor is inferred as `INT` (32-bit), but the recursive branch
         // pulls `node_id` from a BIGINT rel column — Spark refuses to merge
         // them under `UNION ALL` (`CANNOT_MERGE_INCOMPATIBLE_DATA_TYPE`).
-        // Explicitly cast the anchor to int64 there. ClickHouse promotes
-        // small-int literals automatically, so its anchor stays unchanged.
-        let anchor_start = if matches!(dialect, crate::sql_generator::SqlDialect::Databricks) {
+        // Explicitly cast the anchor to int64 there. Only apply when the
+        // start_id is an integer literal (digits with optional leading `-`):
+        // column references (`p.id`) already inherit the column's type, and
+        // string literals (`'abc'`) would break under a numeric cast and
+        // shouldn't be touched. ClickHouse promotes small-int literals
+        // automatically, so its anchor stays unchanged either way.
+        let anchor_start = if matches!(dialect, crate::sql_generator::SqlDialect::Databricks)
+            && is_integer_literal(&start_id)
+        {
             format!("{}({})", fmap.cast_int64(), start_id)
         } else {
             start_id.clone()
