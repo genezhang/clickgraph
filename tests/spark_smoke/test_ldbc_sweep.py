@@ -69,17 +69,10 @@ EXPECTED_FAILURES: dict[str, str] = {
     "bi-8":       "[B] PARSE_SYNTAX_ERROR near `ARRAY` — VLP CTE generation",
     "bi-12":      "[B] PARSE_SYNTAX_ERROR — surfaced after FunctionMapper closure",
     "complex-10": "[B] PARSE_SYNTAX_ERROR near `\"posts\"` — double-quote identifier vs Spark backtick",
-    # C. CTE column resolution (alias mismatch: `with_*_cte_N.col` vs `<scope>.col`)
-    "bi-1":       "[C] CTE alias mismatch",
-    "bi-2":       "[C] CTE alias mismatch",
-    "bi-5":       "[C] CTE alias mismatch",
-    "bi-14":      "[C] CTE alias mismatch",
-    "complex-1":  "[C] CTE alias mismatch",
-    "complex-3":  "[C] CTE alias mismatch",
-    "complex-4":  "[C] CTE alias mismatch",
-    "complex-7":  "[C] CTE alias mismatch",
-    "complex-9":  "[C] CTE alias mismatch: with_friend_cte_N.p6_friend_id vs friend.p6_friend_id",
-    "complex-11": "[C] CTE alias mismatch: with_friend_cte_N.p6_friend_id vs friend.p6_friend_id",
+    # C. Other resolution issues — distinct from the dialect-agnostic
+    # `with_*_cte_N.col` → `alias.col` rewrite (which now passes 8 queries).
+    "bi-14":     "[C] CTE chain: same alias `person1` rebound across 5 chained CTEs; final CTE's `person1.score` doesn't resolve against the previous CTE's schema",
+    "complex-3": "[C] schema mapping: `t5.CountryId` emitted for Place_isPartOf_Place rel (no such column — Place→Place rel uses PlaceId)",
 }
 
 PARAM_REF = re.compile(r"\$([a-zA-Z_]\w*)")

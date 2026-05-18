@@ -1107,6 +1107,21 @@ fn fix_orphan_table_aliases_impl(
         }
     }
 
+    // Also rewrite raw CTE-name qualifiers (e.g., `with_friend_cte_1.col`) to
+    // the JOIN/FROM alias they were bound to (`friend.col`). ClickHouse accepts
+    // either form, but Spark/Delta only resolves against the alias actually
+    // used in FROM/JOIN — leaving the CTE name in place produces
+    // UNRESOLVED_COLUMN on Spark. Upstream construction sites can emit either
+    // form depending on the path; this final pass normalizes them.
+    for (cte_name, from_alias) in &cte_name_to_from_alias {
+        if cte_name == from_alias {
+            continue;
+        }
+        alias_replacements
+            .entry(cte_name.clone())
+            .or_insert_with(|| from_alias.clone());
+    }
+
     if alias_replacements.is_empty() {
         return; // No orphaned aliases to fix
     }
