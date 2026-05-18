@@ -85,10 +85,12 @@ PARAM_REF = re.compile(r"\$([a-zA-Z_]\w*)")
 
 
 def _substitute_params(cypher: str, params: dict[str, object]) -> str:
-    """Inline-substitute `$ident` references with literal values.
+    """Inline-substitute `$ident` references with Cypher literal values.
 
-    Strings are single-quoted (with `'` → `''` escaping). Numbers and bools
-    are stringified bare. Lists become Spark `ARRAY(...)` literals.
+    The substituted query is fed back into `cg`, which then emits Spark SQL —
+    so the literals here must be valid Cypher, not SQL. Strings are
+    single-quoted (with `'` → `''` escaping), numbers/bools stringified bare,
+    lists rendered as Cypher `[a, b, c]` list literals.
     """
     def render(val: object) -> str:
         if isinstance(val, bool):
@@ -118,7 +120,8 @@ def _load_query(family_dir: Path, qid: str) -> tuple[str, dict[str, object]]:
 
 
 def _collect_query_ids() -> list[str]:
-    """List `bi-N` ids 1..18 and `complex-N` / `short-N` from interactive/."""
+    """List every `bi-*.cypher` in bi/ and every `*.cypher` in interactive/.
+    Filtering of unsupported IDs happens later via KNOWN_SKIPS."""
     ids: list[str] = []
     for p in sorted(BI_DIR.glob("bi-*.cypher")):
         ids.append(p.stem)
