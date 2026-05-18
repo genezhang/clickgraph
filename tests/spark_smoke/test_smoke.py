@@ -107,40 +107,46 @@ def _table_rows(output: str) -> list[list[str]]:
 
 
 def test_short1_flat_join():
+    """Flat MATCH with inline id filter + IS_LOCATED_IN traversal.
+    Mini dataset: Person id=1 (Alice) lives in Place id=7 (New_York)."""
     cg_bin = _require_env()
     cypher = (
-        "MATCH (n:Person {id: 14})-[:IS_LOCATED_IN]->(p:City) "
+        "MATCH (n:Person {id: 1})-[:IS_LOCATED_IN]->(p:City) "
         "RETURN n.firstName AS firstName, p.id AS cityId"
     )
     sql = _generate_sql(cg_bin, cypher)
     out = _run_in_container(sql)
     rows = _table_rows(out)
-    assert rows == [["Alice", "1000"]], f"unexpected rows: {rows}\n--- full output ---\n{out}"
+    assert rows == [["Alice", "7"]], f"unexpected rows: {rows}\n--- full output ---\n{out}"
 
 
 def test_knows_vlp_recursive_cte():
     """Undirected KNOWS *1..2 → two recursive CTEs unioned. Stresses the
-    biggest local-Spark unknown: recursive CTE on Delta."""
+    biggest local-Spark unknown: recursive CTE on Delta.
+    Mini dataset KNOWS edges (anchored at id=1): 1↔2, 1↔3, 2↔3, 3↔4, 4↔5.
+    Reachable from 1 at 1..2 hops (excluding self): {2,3,4}."""
     cg_bin = _require_env()
     cypher = (
-        "MATCH (p:Person {id: 14})-[:KNOWS*1..2]-(friend:Person) "
+        "MATCH (p:Person {id: 1})-[:KNOWS*1..2]-(friend:Person) "
+        "WHERE friend.id <> p.id "
         "RETURN DISTINCT friend.id AS friendId, friend.firstName AS firstName "
         "ORDER BY friendId"
     )
     sql = _generate_sql(cg_bin, cypher)
     out = _run_in_container(sql)
     rows = _table_rows(out)
-    assert rows == [["15", "Bob"], ["16", "Carol"], ["17", "Dan"]], (
+    assert rows == [["2", "Bob"], ["3", "Carol"], ["4", "Dave"]], (
         f"unexpected rows: {rows}\n--- full output ---\n{out}"
     )
 
 
 def test_collect_and_count_aggregation():
     """Exercises FunctionMapper: cypher `collect()` → Spark `collect_list()`,
-    plus `count()` over a bidirectional KNOWS UNION ALL with GROUP BY."""
+    plus `count()` with GROUP BY on a directed KNOWS traversal.
+    Anchor=1: KNOWS outgoing edges → 2 (Bob), 3 (Carol)."""
     cg_bin = _require_env()
     cypher = (
-        "MATCH (p:Person {id: 14})-[:KNOWS]-(friend:Person) "
+        "MATCH (p:Person {id: 1})-[:KNOWS]->(friend:Person) "
         "RETURN p.firstName AS anchor, count(friend) AS friendCount, "
         "collect(friend.firstName) AS friends"
     )
@@ -152,18 +158,21 @@ def test_collect_and_count_aggregation():
     anchor, count, friends = rows[0]
     assert anchor == "Alice"
     assert count == "2"
-    # collect_list order over UNION ALL isn't deterministic — compare as a set.
+    # collect_list order isn't guaranteed — compare as a set.
     parsed = {f.strip() for f in friends.strip("[]").split(",")}
-    assert parsed == {"Bob", "Dan"}, f"unexpected friend set: {parsed}"
+    assert parsed == {"Bob", "Carol"}, f"unexpected friend set: {parsed}"
 
 
 def test_optional_match_null_safe_filter():
-    """OPTIONAL MATCH must emit LEFT JOIN with NULL-safe schema filter so
-    persons without an IS_LOCATED_IN edge still appear (Eve, id=18)."""
+    """OPTIONAL MATCH against a virtual-label target (:University, filter
+    type='University') must emit LEFT JOIN with NULL-safe schema filter so
+    persons without a STUDY_AT edge still appear.
+    Mini dataset STUDY_AT: persons 1→MIT, 2→TU_Berlin, 3→TU_Berlin only;
+    persons 4 (Dave) and 5 (Eve) have no STUDY_AT edge."""
     cg_bin = _require_env()
     cypher = (
-        "MATCH (p:Person) OPTIONAL MATCH (p)-[:IS_LOCATED_IN]->(c:City) "
-        "RETURN p.firstName AS firstName, c.name AS cityName ORDER BY p.id"
+        "MATCH (p:Person) OPTIONAL MATCH (p)-[:STUDY_AT]->(u:University) "
+        "RETURN p.firstName AS firstName, u.name AS uniName ORDER BY p.id"
     )
     sql = _generate_sql(cg_bin, cypher)
     assert "LEFT JOIN" in sql, f"expected LEFT JOIN for OPTIONAL MATCH:\n{sql}"
@@ -171,17 +180,18 @@ def test_optional_match_null_safe_filter():
     out = _run_in_container(sql)
     rows = _table_rows(out)
     expected = [
-        ["Alice", "Springfield"],
-        ["Bob", "Springfield"],
-        ["Carol", "Springfield"],
-        ["Dan", "Springfield"],
-        ["Eve", "NULL"],  # Spark `.show()` renders NULL literally
+        ["Alice", "MIT"],
+        ["Bob", "TU_Berlin"],
+        ["Carol", "TU_Berlin"],
+        ["Dave", "NULL"],
+        ["Eve", "NULL"],
     ]
     assert rows == expected, f"unexpected rows: {rows}\n--- full output ---\n{out}"
 
 
 def test_string_functions_mapping():
-    """`toUpper` → `upper`, `length` → `length`, `STARTS WITH` → `startsWith`."""
+    """`toUpper` → `upper`, `length` → `length`, `STARTS WITH` → `startsWith`.
+    Only Alice (id=1) has a firstName starting with 'A'."""
     cg_bin = _require_env()
     cypher = (
         'MATCH (p:Person) WHERE p.firstName STARTS WITH "A" '
