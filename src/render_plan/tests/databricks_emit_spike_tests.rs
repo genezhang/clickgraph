@@ -693,3 +693,168 @@ async fn tostring_under_databricks_emits_string() {
         "Databricks SQL leaked CH `toString`; got:\n{sql}"
     );
 }
+
+/// BFS shortestPath target branch under Databricks emits the structural
+/// `min(CASE WHEN ... THEN ... END)` form for the conditional min, not
+/// CH's `minIf(val, cond)`. Spark has no `minIf` — this is the load-bearing
+/// rewrite for complex-13. Pairs with `count_if` for the existence guard.
+#[tokio::test]
+async fn shortestpath_bfs_under_databricks_uses_min_if_rewrite() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql(
+            "MATCH p = shortestPath((a:User {id: 1})-[:FOLLOWS*]-(b:User {id: 2})) \
+             RETURN length(p) AS hops",
+        )
+    })
+    .await;
+
+    // The target branch must use `count_if(...)` for the existence guard
+    // (Spark spelling, not CH's `countIf`).
+    assert!(
+        sql.contains("count_if("),
+        "expected Spark `count_if(...)` in BFS target branch; got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("countIf("),
+        "Databricks BFS SQL leaked CH `countIf`; got:\n{sql}"
+    );
+    // The conditional min must collapse to `min(CASE WHEN cond THEN val END)`
+    // since Spark has no `minIf`. Match the call-shape boundary so an
+    // unrelated `min(` elsewhere can't satisfy the assertion alone.
+    assert!(
+        sql.contains("min(CASE WHEN"),
+        "expected Spark `min(CASE WHEN ...)` conditional-min rewrite; got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("minIf("),
+        "Databricks BFS SQL leaked CH `minIf`; got:\n{sql}"
+    );
+}
+
+/// CH baseline for the BFS target branch — confirms the CH side still
+/// uses native `countIf` and `minIf` byte-for-byte (no accidental cross-
+/// dialect bleed from the Databricks rewrite).
+#[tokio::test]
+async fn shortestpath_bfs_under_clickhouse_keeps_native_min_if() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::ClickHouse,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql(
+            "MATCH p = shortestPath((a:User {id: 1})-[:FOLLOWS*]-(b:User {id: 2})) \
+             RETURN length(p) AS hops",
+        )
+    })
+    .await;
+
+    assert!(
+        sql.contains("countIf("),
+        "expected CH `countIf(...)` in BFS target branch; got:\n{sql}"
+    );
+    assert!(
+        sql.contains("minIf("),
+        "expected CH `minIf(...)` in BFS target branch; got:\n{sql}"
+    );
+}
+
+/// Undirected BFS shortestPath under Databricks collapses the
+/// anchor/forward/reverse 3-branch recursive UNION ALL into a single
+/// recursive branch joined against a bidirectional sub-UNION ALL over
+/// the rel table. Spark requires exactly two children under a recursive
+/// UNION ALL (anchor + recursive) — three children fail with
+/// INVALID_RECURSIVE_CTE. This shape is the structural rewrite that
+/// unblocks complex-13.
+#[tokio::test]
+async fn shortestpath_bfs_under_databricks_collapses_undirected_to_single_branch() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql(
+            "MATCH p = shortestPath((a:User {id: 1})-[:FOLLOWS*]-(b:User {id: 2})) \
+             RETURN length(p) AS hops",
+        )
+    })
+    .await;
+
+    // The single-branch recursive body should reference `neighbor.node_id`
+    // — the alias of the bidirectional sub-UNION inside the JOIN.
+    assert!(
+        sql.contains("neighbor.node_id"),
+        "expected Spark single-branch recursive form joining against `neighbor`; got:\n{sql}"
+    );
+    // And the bidirectional sub-UNION over the rel table must be present
+    // as a non-recursive inner UNION ALL. Loose match on the structural
+    // hint — the exact column names depend on the schema's rel keys.
+    assert!(
+        sql.contains("AS neighbor ON neighbor.prev = b.node_id"),
+        "expected Spark bidirectional sub-UNION joined as `neighbor`; got:\n{sql}"
+    );
+    // The legacy 3-branch shape would have a *second* `FROM <bfs_cte> b`
+    // (the reverse recursive branch) per BFS CTE. shortestPath emits two
+    // BFS CTEs total (one per direction in the bidirectional outer UNION),
+    // so the rewritten Spark form has exactly one `b` JOIN per BFS CTE = 2.
+    // The legacy 3-branch shape would have 4 (2 BFS CTEs × 2 branches).
+    let count_b_alias = sql.matches(" b\n    JOIN ").count();
+    assert_eq!(
+        count_b_alias, 2,
+        "expected exactly one recursive branch per BFS CTE (2 total); got {count_b_alias}:\n{sql}"
+    );
+}
+
+/// CH baseline for the undirected BFS shape — confirms the existing
+/// 3-branch (anchor + forward + reverse) recursive UNION ALL is preserved
+/// byte-for-byte. ClickHouse accepts N-ary recursive UNION ALL.
+#[tokio::test]
+async fn shortestpath_bfs_under_clickhouse_keeps_three_branch_undirected() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::ClickHouse,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql(
+            "MATCH p = shortestPath((a:User {id: 1})-[:FOLLOWS*]-(b:User {id: 2})) \
+             RETURN length(p) AS hops",
+        )
+    })
+    .await;
+
+    // CH path uses the legacy 2 recursive branches (forward + reverse).
+    // `neighbor` alias should NOT appear — that's the Spark-only rewrite.
+    assert!(
+        !sql.contains("neighbor.node_id"),
+        "CH BFS SQL must not use Spark `neighbor` sub-UNION rewrite; got:\n{sql}"
+    );
+    // Confirm both recursive branches present in each BFS CTE — 2 BFS CTEs
+    // × 2 branches each = 4 occurrences of `<bfs> b\n    JOIN`.
+    let count_b_alias = sql.matches(" b\n    JOIN ").count();
+    assert_eq!(
+        count_b_alias, 4,
+        "expected two recursive branches per BFS CTE on CH (4 total); got {count_b_alias}:\n{sql}"
+    );
+}
+
+/// `is_integer_literal` is the guard that keeps the Databricks anchor
+/// cast from wrapping non-numeric IDs. Direct unit test — covers the
+/// shape via the cypher_to_sql path elsewhere but locks the predicate
+/// itself so refactors don't silently regress it.
+#[test]
+fn is_integer_literal_recognises_only_integers() {
+    use crate::sql_generator::emitters::clickhouse::variable_length_cte::is_integer_literal;
+    assert!(is_integer_literal("14"));
+    assert!(is_integer_literal("-42"));
+    assert!(is_integer_literal("0"));
+    // Not integers: column refs, string literals, floats, empty, bare minus.
+    assert!(!is_integer_literal("p.id"));
+    assert!(!is_integer_literal("'abc'"));
+    assert!(!is_integer_literal("3.14"));
+    assert!(!is_integer_literal(""));
+    assert!(!is_integer_literal("-"));
+    assert!(!is_integer_literal("123abc"));
+}

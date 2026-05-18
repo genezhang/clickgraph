@@ -71,6 +71,19 @@ fn arr(elems: &str) -> String {
     current_function_mapper().array_literal(elems)
 }
 
+/// Whether `s` looks like a bare integer literal (digits, optional leading
+/// `-`). Used to scope the Spark BFS anchor cast to numeric IDs — column
+/// references inherit their column's type and string-keyed IDs would break
+/// under a numeric cast, so neither should be wrapped.
+pub(crate) fn is_integer_literal(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    match bytes.first() {
+        Some(b'-') if bytes.len() > 1 => bytes[1..].iter().all(|b| b.is_ascii_digit()),
+        Some(b) if b.is_ascii_digit() => bytes.iter().all(|b| b.is_ascii_digit()),
+        _ => false,
+    }
+}
+
 /// Property to include in the CTE (column name and which node it belongs to)
 #[derive(Debug, Clone)]
 pub struct NodeProperty {
@@ -1087,56 +1100,102 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // Build the BFS recursive CTE name (without _inner suffix)
         let bfs_cte_name = format!("{}_bfs", self.cte_name);
 
-        // Forward direction branch: from_col → to_col
-        let forward_recursive = format!(
-            "    SELECT DISTINCT rel.{to_col} AS node_id, b.hop + 1 AS hop\n    \
-             FROM {bfs_cte} b\n    \
-             JOIN {rel_table} rel ON rel.{from_col} = b.node_id\n    \
-             WHERE b.hop < {max_hops}\n      \
-             AND rel.{to_col} NOT IN (SELECT node_id FROM {bfs_cte}){stop_at_target}",
-            to_col = to_col,
-            bfs_cte = bfs_cte_name,
-            rel_table = rel_table,
-            from_col = from_col,
-            max_hops = max_hops,
-            stop_at_target = target_id
-                .as_ref()
-                .map(|t| format!("\n      AND b.node_id != {}", t))
-                .unwrap_or_default(),
-        );
+        let stop_at_target = target_id
+            .as_ref()
+            .map(|t| format!("\n      AND b.node_id != {}", t))
+            .unwrap_or_default();
 
-        // Reverse direction branch (for undirected edges): to_col → from_col
-        let reverse_recursive = if self.is_undirected {
+        // Recursive body. ClickHouse accepts N-ary `UNION ALL` for recursive
+        // CTEs, so an undirected edge is emitted as two separate recursive
+        // branches (forward + reverse). Spark/Databricks requires exactly
+        // two children under the recursive `UNION ALL` (anchor + recursive),
+        // so the undirected case is collapsed to a single recursive branch
+        // that joins against a bidirectional sub-`UNION ALL` over the rel
+        // table. The bidirectional sub-`UNION ALL` is non-recursive, so it
+        // doesn't run afoul of the 2-child rule.
+        let dialect = crate::server::query_context::get_current_dialect();
+        let recursive_body = if self.is_undirected
+            && matches!(dialect, crate::sql_generator::SqlDialect::Databricks)
+        {
             format!(
-                "\n    UNION ALL\n    \
-                 SELECT DISTINCT rel.{from_col} AS node_id, b.hop + 1 AS hop\n    \
+                "    SELECT DISTINCT neighbor.node_id AS node_id, b.hop + 1 AS hop\n    \
                  FROM {bfs_cte} b\n    \
-                 JOIN {rel_table} rel ON rel.{to_col} = b.node_id\n    \
+                 JOIN (\n        \
+                     SELECT {from_col} AS prev, {to_col} AS node_id FROM {rel_table}\n        \
+                     UNION ALL\n        \
+                     SELECT {to_col} AS prev, {from_col} AS node_id FROM {rel_table}\n    \
+                 ) AS neighbor ON neighbor.prev = b.node_id\n    \
                  WHERE b.hop < {max_hops}\n      \
-                 AND rel.{from_col} NOT IN (SELECT node_id FROM {bfs_cte}){stop_at_target}",
-                from_col = from_col,
+                 AND neighbor.node_id NOT IN (SELECT node_id FROM {bfs_cte}){stop_at_target}",
                 bfs_cte = bfs_cte_name,
                 rel_table = rel_table,
+                from_col = from_col,
                 to_col = to_col,
                 max_hops = max_hops,
-                stop_at_target = target_id
-                    .as_ref()
-                    .map(|t| format!("\n      AND b.node_id != {}", t))
-                    .unwrap_or_default(),
+                stop_at_target = stop_at_target,
             )
         } else {
-            String::new()
+            // ClickHouse path — and Spark directed case — keep the original
+            // 2- or 3-branch UNION ALL form (matches CH behavior byte-for-byte
+            // when not undirected on Databricks).
+            let forward = format!(
+                "    SELECT DISTINCT rel.{to_col} AS node_id, b.hop + 1 AS hop\n    \
+                 FROM {bfs_cte} b\n    \
+                 JOIN {rel_table} rel ON rel.{from_col} = b.node_id\n    \
+                 WHERE b.hop < {max_hops}\n      \
+                 AND rel.{to_col} NOT IN (SELECT node_id FROM {bfs_cte}){stop_at_target}",
+                to_col = to_col,
+                bfs_cte = bfs_cte_name,
+                rel_table = rel_table,
+                from_col = from_col,
+                max_hops = max_hops,
+                stop_at_target = stop_at_target,
+            );
+            let reverse = if self.is_undirected {
+                format!(
+                    "\n    UNION ALL\n    \
+                     SELECT DISTINCT rel.{from_col} AS node_id, b.hop + 1 AS hop\n    \
+                     FROM {bfs_cte} b\n    \
+                     JOIN {rel_table} rel ON rel.{to_col} = b.node_id\n    \
+                     WHERE b.hop < {max_hops}\n      \
+                     AND rel.{from_col} NOT IN (SELECT node_id FROM {bfs_cte}){stop_at_target}",
+                    from_col = from_col,
+                    bfs_cte = bfs_cte_name,
+                    rel_table = rel_table,
+                    to_col = to_col,
+                    max_hops = max_hops,
+                    stop_at_target = stop_at_target,
+                )
+            } else {
+                String::new()
+            };
+            format!("{forward}{reverse}")
         };
 
-        // Build BFS CTE
+        // Build BFS CTE. On Spark/Databricks a bare integer literal in the
+        // anchor is inferred as `INT` (32-bit), but the recursive branch
+        // pulls `node_id` from a BIGINT rel column — Spark refuses to merge
+        // them under `UNION ALL` (`CANNOT_MERGE_INCOMPATIBLE_DATA_TYPE`).
+        // Explicitly cast the anchor to int64 there. Only apply when the
+        // start_id is an integer literal (digits with optional leading `-`):
+        // column references (`p.id`) already inherit the column's type, and
+        // string literals (`'abc'`) would break under a numeric cast and
+        // shouldn't be touched. ClickHouse promotes small-int literals
+        // automatically, so its anchor stays unchanged either way.
+        let anchor_start = if matches!(dialect, crate::sql_generator::SqlDialect::Databricks)
+            && is_integer_literal(&start_id)
+        {
+            format!("{}({})", fmap.cast_int64(), start_id)
+        } else {
+            start_id.clone()
+        };
         let bfs_cte_sql = format!(
             "{bfs_cte} AS (\n    \
-             SELECT {start_id} AS node_id, {cast_u16}(0) AS hop\n    \
-             UNION ALL\n{forward}{reverse}\n)",
+             SELECT {anchor_start} AS node_id, {cast_u16}(0) AS hop\n    \
+             UNION ALL\n{recursive_body}\n)",
             bfs_cte = bfs_cte_name,
-            start_id = start_id,
-            forward = forward_recursive,
-            reverse = reverse_recursive,
+            anchor_start = anchor_start,
+            recursive_body = recursive_body,
         );
 
         // Build result wrapper CTE that matches VLP output schema.
@@ -1145,19 +1204,22 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // - hop_count for length(path) → t.hop_count rewriting
         // - NULL hop_count when target not reached → ifNull() pattern works
         let result_select = if let Some(ref target) = target_id {
-            // BFS target branch: both countIf and minIf are ClickHouse-only
-            // aggregate forms. Spark has `count_if` (single-arg) but no
-            // `minIf` equivalent — the whole conditional-min pattern needs
-            // a structural rewrite to `min(CASE WHEN cond THEN val END)` to
-            // run on Spark. Until that lands, keep both as CH-native so the
-            // dialect mismatch surfaces as a single UNRESOLVED_ROUTINE rather
-            // than mixed half-translated SQL.
+            // BFS target branch — pair-rewrite the conditional count/min
+            // through the FunctionMapper so both dialects emit valid SQL:
+            //   CH:    countIf(cond) > 0, minIf(val, cond)
+            //   Spark: count_if(cond) > 0, min(CASE WHEN cond THEN val END)
+            // The outer CASE … ELSE NULL is redundant under standard `min`
+            // semantics (empty match → NULL anyway) but kept for clarity
+            // and to leave the CH emission byte-identical to its prior form.
+            let cond = format!("node_id = {target}");
+            let count_if = fmap.count_if();
+            let conditional_min = fmap.min_if(&format!("{cast_u16}(hop)"), &cond);
             format!(
                 "{name} AS (\n    SELECT\n        \
                  {start_id} AS start_id,\n        \
                  {target} AS end_id,\n        \
-                 CASE WHEN countIf(node_id = {target}) > 0\n            \
-                 THEN minIf({cast_u16}(hop), node_id = {target})\n            \
+                 CASE WHEN {count_if}({cond}) > 0\n            \
+                 THEN {conditional_min}\n            \
                  ELSE NULL END AS hop_count,\n        \
                  {empty_str_arr} AS path_relationships,\n        \
                  {empty_i64_arr} AS path_nodes\n    \
