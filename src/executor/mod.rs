@@ -53,4 +53,12 @@ pub trait QueryExecutor: Send + Sync {
         format: &str,
         role: Option<&str>,
     ) -> Result<String, ExecutorError>;
+
+    /// Downcast hook for callers that need a backend's concrete capabilities
+    /// beyond this trait — currently only the Databricks executor, whose
+    /// concrete type schema introspection (`DatabricksProbe`) drives directly.
+    /// Returns `None` by default; backends opt in by overriding it.
+    fn as_any(&self) -> Option<&(dyn std::any::Any + 'static)> {
+        None
+    }
 }

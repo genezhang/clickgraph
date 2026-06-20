@@ -2167,6 +2167,90 @@ pub struct IntrospectRequest {
     pub database: String,
 }
 
+/// Run schema introspection against whichever backend the server uses: the
+/// Databricks probe (`SHOW TABLES` / `DESCRIBE TABLE EXTENDED`) when running in
+/// DeltaGraph mode, or the ClickHouse `system.*` path otherwise. Both return the
+/// same `IntrospectResponse`, so the introspect / discover-prompt handlers share
+/// this entry point. `database` is the namespace to introspect — a ClickHouse
+/// database, or (under Databricks) the Spark schema within `DATABRICKS_CATALOG`.
+async fn introspect_for_backend(
+    app_state: &AppState,
+    database: &str,
+) -> Result<
+    crate::graph_catalog::schema_discovery::IntrospectResponse,
+    (StatusCode, Json<serde_json::Value>),
+> {
+    #[cfg(feature = "databricks")]
+    if app_state.config.databricks {
+        return databricks_introspect(app_state, database).await;
+    }
+
+    let ch_client = match &app_state.clickhouse_client {
+        Some(c) => c,
+        None => {
+            return Err((
+                StatusCode::NOT_IMPLEMENTED,
+                Json(
+                    serde_json::json!({ "error": "Schema introspection is not available in this mode (no ClickHouse connection)" }),
+                ),
+            ));
+        }
+    };
+
+    SchemaDiscovery::introspect(ch_client, database)
+        .await
+        .map_err(|e| {
+            log::error!("Introspect failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e })),
+            )
+        })
+}
+
+/// DeltaGraph introspection: resolve the concrete `DatabricksSqlExecutor` from
+/// the trait object, use its configured catalog plus the request's `database`
+/// (treated as the Spark schema) and drive `DatabricksProbe`.
+#[cfg(feature = "databricks")]
+async fn databricks_introspect(
+    app_state: &AppState,
+    schema: &str,
+) -> Result<
+    crate::graph_catalog::schema_discovery::IntrospectResponse,
+    (StatusCode, Json<serde_json::Value>),
+> {
+    use crate::executor::databricks_sql::DatabricksSqlExecutor;
+    use crate::graph_catalog::databricks_probe::DatabricksProbe;
+
+    let executor = app_state
+        .executor
+        .as_any()
+        .and_then(|a| a.downcast_ref::<DatabricksSqlExecutor>())
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "Databricks mode is active but the executor is not a DatabricksSqlExecutor" })),
+            )
+        })?;
+
+    let catalog = executor.catalog().ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "Databricks introspection requires a catalog. Set DATABRICKS_CATALOG (or the schema YAML `catalog:` field) and restart the server; the request's `database` is used as the Spark schema within that catalog." })),
+        )
+    })?;
+
+    DatabricksProbe::introspect(executor, catalog, schema)
+        .await
+        .map_err(|e| {
+            log::error!("Databricks introspect failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e })),
+            )
+        })
+}
+
 pub async fn introspect_handler(
     State(app_state): State<Arc<AppState>>,
     Json(payload): Json<IntrospectRequest>,
@@ -2186,30 +2270,8 @@ pub async fn introspect_handler(
         ));
     }
 
-    let ch_client = match &app_state.clickhouse_client {
-        Some(c) => c,
-        None => {
-            return Err((
-                StatusCode::NOT_IMPLEMENTED,
-                Json(
-                    serde_json::json!({ "error": "Schema introspection is not available in embedded mode (no ClickHouse connection)" }),
-                ),
-            ));
-        }
-    };
-
-    let response = SchemaDiscovery::introspect(ch_client, &payload.database).await;
-
-    match response {
-        Ok(resp) => Ok(Json(serde_json::to_value(resp).unwrap())),
-        Err(e) => {
-            log::error!("Introspect failed: {}", e);
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e })),
-            ))
-        }
-    }
+    let resp = introspect_for_backend(&app_state, &payload.database).await?;
+    Ok(Json(serde_json::to_value(resp).unwrap()))
 }
 
 #[derive(Deserialize)]
@@ -2235,37 +2297,11 @@ pub async fn discover_prompt_handler(
         ));
     }
 
-    // Introspect the database
-    let ch_client = match &app_state.clickhouse_client {
-        Some(c) => c,
-        None => {
-            return Err((
-                StatusCode::NOT_IMPLEMENTED,
-                Json(
-                    serde_json::json!({ "error": "Schema discovery is not available in embedded mode (no ClickHouse connection)" }),
-                ),
-            ));
-        }
-    };
-
-    let introspect_result = SchemaDiscovery::introspect(ch_client, &payload.database).await;
-
-    match introspect_result {
-        Ok(resp) => {
-            let prompt_response = crate::graph_catalog::llm_prompt::format_discovery_prompt(
-                &resp.database,
-                &resp.tables,
-            );
-            Ok(Json(serde_json::to_value(prompt_response).unwrap()))
-        }
-        Err(e) => {
-            log::error!("Introspect failed for discover-prompt: {}", e);
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e })),
-            ))
-        }
-    }
+    // Introspect via whichever backend is active (ClickHouse or Databricks).
+    let resp = introspect_for_backend(&app_state, &payload.database).await?;
+    let prompt_response =
+        crate::graph_catalog::llm_prompt::format_discovery_prompt(&resp.database, &resp.tables);
+    Ok(Json(serde_json::to_value(prompt_response).unwrap()))
 }
 
 #[derive(Deserialize)]
