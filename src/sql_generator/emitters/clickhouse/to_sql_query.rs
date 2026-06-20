@@ -4565,11 +4565,13 @@ impl RenderExpr {
                 }
 
                 // Native-function pass-through, keyed by the active dialect
-                // (`ch.` for ClickHouse, `dbx.` for Databricks). A foreign
-                // prefix is rejected; this arm returns `String`, so the
-                // rejection degrades to an empty render (loud SQL failure) —
-                // the clear, message-bearing error path lives in
-                // `translate_scalar_function` and `strip_passthrough`.
+                // (`ch.` for ClickHouse, `dbx.` for Databricks). This arm returns
+                // `String`, not `Result`, so a foreign-backend prefix can't be
+                // surfaced as a clean error here — instead we emit the *original*
+                // prefixed name (e.g. `ch.uniq(x)`) so the query fails loudly at
+                // the database on an unknown function, never silently dropping the
+                // prefix into a valid-looking call. The message-bearing error path
+                // is `translate_scalar_function` / the `LogicalExpr` arms.
                 match crate::sql_generator::passthrough::strip_passthrough(
                     &fn_call.name,
                     crate::server::query_context::get_current_dialect(),
@@ -4586,7 +4588,13 @@ impl RenderExpr {
                     Ok(None) => { /* not a pass-through name — normal mapping below */ }
                     Err(e) => {
                         log::error!("scalar pass-through rejected: {}", e);
-                        return String::new();
+                        let args = fn_call
+                            .args
+                            .iter()
+                            .map(|e| e.to_sql())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        return format!("{}({})", fn_call.name, args);
                     }
                 }
 
@@ -4649,12 +4657,18 @@ impl RenderExpr {
                     Err(e) => {
                         // This arm returns `String`, not `Result`, so a foreign-backend
                         // prefix (e.g. `ch.uniq` on Databricks) can't be surfaced as a
-                        // clean translation error here — log it and emit nothing so the
-                        // downstream SQL fails loudly rather than running wrong. (Scalar
-                        // pass-through DOES return a proper error; same pre-existing
-                        // asymmetry as the empty-name case once tracked by this TODO.)
+                        // clean translation error here — emit the *original* prefixed
+                        // name so the query fails loudly at the database on an unknown
+                        // function, never silently dropping the prefix. The
+                        // message-bearing error path is the `LogicalExpr` arms.
                         log::error!("aggregate pass-through rejected: {}", e);
-                        return String::new();
+                        let args = agg
+                            .args
+                            .iter()
+                            .map(|e| e.to_sql())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        return format!("{}({})", agg.name, args);
                     }
                 }
 

@@ -48,14 +48,14 @@ use crate::sql_generator::SqlDialect;
 /// Whether a pass-through call is a scalar or an aggregate function — the
 /// distinction the planner needs to decide GROUP BY.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PassthroughKind {
+pub(crate) enum PassthroughKind {
     Scalar,
     Aggregate,
 }
 
 /// Why a pass-through name could not be resolved against the active dialect.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PassthroughError {
+pub(crate) enum PassthroughError {
     /// A prefix from a *different* backend was used (e.g. `ch.` while the
     /// active backend is Databricks). Carries a ready-to-surface message.
     WrongBackend(String),
@@ -92,17 +92,18 @@ pub(crate) trait PassthroughPolicy: Send + Sync {
 /// foreign-prefix scan in [`strip_passthrough`].
 const POLICY_DIALECTS: &[SqlDialect] = &[SqlDialect::ClickHouse, SqlDialect::Databricks];
 
-/// Returns the pass-through policy for an explicit dialect.
-pub(crate) fn for_dialect(dialect: SqlDialect) -> &'static dyn PassthroughPolicy {
+/// Returns the pass-through policy for an explicit dialect, or `None` for a
+/// dialect that has no policy yet. Returning `None` (rather than panicking)
+/// keeps this safe on the per-function-call hot path: dialects without a
+/// pass-through policy also have no SQL emitter, so they fail earlier at
+/// `emitter_for` — here they simply mean "no pass-through handling".
+fn for_dialect(dialect: SqlDialect) -> Option<&'static dyn PassthroughPolicy> {
     static CLICKHOUSE: clickhouse::ClickhousePassthrough = clickhouse::ClickhousePassthrough;
     static DATABRICKS: databricks::DatabricksPassthrough = databricks::DatabricksPassthrough;
     match dialect {
-        SqlDialect::ClickHouse => &CLICKHOUSE,
-        SqlDialect::Databricks => &DATABRICKS,
-        d => unimplemented!(
-            "pass-through policy for dialect {:?} is not yet implemented",
-            d
-        ),
+        SqlDialect::ClickHouse => Some(&CLICKHOUSE),
+        SqlDialect::Databricks => Some(&DATABRICKS),
+        _ => None,
     }
 }
 
@@ -118,9 +119,11 @@ fn strip_nonempty<'a>(name: &'a str, prefix: &str) -> Option<Result<&'a str, ()>
 ///
 /// Returns `None` for a plain (non-prefixed) function or a bare prefix with
 /// no function name (the empty-name case is reported later, at emit time).
-pub fn classify_passthrough(name: &str) -> Option<PassthroughKind> {
+pub(crate) fn classify_passthrough(name: &str) -> Option<PassthroughKind> {
     for &dialect in POLICY_DIALECTS {
-        let policy = for_dialect(dialect);
+        let Some(policy) = for_dialect(dialect) else {
+            continue;
+        };
 
         // Explicit aggregate prefix wins outright.
         if let Some(agg_prefix) = policy.agg_prefix() {
@@ -150,11 +153,14 @@ pub fn classify_passthrough(name: &str) -> Option<PassthroughKind> {
 /// - `Err(WrongBackend)` — a *foreign* dialect's prefix was used; the
 ///   message names the right one for the active backend.
 /// - `Err(EmptyName)` — a prefix with no function name.
-pub fn strip_passthrough(
+pub(crate) fn strip_passthrough(
     name: &str,
     dialect: SqlDialect,
 ) -> Result<Option<&str>, PassthroughError> {
-    let active = for_dialect(dialect);
+    // A dialect without a pass-through policy gets no pass-through handling.
+    let Some(active) = for_dialect(dialect) else {
+        return Ok(None);
+    };
 
     if let Some(agg_prefix) = active.agg_prefix() {
         if let Some(res) = strip_nonempty(name, agg_prefix) {
@@ -174,7 +180,9 @@ pub fn strip_passthrough(
         if other == dialect {
             continue;
         }
-        let foreign = for_dialect(other);
+        let Some(foreign) = for_dialect(other) else {
+            continue;
+        };
         let hits = name.starts_with(foreign.scalar_prefix())
             || foreign.agg_prefix().is_some_and(|p| name.starts_with(p));
         if hits {

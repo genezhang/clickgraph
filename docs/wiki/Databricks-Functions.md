@@ -9,8 +9,11 @@ built-in.
 > [`ch.`/`chagg.` pass-through](ClickHouse-Functions.md). The two are
 > **backend-specific and mutually exclusive**: `dbx.` works only on the
 > Databricks backend, `ch.`/`chagg.` only on ClickHouse. Using the wrong
-> prefix for the active backend is rejected at translation time with a
-> message pointing at the right one — it never silently produces wrong SQL.
+> prefix for the active backend always **fails** — the prefix is never
+> silently stripped into a valid function on the other backend. Depending
+> on the code path it surfaces either as a translation-time error (with a
+> message naming the correct prefix) or as a database error on the unknown
+> prefixed function name.
 
 ## Quick reference
 
@@ -65,11 +68,11 @@ The registry tracks Spark / Databricks SQL built-in aggregates, including:
 
 | Category | Functions |
 |----------|-----------|
-| **Basic** | `count`, `count_if`, `sum`, `avg`, `mean`, `min`, `max`, `min_by`, `max_by`, `first`, `last`, `any_value`, `mode`, `product` |
+| **Basic** | `count`, `count_if`, `sum`, `avg`, `mean`, `min`, `max`, `min_by`, `max_by`, `first`, `first_value`, `last`, `last_value`, `any_value`, `mode` |
 | **Collection** | `collect_list`, `collect_set`, `array_agg` |
 | **Cardinality / sketch** | `approx_count_distinct`, `count_min_sketch`, `hll_sketch_agg`, `hll_union_agg` |
 | **Percentiles** | `median`, `percentile`, `percentile_approx`, `approx_percentile`, `histogram_numeric` |
-| **Statistics** | `stddev`, `stddev_samp`, `stddev_pop`, `variance`, `var_samp`, `var_pop`, `skewness`, `kurtosis`, `corr`, `covar_samp`, `covar_pop` |
+| **Statistics** | `std`, `stddev`, `stddev_samp`, `stddev_pop`, `variance`, `var_samp`, `var_pop`, `skewness`, `kurtosis`, `corr`, `covar_samp`, `covar_pop` |
 | **Regression** | `regr_avgx`, `regr_avgy`, `regr_count`, `regr_intercept`, `regr_r2`, `regr_slope`, `regr_sxx`, `regr_sxy`, `regr_syy` |
 | **Boolean / bitwise** | `any`, `some`, `every`, `bool_and`, `bool_or`, `bit_and`, `bit_or`, `bit_xor`, `bitmap_construct_agg`, `bitmap_or_agg` |
 | **Grouping** | `grouping`, `grouping_id` |

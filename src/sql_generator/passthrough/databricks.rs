@@ -45,7 +45,6 @@ static SPARK_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::ne
     s.insert("last_value");
     s.insert("any_value");
     s.insert("mode");
-    s.insert("product");
 
     // Collection
     s.insert("collect_list");

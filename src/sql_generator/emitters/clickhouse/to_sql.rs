@@ -144,6 +144,18 @@ impl ToSql for LogicalExpr {
                     fn_call.args.iter().map(|e| e.to_sql()).collect();
                 let args_sql = args_sql?;
 
+                // Native-function pass-through (ch./chagg. for ClickHouse, dbx. for
+                // Databricks). This arm returns Result, so a foreign-backend prefix
+                // is surfaced as a clean translation error here.
+                if let Some(bare) = crate::sql_generator::passthrough::strip_passthrough(
+                    &fn_call.name,
+                    crate::server::query_context::get_current_dialect(),
+                )
+                .map_err(|e| ClickhouseQueryGeneratorError::SchemaError(e.to_string()))?
+                {
+                    return Ok(format!("{}({})", bare, args_sql.join(", ")));
+                }
+
                 // Use function registry to translate Neo4j -> ClickHouse function names
                 // Note: We use ClickHouse-specific aggregate names (like "anyLast") to avoid
                 // conflicts with Cypher functions (like "any" for array predicates)
