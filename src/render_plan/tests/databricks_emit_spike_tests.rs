@@ -840,6 +840,90 @@ async fn shortestpath_bfs_under_clickhouse_keeps_three_branch_undirected() {
     );
 }
 
+// ===========================================================================
+// Native-function pass-through, end to end (sql_generator::passthrough).
+//
+// `dbx.` reaches Spark/Databricks native functions; the registry decides
+// scalar vs aggregate (single prefix, no `dbxagg.`). `ch.`/`chagg.` stay
+// ClickHouse-only. These exercise the full Cypher → SQL path under each
+// dialect; the prefix-matching / cross-backend-rejection logic itself is
+// unit-tested in `sql_generator::passthrough`.
+// ===========================================================================
+
+/// `dbx.<scalar>` under the Databricks dialect emits the bare Spark name.
+#[tokio::test]
+async fn dbx_scalar_passthrough_under_databricks() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (u:User) RETURN dbx.upper(u.name) AS n")
+    })
+    .await;
+    assert!(
+        sql.contains("upper(") && !sql.contains("dbx."),
+        "expected bare `upper(` with the `dbx.` prefix stripped; got:\n{sql}"
+    );
+}
+
+/// `dbx.<aggregate>` is recognised as an aggregate via the Spark registry
+/// (no `dbxagg.` needed) and emitted bare.
+#[tokio::test]
+async fn dbx_aggregate_passthrough_under_databricks() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (u:User) RETURN dbx.collect_list(u.id) AS ids")
+    })
+    .await;
+    assert!(
+        sql.contains("collect_list(") && !sql.contains("dbx."),
+        "expected bare `collect_list(` (registry-detected aggregate); got:\n{sql}"
+    );
+}
+
+/// `dbx.percentile_approx(...)` — multi-arg aggregate, prefix stripped.
+#[tokio::test]
+async fn dbx_percentile_approx_under_databricks() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (u:User) RETURN dbx.percentile_approx(u.id, 0.95) AS p")
+    })
+    .await;
+    assert!(
+        sql.contains("percentile_approx("),
+        "expected bare `percentile_approx(`; got:\n{sql}"
+    );
+}
+
+/// Regression: `ch.`/`chagg.` pass-through still works under the ClickHouse
+/// dialect, scalar and aggregate, with the prefix stripped.
+#[tokio::test]
+async fn ch_passthrough_still_works_under_clickhouse() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::ClickHouse,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (u:User) RETURN ch.cityHash64(u.id) AS h, ch.uniq(u.id) AS c")
+    })
+    .await;
+    assert!(
+        sql.contains("cityHash64(") && sql.contains("uniq("),
+        "expected bare CH `cityHash64(` (scalar) and `uniq(` (aggregate); got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("ch."),
+        "CH prefix should be stripped from emitted SQL; got:\n{sql}"
+    );
+}
+
 /// `is_integer_literal` is the guard that keeps the Databricks anchor
 /// cast from wrapping non-numeric IDs. Direct unit test — covers the
 /// shape via the cypher_to_sql path elsewhere but locks the predicate

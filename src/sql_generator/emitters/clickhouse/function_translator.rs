@@ -285,9 +285,37 @@ pub fn translate_scalar_function(
 ) -> Result<String, ClickhouseQueryGeneratorError> {
     let fn_name = &fn_call.name;
 
-    // Check for ClickHouse pass-through prefixes (chagg. or ch.)
-    if fn_name.starts_with(CH_AGG_PREFIX) || fn_name.starts_with(CH_PASSTHROUGH_PREFIX) {
-        return translate_ch_passthrough(fn_call);
+    // Native-function pass-through, keyed by the active dialect (`ch.`/`chagg.`
+    // for ClickHouse, `dbx.` for Databricks). A prefix belonging to a *different*
+    // backend is rejected here rather than leaking into the generated SQL.
+    if let Some(bare) = crate::sql_generator::passthrough::strip_passthrough(
+        fn_name,
+        crate::server::query_context::get_current_dialect(),
+    )
+    .map_err(|e| ClickhouseQueryGeneratorError::SchemaError(e.to_string()))?
+    {
+        let args_sql: Vec<String> = fn_call
+            .args
+            .iter()
+            .map(|e| e.to_sql())
+            .collect::<Result<_, _>>()
+            .map_err(|e| {
+                ClickhouseQueryGeneratorError::schema_error_with_context(
+                    format!("Failed to convert arguments to SQL: {}", e),
+                    format!(
+                        "in {} pass-through function with {} arguments",
+                        fn_call.name,
+                        fn_call.args.len()
+                    ),
+                )
+            })?;
+        log::debug!(
+            "native pass-through: {}(..) -> {}({})",
+            fn_call.name,
+            bare,
+            args_sql.join(", ")
+        );
+        return Ok(format!("{}({})", bare, args_sql.join(", ")));
     }
 
     let fn_name_lower = fn_name.to_lowercase();
@@ -360,77 +388,6 @@ pub fn translate_scalar_function(
             Ok(format!("{}({})", fn_call.name, args_sql.join(", ")))
         }
     }
-}
-
-/// Translate a ClickHouse pass-through function (ch. prefix)
-///
-/// The ch. prefix allows direct access to any ClickHouse function without
-/// requiring a Neo4j mapping. Uses dot notation for Neo4j ecosystem compatibility
-/// (consistent with apoc.*, gds.* patterns). Arguments still undergo property
-/// mapping and parameter substitution.
-///
-/// # Examples
-/// ```cypher
-/// // Scalar functions
-/// RETURN ch.cityHash64(u.email) AS hash
-/// RETURN ch.JSONExtractString(u.metadata, 'field') AS field
-///
-/// // URL functions
-/// RETURN ch.domain(u.url) AS domain
-///
-/// // IP functions
-/// RETURN ch.IPv4NumToString(u.ip) AS ip_str
-///
-/// // Geo functions
-/// RETURN ch.greatCircleDistance(lat1, lon1, lat2, lon2) AS distance
-/// ```
-fn translate_ch_passthrough(
-    fn_call: &ScalarFnCall,
-) -> Result<String, ClickhouseQueryGeneratorError> {
-    // Strip the ch. or chagg. prefix to get the raw ClickHouse function name
-    let ch_fn_name = get_ch_function_name(&fn_call.name).ok_or_else(|| {
-        ClickhouseQueryGeneratorError::schema_error_with_context(
-            "Expected ch. or chagg. prefix in function name",
-            format!("function name provided: {}", fn_call.name),
-        )
-    })?;
-
-    if ch_fn_name.is_empty() {
-        return Err(ClickhouseQueryGeneratorError::schema_error_with_context(
-            "ch./chagg. prefix requires a function name (e.g., ch.cityHash64, chagg.myAgg)",
-            format!("in ClickHouse pass-through function: {}", fn_call.name),
-        ));
-    }
-
-    // Convert arguments to SQL (this preserves property mapping)
-    let args_sql: Result<Vec<String>, _> = fn_call.args.iter().map(|e| e.to_sql()).collect();
-
-    let args_sql = args_sql.map_err(|e| {
-        ClickhouseQueryGeneratorError::schema_error_with_context(
-            format!("Failed to convert arguments to SQL: {}", e),
-            format!(
-                "in {} function with {} arguments",
-                fn_call.name,
-                fn_call.args.len()
-            ),
-        )
-    })?;
-
-    log::debug!(
-        "ClickHouse pass-through: {}({}) -> {}({})",
-        fn_call.name,
-        fn_call
-            .args
-            .iter()
-            .map(|a| format!("{:?}", a))
-            .collect::<Vec<_>>()
-            .join(", "),
-        ch_fn_name,
-        args_sql.join(", ")
-    );
-
-    // Generate ClickHouse function call directly
-    Ok(format!("{}({})", ch_fn_name, args_sql.join(", ")))
 }
 
 /// Translate Neo4j duration({...}) function to ClickHouse interval expressions

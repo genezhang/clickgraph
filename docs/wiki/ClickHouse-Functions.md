@@ -2,6 +2,8 @@
 
 ClickGraph provides direct access to **any ClickHouse function** using the `ch.` and `chagg.` prefixes. This enables ClickHouse's powerful analytics capabilities directly from Cypher queries.
 
+> **Backend-specific.** The `ch.`/`chagg.` prefixes work only against the **ClickHouse** backend. On the Databricks/Spark backend (DeltaGraph) use the `dbx.` prefix instead — see **[Databricks Function Pass-Through](Databricks-Functions.md)**. A `ch.` call sent to a Databricks server is rejected at translation time (and vice-versa) rather than producing wrong SQL.
+
 ## Quick Reference
 
 | Prefix | Use Case | GROUP BY |

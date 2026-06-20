@@ -981,6 +981,8 @@ LIMIT 5
 
 ClickGraph provides direct access to **any ClickHouse function** using the `ch.` and `chagg.` prefixes.
 
+> Running against **Databricks/Spark** (DeltaGraph)? Use the `dbx.` prefix instead — see [Databricks Function Pass-Through](Databricks-Functions.md). `ch.`/`chagg.` are ClickHouse-only.
+
 ### Quick Reference
 
 | Prefix | Use Case | GROUP BY |

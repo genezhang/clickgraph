@@ -78,6 +78,7 @@ it.
 
 ## See also
 
+- [Databricks Function Pass-Through](Databricks-Functions.md) — reach native Spark/Databricks functions from Cypher with the `dbx.` prefix
 - [HTTP API Reference](API-Reference-HTTP.md) — the endpoints the server exposes
 - [Schema Basics](Schema-Basics.md) — authoring the graph-schema YAML
 - [`cg` CLI](../../clickgraph-tool/AGENTS.md) — `--dialect databricks` for ad-hoc queries

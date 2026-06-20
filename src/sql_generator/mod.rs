@@ -19,6 +19,7 @@ pub(crate) mod clickhouse;
 pub(crate) mod databricks;
 pub(crate) mod emitters;
 pub(crate) mod function_mapper;
+pub(crate) mod passthrough;
 
 /// SQL dialect for query generation.
 ///
