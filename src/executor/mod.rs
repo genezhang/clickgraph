@@ -23,6 +23,8 @@ pub mod source_resolver;
 
 #[cfg(feature = "databricks")]
 pub mod databricks_sql;
+#[cfg(feature = "databricks")]
+mod text_format;
 
 /// Backend-agnostic SQL execution interface.
 ///

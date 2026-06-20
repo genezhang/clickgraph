@@ -19,11 +19,11 @@
 //!   Databricks. EXTERNAL_LINKS downloads presigned chunk URLs (JSON
 //!   arrays-of-arrays) and follows `next_chunk_index`, so it has no size
 //!   ceiling; use it for any result that can exceed the inline cap.
-//! - `execute_text` rejects `Pretty`/`CSV`-style formats. Adding
-//!   format conversion is straightforward but isn't needed yet —
-//!   the only consumer that calls `execute_text` is the ClickHouse
-//!   passthrough endpoint, which a Databricks deployment wouldn't
-//!   expose.
+//! - `execute_text` renders `Pretty`/`PrettyCompact`/`CSV`/`CSVWithNames`
+//!   client-side (the Databricks API has no server-side tabular renderer),
+//!   via [`super::text_format`]. These are the formats the HTTP `/query`
+//!   endpoint routes through `execute_text` — e.g. what the interactive
+//!   `clickgraph-client` REPL requests. Other formats error out up front.
 //!
 //! ## Statement Execution API reference
 //!
@@ -500,15 +500,16 @@ impl DatabricksSqlExecutor {
             .await?;
         decode_statement_response(resp).await
     }
-}
 
-#[async_trait]
-impl QueryExecutor for DatabricksSqlExecutor {
-    async fn execute_json(
-        &self,
-        sql: &str,
-        _role: Option<&str>,
-    ) -> Result<Vec<Value>, ExecutorError> {
+    /// Submit a statement, poll to a terminal state, and return the
+    /// SUCCEEDED response together with its result rows as positional
+    /// arrays-of-values (column names live in the response manifest).
+    ///
+    /// Shared by `execute_json` (which keys each row by column name) and
+    /// `execute_text` (which renders the rows as a text table). Both
+    /// INLINE (`data_array`) and EXTERNAL_LINKS (downloaded chunks) results
+    /// resolve to the same positional shape here.
+    async fn run(&self, sql: &str) -> Result<(StatementResponse, Vec<Vec<Value>>), ExecutorError> {
         // Observability: time the whole statement and count polls so a slow
         // query is traceable. The Databricks `statement_id` is logged so an
         // oncall can pivot from a ClickGraph log line to the warehouse's
@@ -522,9 +523,9 @@ impl QueryExecutor for DatabricksSqlExecutor {
             self.config.disposition.as_api_str(),
         );
 
-        // Poll until the statement reaches a terminal state. The
-        // initial submit may already return SUCCEEDED if the query
-        // finished within `wait_timeout`; otherwise we poll.
+        // Poll until the statement reaches a terminal state. The initial
+        // submit may already return SUCCEEDED if the query finished within
+        // `wait_timeout`; otherwise we poll.
         let mut polls: u32 = 0;
         while !response.status.state.is_terminal() {
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -556,17 +557,21 @@ impl QueryExecutor for DatabricksSqlExecutor {
         }
 
         // EXTERNAL_LINKS results carry presigned chunk URLs instead of an
-        // inline `data_array`; fetch and concatenate them, then key by the
-        // manifest columns exactly as the inline path does.
-        let rows = if let Some(links) = response
+        // inline `data_array`; fetch and concatenate them. INLINE results
+        // read straight from the body. A missing `data_array` is valid for
+        // empty result sets (DDL or a SELECT with zero rows) → empty Vec.
+        let data: Vec<Vec<Value>> = if let Some(links) = response
             .result
             .as_ref()
             .and_then(|r| r.external_links.as_ref())
         {
-            let data = self.fetch_external_links(&statement_id, links).await?;
-            rows_from_data(&response, &data)?
+            self.fetch_external_links(&statement_id, links).await?
         } else {
-            rows_from_response(&response)?
+            response
+                .result
+                .as_ref()
+                .and_then(|r| r.data_array.clone())
+                .unwrap_or_default()
         };
 
         log::info!(
@@ -574,23 +579,40 @@ impl QueryExecutor for DatabricksSqlExecutor {
             "statement_id={statement_id} state=SUCCEEDED polls={polls} \
              duration_ms={} rows={}",
             started.elapsed().as_millis(),
-            rows.len(),
+            data.len(),
         );
-        Ok(rows)
+        Ok((response, data))
+    }
+}
+
+#[async_trait]
+impl QueryExecutor for DatabricksSqlExecutor {
+    async fn execute_json(
+        &self,
+        sql: &str,
+        _role: Option<&str>,
+    ) -> Result<Vec<Value>, ExecutorError> {
+        let (response, data) = self.run(sql).await?;
+        rows_from_data(&response, &data)
     }
 
     async fn execute_text(
         &self,
-        _sql: &str,
+        sql: &str,
         format: &str,
         _role: Option<&str>,
     ) -> Result<String, ExecutorError> {
-        // No-op for now — the Databricks API doesn't speak ClickHouse
-        // output formats. If a future consumer needs CSV/Pretty
-        // output, the right shape is to fetch JSON via `execute_json`
-        // and post-format here. Returning an explicit error keeps
-        // accidental callers from silently emitting bad output.
-        Err(ExecutorError::UnsupportedFormat(format.to_string()))
+        // The Databricks API has no server-side pretty/tabular renderer
+        // (unlike ClickHouse's `Pretty`/`CSV` output formats), so fetch the
+        // structured rows and format them client-side. Only the formats the
+        // HTTP `/query` endpoint routes here are supported; reject anything
+        // else up front so we don't spend a warehouse query we can't emit.
+        if !super::text_format::is_supported(format) {
+            return Err(ExecutorError::UnsupportedFormat(format.to_string()));
+        }
+        let (response, data) = self.run(sql).await?;
+        let columns = columns_of(&response);
+        super::text_format::format_rows(&columns, &data, format)
     }
 }
 
@@ -785,8 +807,10 @@ async fn decode_statement_response(
 
 /// Convert a SUCCEEDED `StatementResponse` into JSONEachRow-style
 /// objects: one `serde_json::Value::Object` per row, keyed by column
-/// name. Pulled out as a free function so unit tests can feed
-/// hand-built responses without an HTTP round trip.
+/// name. Test-only convenience that bundles inline `data_array` extraction
+/// with `rows_from_data` — production resolves rows (inline or external)
+/// in `run()` and calls `rows_from_data` directly.
+#[cfg(test)]
 fn rows_from_response(resp: &StatementResponse) -> Result<Vec<Value>, ExecutorError> {
     let data = match resp.result.as_ref().and_then(|r| r.data_array.as_ref()) {
         Some(rows) => rows.as_slice(),
@@ -797,6 +821,15 @@ fn rows_from_response(resp: &StatementResponse) -> Result<Vec<Value>, ExecutorEr
     rows_from_data(resp, data)
 }
 
+/// Manifest column names, in order. Empty when the response carried no
+/// manifest (e.g. a DDL statement) — `execute_text` renders that as no table.
+fn columns_of(resp: &StatementResponse) -> Vec<String> {
+    resp.manifest
+        .as_ref()
+        .map(|m| m.schema.columns.iter().map(|c| c.name.clone()).collect())
+        .unwrap_or_default()
+}
+
 /// Key an already-collected set of row arrays by the response's manifest
 /// column names. Shared by the INLINE path (`data_array`) and the
 /// EXTERNAL_LINKS path (downloaded chunks).
@@ -804,6 +837,11 @@ fn rows_from_data(
     resp: &StatementResponse,
     data: &[Vec<Value>],
 ) -> Result<Vec<Value>, ExecutorError> {
+    // Empty result sets (DDL or a zero-row SELECT) need no manifest — and
+    // some may not carry one. Short-circuit before requiring it.
+    if data.is_empty() {
+        return Ok(Vec::new());
+    }
     let manifest = resp
         .manifest
         .as_ref()
@@ -1159,20 +1197,71 @@ mod wiremock_tests {
     }
 
     #[tokio::test]
-    async fn execute_text_rejects_format() {
-        // Doesn't hit the wire — `execute_text` errors out before any
-        // HTTP call. Test it here so the rejection path is exercised
-        // in the same module that documents the policy.
+    async fn execute_text_rejects_unsupported_format() {
+        // An unsupported format is rejected BEFORE any HTTP call — no mock is
+        // registered, so a wire hit would fail the test. (The four supported
+        // formats are Pretty/PrettyCompact/CSV/CSVWithNames.)
         let server = MockServer::start().await;
         let exec = DatabricksSqlExecutor::new(cfg_for(&server)).expect("client builds");
         let err = exec
-            .execute_text("SELECT 1", "Pretty", None)
+            .execute_text("SELECT 1", "JSONEachRow", None)
             .await
             .expect_err("should reject");
         assert!(
-            matches!(err, ExecutorError::UnsupportedFormat(ref f) if f == "Pretty"),
-            "expected UnsupportedFormat(\"Pretty\"), got {err:?}"
+            matches!(err, ExecutorError::UnsupportedFormat(ref f) if f == "JSONEachRow"),
+            "expected UnsupportedFormat(\"JSONEachRow\"), got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn execute_text_renders_pretty_table() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/2.0/sql/statements"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "statement_id": "stmt-text-1",
+                "status": { "state": "SUCCEEDED" },
+                "manifest": manifest_with_columns(&["id", "name"]),
+                "result": { "data_array": [[1, "alice"], [2, "bob"]] }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let exec = DatabricksSqlExecutor::new(cfg_for(&server)).expect("client builds");
+        let text = exec
+            .execute_text("SELECT id, name FROM users", "PrettyCompact", None)
+            .await
+            .expect("execute_text");
+        let lines: Vec<&str> = text.lines().collect();
+        // top, header, separator, 2 data rows, bottom
+        assert_eq!(lines.len(), 6, "got:\n{text}");
+        assert!(lines[1].contains("id") && lines[1].contains("name"));
+        assert!(lines[3].contains("alice"));
+        assert!(lines[4].contains("bob"));
+    }
+
+    #[tokio::test]
+    async fn execute_text_renders_csv_with_names() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/2.0/sql/statements"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "statement_id": "stmt-text-2",
+                "status": { "state": "SUCCEEDED" },
+                "manifest": manifest_with_columns(&["id", "name"]),
+                "result": { "data_array": [[1, "alice"]] }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let exec = DatabricksSqlExecutor::new(cfg_for(&server)).expect("client builds");
+        let text = exec
+            .execute_text("SELECT id, name FROM users", "CSVWithNames", None)
+            .await
+            .expect("execute_text");
+        assert_eq!(text, "id,name\n1,alice\n");
     }
 
     fn external_links_cfg(server: &MockServer) -> DatabricksConfig {
