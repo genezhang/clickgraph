@@ -96,6 +96,7 @@ curl -X POST http://localhost:8080/query \
 ### Production Deployment
 - **[Docker Deployment](Docker-Deployment.md)** - Production Docker setup
 - **[Kubernetes Deployment](Kubernetes-Deployment.md)** - Helm charts and K8s manifests
+- **[Databricks Deployment (DeltaGraph)](Databricks-Deployment.md)** - Run Cypher against a Databricks SQL Warehouse (Spark SQL backend)
 - **[Embedded Mode](Embedded-Mode.md)** - Serverless / edge deployments without ClickHouse
 - **[Production Best Practices](Production-Best-Practices.md)** - Security, performance, monitoring
 - **[Performance Tuning](Performance-Query-Optimization.md)** - Query and schema optimization
