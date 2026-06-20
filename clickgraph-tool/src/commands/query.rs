@@ -105,18 +105,44 @@ async fn run_query_databricks(cypher: &str, format: &str, cfg: &CgConfig) -> Res
              ~/.config/cg/config.toml."
         )
     })?;
-    let token = cfg.databricks.token.as_deref().ok_or_else(|| {
-        anyhow!(
-            "Databricks token not set. Provide DATABRICKS_TOKEN (or CG_DATABRICKS_TOKEN), \
-             or a [databricks] section in ~/.config/cg/config.toml. The token is never \
-             accepted on the command line."
-        )
-    })?;
+    // OAuth M2M takes precedence when both client credentials are present;
+    // otherwise a PAT is required. Exactly one of the pair set is almost always
+    // a misconfiguration (typo'd env var) — error rather than silently falling
+    // back to PAT, which would mask the intent.
+    let oauth = match (
+        cfg.databricks.client_id.as_deref(),
+        cfg.databricks.client_secret.as_deref(),
+    ) {
+        (Some(id), Some(secret)) => Some(clickgraph_embedded::OAuthM2MConfig::new(id, secret)),
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(anyhow!(
+                "Incomplete Databricks OAuth config: set BOTH \
+                 CG_DATABRICKS_CLIENT_ID and CG_DATABRICKS_CLIENT_SECRET for OAuth M2M, \
+                 or neither (and provide DATABRICKS_TOKEN for PAT auth)."
+            ));
+        }
+        (None, None) => None,
+    };
+    // The PAT is required only when OAuth is not configured. Use a placeholder
+    // when OAuth is active (the executor never reads it in that mode).
+    let token = if oauth.is_some() {
+        cfg.databricks.token.clone().unwrap_or_default()
+    } else {
+        cfg.databricks.token.clone().ok_or_else(|| {
+            anyhow!(
+                "Databricks auth not set. Provide DATABRICKS_TOKEN (or CG_DATABRICKS_TOKEN) for \
+                 PAT auth, or CG_DATABRICKS_CLIENT_ID + CG_DATABRICKS_CLIENT_SECRET for OAuth \
+                 M2M, or a [databricks] section in ~/.config/cg/config.toml. Secrets are never \
+                 accepted on the command line."
+            )
+        })?
+    };
 
     let mut dbc = clickgraph_embedded::DatabricksConfig::new(host, warehouse_id, token);
     dbc.catalog = cfg.databricks.catalog.clone();
     dbc.schema = cfg.databricks.schema.clone();
     dbc.base_url = cfg.databricks.base_url.clone();
+    dbc.oauth = oauth;
 
     let schema_path = path.to_string();
     let cypher = cypher.to_string();

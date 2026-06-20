@@ -18,6 +18,14 @@ pub enum ExecutorError {
     #[error("Remote backend error ({status}): {body}")]
     Remote { status: u16, body: String },
 
+    /// Authentication was rejected (HTTP 401) — e.g. an expired or revoked
+    /// PAT, or a stale OAuth token. Surfaced distinctly from `Remote` so
+    /// callers can prompt for re-auth instead of treating it as a transient
+    /// backend error. Never retried (a retry with the same credential can't
+    /// succeed).
+    #[error("Authentication failed (401): {0}")]
+    Auth(String),
+
     /// The requested output format isn't supported by the active
     /// backend. Databricks' Statement Execution API doesn't have
     /// ClickHouse's `Pretty`/`CSV`/`JSONEachRow` format names; the

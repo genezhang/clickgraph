@@ -52,6 +52,11 @@ pub struct DatabricksClientConfig {
     /// tests point this at a `wiremock` URL so the same code paths run
     /// against a localhost mock.
     pub base_url: Option<String>,
+    /// OAuth M2M (service-principal) credentials. When both are set, OAuth
+    /// is used instead of the PAT `token`. From `CG_DATABRICKS_CLIENT_ID` /
+    /// `CG_DATABRICKS_CLIENT_SECRET` (or the `DATABRICKS_*` forms).
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
 }
 
 /// Config file format (~/.config/cg/config.toml)
@@ -99,6 +104,8 @@ struct FileDatabricksSection {
     catalog: Option<String>,
     schema: Option<String>,
     base_url: Option<String>,
+    client_id: Option<String>,
+    client_secret: Option<String>,
 }
 
 impl CgConfig {
@@ -205,6 +212,14 @@ impl CgConfig {
             base_url: std::env::var("CG_DATABRICKS_BASE_URL")
                 .ok()
                 .or(file_cfg.databricks.base_url),
+            client_id: std::env::var("CG_DATABRICKS_CLIENT_ID")
+                .ok()
+                .or_else(|| std::env::var("DATABRICKS_CLIENT_ID").ok())
+                .or(file_cfg.databricks.client_id),
+            client_secret: std::env::var("CG_DATABRICKS_CLIENT_SECRET")
+                .ok()
+                .or_else(|| std::env::var("DATABRICKS_CLIENT_SECRET").ok())
+                .or(file_cfg.databricks.client_secret),
         };
 
         Ok(CgConfig {
