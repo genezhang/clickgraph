@@ -9,6 +9,7 @@ mod complex_feature_tests;
 mod cross_schema_pattern_tests;
 mod cte_column_aliasing_tests;
 mod ldbc_regression_tests;
+mod metrics_endpoint_tests;
 mod parameter_function_test;
 mod path_variable_tests;
 mod skip_offset_tests;

@@ -677,6 +677,66 @@ curl http://localhost:8080/health
 
 ---
 
+## Observability / Stats
+
+Aggregate metrics, a Prometheus scrape target, and a slow-query log. Cover both
+the HTTP and Bolt query paths. Enabled by default
+(`CLICKGRAPH_METRICS_ENABLED=true`); when disabled these endpoints return `404`.
+
+### GET /metrics
+
+Prometheus exposition format (`Content-Type: text/plain; version=0.0.4`) — point
+a Prometheus scraper here. Exposes query counters (`clickgraph_queries_total`,
+`..._by_type_total{type=…}`, `..._errors_total{class=…}`), in-flight gauge,
+per-phase latency histograms (`clickgraph_query_duration_seconds_bucket{phase=…,
+le=…}` for `total`/`parse`/`plan`/`render`/`sqlgen`/`exec`), result-row and
+ClickHouse byte counters, plus cache and connection-pool gauges. Labels are
+bounded (never raw query text, role, or tenant).
+
+```bash
+curl http://localhost:8080/metrics
+```
+
+### GET /stats
+
+JSON snapshot for humans/dashboards: uptime, version, query counters by type and
+error class, latency percentiles (p50/p95/p99 + mean) per phase, cache
+hit-rate, connection-pool stats (`null` in embedded/Databricks modes), and
+ClickHouse transfer bytes.
+
+```bash
+curl http://localhost:8080/stats | jq
+```
+
+### GET /stats/queries
+
+Slow-query ring buffer for ad-hoc performance debugging.
+
+| Param | Default | Meaning |
+|-------|---------|---------|
+| `recent`  | 20 | Most recent queries, newest first |
+| `slowest` | 20 | Top-N by total time |
+
+Each record carries `timestamp_ms`, `query_type`, `total_ms`, `exec_ms`,
+`result_rows`, `outcome` (`ok` or an error class), and — only when
+`CLICKGRAPH_METRICS_QUERY_PREVIEW=true` — a truncated `query_preview`.
+
+```bash
+curl "http://localhost:8080/stats/queries?recent=10&slowest=10" | jq
+```
+
+**Configuration** (env vars):
+
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `CLICKGRAPH_METRICS_ENABLED` | `true` | Enable the endpoints + recording |
+| `CLICKGRAPH_SLOW_QUERY_CAPACITY` | `128` | Ring buffer size (≤10000) |
+| `CLICKGRAPH_SLOW_QUERY_THRESHOLD_MS` | `0` | Only ring queries ≥ this many ms (0 = all) |
+| `CLICKGRAPH_METRICS_QUERY_PREVIEW` | `false` | Retain truncated query text in the ring (JSON only) |
+| `CLICKGRAPH_METRICS_CH_SUMMARY` | `false` | Capture true `X-ClickHouse-Summary` stats (remote mode; opt-in) |
+
+---
+
 ## Error Handling
 
 ### Error Response Format
