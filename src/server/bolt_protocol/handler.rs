@@ -18,6 +18,9 @@ use crate::clickhouse_query_generator;
 use crate::executor::QueryExecutor;
 use crate::open_cypher_parser;
 use crate::query_planner;
+use crate::server::handlers::QueryPerformanceMetrics;
+use crate::server::metrics::{self, ErrorClass, Outcome, QuerySample};
+use crate::server::GLOBAL_SERVER_METRICS;
 
 /// Execution plan for procedure-only queries (extracted before async execution)
 #[derive(Debug)]
@@ -1687,7 +1690,13 @@ impl BoltHandler {
         // Note: id() predicates with encoded values are decoded in FilterTagging pass
         use crate::server::query_context::{with_query_context, QueryContext};
         let ctx = QueryContext::new(schema_name.clone());
-        match with_query_context(
+
+        // Observability: the Bolt path doesn't build per-phase timings like the
+        // HTTP handler, so record only total/exec latency under a coarse "bolt"
+        // type. The in-flight guard + CH-stats scope mirror the HTTP path.
+        let _inflight = GLOBAL_SERVER_METRICS.get().map(|r| r.in_flight_guard());
+        let run_start = std::time::Instant::now();
+        let exec_result = metrics::with_ch_stats_scope(with_query_context(
             ctx,
             self.execute_cypher_query(
                 &query,
@@ -1697,9 +1706,10 @@ impl BoltHandler {
                 role,
                 view_parameters,
             ),
-        )
-        .await
-        {
+        ))
+        .await;
+
+        let (messages, outcome) = match exec_result {
             Ok(result_metadata) => {
                 // Update context to streaming state
                 {
@@ -1708,7 +1718,7 @@ impl BoltHandler {
                 }
 
                 // Return success with query metadata
-                Ok(vec![BoltMessage::success(result_metadata)])
+                (vec![BoltMessage::success(result_metadata)], Outcome::Ok)
             }
             Err(query_error) => {
                 let error_code = query_error.error_code().to_string();
@@ -1723,9 +1733,31 @@ impl BoltHandler {
                 // Don't update state - let client send RESET to recover
                 // Setting to Failed would close the connection
 
-                Ok(vec![BoltMessage::failure(error_code, error_message)])
+                (
+                    vec![BoltMessage::failure(error_code, error_message)],
+                    Outcome::Err(ErrorClass::Exec),
+                )
             }
+        };
+
+        if let Some(reg) = GLOBAL_SERVER_METRICS.get() {
+            let elapsed = run_start.elapsed().as_secs_f64();
+            let m = QueryPerformanceMetrics {
+                total_time: elapsed,
+                execution_time: elapsed,
+                query_type: "bolt".to_string(),
+                ..QueryPerformanceMetrics::default()
+            };
+            reg.record_query(&QuerySample {
+                metrics: &m,
+                outcome,
+                has_phase_breakdown: false,
+                query_text: Some(&query),
+                ch: metrics::current_ch_stats(),
+            });
         }
+
+        Ok(messages)
     }
 
     /// Handle PULL message (fetch query results)

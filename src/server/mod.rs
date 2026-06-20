@@ -27,6 +27,7 @@ use crate::config::ServerConfig;
 use crate::executor::{remote::RemoteClickHouseExecutor, QueryExecutor};
 use crate::graph_catalog::graph_schema::GraphSchema;
 use bolt_protocol::{BoltConfig, BoltServer};
+use connection_pool::RoleConnectionPool;
 
 pub mod bolt_protocol;
 mod clickhouse_client;
@@ -34,6 +35,7 @@ pub mod connection_pool;
 pub mod graph_catalog;
 pub mod graph_output;
 pub mod handlers;
+pub mod metrics;
 pub mod models;
 mod parameter_substitution;
 mod query_cache;
@@ -50,6 +52,9 @@ pub struct AppState {
     /// Semaphore limiting concurrent query processing.
     /// `None` when max_concurrent_queries = 0 (unlimited).
     pub query_semaphore: Option<Arc<Semaphore>>,
+    /// Remote ClickHouse connection pool, exposed so `/stats` and `/metrics`
+    /// can report pool stats. `None` in embedded / Databricks modes.
+    pub pool: Option<Arc<RoleConnectionPool>>,
 }
 
 // ==================================================================================
@@ -77,6 +82,10 @@ pub static GLOBAL_SCHEMA_CONFIGS: OnceCell<
 
 // Query cache for SQL templates
 pub static GLOBAL_QUERY_CACHE: OnceCell<query_cache::QueryCache> = OnceCell::const_new();
+
+// Observability registry (aggregate counters, latency histograms, slow-query
+// ring). Initialized once in `run_server` before the listener binds.
+pub static GLOBAL_SERVER_METRICS: OnceCell<Arc<metrics::ServerMetrics>> = OnceCell::const_new();
 
 pub async fn run() {
     dotenv().ok();
@@ -149,6 +158,7 @@ pub async fn run_with_config(config: ServerConfig) {
             clickhouse_client: None,
             query_semaphore: make_query_semaphore(&config),
             config: config.clone(),
+            pool: None,
         };
 
         // Initialize query cache
@@ -231,6 +241,7 @@ pub async fn run_with_config(config: ServerConfig) {
             clickhouse_client: None,
             query_semaphore: make_query_semaphore(&config),
             config: config.clone(),
+            pool: None,
         };
 
         let cache_config = query_cache::QueryCacheConfig::from_env();
@@ -279,6 +290,7 @@ pub async fn run_with_config(config: ServerConfig) {
             clickhouse_client: client_opt.clone(),
             query_semaphore: query_semaphore.clone(),
             config: config.clone(),
+            pool: Some(connection_pool.clone()),
         }
     } else {
         // For YAML-only mode, we need a placeholder client
@@ -295,6 +307,7 @@ pub async fn run_with_config(config: ServerConfig) {
             clickhouse_client: None,
             query_semaphore,
             config: config.clone(),
+            pool: Some(connection_pool.clone()),
         }
     };
 
@@ -340,11 +353,11 @@ fn make_query_semaphore(config: &ServerConfig) -> Option<Arc<Semaphore>> {
     }
 }
 
-/// Bind and serve HTTP (and optionally Bolt) using the given `app_state`.
-async fn run_server(app_state: AppState, config: ServerConfig) {
-    let http_bind_address = format!("{}:{}", config.http_host, config.http_port);
-    log::info!("Starting HTTP server on {}", http_bind_address);
-
+/// Build the fully-layered HTTP router for the given state and config.
+///
+/// Extracted from `run_server` so it can be exercised directly in tests via
+/// `tower::ServiceExt::oneshot` without binding a real listener.
+pub fn build_router(app_state: AppState, config: &ServerConfig) -> Router {
     let mut app = Router::new()
         .route("/health", get(health_check))
         .route("/query", post(query_handler))
@@ -355,7 +368,11 @@ async fn run_server(app_state: AppState, config: ServerConfig) {
         .route("/schemas/introspect", post(introspect_handler))
         .route("/schemas/discover-prompt", post(discover_prompt_handler))
         .route("/schemas/draft", post(draft_handler))
-        .with_state(Arc::new(app_state.clone()))
+        // Observability / stats / performance monitoring
+        .route("/metrics", get(handlers::metrics_handler))
+        .route("/stats", get(handlers::stats_handler))
+        .route("/stats/queries", get(handlers::stats_queries_handler))
+        .with_state(Arc::new(app_state))
         // Body size limit (default 1 MB, configurable via CLICKGRAPH_MAX_REQUEST_BODY_BYTES)
         .layer(DefaultBodyLimit::max(config.max_request_body_bytes))
         // Catch panics in handlers — return 500 instead of dropping the connection
@@ -367,6 +384,28 @@ async fn run_server(app_state: AppState, config: ServerConfig) {
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(config.query_timeout_secs),
         ));
+    }
+    app
+}
+
+/// Bind and serve HTTP (and optionally Bolt) using the given `app_state`.
+async fn run_server(app_state: AppState, config: ServerConfig) {
+    let http_bind_address = format!("{}:{}", config.http_host, config.http_port);
+    log::info!("Starting HTTP server on {}", http_bind_address);
+
+    // Initialize the observability registry once, before binding the listener
+    // (same ordering guarantee as GLOBAL_QUERY_CACHE).
+    let metrics_cfg = metrics::MetricsConfig {
+        enabled: config.metrics_enabled,
+        slow_query_capacity: config.slow_query_capacity,
+        slow_query_threshold_ms: config.slow_query_threshold_ms,
+        query_preview: config.metrics_query_preview,
+    };
+    let _ = GLOBAL_SERVER_METRICS.set(Arc::new(metrics::ServerMetrics::new(metrics_cfg)));
+
+    let app = build_router(app_state.clone(), &config);
+
+    if config.query_timeout_secs > 0 {
         log::info!("HTTP request timeout: {}s", config.query_timeout_secs);
     }
 

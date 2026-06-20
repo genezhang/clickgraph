@@ -21,11 +21,26 @@ use crate::{
 
 use super::{
     graph_catalog,
+    metrics::{self, ErrorClass, Outcome, QuerySample},
     models::{GraphQueryResponse, OutputFormat, QueryRequest, QueryStats, SqlOnlyResponse},
     parameter_substitution, query_cache,
     query_context::{with_query_context, QueryContext},
-    AppState, GLOBAL_QUERY_CACHE,
+    AppState, GLOBAL_QUERY_CACHE, GLOBAL_SERVER_METRICS,
 };
+
+/// Record a completed query into the global registry (no-op if metrics are off
+/// or uninitialized). Pulls any ClickHouse-side stats captured for this query.
+fn record_query(metrics: &QueryPerformanceMetrics, query_text: &str, outcome: Outcome) {
+    if let Some(reg) = GLOBAL_SERVER_METRICS.get() {
+        reg.record_query(&QuerySample {
+            metrics,
+            outcome,
+            has_phase_breakdown: true,
+            query_text: Some(query_text),
+            ch: metrics::current_ch_stats(),
+        });
+    }
+}
 
 /// Merge view_parameters and query parameters into a single HashMap
 ///
@@ -174,6 +189,136 @@ pub async fn simple_test_handler() -> impl IntoResponse {
     "Hello from simple test"
 }
 
+/// JSON helper: current query-cache metrics, or `null` when the cache is absent.
+fn cache_metrics_json() -> serde_json::Value {
+    match GLOBAL_QUERY_CACHE.get() {
+        Some(cache) => {
+            let m = cache.metrics();
+            serde_json::json!({
+                "hits": m.hits,
+                "misses": m.misses,
+                "evictions": m.evictions,
+                "hit_rate": m.hit_rate(),
+                "size": m.size,
+                "size_bytes": m.size_bytes,
+                "max_entries": m.max_entries,
+                "max_size_bytes": m.max_size_bytes,
+            })
+        }
+        None => serde_json::Value::Null,
+    }
+}
+
+/// JSON helper: connection-pool stats, or `null` in embedded/Databricks modes.
+async fn pool_stats_json(app_state: &AppState) -> serde_json::Value {
+    match &app_state.pool {
+        Some(pool) => {
+            let s = pool.stats().await;
+            serde_json::json!({
+                "total_role_pools": s.total_role_pools,
+                "roles": s.roles,
+                "node_count": s.node_count,
+                "cluster_name": s.cluster_name,
+            })
+        }
+        None => serde_json::Value::Null,
+    }
+}
+
+/// `GET /metrics` — Prometheus exposition format. 404 when metrics are disabled.
+pub async fn metrics_handler(State(app_state): State<Arc<AppState>>) -> Response {
+    let Some(reg) = GLOBAL_SERVER_METRICS.get() else {
+        return (StatusCode::NOT_FOUND, "metrics not initialized").into_response();
+    };
+    if !reg.enabled() {
+        return (StatusCode::NOT_FOUND, "metrics disabled").into_response();
+    }
+
+    let mut out = String::with_capacity(2048);
+    reg.render_prometheus(&mut out);
+
+    // Append cache + pool gauges (sourced from their own registries).
+    use std::fmt::Write;
+    if let Some(cache) = GLOBAL_QUERY_CACHE.get() {
+        let m = cache.metrics();
+        let _ = writeln!(out, "# TYPE clickgraph_cache_hits_total counter");
+        let _ = writeln!(out, "clickgraph_cache_hits_total {}", m.hits);
+        let _ = writeln!(out, "# TYPE clickgraph_cache_misses_total counter");
+        let _ = writeln!(out, "clickgraph_cache_misses_total {}", m.misses);
+        let _ = writeln!(out, "# TYPE clickgraph_cache_evictions_total counter");
+        let _ = writeln!(out, "clickgraph_cache_evictions_total {}", m.evictions);
+        let _ = writeln!(out, "# TYPE clickgraph_cache_size gauge");
+        let _ = writeln!(out, "clickgraph_cache_size {}", m.size);
+        let _ = writeln!(out, "# TYPE clickgraph_cache_size_bytes gauge");
+        let _ = writeln!(out, "clickgraph_cache_size_bytes {}", m.size_bytes);
+    }
+    if let Some(pool) = &app_state.pool {
+        let s = pool.stats().await;
+        let _ = writeln!(out, "# TYPE clickgraph_pool_role_pools gauge");
+        let _ = writeln!(out, "clickgraph_pool_role_pools {}", s.total_role_pools);
+        let _ = writeln!(out, "# TYPE clickgraph_pool_node_count gauge");
+        let _ = writeln!(out, "clickgraph_pool_node_count {}", s.node_count);
+    }
+
+    (
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; version=0.0.4"),
+        )],
+        out,
+    )
+        .into_response()
+}
+
+/// `GET /stats` — JSON snapshot of counters, latency percentiles, cache, pool.
+pub async fn stats_handler(State(app_state): State<Arc<AppState>>) -> Response {
+    let Some(reg) = GLOBAL_SERVER_METRICS.get() else {
+        return (StatusCode::NOT_FOUND, "metrics not initialized").into_response();
+    };
+    if !reg.enabled() {
+        return (StatusCode::NOT_FOUND, "metrics disabled").into_response();
+    }
+
+    let snapshot = reg.snapshot();
+    let body = serde_json::json!({
+        "service": "clickgraph",
+        "version": env!("CARGO_PKG_VERSION"),
+        "metrics": snapshot,
+        "cache": cache_metrics_json(),
+        "pool": pool_stats_json(&app_state).await,
+    });
+    Json(body).into_response()
+}
+
+/// `GET /stats/queries?recent=N&slowest=N` — slow-query ring buffer view.
+pub async fn stats_queries_handler(
+    State(_app_state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+) -> Response {
+    let Some(reg) = GLOBAL_SERVER_METRICS.get() else {
+        return (StatusCode::NOT_FOUND, "metrics not initialized").into_response();
+    };
+    if !reg.enabled() {
+        return (StatusCode::NOT_FOUND, "metrics disabled").into_response();
+    }
+
+    let parse_n = |key: &str, default: usize| {
+        params
+            .get(key)
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(default)
+            .min(1000)
+    };
+    let recent = parse_n("recent", 20);
+    let slowest = parse_n("slowest", 20);
+
+    Json(serde_json::json!({
+        "recent": reg.recent_queries(recent),
+        "slowest": reg.slowest_queries(slowest),
+    }))
+    .into_response()
+}
+
 pub async fn query_handler(
     State(app_state): State<Arc<AppState>>,
     Json(payload): Json<QueryRequest>,
@@ -187,6 +332,9 @@ pub async fn query_handler(
                     "Query rejected: max concurrent queries ({}) reached",
                     app_state.config.max_concurrent_queries
                 );
+                if let Some(reg) = GLOBAL_SERVER_METRICS.get() {
+                    reg.record_error(ErrorClass::Capacity);
+                }
                 return Ok((
                     StatusCode::SERVICE_UNAVAILABLE,
                     Json(serde_json::json!({
@@ -200,6 +348,11 @@ pub async fn query_handler(
     } else {
         None
     };
+
+    // Increment the in-flight gauge for the lifetime of this request. The RAII
+    // guard decrements on every return path (incl. the many early returns and
+    // panics) in this handler.
+    let _inflight = GLOBAL_SERVER_METRICS.get().map(|reg| reg.in_flight_guard());
 
     let start_time = Instant::now();
     let metrics = QueryPerformanceMetrics::new();
@@ -925,7 +1078,9 @@ pub async fn query_handler(
     // - Automatically cleaned up when the task completes
     let context = QueryContext::new(Some(schema_name.clone()));
 
-    with_query_context(context, async move {
+    // Scope a ClickHouse-stats slot around the whole inner run so the executor
+    // can record per-query CH stats that the finalization sites read back.
+    let result = metrics::with_ch_stats_scope(with_query_context(context, async move {
         query_handler_inner(
             app_state,
             payload,
@@ -938,8 +1093,31 @@ pub async fn query_handler(
             metrics,
         )
         .await
-    })
-    .await
+    }))
+    .await;
+
+    // Successful queries are recorded with full phase breakdown at the inner
+    // finalization sites; here we capture the error outcomes. Every `Err` from
+    // the inner handler carries an HTTP status we can classify, and we still
+    // know the total wall time (`start_time` is `Copy`) — so failures land in
+    // the slow-query ring with latency too, just without a per-phase breakdown.
+    if let Err((status, _)) = &result {
+        if let Some(reg) = GLOBAL_SERVER_METRICS.get() {
+            let m = QueryPerformanceMetrics {
+                total_time: start_time.elapsed().as_secs_f64(),
+                query_type: "other".to_string(),
+                ..QueryPerformanceMetrics::default()
+            };
+            reg.record_query(&QuerySample {
+                metrics: &m,
+                outcome: Outcome::Err(ErrorClass::from_status(status.as_u16())),
+                has_phase_breakdown: false,
+                query_text: Some(&query_string),
+                ch: metrics::current_ch_stats(),
+            });
+        }
+    }
+    result
 }
 
 /// Inner query handler logic - runs within task-local context
@@ -1393,6 +1571,8 @@ async fn query_handler_inner(
             stats: metrics.to_stats(),
         };
 
+        record_query(&metrics, &payload.query, Outcome::Ok);
+
         let mut resp = Json(response).into_response();
         if let Ok(cache_header) = axum::http::HeaderValue::try_from(cache_status) {
             resp.headers_mut()
@@ -1456,6 +1636,7 @@ async fn query_handler_inner(
                     .insert("X-Query-Cache-Status", cache_header);
             }
 
+            record_query(&metrics, &payload.query, Outcome::Ok);
             Ok(resp)
         }
         Err(e) => Err(e),

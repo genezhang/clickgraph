@@ -86,6 +86,7 @@ async-trait = "0.1"
 anyhow = "1.0"
 test-case = "3.3"  # For PackStream tests
 serial_test = "3.2"  # For serializing tests that modify global state
+tower = { version = "0.5", features = ["util"] }  # ServiceExt::oneshot for router tests
 # Mock HTTP server for the Databricks executor's integration tests.
 # Unconditional dev-dep so `cargo test` always knows where to find it;
 # the tests themselves are gated on `#[cfg(feature = "databricks")]`,

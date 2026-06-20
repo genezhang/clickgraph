@@ -89,6 +89,36 @@ pub struct ServerConfig {
 
     /// Maximum concurrent queries. 0 = unlimited. Default: 64.
     pub max_concurrent_queries: usize,
+
+    /// Whether the observability registry and `/metrics` /`/stats` endpoints
+    /// are enabled. When false the endpoints return 404 and recording is a
+    /// cheap no-op. Default: true.
+    pub metrics_enabled: bool,
+
+    /// Capacity of the in-memory slow-query ring buffer surfaced by
+    /// `/stats/queries`. Default: 128.
+    #[validate(range(
+        min = 1,
+        max = 10000,
+        message = "Slow-query capacity must be between 1 and 10000"
+    ))]
+    pub slow_query_capacity: usize,
+
+    /// Only queries whose total time is at least this many milliseconds are
+    /// pushed into the slow-query ring. 0 = record every query (the ring then
+    /// retains the most recent N). Default: 0.
+    pub slow_query_threshold_ms: u64,
+
+    /// Capture true ClickHouse-side execution stats (read_rows/read_bytes/
+    /// elapsed) by reading the `X-ClickHouse-Summary` response header via a
+    /// direct request path. Off by default — the default path uses the
+    /// `clickhouse` crate, which does not expose that header. Remote mode only.
+    pub metrics_ch_summary: bool,
+
+    /// Include a truncated preview of the Cypher text in the slow-query ring
+    /// (JSON only, never a Prometheus label). Off by default for environments
+    /// where query text may carry sensitive values.
+    pub metrics_query_preview: bool,
 }
 
 impl Default for ServerConfig {
@@ -108,6 +138,11 @@ impl Default for ServerConfig {
             query_timeout_secs: 300,
             max_request_body_bytes: 1_048_576, // 1 MB
             max_concurrent_queries: 64,
+            metrics_enabled: true,
+            slow_query_capacity: 128,
+            slow_query_threshold_ms: 0,
+            metrics_ch_summary: false,
+            metrics_query_preview: false,
         }
     }
 }
@@ -130,6 +165,11 @@ impl ServerConfig {
             query_timeout_secs: parse_env_var("CLICKGRAPH_QUERY_TIMEOUT_SECS", "300")?,
             max_request_body_bytes: parse_env_var("CLICKGRAPH_MAX_REQUEST_BODY_BYTES", "1048576")?,
             max_concurrent_queries: parse_env_var("CLICKGRAPH_MAX_CONCURRENT_QUERIES", "64")?,
+            metrics_enabled: parse_env_var("CLICKGRAPH_METRICS_ENABLED", "true")?,
+            slow_query_capacity: parse_env_var("CLICKGRAPH_SLOW_QUERY_CAPACITY", "128")?,
+            slow_query_threshold_ms: parse_env_var("CLICKGRAPH_SLOW_QUERY_THRESHOLD_MS", "0")?,
+            metrics_ch_summary: parse_env_var("CLICKGRAPH_METRICS_CH_SUMMARY", "false")?,
+            metrics_query_preview: parse_env_var("CLICKGRAPH_METRICS_QUERY_PREVIEW", "false")?,
         };
 
         config.validate()?;
@@ -153,6 +193,14 @@ impl ServerConfig {
             query_timeout_secs: cli.query_timeout_secs,
             max_request_body_bytes: cli.max_request_body_bytes,
             max_concurrent_queries: cli.max_concurrent_queries,
+            // Metrics knobs are operational and env-only (no CLI flag); read
+            // them from the environment so `from_cli` (the live startup path)
+            // still honors CLICKGRAPH_METRICS_* / CLICKGRAPH_SLOW_QUERY_*.
+            metrics_enabled: parse_env_var("CLICKGRAPH_METRICS_ENABLED", "true")?,
+            slow_query_capacity: parse_env_var("CLICKGRAPH_SLOW_QUERY_CAPACITY", "128")?,
+            slow_query_threshold_ms: parse_env_var("CLICKGRAPH_SLOW_QUERY_THRESHOLD_MS", "0")?,
+            metrics_ch_summary: parse_env_var("CLICKGRAPH_METRICS_CH_SUMMARY", "false")?,
+            metrics_query_preview: parse_env_var("CLICKGRAPH_METRICS_QUERY_PREVIEW", "false")?,
         };
 
         config.validate()?;
@@ -193,6 +241,11 @@ impl ServerConfig {
         self.query_timeout_secs = other.query_timeout_secs;
         self.max_request_body_bytes = other.max_request_body_bytes;
         self.max_concurrent_queries = other.max_concurrent_queries;
+        self.metrics_enabled = other.metrics_enabled;
+        self.slow_query_capacity = other.slow_query_capacity;
+        self.slow_query_threshold_ms = other.slow_query_threshold_ms;
+        self.metrics_ch_summary = other.metrics_ch_summary;
+        self.metrics_query_preview = other.metrics_query_preview;
     }
 }
 
@@ -263,6 +316,25 @@ mod tests {
     fn test_empty_host() {
         let config = ServerConfig {
             http_host: "".to_string(), // Invalid
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_metrics_defaults() {
+        let config = ServerConfig::default();
+        assert!(config.metrics_enabled);
+        assert_eq!(config.slow_query_capacity, 128);
+        assert_eq!(config.slow_query_threshold_ms, 0);
+        assert!(!config.metrics_ch_summary);
+        assert!(!config.metrics_query_preview);
+    }
+
+    #[test]
+    fn test_invalid_slow_query_capacity() {
+        let config = ServerConfig {
+            slow_query_capacity: 10_001, // Invalid (> 10000)
             ..Default::default()
         };
         assert!(config.validate().is_err());
