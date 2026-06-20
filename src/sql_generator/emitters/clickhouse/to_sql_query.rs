@@ -4568,10 +4568,11 @@ impl RenderExpr {
                 // (`ch.` for ClickHouse, `dbx.` for Databricks). This arm returns
                 // `String`, not `Result`, so a foreign-backend prefix can't be
                 // surfaced as a clean error here — instead we emit the *original*
-                // prefixed name (e.g. `ch.uniq(x)`) so the query fails loudly at
-                // the database on an unknown function, never silently dropping the
-                // prefix into a valid-looking call. The message-bearing error path
-                // is `translate_scalar_function` / the `LogicalExpr` arms.
+                // prefixed name (e.g. `ch.uniq(x)`) so the query surfaces a
+                // database error on the unknown prefixed function rather than
+                // silently dropping the prefix into a valid-looking call. The
+                // message-bearing error path is `translate_scalar_function` /
+                // the `LogicalExpr` arms.
                 match crate::sql_generator::passthrough::strip_passthrough(
                     &fn_call.name,
                     crate::server::query_context::get_current_dialect(),
@@ -4658,9 +4659,9 @@ impl RenderExpr {
                         // This arm returns `String`, not `Result`, so a foreign-backend
                         // prefix (e.g. `ch.uniq` on Databricks) can't be surfaced as a
                         // clean translation error here — emit the *original* prefixed
-                        // name so the query fails loudly at the database on an unknown
-                        // function, never silently dropping the prefix. The
-                        // message-bearing error path is the `LogicalExpr` arms.
+                        // name so the query surfaces a database error on the unknown
+                        // prefixed function rather than silently dropping the prefix.
+                        // The message-bearing error path is the `LogicalExpr` arms.
                         log::error!("aggregate pass-through rejected: {}", e);
                         let args = agg
                             .args
