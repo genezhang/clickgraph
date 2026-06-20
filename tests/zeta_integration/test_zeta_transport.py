@@ -117,11 +117,11 @@ def _cg_query(cg_bin: Path, cypher: str) -> list[dict]:
 
 # ── the cross-stack checks ───────────────────────────────────────────────────
 
-# Cross-stack cases that pass today: they prove the transport layer (cg →
-# DatabricksSqlExecutor → REST submit/poll → JSON decode → rows). ORDER BY is
-# avoided and rows are compared order-insensitively (see _rows_eq), because
-# Zeta lacks Spark's lateral column aliases that DeltaGraph's ORDER BY
-# desugaring relies on — one of the documented Zeta VLP gaps below.
+# Cross-stack cases proving the transport layer (cg → DatabricksSqlExecutor →
+# REST submit/poll → JSON decode → rows). The VLP case additionally exercises
+# the Zeta `array_contains` / array-`concat` / `CAST(array() AS ARRAY<T>)`
+# builtins and Spark lateral column aliases (the `ORDER BY` desugaring) — all of
+# which DeltaGraph's variable-length-path SQL needs and which now run on Zeta.
 CASES = [
     (
         "flat_knows_join",
@@ -135,23 +135,18 @@ CASES = [
         "RETURN count(f) AS friendCount",
         [{"friendCount": 2}],
     ),
+    (
+        # Undirected VLP with ORDER BY: exercises recursive CTEs +
+        # array_contains/concat (cycle detection / path extension) + the
+        # array CAST + lateral column aliases (ORDER BY desugaring).
+        # KNOWS edges anchored at 1: 1↔2, 1↔3, 2↔3, 3↔4, 4↔5 → within 2 hops
+        # (excluding self): {2,3,4}.
+        "vlp_two_hops_ordered",
+        "MATCH (p:Person {id:1})-[:KNOWS*1..2]-(f:Person) WHERE f.id <> p.id "
+        "RETURN DISTINCT f.id AS id ORDER BY id",
+        [{"id": 2}, {"id": 3}, {"id": 4}],
+    ),
 ]
-
-# Variable-length-path queries do NOT yet execute on Zeta end-to-end. The
-# `array_contains` / array-`concat` builtins added for this are necessary but
-# not sufficient: DeltaGraph's VLP SQL also needs
-#   (a) `CAST(array() AS ARRAY<T>)` at execution — Zeta errors
-#       "unsupported CAST target type: ARRAY<STRING>"; and
-#   (b) Spark lateral column aliases for the ORDER BY desugaring
-#       (`SELECT x AS id, id AS __order_col_0`) — Zeta errors
-#       "column not found: id".
-# Until those land in Zeta, VLP fidelity is validated on the Spark/Delta docker
-# container (tests/spark_smoke), not here. See docs/deltagraph/ZETA_FIDELITY.md.
-VLP_KNOWN_GAP = (
-    "vlp_two_hops",
-    "MATCH (p:Person {id:1})-[:KNOWS*1..2]-(f:Person) WHERE f.id <> p.id "
-    "RETURN DISTINCT f.id AS id",
-)
 
 
 def _sort_key(d: dict) -> str:
@@ -159,8 +154,7 @@ def _sort_key(d: dict) -> str:
 
 
 def _rows_eq(a: list[dict], b: list[dict]) -> bool:
-    """Order-insensitive row comparison (Zeta returns unordered without the
-    lateral-alias ORDER BY path)."""
+    """Order-insensitive row comparison."""
     return sorted(a, key=_sort_key) == sorted(b, key=_sort_key)
 
 
@@ -170,18 +164,6 @@ def _run_all(cg_bin: Path) -> None:
         rows = _cg_query(cg_bin, cypher)
         assert _rows_eq(rows, expected), f"[{name}] expected {expected}, got {rows}"
         print(f"[PASS] {name}: {rows}")
-    # VLP is a documented Zeta gap — confirm it still fails. An XPASS here means
-    # Zeta closed the gaps, so FAIL loudly to prompt updating ZETA_FIDELITY.md.
-    name, cypher = VLP_KNOWN_GAP
-    try:
-        rows = _cg_query(cg_bin, cypher)
-    except AssertionError:
-        print(f"[KNOWN-GAP] {name}: VLP not yet executable on Zeta (see ZETA_FIDELITY.md)")
-        return
-    raise AssertionError(
-        f"[XPASS] {name}: VLP now runs on Zeta (got {rows}) — close the gap, "
-        "drop the known-gap marker, and update ZETA_FIDELITY.md"
-    )
 
 
 # pytest entrypoints ----------------------------------------------------------
@@ -191,14 +173,6 @@ try:
     import pytest as _pytest
 except ImportError:  # pragma: no cover - standalone mode
     _pytest = None
-
-
-def _xfail_strict(reason: str):
-    """`@pytest.mark.xfail(strict=True)` when pytest is present, else a no-op
-    (the decorated test funcs aren't invoked in standalone mode)."""
-    if _pytest is not None:
-        return _pytest.mark.xfail(strict=True, reason=reason)
-    return lambda f: f
 
 
 def _require_env():
@@ -224,15 +198,12 @@ def test_zeta_transport_aggregation():
     assert _rows_eq(_cg_query(cg, CASES[1][1]), CASES[1][2])
 
 
-@_xfail_strict("VLP not executable on Zeta (array CAST + lateral alias) — see ZETA_FIDELITY.md")
-def test_zeta_transport_vlp_known_gap():
-    """VLP doesn't execute on Zeta yet (CAST-to-array + lateral-alias gaps).
-    The query IS run — it raises today → xfail. When Zeta closes the gaps it
-    succeeds → strict xfail turns that into an XPASS failure, prompting the
-    marker's removal."""
+def test_zeta_transport_vlp_ordered():
+    """VLP with ORDER BY now runs on Zeta end-to-end (recursive CTEs +
+    array_contains/concat + array CAST + lateral column aliases)."""
     cg = _require_env()
     _seed()
-    _cg_query(cg, VLP_KNOWN_GAP[1])
+    assert _rows_eq(_cg_query(cg, CASES[2][1]), CASES[2][2])
 
 
 if __name__ == "__main__":
