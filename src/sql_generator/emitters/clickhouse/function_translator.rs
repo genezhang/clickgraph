@@ -244,39 +244,12 @@ static CH_AGGREGATE_FUNCTIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|
     s
 });
 
-/// Check if a function name (without ch. prefix) is a known ClickHouse aggregate
+/// Check if a function name (without ch. prefix) is a known ClickHouse aggregate.
+/// Consulted by the ClickHouse [`PassthroughPolicy`] to classify `ch.` calls.
+///
+/// [`PassthroughPolicy`]: crate::sql_generator::passthrough::PassthroughPolicy
 pub fn is_ch_aggregate_function(fn_name: &str) -> bool {
     CH_AGGREGATE_FUNCTIONS.contains(fn_name.to_lowercase().as_str())
-}
-
-/// Check if a function uses the explicit chagg. prefix
-/// chagg.functionName() is ALWAYS treated as an aggregate, no registry lookup needed
-pub fn is_explicit_ch_aggregate(fn_name: &str) -> bool {
-    fn_name.starts_with(CH_AGG_PREFIX)
-}
-
-/// Check if a ch. prefixed function is an aggregate
-/// Returns true if:
-/// 1. Function starts with chagg. (explicit aggregate), OR
-/// 2. Function starts with ch. and the underlying function is in the aggregate registry
-pub fn is_ch_passthrough_aggregate(fn_name: &str) -> bool {
-    // Explicit chagg. prefix - always an aggregate
-    if fn_name.starts_with(CH_AGG_PREFIX) {
-        return true;
-    }
-    // ch. prefix - check registry
-    if let Some(ch_fn_name) = fn_name.strip_prefix(CH_PASSTHROUGH_PREFIX) {
-        return is_ch_aggregate_function(ch_fn_name);
-    }
-    false
-}
-
-/// Get the raw ClickHouse function name from a ch. or chagg. prefixed name
-/// Returns None if not a ch./chagg. prefixed function
-pub fn get_ch_function_name(fn_name: &str) -> Option<&str> {
-    fn_name
-        .strip_prefix(CH_AGG_PREFIX)
-        .or_else(|| fn_name.strip_prefix(CH_PASSTHROUGH_PREFIX))
 }
 
 /// Translate a Neo4j scalar function call to ClickHouse SQL
@@ -285,9 +258,37 @@ pub fn translate_scalar_function(
 ) -> Result<String, ClickhouseQueryGeneratorError> {
     let fn_name = &fn_call.name;
 
-    // Check for ClickHouse pass-through prefixes (chagg. or ch.)
-    if fn_name.starts_with(CH_AGG_PREFIX) || fn_name.starts_with(CH_PASSTHROUGH_PREFIX) {
-        return translate_ch_passthrough(fn_call);
+    // Native-function pass-through, keyed by the active dialect (`ch.`/`chagg.`
+    // for ClickHouse, `dbx.` for Databricks). A prefix belonging to a *different*
+    // backend is rejected here rather than leaking into the generated SQL.
+    if let Some(bare) = crate::sql_generator::passthrough::strip_passthrough(
+        fn_name,
+        crate::server::query_context::get_current_dialect(),
+    )
+    .map_err(|e| ClickhouseQueryGeneratorError::SchemaError(e.to_string()))?
+    {
+        let args_sql: Vec<String> = fn_call
+            .args
+            .iter()
+            .map(|e| e.to_sql())
+            .collect::<Result<_, _>>()
+            .map_err(|e| {
+                ClickhouseQueryGeneratorError::schema_error_with_context(
+                    format!("Failed to convert arguments to SQL: {}", e),
+                    format!(
+                        "in {} pass-through function with {} arguments",
+                        fn_call.name,
+                        fn_call.args.len()
+                    ),
+                )
+            })?;
+        log::debug!(
+            "native pass-through: {}(..) -> {}({})",
+            fn_call.name,
+            bare,
+            args_sql.join(", ")
+        );
+        return Ok(format!("{}({})", bare, args_sql.join(", ")));
     }
 
     let fn_name_lower = fn_name.to_lowercase();
@@ -360,77 +361,6 @@ pub fn translate_scalar_function(
             Ok(format!("{}({})", fn_call.name, args_sql.join(", ")))
         }
     }
-}
-
-/// Translate a ClickHouse pass-through function (ch. prefix)
-///
-/// The ch. prefix allows direct access to any ClickHouse function without
-/// requiring a Neo4j mapping. Uses dot notation for Neo4j ecosystem compatibility
-/// (consistent with apoc.*, gds.* patterns). Arguments still undergo property
-/// mapping and parameter substitution.
-///
-/// # Examples
-/// ```cypher
-/// // Scalar functions
-/// RETURN ch.cityHash64(u.email) AS hash
-/// RETURN ch.JSONExtractString(u.metadata, 'field') AS field
-///
-/// // URL functions
-/// RETURN ch.domain(u.url) AS domain
-///
-/// // IP functions
-/// RETURN ch.IPv4NumToString(u.ip) AS ip_str
-///
-/// // Geo functions
-/// RETURN ch.greatCircleDistance(lat1, lon1, lat2, lon2) AS distance
-/// ```
-fn translate_ch_passthrough(
-    fn_call: &ScalarFnCall,
-) -> Result<String, ClickhouseQueryGeneratorError> {
-    // Strip the ch. or chagg. prefix to get the raw ClickHouse function name
-    let ch_fn_name = get_ch_function_name(&fn_call.name).ok_or_else(|| {
-        ClickhouseQueryGeneratorError::schema_error_with_context(
-            "Expected ch. or chagg. prefix in function name",
-            format!("function name provided: {}", fn_call.name),
-        )
-    })?;
-
-    if ch_fn_name.is_empty() {
-        return Err(ClickhouseQueryGeneratorError::schema_error_with_context(
-            "ch./chagg. prefix requires a function name (e.g., ch.cityHash64, chagg.myAgg)",
-            format!("in ClickHouse pass-through function: {}", fn_call.name),
-        ));
-    }
-
-    // Convert arguments to SQL (this preserves property mapping)
-    let args_sql: Result<Vec<String>, _> = fn_call.args.iter().map(|e| e.to_sql()).collect();
-
-    let args_sql = args_sql.map_err(|e| {
-        ClickhouseQueryGeneratorError::schema_error_with_context(
-            format!("Failed to convert arguments to SQL: {}", e),
-            format!(
-                "in {} function with {} arguments",
-                fn_call.name,
-                fn_call.args.len()
-            ),
-        )
-    })?;
-
-    log::debug!(
-        "ClickHouse pass-through: {}({}) -> {}({})",
-        fn_call.name,
-        fn_call
-            .args
-            .iter()
-            .map(|a| format!("{:?}", a))
-            .collect::<Vec<_>>()
-            .join(", "),
-        ch_fn_name,
-        args_sql.join(", ")
-    );
-
-    // Generate ClickHouse function call directly
-    Ok(format!("{}({})", ch_fn_name, args_sql.join(", ")))
 }
 
 /// Translate Neo4j duration({...}) function to ClickHouse interval expressions
@@ -530,11 +460,6 @@ fn translate_duration_function(
             )))
         }
     }
-}
-
-/// Check if a function uses ClickHouse pass-through (ch. prefix)
-pub fn is_ch_passthrough(fn_name: &str) -> bool {
-    fn_name.starts_with(CH_PASSTHROUGH_PREFIX)
 }
 
 /// Check if a function is supported (has a mapping)
@@ -731,15 +656,6 @@ mod tests {
             .contains("requires a function name"));
     }
 
-    #[test]
-    fn test_is_ch_passthrough() {
-        assert!(is_ch_passthrough("ch.cityHash64"));
-        assert!(is_ch_passthrough("ch.JSONExtract"));
-        assert!(!is_ch_passthrough("cityHash64"));
-        assert!(!is_ch_passthrough("toUpper"));
-        assert!(!is_ch_passthrough("CH.test")); // Case sensitive
-    }
-
     // ===== ClickHouse Aggregate Function Tests =====
 
     #[test]
@@ -763,52 +679,6 @@ mod tests {
     }
 
     #[test]
-    fn test_is_ch_passthrough_aggregate() {
-        // ch. prefixed aggregates
-        assert!(is_ch_passthrough_aggregate("ch.uniq"));
-        assert!(is_ch_passthrough_aggregate("ch.quantile"));
-        assert!(is_ch_passthrough_aggregate("ch.topK"));
-        assert!(is_ch_passthrough_aggregate("ch.groupArray"));
-
-        // ch. prefixed non-aggregates
-        assert!(!is_ch_passthrough_aggregate("ch.cityHash64"));
-        assert!(!is_ch_passthrough_aggregate("ch.JSONExtract"));
-
-        // Non ch. prefixed
-        assert!(!is_ch_passthrough_aggregate("uniq"));
-        assert!(!is_ch_passthrough_aggregate("count"));
-    }
-
-    #[test]
-    fn test_chagg_explicit_aggregate_prefix() {
-        // chagg. prefix is ALWAYS an aggregate, regardless of function name
-        assert!(is_ch_passthrough_aggregate("chagg.customAggregate"));
-        assert!(is_ch_passthrough_aggregate("chagg.mySpecialFunc"));
-        assert!(is_ch_passthrough_aggregate("chagg.uniq")); // Also works for known ones
-        assert!(is_ch_passthrough_aggregate("chagg.anyNewFunction"));
-
-        // chagg. prefix starts_with check
-        assert!(is_explicit_ch_aggregate("chagg.test"));
-        assert!(!is_explicit_ch_aggregate("ch.test"));
-        assert!(!is_explicit_ch_aggregate("test"));
-    }
-
-    #[test]
-    fn test_get_ch_function_name_both_prefixes() {
-        // ch. prefix
-        assert_eq!(get_ch_function_name("ch.uniq"), Some("uniq"));
-        assert_eq!(get_ch_function_name("ch.cityHash64"), Some("cityHash64"));
-
-        // chagg. prefix
-        assert_eq!(get_ch_function_name("chagg.customAgg"), Some("customAgg"));
-        assert_eq!(get_ch_function_name("chagg.uniq"), Some("uniq"));
-
-        // No prefix
-        assert_eq!(get_ch_function_name("uniq"), None);
-        assert_eq!(get_ch_function_name("count"), None);
-    }
-
-    #[test]
     fn test_chagg_translate_function() {
         // chagg.customAggregate(x) -> customAggregate(x)
         let fn_call = ScalarFnCall {
@@ -818,15 +688,6 @@ mod tests {
 
         let result = translate_scalar_function(&fn_call).unwrap();
         assert_eq!(result, "myCustomAgg('test')");
-    }
-
-    #[test]
-    fn test_get_ch_function_name() {
-        assert_eq!(get_ch_function_name("ch.uniq"), Some("uniq"));
-        assert_eq!(get_ch_function_name("ch.cityHash64"), Some("cityHash64"));
-        assert_eq!(get_ch_function_name("ch."), Some(""));
-        assert_eq!(get_ch_function_name("uniq"), None);
-        assert_eq!(get_ch_function_name("count"), None);
     }
 
     #[test]

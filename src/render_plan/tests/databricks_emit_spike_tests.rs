@@ -840,6 +840,149 @@ async fn shortestpath_bfs_under_clickhouse_keeps_three_branch_undirected() {
     );
 }
 
+// ===========================================================================
+// Native-function pass-through, end to end (sql_generator::passthrough).
+//
+// `dbx.` reaches Spark/Databricks native functions; the registry decides
+// scalar vs aggregate (single prefix, no `dbxagg.`). `ch.`/`chagg.` stay
+// ClickHouse-only. These exercise the full Cypher → SQL path under each
+// dialect; the prefix-matching / cross-backend-rejection logic itself is
+// unit-tested in `sql_generator::passthrough`.
+// ===========================================================================
+
+/// `dbx.<scalar>` under the Databricks dialect emits the bare Spark name.
+#[tokio::test]
+async fn dbx_scalar_passthrough_under_databricks() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (u:User) RETURN dbx.upper(u.name) AS n")
+    })
+    .await;
+    assert!(
+        sql.contains("upper(") && !sql.contains("dbx."),
+        "expected bare `upper(` with the `dbx.` prefix stripped; got:\n{sql}"
+    );
+}
+
+/// `dbx.<aggregate>` is recognised as an aggregate via the Spark registry
+/// (no `dbxagg.` needed) and emitted bare.
+#[tokio::test]
+async fn dbx_aggregate_passthrough_under_databricks() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (u:User) RETURN dbx.collect_list(u.id) AS ids")
+    })
+    .await;
+    assert!(
+        sql.contains("collect_list(") && !sql.contains("dbx."),
+        "expected bare `collect_list(` (registry-detected aggregate); got:\n{sql}"
+    );
+}
+
+/// `dbx.percentile_approx(...)` — multi-arg aggregate, prefix stripped.
+#[tokio::test]
+async fn dbx_percentile_approx_under_databricks() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (u:User) RETURN dbx.percentile_approx(u.id, 0.95) AS p")
+    })
+    .await;
+    assert!(
+        sql.contains("percentile_approx("),
+        "expected bare `percentile_approx(`; got:\n{sql}"
+    );
+}
+
+/// Regression: `ch.`/`chagg.` pass-through still works under the ClickHouse
+/// dialect, scalar and aggregate, with the prefix stripped.
+#[tokio::test]
+async fn ch_passthrough_still_works_under_clickhouse() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::ClickHouse,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (u:User) RETURN ch.cityHash64(u.id) AS h, ch.uniq(u.id) AS c")
+    })
+    .await;
+    assert!(
+        sql.contains("cityHash64(") && sql.contains("uniq("),
+        "expected bare CH `cityHash64(` (scalar) and `uniq(` (aggregate); got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("ch."),
+        "CH prefix should be stripped from emitted SQL; got:\n{sql}"
+    );
+}
+
+/// A foreign-backend prefix on the rendering path (which returns `String`,
+/// not `Result`) is emitted **verbatim** so the query fails loudly at the
+/// database on an unknown function — never silently stripped into a
+/// valid-looking call. `ch.uniq` (aggregate) under Databricks.
+#[tokio::test]
+async fn foreign_aggregate_prefix_emitted_verbatim_under_databricks() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (u:User) RETURN ch.uniq(u.id) AS c")
+    })
+    .await;
+    // The invalid prefixed name survives into the SQL (DB will reject it);
+    // it is NOT silently stripped to a bare `uniq(`.
+    assert!(
+        sql.contains("ch.uniq("),
+        "expected the foreign `ch.uniq(` to be emitted verbatim (loud failure); got:\n{sql}"
+    );
+}
+
+/// Foreign scalar prefix `dbx.upper` under ClickHouse — emitted verbatim.
+#[tokio::test]
+async fn foreign_scalar_prefix_emitted_verbatim_under_clickhouse() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::ClickHouse,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (u:User) RETURN dbx.upper(u.name) AS n")
+    })
+    .await;
+    assert!(
+        sql.contains("dbx.upper("),
+        "expected the foreign `dbx.upper(` to be emitted verbatim; got:\n{sql}"
+    );
+}
+
+/// Nested foreign pass-through as an argument must NOT be silently dropped.
+/// `dbx.upper(ch.lower(u.name))` under Databricks: the outer `dbx.` strips
+/// to `upper(...)`, the inner foreign `ch.lower` is emitted verbatim as the
+/// argument — so the argument list is intact (no `upper()` with a lost arg).
+#[tokio::test]
+async fn nested_foreign_passthrough_arg_is_not_dropped() {
+    let ctx = QueryContext {
+        dialect: SqlDialect::Databricks,
+        ..QueryContext::default()
+    };
+    let sql = with_query_context(ctx, async {
+        cypher_to_sql("MATCH (u:User) RETURN dbx.upper(ch.lower(u.name)) AS n")
+    })
+    .await;
+    assert!(
+        sql.contains("upper(ch.lower("),
+        "expected nested arg preserved as `upper(ch.lower(`, not dropped; got:\n{sql}"
+    );
+}
+
 /// `is_integer_literal` is the guard that keeps the Databricks anchor
 /// cast from wrapping non-numeric IDs. Direct unit test — covers the
 /// shape via the cypher_to_sql path elsewhere but locks the predicate

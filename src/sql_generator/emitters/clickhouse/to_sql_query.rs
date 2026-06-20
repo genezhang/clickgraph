@@ -25,7 +25,6 @@ use std::collections::HashSet;
 
 // Import function translator for Neo4j -> ClickHouse function mappings
 use super::function_registry::get_function_mapping;
-use super::function_translator::{get_ch_function_name, CH_PASSTHROUGH_PREFIX};
 
 // ============================================================================
 // RENDER CONTEXT ACCESSORS (delegating to unified query_context)
@@ -4565,6 +4564,41 @@ impl RenderExpr {
                     }
                 }
 
+                // Native-function pass-through, keyed by the active dialect
+                // (`ch.` for ClickHouse, `dbx.` for Databricks). This arm returns
+                // `String`, not `Result`, so a foreign-backend prefix can't be
+                // surfaced as a clean error here — instead we emit the *original*
+                // prefixed name (e.g. `ch.uniq(x)`) so the query surfaces a
+                // database error on the unknown prefixed function rather than
+                // silently dropping the prefix into a valid-looking call. The
+                // message-bearing error path is `translate_scalar_function` /
+                // the `LogicalExpr` arms.
+                match crate::sql_generator::passthrough::strip_passthrough(
+                    &fn_call.name,
+                    crate::server::query_context::get_current_dialect(),
+                ) {
+                    Ok(Some(bare)) => {
+                        let args = fn_call
+                            .args
+                            .iter()
+                            .map(|e| e.to_sql())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        return format!("{}({})", bare, args);
+                    }
+                    Ok(None) => { /* not a pass-through name — normal mapping below */ }
+                    Err(e) => {
+                        log::error!("scalar pass-through rejected: {}", e);
+                        let args = fn_call
+                            .args
+                            .iter()
+                            .map(|e| e.to_sql())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        return format!("{}({})", fn_call.name, args);
+                    }
+                }
+
                 // Check if we have a Neo4j -> ClickHouse mapping
                 match get_function_mapping(&fn_name_lower) {
                     Some(mapping) => {
@@ -4599,17 +4633,13 @@ impl RenderExpr {
                 }
             }
             RenderExpr::AggregateFnCall(agg) => {
-                // Check for ClickHouse pass-through prefix (ch.)
-                if agg.name.starts_with(CH_PASSTHROUGH_PREFIX) {
-                    if let Some(ch_fn_name) = get_ch_function_name(&agg.name) {
-                        if ch_fn_name.is_empty() {
-                            log::error!("ch. prefix requires a function name (e.g., ch.uniq)");
-                            // TODO: Refactor to_sql() to return Result<String, Error> so this error
-                            // can be propagated instead of returning an empty string here.
-                            // Returning an empty string is acceptable as an intermediate step
-                            // but may lead to SQL syntax errors later in query execution.
-                            return String::new(); // Return empty string for invalid function name
-                        }
+                // Native-function pass-through, keyed by the active dialect
+                // (`ch.`/`chagg.` for ClickHouse, `dbx.` for Databricks).
+                match crate::sql_generator::passthrough::strip_passthrough(
+                    &agg.name,
+                    crate::server::query_context::get_current_dialect(),
+                ) {
+                    Ok(Some(bare)) => {
                         let args = agg
                             .args
                             .iter()
@@ -4617,13 +4647,29 @@ impl RenderExpr {
                             .collect::<Vec<_>>()
                             .join(", ");
                         log::debug!(
-                            "ClickHouse aggregate pass-through: ch.{}({}) -> {}({})",
-                            ch_fn_name,
-                            args,
-                            ch_fn_name,
+                            "aggregate pass-through: {}(..) -> {}({})",
+                            agg.name,
+                            bare,
                             args
                         );
-                        return format!("{}({})", ch_fn_name, args);
+                        return format!("{}({})", bare, args);
+                    }
+                    Ok(None) => { /* not a pass-through name — fall through to the registry */ }
+                    Err(e) => {
+                        // This arm returns `String`, not `Result`, so a foreign-backend
+                        // prefix (e.g. `ch.uniq` on Databricks) can't be surfaced as a
+                        // clean translation error here — emit the *original* prefixed
+                        // name so the query surfaces a database error on the unknown
+                        // prefixed function rather than silently dropping the prefix.
+                        // The message-bearing error path is the `LogicalExpr` arms.
+                        log::error!("aggregate pass-through rejected: {}", e);
+                        let args = agg
+                            .args
+                            .iter()
+                            .map(|e| e.to_sql())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        return format!("{}({})", agg.name, args);
                     }
                 }
 

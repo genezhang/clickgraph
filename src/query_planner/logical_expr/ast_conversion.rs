@@ -11,9 +11,6 @@
 use std::sync::Arc;
 
 use crate::{
-    clickhouse_query_generator::{
-        is_ch_passthrough_aggregate, CH_AGG_PREFIX, CH_PASSTHROUGH_PREFIX,
-    },
     open_cypher_parser,
     query_planner::logical_plan::{Filter, GraphNode, GraphRel, LogicalPlan},
 };
@@ -158,12 +155,16 @@ impl<'a> TryFrom<open_cypher_parser::ast::FunctionCall<'a>> for LogicalExpr {
         // Check if it's a standard aggregate function
         let is_standard_agg = agg_fns.contains(&name_lower.as_str());
 
-        // Check if it's a ch./chagg. prefixed ClickHouse aggregate function
-        // chagg. prefix is ALWAYS an aggregate (explicit declaration)
-        // ch. prefix checks against the aggregate registry
-        let is_ch_agg = value.name.starts_with(CH_AGG_PREFIX)
-            || (value.name.starts_with(CH_PASSTHROUGH_PREFIX)
-                && is_ch_passthrough_aggregate(&value.name));
+        // Check if it's a native pass-through aggregate (any backend's prefix).
+        // Dialect-agnostic on purpose: the planner runs before the dialect is
+        // pinned, so we classify by recognizing every backend's prefixes —
+        // `ch.`/`chagg.` (ClickHouse, registry + explicit) and `dbx.`
+        // (Databricks, registry). Wrong-backend prefixes are rejected later, at
+        // emit time. See `sql_generator::passthrough`.
+        let is_passthrough_agg = matches!(
+            crate::sql_generator::passthrough::classify_passthrough(&value.name),
+            Some(crate::sql_generator::passthrough::PassthroughKind::Aggregate)
+        );
 
         let args = value
             .args
@@ -171,7 +172,7 @@ impl<'a> TryFrom<open_cypher_parser::ast::FunctionCall<'a>> for LogicalExpr {
             .map(LogicalExpr::try_from)
             .collect::<Result<Vec<_>, _>>()?;
 
-        if is_standard_agg || is_ch_agg {
+        if is_standard_agg || is_passthrough_agg {
             Ok(LogicalExpr::AggregateFnCall(AggregateFnCall {
                 name: value.name,
                 args,
