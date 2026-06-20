@@ -69,11 +69,12 @@ The detailed, maintained DeltaGraph docs live under `docs/deltagraph/`:
 
 Connect with **Neo4j Browser**, **NeoDash**, **graph-notebook**, or any Bolt v5
 driver — these work unchanged. The `cg` CLI works too via `--dialect databricks`
-(see Quickstart). The interactive **`clickgraph-client` REPL** is only partially
-supported against DeltaGraph today: schema authoring (`:design`/`:load`) works,
-but Cypher queries and `:introspect`/`:discover` do not yet (the Databricks
-executor lacks text output formats, and introspection relies on ClickHouse
-`system.*` tables). Use Neo4j Browser or `cg` to query in the meantime.
+(see Quickstart). The interactive **`clickgraph-client` REPL** also works against
+DeltaGraph: Cypher queries render as tables client-side, and
+`:introspect`/`:discover` drive Databricks' `SHOW TABLES` / `DESCRIBE TABLE
+EXTENDED`. Introspection needs a catalog — set `DATABRICKS_CATALOG` (or the YAML
+`catalog:` field) and the REPL's argument is treated as the Spark schema within
+it.
 
 ## See also
 

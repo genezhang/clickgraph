@@ -225,6 +225,13 @@ impl DatabricksSqlExecutor {
         })
     }
 
+    /// The default Unity Catalog this executor targets, if configured
+    /// (`DATABRICKS_CATALOG` or the schema YAML `catalog:` field). Used by
+    /// schema introspection, which needs a `catalog.schema` namespace.
+    pub fn catalog(&self) -> Option<&str> {
+        self.config.catalog.as_deref()
+    }
+
     /// Resolve the bearer token for an API call. Under PAT auth this is the
     /// static token. Under OAuth M2M it returns a cached token if still valid,
     /// otherwise fetches a fresh one from the OIDC endpoint and caches it with
@@ -614,6 +621,10 @@ impl QueryExecutor for DatabricksSqlExecutor {
         let columns = columns_of(&response);
         super::text_format::format_rows(&columns, &data, format)
     }
+
+    fn as_any(&self) -> Option<&(dyn std::any::Any + 'static)> {
+        Some(self)
+    }
 }
 
 // ---------- Statement Execution API request/response shapes ----------
@@ -930,6 +941,33 @@ mod tests {
         let v = serde_json::to_value(&body).unwrap();
         assert_eq!(v["catalog"], json!("main"));
         assert_eq!(v["schema"], json!("default"));
+    }
+
+    #[test]
+    fn catalog_accessor_reflects_config() {
+        // Introspection reads the configured catalog through this accessor.
+        let exec = DatabricksSqlExecutor::new(cfg()).expect("client builds");
+        assert_eq!(exec.catalog(), None);
+
+        let mut c = cfg();
+        c.catalog = Some("main".into());
+        let exec = DatabricksSqlExecutor::new(c).expect("client builds");
+        assert_eq!(exec.catalog(), Some("main"));
+    }
+
+    #[test]
+    fn as_any_downcasts_to_concrete_executor() {
+        // The introspect handler recovers the concrete type from the trait
+        // object via this hook to drive `DatabricksProbe`.
+        let exec = DatabricksSqlExecutor::new(cfg()).expect("client builds");
+        let dynref: &dyn QueryExecutor = &exec;
+        assert!(
+            dynref
+                .as_any()
+                .and_then(|a| a.downcast_ref::<DatabricksSqlExecutor>())
+                .is_some(),
+            "DatabricksSqlExecutor should downcast from &dyn QueryExecutor"
+        );
     }
 
     #[test]

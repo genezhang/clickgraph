@@ -8,6 +8,8 @@ pub(crate) mod browser_test_schemas;
 mod complex_feature_tests;
 mod cross_schema_pattern_tests;
 mod cte_column_aliasing_tests;
+#[cfg(feature = "databricks")]
+mod databricks_introspect_tests;
 mod ldbc_regression_tests;
 mod metrics_endpoint_tests;
 mod parameter_function_test;

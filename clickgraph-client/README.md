@@ -136,21 +136,17 @@ ClickGraph into automation or to translate/execute without standing up a server.
 
 ## DeltaGraph (Databricks) compatibility
 
-This REPL targets a **ClickHouse-backed** ClickGraph server. Against a
-[DeltaGraph](../docs/wiki/Databricks-Deployment.md) server (the `deltagraph`
-binary, Databricks backend) support is currently **partial**:
+The REPL works against a [DeltaGraph](../docs/wiki/Databricks-Deployment.md)
+server (the `deltagraph` binary, Databricks backend) as well as a ClickHouse
+one. Cypher queries render as tables client-side (the Databricks API has no
+server-side pretty format), and `:introspect`/`:discover` drive Databricks'
+`SHOW TABLES` / `DESCRIBE TABLE EXTENDED` instead of ClickHouse `system.*`.
 
-| Command | DeltaGraph |
-|---------|-----------|
-| `:schemas`, `:design`, `:load` | ✅ works |
-| *(Cypher query)*, `:introspect`, `:discover` | ❌ not yet — server-side gaps |
-
-Queries fail because the Databricks executor doesn't yet implement text output
-formats (the REPL requests `PrettyCompact`), and introspection/discovery require
-ClickHouse `system.*` tables that don't exist on Databricks. Until those
-server-side paths land, use **Neo4j Browser** or the **`cg --dialect databricks`**
-CLI to query a DeltaGraph warehouse; you can still author schemas here with
-`:design` + `:load`.
+One difference: Databricks namespaces are `catalog.schema`, so introspection
+needs a catalog. Start the server with `DATABRICKS_CATALOG` set (or the schema
+YAML `catalog:` field); then `:introspect <schema>` / `:discover <schema>` treat
+their argument as the Spark schema within that catalog. Without a catalog those
+commands return a 400 explaining the requirement.
 
 ## See also
 
