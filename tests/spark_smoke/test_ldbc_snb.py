@@ -1,52 +1,58 @@
-"""LDBC SNB functional tests against delta-docker.
+"""LDBC SNB Cypher→Spark SQL translation tests.
 
-Runs a moderate subset of LDBC SNB queries to verify:
-- All official queries translate correctly to Spark SQL
-- Complex patterns (VLP, OPTIONAL MATCH, aggregations) work
-- No syntax errors in generated SQL
+Runs a hand-written subset of LDBC SNB–style queries through `cg` under the
+Databricks dialect and asserts on the *generated* Spark SQL — VLP CTEs,
+OPTIONAL MATCH → LEFT JOIN, aggregations, string functions, etc. These verify
+the Cypher→SQL translation only; they do not execute the SQL against a Spark
+warehouse (that is covered by `test_smoke.py` / `test_ldbc_sweep.py`).
 
 Skipped unless CLICKGRAPH_SPARK_TESTS=1.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = REPO_ROOT / "benchmarks" / "ldbc_snb" / "schemas" / "ldbc_snb_complete.yaml"
-QUERIES_DIR = REPO_ROOT / "benchmarks" / "ldbc_snb" / "queries" / "official"
-HARNESS_DIR = Path(__file__).parent
-IMAGE = os.environ.get("CG_SPARK_IMAGE", "deltaio/delta-docker:4.1.0")
 
 
-def _resolve_cg_bin() -> Path:
-    """Find cg binary via cargo metadata or fallback."""
+def _resolve_cg_bin() -> Optional[Path]:
+    """CG_BIN env override → cargo metadata target_directory → repo-relative target."""
+    env_override = os.environ.get("CG_BIN")
+    if env_override:
+        return Path(env_override)
     try:
         meta = subprocess.run(
             ["cargo", "metadata", "--no-deps", "--format-version", "1"],
             cwd=REPO_ROOT, capture_output=True, text=True, check=True, timeout=30,
         )
-        import json
         target_dir = Path(json.loads(meta.stdout)["target_directory"])
         candidate = target_dir / "release" / "cg"
         if candidate.exists():
             return candidate
-    except Exception:
+    except (subprocess.SubprocessError, json.JSONDecodeError, KeyError, OSError):
         pass
     fallback = REPO_ROOT / "target" / "release" / "cg"
-    if fallback.exists():
-        return fallback
-    raise RuntimeError("cg binary not found")
+    return fallback if fallback.exists() else None
 
 
 def _require_env() -> Path:
     if os.environ.get("CLICKGRAPH_SPARK_TESTS") != "1":
         pytest.skip("CLICKGRAPH_SPARK_TESTS=1 not set")
-    return _resolve_cg_bin()
+    cg = _resolve_cg_bin()
+    if cg is None:
+        pytest.skip(
+            "cg binary not found — build with "
+            "`cargo build --release -p clickgraph-tool --features databricks`"
+        )
+    return cg
 
 
 def _generate_sql(cg_bin: Path, cypher: str) -> str:
@@ -58,44 +64,7 @@ def _generate_sql(cg_bin: Path, cypher: str) -> str:
     return result.stdout
 
 
-def _run_in_container(sql: str) -> str:
-    """Execute SQL against a freshly-seeded Delta warehouse inside the image."""
-    result = subprocess.run(
-        [
-            "docker", "run", "--rm", "--entrypoint", "bash",
-            "-v", f"{HARNESS_DIR}:/workspace:ro",
-            "-e", f"SMOKE_SQL={sql}",
-            IMAGE,
-            "-c", "python3 /workspace/seed_and_query.py",
-        ],
-        capture_output=True, text=True, timeout=300,
-    )
-    if result.returncode != 0:
-        raise AssertionError(
-            f"spark run failed (rc={result.returncode}):\nSTDERR:\n{result.stderr}\nSTDOUT:\n{result.stdout}"
-        )
-    return result.stdout
-
-
-def _parse_show_output(output: str) -> list[list[str]]:
-    """Parse spark `show()` ASCII table output into [[cell, ...], ...]."""
-    rows: list[list[str]] = []
-    in_table = False
-    seen_header = False
-    for line in output.splitlines():
-        if line.startswith("+") and "-" in line:
-            in_table = True
-            continue
-        if in_table and line.startswith("|"):
-            cells = [c.strip() for c in line.strip("|").split("|")]
-            if not seen_header:
-                seen_header = True
-                continue
-            rows.append(cells)
-    return rows
-
-
-# Load a subset of LDBC SNB queries for functional testing
+# Hand-written subset of LDBC SNB–style queries for translation testing.
 # These cover: basic patterns, VLP, OPTIONAL MATCH, aggregations, string functions
 
 @pytest.fixture(scope="module")
