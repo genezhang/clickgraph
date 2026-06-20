@@ -158,7 +158,7 @@ pub fn record_ch_network_bytes(bytes: u64) {
 }
 
 /// Record the parsed `X-ClickHouse-Summary` figures for the current query
-/// (Phase B). No-op outside a [`with_ch_stats`] scope.
+/// (Phase B). No-op outside a [`with_ch_stats_scope`] scope.
 pub fn record_ch_summary(read_rows: u64, read_bytes: u64, elapsed_ns: u64) {
     let _ = CH_STATS_SLOT.try_with(|s| {
         let mut st = s.borrow_mut();
