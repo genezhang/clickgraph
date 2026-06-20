@@ -160,6 +160,21 @@ impl RoleConnectionPool {
             cluster_name: self.base_config.cluster_name.clone(),
         }
     }
+
+    /// Raw HTTP endpoint parts for the metrics summary path (`remote.rs`), which
+    /// bypasses the `clickhouse` crate to read `X-ClickHouse-Summary`. Selects a
+    /// node via the same round-robin as `get_client` and carries the identical
+    /// settings (`standard_options`) + role so results match the crate path.
+    pub fn http_endpoint(&self, role: Option<&str>) -> ChHttpEndpoint {
+        let idx = self.round_robin.fetch_add(1, Ordering::Relaxed) % self.base_config.urls.len();
+        ChHttpEndpoint {
+            url: self.base_config.urls[idx].clone(),
+            user: self.base_config.user.clone(),
+            password: self.base_config.password.clone(),
+            database: self.base_config.database.clone(),
+            options: ConnectionConfig::standard_options(self.base_config.max_cte_depth, role),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -168,6 +183,19 @@ pub struct PoolStats {
     pub roles: Vec<String>,
     pub node_count: usize,
     pub cluster_name: Option<String>,
+}
+
+/// Connection details for a direct ClickHouse HTTP request (the metrics
+/// summary path). Auth goes in `X-ClickHouse-User` / `-Key` headers; `database`,
+/// `options`, and any role go in the URL query string — matching how the
+/// `clickhouse` crate composes its request.
+#[derive(Debug, Clone)]
+pub struct ChHttpEndpoint {
+    pub url: String,
+    pub user: String,
+    pub password: String,
+    pub database: String,
+    pub options: Vec<(String, String)>,
 }
 
 impl ConnectionConfig {
@@ -263,33 +291,50 @@ impl ConnectionConfig {
         }
     }
 
+    /// The ClickHouse settings every query runs with. Single source of truth so
+    /// the `clickhouse`-crate client and the metrics reqwest path (which reads
+    /// `X-ClickHouse-Summary`) apply identical settings — any drift would make
+    /// the two execution paths return different results.
+    fn standard_options(max_cte_depth: u32, role: Option<&str>) -> Vec<(String, String)> {
+        let mut opts = vec![
+            ("join_use_nulls".to_string(), "1".to_string()),
+            ("allow_experimental_json_type".to_string(), "1".to_string()),
+            (
+                "input_format_binary_read_json_as_string".to_string(),
+                "1".to_string(),
+            ),
+            (
+                "output_format_binary_write_json_as_string".to_string(),
+                "1".to_string(),
+            ),
+            (
+                "max_recursive_cte_evaluation_depth".to_string(),
+                max_cte_depth.to_string(),
+            ),
+            // VLP queries with polymorphic schemas generate large SQL via UNION
+            // ALL expansion; the 256KB default is too small for multi-type VLP.
+            ("max_query_size".to_string(), "10485760".to_string()), // 10MB
+            // Large VLP SQL also creates large ASTs; default 50000 is too small.
+            ("max_ast_elements".to_string(), "1000000".to_string()), // 1M
+        ];
+        if let Some(role_name) = role {
+            opts.push(("role".to_string(), role_name.to_string()));
+        }
+        opts
+    }
+
     fn create_client_for_url(&self, url: &str, role: Option<&str>) -> Client {
         let mut client = Client::default()
             .with_url(url)
             .with_user(&self.user)
             .with_password(&self.password)
-            .with_database(&self.database)
-            .with_option("join_use_nulls", "1")
-            .with_option("allow_experimental_json_type", "1")
-            .with_option("input_format_binary_read_json_as_string", "1")
-            .with_option("output_format_binary_write_json_as_string", "1")
-            .with_option(
-                "max_recursive_cte_evaluation_depth",
-                self.max_cte_depth.to_string(),
-            )
-            // VLP queries with polymorphic schemas generate large SQL due to UNION ALL expansion.
-            // The default 262144 bytes (256KB) is too small for multi-type VLP queries.
-            .with_option("max_query_size", "10485760") // 10MB query size limit
-            // Large VLP SQL also creates large ASTs; default 50000 is too small.
-            .with_option("max_ast_elements", "1000000"); // 1M AST elements
-
-        // Set role for this connection pool via ClickHouse option
-        // This adds the role parameter to all HTTP requests from this client
-        if let Some(role_name) = role {
-            log::debug!("Creating connection pool with role: {}", role_name);
-            client = client.with_option("role", role_name);
+            .with_database(&self.database);
+        for (name, value) in Self::standard_options(self.max_cte_depth, role) {
+            client = client.with_option(name, value);
         }
-
+        if role.is_some() {
+            log::debug!("Creating connection pool with role: {:?}", role);
+        }
         client
     }
 }

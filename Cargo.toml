@@ -54,7 +54,10 @@ chdb-rust = { version = "1.3.1", optional = true }
 # Compiled only when the `databricks` feature is enabled. `rustls-tls` chosen
 # over native-tls to avoid OpenSSL version coupling on Linux distros and to
 # match what the underlying clickhouse crate already pulls in via reqwest.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+# Non-optional: used by the Databricks executor (databricks feature) AND the
+# remote executor's metrics summary path (reads X-ClickHouse-Summary, gated at
+# runtime by CLICKGRAPH_METRICS_CH_SUMMARY).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { version = "0.6", optional = true }
@@ -75,7 +78,9 @@ jemalloc = ["tikv-jemallocator"]
 embedded = ["chdb-rust"]
 # DeltaGraph Phase 2: Databricks SQL Warehouse executor.
 # Off by default — only enable when building DeltaGraph distribution.
-databricks = ["reqwest"]
+# (reqwest is now a non-optional dependency, so this feature is a marker for
+# the Databricks-only code paths gated via #[cfg(feature = "databricks")].)
+databricks = []
 
 [dev-dependencies]
 clickhouse = { version = "0.13.2", features = ["test-util"] }
