@@ -80,7 +80,11 @@ def main() -> int:
     print(sql)
     print("=" * 70)
     print("RESULT:")
-    spark.sql(sql).show(truncate=False)
+    # n is set high so the parity gate sees every row — `show()` defaults to 20,
+    # which would silently truncate larger result sets into a false mismatch (or
+    # an arbitrary subset under order-insensitive comparison). truncate=False
+    # keeps wide string cells intact.
+    spark.sql(sql).show(n=100_000, truncate=False)
     spark.stop()
     return 0
 

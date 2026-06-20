@@ -144,7 +144,8 @@ def _qid_param(qid: str):
 @pytest.mark.parametrize("qid", [_qid_param(q) for q in _collect_query_ids()])
 def test_ldbc_query_translates_and_executes(qid: str) -> None:
     """First-pass gate: query translates (cg) and executes (Spark) without error.
-    Empty result rows are acceptable — result-set diff vs ClickGraph is M3."""
+    Empty result rows are acceptable here. The result-set diff vs ClickGraph
+    (the M3 gate) is implemented in `test_ldbc_parity.py`."""
     cg_bin = _require_env()
     cypher_raw, params = _load_query(_family_dir(qid), qid)
     cypher = _substitute_params(cypher_raw, params)

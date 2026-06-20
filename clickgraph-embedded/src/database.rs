@@ -12,7 +12,9 @@ use clickgraph::executor::chdb_embedded::ChdbExecutor;
 #[cfg(feature = "embedded")]
 pub use clickgraph::executor::chdb_embedded::StorageCredentials;
 #[cfg(feature = "databricks")]
-pub use clickgraph::executor::databricks_sql::{DatabricksConfig, DatabricksSqlExecutor};
+pub use clickgraph::executor::databricks_sql::{
+    DatabricksConfig, DatabricksSqlExecutor, OAuthM2MConfig,
+};
 use clickgraph::executor::remote::RemoteClickHouseExecutor;
 use clickgraph::executor::{ExecutorError, QueryExecutor};
 use clickgraph::graph_catalog::config::GraphSchemaConfig;

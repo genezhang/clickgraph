@@ -179,15 +179,26 @@ cg --schema schema.yaml --dialect databricks sql "MATCH (u:User) RETURN u.name L
 ## What's not in this iteration
 
 - **Writes** (`CREATE`, `SET`, `DELETE`, `MERGE`). DeltaGraph is read-only
-  against Databricks; embedded chdb is the only write target today.
-  Write support against Delta tables is not on the current roadmap and
-  has no committed timeline — track [the DeltaGraph plan](../design/DELTAGRAPH_PLAN.md)
-  for any change in scope.
-- **OAuth M2M.** PAT is the only supported auth.
-- **External-link result chunks.** Large result sets (>25 MB) currently
-  fail with an error from the Statement Execution API. The executor
-  uses `INLINE`/`JSON_ARRAY` disposition; switching to `EXTERNAL_LINKS`
-  for large results is a Phase 5 deliverable.
+  against Databricks in this (beta) iteration; embedded chdb is the only
+  write target today. Write support against Delta tables — `MERGE` plus
+  relationship `CREATE`, edge-alias `DELETE`, `SET a += {…}` map-merge, and
+  `REMOVE a:Label` — is part of the **GA scope (planned for v0.7.x)**, not
+  the beta. See [`STATUS.md`](../../STATUS.md) and
+  [GA readiness](GA_READINESS.md) for the current write gaps and timeline.
+- **OAuth M2M** — *now supported* alongside PAT. Set
+  `CG_DATABRICKS_CLIENT_ID` + `CG_DATABRICKS_CLIENT_SECRET` (or the
+  `DATABRICKS_*` forms, or `[databricks] client_id/client_secret` in the
+  config file) for service-principal auth; the executor exchanges them at
+  the workspace OIDC endpoint and refreshes the token before expiry. PAT
+  (`DATABRICKS_TOKEN`) still works and is the default. Validation against a
+  real identity provider is pending a live workspace.
+- **External-link result chunks** — *now supported.* The executor speaks
+  both `INLINE` (default, ≤25 MB) and `EXTERNAL_LINKS` dispositions; set
+  `DatabricksConfig::disposition = ResultDisposition::ExternalLinks` for
+  large result sets that would exceed the inline cap. The executor
+  downloads the presigned chunk URLs and follows `next_chunk_index`.
+  Validation against a live warehouse's real cloud-storage staging is
+  still pending (covered locally against the zeta-databricks emulator).
 - **`CALL` subqueries** (e.g. LDBC bi-16) — same gap as ClickGraph;
   inherited from the shared planner.
 - **Schema discovery from Unity Catalog** (`SHOW TABLES IN catalog.schema`,
