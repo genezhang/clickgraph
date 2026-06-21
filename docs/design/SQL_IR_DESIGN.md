@@ -43,7 +43,7 @@ branches and become `Dialect` methods.
 
 ### What's ClickHouse-specific (~25%) — the actual work
 - **Four render paths** that each turn expressions into SQL and drift:
-  - **A. `RenderExpr::to_sql()`** (`to_sql_query.rs:4354`) — canonical, all 17
+  - **A. `RenderExpr::to_sql()`** (`src/sql_generator/emitters/clickhouse/to_sql_query.rs`) — canonical, all 17
     variants, dialect-aware via FunctionMapper/registry. ~1,300 lines.
   - **B. `render_expr_to_sql_string()`** (`plan_builder_helpers.rs:692`) —
     JOIN dependency sort; 12 variants; **no dialect awareness**; `"TRUE"` fallback.
@@ -214,6 +214,9 @@ otherwise it rides along in Phase 1.
 - **Types/CAST** (gap): `Int64↔BIGINT`, `Float64↔DOUBLE`, `String↔STRING`,
   `UInt8↔TINYINT`, `DateTime64(3)↔TIMESTAMP`, `Date32↔DATE`, `UUID↔STRING`,
   `Array(T)↔ARRAY<T>`, `Nullable(T)`→(strip), `CAST(x,'T')↔CAST(x AS T)`.
+- **Clauses** (gaps surfaced by Phase 0 goldens): pagination — CH
+  `LIMIT {skip}, {n}` vs Spark `LIMIT {n} OFFSET {skip}`; `IN` list — Spark needs
+  `IN (a, b)`, not the array-literal swap's `IN array(a, b)`.
 - **Keywords/temporal**: `FINAL` (CH only), `SETTINGS`/`SAMPLE` (CH only),
   `toIntervalX`↔`INTERVAL`, epoch-millis wrapping
   (`fromUnixTimestamp64Milli`↔`timestamp_millis`).

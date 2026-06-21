@@ -82,6 +82,26 @@ const CORPUS: &[(&str, &str)] = &[
         "vlp_recursive",
         "MATCH (a:User)-[:FOLLOWS*1..3]->(b:User) RETURN b.user_id",
     ),
+    ("whole_entity", "MATCH (u:User) RETURN u"),
+    (
+        "optional_match",
+        "MATCH (u:User) OPTIONAL MATCH (u)-[:AUTHORED]->(p:Post) RETURN u.name, p.title",
+    ),
+    (
+        "union",
+        "MATCH (u:User) RETURN u.name AS x UNION MATCH (p:Post) RETURN p.title AS x",
+    ),
+    (
+        "group_two_keys",
+        "MATCH (u:User) RETURN u.country, u.city, count(u) AS n",
+    ),
+    // NOTE: Path D coverage (EXISTS / pattern-predicate, e.g.
+    // `WHERE (u)-[:AUTHORED]->(:Post)`) is intentionally absent — that path
+    // currently hits `unimplemented!` in render_expr for anonymous pattern
+    // nodes in expression context. Add it to this corpus once it renders
+    // (it is the path Phase 2 of the IR refactor unifies). Likewise composite
+    // node-ID, denormalized, multi-label, and UNWIND/arrayJoin shapes need
+    // additional schemas / not-yet-implemented Spark structural support.
 ];
 
 fn load_schema() -> GraphSchema {
@@ -117,6 +137,13 @@ async fn render(schema: &GraphSchema, cypher: &str, dialect: SqlDialect) -> Stri
 /// ordering/concurrency: `ALIAS_COUNTER` (anonymous rel aliases `t{n}`) and
 /// `CTE_COUNTER` (`cte{n}`). Each is remapped by first appearance, so goldens
 /// are deterministic while structure (which alias joins where) is preserved.
+///
+/// CAUTION: this is text-blind — it rewrites any `t<digits>`/`cte<digits>`
+/// token, including ones inside string literals or a schema column literally
+/// named `t5`. Today the corpus contains no such token (verified), but if you
+/// add a query whose SQL contains a non-counter `t<n>`/`cte<n>`, tighten this
+/// (e.g. scope to the alias-defining position) so a real regression in that
+/// token can't be silently normalized away.
 fn normalize(sql: &str) -> String {
     fn remap(input: &str, pattern: &str, prefix: &str) -> String {
         let re = regex::Regex::new(pattern).unwrap();
@@ -148,7 +175,7 @@ fn golden_path(name: &str, dialect: &str) -> String {
 #[tokio::test]
 async fn sql_golden_snapshots() {
     let schema = load_schema();
-    let update = std::env::var("UPDATE_GOLDEN").is_ok();
+    let update = std::env::var("UPDATE_GOLDEN").as_deref() == Ok("1");
     let mut mismatches: Vec<String> = Vec::new();
 
     for (name, cypher) in CORPUS {
@@ -157,6 +184,11 @@ async fn sql_golden_snapshots() {
             (SqlDialect::Databricks, "databricks"),
         ] {
             let sql = normalize(&render(&schema, cypher, dialect).await);
+            // Guard against a vacuous pass (e.g. a future to_sql() returning "").
+            assert!(
+                sql.contains("SELECT"),
+                "{name}__{dname} produced SQL without SELECT:\n{sql}"
+            );
             let path = golden_path(name, dname);
 
             if update {
