@@ -106,6 +106,31 @@ impl SchemaType {
         format!("Nullable({})", self.to_clickhouse_type())
     }
 
+    /// Spark / Databricks SQL type name. Spark has no unsigned or UUID types and
+    /// all columns are nullable, so there is no `Nullable(...)` wrapper.
+    pub fn to_spark_type(&self) -> &'static str {
+        match self {
+            SchemaType::Integer => "BIGINT",
+            SchemaType::Float => "DOUBLE",
+            SchemaType::String => "STRING",
+            SchemaType::Boolean => "BOOLEAN",
+            SchemaType::DateTime => "TIMESTAMP",
+            SchemaType::Date => "DATE",
+            SchemaType::Uuid => "STRING", // no native UUID type
+        }
+    }
+
+    /// Dialect-aware SQL type name for use inside a CAST. ClickHouse wraps in
+    /// `Nullable(T)` when `nullable`; Spark types are implicitly nullable, so the
+    /// flag is ignored there.
+    pub fn sql_type_name(&self, dialect: SqlDialect, nullable: bool) -> String {
+        match dialect {
+            SqlDialect::Databricks => self.to_spark_type().to_string(),
+            _ if nullable => self.to_nullable_clickhouse_type(),
+            _ => self.to_clickhouse_type().to_string(),
+        }
+    }
+
     /// Convert a string value to a SQL literal with correct type
     ///
     /// This is used to generate performant SQL predicates from elementId values.
@@ -282,6 +307,45 @@ pub fn map_clickhouse_type(ch_type: &str) -> SchemaType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_sql_type_name_dialect_aware() {
+        // ClickHouse: existing spellings; Nullable wrapper when requested.
+        assert_eq!(
+            SchemaType::Integer.sql_type_name(SqlDialect::ClickHouse, false),
+            "Int64"
+        );
+        assert_eq!(
+            SchemaType::Integer.sql_type_name(SqlDialect::ClickHouse, true),
+            "Nullable(Int64)"
+        );
+        assert_eq!(
+            SchemaType::Boolean.sql_type_name(SqlDialect::ClickHouse, false),
+            "UInt8"
+        );
+
+        // Databricks: Spark spellings, nullable flag ignored (implicitly nullable).
+        assert_eq!(
+            SchemaType::Integer.sql_type_name(SqlDialect::Databricks, true),
+            "BIGINT"
+        );
+        assert_eq!(
+            SchemaType::String.sql_type_name(SqlDialect::Databricks, false),
+            "STRING"
+        );
+        assert_eq!(
+            SchemaType::Boolean.sql_type_name(SqlDialect::Databricks, false),
+            "BOOLEAN"
+        );
+        assert_eq!(
+            SchemaType::DateTime.sql_type_name(SqlDialect::Databricks, false),
+            "TIMESTAMP"
+        );
+        assert_eq!(
+            SchemaType::Uuid.sql_type_name(SqlDialect::Databricks, false),
+            "STRING"
+        );
+    }
 
     #[test]
     fn test_from_str_basic() {
