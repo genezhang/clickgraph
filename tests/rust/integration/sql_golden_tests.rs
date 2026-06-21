@@ -49,6 +49,7 @@ const CORPUS: &[(&str, &str)] = &[
         "where_in_list",
         "MATCH (u:User) WHERE u.country IN ['US', 'UK'] RETURN u.name",
     ),
+    ("in_empty", "MATCH (u:User) WHERE u.country IN [] RETURN u.name"),
     (
         "order_skip_limit",
         "MATCH (u:User) RETURN u.name ORDER BY u.name DESC SKIP 5 LIMIT 10",

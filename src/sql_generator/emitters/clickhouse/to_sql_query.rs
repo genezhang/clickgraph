@@ -441,6 +441,18 @@ fn render_constant_in_list(op: &OperatorApplication, rendered: &[String]) -> Opt
         return None;
     }
     if let RenderExpr::List(items) = &op.operands[1] {
+        // Empty list: Spark `IN ()` is a syntax error. `IN []` is always false,
+        // `NOT IN []` always true — emit the constant predicate directly.
+        if items.is_empty() {
+            return Some(
+                if op.operator == Operator::In {
+                    "FALSE"
+                } else {
+                    "TRUE"
+                }
+                .to_string(),
+            );
+        }
         if items
             .iter()
             .all(|i| matches!(i, RenderExpr::Literal(_) | RenderExpr::Parameter(_)))
