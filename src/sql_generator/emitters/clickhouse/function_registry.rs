@@ -39,11 +39,14 @@ fn wrap_epoch_millis_arg(args: &[String]) -> Vec<String> {
     if already_datetime {
         args.to_vec()
     } else {
-        let wrapped = match dialect {
-            SqlDialect::Databricks => format!("timestamp_millis({})", arg),
-            _ => format!("fromUnixTimestamp64Milli({})", arg),
-        };
-        vec![wrapped]
+        // Reuse the single source of truth for the epoch-millis -> timestamp wrap
+        // (CH `fromUnixTimestamp64Milli`, Spark `timestamp_millis`) so it can't
+        // drift from `render_interval_arithmetic`. (The `already_datetime`
+        // detection above is still a local copy — a deferred follow-up.)
+        vec![
+            crate::sql_generator::function_mapper::current_function_mapper()
+                .epoch_millis_to_timestamp(arg),
+        ]
     }
 }
 

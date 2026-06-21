@@ -186,6 +186,16 @@ impl FunctionMapper for DatabricksFunctionMapper {
             ),
         }
     }
+
+    fn epoch_millis_to_timestamp(&self, expr: &str) -> String {
+        // Spark TIMESTAMP from epoch milliseconds. Verified on Databricks SQL:
+        // unix_millis(timestamp_millis(x)) round-trips exactly under UTC.
+        format!("timestamp_millis({})", expr)
+    }
+
+    fn timestamp_to_epoch_millis(&self, expr: &str) -> String {
+        format!("unix_millis({})", expr)
+    }
 }
 
 #[cfg(test)]
@@ -214,6 +224,8 @@ mod tests {
         assert_eq!(m.cast_string(), "string");
         assert_eq!(m.array_concat(), "concat");
         assert_eq!(m.array_contains(), "array_contains");
+        assert_eq!(m.epoch_millis_to_timestamp("x"), "timestamp_millis(x)");
+        assert_eq!(m.timestamp_to_epoch_millis("x"), "unix_millis(x)");
         assert_eq!(
             m.empty_string_array_cast(),
             "CAST(array() AS ARRAY<STRING>)"

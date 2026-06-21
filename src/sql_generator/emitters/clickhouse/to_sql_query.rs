@@ -352,9 +352,8 @@ fn try_rewrite_in_cte_subquery(
 // `to_sql_without_table_alias`, and `impl ToSql for OperatorApplication`),
 // which is why dialect leaf-fixes previously needed editing in three places.
 // Extracted verbatim so each path calls one source of truth; output is
-// byte-identical. (The interval case still emits ClickHouse-only
-// `toInterval*`/`fromUnixTimestamp64Milli` — making it dialect-aware is a
-// separate leaf slice, now a single-site change.)
+// byte-identical. The interval case is now dialect-aware (see
+// `render_interval_arithmetic` + the `FunctionMapper` epoch/timestamp methods).
 // ---------------------------------------------------------------------------
 
 /// `list1 + list2` -> dialect array concat. Operands flatten via `to_sql()`
@@ -388,27 +387,60 @@ fn render_string_addition(op: &OperatorApplication) -> Option<String> {
     None
 }
 
-/// Interval arithmetic on epoch-millis: wrap non-interval operands with
-/// `fromUnixTimestamp64Milli` and convert the result back via
-/// `toUnixTimestamp64Milli`. `rendered` is the path's pre-rendered operands.
+/// Interval arithmetic on epoch-millis: wrap non-interval operands as a
+/// timestamp, do the `+`/`-`, and convert the result back to epoch-millis.
+/// Dialect-aware via the function mapper — ClickHouse:
+/// `toUnixTimestamp64Milli(fromUnixTimestamp64Milli(x) + toIntervalDay(n))`;
+/// Databricks: `unix_millis(timestamp_millis(x) + make_dt_interval(n,0,0,0))`.
+/// `rendered` is the path's pre-rendered operands; one of them is the interval
+/// (produced by the `duration()` translation).
 fn render_interval_arithmetic(op: &OperatorApplication, rendered: &[String]) -> Option<String> {
+    use crate::server::query_context::get_current_dialect;
+    use crate::sql_generator::SqlDialect;
+
+    let dialect = get_current_dialect();
+    // An operand is the interval term when it is a dialect interval constructor.
+    // Databricks markers are anchored on the call `(` so a column whose name
+    // merely contains the token isn't mistaken for an interval. (The CH `(`-less
+    // `toInterval` check is kept verbatim to preserve byte-identical CH output.)
+    let is_interval = |r: &str| match dialect {
+        SqlDialect::Databricks => {
+            r.contains("make_dt_interval(") || r.contains("make_ym_interval(")
+        }
+        _ => r.contains("toInterval"),
+    };
+
     if (op.operator == Operator::Addition || op.operator == Operator::Subtraction)
         && rendered.len() == 2
-        && rendered.iter().any(|r| r.contains("toInterval"))
+        && rendered.iter().any(|r| is_interval(r))
     {
-        let wrapped: Vec<String> = rendered
-            .iter()
-            .map(|r| {
-                if r.contains("toInterval")
-                    || r.contains("fromUnixTimestamp64Milli")
+        // An operand that is already a timestamp expression must not be re-wrapped.
+        // Databricks function markers are anchored on the call `(`; `current_timestamp`
+        // is intentionally bare (Spark allows it as a keyword without parens). The CH
+        // arm is kept verbatim to preserve byte-identical CH output.
+        let already_timestamp = |r: &str| match dialect {
+            SqlDialect::Databricks => {
+                r.contains("timestamp_millis(")
+                    || r.contains("to_timestamp(")
+                    || r.contains("from_unixtime(")
+                    || r.contains("current_timestamp")
+            }
+            _ => {
+                r.contains("fromUnixTimestamp64Milli")
                     || r.contains("parseDateTime64BestEffort")
                     || r.contains("toDateTime")
                     || r.contains("now64")
                     || r.contains("now()")
-                {
+            }
+        };
+        let mapper = crate::sql_generator::function_mapper::current_function_mapper();
+        let wrapped: Vec<String> = rendered
+            .iter()
+            .map(|r| {
+                if is_interval(r) || already_timestamp(r) {
                     r.clone()
                 } else {
-                    format!("fromUnixTimestamp64Milli({})", r)
+                    mapper.epoch_millis_to_timestamp(r)
                 }
             })
             .collect();
@@ -417,10 +449,10 @@ fn render_interval_arithmetic(op: &OperatorApplication, rendered: &[String]) -> 
         } else {
             "-"
         };
-        return Some(format!(
-            "toUnixTimestamp64Milli({} {} {})",
-            &wrapped[0], sql_op, &wrapped[1]
-        ));
+        return Some(
+            mapper
+                .timestamp_to_epoch_millis(&format!("{} {} {}", &wrapped[0], sql_op, &wrapped[1])),
+        );
     }
     None
 }
@@ -4622,61 +4654,33 @@ impl RenderExpr {
                 if fn_name_lower == "duration" && fn_call.args.len() == 1 {
                     if let RenderExpr::MapLiteral(entries) = &fn_call.args[0] {
                         if !entries.is_empty() {
-                            // Convert duration({days: 5, hours: 2}) -> (toIntervalDay(5) + toIntervalHour(2))
+                            // Convert duration({days: 5, hours: 2}) into the active
+                            // dialect's interval constructors (ClickHouse
+                            // `toIntervalDay(5) + toIntervalHour(2)`, Databricks
+                            // `make_dt_interval(...)`). Shares the unit mapping with
+                            // the `LogicalExpr` path via `interval_expr_for_unit`.
+                            let dialect = crate::server::query_context::get_current_dialect();
                             let interval_parts: Vec<String> = entries
                                 .iter()
                                 .filter_map(|(key, value)| {
                                     let value_sql = value.to_sql();
                                     let key_lower = key.to_lowercase();
-
-                                    // Map Neo4j time unit to ClickHouse interval function
-                                    let result = match key_lower.as_str() {
-                                        "years" | "year" => {
-                                            format!("toIntervalYear({})", value_sql)
-                                        }
-                                        "months" | "month" => {
-                                            format!("toIntervalMonth({})", value_sql)
-                                        }
-                                        "weeks" | "week" => {
-                                            format!("toIntervalWeek({})", value_sql)
-                                        }
-                                        "days" | "day" => format!("toIntervalDay({})", value_sql),
-                                        "hours" | "hour" => {
-                                            format!("toIntervalHour({})", value_sql)
-                                        }
-                                        "minutes" | "minute" => {
-                                            format!("toIntervalMinute({})", value_sql)
-                                        }
-                                        "seconds" | "second" => {
-                                            format!("toIntervalSecond({})", value_sql)
-                                        }
-                                        "milliseconds" | "millisecond" => {
-                                            format!("toIntervalSecond({} / 1000.0)", value_sql)
-                                        }
-                                        "microseconds" | "microsecond" => {
-                                            format!("toIntervalSecond({} / 1000000.0)", value_sql)
-                                        }
-                                        "nanoseconds" | "nanosecond" => {
-                                            format!(
-                                                "toIntervalSecond({} / 1000000000.0)",
-                                                value_sql
-                                            )
-                                        }
-                                        _ => {
-                                            log::debug!(
-                                                "Unknown duration unit '{}', using as-is",
-                                                key
-                                            );
-                                            return None;
-                                        }
-                                    };
-                                    Some(result)
+                                    let mapped = super::function_translator::interval_expr_for_unit(
+                                        &key_lower, &value_sql, dialect,
+                                    );
+                                    if mapped.is_none() {
+                                        log::debug!("Unknown duration unit '{}', using as-is", key);
+                                    }
+                                    mapped
                                 })
                                 .collect();
 
+                            // If every unit was unknown, `interval_parts` is empty —
+                            // fall through to normal function handling rather than
+                            // emitting an invalid `()`.
                             if interval_parts.len() == 1 {
                                 return interval_parts[0].clone();
-                            } else {
+                            } else if !interval_parts.is_empty() {
                                 return format!("({})", interval_parts.join(" + "));
                             }
                         }
