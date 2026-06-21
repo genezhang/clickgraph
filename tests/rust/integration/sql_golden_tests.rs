@@ -88,6 +88,9 @@ const CORPUS: &[(&str, &str)] = &[
         "MATCH (u:User) OPTIONAL MATCH (u)-[:AUTHORED]->(p:Post) RETURN u.name, p.title",
     ),
     (
+        // NB: the engine currently renders this via the multi-label entity-union
+        // path (a `__multi_label_union` CTE), not a projection-list UNION — the
+        // golden locks that current behavior.
         "union",
         "MATCH (u:User) RETURN u.name AS x UNION MATCH (p:Post) RETURN p.title AS x",
     ),
