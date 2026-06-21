@@ -93,6 +93,12 @@ const CORPUS: &[(&str, &str)] = &[
         "list_slice_open",
         "MATCH (u:User) RETURN [10, 20, 30, 40][1..] AS s",
     ),
+    (
+        "list_slice_to",
+        "MATCH (u:User) RETURN [10, 20, 30, 40][..2] AS s",
+    ),
+    // tail() -> CH arraySlice(list, 2) / Spark slice(list, 2, greatest(size-1, 0))
+    ("list_tail", "MATCH (u:User) RETURN tail([10, 20, 30]) AS t"),
     // Heterogeneous end type (User|Post) routes through multi_type_vlp_joins,
     // locking the generator output for both dialects (incl. dialect-aware
     // array/string casts: CH `toString(..)`/`['x']` vs Spark `string(..)`/

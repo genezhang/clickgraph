@@ -373,7 +373,12 @@ lazy_static::lazy_static! {
                 }
                 let list = args[0].clone();
                 if matches!(get_current_dialect(), SqlDialect::Databricks) {
-                    vec![list.clone(), "2".to_string(), format!("size({}) - 1", list)]
+                    // Floor at 0: slice errors on negative length (empty list).
+                    vec![
+                        list.clone(),
+                        "2".to_string(),
+                        format!("greatest(size({}) - 1, 0)", list),
+                    ]
                 } else {
                     vec![list, "2".to_string()]
                 }

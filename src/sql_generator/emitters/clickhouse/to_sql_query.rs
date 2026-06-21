@@ -5365,17 +5365,18 @@ impl RenderExpr {
                 format!("{}[{}]", array_sql, index_sql)
             }
             RenderExpr::ArraySlicing { array, from, to } => {
-                // Array slicing in ClickHouse using arraySlice function
-                // arraySlice(array, offset, length)
-                // - offset: 1-based index (Cypher uses 0-based, need to convert)
-                // - length: number of elements to extract
+                // Array slicing -> arraySlice(arr, offset, length) (CH) / slice (Spark),
+                // both 1-based offset + element count. Cypher indices are 0-based, so
+                // offset = from + 1. NOTE: this computes `to - from + 1` (to-INCLUSIVE),
+                // which differs from Neo4j's half-open `[from..to)` semantics — a
+                // pre-existing discrepancy preserved byte-for-byte here (not introduced
+                // by the dialect refactor); tracked separately.
                 let array_sql = array.to_sql();
                 let mapper = crate::sql_generator::function_mapper::current_function_mapper();
 
                 match (from, to) {
                     (Some(from_expr), Some(to_expr)) => {
-                        // [from..to] (Cypher 0-based inclusive) -> 1-based offset + length.
-                        // CH arraySlice(arr, from+1, to-from+1); Spark slice(...) (same shape).
+                        // [from..to] -> 1-based offset + length (to-inclusive, see above).
                         mapper.array_slice(
                             &array_sql,
                             &format!("{} + 1", from_expr.to_sql()),

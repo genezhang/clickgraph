@@ -172,13 +172,16 @@ impl FunctionMapper for DatabricksFunctionMapper {
     }
 
     fn array_slice(&self, arr: &str, offset: &str, length: Option<&str>) -> String {
-        // Spark slice(arr, start, length) requires a length. CH's 2-arg
-        // arraySlice(arr, offset) (rest from offset) becomes
-        // slice(arr, offset, size(arr) - (offset) + 1).
+        // Spark slice(arr, start, length) requires a length, and ERRORS on a
+        // negative one — whereas CH's 2-arg arraySlice(arr, offset) silently
+        // returns empty when offset is past the end. So the computed
+        // rest-from-offset length, size(arr) - offset + 1, is floored at 0 with
+        // greatest(...) to preserve CH's empty-on-out-of-bounds behavior.
+        // (Note: `arr` is evaluated twice here; fine for column/literal arrays.)
         match length {
             Some(l) => format!("slice({}, {}, {})", arr, offset, l),
             None => format!(
-                "slice({}, {}, size({}) - ({}) + 1)",
+                "slice({}, {}, greatest(size({}) - ({}) + 1, 0))",
                 arr, offset, arr, offset
             ),
         }
@@ -231,7 +234,7 @@ mod tests {
         assert_eq!(m.array_slice("arr", "2", Some("3")), "slice(arr, 2, 3)");
         assert_eq!(
             m.array_slice("arr", "2", None),
-            "slice(arr, 2, size(arr) - (2) + 1)"
+            "slice(arr, 2, greatest(size(arr) - (2) + 1, 0))"
         );
     }
 
