@@ -217,7 +217,12 @@ impl ToSql for LogicalExpr {
                                 .into_iter()
                                 .flatten()
                                 .collect();
-                            Ok(format!("arrayConcat({})", flattened.join(", ")))
+                            Ok(format!(
+                                "{}({})",
+                                crate::sql_generator::function_mapper::current_function_mapper()
+                                    .array_concat(),
+                                flattened.join(", ")
+                            ))
                         }
                         // Use concat() for string concatenation, + for numeric
                         // Flatten nested + operations for cases like: a + ' - ' + b
