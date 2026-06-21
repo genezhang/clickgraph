@@ -425,6 +425,37 @@ fn render_interval_arithmetic(op: &OperatorApplication, rendered: &[String]) -> 
     None
 }
 
+/// Render the SKIP/LIMIT clause, dialect-aware (no trailing newline; empty when
+/// neither is set). ClickHouse uses the MySQL-style `LIMIT offset, count` and
+/// requires a count when offsetting (so SKIP-only emits a huge upper bound);
+/// Spark/Databricks uses standard `LIMIT count OFFSET offset` and supports a
+/// bare `OFFSET`. Replaces the same logic previously copy-pasted across the
+/// union-branch, main-query, and CTE-body emission sites.
+fn limit_offset_clause(skip: Option<i64>, limit: Option<i64>) -> String {
+    use crate::server::query_context::get_current_dialect;
+    use crate::sql_generator::SqlDialect;
+    let databricks = matches!(get_current_dialect(), SqlDialect::Databricks);
+    match (skip, limit) {
+        (None, None) => String::new(),
+        (None, Some(l)) => format!("LIMIT {l}"),
+        (Some(s), Some(l)) => {
+            if databricks {
+                format!("LIMIT {l} OFFSET {s}")
+            } else {
+                format!("LIMIT {s}, {l}")
+            }
+        }
+        (Some(s), None) => {
+            if databricks {
+                format!("OFFSET {s}")
+            } else {
+                // ClickHouse requires a count with an offset; use a huge upper bound.
+                format!("LIMIT {s}, 18446744073709551615")
+            }
+        }
+    }
+}
+
 /// Build the relationship columns mapping from a RenderPlan (for collecting data)
 /// Returns the mapping of alias → (from_id_column, to_id_column)
 fn build_relationship_columns_from_plan(plan: &RenderPlan) -> HashMap<String, (String, String)> {
@@ -2850,15 +2881,10 @@ fn render_union_branch_sql(branch: &RenderPlan) -> String {
         if has_order_by {
             bsql.push_str(&branch.order_by.to_sql());
         }
-        if let Some(limit) = branch.limit.0 {
-            if let Some(skip) = branch.skip.0 {
-                bsql.push_str(&format!("LIMIT {skip}, {limit}\n"));
-            } else {
-                bsql.push_str(&format!("LIMIT {limit}\n"));
-            }
-        } else if let Some(skip) = branch.skip.0 {
-            // ClickHouse requires LIMIT when using offset; emulate SKIP-only with large upper bound
-            bsql.push_str(&format!("LIMIT {skip}, 18446744073709551615\n"));
+        let clause = limit_offset_clause(branch.skip.0, branch.limit.0);
+        if !clause.is_empty() {
+            bsql.push_str(&clause);
+            bsql.push('\n');
         }
 
         bsql
@@ -3631,16 +3657,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
             }
 
             // Add LIMIT/OFFSET after ORDER BY if present
-            if let Some(m) = plan.limit.0 {
-                if let Some(n) = plan.skip.0 {
-                    sql.push_str(&format!("LIMIT {n}, {m}"));
-                } else {
-                    sql.push_str(&format!("LIMIT {m}"));
-                }
-            } else if let Some(n) = plan.skip.0 {
-                // ClickHouse requires LIMIT when using offset; emulate SKIP-only with large upper bound
-                sql.push_str(&format!("LIMIT {n}, 18446744073709551615"));
-            }
+            sql.push_str(&limit_offset_clause(plan.skip.0, plan.limit.0));
         } else {
             // No ordering/limiting - bare UNION is fine
             if let Some(union) = &plan.union.0 {
@@ -3728,16 +3745,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
     sql.push_str(&plan.order_by.to_sql());
     sql.push_str(&plan.union.to_sql());
 
-    if let Some(m) = plan.limit.0 {
-        if let Some(n) = plan.skip.0 {
-            sql.push_str(&format!("LIMIT {n}, {m}"));
-        } else {
-            sql.push_str(&format!("LIMIT {m}"));
-        }
-    } else if let Some(n) = plan.skip.0 {
-        // ClickHouse requires LIMIT when using offset; emulate SKIP-only with large upper bound
-        sql.push_str(&format!("LIMIT {n}, 18446744073709551615"));
-    }
+    sql.push_str(&limit_offset_clause(plan.skip.0, plan.limit.0));
 
     // Note: max_recursive_cte_evaluation_depth is set as a client-level option
     // in connection_pool.rs, not as a SQL SETTINGS clause.
@@ -4207,14 +4215,10 @@ impl ToSql for Cte {
                         cte_body.push_str(&plan.order_by.to_sql());
 
                         // Handle SKIP/LIMIT - either or both may be present
-                        if plan.limit.0.is_some() || plan.skip.0.is_some() {
-                            let skip_str = if let Some(n) = plan.skip.0 {
-                                format!("{n}, ")
-                            } else {
-                                "".to_string()
-                            };
-                            let limit_val = plan.limit.0.unwrap_or(9223372036854775807i64);
-                            cte_body.push_str(&format!("LIMIT {skip_str}{limit_val}\n"));
+                        let clause = limit_offset_clause(plan.skip.0, plan.limit.0);
+                        if !clause.is_empty() {
+                            cte_body.push_str(&clause);
+                            cte_body.push('\n');
                         }
                     } else {
                         // For Union plans without modifiers, just emit the union branches directly
@@ -4245,15 +4249,10 @@ impl ToSql for Cte {
                     cte_body.push_str(&plan.order_by.to_sql());
 
                     // Add LIMIT/SKIP for non-union CTEs as well
-                    if plan.limit.0.is_some() || plan.skip.0.is_some() {
-                        let skip_str = if let Some(n) = plan.skip.0 {
-                            format!("{n}, ")
-                        } else {
-                            "".to_string()
-                        };
-                        // ClickHouse requires LIMIT if OFFSET is present
-                        let limit_val = plan.limit.0.unwrap_or(9223372036854775807i64);
-                        cte_body.push_str(&format!("LIMIT {skip_str}{limit_val}\n"));
+                    let clause = limit_offset_clause(plan.skip.0, plan.limit.0);
+                    if !clause.is_empty() {
+                        cte_body.push_str(&clause);
+                        cte_body.push('\n');
                     }
                 }
 

@@ -53,6 +53,16 @@ const CORPUS: &[(&str, &str)] = &[
         "order_skip_limit",
         "MATCH (u:User) RETURN u.name ORDER BY u.name DESC SKIP 5 LIMIT 10",
     ),
+    // SKIP without LIMIT: CH needs a huge upper bound; Spark uses bare OFFSET.
+    (
+        "skip_only",
+        "MATCH (u:User) RETURN u.name ORDER BY u.name SKIP 3",
+    ),
+    // SKIP/LIMIT inside a WITH -> drives the CTE-body LIMIT emission path.
+    (
+        "with_skip_limit",
+        "MATCH (u:User) WITH u.name AS n ORDER BY n SKIP 2 LIMIT 5 RETURN n",
+    ),
     ("aggregate_count", "MATCH (u:User) RETURN count(u)"),
     (
         "aggregate_group_collect",
