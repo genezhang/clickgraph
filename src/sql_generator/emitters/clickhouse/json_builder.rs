@@ -6,6 +6,12 @@
 //! Unlike `toJSONString(map(...))` which requires all values to be strings,
 //! `formatRowNoNewline` preserves native types (integers, booleans, dates, etc.).
 //!
+//! The JSON-object wrapper is dialect-aware via
+//! [`FunctionMapper::json_row_object`]: ClickHouse emits
+//! `formatRowNoNewline('JSONEachRow', ...)`, Databricks/Spark emits
+//! `to_json(struct(...))`. The column list this module builds (with/without
+//! `AS key`, prefixed keys) is identical for both dialects.
+//!
 //! # Example
 //!
 //! ```sql
@@ -106,7 +112,8 @@ pub fn generate_json_properties_sql(
     }
 
     // formatRowNoNewline('JSONEachRow', col1, col2, ...) produces type-preserving JSON
-    format!("formatRowNoNewline('JSONEachRow', {})", columns.join(", "))
+    crate::sql_generator::function_mapper::current_function_mapper()
+        .json_row_object(&columns.join(", "))
 }
 
 /// Generate SQL for type-preserving JSON properties from a NodeSchema
@@ -176,7 +183,8 @@ pub fn generate_json_properties_without_aliases(
         return "'{}'".to_string();
     }
 
-    format!("formatRowNoNewline('JSONEachRow', {})", columns.join(", "))
+    crate::sql_generator::function_mapper::current_function_mapper()
+        .json_row_object(&columns.join(", "))
 }
 
 /// Generate SQL for type-preserving JSON from NodeSchema without aliases (for CTEs)
@@ -223,7 +231,8 @@ pub fn generate_json_from_denormalized_properties(
         })
         .collect();
 
-    format!("formatRowNoNewline('JSONEachRow', {})", columns.join(", "))
+    crate::sql_generator::function_mapper::current_function_mapper()
+        .json_row_object(&columns.join(", "))
 }
 
 /// Generate SQL for a UNION query across all node types

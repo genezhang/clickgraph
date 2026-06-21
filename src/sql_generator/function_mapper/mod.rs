@@ -163,6 +163,14 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// result of interval arithmetic matches the stored column type. CH:
     /// `toUnixTimestamp64Milli(expr)`. Spark: `unix_millis(expr)`.
     fn timestamp_to_epoch_millis(&self, expr: &str) -> String;
+
+    /// Build a type-preserving JSON object from a comma-separated column list
+    /// (each item optionally `col AS key`), used for entity `_properties`.
+    /// CH: `formatRowNoNewline('JSONEachRow', <cols>)`. Spark:
+    /// `to_json(struct(<cols>))` — `struct` field names become JSON keys (a bare
+    /// `t.col` yields key `col`, matching CH's column-name keys), and both
+    /// preserve native value types. `columns` is the pre-joined fragment.
+    fn json_row_object(&self, columns: &str) -> String;
 }
 
 /// Returns the function mapper for the active SQL dialect, read from the
