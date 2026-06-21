@@ -76,6 +76,15 @@ impl SqlDialect {
     pub fn is_supported(&self) -> bool {
         matches!(self, SqlDialect::ClickHouse)
     }
+
+    /// Whether this dialect supports the `FINAL` table modifier. `FINAL` is a
+    /// ClickHouse MergeTree-family read-time dedup hint; it is invalid SQL on
+    /// other backends (notably Databricks/Spark, which has no such storage
+    /// engine), so the renderer must not emit it there regardless of a schema's
+    /// `use_final` setting.
+    pub fn supports_final_keyword(&self) -> bool {
+        matches!(self, SqlDialect::ClickHouse)
+    }
 }
 
 /// Renders a `RenderPlan` into SQL text for a target dialect.

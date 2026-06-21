@@ -445,8 +445,15 @@ impl ToSql for LogicalPlan {
     fn to_sql(&self) -> Result<String, ClickhouseQueryGeneratorError> {
         match self {
             LogicalPlan::ViewScan(scan) => {
-                // Add FINAL keyword if enabled
-                let final_keyword = if scan.use_final { " FINAL" } else { "" };
+                // Add FINAL keyword if enabled. FINAL is ClickHouse-only — never emit it
+                // on other dialects (e.g. Databricks/Spark) where it is invalid SQL.
+                let final_keyword = if scan.use_final
+                    && crate::server::query_context::get_current_dialect().supports_final_keyword()
+                {
+                    " FINAL"
+                } else {
+                    ""
+                };
                 let mut sql = format!("SELECT * FROM {}{}", scan.source_table, final_keyword);
 
                 // Add WHERE clause if view_filter is present
@@ -473,5 +480,52 @@ impl ToSql for LogicalPlan {
             }
             _ => Err(ClickhouseQueryGeneratorError::UnsupportedDDLQuery),
         }
+    }
+}
+
+#[cfg(test)]
+mod final_dialect_tests {
+    use super::ToSql;
+    use crate::query_planner::logical_plan::{LogicalPlan, ViewScan};
+    use crate::server::query_context::{with_query_context, QueryContext};
+    use crate::sql_generator::SqlDialect;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn view_scan_with_final() -> LogicalPlan {
+        let mut scan = ViewScan::new(
+            "users".to_string(),
+            None,
+            HashMap::new(),
+            "id".to_string(),
+            vec![],
+            vec![],
+        );
+        scan.use_final = true;
+        LogicalPlan::ViewScan(Arc::new(scan))
+    }
+
+    /// FINAL is ClickHouse-only: emitted under ClickHouse, omitted under Databricks
+    /// even when the schema requests it (use_final = true).
+    #[tokio::test]
+    async fn final_emitted_only_on_clickhouse() {
+        // Default scope -> ClickHouse -> FINAL present.
+        let ch_sql = view_scan_with_final().to_sql().unwrap();
+        assert!(
+            ch_sql.contains(" FINAL"),
+            "ClickHouse should emit FINAL; got: {ch_sql}"
+        );
+
+        // Databricks dialect -> no FINAL (invalid Spark SQL).
+        let ctx = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        let dbx_sql =
+            with_query_context(ctx, async { view_scan_with_final().to_sql().unwrap() }).await;
+        assert!(
+            !dbx_sql.contains("FINAL"),
+            "Databricks must not emit FINAL; got: {dbx_sql}"
+        );
     }
 }

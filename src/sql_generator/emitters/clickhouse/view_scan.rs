@@ -44,8 +44,11 @@ pub fn build_view_scan(scan: &ViewScan, _plan: &LogicalPlan) -> String {
         scan.source_table.clone()
     };
 
-    // Add FINAL keyword if enabled for this table
-    if scan.use_final {
+    // Add FINAL keyword if enabled for this table. FINAL is ClickHouse-only —
+    // never emit it on other dialects (e.g. Databricks/Spark) where it is invalid SQL.
+    if scan.use_final
+        && crate::server::query_context::get_current_dialect().supports_final_keyword()
+    {
         sql.push_str(&format!("SELECT * FROM {} FINAL", table_ref));
     } else {
         sql.push_str(&format!("SELECT * FROM {}", table_ref));
