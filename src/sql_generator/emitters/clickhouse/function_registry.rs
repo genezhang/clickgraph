@@ -928,8 +928,7 @@ lazy_static::lazy_static! {
             arg_transform: None,
         });
 
-        // contains(str, search) -> position(str, search) > 0 or like
-        // ClickHouse has positionCaseInsensitive too
+        // contains(str, search) -> position(str, search) > 0 (caller adds the > 0)
         m.insert("contains", FunctionMapping {
             neo4j_name: "contains",
             clickhouse_name: "position",
