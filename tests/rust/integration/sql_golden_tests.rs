@@ -58,6 +58,11 @@ const CORPUS: &[(&str, &str)] = &[
         "skip_only",
         "MATCH (u:User) RETURN u.name ORDER BY u.name SKIP 3",
     ),
+    // SKIP/LIMIT inside a WITH -> drives the CTE-body LIMIT emission path.
+    (
+        "with_skip_limit",
+        "MATCH (u:User) WITH u.name AS n ORDER BY n SKIP 2 LIMIT 5 RETURN n",
+    ),
     ("aggregate_count", "MATCH (u:User) RETURN count(u)"),
     (
         "aggregate_group_collect",
