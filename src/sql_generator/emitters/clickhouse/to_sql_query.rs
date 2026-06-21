@@ -344,6 +344,87 @@ fn try_rewrite_in_cte_subquery(
     None
 }
 
+// ---------------------------------------------------------------------------
+// Shared OperatorApplication sub-renderers.
+//
+// These three Addition/Subtraction special cases were copy-pasted across the
+// three OperatorApplication render paths (`RenderExpr::to_sql`,
+// `to_sql_without_table_alias`, and `impl ToSql for OperatorApplication`),
+// which is why dialect leaf-fixes previously needed editing in three places.
+// Extracted verbatim so each path calls one source of truth; output is
+// byte-identical. (The interval case still emits ClickHouse-only
+// `toInterval*`/`fromUnixTimestamp64Milli` — making it dialect-aware is a
+// separate leaf slice, now a single-site change.)
+// ---------------------------------------------------------------------------
+
+/// `list1 + list2` -> dialect array concat. Operands flatten via `to_sql()`
+/// (always qualified), so this is independent of the calling path's aliasing.
+fn render_list_addition(op: &OperatorApplication) -> Option<String> {
+    if op.operator == Operator::Addition && op.operands.iter().any(is_list_expr) {
+        let flattened: Vec<String> = op
+            .operands
+            .iter()
+            .flat_map(flatten_list_addition_operands)
+            .collect();
+        return Some(format!(
+            "{}({})",
+            crate::sql_generator::function_mapper::current_function_mapper().array_concat(),
+            flattened.join(", ")
+        ));
+    }
+    None
+}
+
+/// String `+` -> `concat(...)` (ClickHouse has no `+` for strings).
+fn render_string_addition(op: &OperatorApplication) -> Option<String> {
+    if op.operator == Operator::Addition && has_string_operand(&op.operands) {
+        let flattened: Vec<String> = op
+            .operands
+            .iter()
+            .flat_map(flatten_addition_operands)
+            .collect();
+        return Some(format!("concat({})", flattened.join(", ")));
+    }
+    None
+}
+
+/// Interval arithmetic on epoch-millis: wrap non-interval operands with
+/// `fromUnixTimestamp64Milli` and convert the result back via
+/// `toUnixTimestamp64Milli`. `rendered` is the path's pre-rendered operands.
+fn render_interval_arithmetic(op: &OperatorApplication, rendered: &[String]) -> Option<String> {
+    if (op.operator == Operator::Addition || op.operator == Operator::Subtraction)
+        && rendered.len() == 2
+        && rendered.iter().any(|r| r.contains("toInterval"))
+    {
+        let wrapped: Vec<String> = rendered
+            .iter()
+            .map(|r| {
+                if r.contains("toInterval")
+                    || r.contains("fromUnixTimestamp64Milli")
+                    || r.contains("parseDateTime64BestEffort")
+                    || r.contains("toDateTime")
+                    || r.contains("now64")
+                    || r.contains("now()")
+                {
+                    r.clone()
+                } else {
+                    format!("fromUnixTimestamp64Milli({})", r)
+                }
+            })
+            .collect();
+        let sql_op = if op.operator == Operator::Addition {
+            "+"
+        } else {
+            "-"
+        };
+        return Some(format!(
+            "toUnixTimestamp64Milli({} {} {})",
+            &wrapped[0], sql_op, &wrapped[1]
+        ));
+    }
+    None
+}
+
 /// Build the relationship columns mapping from a RenderPlan (for collecting data)
 /// Returns the mapping of alias → (from_id_column, to_id_column)
 fn build_relationship_columns_from_plan(plan: &RenderPlan) -> HashMap<String, (String, String)> {
@@ -5116,62 +5197,16 @@ impl RenderExpr {
                     return super::common::contains_predicate(&rendered[0], &rendered[1]);
                 }
 
-                // Special handling for Addition with list/array operands - use arrayConcat()
-                // Cypher: list1 + list2 → ClickHouse: arrayConcat(list1, list2)
-                if op.operator == Operator::Addition && op.operands.iter().any(is_list_expr) {
-                    let flattened: Vec<String> = op
-                        .operands
-                        .iter()
-                        .flat_map(flatten_list_addition_operands)
-                        .collect();
-                    return format!(
-                        "{}({})",
-                        crate::sql_generator::function_mapper::current_function_mapper()
-                            .array_concat(),
-                        flattened.join(", ")
-                    );
+                // Addition/Subtraction special cases (list concat, string concat,
+                // interval arithmetic) — shared with the other two operator paths.
+                if let Some(s) = render_list_addition(op) {
+                    return s;
                 }
-
-                // Special handling for Addition with string operands - use concat()
-                // ClickHouse doesn't support + for string concatenation
-                // Flatten nested + operations to handle cases like: a + ' - ' + b
-                if op.operator == Operator::Addition && has_string_operand(&op.operands) {
-                    let flattened: Vec<String> = op
-                        .operands
-                        .iter()
-                        .flat_map(flatten_addition_operands)
-                        .collect();
-                    return format!("concat({})", flattened.join(", "));
+                if let Some(s) = render_string_addition(op) {
+                    return s;
                 }
-
-                // Special handling for interval arithmetic with epoch-millis values
-                if (op.operator == Operator::Addition || op.operator == Operator::Subtraction)
-                    && rendered.len() == 2
-                {
-                    let has_interval = rendered.iter().any(|r| r.contains("toInterval"));
-                    if has_interval {
-                        let wrapped: Vec<String> = rendered
-                            .iter()
-                            .map(|r| {
-                                if r.contains("toInterval")
-                                    || r.contains("fromUnixTimestamp64Milli")
-                                    || r.contains("parseDateTime64BestEffort")
-                                    || r.contains("toDateTime")
-                                    || r.contains("now64")
-                                    || r.contains("now()")
-                                {
-                                    r.clone()
-                                } else {
-                                    format!("fromUnixTimestamp64Milli({})", r)
-                                }
-                            })
-                            .collect();
-                        let sql_op = op_str(op.operator);
-                        return format!(
-                            "toUnixTimestamp64Milli({} {} {})",
-                            &wrapped[0], sql_op, &wrapped[1]
-                        );
-                    }
+                if let Some(s) = render_interval_arithmetic(op, &rendered) {
+                    return s;
                 }
 
                 let sql_op = op_str(op.operator);
@@ -5540,49 +5575,14 @@ impl RenderExpr {
                     return super::common::contains_predicate(&rendered[0], &rendered[1]);
                 }
 
-                // Special handling for Addition with list/array operands - use arrayConcat()
-                if op.operator == Operator::Addition && op.operands.iter().any(is_list_expr) {
-                    let flattened: Vec<String> = op
-                        .operands
-                        .iter()
-                        .flat_map(flatten_list_addition_operands)
-                        .collect();
-                    return format!(
-                        "{}({})",
-                        crate::sql_generator::function_mapper::current_function_mapper()
-                            .array_concat(),
-                        flattened.join(", ")
-                    );
+                // Addition special cases (list concat, interval arithmetic) —
+                // shared with the other operator paths. (No string-concat case
+                // here, matching this path's original behavior.)
+                if let Some(s) = render_list_addition(op) {
+                    return s;
                 }
-
-                // Special handling for interval arithmetic with epoch-millis values
-                if (op.operator == Operator::Addition || op.operator == Operator::Subtraction)
-                    && rendered.len() == 2
-                {
-                    let has_interval = rendered.iter().any(|r| r.contains("toInterval"));
-                    if has_interval {
-                        let wrapped: Vec<String> = rendered
-                            .iter()
-                            .map(|r| {
-                                if r.contains("toInterval")
-                                    || r.contains("fromUnixTimestamp64Milli")
-                                    || r.contains("parseDateTime64BestEffort")
-                                    || r.contains("toDateTime")
-                                    || r.contains("now64")
-                                    || r.contains("now()")
-                                {
-                                    r.clone()
-                                } else {
-                                    format!("fromUnixTimestamp64Milli({})", r)
-                                }
-                            })
-                            .collect();
-                        let sql_op = op_str(op.operator);
-                        return format!(
-                            "toUnixTimestamp64Milli({} {} {})",
-                            &wrapped[0], sql_op, &wrapped[1]
-                        );
-                    }
+                if let Some(s) = render_interval_arithmetic(op, &rendered) {
+                    return s;
                 }
 
                 let sql_op = op_str(op.operator);
@@ -5770,65 +5770,16 @@ impl ToSql for OperatorApplication {
             return super::common::contains_predicate(&rendered[0], &rendered[1]);
         }
 
-        // Special handling for Addition with list/array operands - use arrayConcat()
-        if self.operator == Operator::Addition && self.operands.iter().any(is_list_expr) {
-            let flattened: Vec<String> = self
-                .operands
-                .iter()
-                .flat_map(flatten_list_addition_operands)
-                .collect();
-            return format!(
-                "{}({})",
-                crate::sql_generator::function_mapper::current_function_mapper().array_concat(),
-                flattened.join(", ")
-            );
+        // Addition/Subtraction special cases (list concat, string concat,
+        // interval arithmetic) — shared with the RenderExpr operator paths.
+        if let Some(s) = render_list_addition(self) {
+            return s;
         }
-
-        // Special handling for Addition with string operands - use concat()
-        // ClickHouse doesn't support + for string concatenation
-        // Flatten nested + operations to handle cases like: a + ' - ' + b
-        if self.operator == Operator::Addition && has_string_operand(&self.operands) {
-            let flattened: Vec<String> = self
-                .operands
-                .iter()
-                .flat_map(flatten_addition_operands)
-                .collect();
-            return format!("concat({})", flattened.join(", "));
+        if let Some(s) = render_string_addition(self) {
+            return s;
         }
-
-        // Special handling for interval arithmetic with epoch-millis values.
-        // When + or - has a toInterval* operand, the other operand must be DateTime64.
-        // Wrap non-interval operands with fromUnixTimestamp64Milli() and convert the
-        // final result back to Int64 millis with toUnixTimestamp64Milli() for safe
-        // comparisons with other Int64 timestamp columns.
-        if (self.operator == Operator::Addition || self.operator == Operator::Subtraction)
-            && rendered.len() == 2
-        {
-            let has_interval = rendered.iter().any(|r| r.contains("toInterval"));
-            if has_interval {
-                let wrapped: Vec<String> = rendered
-                    .iter()
-                    .map(|r| {
-                        if r.contains("toInterval")
-                            || r.contains("fromUnixTimestamp64Milli")
-                            || r.contains("parseDateTime64BestEffort")
-                            || r.contains("toDateTime")
-                            || r.contains("now64")
-                            || r.contains("now()")
-                        {
-                            r.clone()
-                        } else {
-                            format!("fromUnixTimestamp64Milli({})", r)
-                        }
-                    })
-                    .collect();
-                let sql_op = op_str(self.operator);
-                // Convert result back to epoch millis for consistent Int64 comparisons
-                return format!(
-                    "toUnixTimestamp64Milli({} {} {})",
-                    &wrapped[0], sql_op, &wrapped[1]
-                );
-            }
+        if let Some(s) = render_interval_arithmetic(self, &rendered) {
+            return s;
         }
 
         let sql_op = op_str(self.operator);
