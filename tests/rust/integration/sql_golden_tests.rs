@@ -83,6 +83,12 @@ const CORPUS: &[(&str, &str)] = &[
         "MATCH (a:User)-[:FOLLOWS*1..3]->(b:User) RETURN b.user_id",
     ),
     ("whole_entity", "MATCH (u:User) RETURN u"),
+    // Heterogeneous end type (User|Post) routes through multi_type_vlp_joins,
+    // exercising the dialect-aware CAST/type-name path end-to-end.
+    (
+        "vlp_multi_type",
+        "MATCH (a:User)-[:FOLLOWS|AUTHORED*1..2]->(b) RETURN b",
+    ),
     (
         "optional_match",
         "MATCH (u:User) OPTIONAL MATCH (u)-[:AUTHORED]->(p:Post) RETURN u.name, p.title",

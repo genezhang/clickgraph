@@ -268,8 +268,8 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         let start_id_needs_string = self.needs_string_conversion_for_end_id() || any_composite;
 
         // Dialect-aware CAST: CH `CAST(x, 'T')` (Nullable-wrapped) vs Spark
-        // `CAST(x AS T)` with Spark type names. type-name + syntax are owned by
-        // SchemaType::sql_type_name / FunctionMapper::cast_as.
+        // `CAST(x AS T)` with Spark type names. Type-name and syntax are owned
+        // by SchemaType::sql_type_name and FunctionMapper::cast_as.
         let dialect = crate::server::query_context::get_current_dialect();
         let mapper = crate::sql_generator::function_mapper::current_function_mapper();
 

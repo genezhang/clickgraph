@@ -222,3 +222,8 @@ otherwise it rides along in Phase 1.
   (`fromUnixTimestamp64Milli`↔`timestamp_millis`).
 - **Idioms** (gap): `if`↔`CASE`, regex `match()`↔`rlike`, JSON
   `JSONExtractString(b,'f')`↔`get_json_object(b,'$.f')`.
+- **JSON row construction** (gap surfaced by the `vlp_multi_type` golden):
+  multi-type VLP builds `_properties` columns via CH-only
+  `formatRowNoNewline('JSONEachRow', ...)` — invalid on Spark, needs a
+  `to_json(struct(...))`-style equivalent. The golden locks the current
+  (Spark-incomplete) output so the fix shows as a diff.
