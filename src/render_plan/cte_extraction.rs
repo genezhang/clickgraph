@@ -1148,7 +1148,9 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                 .iter()
                 .map(|arg| render_expr_to_sql_string(arg, alias_mapping))
                 .collect();
-            format!("{}({})", func.name, args.join(", "))
+            // Map dialect-divergent names (e.g. tuple -> Spark struct) via the registry.
+            let name = crate::clickhouse_query_generator::dialect_function_name(&func.name);
+            format!("{}({})", name, args.join(", "))
         }
         RenderExpr::AggregateFnCall(agg) => {
             let args: Vec<String> = agg

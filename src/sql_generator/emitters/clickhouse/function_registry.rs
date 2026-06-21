@@ -928,6 +928,14 @@ lazy_static::lazy_static! {
             arg_transform: None,
         });
 
+        // tuple(a, b, ...) -> CH `tuple`, Spark `struct` (element-wise equality).
+        m.insert("tuple", FunctionMapping {
+            neo4j_name: "tuple",
+            clickhouse_name: "tuple",
+            databricks_name: Some("struct"),
+            arg_transform: None,
+        });
+
         // contains(str, search) -> position(str, search) > 0 (caller adds the > 0)
         m.insert("contains", FunctionMapping {
             neo4j_name: "contains",

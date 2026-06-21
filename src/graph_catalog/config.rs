@@ -102,7 +102,17 @@ impl Identifier {
                     .map(|c| format!("{}.{}", alias, c))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("({})", fields)
+                // ClickHouse: bare tuple literal `(a, b)`. Spark has no row-value
+                // constructor with that syntax, so use `struct(a, b)`. Spark struct
+                // equality matches when both sides have the same field names — the
+                // common case here (same `Identifier`, two aliases). Equality
+                // between two *different* composite identifiers (different column
+                // names) would need per-column AND (see `to_sql_equality`); that
+                // cross-identifier composite join on Spark is a known follow-up.
+                match crate::server::query_context::get_current_dialect() {
+                    crate::sql_generator::SqlDialect::Databricks => format!("struct({})", fields),
+                    _ => format!("({})", fields),
+                }
             }
         }
     }
@@ -2599,6 +2609,29 @@ fn resolve_fulltext_indexes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_to_sql_tuple_composite_is_dialect_aware() {
+        use crate::server::query_context::{with_query_context, QueryContext};
+        use crate::sql_generator::SqlDialect;
+
+        let id = Identifier::Composite(vec!["c1".to_string(), "c2".to_string()]);
+
+        // ClickHouse (default scope): bare tuple literal.
+        assert_eq!(id.to_sql_tuple("a"), "(a.c1, a.c2)");
+
+        // Databricks: struct(...) (Spark has no bare row constructor).
+        let ctx = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        let dbx = with_query_context(ctx, async { id.to_sql_tuple("a") }).await;
+        assert_eq!(dbx, "struct(a.c1, a.c2)");
+
+        // Single ID is unchanged on both dialects.
+        let single = Identifier::Single("id".to_string());
+        assert_eq!(single.to_sql_tuple("a"), "a.id");
+    }
 
     #[test]
     fn test_relationship_definition_edge_id_parsing() {

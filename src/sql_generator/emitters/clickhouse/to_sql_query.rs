@@ -6018,6 +6018,35 @@ mod tests {
         assert_eq!(sql, "(position('need', 'hay') > 0)");
     }
 
+    /// A `tuple(...)` ScalarFnCall renders as CH `tuple(...)` but Spark `struct(...)`.
+    #[tokio::test]
+    async fn test_tuple_renders_as_struct_on_databricks() {
+        use crate::render_plan::render_expr::ScalarFnCall;
+        use crate::server::query_context::{with_query_context, QueryContext};
+        use crate::sql_generator::SqlDialect;
+
+        let make_expr = || {
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: "tuple".to_string(),
+                args: vec![
+                    RenderExpr::Literal(Literal::Integer(1)),
+                    RenderExpr::Literal(Literal::Integer(2)),
+                ],
+            })
+        };
+
+        // ClickHouse (default).
+        assert_eq!(make_expr().to_sql(), "tuple(1, 2)");
+
+        // Databricks.
+        let ctx = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        let sql = with_query_context(ctx, async { make_expr().to_sql() }).await;
+        assert_eq!(sql, "struct(1, 2)");
+    }
+
     /// Test: numeric + numeric (no list) → stays as addition, not arrayConcat
     #[test]
     fn test_addition_without_lists_unchanged() {
