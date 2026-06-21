@@ -425,6 +425,38 @@ fn render_interval_arithmetic(op: &OperatorApplication, rendered: &[String]) -> 
     None
 }
 
+/// `x IN [const, const, ...]` on Databricks/Spark, where the array-literal form
+/// (`x IN array(...)`) is invalid — Spark needs a paren value-list `x IN (a, b)`.
+/// Returns `None` on ClickHouse (its `x IN [array]` form is kept byte-stable) and
+/// for non-constant lists (those are expanded to OR/AND by the caller first).
+/// `rendered[0]` is the path-rendered LHS; list items are constants so they
+/// render identically regardless of aliasing.
+fn render_constant_in_list(op: &OperatorApplication, rendered: &[String]) -> Option<String> {
+    use crate::server::query_context::get_current_dialect;
+    use crate::sql_generator::SqlDialect;
+    if !matches!(get_current_dialect(), SqlDialect::Databricks)
+        || !matches!(op.operator, Operator::In | Operator::NotIn)
+        || rendered.len() != 2
+    {
+        return None;
+    }
+    if let RenderExpr::List(items) = &op.operands[1] {
+        if items
+            .iter()
+            .all(|i| matches!(i, RenderExpr::Literal(_) | RenderExpr::Parameter(_)))
+        {
+            let rhs: Vec<String> = items.iter().map(|i| i.to_sql()).collect();
+            let kw = if op.operator == Operator::In {
+                "IN"
+            } else {
+                "NOT IN"
+            };
+            return Some(format!("{} {} ({})", rendered[0], kw, rhs.join(", ")));
+        }
+    }
+    None
+}
+
 /// Render the SKIP/LIMIT clause, dialect-aware (no trailing newline; empty when
 /// neither is set). ClickHouse uses the MySQL-style `LIMIT offset, count` and
 /// requires a count when offsetting (so SKIP-only emits a huge upper bound);
@@ -5181,6 +5213,8 @@ impl RenderExpr {
                                     .collect();
                                 return format!("({})", clauses.join(" AND "));
                             }
+                        } else if let Some(s) = render_constant_in_list(op, &rendered) {
+                            return s;
                         }
                     }
                 }
@@ -5559,6 +5593,8 @@ impl RenderExpr {
                                     .collect();
                                 return format!("({})", clauses.join(" AND "));
                             }
+                        } else if let Some(s) = render_constant_in_list(op, &rendered) {
+                            return s;
                         }
                     }
                 }
@@ -5754,6 +5790,8 @@ impl ToSql for OperatorApplication {
                             .collect();
                         return format!("({})", clauses.join(" AND "));
                     }
+                } else if let Some(s) = render_constant_in_list(self, &rendered) {
+                    return s;
                 }
             }
         }
