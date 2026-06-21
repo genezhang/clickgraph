@@ -82,9 +82,49 @@ pub fn contains_predicate(haystack: &str, needle: &str) -> String {
 pub fn dialect_function_name(name: &str) -> String {
     use super::function_registry::get_function_mapping;
     match get_function_mapping(&name.to_lowercase()) {
-        Some(mapping) => mapping
+        // Only remap pure name-swaps. A registry entry with an `arg_transform`
+        // (e.g. `left`/`right` -> `substring(s, 1, n)`) also rewrites its
+        // arguments; this shim renders args itself and cannot apply that
+        // transform, so name-mapping such an entry would emit a wrong call.
+        // Leave those raw — they are handled correctly by the canonical
+        // `RenderExpr::to_sql` / `translate_scalar_function` paths.
+        Some(mapping) if mapping.arg_transform.is_none() => mapping
             .name_for(crate::server::query_context::get_current_dialect())
             .to_string(),
-        None => name.to_string(),
+        _ => name.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod dialect_function_name_tests {
+    use super::dialect_function_name;
+    use crate::server::query_context::{with_query_context, QueryContext};
+    use crate::sql_generator::SqlDialect;
+
+    #[tokio::test]
+    async fn maps_pure_name_swaps_only() {
+        // tuple is a pure name-swap -> mapped per dialect.
+        assert_eq!(dialect_function_name("tuple"), "tuple"); // default = ClickHouse
+        let ctx = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        let dbx_tuple = with_query_context(ctx, async { dialect_function_name("tuple") }).await;
+        assert_eq!(dbx_tuple, "struct");
+
+        // left/right have an arg_transform (-> substring with rewritten args), so
+        // this shim must NOT name-map them — it would emit substring() without the
+        // transform. They stay raw on both dialects.
+        assert_eq!(dialect_function_name("left"), "left");
+        assert_eq!(dialect_function_name("right"), "right");
+        let ctx2 = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        let dbx_left = with_query_context(ctx2, async { dialect_function_name("left") }).await;
+        assert_eq!(dbx_left, "left");
+
+        // Unknown functions fall through unchanged.
+        assert_eq!(dialect_function_name("some_native_fn"), "some_native_fn");
     }
 }

@@ -850,12 +850,19 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     .iter()
                     .map(|col| format!("{}.{}", self.relationship_alias, col))
                     .collect();
-                format!("tuple({})", tuple_elements.join(", "))
+                format!(
+                    "{}({})",
+                    crate::sql_generator::function_mapper::current_function_mapper()
+                        .tuple_constructor(),
+                    tuple_elements.join(", ")
+                )
             }
             None => {
                 // Default: use (from_id, to_id) as edge identity
                 format!(
-                    "tuple({}.{}, {}.{})",
+                    "{}({}.{}, {}.{})",
+                    crate::sql_generator::function_mapper::current_function_mapper()
+                        .tuple_constructor(),
                     self.relationship_alias,
                     self.relationship_from_column,
                     self.relationship_alias,
@@ -878,11 +885,18 @@ impl<'a> VariableLengthCteGenerator<'a> {
                     .iter()
                     .map(|col| format!("{}.{}", rel_alias, col))
                     .collect();
-                format!("tuple({})", tuple_elements.join(", "))
+                format!(
+                    "{}({})",
+                    crate::sql_generator::function_mapper::current_function_mapper()
+                        .tuple_constructor(),
+                    tuple_elements.join(", ")
+                )
             }
             None => {
                 format!(
-                    "tuple({}.{}, {}.{})",
+                    "{}({}.{}, {}.{})",
+                    crate::sql_generator::function_mapper::current_function_mapper()
+                        .tuple_constructor(),
                     rel_alias,
                     self.relationship_from_column,
                     rel_alias,

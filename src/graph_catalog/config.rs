@@ -103,8 +103,12 @@ impl Identifier {
                     .collect::<Vec<_>>()
                     .join(", ");
                 // ClickHouse: bare tuple literal `(a, b)`. Spark has no row-value
-                // constructor with that syntax, so use `struct(a, b)` — its
-                // equality compares element-wise the same way.
+                // constructor with that syntax, so use `struct(a, b)`. Spark struct
+                // equality matches when both sides have the same field names — the
+                // common case here (same `Identifier`, two aliases). Equality
+                // between two *different* composite identifiers (different column
+                // names) would need per-column AND (see `to_sql_equality`); that
+                // cross-identifier composite join on Spark is a known follow-up.
                 match crate::server::query_context::get_current_dialect() {
                     crate::sql_generator::SqlDialect::Databricks => format!("struct({})", fields),
                     _ => format!("({})", fields),
