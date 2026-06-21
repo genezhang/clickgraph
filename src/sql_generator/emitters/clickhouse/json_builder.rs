@@ -6,6 +6,12 @@
 //! Unlike `toJSONString(map(...))` which requires all values to be strings,
 //! `formatRowNoNewline` preserves native types (integers, booleans, dates, etc.).
 //!
+//! The JSON-object wrapper is dialect-aware via
+//! [`FunctionMapper::json_row_object`]: ClickHouse emits
+//! `formatRowNoNewline('JSONEachRow', ...)`, Databricks/Spark emits
+//! `to_json(struct(...))`. The column list this module builds (with/without
+//! `AS key`, prefixed keys) is identical for both dialects.
+//!
 //! # Example
 //!
 //! ```sql
@@ -32,8 +38,10 @@ fn quote_column_name(name: &str) -> String {
     }
 }
 
-/// Quote a JSON key name for use inside formatRowNoNewline.
+/// Quote a JSON key name for use inside the JSON-object wrapper.
 /// JSON keys with dots need to be quoted to avoid ClickHouse interpreting them as tuple access.
+/// The backtick form is valid in Spark too: `to_json(struct(col AS `a.b`))` was
+/// verified live on Databricks to emit the key `"a.b"`.
 fn quote_json_key(name: &str) -> String {
     if name.contains('.') || name.contains(' ') || name.contains('-') {
         // Use backticks for JSON keys containing special characters
@@ -106,7 +114,8 @@ pub fn generate_json_properties_sql(
     }
 
     // formatRowNoNewline('JSONEachRow', col1, col2, ...) produces type-preserving JSON
-    format!("formatRowNoNewline('JSONEachRow', {})", columns.join(", "))
+    crate::sql_generator::function_mapper::current_function_mapper()
+        .json_row_object(&columns.join(", "))
 }
 
 /// Generate SQL for type-preserving JSON properties from a NodeSchema
@@ -176,7 +185,8 @@ pub fn generate_json_properties_without_aliases(
         return "'{}'".to_string();
     }
 
-    format!("formatRowNoNewline('JSONEachRow', {})", columns.join(", "))
+    crate::sql_generator::function_mapper::current_function_mapper()
+        .json_row_object(&columns.join(", "))
 }
 
 /// Generate SQL for type-preserving JSON from NodeSchema without aliases (for CTEs)
@@ -223,7 +233,8 @@ pub fn generate_json_from_denormalized_properties(
         })
         .collect();
 
-    format!("formatRowNoNewline('JSONEachRow', {})", columns.join(", "))
+    crate::sql_generator::function_mapper::current_function_mapper()
+        .json_row_object(&columns.join(", "))
 }
 
 /// Generate SQL for a UNION query across all node types

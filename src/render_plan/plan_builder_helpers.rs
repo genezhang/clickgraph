@@ -5031,11 +5031,9 @@ fn build_format_row_json(
         return RenderExpr::Literal(Literal::String("{}".to_string()));
     }
 
-    // formatRowNoNewline('JSONEachRow', t1.col AS _s_city, t1.name AS _s_name, ...)
-    // Prefixed aliases ensure no collision in ClickHouse scope
-    let format_expr = format!(
-        "formatRowNoNewline('JSONEachRow', {})",
-        aliased_cols.join(", ")
-    );
+    // Dialect-aware JSON object: CH formatRowNoNewline('JSONEachRow', cols),
+    // Spark to_json(struct(cols)). Prefixed aliases ensure no collision in scope.
+    let format_expr = crate::sql_generator::function_mapper::current_function_mapper()
+        .json_row_object(&aliased_cols.join(", "));
     RenderExpr::Raw(format_expr)
 }

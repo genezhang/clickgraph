@@ -109,6 +109,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
     fn timestamp_to_epoch_millis(&self, expr: &str) -> String {
         format!("toUnixTimestamp64Milli({})", expr)
     }
+
+    fn json_row_object(&self, columns: &str) -> String {
+        format!("formatRowNoNewline('JSONEachRow', {})", columns)
+    }
 }
 
 #[cfg(test)]
@@ -150,6 +154,15 @@ mod tests {
         assert_eq!(
             m.timestamp_to_epoch_millis("x"),
             "toUnixTimestamp64Milli(x)"
+        );
+    }
+
+    #[test]
+    fn json_row_object_uses_format_row_no_newline() {
+        let m = ClickhouseFunctionMapper;
+        assert_eq!(
+            m.json_row_object("a.x AS x, a.y AS y"),
+            "formatRowNoNewline('JSONEachRow', a.x AS x, a.y AS y)"
         );
     }
 

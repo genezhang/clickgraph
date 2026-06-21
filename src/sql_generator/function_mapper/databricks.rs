@@ -196,6 +196,15 @@ impl FunctionMapper for DatabricksFunctionMapper {
     fn timestamp_to_epoch_millis(&self, expr: &str) -> String {
         format!("unix_millis({})", expr)
     }
+
+    fn json_row_object(&self, columns: &str) -> String {
+        // Spark `to_json(struct(...))` — struct field names become JSON keys and
+        // native types are preserved. Verified live on Databricks SQL:
+        // to_json(struct(p.firstName AS firstName, p.id AS id)) ->
+        // {"firstName":"Alice","id":1} (id stays numeric), and a bare
+        // struct(p.col) yields key `col` (table prefix stripped).
+        format!("to_json(struct({}))", columns)
+    }
 }
 
 #[cfg(test)]
@@ -226,6 +235,10 @@ mod tests {
         assert_eq!(m.array_contains(), "array_contains");
         assert_eq!(m.epoch_millis_to_timestamp("x"), "timestamp_millis(x)");
         assert_eq!(m.timestamp_to_epoch_millis("x"), "unix_millis(x)");
+        assert_eq!(
+            m.json_row_object("a.x AS x, a.y AS y"),
+            "to_json(struct(a.x AS x, a.y AS y))"
+        );
         assert_eq!(
             m.empty_string_array_cast(),
             "CAST(array() AS ARRAY<STRING>)"
