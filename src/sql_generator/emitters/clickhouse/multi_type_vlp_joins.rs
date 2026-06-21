@@ -39,6 +39,19 @@ use crate::query_planner::plan_ctx::PlanCtx;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// The reserved `end_id` / `start_id` columns are projected up-front for the
+/// VLP self-join. An individual property column is aliased `{prefix}{property}`
+/// (e.g. `end_` + `id`), so a node whose id property is literally `id` produces
+/// a second `end_id` column. ClickHouse tolerates duplicate SELECT aliases, but
+/// Spark rejects any later reference as `AMBIGUOUS_REFERENCE`. The reserved
+/// column already carries that exact value (and `end_properties` JSON carries
+/// the property), so the colliding individual column is skipped — value-preserving
+/// on both dialects.
+fn prop_alias_collides_with_reserved_id(prefix: &str, safe_alias: &str) -> bool {
+    let aliased = format!("{}{}", prefix, safe_alias);
+    aliased == VLP_END_ID_COLUMN || aliased == VLP_START_ID_COLUMN
+}
+
 /// Property projection for heterogeneous node types
 #[derive(Debug, Clone)]
 pub struct PropertyProjection {
@@ -1166,6 +1179,9 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                         crate::clickhouse_query_generator::quote_identifier(&prop_info.db_column);
                     // Replace dots in alias with underscores (dots are not allowed in column aliases)
                     let safe_alias = prop_info.cypher_property.replace('.', "_");
+                    if prop_alias_collides_with_reserved_id("end_", &safe_alias) {
+                        continue;
+                    }
                     items.push(format!(
                         "{}.{} AS end_{}",
                         node_alias, quoted_col, safe_alias
@@ -1213,6 +1229,9 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                                         crate::clickhouse_query_generator::quote_identifier(db_col);
                                     // Replace dots in alias with underscores (dots are not allowed in column aliases)
                                     let safe_alias = cypher_name.replace('.', "_");
+                                    if prop_alias_collides_with_reserved_id("end_", &safe_alias) {
+                                        continue;
+                                    }
                                     items.push(format!(
                                         "{}.{} AS end_{}",
                                         node_alias, quoted_col, safe_alias
@@ -1300,6 +1319,9 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                         );
                         // Replace dots in alias with underscores (dots are not allowed in column aliases)
                         let safe_alias = prop_info.cypher_property.replace('.', "_");
+                        if prop_alias_collides_with_reserved_id("start_", &safe_alias) {
+                            continue;
+                        }
                         items.push(format!(
                             "{}.{} AS start_{}",
                             start_alias_sql, quoted_col, safe_alias
@@ -1348,6 +1370,12 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
                                             );
                                         // Replace dots in alias with underscores (dots are not allowed in column aliases)
                                         let safe_alias = cypher_name.replace('.', "_");
+                                        if prop_alias_collides_with_reserved_id(
+                                            "start_",
+                                            &safe_alias,
+                                        ) {
+                                            continue;
+                                        }
                                         items.push(format!(
                                             "{}.{} AS start_{}",
                                             start_alias_sql, quoted_col, safe_alias
@@ -1805,6 +1833,18 @@ mod tests {
     // Simplified tests - just verify structure and basic functionality
     // Full integration testing will be done in Python integration tests
     // Schema creation is complex, so we test without actual GraphSchema for now
+
+    #[test]
+    fn prop_alias_collides_with_reserved_id_detects_id_property() {
+        // A node whose id property is literally `id` -> `end_id` / `start_id`,
+        // colliding with the reserved id columns (Spark AMBIGUOUS_REFERENCE).
+        assert!(prop_alias_collides_with_reserved_id("end_", "id"));
+        assert!(prop_alias_collides_with_reserved_id("start_", "id"));
+        // Distinct property names do not collide.
+        assert!(!prop_alias_collides_with_reserved_id("end_", "name"));
+        assert!(!prop_alias_collides_with_reserved_id("start_", "user_id"));
+        assert!(!prop_alias_collides_with_reserved_id("end_", "type"));
+    }
 
     #[test]
     fn test_multi_type_vlp_generator_structure() {
