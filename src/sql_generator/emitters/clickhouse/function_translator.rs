@@ -363,19 +363,6 @@ pub fn translate_scalar_function(
     }
 }
 
-/// Translate Neo4j duration({...}) function to ClickHouse interval expressions
-///
-/// Neo4j duration supports the following units (all plural and singular forms):
-/// - years, months, weeks, days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds
-///
-/// ClickHouse interval functions:
-/// - toIntervalYear(n), toIntervalMonth(n), toIntervalWeek(n), toIntervalDay(n)
-/// - toIntervalHour(n), toIntervalMinute(n), toIntervalSecond(n)
-///
-/// Examples:
-///   duration({days: 5}) -> toIntervalDay(5)
-///   duration({days: 5, hours: 2}) -> (toIntervalDay(5) + toIntervalHour(2))
-///   duration({months: 1, days: 15}) -> (toIntervalMonth(1) + toIntervalDay(15))
 /// Map a single Neo4j duration unit + already-rendered value expression to the
 /// active dialect's interval constructor. Returns `None` for an unrecognized
 /// unit so each caller keeps its own unknown-unit policy (error vs skip).
@@ -384,11 +371,18 @@ pub fn translate_scalar_function(
 /// `toIntervalSecond(n / scale)` since CH lacks ms/us/ns intervals. Databricks
 /// uses `make_dt_interval(days, hours, mins, secs)` / `make_ym_interval(years,
 /// months)` — both accept fractional/expression args, so sub-second precision
-/// maps onto the fractional `secs` field. NOTE: Spark rejects adding a
-/// year-month interval to a day-time interval, so a `duration({months: m,
-/// days: d})` that mixes the two families produces SQL that errors at execution
-/// on Databricks; single-family and single-unit durations are the validated,
-/// supported cases.
+/// maps onto the fractional `secs` field.
+///
+/// Limitations (both shared with the consuming `render_interval_arithmetic`):
+/// - Spark rejects adding a year-month interval to a day-time interval, so a
+///   `duration({months: m, days: d})` that mixes the two families produces SQL
+///   that errors at execution on Databricks. Single-family and single-unit
+///   durations are the validated, supported cases.
+/// - Only single-level interval arithmetic is supported: `x + duration(..)`.
+///   Nested forms like `x + duration(..) + duration(..)` are mis-handled on
+///   both dialects because the consumer detects the interval operand by
+///   substring (`toInterval` / `make_*_interval`) and the inner result string
+///   still contains that marker. Pre-existing for ClickHouse; not addressed here.
 pub(crate) fn interval_expr_for_unit(
     unit_lower: &str,
     value_sql: &str,
@@ -435,6 +429,17 @@ pub(crate) fn interval_expr_for_unit(
     })
 }
 
+/// Translate a Neo4j `duration({...})` map into the active dialect's combined
+/// interval expression, delegating the per-unit spelling to
+/// [`interval_expr_for_unit`].
+///
+/// Neo4j duration supports (plural and singular): years, months, weeks, days,
+/// hours, minutes, seconds, milliseconds, microseconds, nanoseconds.
+///
+/// Examples (ClickHouse):
+///   duration({days: 5}) -> toIntervalDay(5)
+///   duration({days: 5, hours: 2}) -> (toIntervalDay(5) + toIntervalHour(2))
+///   duration({months: 1, days: 15}) -> (toIntervalMonth(1) + toIntervalDay(15))
 fn translate_duration_function(
     fn_call: &ScalarFnCall,
 ) -> Result<String, ClickhouseQueryGeneratorError> {

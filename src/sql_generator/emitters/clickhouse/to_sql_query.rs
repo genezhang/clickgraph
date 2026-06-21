@@ -400,8 +400,13 @@ fn render_interval_arithmetic(op: &OperatorApplication, rendered: &[String]) -> 
 
     let dialect = get_current_dialect();
     // An operand is the interval term when it is a dialect interval constructor.
+    // Databricks markers are anchored on the call `(` so a column whose name
+    // merely contains the token isn't mistaken for an interval. (The CH `(`-less
+    // `toInterval` check is kept verbatim to preserve byte-identical CH output.)
     let is_interval = |r: &str| match dialect {
-        SqlDialect::Databricks => r.contains("make_dt_interval") || r.contains("make_ym_interval"),
+        SqlDialect::Databricks => {
+            r.contains("make_dt_interval(") || r.contains("make_ym_interval(")
+        }
         _ => r.contains("toInterval"),
     };
 
@@ -410,11 +415,14 @@ fn render_interval_arithmetic(op: &OperatorApplication, rendered: &[String]) -> 
         && rendered.iter().any(|r| is_interval(r))
     {
         // An operand that is already a timestamp expression must not be re-wrapped.
+        // Databricks function markers are anchored on the call `(`; `current_timestamp`
+        // is intentionally bare (Spark allows it as a keyword without parens). The CH
+        // arm is kept verbatim to preserve byte-identical CH output.
         let already_timestamp = |r: &str| match dialect {
             SqlDialect::Databricks => {
-                r.contains("timestamp_millis")
-                    || r.contains("to_timestamp")
-                    || r.contains("from_unixtime")
+                r.contains("timestamp_millis(")
+                    || r.contains("to_timestamp(")
+                    || r.contains("from_unixtime(")
                     || r.contains("current_timestamp")
             }
             _ => {
@@ -4667,9 +4675,12 @@ impl RenderExpr {
                                 })
                                 .collect();
 
+                            // If every unit was unknown, `interval_parts` is empty —
+                            // fall through to normal function handling rather than
+                            // emitting an invalid `()`.
                             if interval_parts.len() == 1 {
                                 return interval_parts[0].clone();
-                            } else {
+                            } else if !interval_parts.is_empty() {
                                 return format!("({})", interval_parts.join(" + "));
                             }
                         }
