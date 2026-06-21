@@ -2393,8 +2393,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 let concat_parts: Vec<String> = cols
                     .iter()
                     .map(|c| {
+                        // toString -> Spark `string` cast alias via the FunctionMapper.
                         format!(
-                            "toString({}.{})",
+                            "{}({}.{})",
+                            crate::sql_generator::function_mapper::current_function_mapper()
+                                .cast_string(),
                             &self.relationship_alias,
                             crate::clickhouse_query_generator::quote_identifier(c)
                         )

@@ -16913,7 +16913,10 @@ fn render_logical_expr_to_sql(
                 return match op.operator {
                     Op::StartsWith => format!("startsWith({}, {})", left, right),
                     Op::EndsWith => format!("endsWith({}, {})", left, right),
-                    Op::Contains => format!("position({}, {}) > 0", left, right),
+                    Op::Contains => {
+                        // Dialect-aware: Spark's position(substr, str) reverses CH's arg order.
+                        crate::clickhouse_query_generator::contains_predicate(&left, &right)
+                    }
                     Op::RegexMatch => format!("match({}, {})", left, right),
                     _ => unreachable!(),
                 };

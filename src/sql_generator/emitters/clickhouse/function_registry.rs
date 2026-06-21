@@ -928,16 +928,22 @@ lazy_static::lazy_static! {
             arg_transform: None,
         });
 
-        // contains(str, search) -> position(str, search) > 0 or like
-        // ClickHouse has positionCaseInsensitive too
+        // contains(str, search) -> position(str, search) > 0 (caller adds the > 0)
         m.insert("contains", FunctionMapping {
             neo4j_name: "contains",
             clickhouse_name: "position",
             databricks_name: None,
             arg_transform: Some(|args| {
                 // contains(str, search) -> position(str, search) > 0
-                // Caller needs to handle the > 0 comparison
-                args.to_vec()
+                // (caller adds the > 0). Spark's position(substr, str) reverses
+                // the arg order, so swap the two operands on Databricks.
+                use crate::server::query_context::get_current_dialect;
+                use crate::sql_generator::SqlDialect;
+                if args.len() == 2 && matches!(get_current_dialect(), SqlDialect::Databricks) {
+                    vec![args[1].clone(), args[0].clone()]
+                } else {
+                    args.to_vec()
+                }
             }),
         });
 

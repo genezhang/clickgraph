@@ -5113,7 +5113,7 @@ impl RenderExpr {
                     return format!("endsWith({}, {})", &rendered[0], &rendered[1]);
                 }
                 if op.operator == Operator::Contains && rendered.len() == 2 {
-                    return format!("(position({}, {}) > 0)", &rendered[0], &rendered[1]);
+                    return super::common::contains_predicate(&rendered[0], &rendered[1]);
                 }
 
                 // Special handling for Addition with list/array operands - use arrayConcat()
@@ -5534,7 +5534,7 @@ impl RenderExpr {
                     return format!("endsWith({}, {})", &rendered[0], &rendered[1]);
                 }
                 if op.operator == Operator::Contains && rendered.len() == 2 {
-                    return format!("(position({}, {}) > 0)", &rendered[0], &rendered[1]);
+                    return super::common::contains_predicate(&rendered[0], &rendered[1]);
                 }
 
                 // Special handling for Addition with list/array operands - use arrayConcat()
@@ -5764,7 +5764,7 @@ impl ToSql for OperatorApplication {
             return format!("endsWith({}, {})", &rendered[0], &rendered[1]);
         }
         if self.operator == Operator::Contains && rendered.len() == 2 {
-            return format!("(position({}, {}) > 0)", &rendered[0], &rendered[1]);
+            return super::common::contains_predicate(&rendered[0], &rendered[1]);
         }
 
         // Special handling for Addition with list/array operands - use arrayConcat()
@@ -5986,6 +5986,36 @@ mod tests {
                 && make_op().to_sql().contains("arrayConcat("),
             "CH baseline should still emit arrayConcat"
         );
+    }
+
+    /// CONTAINS renders `position(haystack, needle) > 0` on ClickHouse but must
+    /// REVERSE the args on Databricks, since Spark's `position(substr, str)` takes
+    /// the substring first.
+    #[tokio::test]
+    async fn test_contains_reverses_position_args_on_databricks() {
+        use crate::server::query_context::{with_query_context, QueryContext};
+        use crate::sql_generator::SqlDialect;
+
+        let make_expr = || {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::Contains,
+                operands: vec![
+                    RenderExpr::Literal(Literal::String("hay".to_string())),
+                    RenderExpr::Literal(Literal::String("need".to_string())),
+                ],
+            })
+        };
+
+        // ClickHouse (default): haystack first.
+        assert_eq!(make_expr().to_sql(), "(position('hay', 'need') > 0)");
+
+        // Databricks: substring (needle) first.
+        let ctx = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        let sql = with_query_context(ctx, async { make_expr().to_sql() }).await;
+        assert_eq!(sql, "(position('need', 'hay') > 0)");
     }
 
     /// Test: numeric + numeric (no list) → stays as addition, not arrayConcat

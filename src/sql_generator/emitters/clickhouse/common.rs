@@ -54,3 +54,20 @@ pub fn quote_identifier(name: &str) -> String {
 pub fn qualified_column(table_alias: &str, column_name: &str) -> String {
     format!("{}.{}", table_alias, quote_identifier(column_name))
 }
+
+/// Emit a substring-containment predicate for Cypher `haystack CONTAINS needle`,
+/// dialect-aware.
+///
+/// ClickHouse `position(haystack, needle)` and Spark/Databricks
+/// `position(substr, str)` take their two arguments in OPPOSITE order, so the
+/// operands are swapped when rendering for Databricks. Both return a 1-based
+/// index (0 = not found), so the `> 0` test is identical.
+pub fn contains_predicate(haystack: &str, needle: &str) -> String {
+    use crate::sql_generator::SqlDialect;
+    match crate::server::query_context::get_current_dialect() {
+        // Spark: position(substr, str) — substring first.
+        SqlDialect::Databricks => format!("(position({}, {}) > 0)", needle, haystack),
+        // ClickHouse: position(haystack, needle) — haystack first.
+        _ => format!("(position({}, {}) > 0)", haystack, needle),
+    }
+}
