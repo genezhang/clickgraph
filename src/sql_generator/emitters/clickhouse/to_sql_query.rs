@@ -5120,7 +5120,12 @@ impl RenderExpr {
                         .iter()
                         .flat_map(flatten_list_addition_operands)
                         .collect();
-                    return format!("arrayConcat({})", flattened.join(", "));
+                    return format!(
+                        "{}({})",
+                        crate::sql_generator::function_mapper::current_function_mapper()
+                            .array_concat(),
+                        flattened.join(", ")
+                    );
                 }
 
                 // Special handling for Addition with string operands - use concat()
@@ -5535,7 +5540,12 @@ impl RenderExpr {
                         .iter()
                         .flat_map(flatten_list_addition_operands)
                         .collect();
-                    return format!("arrayConcat({})", flattened.join(", "));
+                    return format!(
+                        "{}({})",
+                        crate::sql_generator::function_mapper::current_function_mapper()
+                            .array_concat(),
+                        flattened.join(", ")
+                    );
                 }
 
                 // Special handling for interval arithmetic with epoch-millis values
@@ -5760,7 +5770,11 @@ impl ToSql for OperatorApplication {
                 .iter()
                 .flat_map(flatten_list_addition_operands)
                 .collect();
-            return format!("arrayConcat({})", flattened.join(", "));
+            return format!(
+                "{}({})",
+                crate::sql_generator::function_mapper::current_function_mapper().array_concat(),
+                flattened.join(", ")
+            );
         }
 
         // Special handling for Addition with string operands - use concat()
@@ -5920,6 +5934,54 @@ mod tests {
         });
         let sql = expr.to_sql();
         assert_eq!(sql, "arrayConcat([42], [1])");
+    }
+
+    /// Under the Databricks dialect, list concatenation emits Spark's
+    /// `concat(...)` (array-overloaded), not ClickHouse's `arrayConcat(...)`.
+    #[tokio::test]
+    async fn test_list_concat_uses_concat_under_databricks() {
+        use crate::server::query_context::{with_query_context, QueryContext};
+        use crate::sql_generator::SqlDialect;
+
+        let make_expr = || {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::Addition,
+                operands: vec![
+                    RenderExpr::List(vec![RenderExpr::Literal(Literal::Integer(1))]),
+                    RenderExpr::List(vec![RenderExpr::Literal(Literal::Integer(2))]),
+                ],
+            })
+        };
+
+        // Bare OperatorApplication::to_sql is a separate render arm (reached via
+        // JOIN ON predicates) — cover it too.
+        let make_op = || OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![
+                RenderExpr::List(vec![RenderExpr::Literal(Literal::Integer(1))]),
+                RenderExpr::List(vec![RenderExpr::Literal(Literal::Integer(2))]),
+            ],
+        };
+
+        let ctx = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        let (sql, op_sql) =
+            with_query_context(ctx, async { (make_expr().to_sql(), make_op().to_sql()) }).await;
+        for s in [&sql, &op_sql] {
+            assert!(
+                s.contains("concat(") && !s.contains("arrayConcat("),
+                "expected Spark `concat(`, not `arrayConcat(`; got: {s}"
+            );
+        }
+
+        // CH baseline (default scope) keeps arrayConcat on both arms.
+        assert!(
+            make_expr().to_sql().contains("arrayConcat(")
+                && make_op().to_sql().contains("arrayConcat("),
+            "CH baseline should still emit arrayConcat"
+        );
     }
 
     /// Test: numeric + numeric (no list) → stays as addition, not arrayConcat
