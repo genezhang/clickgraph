@@ -1101,32 +1101,12 @@ fn determine_use_final(
     config_use_final: Option<bool>,
     engine: &Option<TableEngine>,
 ) -> Option<bool> {
-    let engine_supports_final = engine.as_ref().map(|e| e.supports_final()).unwrap_or(false);
-
-    if let Some(explicit) = config_use_final {
-        // Ignore an explicit `use_final: true` only when the engine is KNOWN and
-        // demonstrably cannot do FINAL — notably a Databricks/Delta/Spark source,
-        // where FINAL is invalid SQL and meaningless (no ReplacingMergeTree-style
-        // merge to finalize). When the engine is undetected (None) we respect the
-        // user's explicit choice: on ClickHouse they may know it is a FINAL-capable
-        // engine that detection missed.
-        if explicit {
-            if let Some(e) = engine {
-                if !e.supports_final() {
-                    log::warn!(
-                        "Ignoring `use_final: true`: engine {:?} does not support FINAL; \
-                         forcing use_final=false",
-                        e
-                    );
-                    return Some(false);
-                }
-            }
-        }
-        return Some(explicit);
+    // If config has explicit value, use it
+    if config_use_final.is_some() {
+        return config_use_final;
     }
-
-    // No explicit value — auto-detect from the engine.
-    Some(engine_supports_final)
+    // Otherwise, auto-detect from engine
+    Some(engine.as_ref().map(|e| e.supports_final()).unwrap_or(false))
 }
 
 /// Parse node_id types from YAML configuration
@@ -2619,36 +2599,6 @@ fn resolve_fulltext_indexes(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_determine_use_final_honors_engine_support() {
-        let replacing = Some(TableEngine::ReplacingMergeTree {
-            version_column: None,
-        });
-        let plain = Some(TableEngine::MergeTree);
-
-        // No explicit value -> auto-detect from engine.
-        assert_eq!(determine_use_final(None, &replacing), Some(true));
-        assert_eq!(determine_use_final(None, &plain), Some(false));
-        assert_eq!(determine_use_final(None, &None), Some(false));
-
-        // Explicit true honored when the engine supports FINAL.
-        assert_eq!(determine_use_final(Some(true), &replacing), Some(true));
-        // Explicit true on a KNOWN engine without FINAL (e.g. a Databricks/Delta
-        // source, which surfaces as a non-MergeTree engine) is ignored.
-        assert_eq!(determine_use_final(Some(true), &plain), Some(false));
-        assert_eq!(
-            determine_use_final(Some(true), &Some(TableEngine::Other("delta".to_string()))),
-            Some(false)
-        );
-        // Explicit true with an UNDETECTED engine (None) is respected — on
-        // ClickHouse the user may know it's a FINAL-capable engine detection missed.
-        assert_eq!(determine_use_final(Some(true), &None), Some(true));
-
-        // Explicit false is always respected.
-        assert_eq!(determine_use_final(Some(false), &replacing), Some(false));
-        assert_eq!(determine_use_final(Some(false), &plain), Some(false));
-    }
 
     #[test]
     fn test_relationship_definition_edge_id_parsing() {

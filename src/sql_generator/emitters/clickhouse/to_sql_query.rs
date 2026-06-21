@@ -3806,8 +3806,12 @@ impl ToSql for FromTableItem {
             sql.push_str(" AS ");
             sql.push_str(&alias);
 
-            // Add FINAL keyword AFTER alias if needed (ClickHouse syntax: FROM table AS alias FINAL)
-            if view_ref.use_final {
+            // Add FINAL keyword AFTER alias if needed (ClickHouse syntax: FROM table AS alias FINAL).
+            // FINAL is ClickHouse-only — never emit it on other dialects (e.g. Databricks/Spark),
+            // where it is invalid SQL, regardless of the schema's use_final.
+            if view_ref.use_final
+                && crate::server::query_context::get_current_dialect().supports_final_keyword()
+            {
                 sql.push_str(" FINAL");
             }
 
