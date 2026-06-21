@@ -71,3 +71,20 @@ pub fn contains_predicate(haystack: &str, needle: &str) -> String {
         _ => format!("(position({}, {}) > 0)", haystack, needle),
     }
 }
+
+/// Resolve a SQL function name to its active-dialect spelling via the function
+/// registry, falling back to `name` unchanged when it has no registry entry.
+///
+/// Lets the duplicate generic `ScalarFnCall` renderers (in `render_plan`) map
+/// dialect-divergent names (e.g. `tuple` -> Spark `struct`) without each one
+/// re-implementing the lookup. The canonical `RenderExpr::to_sql` arm already
+/// routes through the registry directly; this is the shared shim for the others.
+pub fn dialect_function_name(name: &str) -> String {
+    use super::function_registry::get_function_mapping;
+    match get_function_mapping(&name.to_lowercase()) {
+        Some(mapping) => mapping
+            .name_for(crate::server::query_context::get_current_dialect())
+            .to_string(),
+        None => name.to_string(),
+    }
+}
