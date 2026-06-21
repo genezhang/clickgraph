@@ -5770,7 +5770,11 @@ impl ToSql for OperatorApplication {
                 .iter()
                 .flat_map(flatten_list_addition_operands)
                 .collect();
-            return format!("arrayConcat({})", flattened.join(", "));
+            return format!(
+                "{}({})",
+                crate::sql_generator::function_mapper::current_function_mapper().array_concat(),
+                flattened.join(", ")
+            );
         }
 
         // Special handling for Addition with string operands - use concat()
@@ -5949,19 +5953,33 @@ mod tests {
             })
         };
 
+        // Bare OperatorApplication::to_sql is a separate render arm (reached via
+        // JOIN ON predicates) — cover it too.
+        let make_op = || OperatorApplication {
+            operator: Operator::Addition,
+            operands: vec![
+                RenderExpr::List(vec![RenderExpr::Literal(Literal::Integer(1))]),
+                RenderExpr::List(vec![RenderExpr::Literal(Literal::Integer(2))]),
+            ],
+        };
+
         let ctx = QueryContext {
             dialect: SqlDialect::Databricks,
             ..QueryContext::default()
         };
-        let sql = with_query_context(ctx, async { make_expr().to_sql() }).await;
-        assert!(
-            sql.contains("concat(") && !sql.contains("arrayConcat("),
-            "expected Spark `concat(`, not `arrayConcat(`; got: {sql}"
-        );
+        let (sql, op_sql) =
+            with_query_context(ctx, async { (make_expr().to_sql(), make_op().to_sql()) }).await;
+        for s in [&sql, &op_sql] {
+            assert!(
+                s.contains("concat(") && !s.contains("arrayConcat("),
+                "expected Spark `concat(`, not `arrayConcat(`; got: {s}"
+            );
+        }
 
-        // CH baseline (default scope) keeps arrayConcat.
+        // CH baseline (default scope) keeps arrayConcat on both arms.
         assert!(
-            make_expr().to_sql().contains("arrayConcat("),
+            make_expr().to_sql().contains("arrayConcat(")
+                && make_op().to_sql().contains("arrayConcat("),
             "CH baseline should still emit arrayConcat"
         );
     }
