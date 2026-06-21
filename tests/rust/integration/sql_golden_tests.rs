@@ -83,6 +83,22 @@ const CORPUS: &[(&str, &str)] = &[
         "MATCH (a:User)-[:FOLLOWS*1..3]->(b:User) RETURN b.user_id",
     ),
     ("whole_entity", "MATCH (u:User) RETURN u"),
+    // List slicing -> arraySlice (CH) / slice (Spark). Both the 3-arg bounded
+    // form and the 2-arg open-ended form (Spark needs a computed length).
+    (
+        "list_slice_bounded",
+        "MATCH (u:User) RETURN [10, 20, 30, 40][1..3] AS s",
+    ),
+    (
+        "list_slice_open",
+        "MATCH (u:User) RETURN [10, 20, 30, 40][1..] AS s",
+    ),
+    (
+        "list_slice_to",
+        "MATCH (u:User) RETURN [10, 20, 30, 40][..2] AS s",
+    ),
+    // tail() -> CH arraySlice(list, 2) / Spark slice(list, 2, greatest(size-1, 0))
+    ("list_tail", "MATCH (u:User) RETURN tail([10, 20, 30]) AS t"),
     // Heterogeneous end type (User|Post) routes through multi_type_vlp_joins,
     // locking the generator output for both dialects (incl. dialect-aware
     // array/string casts: CH `toString(..)`/`['x']` vs Spark `string(..)`/

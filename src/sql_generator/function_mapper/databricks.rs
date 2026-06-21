@@ -170,6 +170,22 @@ impl FunctionMapper for DatabricksFunctionMapper {
         // Spark/ANSI CAST(expr AS TYPE) with an unquoted type keyword.
         format!("CAST({} AS {})", expr, type_name)
     }
+
+    fn array_slice(&self, arr: &str, offset: &str, length: Option<&str>) -> String {
+        // Spark slice(arr, start, length) requires a length, and ERRORS on a
+        // negative one — whereas CH's 2-arg arraySlice(arr, offset) silently
+        // returns empty when offset is past the end. So the computed
+        // rest-from-offset length, size(arr) - offset + 1, is floored at 0 with
+        // greatest(...) to preserve CH's empty-on-out-of-bounds behavior.
+        // (Note: `arr` is evaluated twice here; fine for column/literal arrays.)
+        match length {
+            Some(l) => format!("slice({}, {}, {})", arr, offset, l),
+            None => format!(
+                "slice({}, {}, greatest(size({}) - ({}) + 1, 0))",
+                arr, offset, arr, offset
+            ),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -214,6 +230,12 @@ mod tests {
         // ANSI CAST syntax with unquoted type keyword.
         assert_eq!(m.cast_as("''", "STRING"), "CAST('' AS STRING)");
         assert_eq!(m.cast_as("NULL", "BIGINT"), "CAST(NULL AS BIGINT)");
+        // slice requires a length; the 2-arg CH form computes one.
+        assert_eq!(m.array_slice("arr", "2", Some("3")), "slice(arr, 2, 3)");
+        assert_eq!(
+            m.array_slice("arr", "2", None),
+            "slice(arr, 2, greatest(size(arr) - (2) + 1, 0))"
+        );
     }
 
     /// Documented structural gap: `array_count` has no clean Spark mapping.

@@ -94,6 +94,13 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         // ClickHouse function-call CAST with a quoted type string.
         format!("CAST({}, '{}')", expr, type_name)
     }
+
+    fn array_slice(&self, arr: &str, offset: &str, length: Option<&str>) -> String {
+        match length {
+            Some(l) => format!("arraySlice({}, {}, {})", arr, offset, l),
+            None => format!("arraySlice({}, {})", arr, offset),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -116,6 +123,13 @@ mod tests {
             m.cast_as("NULL", "Nullable(Int64)"),
             "CAST(NULL, 'Nullable(Int64)')"
         );
+    }
+
+    #[test]
+    fn array_slice_keeps_clickhouse_2_and_3_arg_forms() {
+        let m = ClickhouseFunctionMapper;
+        assert_eq!(m.array_slice("a", "2", Some("3")), "arraySlice(a, 2, 3)");
+        assert_eq!(m.array_slice("a", "2", None), "arraySlice(a, 2)");
     }
 
     #[test]

@@ -359,16 +359,28 @@ lazy_static::lazy_static! {
             }),
         });
 
-        // tail(list) -> arraySlice(list, 2) [all but first]
+        // tail(list) = all but first. CH arraySlice(list, 2) (2-arg, rest from
+        // offset). Spark slice requires a length, so emit slice(list, 2, size(list) - 1).
         m.insert("tail", FunctionMapping {
             neo4j_name: "tail",
             clickhouse_name: "arraySlice",
-            databricks_name: None,
+            databricks_name: Some("slice"),
             arg_transform: Some(|args| {
-                if !args.is_empty() {
-                    vec![args[0].clone(), "2".to_string()]
+                use crate::server::query_context::get_current_dialect;
+                use crate::sql_generator::SqlDialect;
+                if args.is_empty() {
+                    return args.to_vec();
+                }
+                let list = args[0].clone();
+                if matches!(get_current_dialect(), SqlDialect::Databricks) {
+                    // Floor at 0: slice errors on negative length (empty list).
+                    vec![
+                        list.clone(),
+                        "2".to_string(),
+                        format!("greatest(size({}) - 1, 0)", list),
+                    ]
                 } else {
-                    args.to_vec()
+                    vec![list, "2".to_string()]
                 }
             }),
         });
