@@ -267,36 +267,37 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         // (when end_id is String due to heterogeneous types or composite IDs)
         let start_id_needs_string = self.needs_string_conversion_for_end_id() || any_composite;
 
+        // Dialect-aware CAST: CH `CAST(x, 'T')` (Nullable-wrapped) vs Spark
+        // `CAST(x AS T)` with Spark type names. Type-name and syntax are owned
+        // by SchemaType::sql_type_name and FunctionMapper::cast_as.
+        let dialect = crate::server::query_context::get_current_dialect();
+        let mapper = crate::sql_generator::function_mapper::current_function_mapper();
+
         let start_id_sql = if start_id_needs_string {
-            "CAST('', 'String')".to_string()
+            mapper.cast_as("''", &SchemaType::String.sql_type_name(dialect, false))
         } else {
-            // Use Nullable(T) when default_value is NULL so ClickHouse accepts the CAST
+            // Nullable when default_value is NULL so the CAST is accepted.
             let default = start_id_type.default_value();
-            let ch_type = if default == "NULL" {
-                start_id_type.to_nullable_clickhouse_type()
-            } else {
-                start_id_type.to_clickhouse_type().to_string()
-            };
-            format!("CAST({}, '{}')", default, ch_type)
+            mapper.cast_as(
+                default,
+                &start_id_type.sql_type_name(dialect, default == "NULL"),
+            )
         };
 
         // End ID needs String if heterogeneous types OR composite IDs
         let end_id_needs_string = self.needs_string_conversion_for_end_id() || any_composite;
 
         let end_id_sql = if end_id_needs_string {
-            "CAST('', 'String')".to_string()
+            mapper.cast_as("''", &SchemaType::String.sql_type_name(dialect, false))
         } else {
             let default = end_id_type.default_value();
-            let ch_type = if default == "NULL" {
-                end_id_type.to_nullable_clickhouse_type()
-            } else {
-                end_id_type.to_clickhouse_type().to_string()
-            };
-            format!("CAST({}, '{}')", default, ch_type)
+            mapper.cast_as(
+                default,
+                &end_id_type.sql_type_name(dialect, default == "NULL"),
+            )
         };
 
-        let empty_str_arr = crate::sql_generator::function_mapper::current_function_mapper()
-            .empty_string_array_cast();
+        let empty_str_arr = mapper.empty_string_array_cast();
         format!(
             "SELECT '' AS end_type, {end_id_sql} AS end_id, {start_id_sql} AS start_id, '' AS start_type, \
              '{{}}' AS end_properties, '{{}}' AS start_properties, \

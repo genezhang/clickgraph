@@ -165,6 +165,11 @@ impl FunctionMapper for DatabricksFunctionMapper {
         // so this stays consistent with that.
         format!("`{}`", name.replace('`', "``"))
     }
+
+    fn cast_as(&self, expr: &str, type_name: &str) -> String {
+        // Spark/ANSI CAST(expr AS TYPE) with an unquoted type keyword.
+        format!("CAST({} AS {})", expr, type_name)
+    }
 }
 
 #[cfg(test)]
@@ -206,6 +211,9 @@ mod tests {
         // Embedded backticks must be doubled, not left raw — otherwise
         // an alias like `` x`y `` would prematurely close the quote.
         assert_eq!(m.quote_alias("x`y"), "`x``y`");
+        // ANSI CAST syntax with unquoted type keyword.
+        assert_eq!(m.cast_as("''", "STRING"), "CAST('' AS STRING)");
+        assert_eq!(m.cast_as("NULL", "BIGINT"), "CAST(NULL AS BIGINT)");
     }
 
     /// Documented structural gap: `array_count` has no clean Spark mapping.

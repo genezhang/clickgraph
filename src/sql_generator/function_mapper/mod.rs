@@ -139,6 +139,13 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// concern — it already uses backticks for both dialects since
     /// both accept them for plain column refs.
     fn quote_alias(&self, name: &str) -> String;
+
+    /// Build a CAST expression. The two dialects diverge on both syntax and the
+    /// type-name spelling: ClickHouse uses the function-call form with a quoted
+    /// type string, `CAST(expr, 'Int64')`; Spark/ANSI uses `CAST(expr AS BIGINT)`.
+    /// `type_name` must already be the dialect-appropriate spelling (see
+    /// `SchemaType::sql_type_name`).
+    fn cast_as(&self, expr: &str, type_name: &str) -> String;
 }
 
 /// Returns the function mapper for the active SQL dialect, read from the

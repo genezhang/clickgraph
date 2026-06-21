@@ -89,6 +89,11 @@ impl FunctionMapper for ClickhouseFunctionMapper {
         // and naive wrapping would produce malformed SQL.
         format!("\"{}\"", name.replace('"', "\"\""))
     }
+
+    fn cast_as(&self, expr: &str, type_name: &str) -> String {
+        // ClickHouse function-call CAST with a quoted type string.
+        format!("CAST({}, '{}')", expr, type_name)
+    }
 }
 
 #[cfg(test)]
@@ -101,6 +106,16 @@ mod tests {
         let m = ClickhouseFunctionMapper;
         assert_eq!(m.quote_alias("b.id"), "\"b.id\"");
         assert_eq!(m.quote_alias("x\"y"), "\"x\"\"y\"");
+    }
+
+    #[test]
+    fn cast_as_uses_clickhouse_function_call_form() {
+        let m = ClickhouseFunctionMapper;
+        assert_eq!(m.cast_as("''", "String"), "CAST('', 'String')");
+        assert_eq!(
+            m.cast_as("NULL", "Nullable(Int64)"),
+            "CAST(NULL, 'Nullable(Int64)')"
+        );
     }
 
     #[test]
