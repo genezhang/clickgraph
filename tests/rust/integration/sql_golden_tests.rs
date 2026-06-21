@@ -84,7 +84,13 @@ const CORPUS: &[(&str, &str)] = &[
     ),
     ("whole_entity", "MATCH (u:User) RETURN u"),
     // Heterogeneous end type (User|Post) routes through multi_type_vlp_joins,
-    // exercising the dialect-aware CAST/type-name path end-to-end.
+    // locking the generator output for both dialects (incl. dialect-aware
+    // array/string casts: CH `toString(..)`/`['x']` vs Spark `string(..)`/
+    // `array('x')`). NOTE: this query enumerates real paths, so it takes the
+    // concrete-branch path and does NOT reach `generate_empty_cte_sql` (the
+    // empty-placeholder CAST sites migrated in this slice) — those remain
+    // covered by the `cast_as`/`sql_type_name` unit tests; an integration
+    // golden for the no-path empty branch is a deferred follow-up.
     (
         "vlp_multi_type",
         "MATCH (a:User)-[:FOLLOWS|AUTHORED*1..2]->(b) RETURN b",
