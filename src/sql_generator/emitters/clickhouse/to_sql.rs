@@ -321,11 +321,10 @@ impl ToSql for LogicalExpr {
                         ))
                     }
                     Operator::Contains => {
-                        // ClickHouse: position(haystack, needle) > 0 or like(haystack, '%needle%')
-                        // Using position() for efficiency
-                        Ok(format!(
-                            "(position({}, {}) > 0)",
-                            operands_sql[0], operands_sql[1]
+                        // position(haystack, needle) > 0 — dialect-aware (Spark reverses args).
+                        Ok(super::common::contains_predicate(
+                            &operands_sql[0],
+                            &operands_sql[1],
                         ))
                     }
                     Operator::Not => Ok(format!("NOT ({})", operands_sql[0])),

@@ -1129,7 +1129,13 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                 }
                 Operator::StartsWith => format!("startsWith({}, {})", operands[0], operands[1]),
                 Operator::EndsWith => format!("endsWith({}, {})", operands[0], operands[1]),
-                Operator::Contains => format!("(position({}, {}) > 0)", operands[0], operands[1]),
+                Operator::Contains => {
+                    // Dialect-aware: Spark's position(substr, str) reverses CH's arg order.
+                    crate::clickhouse_query_generator::contains_predicate(
+                        &operands[0],
+                        &operands[1],
+                    )
+                }
                 Operator::IsNull => format!("{} IS NULL", operands[0]),
                 Operator::IsNotNull => format!("{} IS NOT NULL", operands[0]),
                 Operator::Distinct => format!("{} IS DISTINCT FROM {}", operands[0], operands[1]),
