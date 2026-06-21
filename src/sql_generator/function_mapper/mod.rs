@@ -146,6 +146,12 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// `type_name` must already be the dialect-appropriate spelling (see
     /// `SchemaType::sql_type_name`).
     fn cast_as(&self, expr: &str, type_name: &str) -> String;
+
+    /// Array slice from a 1-based `offset`. CH `arraySlice(arr, offset[, length])`
+    /// accepts a 2-arg "rest from offset" form; Spark `slice(arr, start, length)`
+    /// REQUIRES a length, so the `None` case computes `size(arr) - offset + 1`.
+    /// `offset`/`length` are pre-rendered SQL fragments.
+    fn array_slice(&self, arr: &str, offset: &str, length: Option<&str>) -> String;
 }
 
 /// Returns the function mapper for the active SQL dialect, read from the

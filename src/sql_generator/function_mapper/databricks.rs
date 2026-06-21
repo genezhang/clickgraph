@@ -170,6 +170,19 @@ impl FunctionMapper for DatabricksFunctionMapper {
         // Spark/ANSI CAST(expr AS TYPE) with an unquoted type keyword.
         format!("CAST({} AS {})", expr, type_name)
     }
+
+    fn array_slice(&self, arr: &str, offset: &str, length: Option<&str>) -> String {
+        // Spark slice(arr, start, length) requires a length. CH's 2-arg
+        // arraySlice(arr, offset) (rest from offset) becomes
+        // slice(arr, offset, size(arr) - (offset) + 1).
+        match length {
+            Some(l) => format!("slice({}, {}, {})", arr, offset, l),
+            None => format!(
+                "slice({}, {}, size({}) - ({}) + 1)",
+                arr, offset, arr, offset
+            ),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -214,6 +227,12 @@ mod tests {
         // ANSI CAST syntax with unquoted type keyword.
         assert_eq!(m.cast_as("''", "STRING"), "CAST('' AS STRING)");
         assert_eq!(m.cast_as("NULL", "BIGINT"), "CAST(NULL AS BIGINT)");
+        // slice requires a length; the 2-arg CH form computes one.
+        assert_eq!(m.array_slice("arr", "2", Some("3")), "slice(arr, 2, 3)");
+        assert_eq!(
+            m.array_slice("arr", "2", None),
+            "slice(arr, 2, size(arr) - (2) + 1)"
+        );
     }
 
     /// Documented structural gap: `array_count` has no clean Spark mapping.

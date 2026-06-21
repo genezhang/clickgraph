@@ -5370,31 +5370,33 @@ impl RenderExpr {
                 // - offset: 1-based index (Cypher uses 0-based, need to convert)
                 // - length: number of elements to extract
                 let array_sql = array.to_sql();
+                let mapper = crate::sql_generator::function_mapper::current_function_mapper();
 
                 match (from, to) {
                     (Some(from_expr), Some(to_expr)) => {
-                        // [from..to] - both bounds specified
-                        // Cypher: 0-based inclusive on both ends
-                        // ClickHouse arraySlice: 1-based offset, length parameter
-                        // Example: [2..4] means indices 2,3,4 (3 elements starting at index 2)
-                        // Convert: arraySlice(arr, from+1, to-from+1)
-                        format!(
-                            "arraySlice({}, {} + 1, {} - {} + 1)",
-                            array_sql,
-                            from_expr.to_sql(),
-                            to_expr.to_sql(),
-                            from_expr.to_sql()
+                        // [from..to] (Cypher 0-based inclusive) -> 1-based offset + length.
+                        // CH arraySlice(arr, from+1, to-from+1); Spark slice(...) (same shape).
+                        mapper.array_slice(
+                            &array_sql,
+                            &format!("{} + 1", from_expr.to_sql()),
+                            Some(&format!(
+                                "{} - {} + 1",
+                                to_expr.to_sql(),
+                                from_expr.to_sql()
+                            )),
                         )
                     }
                     (Some(from_expr), None) => {
-                        // [from..] - only lower bound, slice to end
-                        // arraySlice(arr, from+1) - omitting length takes rest of array
-                        format!("arraySlice({}, {} + 1)", array_sql, from_expr.to_sql())
+                        // [from..] - slice to end. CH 2-arg form; Spark computes the length.
+                        mapper.array_slice(&array_sql, &format!("{} + 1", from_expr.to_sql()), None)
                     }
                     (None, Some(to_expr)) => {
-                        // [..to] - only upper bound, slice from start
-                        // arraySlice(arr, 1, to+1) - from index 1, take to+1 elements
-                        format!("arraySlice({}, 1, {} + 1)", array_sql, to_expr.to_sql())
+                        // [..to] - from index 1, take to+1 elements.
+                        mapper.array_slice(
+                            &array_sql,
+                            "1",
+                            Some(&format!("{} + 1", to_expr.to_sql())),
+                        )
                     }
                     (None, None) => {
                         // [..] - no bounds, return entire array (identity operation)
