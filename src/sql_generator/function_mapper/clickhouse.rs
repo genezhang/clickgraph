@@ -101,6 +101,14 @@ impl FunctionMapper for ClickhouseFunctionMapper {
             None => format!("arraySlice({}, {})", arr, offset),
         }
     }
+
+    fn epoch_millis_to_timestamp(&self, expr: &str) -> String {
+        format!("fromUnixTimestamp64Milli({})", expr)
+    }
+
+    fn timestamp_to_epoch_millis(&self, expr: &str) -> String {
+        format!("toUnixTimestamp64Milli({})", expr)
+    }
 }
 
 #[cfg(test)]
@@ -130,6 +138,19 @@ mod tests {
         let m = ClickhouseFunctionMapper;
         assert_eq!(m.array_slice("a", "2", Some("3")), "arraySlice(a, 2, 3)");
         assert_eq!(m.array_slice("a", "2", None), "arraySlice(a, 2)");
+    }
+
+    #[test]
+    fn epoch_millis_timestamp_roundtrip_uses_clickhouse_functions() {
+        let m = ClickhouseFunctionMapper;
+        assert_eq!(
+            m.epoch_millis_to_timestamp("x"),
+            "fromUnixTimestamp64Milli(x)"
+        );
+        assert_eq!(
+            m.timestamp_to_epoch_millis("x"),
+            "toUnixTimestamp64Milli(x)"
+        );
     }
 
     #[test]

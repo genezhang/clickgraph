@@ -152,6 +152,17 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// REQUIRES a length, so the `None` case computes `size(arr) - offset + 1`.
     /// `offset`/`length` are pre-rendered SQL fragments.
     fn array_slice(&self, arr: &str, offset: &str, length: Option<&str>) -> String;
+
+    /// Convert an epoch-millis `BIGINT` expression to a timestamp value, so
+    /// interval arithmetic can run on it. CH: `fromUnixTimestamp64Milli(expr)`
+    /// (-> DateTime64). Spark: `timestamp_millis(expr)` (-> TIMESTAMP). The
+    /// inverse of [`timestamp_to_epoch_millis`](Self::timestamp_to_epoch_millis).
+    fn epoch_millis_to_timestamp(&self, expr: &str) -> String;
+
+    /// Convert a timestamp expression back to an epoch-millis `BIGINT`, so the
+    /// result of interval arithmetic matches the stored column type. CH:
+    /// `toUnixTimestamp64Milli(expr)`. Spark: `unix_millis(expr)`.
+    fn timestamp_to_epoch_millis(&self, expr: &str) -> String;
 }
 
 /// Returns the function mapper for the active SQL dialect, read from the

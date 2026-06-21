@@ -376,6 +376,65 @@ pub fn translate_scalar_function(
 ///   duration({days: 5}) -> toIntervalDay(5)
 ///   duration({days: 5, hours: 2}) -> (toIntervalDay(5) + toIntervalHour(2))
 ///   duration({months: 1, days: 15}) -> (toIntervalMonth(1) + toIntervalDay(15))
+/// Map a single Neo4j duration unit + already-rendered value expression to the
+/// active dialect's interval constructor. Returns `None` for an unrecognized
+/// unit so each caller keeps its own unknown-unit policy (error vs skip).
+///
+/// ClickHouse uses `toInterval*(n)`; sub-second units fold into
+/// `toIntervalSecond(n / scale)` since CH lacks ms/us/ns intervals. Databricks
+/// uses `make_dt_interval(days, hours, mins, secs)` / `make_ym_interval(years,
+/// months)` — both accept fractional/expression args, so sub-second precision
+/// maps onto the fractional `secs` field. NOTE: Spark rejects adding a
+/// year-month interval to a day-time interval, so a `duration({months: m,
+/// days: d})` that mixes the two families produces SQL that errors at execution
+/// on Databricks; single-family and single-unit durations are the validated,
+/// supported cases.
+pub(crate) fn interval_expr_for_unit(
+    unit_lower: &str,
+    value_sql: &str,
+    dialect: crate::sql_generator::SqlDialect,
+) -> Option<String> {
+    use crate::sql_generator::SqlDialect;
+    Some(match dialect {
+        SqlDialect::Databricks => match unit_lower {
+            "years" | "year" => format!("make_ym_interval({}, 0)", value_sql),
+            "months" | "month" => format!("make_ym_interval(0, {})", value_sql),
+            "weeks" | "week" => format!("make_dt_interval(7 * ({}), 0, 0, 0)", value_sql),
+            "days" | "day" => format!("make_dt_interval({}, 0, 0, 0)", value_sql),
+            "hours" | "hour" => format!("make_dt_interval(0, {}, 0, 0)", value_sql),
+            "minutes" | "minute" => format!("make_dt_interval(0, 0, {}, 0)", value_sql),
+            "seconds" | "second" => format!("make_dt_interval(0, 0, 0, {})", value_sql),
+            "milliseconds" | "millisecond" => {
+                format!("make_dt_interval(0, 0, 0, {} / 1000.0)", value_sql)
+            }
+            "microseconds" | "microsecond" => {
+                format!("make_dt_interval(0, 0, 0, {} / 1000000.0)", value_sql)
+            }
+            "nanoseconds" | "nanosecond" => {
+                format!("make_dt_interval(0, 0, 0, {} / 1000000000.0)", value_sql)
+            }
+            _ => return None,
+        },
+        _ => match unit_lower {
+            "years" | "year" => format!("toIntervalYear({})", value_sql),
+            "months" | "month" => format!("toIntervalMonth({})", value_sql),
+            "weeks" | "week" => format!("toIntervalWeek({})", value_sql),
+            "days" | "day" => format!("toIntervalDay({})", value_sql),
+            "hours" | "hour" => format!("toIntervalHour({})", value_sql),
+            "minutes" | "minute" => format!("toIntervalMinute({})", value_sql),
+            "seconds" | "second" => format!("toIntervalSecond({})", value_sql),
+            "milliseconds" | "millisecond" => format!("toIntervalSecond({} / 1000.0)", value_sql),
+            "microseconds" | "microsecond" => {
+                format!("toIntervalSecond({} / 1000000.0)", value_sql)
+            }
+            "nanoseconds" | "nanosecond" => {
+                format!("toIntervalSecond({} / 1000000000.0)", value_sql)
+            }
+            _ => return None,
+        },
+    })
+}
+
 fn translate_duration_function(
     fn_call: &ScalarFnCall,
 ) -> Result<String, ClickhouseQueryGeneratorError> {
@@ -396,41 +455,20 @@ fn translate_duration_function(
                 ));
             }
 
-            // Map Neo4j duration units to ClickHouse interval functions
+            // Map Neo4j duration units to the active dialect's interval
+            // constructors (ClickHouse `toInterval*`, Databricks `make_*_interval`).
+            let dialect = crate::server::query_context::get_current_dialect();
             let interval_parts: Result<Vec<String>, _> = entries
                 .iter()
                 .map(|(key, value)| {
                     let value_sql = value.to_sql()?;
                     let key_lower = key.to_lowercase();
-
-                    // Map Neo4j time unit to ClickHouse interval function
-                    let interval_fn = match key_lower.as_str() {
-                        "years" | "year" => "toIntervalYear",
-                        "months" | "month" => "toIntervalMonth",
-                        "weeks" | "week" => "toIntervalWeek",
-                        "days" | "day" => "toIntervalDay",
-                        "hours" | "hour" => "toIntervalHour",
-                        "minutes" | "minute" => "toIntervalMinute",
-                        "seconds" | "second" => "toIntervalSecond",
-                        // For sub-second precision, convert to seconds (ClickHouse doesn't have ms/us/ns intervals)
-                        "milliseconds" | "millisecond" => {
-                            return Ok(format!("toIntervalSecond({} / 1000.0)", value_sql));
-                        }
-                        "microseconds" | "microsecond" => {
-                            return Ok(format!("toIntervalSecond({} / 1000000.0)", value_sql));
-                        }
-                        "nanoseconds" | "nanosecond" => {
-                            return Ok(format!("toIntervalSecond({} / 1000000000.0)", value_sql));
-                        }
-                        _ => {
-                            return Err(ClickhouseQueryGeneratorError::SchemaError(format!(
-                                "Unknown duration unit '{}'. Supported: years, months, weeks, days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds",
-                                key
-                            )));
-                        }
-                    };
-
-                    Ok(format!("{}({})", interval_fn, value_sql))
+                    interval_expr_for_unit(&key_lower, &value_sql, dialect).ok_or_else(|| {
+                        ClickhouseQueryGeneratorError::SchemaError(format!(
+                            "Unknown duration unit '{}'. Supported: years, months, weeks, days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds",
+                            key
+                        ))
+                    })
                 })
                 .collect();
 
@@ -514,6 +552,56 @@ pub fn get_supported_functions() -> Vec<&'static str> {
 mod tests {
     use super::*;
     use crate::query_planner::logical_expr::{Literal, LogicalExpr};
+
+    #[test]
+    fn interval_expr_for_unit_clickhouse_spellings() {
+        use crate::sql_generator::SqlDialect::ClickHouse;
+        assert_eq!(
+            interval_expr_for_unit("days", "5", ClickHouse).unwrap(),
+            "toIntervalDay(5)"
+        );
+        assert_eq!(
+            interval_expr_for_unit("month", "1", ClickHouse).unwrap(),
+            "toIntervalMonth(1)"
+        );
+        assert_eq!(
+            interval_expr_for_unit("milliseconds", "1500", ClickHouse).unwrap(),
+            "toIntervalSecond(1500 / 1000.0)"
+        );
+        assert!(interval_expr_for_unit("fortnights", "1", ClickHouse).is_none());
+    }
+
+    #[test]
+    fn interval_expr_for_unit_databricks_spellings() {
+        use crate::sql_generator::SqlDialect::Databricks;
+        // day-time family -> make_dt_interval(days, hours, mins, secs)
+        assert_eq!(
+            interval_expr_for_unit("days", "5", Databricks).unwrap(),
+            "make_dt_interval(5, 0, 0, 0)"
+        );
+        assert_eq!(
+            interval_expr_for_unit("hours", "2", Databricks).unwrap(),
+            "make_dt_interval(0, 2, 0, 0)"
+        );
+        assert_eq!(
+            interval_expr_for_unit("weeks", "2", Databricks).unwrap(),
+            "make_dt_interval(7 * (2), 0, 0, 0)"
+        );
+        assert_eq!(
+            interval_expr_for_unit("milliseconds", "1500", Databricks).unwrap(),
+            "make_dt_interval(0, 0, 0, 1500 / 1000.0)"
+        );
+        // year-month family -> make_ym_interval(years, months)
+        assert_eq!(
+            interval_expr_for_unit("year", "3", Databricks).unwrap(),
+            "make_ym_interval(3, 0)"
+        );
+        assert_eq!(
+            interval_expr_for_unit("months", "1", Databricks).unwrap(),
+            "make_ym_interval(0, 1)"
+        );
+        assert!(interval_expr_for_unit("fortnights", "1", Databricks).is_none());
+    }
 
     #[test]
     fn test_translate_simple_function() {

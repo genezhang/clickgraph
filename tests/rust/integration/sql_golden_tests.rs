@@ -110,6 +110,24 @@ const CORPUS: &[(&str, &str)] = &[
     ),
     // tail() -> CH arraySlice(list, 2) / Spark slice(list, 2, greatest(size-1, 0))
     ("list_tail", "MATCH (u:User) RETURN tail([10, 20, 30]) AS t"),
+    // Interval arithmetic on an epoch-millis column -> CH
+    // `toUnixTimestamp64Milli(fromUnixTimestamp64Milli(x) + toIntervalDay(n))`
+    // vs Spark `unix_millis(timestamp_millis(x) + make_dt_interval(n,0,0,0))`.
+    // Day-time, year-month, and same-family multi-unit are the validated cases
+    // (verified live on Databricks SQL). Mixing year-month with day-time in one
+    // duration() is unsupported on Spark and intentionally not in the corpus.
+    (
+        "interval_add_days",
+        "MATCH (u:User) RETURN u.registration_date + duration({days: 7}) AS d",
+    ),
+    (
+        "interval_sub_month",
+        "MATCH (u:User) RETURN u.registration_date - duration({months: 1}) AS d",
+    ),
+    (
+        "interval_multi_same_family",
+        "MATCH (u:User) RETURN u.registration_date + duration({days: 5, hours: 2}) AS d",
+    ),
     // Heterogeneous end type (User|Post) routes through multi_type_vlp_joins,
     // locking the generator output for both dialects (incl. dialect-aware
     // array/string casts: CH `toString(..)`/`['x']` vs Spark `string(..)`/
