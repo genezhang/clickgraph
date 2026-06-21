@@ -38,8 +38,10 @@ fn quote_column_name(name: &str) -> String {
     }
 }
 
-/// Quote a JSON key name for use inside formatRowNoNewline.
+/// Quote a JSON key name for use inside the JSON-object wrapper.
 /// JSON keys with dots need to be quoted to avoid ClickHouse interpreting them as tuple access.
+/// The backtick form is valid in Spark too: `to_json(struct(col AS `a.b`))` was
+/// verified live on Databricks to emit the key `"a.b"`.
 fn quote_json_key(name: &str) -> String {
     if name.contains('.') || name.contains(' ') || name.contains('-') {
         // Use backticks for JSON keys containing special characters

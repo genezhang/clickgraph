@@ -4022,10 +4022,8 @@ pub fn extract_ctes_with_context(
                         let rel_properties_json = if rel_prop_cols.is_empty() {
                             "'{}'".to_string() // Empty JSON object
                         } else {
-                            format!(
-                                "formatRowNoNewline('JSONEachRow', {})",
-                                rel_prop_cols.join(", ")
-                            )
+                            crate::sql_generator::function_mapper::current_function_mapper()
+                                .json_row_object(&rel_prop_cols.join(", "))
                         };
 
                         // Collect node properties for start_properties and end_properties
@@ -4061,19 +4059,15 @@ pub fn extract_ctes_with_context(
                         let start_properties_json = if start_prop_cols.is_empty() {
                             "'{}'".to_string()
                         } else {
-                            format!(
-                                "formatRowNoNewline('JSONEachRow', {})",
-                                start_prop_cols.join(", ")
-                            )
+                            crate::sql_generator::function_mapper::current_function_mapper()
+                                .json_row_object(&start_prop_cols.join(", "))
                         };
 
                         let end_properties_json = if end_prop_cols.is_empty() {
                             "'{}'".to_string()
                         } else {
-                            format!(
-                                "formatRowNoNewline('JSONEachRow', {})",
-                                end_prop_cols.join(", ")
-                            )
+                            crate::sql_generator::function_mapper::current_function_mapper()
+                                .json_row_object(&end_prop_cols.join(", "))
                         };
 
                         // Extract base relationship type (strip ::FromLabel::ToLabel suffix)
