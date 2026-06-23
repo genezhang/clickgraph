@@ -52,7 +52,7 @@ impl PropertyValue {
                 if col == "*" {
                     format!("{}.*", table_alias)
                 } else if needs_quoting(col) {
-                    format!("{}.\"{}\"", table_alias, col)
+                    format!("{}.{}", table_alias, quote_col_ident(col))
                 } else {
                     format!("{}.{}", table_alias, col)
                 }
@@ -84,7 +84,7 @@ impl PropertyValue {
         match self {
             PropertyValue::Column(col) => {
                 if needs_quoting(col) {
-                    format!("\"{}\"", col)
+                    quote_col_ident(col)
                 } else {
                     col.clone()
                 }
@@ -191,7 +191,7 @@ impl ClickHouseExpr {
                 format!("{}.{}", table_alias, col)
             }
             ClickHouseExpr::QuotedColumn(col) => {
-                format!("{}.\"{}\"", table_alias, col)
+                format!("{}.{}", table_alias, quote_col_ident(col))
             }
             ClickHouseExpr::FunctionCall { name, args } => {
                 let args_sql: Vec<String> = args.iter().map(|a| a.to_sql(table_alias)).collect();
@@ -221,7 +221,7 @@ impl ClickHouseExpr {
     pub fn to_sql_no_alias(&self) -> String {
         match self {
             ClickHouseExpr::Column(col) => col.clone(),
-            ClickHouseExpr::QuotedColumn(col) => format!("\"{}\"", col),
+            ClickHouseExpr::QuotedColumn(col) => quote_col_ident(col),
             ClickHouseExpr::FunctionCall { name, args } => {
                 let args_sql: Vec<String> = args.iter().map(|a| a.to_sql_no_alias()).collect();
                 format!("{}({})", name, args_sql.join(", "))
@@ -338,6 +338,16 @@ fn is_simple_column(s: &str) -> bool {
 fn needs_quoting(col: &str) -> bool {
     // If column name contains spaces or special chars, it needs quoting
     col.chars().any(|c| !c.is_alphanumeric() && c != '_')
+}
+
+/// Quote a column identifier for the active SQL dialect — ClickHouse double
+/// quotes (`"col"`), Spark/Databricks backticks (`` `col` ``). Spark parses
+/// `"col"` as a string literal, so a double-quoted identifier there is a syntax
+/// error. Routes through the shared `FunctionMapper::quote_alias`, so CH output
+/// stays byte-identical (same `"col"`, plus embedded-quote escaping). Outside a
+/// task-local scope this defaults to ClickHouse.
+fn quote_col_ident(col: &str) -> String {
+    crate::sql_generator::function_mapper::current_function_mapper().quote_alias(col)
 }
 
 /// Parse ClickHouse scalar expression (entry point for complex expressions)
@@ -645,6 +655,51 @@ mod tests {
         let pv = parse_property_value("score / 100").unwrap();
         // 100 is parsed as integer literal
         assert_eq!(pv.to_sql("u"), "(u.score / 100)");
+    }
+
+    #[tokio::test]
+    async fn quoted_column_identifier_is_dialect_aware() {
+        use crate::server::query_context::{with_query_context, QueryContext};
+        use crate::sql_generator::SqlDialect;
+
+        // A column whose name has a space needs quoting. CH double-quotes the
+        // identifier; Spark/Databricks must use backticks (it parses `"x"` as a
+        // string literal). Default (no task-local scope) → ClickHouse.
+        assert_eq!(
+            PropertyValue::Column("odd name".to_string()).to_sql("u"),
+            "u.\"odd name\""
+        );
+
+        let ch = with_query_context(
+            QueryContext {
+                dialect: SqlDialect::ClickHouse,
+                ..QueryContext::default()
+            },
+            async { PropertyValue::Column("odd name".to_string()).to_sql("u") },
+        )
+        .await;
+        assert_eq!(ch, "u.\"odd name\"", "CH stays byte-identical");
+
+        let dbx = with_query_context(
+            QueryContext {
+                dialect: SqlDialect::Databricks,
+                ..QueryContext::default()
+            },
+            async { PropertyValue::Column("odd name".to_string()).to_sql("u") },
+        )
+        .await;
+        assert_eq!(dbx, "u.`odd name`", "Spark uses backticks");
+
+        // The no-alias path flips the delimiter too.
+        let dbx_no_alias = with_query_context(
+            QueryContext {
+                dialect: SqlDialect::Databricks,
+                ..QueryContext::default()
+            },
+            async { PropertyValue::Column("odd name".to_string()).to_sql_column_only() },
+        )
+        .await;
+        assert_eq!(dbx_no_alias, "`odd name`");
     }
 
     #[test]
