@@ -707,6 +707,14 @@ struct ManifestSchema {
 #[derive(Debug, Deserialize)]
 struct ColumnInfo {
     name: String,
+    /// Canonical Spark type enum from the manifest (`INT`, `LONG`, `DOUBLE`,
+    /// `DECIMAL`, `BOOLEAN`, `STRING`, `ARRAY`, ...). The Statement Execution
+    /// API's `JSON_ARRAY` format returns every value as a JSON string
+    /// regardless of SQL type, so this is what [`coerce_scalar`] keys on to
+    /// restore native JSON numbers/booleans. Absent on some responses (older
+    /// DBR, DDL) — `None` then means "leave the value as the API sent it".
+    #[serde(default)]
+    type_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -857,11 +865,14 @@ fn rows_from_data(
         .manifest
         .as_ref()
         .ok_or_else(|| ExecutorError::Parse("manifest missing from SUCCEEDED response".into()))?;
-    let columns: Vec<&str> = manifest
+    // (name, type_name) per column. The type drives scalar coercion below so
+    // the rows match ClickHouse's native-typed JSONEachRow output instead of
+    // the all-strings shape the JSON_ARRAY API delivers.
+    let columns: Vec<(&str, Option<&str>)> = manifest
         .schema
         .columns
         .iter()
-        .map(|c| c.name.as_str())
+        .map(|c| (c.name.as_str(), c.type_name.as_deref()))
         .collect();
 
     let mut out = Vec::with_capacity(data.len());
@@ -874,12 +885,60 @@ fn rows_from_data(
             )));
         }
         let mut obj = Map::with_capacity(columns.len());
-        for (col, val) in columns.iter().zip(row.iter()) {
-            obj.insert((*col).to_string(), val.clone());
+        for ((col, type_name), val) in columns.iter().zip(row.iter()) {
+            let coerced = match type_name {
+                Some(t) => coerce_scalar(val.clone(), t),
+                None => val.clone(),
+            };
+            obj.insert((*col).to_string(), coerced);
         }
         out.push(Value::Object(obj));
     }
     Ok(out)
+}
+
+/// Restore a native JSON scalar from the all-strings shape the Statement
+/// Execution API's `JSON_ARRAY` format returns.
+///
+/// Databricks delivers every value as a JSON string — `"7"`, `"3.14"`,
+/// `"true"` — regardless of the SQL type, while ClickHouse's JSONEachRow
+/// returns native `7` / `3.14` / `true`. This coerces the numeric and boolean
+/// scalar types named in the manifest so both backends present an identical
+/// JSON shape to callers (the result-type-fidelity gap from the LDBC parity
+/// sweep). Coercion is deliberately conservative:
+///
+/// - Only `Value::String` payloads are touched; SQL `NULL` already arrives as
+///   JSON `null`, and any already-native value passes through unchanged
+///   (defensive against a future API/format that returns typed scalars).
+/// - `STRING`/`CHAR`/`BINARY`/`DATE`/`TIMESTAMP`/`INTERVAL` stay strings — that
+///   matches ClickHouse, and the entity `_properties` columns are `to_json(...)`
+///   STRINGs that must remain JSON text.
+/// - Complex `ARRAY`/`STRUCT`/`MAP` values arrive as JSON-encoded strings whose
+///   inner scalars are themselves strings; faithfully un-stringing them needs
+///   element-typed recursion, so they're left as-is here and tracked as a
+///   follow-up. A scalar fix covers the dominant property-projection case.
+/// - A parse failure falls back to the original string rather than dropping the
+///   value, so a surprising payload degrades to "uncoerced" rather than lossy.
+fn coerce_scalar(value: Value, type_name: &str) -> Value {
+    let s = match &value {
+        Value::String(s) => s.as_str(),
+        _ => return value,
+    };
+    let coerced = match type_name {
+        "BOOLEAN" => match s {
+            "true" => Some(Value::Bool(true)),
+            "false" => Some(Value::Bool(false)),
+            _ => None,
+        },
+        "BYTE" | "SHORT" | "INT" | "LONG" => s.parse::<i64>().ok().map(|n| Value::Number(n.into())),
+        "FLOAT" | "DOUBLE" | "DECIMAL" => s
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number),
+        _ => None,
+    };
+    coerced.unwrap_or(value)
 }
 
 #[cfg(test)]
@@ -1035,6 +1094,103 @@ mod tests {
             matches!(err, ExecutorError::Parse(_)),
             "expected Parse error, got {err:?}"
         );
+    }
+
+    #[test]
+    fn coerce_scalar_restores_native_types() {
+        // The JSON_ARRAY API delivers every value as a string; coercion keys on
+        // the manifest type to restore the native JSON scalar.
+        assert_eq!(coerce_scalar(json!("7"), "INT"), json!(7));
+        assert_eq!(coerce_scalar(json!("7"), "LONG"), json!(7));
+        assert_eq!(coerce_scalar(json!("-3"), "SHORT"), json!(-3));
+        assert_eq!(coerce_scalar(json!("5"), "BYTE"), json!(5));
+        assert_eq!(coerce_scalar(json!("9.5"), "DOUBLE"), json!(9.5));
+        assert_eq!(coerce_scalar(json!("9.5"), "FLOAT"), json!(9.5));
+        // DECIMAL coerces to a number, matching ClickHouse's JSONEachRow
+        // (which also emits Decimal as a bare number, not a string).
+        assert_eq!(coerce_scalar(json!("9.5"), "DECIMAL"), json!(9.5));
+        assert_eq!(coerce_scalar(json!("true"), "BOOLEAN"), json!(true));
+        assert_eq!(coerce_scalar(json!("false"), "BOOLEAN"), json!(false));
+    }
+
+    #[test]
+    fn coerce_scalar_leaves_strings_and_complex_untouched() {
+        // STRING stays a string (incl. the to_json `_properties` payload).
+        assert_eq!(coerce_scalar(json!("hi"), "STRING"), json!("hi"));
+        let jprops = json!("{\"x\":7}");
+        assert_eq!(coerce_scalar(jprops.clone(), "STRING"), jprops);
+        // DATE / TIMESTAMP keep their string rendering — matches ClickHouse.
+        assert_eq!(
+            coerce_scalar(json!("2020-01-01"), "DATE"),
+            json!("2020-01-01")
+        );
+        // Complex types arrive as JSON-encoded strings and are left as-is
+        // (element-typed recursion is a tracked follow-up).
+        let arr = json!("[\"1\",\"2\"]");
+        assert_eq!(coerce_scalar(arr.clone(), "ARRAY"), arr);
+    }
+
+    #[test]
+    fn coerce_scalar_passes_through_null_and_native_and_unparseable() {
+        // SQL NULL already arrives as JSON null — never stringified.
+        assert_eq!(coerce_scalar(json!(null), "INT"), json!(null));
+        // An already-native value (defensive: future API/format change) is kept.
+        assert_eq!(coerce_scalar(json!(7), "INT"), json!(7));
+        // A payload that doesn't parse degrades to the original string rather
+        // than being dropped or panicking.
+        assert_eq!(
+            coerce_scalar(json!("not-a-number"), "INT"),
+            json!("not-a-number")
+        );
+        // An unknown / unmapped type name leaves the value alone.
+        assert_eq!(coerce_scalar(json!("x"), "BINARY"), json!("x"));
+    }
+
+    #[test]
+    fn rows_from_response_coerces_using_manifest_types() {
+        // End-to-end: a JSON_ARRAY-style response (all values as strings) keyed
+        // by the manifest, with each scalar coerced to its native JSON type.
+        let resp: StatementResponse = serde_json::from_value(json!({
+            "statement_id": "stmt-coerce",
+            "status": { "state": "SUCCEEDED" },
+            "manifest": { "schema": { "columns": [
+                { "name": "id", "type_name": "LONG" },
+                { "name": "score", "type_name": "DOUBLE" },
+                { "name": "active", "type_name": "BOOLEAN" },
+                { "name": "name", "type_name": "STRING" },
+                { "name": "missing", "type_name": "INT" }
+            ]}},
+            "result": { "data_array": [
+                ["1", "9.5", "true", "alice", null]
+            ]}
+        }))
+        .unwrap();
+        let rows = rows_from_response(&resp).expect("parse");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], json!(1));
+        assert_eq!(rows[0]["score"], json!(9.5));
+        assert_eq!(rows[0]["active"], json!(true));
+        assert_eq!(rows[0]["name"], json!("alice"));
+        assert_eq!(rows[0]["missing"], json!(null));
+    }
+
+    #[test]
+    fn rows_from_response_without_type_names_passes_values_through() {
+        // A manifest that omits type_name (older DBR / DDL) must not alter
+        // values — they pass through exactly as the API delivered them.
+        let resp: StatementResponse = serde_json::from_value(json!({
+            "statement_id": "stmt-no-types",
+            "status": { "state": "SUCCEEDED" },
+            "manifest": { "schema": { "columns": [
+                { "name": "a" },
+                { "name": "b" }
+            ]}},
+            "result": { "data_array": [[1, "x"]] }
+        }))
+        .unwrap();
+        let rows = rows_from_response(&resp).expect("parse");
+        assert_eq!(rows[0]["a"], json!(1));
+        assert_eq!(rows[0]["b"], json!("x"));
     }
 
     #[test]
