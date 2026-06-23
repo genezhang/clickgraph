@@ -61,7 +61,7 @@ use crate::render_plan::cte_extraction::{
 use crate::render_plan::errors::RenderBuildError;
 use crate::render_plan::render_expr::{
     AggregateFnCall, Column, ColumnAlias, Literal, Operator, OperatorApplication, PropertyAccess,
-    RenderExpr, ScalarFnCall, TableAlias,
+    RenderCase, RenderExpr, ScalarFnCall, TableAlias,
 };
 use crate::render_plan::view_table_ref::{from_table_to_view_ref, view_ref_to_from_table};
 use crate::render_plan::JoinType;
@@ -2679,6 +2679,76 @@ mod tests {
         );
     }
 
+    /// Databricks: a hoisted WHERE predicate on a `count(x)` becomes
+    /// `count(CASE WHEN cond THEN x END)` — Spark's `count_if` takes only a
+    /// predicate (1 arg), so the CH 2-arg `countIf(x, cond)` shape would error
+    /// with `WRONG_NUM_ARGS`. `count` ignores NULLs, matching `countIf`.
+    #[tokio::test]
+    async fn rewrite_count_to_conditional_databricks_wraps_in_case() {
+        use crate::server::query_context::{with_query_context, QueryContext};
+        use crate::sql_generator::SqlDialect;
+
+        let ctx = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        let agg = with_query_context(ctx, async {
+            let mut agg = AggregateFnCall {
+                name: "count".to_string(),
+                args: vec![RenderExpr::Literal(Literal::Integer(1))],
+            };
+            rewrite_count_to_conditional(&mut agg, RenderExpr::Literal(Literal::Boolean(true)));
+            agg
+        })
+        .await;
+
+        assert_eq!(agg.name, "count", "name must stay `count` for Spark");
+        assert_eq!(agg.args.len(), 1, "Spark count takes exactly one arg");
+        match &agg.args[0] {
+            RenderExpr::Case(c) => {
+                assert!(c.expr.is_none(), "searched CASE (no scrutinee)");
+                assert_eq!(c.when_then.len(), 1);
+                assert_eq!(
+                    c.when_then[0].0,
+                    RenderExpr::Literal(Literal::Boolean(true))
+                );
+                assert_eq!(c.when_then[0].1, RenderExpr::Literal(Literal::Integer(1)));
+                assert!(c.else_expr.is_none(), "no ELSE → NULL, dropped by count");
+            }
+            other => panic!("expected CASE-wrapped count arg, got {other:?}"),
+        }
+    }
+
+    /// ClickHouse keeps the native 2-arg `-If` combinator `countIf(x, cond)`.
+    #[tokio::test]
+    async fn rewrite_count_to_conditional_clickhouse_uses_countif() {
+        use crate::server::query_context::{with_query_context, QueryContext};
+        use crate::sql_generator::SqlDialect;
+
+        let ctx = QueryContext {
+            dialect: SqlDialect::ClickHouse,
+            ..QueryContext::default()
+        };
+        let agg = with_query_context(ctx, async {
+            let mut agg = AggregateFnCall {
+                name: "count".to_string(),
+                args: vec![RenderExpr::Literal(Literal::Integer(1))],
+            };
+            rewrite_count_to_conditional(&mut agg, RenderExpr::Literal(Literal::Boolean(true)));
+            agg
+        })
+        .await;
+
+        assert_eq!(agg.name, "countIf");
+        assert_eq!(
+            agg.args,
+            vec![
+                RenderExpr::Literal(Literal::Integer(1)),
+                RenderExpr::Literal(Literal::Boolean(true)),
+            ]
+        );
+    }
+
     /// When the task-local dialect is Databricks, the helper builds the
     /// `size(filter(arr, x -> pred))` structural rewrite — Spark has no
     /// `arrayCount` equivalent. Note `filter` reverses arg order (arr,
@@ -3252,6 +3322,35 @@ pub fn remap_cte_names_in_expr(
             })
         }
         other => other,
+    }
+}
+
+/// Rewrite a `count(x)` aggregate so a WHERE predicate that was hoisted into
+/// the aggregate becomes a conditional count — dialect-aware.
+///
+/// ClickHouse expresses this as the 2-arg `-If` combinator `countIf(x, cond)`:
+/// count rows where `cond` holds (and `x` is non-null). Spark's `count_if`
+/// takes only a predicate (1 arg), so the same 2-arg shape errors with
+/// `WRONG_NUM_ARGS`; emulate it there as `count(CASE WHEN cond THEN x END)` —
+/// `count` ignores NULLs, so rows failing `cond` drop out exactly like `countIf`
+/// does. Mirrors the `min_if` mapper's CASE rewrite. Caller guarantees
+/// `agg.args` is non-empty (the count target is `args[0]`).
+fn rewrite_count_to_conditional(agg: &mut AggregateFnCall, cond: RenderExpr) {
+    use crate::sql_generator::SqlDialect;
+    match crate::server::query_context::get_current_dialect() {
+        SqlDialect::Databricks => {
+            let target = agg.args[0].clone();
+            agg.args[0] = RenderExpr::Case(RenderCase {
+                expr: None,
+                when_then: vec![(cond, target)],
+                else_expr: None,
+            });
+            // name stays "count"
+        }
+        _ => {
+            agg.name = current_function_mapper().count_if().to_string();
+            agg.args.push(cond);
+        }
     }
 }
 
@@ -10672,10 +10771,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                             && !agg.args.is_empty()
                                                         {
                                                             log::info!("🔧 OPTIONAL MATCH CTE body restructuring: converting count() to count-if with WHERE filter");
-                                                            agg.name = current_function_mapper()
-                                                                .count_if()
-                                                                .to_string();
-                                                            agg.args.push(where_clone.clone());
+                                                            rewrite_count_to_conditional(
+                                                                agg,
+                                                                where_clone.clone(),
+                                                            );
                                                         }
                                                     }
                                                 }
@@ -10900,6 +10999,46 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                                 for item in items.iter_mut() {
                                                                     rewrite_person_to_fk(
                                                                         item,
+                                                                        person_alias,
+                                                                        rel_alias,
+                                                                        fk_col,
+                                                                    );
+                                                                }
+                                                            }
+                                                            // The Databricks count→conditional rewrite wraps the
+                                                            // moved predicate in `count(CASE WHEN cond THEN x END)`;
+                                                            // descend so the person ref inside `cond` is rewritten to
+                                                            // the FK column (CH keeps it in countIf args, walked above).
+                                                            RenderExpr::Case(case) => {
+                                                                if let Some(e) = case.expr.as_mut() {
+                                                                    rewrite_person_to_fk(
+                                                                        e,
+                                                                        person_alias,
+                                                                        rel_alias,
+                                                                        fk_col,
+                                                                    );
+                                                                }
+                                                                for (when, then) in
+                                                                    case.when_then.iter_mut()
+                                                                {
+                                                                    rewrite_person_to_fk(
+                                                                        when,
+                                                                        person_alias,
+                                                                        rel_alias,
+                                                                        fk_col,
+                                                                    );
+                                                                    rewrite_person_to_fk(
+                                                                        then,
+                                                                        person_alias,
+                                                                        rel_alias,
+                                                                        fk_col,
+                                                                    );
+                                                                }
+                                                                if let Some(e) =
+                                                                    case.else_expr.as_mut()
+                                                                {
+                                                                    rewrite_person_to_fk(
+                                                                        e,
                                                                         person_alias,
                                                                         rel_alias,
                                                                         fk_col,
