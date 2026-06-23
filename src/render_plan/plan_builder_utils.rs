@@ -2679,6 +2679,38 @@ mod tests {
         );
     }
 
+    /// `quote_qualified_col` keeps CH double-quotes (byte-identical to the old
+    /// hardcoded form) and flips to Spark backticks under Databricks — Spark
+    /// parses `"col"` as a string literal, so the delimiter must change.
+    #[tokio::test]
+    async fn quote_qualified_col_is_dialect_aware() {
+        use crate::server::query_context::{with_query_context, QueryContext};
+        use crate::sql_generator::SqlDialect;
+
+        // Default (no task-local scope) → ClickHouse, matching historical output.
+        assert_eq!(quote_qualified_col("alias", "posts"), "alias.\"posts\"");
+
+        let ch = with_query_context(
+            QueryContext {
+                dialect: SqlDialect::ClickHouse,
+                ..QueryContext::default()
+            },
+            async { quote_qualified_col("alias", "posts") },
+        )
+        .await;
+        assert_eq!(ch, "alias.\"posts\"");
+
+        let dbx = with_query_context(
+            QueryContext {
+                dialect: SqlDialect::Databricks,
+                ..QueryContext::default()
+            },
+            async { quote_qualified_col("alias", "posts") },
+        )
+        .await;
+        assert_eq!(dbx, "alias.`posts`");
+    }
+
     /// Databricks: a hoisted WHERE predicate on a `count(x)` becomes
     /// `count(CASE WHEN cond THEN x END)` — Spark's `count_if` takes only a
     /// predicate (1 arg), so the CH 2-arg `countIf(x, cond)` shape would error
@@ -3352,6 +3384,19 @@ fn rewrite_count_to_conditional(agg: &mut AggregateFnCall, cond: RenderExpr) {
             agg.args.push(cond);
         }
     }
+}
+
+/// Build a dialect-quoted qualified column reference `alias.<quoted col>`.
+///
+/// Bare (non-`p{N}`) CTE variables are referenced as `alias."col"` on
+/// ClickHouse and `` alias.`col` `` on Spark/Databricks — Spark parses `"col"`
+/// as a string literal, so the identifier delimiter must flip. Routes through
+/// `FunctionMapper::quote_alias` (CH → `"x"`, Spark → `` `x` ``), keeping CH
+/// output byte-identical (the helper escapes embedded quotes too) while fixing
+/// the Databricks syntax error. Used by the alias-mapping builders for
+/// variables that lack the `p{N}_{alias}_{prop}` column shape.
+fn quote_qualified_col(alias: &str, col: &str) -> String {
+    format!("{}.{}", alias, current_function_mapper().quote_alias(col))
 }
 
 /// Apply CTE name remapping to all expressions in a RenderPlan
@@ -15398,7 +15443,7 @@ fn build_cte_column_map(
                     map.insert((parsed_alias, parsed_property), qualified);
                 } else {
                     // Non-p{N} columns: treat the alias itself as a bare variable
-                    let qualified = format!("{}.\"{}\"", effective_alias, cte_col_name);
+                    let qualified = quote_qualified_col(&effective_alias, cte_col_name);
                     map.insert((cte_col_name.clone(), "id".to_string()), qualified.clone());
                     map.insert((cte_col_name.clone(), cte_col_name.clone()), qualified);
                 }
@@ -17724,7 +17769,7 @@ fn find_pc_cte_join_column(
                                 .entry((parsed_alias, parsed_property))
                                 .or_insert(qualified);
                         } else {
-                            let qualified = format!("{}.\"{}\"", from_alias, col_name);
+                            let qualified = quote_qualified_col(from_alias, col_name);
                             col_map
                                 .entry((col_name.clone(), "id".to_string()))
                                 .or_insert(qualified.clone());
@@ -17774,7 +17819,7 @@ fn find_pc_cte_join_column(
                 };
                 if cte_has_bare_alias && has_bare_column {
                     // UNWIND scalar: the column name IS the alias
-                    format!("{}.\"{}\"", from_alias, var_name)
+                    quote_qualified_col(from_alias, var_name)
                 } else {
                     let cte_col = crate::utils::cte_column_naming::cte_column_name(var_name, "id");
                     format!("{}.{}", from_alias, cte_col)
@@ -17878,7 +17923,7 @@ fn generate_and_replace_arraycount_pc_subqueries(
                                 .entry((parsed_alias, parsed_property))
                                 .or_insert(qualified);
                         } else {
-                            let qualified = format!("{}.\"{}\"", from_alias, col_name);
+                            let qualified = quote_qualified_col(from_alias, col_name);
                             branch_col_map
                                 .entry((col_name.clone(), "id".to_string()))
                                 .or_insert(qualified.clone());
@@ -17907,7 +17952,7 @@ fn generate_and_replace_arraycount_pc_subqueries(
                 if let Some(ref lc) = pc.list_constraint {
                     let key1 = (lc.list_alias.clone(), "id".to_string());
                     if !branch_col_map.contains_key(&key1) {
-                        let qualified = format!("{}.\"{}\"", from_alias, lc.list_alias);
+                        let qualified = quote_qualified_col(from_alias, &lc.list_alias);
                         branch_col_map.insert(key1, qualified.clone());
                         branch_col_map
                             .insert((lc.list_alias.clone(), lc.list_alias.clone()), qualified);
