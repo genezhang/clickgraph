@@ -108,6 +108,14 @@ pub struct QueryContext {
     /// column for a given table alias when the variable registry is not populated
     /// (simple queries without WITH clauses).
     pub alias_label_map: HashMap<String, String>,
+
+    /// Names of CTE output columns that hold an array/collection value (produced
+    /// by a `collect`/`groupArray` aggregate or a list literal). Set once during
+    /// render_plan_to_sql(). Lets the Databricks `size()` render dispatch pick
+    /// Spark `size` (collection) vs `length` (string) when the argument is a
+    /// carried-forward collection column whose type the variable registry does
+    /// not track (e.g. `WITH collect(post) AS posts`).
+    pub array_cte_columns: HashSet<String>,
 }
 
 impl QueryContext {
@@ -449,6 +457,28 @@ pub fn set_current_variable_registry(
     let _ = QUERY_CONTEXT.try_with(|ctx| {
         ctx.borrow_mut().current_variable_registry = Some(registry);
     });
+}
+
+/// Record the set of CTE columns that hold array/collection values.
+pub fn set_array_cte_columns(columns: std::collections::HashSet<String>) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().array_cte_columns = columns;
+    });
+}
+
+/// True if `column` is a known array/collection-valued CTE column.
+pub fn is_array_cte_column(column: &str) -> bool {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().array_cte_columns.contains(column))
+        .unwrap_or(false)
+}
+
+/// Snapshot the current array-CTE-column set (for save/restore around re-entrant
+/// `render_plan_to_sql` calls so a nested sub-plan doesn't clobber the parent's).
+pub fn get_array_cte_columns() -> std::collections::HashSet<String> {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().array_cte_columns.clone())
+        .unwrap_or_default()
 }
 
 /// Get the current variable registry (for property resolution during SQL rendering)

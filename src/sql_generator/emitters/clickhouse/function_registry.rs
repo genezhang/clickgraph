@@ -221,6 +221,12 @@ lazy_static::lazy_static! {
         m.insert("size", FunctionMapping {
             neo4j_name: "size",
             clickhouse_name: "length",
+            // CH `length` is overloaded for arrays AND strings, but Spark splits
+            // them: `length` is string/binary-only (rejects arrays) and `size`
+            // is collection-only (rejects strings). The static name therefore
+            // can't be right for both — `length` is the string-safe default and
+            // the ScalarFnCall render site upgrades it to Spark `size` when the
+            // argument is a detected collection (see `databricks_size_name`).
             databricks_name: None,
             arg_transform: None,
         });

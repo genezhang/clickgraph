@@ -2804,6 +2804,50 @@ mod tests {
         );
     }
 
+    /// `emit_array_count_in_subquery` defaults to ClickHouse's native
+    /// `arrayCount(x -> <lhs> IN (subq), arr)` outside a task-local scope.
+    #[test]
+    fn emit_array_count_in_subquery_defaults_to_clickhouse() {
+        let sql = emit_array_count_in_subquery("x", "SELECT id FROM t", "vp.path_nodes");
+        assert_eq!(
+            sql,
+            "arrayCount(x -> x IN (SELECT id FROM t), vp.path_nodes)"
+        );
+    }
+
+    /// Databricks/Spark forbids subqueries inside HOF lambdas, so the IN-subquery
+    /// array count explodes the array in a scalar subquery and tests membership in
+    /// a plain WHERE — duplicate-preserving, matching `arrayCount` semantics.
+    #[tokio::test]
+    async fn emit_array_count_in_subquery_databricks_uses_explode_scalar() {
+        use crate::server::query_context::{with_query_context, QueryContext};
+        use crate::sql_generator::SqlDialect;
+
+        let ctx = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        // Simple non-correlated membership (LDBC Q10 shape).
+        let sql = with_query_context(ctx.clone(), async {
+            emit_array_count_in_subquery("x", "SELECT id FROM t", "p.posts")
+        })
+        .await;
+        assert_eq!(
+            sql,
+            "(SELECT count(*) FROM (SELECT explode(p.posts) AS x) WHERE x IN (SELECT id FROM t))"
+        );
+
+        // Correlated tuple membership (the tuple-fallback path).
+        let tuple = with_query_context(ctx, async {
+            emit_array_count_in_subquery("(x, friend.pid)", "SELECT id, gid FROM t", "p.posts")
+        })
+        .await;
+        assert_eq!(
+            tuple,
+            "(SELECT count(*) FROM (SELECT explode(p.posts) AS x) WHERE (x, friend.pid) IN (SELECT id, gid FROM t))"
+        );
+    }
+
     /// Regression test: build_cte_column_map must use real column names from expressions,
     /// not CTE alias names like p1_a_user_id. When the FROM is a base table (e.g., social.users),
     /// correlated subqueries must reference `a.user_id`, not `a.p1_a_user_id`.
@@ -16399,7 +16443,7 @@ fn generate_list_comp_array_count(
         where_str
     );
 
-    let result = emit_array_count_call("x", &format!("x IN ({})", inner_select), &list_col);
+    let result = emit_array_count_in_subquery("x", &inner_select, &list_col);
 
     log::info!(
         "🔧 array-count expression: {}",
@@ -16423,6 +16467,31 @@ fn emit_array_count_call(lambda_var: &str, predicate: &str, array: &str) -> Stri
         }
         _ => format!(
             "{}({lambda_var} -> {predicate}, {array})",
+            current_function_mapper().array_count()
+        ),
+    }
+}
+
+/// Count array elements whose membership is tested by an `IN (subquery)`
+/// predicate (the list-comprehension-with-pattern idiom, e.g. LDBC Q10's
+/// `size([p IN posts WHERE (p)-[:HAS_TAG]->()<-[:HAS_INTEREST]-(person)])`).
+///
+/// ClickHouse keeps the native `arrayCount(x -> <lhs> IN (subq), arr)` — CH
+/// allows subqueries inside lambdas. Spark/Databricks forbids ANY subquery
+/// inside a higher-order-function lambda (`UNSUPPORTED_SUBQUERY_EXPRESSION_
+/// CATEGORY.HIGHER_ORDER_FUNCTION`), so neither `size(filter(arr, x -> x IN
+/// (subq)))` nor an `array_contains` over a CTE-bound set works. Instead explode
+/// the array in a scalar subquery and move the membership test to a plain WHERE:
+/// `(SELECT count(*) FROM (SELECT explode(arr) AS x) WHERE <lhs> IN (subq))`.
+/// This is duplicate-preserving — matching `arrayCount` semantics exactly (unlike
+/// `array_intersect`, which would dedupe) — and supports a correlated tuple `lhs`.
+fn emit_array_count_in_subquery(membership_lhs: &str, inner_select: &str, array: &str) -> String {
+    match crate::server::query_context::get_current_dialect() {
+        crate::sql_generator::SqlDialect::Databricks => format!(
+            "(SELECT count(*) FROM (SELECT explode({array}) AS x) WHERE {membership_lhs} IN ({inner_select}))"
+        ),
+        _ => format!(
+            "{}(x -> {membership_lhs} IN ({inner_select}), {array})",
             current_function_mapper().array_count()
         ),
     }
@@ -16470,11 +16539,7 @@ fn generate_list_comp_array_count_tuple_fallback(
         where_str
     );
 
-    let result = emit_array_count_call(
-        "x",
-        &format!("{} IN ({})", lambda_tuple, inner_select),
-        list_col,
-    );
+    let result = emit_array_count_in_subquery(&lambda_tuple, &inner_select, list_col);
 
     log::info!(
         "🔧 array-count tuple fallback: {}",
