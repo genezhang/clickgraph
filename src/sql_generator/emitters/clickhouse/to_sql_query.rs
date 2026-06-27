@@ -501,6 +501,302 @@ fn render_constant_in_list(op: &OperatorApplication, rendered: &[String]) -> Opt
     None
 }
 
+/// Spark/Databricks (unlike ClickHouse) does not allow a WHERE clause to
+/// reference a SELECT-list alias defined in the same query: the bare name is
+/// resolved against the FROM tables only, so it is either unresolved or — when
+/// more than one joined table carries that column — an AMBIGUOUS_REFERENCE
+/// error. LDBC interactive Q10 hits this: `WITH person, city, friend,
+/// datetime({epochMillis: friend.birthday}) AS birthday WHERE birthday.month=...`
+/// renders to a CTE projecting `friend.birthday AS birthday` whose WHERE reads
+/// `month(timestamp_millis(birthday))`, and both `friend` and `person` (Person
+/// self-join) expose a `birthday` column.
+///
+/// Inline each WHERE reference to a same-scope SELECT alias with that alias's
+/// source expression, restoring ClickHouse/Neo4j semantics (the post-WITH WHERE
+/// filters the projected value). Databricks-only — ClickHouse keeps
+/// alias-in-WHERE and stays byte-identical (golden snapshots).
+fn inline_where_alias_refs_for_spark(plan: &mut RenderPlan) {
+    use crate::server::query_context::get_current_dialect;
+    use crate::sql_generator::SqlDialect;
+    if !matches!(get_current_dialect(), SqlDialect::Databricks) {
+        return;
+    }
+    inline_where_alias_refs_recursive(plan);
+}
+
+/// Recursively inline WHERE alias references using THIS scope's primary SELECT
+/// projection (`plan.select`).
+///
+/// The primary map is applied to the primary filter and, for a UNION, to each
+/// branch filter — because at emit a branch's own SELECT may be a nested
+/// whole-node expansion whose bare columns spuriously collide (an undirected
+/// internal union's reverse arm carries a bare `person.birthday` that shadows
+/// the WITH variable, while the projection that is actually emitted binds
+/// `friend.birthday`). Matching the ClickHouse binding requires the primary
+/// (shared) projection, not the branch's raw one.
+///
+/// To stay sound for *genuine* user `UNION`s — whose arms legitimately bind the
+/// same alias name to different, per-branch sources — a branch only receives the
+/// primary entries whose source expression references table aliases that are all
+/// present in that branch's own FROM/JOINs. So `birthday => friend.birthday` is
+/// inlined into the reverse arm (which joins `friend`), but `score => a.age`
+/// would be skipped for a UNION arm that selects from `m` only, never producing
+/// `WHERE a.age` against a table the branch lacks.
+fn inline_where_alias_refs_recursive(plan: &mut RenderPlan) {
+    // Build alias -> source-expression map from THIS scope's primary SELECT.
+    // Skip aggregate-bearing sources (an aggregate is illegal in WHERE; such a
+    // predicate belongs in HAVING, which we never touch).
+    let mut alias_map: HashMap<String, RenderExpr> = HashMap::new();
+    for item in &plan.select.items {
+        if let Some(ca) = &item.col_alias {
+            if source_contains_aggregate(&item.expression) {
+                continue;
+            }
+            alias_map.insert(ca.0.clone(), item.expression.clone());
+        }
+    }
+    if !alias_map.is_empty() {
+        if let Some(filter) = plan.filters.0.as_mut() {
+            substitute_alias_refs_in_expr(filter, &alias_map);
+        }
+        if let Some(union) = plan.union.0.as_mut() {
+            for branch in union.input.iter_mut() {
+                let branch_tables = collect_scope_table_aliases(branch);
+                let branch_map: HashMap<String, RenderExpr> = alias_map
+                    .iter()
+                    .filter(|(_, src)| match source_table_aliases(src) {
+                        // Only inline a source whose required tables are all
+                        // present in this branch. `None` means the source has a
+                        // node whose table refs can't be determined — fail
+                        // closed (do not inline) rather than risk emitting a
+                        // column against a table the branch lacks.
+                        Some(tables) => tables.is_subset(&branch_tables),
+                        None => false,
+                    })
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                if !branch_map.is_empty() {
+                    if let Some(filter) = branch.filters.0.as_mut() {
+                        substitute_alias_refs_in_expr(filter, &branch_map);
+                    }
+                }
+            }
+        }
+    }
+    for cte in plan.ctes.0.iter_mut() {
+        if let CteContent::Structured(cte_plan) = &mut cte.content {
+            inline_where_alias_refs_recursive(cte_plan);
+        }
+    }
+}
+
+/// Table aliases available in a scope: its FROM table plus every JOINed table.
+fn collect_scope_table_aliases(plan: &RenderPlan) -> HashSet<String> {
+    let mut aliases = HashSet::new();
+    if let Some(from) = plan.from.0.as_ref() {
+        if let Some(alias) = from.alias.as_ref() {
+            aliases.insert(alias.clone());
+        }
+    }
+    for join in &plan.joins.0 {
+        aliases.insert(join.table_alias.clone());
+    }
+    aliases
+}
+
+/// The set of table aliases a SELECT-source expression references, or `None`
+/// when the expression contains a node whose table references cannot be fully
+/// determined (so it is unsafe to inline into a foreign UNION branch).
+///
+/// Because `substitute_alias_refs_in_expr` injects the source WHOLESALE into a
+/// branch filter, the guard must know EVERY table the source needs; an
+/// incomplete count could wrongly pass the subset check. So this is fail-closed:
+/// it fully walks every compound variant that can nest column references
+/// (functions, operators, `Case`, `List`, `MapLiteral`, array subscript/slice),
+/// records each `PropertyAccessExp`/qualified `Column` table, treats
+/// `Literal`/`Parameter`/`Star` as table-free, and returns `None` for anything
+/// whose tables cannot be proven — bare unqualified columns, alias refs, `Raw`
+/// SQL, sub-queries, `ReduceExpr`, `PatternCount`, `CteEntityRef`. `None` → the
+/// caller skips inlining. Over-skipping only leaves a rare Spark alias-in-WHERE
+/// unfixed; it never emits wrong SQL.
+fn source_table_aliases(expr: &RenderExpr) -> Option<HashSet<String>> {
+    let mut out = HashSet::new();
+    if collect_source_table_aliases(expr, &mut out) {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+/// Returns false if an opaque/undeterminable node was encountered.
+fn collect_source_table_aliases(expr: &RenderExpr, out: &mut HashSet<String>) -> bool {
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => {
+            out.insert(pa.table_alias.0.clone());
+            true
+        }
+        // A `Column` carries its raw text; a qualified `alias.col` determines its
+        // table (the qualifier), an unqualified bare column does not → fail closed.
+        RenderExpr::Column(col) => match col.raw().split_once('.') {
+            Some((table, _)) => {
+                out.insert(table.to_string());
+                true
+            }
+            None => false,
+        },
+        RenderExpr::Literal(_) | RenderExpr::Parameter(_) | RenderExpr::Star => true,
+        RenderExpr::OperatorApplicationExp(op) => op
+            .operands
+            .iter()
+            .all(|o| collect_source_table_aliases(o, out)),
+        RenderExpr::ScalarFnCall(f) => f.args.iter().all(|a| collect_source_table_aliases(a, out)),
+        RenderExpr::AggregateFnCall(a) => {
+            a.args.iter().all(|x| collect_source_table_aliases(x, out))
+        }
+        RenderExpr::Case(c) => {
+            c.expr
+                .as_deref()
+                .is_none_or(|e| collect_source_table_aliases(e, out))
+                && c.when_then.iter().all(|(w, t)| {
+                    collect_source_table_aliases(w, out) && collect_source_table_aliases(t, out)
+                })
+                && c.else_expr
+                    .as_deref()
+                    .is_none_or(|e| collect_source_table_aliases(e, out))
+        }
+        RenderExpr::List(items) => items.iter().all(|i| collect_source_table_aliases(i, out)),
+        RenderExpr::ArraySubscript { array, index } => {
+            collect_source_table_aliases(array, out) && collect_source_table_aliases(index, out)
+        }
+        RenderExpr::MapLiteral(entries) => entries
+            .iter()
+            .all(|(_, v)| collect_source_table_aliases(v, out)),
+        RenderExpr::ArraySlicing { array, from, to } => {
+            collect_source_table_aliases(array, out)
+                && from
+                    .as_deref()
+                    .is_none_or(|e| collect_source_table_aliases(e, out))
+                && to
+                    .as_deref()
+                    .is_none_or(|e| collect_source_table_aliases(e, out))
+        }
+        // Bare column/alias refs and every variant we cannot fully introspect:
+        // table set is undeterminable → fail closed.
+        _ => false,
+    }
+}
+
+/// Aggregate detection for SELECT-source expressions, covering every nesting
+/// variant the inline pass can carry (including `MapLiteral`/`ArraySlicing` that
+/// the shared `render_expr_contains_aggregate` does not). Used to keep an
+/// aggregate-bearing source out of the alias map entirely — an aggregate is
+/// illegal in WHERE, so it must never be inlined there.
+fn source_contains_aggregate(expr: &RenderExpr) -> bool {
+    match expr {
+        RenderExpr::AggregateFnCall(_) => true,
+        RenderExpr::ScalarFnCall(f) => f.args.iter().any(source_contains_aggregate),
+        RenderExpr::OperatorApplicationExp(op) => op.operands.iter().any(source_contains_aggregate),
+        RenderExpr::Case(c) => {
+            c.expr.as_deref().is_some_and(source_contains_aggregate)
+                || c.when_then
+                    .iter()
+                    .any(|(w, t)| source_contains_aggregate(w) || source_contains_aggregate(t))
+                || c.else_expr
+                    .as_deref()
+                    .is_some_and(source_contains_aggregate)
+        }
+        RenderExpr::List(items) => items.iter().any(source_contains_aggregate),
+        RenderExpr::MapLiteral(entries) => {
+            entries.iter().any(|(_, v)| source_contains_aggregate(v))
+        }
+        RenderExpr::ArraySubscript { array, index } => {
+            source_contains_aggregate(array) || source_contains_aggregate(index)
+        }
+        RenderExpr::ArraySlicing { array, from, to } => {
+            source_contains_aggregate(array)
+                || from.as_deref().is_some_and(source_contains_aggregate)
+                || to.as_deref().is_some_and(source_contains_aggregate)
+        }
+        _ => false,
+    }
+}
+
+/// Replace, in place, any leaf that names a SELECT alias (`ColumnAlias`,
+/// `TableAlias`, or a bare `Column`) with that alias's source expression, walking
+/// the same compound variants as `collect_bare_aliases_from_expr` in
+/// plan_optimizer. `RenderExpr::Raw` is deliberately NOT handled: blindly
+/// string-substituting an alias name inside opaque raw SQL is unsafe (it could
+/// hit a substring or a quoted literal), so a raw predicate referencing an alias
+/// is left as-is.
+fn substitute_alias_refs_in_expr(expr: &mut RenderExpr, alias_map: &HashMap<String, RenderExpr>) {
+    match expr {
+        RenderExpr::ColumnAlias(ca) => {
+            if let Some(src) = alias_map.get(&ca.0) {
+                *expr = src.clone();
+            }
+        }
+        RenderExpr::TableAlias(ta) => {
+            if let Some(src) = alias_map.get(&ta.0) {
+                *expr = src.clone();
+            }
+        }
+        RenderExpr::Column(col) => {
+            if let Some(src) = alias_map.get(col.raw()) {
+                *expr = src.clone();
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in op.operands.iter_mut() {
+                substitute_alias_refs_in_expr(operand, alias_map);
+            }
+        }
+        RenderExpr::ScalarFnCall(func) => {
+            for arg in func.args.iter_mut() {
+                substitute_alias_refs_in_expr(arg, alias_map);
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in agg.args.iter_mut() {
+                substitute_alias_refs_in_expr(arg, alias_map);
+            }
+        }
+        RenderExpr::Case(case) => {
+            if let Some(e) = case.expr.as_mut() {
+                substitute_alias_refs_in_expr(e, alias_map);
+            }
+            for (when, then) in case.when_then.iter_mut() {
+                substitute_alias_refs_in_expr(when, alias_map);
+                substitute_alias_refs_in_expr(then, alias_map);
+            }
+            if let Some(e) = case.else_expr.as_mut() {
+                substitute_alias_refs_in_expr(e, alias_map);
+            }
+        }
+        RenderExpr::List(items) => {
+            for item in items.iter_mut() {
+                substitute_alias_refs_in_expr(item, alias_map);
+            }
+        }
+        RenderExpr::ArraySubscript { array, index } => {
+            substitute_alias_refs_in_expr(array, alias_map);
+            substitute_alias_refs_in_expr(index, alias_map);
+        }
+        RenderExpr::ArraySlicing { array, from, to } => {
+            substitute_alias_refs_in_expr(array, alias_map);
+            if let Some(f) = from.as_mut() {
+                substitute_alias_refs_in_expr(f, alias_map);
+            }
+            if let Some(t) = to.as_mut() {
+                substitute_alias_refs_in_expr(t, alias_map);
+            }
+        }
+        RenderExpr::InSubquery(subq) => {
+            substitute_alias_refs_in_expr(&mut subq.expr, alias_map);
+        }
+        _ => {}
+    }
+}
+
 /// Render the SKIP/LIMIT clause, dialect-aware (no trailing newline; empty when
 /// neither is set). ClickHouse uses the MySQL-style `LIMIT offset, count` and
 /// requires a count when offsetting (so SKIP-only emits a huge upper bound);
@@ -3383,6 +3679,13 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
         }
     }
 
+    // Spark/Databricks: inline WHERE references to same-scope SELECT aliases.
+    // Runs LAST — after every VLP/undirected/disambiguation rewrite — so each
+    // scope's SELECT projection is final and its alias map reflects exactly what
+    // the branch will emit (the reverse undirected arm now binds `friend`, not a
+    // stale whole-node `person`). ClickHouse path is untouched (gated).
+    inline_where_alias_refs_for_spark(&mut plan);
+
     let mut sql = String::new();
 
     // If there's a Union, wrap it in a subquery for correct ClickHouse behavior.
@@ -5893,6 +6196,265 @@ mod tests {
     fn test_map_literal_empty() {
         let map_expr = RenderExpr::MapLiteral(vec![]);
         assert_eq!(map_expr.to_sql(), "map()");
+    }
+
+    // ---- WHERE alias inlining for Spark/Databricks (LDBC Q10) ----
+
+    use crate::graph_catalog::expression_parser::PropertyValue;
+    use crate::render_plan::render_expr::{PropertyAccess, ScalarFnCall, TableAlias};
+    use crate::render_plan::{
+        ArrayJoinItem, CteItems, GroupByExpressions, Join, JoinItems, JoinType, LimitItem,
+        OrderByItems, SkipItem, Union, UnionType,
+    };
+
+    /// A branch that joins one table under `table_alias`, with the given WHERE.
+    fn branch_joining(table_alias: &str, filter: RenderExpr) -> RenderPlan {
+        let mut b = empty_plan();
+        b.joins = JoinItems(vec![Join {
+            table_name: "ldbc.Person".to_string(),
+            table_alias: table_alias.to_string(),
+            joining_on: vec![],
+            join_type: JoinType::Inner,
+            pre_filter: None,
+            from_id_column: None,
+            to_id_column: None,
+            graph_rel: None,
+        }]);
+        b.filters = FilterItems(Some(filter));
+        b
+    }
+
+    fn empty_plan() -> RenderPlan {
+        RenderPlan {
+            ctes: CteItems(vec![]),
+            select: SelectItems {
+                items: vec![],
+                distinct: false,
+            },
+            from: FromTableItem(None),
+            joins: JoinItems(vec![]),
+            array_join: ArrayJoinItem(vec![]),
+            filters: FilterItems(None),
+            group_by: GroupByExpressions(vec![]),
+            having_clause: None,
+            order_by: OrderByItems(vec![]),
+            skip: SkipItem(None),
+            limit: LimitItem(None),
+            union: UnionItems(None),
+            fixed_path_info: None,
+            is_multi_label_scan: false,
+            variable_registry: None,
+        }
+    }
+
+    fn friend_birthday() -> RenderExpr {
+        RenderExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: TableAlias("friend".to_string()),
+            column: PropertyValue::Column("birthday".to_string()),
+        })
+    }
+
+    /// `month(birthday)` where `birthday` is a bare alias reference (TableAlias).
+    fn month_of_birthday_alias() -> RenderExpr {
+        RenderExpr::ScalarFnCall(ScalarFnCall {
+            name: "month".to_string(),
+            args: vec![RenderExpr::TableAlias(TableAlias("birthday".to_string()))],
+        })
+    }
+
+    #[test]
+    fn substitute_alias_refs_replaces_bare_alias_with_source() {
+        let mut expr = month_of_birthday_alias();
+        let mut map = HashMap::new();
+        map.insert("birthday".to_string(), friend_birthday());
+        substitute_alias_refs_in_expr(&mut expr, &map);
+        // The bare alias is replaced by its qualified source (`friend.birthday`);
+        // the surrounding function rendering is left to the registry.
+        let sql = expr.to_sql();
+        assert!(sql.contains("friend.birthday"), "got: {sql}");
+    }
+
+    #[test]
+    fn substitute_alias_refs_leaves_unmapped_refs_untouched() {
+        let mut expr = month_of_birthday_alias();
+        let map = HashMap::new(); // empty: nothing to inline
+        substitute_alias_refs_in_expr(&mut expr, &map);
+        // Bare alias is preserved when there is no source to inline.
+        let sql = expr.to_sql();
+        assert!(!sql.contains("friend.birthday"), "got: {sql}");
+        assert!(sql.contains("birthday"), "got: {sql}");
+    }
+
+    fn primary_birthday_select() -> SelectItems {
+        SelectItems {
+            items: vec![SelectItem {
+                expression: friend_birthday(),
+                col_alias: Some(ColumnAlias("birthday".to_string())),
+            }],
+            distinct: false,
+        }
+    }
+
+    /// Regression for LDBC Q10: an undirected internal UNION whose reverse arm
+    /// joins `friend` and carries a colliding bare `birthday` column. The primary
+    /// `birthday => friend.birthday` binding is inlined into BOTH the primary
+    /// filter and the branch filter (the branch joins `friend`, so the guard
+    /// permits it), giving `month(friend.birthday)` in each arm — no ambiguous
+    /// bare reference, both arms consistent.
+    #[test]
+    fn inline_where_alias_refs_inlines_into_branch_that_has_source_table() {
+        let branch = branch_joining("friend", month_of_birthday_alias());
+
+        let mut plan = empty_plan();
+        plan.select = primary_birthday_select();
+        plan.filters = FilterItems(Some(month_of_birthday_alias()));
+        plan.union = UnionItems(Some(Union {
+            input: vec![branch],
+            union_type: UnionType::All,
+        }));
+
+        inline_where_alias_refs_recursive(&mut plan);
+
+        let primary_sql = plan.filters.0.unwrap().to_sql();
+        assert!(
+            primary_sql.contains("friend.birthday"),
+            "got: {primary_sql}"
+        );
+        let branch_sql = plan.union.0.unwrap().input[0]
+            .filters
+            .0
+            .clone()
+            .unwrap()
+            .to_sql();
+        assert!(branch_sql.contains("friend.birthday"), "got: {branch_sql}");
+    }
+
+    /// Soundness guard for genuine user UNIONs: a branch whose FROM/JOINs do NOT
+    /// contain the primary source's table must NOT receive the inline (it would
+    /// emit `WHERE friend.birthday` against a table the branch lacks). The branch
+    /// filter is left untouched.
+    #[test]
+    fn inline_where_alias_refs_skips_branch_missing_source_table() {
+        // Branch joins `movie`, not `friend`; primary source is `friend.birthday`.
+        let branch = branch_joining("movie", month_of_birthday_alias());
+
+        let mut plan = empty_plan();
+        plan.select = primary_birthday_select();
+        plan.union = UnionItems(Some(Union {
+            input: vec![branch],
+            union_type: UnionType::All,
+        }));
+
+        inline_where_alias_refs_recursive(&mut plan);
+
+        let branch_sql = plan.union.0.unwrap().input[0]
+            .filters
+            .0
+            .clone()
+            .unwrap()
+            .to_sql();
+        // Guard skipped: no `friend.birthday` leaked into the foreign branch.
+        assert!(!branch_sql.contains("friend.birthday"), "got: {branch_sql}");
+        assert!(branch_sql.contains("birthday"), "got: {branch_sql}");
+    }
+
+    /// `datetime({epochMillis: friend.birthday})` — the actual Q10 source shape.
+    fn datetime_of_friend_birthday() -> RenderExpr {
+        RenderExpr::ScalarFnCall(ScalarFnCall {
+            name: "datetime".to_string(),
+            args: vec![RenderExpr::MapLiteral(vec![(
+                "epochMillis".to_string(),
+                friend_birthday(),
+            )])],
+        })
+    }
+
+    /// The guard must see through `MapLiteral` (Q10's source buries
+    /// `friend.birthday` inside `datetime({epochMillis: ...})`). Under-counting
+    /// here would either skip the legit inline or, worse, pass a foreign branch.
+    #[test]
+    fn source_table_aliases_sees_through_map_literal() {
+        assert_eq!(
+            source_table_aliases(&datetime_of_friend_birthday()),
+            Some(HashSet::from(["friend".to_string()]))
+        );
+    }
+
+    /// Determinable, table-free sources are a subset of every branch.
+    #[test]
+    fn source_table_aliases_literal_is_empty_set() {
+        let lit = RenderExpr::Literal(Literal::Integer(1));
+        assert_eq!(source_table_aliases(&lit), Some(HashSet::new()));
+    }
+
+    /// Fail-closed: a source with an undeterminable node (`Raw`, bare unqualified
+    /// `Column`) returns `None` so it is never inlined into a foreign branch.
+    #[test]
+    fn source_table_aliases_fails_closed_on_opaque() {
+        assert_eq!(
+            source_table_aliases(&RenderExpr::Raw("anything(x)".to_string())),
+            None
+        );
+        let bare = RenderExpr::Column(crate::render_plan::render_expr::Column(
+            PropertyValue::Column("birthday".to_string()),
+        ));
+        assert_eq!(source_table_aliases(&bare), None);
+    }
+
+    /// A qualified bare column resolves to its qualifier table.
+    #[test]
+    fn source_table_aliases_qualified_column_yields_table() {
+        let qualified = RenderExpr::Column(crate::render_plan::render_expr::Column(
+            PropertyValue::Column("friend.birthday".to_string()),
+        ));
+        assert_eq!(
+            source_table_aliases(&qualified),
+            Some(HashSet::from(["friend".to_string()]))
+        );
+    }
+
+    /// An aggregate buried in a `MapLiteral` must keep the source out of the
+    /// alias map — `render_expr_contains_aggregate` misses it, `source_contains_
+    /// aggregate` does not.
+    #[test]
+    fn source_contains_aggregate_sees_through_map_literal() {
+        let agg_in_map = RenderExpr::MapLiteral(vec![(
+            "n".to_string(),
+            RenderExpr::AggregateFnCall(AggregateFnCall {
+                name: "count".to_string(),
+                args: vec![RenderExpr::Star],
+            }),
+        )]);
+        assert!(source_contains_aggregate(&agg_in_map));
+        assert!(!source_contains_aggregate(&friend_birthday()));
+    }
+
+    /// End-to-end: Q10's real source shape inlines into a `friend`-joining arm.
+    #[test]
+    fn inline_where_alias_refs_inlines_map_literal_source_into_branch() {
+        let branch = branch_joining("friend", month_of_birthday_alias());
+        let mut plan = empty_plan();
+        plan.select = SelectItems {
+            items: vec![SelectItem {
+                expression: datetime_of_friend_birthday(),
+                col_alias: Some(ColumnAlias("birthday".to_string())),
+            }],
+            distinct: false,
+        };
+        plan.union = UnionItems(Some(Union {
+            input: vec![branch],
+            union_type: UnionType::All,
+        }));
+
+        inline_where_alias_refs_recursive(&mut plan);
+
+        let branch_sql = plan.union.0.unwrap().input[0]
+            .filters
+            .0
+            .clone()
+            .unwrap()
+            .to_sql();
+        assert!(branch_sql.contains("friend.birthday"), "got: {branch_sql}");
     }
 
     /// Test: collect(x) + collect(y) → arrayConcat(groupArray(x), groupArray(y))
