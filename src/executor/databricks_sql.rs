@@ -715,6 +715,11 @@ struct ColumnInfo {
     /// DBR, DDL) — `None` then means "leave the value as the API sent it".
     #[serde(default)]
     type_name: Option<String>,
+    /// Full SQL type text, e.g. `ARRAY<STRING>`, `DECIMAL(10,2)`. `type_name`
+    /// collapses arrays to the bare enum `ARRAY`, so this is the only place the
+    /// element type is available for un-stringing complex columns.
+    #[serde(default)]
+    type_text: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -868,11 +873,17 @@ fn rows_from_data(
     // (name, type_name) per column. The type drives scalar coercion below so
     // the rows match ClickHouse's native-typed JSONEachRow output instead of
     // the all-strings shape the JSON_ARRAY API delivers.
-    let columns: Vec<(&str, Option<&str>)> = manifest
+    let columns: Vec<(&str, Option<&str>, Option<&str>)> = manifest
         .schema
         .columns
         .iter()
-        .map(|c| (c.name.as_str(), c.type_name.as_deref()))
+        .map(|c| {
+            (
+                c.name.as_str(),
+                c.type_name.as_deref(),
+                c.type_text.as_deref(),
+            )
+        })
         .collect();
 
     let mut out = Vec::with_capacity(data.len());
@@ -885,8 +896,12 @@ fn rows_from_data(
             )));
         }
         let mut obj = Map::with_capacity(columns.len());
-        for ((col, type_name), val) in columns.iter().zip(row.iter()) {
+        for ((col, type_name, type_text), val) in columns.iter().zip(row.iter()) {
             let coerced = match type_name {
+                // ARRAY columns arrive as a JSON-encoded string whose inner
+                // scalars are themselves strings; un-string them recursively so
+                // the HTTP/Bolt result matches ClickHouse's native array shape.
+                Some("ARRAY") => coerce_array(val.clone(), *type_text),
                 Some(t) => coerce_scalar(val.clone(), t),
                 None => val.clone(),
             };
@@ -913,10 +928,9 @@ fn rows_from_data(
 /// - `STRING`/`CHAR`/`BINARY`/`DATE`/`TIMESTAMP`/`INTERVAL` stay strings — that
 ///   matches ClickHouse, and the entity `_properties` columns are `to_json(...)`
 ///   STRINGs that must remain JSON text.
-/// - Complex `ARRAY`/`STRUCT`/`MAP` values arrive as JSON-encoded strings whose
-///   inner scalars are themselves strings; faithfully un-stringing them needs
-///   element-typed recursion, so they're left as-is here and tracked as a
-///   follow-up. A scalar fix covers the dominant property-projection case.
+/// - `ARRAY` columns are handled by [`coerce_array`] (element-typed recursion).
+///   `STRUCT`/`MAP` values still arrive as JSON-encoded strings and are left
+///   as-is — tracked as a follow-up.
 /// - A parse failure falls back to the original string rather than dropping the
 ///   value, so a surprising payload degrades to "uncoerced" rather than lossy.
 fn coerce_scalar(value: Value, type_name: &str) -> Value {
@@ -939,6 +953,78 @@ fn coerce_scalar(value: Value, type_name: &str) -> Value {
         _ => None,
     };
     coerced.unwrap_or(value)
+}
+
+/// Restore a native JSON array from an `ARRAY` column. The Statement Execution
+/// API delivers the whole array as one JSON-encoded string (e.g.
+/// `"[\"a\",\"b\"]"`) whose inner scalars are themselves strings. Parse it and
+/// coerce each leaf by the element type from `type_text` (e.g. `ARRAY<INT>`), so
+/// the result matches ClickHouse's native `["a","b"]` / `[1,2]` shape. Nested
+/// `ARRAY<ARRAY<…>>` recurses. A parse failure returns the original value.
+fn coerce_array(value: Value, type_text: Option<&str>) -> Value {
+    let s = match &value {
+        Value::String(s) => s,
+        _ => return value,
+    };
+    match serde_json::from_str::<Value>(s) {
+        Ok(parsed) => coerce_by_type(parsed, type_text.unwrap_or("ARRAY<STRING>")),
+        Err(_) => value,
+    }
+}
+
+/// Walk an already-parsed JSON value, coercing string leaves per `sql_type`
+/// (the `type_text` for this level). Arrays recurse into their element type.
+fn coerce_by_type(value: Value, sql_type: &str) -> Value {
+    match value {
+        Value::Array(items) => {
+            let inner = array_element_type(sql_type).unwrap_or("STRING");
+            Value::Array(
+                items
+                    .into_iter()
+                    .map(|it| coerce_by_type(it, inner))
+                    .collect(),
+            )
+        }
+        Value::String(s) => {
+            // Map SQL type names (type_text) onto the enum names coerce_scalar
+            // keys on, then reuse it for the leaf scalar.
+            let base = sql_type
+                .split('(')
+                .next()
+                .unwrap_or(sql_type)
+                .trim()
+                .to_ascii_uppercase();
+            let enum_name = match base.as_str() {
+                "TINYINT" => "BYTE",
+                "SMALLINT" => "SHORT",
+                "INTEGER" => "INT",
+                "BIGINT" => "LONG",
+                "REAL" => "FLOAT",
+                "NUMERIC" => "DECIMAL",
+                other => other,
+            };
+            coerce_scalar(Value::String(s), enum_name)
+        }
+        other => other,
+    }
+}
+
+/// Extract the element type from an `ARRAY<…>` type text (case-insensitive):
+/// `ARRAY<STRING>` -> `STRING`, `ARRAY<ARRAY<INT>>` -> `ARRAY<INT>`. Returns
+/// `None` for non-array types.
+fn array_element_type(type_text: &str) -> Option<&str> {
+    let t = type_text.trim();
+    // `str::get` (not byte indexing) so a non-ASCII manifest type_text degrades
+    // to None instead of panicking on a non-char-boundary slice.
+    if t.ends_with('>')
+        && t.len() > "ARRAY<>".len()
+        && t.get(.."ARRAY<".len())
+            .is_some_and(|p| p.eq_ignore_ascii_case("ARRAY<"))
+    {
+        Some(t["ARRAY<".len()..t.len() - 1].trim())
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -1741,5 +1827,67 @@ mod wiremock_tests {
             .await
             .expect("execute_json");
         assert!(rows.is_empty(), "no links → empty rows");
+    }
+
+    #[test]
+    fn coerce_array_of_strings() {
+        // The dominant demo case: ARRAY<STRING> arrives as a JSON string.
+        let v = Value::String("[\"Furniture\",\"Books\"]".to_string());
+        assert_eq!(
+            coerce_array(v, Some("ARRAY<STRING>")),
+            json!(["Furniture", "Books"])
+        );
+    }
+
+    #[test]
+    fn coerce_array_of_ints_unstrings_elements() {
+        // Inner scalars come stringified; element type drives numeric coercion.
+        let v = Value::String("[\"10\",\"20\",\"30\"]".to_string());
+        assert_eq!(coerce_array(v, Some("ARRAY<INT>")), json!([10, 20, 30]));
+        // SQL spelling (BIGINT) maps onto the LONG coercion path too.
+        let v = Value::String("[\"1\",\"2\"]".to_string());
+        assert_eq!(coerce_array(v, Some("ARRAY<BIGINT>")), json!([1, 2]));
+    }
+
+    #[test]
+    fn coerce_array_nested_and_empty() {
+        let v = Value::String("[[\"1\",\"2\"],[\"3\"]]".to_string());
+        assert_eq!(
+            coerce_array(v, Some("ARRAY<ARRAY<INT>>")),
+            json!([[1, 2], [3]])
+        );
+        assert_eq!(
+            coerce_array(Value::String("[]".to_string()), Some("ARRAY<STRING>")),
+            json!([])
+        );
+    }
+
+    #[test]
+    fn coerce_array_missing_type_text_defaults_to_strings() {
+        // No type_text → treat elements as strings (parse to native array still).
+        let v = Value::String("[\"a\",\"b\"]".to_string());
+        assert_eq!(coerce_array(v, None), json!(["a", "b"]));
+    }
+
+    #[test]
+    fn coerce_array_malformed_falls_back_to_original() {
+        let v = Value::String("not json".to_string());
+        assert_eq!(
+            coerce_array(v, Some("ARRAY<STRING>")),
+            Value::String("not json".to_string())
+        );
+    }
+
+    #[test]
+    fn array_element_type_parsing() {
+        assert_eq!(array_element_type("ARRAY<STRING>"), Some("STRING"));
+        assert_eq!(array_element_type("array<int>"), Some("int"));
+        assert_eq!(array_element_type("ARRAY<ARRAY<INT>>"), Some("ARRAY<INT>"));
+        assert_eq!(array_element_type("STRING"), None);
+        assert_eq!(array_element_type("MAP<STRING,INT>"), None);
+        // Non-ASCII type_text must degrade to None, never panic on a byte slice
+        // that lands inside a multi-byte char (e.g. byte 6 inside 'é').
+        assert_eq!(array_element_type("ARRAYéxx"), None);
+        assert_eq!(array_element_type("«"), None);
     }
 }
