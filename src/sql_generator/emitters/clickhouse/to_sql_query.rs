@@ -4788,7 +4788,23 @@ impl ToSql for Cte {
                         cte_body.push_str(&plan.select.to_sql());
                     }
 
-                    cte_body.push_str(&plan.from.to_sql());
+                    // UNWIND-only CTE bodies (e.g. `UNWIND [1,2,3] AS x WITH x ...`)
+                    // have no real table; the array expansion needs a one-row base
+                    // relation, mirroring the main-query path. Dialect-specific:
+                    // CH `system.one`, Spark `(SELECT 1)`. (issue #401)
+                    let cte_from_sql = plan.from.to_sql();
+                    if cte_from_sql.is_empty() && !plan.array_join.0.is_empty() {
+                        match crate::server::query_context::get_current_dialect() {
+                            crate::sql_generator::SqlDialect::Databricks => {
+                                cte_body.push_str("FROM (SELECT 1) AS _unwind\n");
+                            }
+                            _ => {
+                                cte_body.push_str("FROM system.one\n");
+                            }
+                        }
+                    } else {
+                        cte_body.push_str(&cte_from_sql);
+                    }
                     cte_body.push_str(&plan.joins.to_sql());
                     cte_body.push_str(&plan.array_join.to_sql());
                     cte_body.push_str(&plan.filters.to_sql());
