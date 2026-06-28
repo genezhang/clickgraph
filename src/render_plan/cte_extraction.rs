@@ -4192,7 +4192,24 @@ pub fn extract_ctes_with_context(
                     .collect();
 
                 let union_branches = union_branches?;
-                let union_sql = union_branches.join("\nUNION ALL\n");
+                // Each branch carries a `LIMIT 1000` safety cap. Spark/Databricks
+                // forbids a bare per-branch LIMIT in a set operation
+                // (`SELECT … LIMIT n UNION ALL …` → parse error "Expected ), found
+                // UNION"); the branch must be parenthesized. ClickHouse accepts
+                // the bare form, so only wrap for Databricks to keep CH output
+                // byte-identical.
+                let union_sql = if matches!(
+                    crate::server::query_context::get_current_dialect(),
+                    crate::sql_generator::SqlDialect::Databricks
+                ) {
+                    union_branches
+                        .iter()
+                        .map(|b| format!("({b})"))
+                        .collect::<Vec<_>>()
+                        .join("\nUNION ALL\n")
+                } else {
+                    union_branches.join("\nUNION ALL\n")
+                };
 
                 // Create CTE name based on relationship alias
                 let cte_name = format!("pattern_union_{}", graph_rel.alias);
