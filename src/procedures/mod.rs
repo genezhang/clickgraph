@@ -117,6 +117,12 @@ impl ProcedureRegistry {
             "dbms.security.showCurrentUser",
             Arc::new(dbms_stubs::show_current_user),
         );
+        // The classic ("old") Neo4j Browser polls the pre-namespace name on
+        // connect; without it the classic Browser's sidebar never loads.
+        registry.register(
+            "dbms.showCurrentUser",
+            Arc::new(dbms_stubs::show_current_user),
+        );
         registry.register("dbms.procedures", Arc::new(dbms_stubs::list_procedures));
         registry.register("dbms.functions", Arc::new(dbms_stubs::list_functions));
         registry.register("dbms.info", Arc::new(dbms_stubs::info));
@@ -158,8 +164,8 @@ mod tests {
     #[test]
     fn test_registry_creation() {
         let registry = ProcedureRegistry::new();
-        // 16 procedures (6 core + 2 apoc + 5 dbms stubs + 3 Browser-compat probes)
-        assert_eq!(registry.names().len(), 16);
+        // 17 procedures (6 core + 2 apoc + 6 dbms stubs + 3 Browser-compat probes)
+        assert_eq!(registry.names().len(), 17);
 
         // Verify all expected procedures are registered
         assert!(registry.contains("db.labels"));
@@ -170,6 +176,7 @@ mod tests {
         assert!(registry.contains("db.schema.relTypeProperties"));
         assert!(registry.contains("dbms.clientConfig"));
         assert!(registry.contains("dbms.security.showCurrentUser"));
+        assert!(registry.contains("dbms.showCurrentUser"));
         assert!(registry.contains("dbms.procedures"));
         assert!(registry.contains("dbms.functions"));
         assert!(registry.contains("dbms.info"));
@@ -184,8 +191,8 @@ mod tests {
     fn test_registry_register_and_lookup() {
         let mut registry = ProcedureRegistry::new();
 
-        // Should already have 16 built-in procedures
-        assert_eq!(registry.names().len(), 16);
+        // Should already have 17 built-in procedures
+        assert_eq!(registry.names().len(), 17);
 
         // Register a dummy procedure
         let dummy_proc: ProcedureFn = Arc::new(|_schema| {
@@ -199,7 +206,7 @@ mod tests {
 
         assert!(registry.contains("test.procedure"));
         assert!(registry.get("test.procedure").is_some());
-        assert_eq!(registry.names().len(), 17); // 16 built-in + 1 test
+        assert_eq!(registry.names().len(), 18); // 17 built-in + 1 test
     }
 
     #[test]
