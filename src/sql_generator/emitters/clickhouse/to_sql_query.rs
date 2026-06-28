@@ -4207,12 +4207,20 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
     sql.push_str(&plan.ctes.to_sql());
     sql.push_str(&plan.select.to_sql_with_unwind_aliases(&unwind_aliases));
 
-    // Add FROM clause - use system.one for UNWIND-only queries (no actual table)
+    // Add FROM clause - UNWIND-only queries (no actual table) need a one-row
+    // base relation for the array-expansion to hang off. Dialect-specific:
+    //   CH:    `system.one` (single-row virtual table) + `ARRAY JOIN`
+    //   Spark: `(SELECT 1)` subquery (aliased) + `LATERAL VIEW explode`
     let from_sql = plan.from.to_sql();
     if from_sql.is_empty() && !plan.array_join.0.is_empty() {
-        // ARRAY JOIN requires a FROM clause in ClickHouse
-        // system.one is a virtual table with one row, perfect for UNWIND-only queries
-        sql.push_str("FROM system.one\n");
+        match crate::server::query_context::get_current_dialect() {
+            crate::sql_generator::SqlDialect::Databricks => {
+                sql.push_str("FROM (SELECT 1) AS _unwind\n");
+            }
+            _ => {
+                sql.push_str("FROM system.one\n");
+            }
+        }
     } else {
         sql.push_str(&from_sql);
     }
@@ -4437,13 +4445,26 @@ impl ToSql for ArrayJoinItem {
             return "".into();
         }
 
+        let databricks = matches!(
+            crate::server::query_context::get_current_dialect(),
+            crate::sql_generator::SqlDialect::Databricks
+        );
         let mut sql = String::new();
         for array_join in &self.0 {
-            sql.push_str(&format!(
-                "ARRAY JOIN {} AS {}\n",
-                array_join.expression.to_sql(),
-                array_join.alias
-            ));
+            if databricks {
+                // Spark has no ARRAY JOIN; UNWIND maps to LATERAL VIEW explode.
+                sql.push_str(&format!(
+                    "LATERAL VIEW explode({}) AS {}\n",
+                    array_join.expression.to_sql(),
+                    array_join.alias
+                ));
+            } else {
+                sql.push_str(&format!(
+                    "ARRAY JOIN {} AS {}\n",
+                    array_join.expression.to_sql(),
+                    array_join.alias
+                ));
+            }
         }
         sql
     }
