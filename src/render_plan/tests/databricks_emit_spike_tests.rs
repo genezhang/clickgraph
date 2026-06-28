@@ -433,6 +433,49 @@ async fn split_function_per_dialect() {
     );
 }
 
+/// UNWIND of a literal list lowers to array expansion. The base relation and
+/// expansion syntax are dialect-specific: CH `FROM system.one` + `ARRAY JOIN`,
+/// Spark `FROM (SELECT 1) AS _unwind` + `LATERAL VIEW explode` (Spark has
+/// neither `system.one` nor `ARRAY JOIN`).
+#[tokio::test]
+async fn unwind_literal_per_dialect() {
+    let cypher = "UNWIND [1, 2, 3, 4] AS x RETURN x, x * x AS sq ORDER BY x";
+
+    let ch = with_query_context(
+        QueryContext {
+            dialect: SqlDialect::ClickHouse,
+            ..QueryContext::default()
+        },
+        async { cypher_to_sql(cypher) },
+    )
+    .await;
+    assert!(
+        ch.contains("FROM system.one") && ch.contains("ARRAY JOIN"),
+        "CH UNWIND should use system.one + ARRAY JOIN; got:\n{ch}"
+    );
+
+    let dbx = with_query_context(
+        QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        },
+        async { cypher_to_sql(cypher) },
+    )
+    .await;
+    assert!(
+        dbx.contains("LATERAL VIEW explode("),
+        "Databricks UNWIND should use LATERAL VIEW explode; got:\n{dbx}"
+    );
+    assert!(
+        dbx.contains("FROM (SELECT 1)"),
+        "Databricks UNWIND-only needs a one-row subquery base; got:\n{dbx}"
+    );
+    assert!(
+        !dbx.contains("system.one") && !dbx.contains("ARRAY JOIN"),
+        "Databricks SQL leaked CH `system.one`/`ARRAY JOIN`; got:\n{dbx}"
+    );
+}
+
 /// Aggregation path — exercises `build_outer_aggregate_select` and the
 /// `extract_outer_aggregation_info` rewrite where ColumnAlias references
 /// in GROUP BY / aggregate args get quoted via `quote_alias`. The plain
