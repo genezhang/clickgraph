@@ -476,6 +476,46 @@ async fn unwind_literal_per_dialect() {
     );
 }
 
+/// Regression for issue #401: an UNWIND-only segment wrapped into a CTE (via a
+/// following WITH) must keep both its array expansion AND its one-row base
+/// relation inside the CTE body. Previously the CTE body dropped both, leaving
+/// the unwound variable undefined (`SELECT x ... WHERE x > 1` with no FROM/JOIN).
+#[tokio::test]
+async fn unwind_in_cte_per_dialect() {
+    let cypher = "UNWIND [1, 2, 3] AS x WITH x WHERE x > 1 RETURN x";
+
+    let ch = with_query_context(
+        QueryContext {
+            dialect: SqlDialect::ClickHouse,
+            ..QueryContext::default()
+        },
+        async { cypher_to_sql(cypher) },
+    )
+    .await;
+    // The CTE body must contain the base relation + ARRAY JOIN, not just `SELECT x`.
+    assert!(
+        ch.contains("FROM system.one") && ch.contains("ARRAY JOIN"),
+        "CH UNWIND-in-CTE body should keep system.one + ARRAY JOIN; got:\n{ch}"
+    );
+
+    let dbx = with_query_context(
+        QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        },
+        async { cypher_to_sql(cypher) },
+    )
+    .await;
+    assert!(
+        dbx.contains("FROM (SELECT 1)") && dbx.contains("LATERAL VIEW explode("),
+        "Databricks UNWIND-in-CTE body should keep one-row base + LATERAL VIEW explode; got:\n{dbx}"
+    );
+    assert!(
+        !dbx.contains("system.one") && !dbx.contains("ARRAY JOIN"),
+        "Databricks UNWIND-in-CTE leaked CH `system.one`/`ARRAY JOIN`; got:\n{dbx}"
+    );
+}
+
 /// `RETURN DISTINCT expr ORDER BY expr`: Spark resolves ORDER BY against the
 /// DISTINCT output, so the sort term must reference the projection's backtick
 /// alias, not the underlying `table.col`. ClickHouse keeps `table.col`.

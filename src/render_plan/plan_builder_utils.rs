@@ -8038,6 +8038,23 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     plan_to_render.to_render_plan_with_ctx(schema, plan_ctx, body_scope_ref)?
                 };
 
+                // When a WITH segment contains an UNWIND (e.g. `UNWIND [1,2,3] AS x
+                // WITH x ...`), the CTE-body render path above can drop the array
+                // expansion, leaving the unwound variable undefined in the CTE body.
+                // Re-extract the array joins from the segment and attach them so the
+                // CTE keeps its ARRAY JOIN / LATERAL VIEW. The empty FROM falls back
+                // to the dialect's one-row base at SQL-generation time, exactly like a
+                // non-CTE UNWIND. (issue #401)
+                if rendered.array_join.0.is_empty() {
+                    let array_joins =
+                        <LogicalPlan as super::join_builder::JoinBuilder>::extract_array_join(
+                            plan_to_render,
+                        )?;
+                    if !array_joins.is_empty() {
+                        rendered.array_join = ArrayJoinItem(array_joins);
+                    }
+                }
+
                 // CRITICAL: Extract CTE schemas from nested rendering
                 // When rendering nested WITHs, the recursive call builds CTEs that we need
                 // to reference. Extract their schemas and add to our cte_schemas map.
