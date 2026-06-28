@@ -492,6 +492,30 @@ fn encode_string_list(strings: &[String]) -> Vec<u8> {
     result
 }
 
+/// Encode a list of already-packstream-encoded items (e.g. Node or
+/// Relationship structures) into a packstream List value. Used to build the
+/// `nodes`/`relationships` columns of `db.schema.visualization()`.
+pub fn encode_packstream_list(items: &[Vec<u8>]) -> Vec<u8> {
+    let mut result = Vec::new();
+    let len = items.len();
+    if len < 16 {
+        result.push(0x90 | (len as u8));
+    } else if len <= 255 {
+        result.push(0xD4);
+        result.push(len as u8);
+    } else if len <= 65535 {
+        result.push(0xD5);
+        result.extend_from_slice(&(len as u16).to_be_bytes());
+    } else {
+        result.push(0xD6);
+        result.extend_from_slice(&(len as u32).to_be_bytes());
+    }
+    for item in items {
+        result.extend_from_slice(item);
+    }
+    result
+}
+
 /// Encode a properties map to packstream format
 fn encode_properties_map(properties: &HashMap<String, Value>) -> Vec<u8> {
     let mut result = Vec::new();
@@ -615,6 +639,20 @@ fn encode_json_value_into(value: &Value, result: &mut Vec<u8>, depth: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_encode_packstream_list() {
+        // Empty list -> tiny-list header 0x90, no items.
+        assert_eq!(encode_packstream_list(&[]), vec![0x90]);
+        // Two pre-encoded items -> 0x92 + item bytes concatenated in order.
+        let items = vec![vec![0x01u8], vec![0x02u8, 0x03u8]];
+        assert_eq!(encode_packstream_list(&items), vec![0x92, 0x01, 0x02, 0x03]);
+        // 16-element boundary crosses into LIST_8 (0xD4 + count).
+        let many: Vec<Vec<u8>> = (0..16).map(|_| vec![0x00u8]).collect();
+        let encoded = encode_packstream_list(&many);
+        assert_eq!(&encoded[0..2], &[0xD4, 16]);
+        assert_eq!(encoded.len(), 2 + 16);
+    }
 
     #[test]
     fn test_encode_integer_tiny() {

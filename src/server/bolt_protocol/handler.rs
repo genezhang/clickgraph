@@ -72,6 +72,78 @@ fn bolt_value_to_string(value: &BoltValue) -> String {
 /// the normal pipeline correctly. The bundled UNION ALL form crashes our SQL
 /// generator, so it gets intercepted in `handle_run`. Tolerant of whitespace and
 /// trailing semicolons; case-insensitive.
+/// Build the two RECORD fields (`nodes`, `relationships`) returned by
+/// `CALL db.schema.visualization()`: a virtual graph of the schema with one
+/// node per label and one relationship per (type, from-label, to-label). The
+/// node/relationship structures are packstream-encoded so Neo4j Browser renders
+/// them as a real graph and derives default per-label styling from them.
+fn build_schema_visualization_fields(
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+) -> Vec<BoltValue> {
+    use crate::server::bolt_protocol::graph_objects::{encode_packstream_list, Node, Relationship};
+    use std::collections::HashMap as StdHashMap;
+
+    // One virtual node per (deduped) base label.
+    let mut labels: Vec<String> = schema
+        .all_node_schemas()
+        .keys()
+        .map(|k| k.rsplit("::").next().unwrap_or(k).to_string())
+        .collect();
+    labels.sort();
+    labels.dedup();
+
+    let mut label_id: StdHashMap<String, i64> = StdHashMap::new();
+    let mut node_bytes: Vec<Vec<u8>> = Vec::with_capacity(labels.len());
+    for (i, label) in labels.iter().enumerate() {
+        let id = i as i64;
+        label_id.insert(label.clone(), id);
+        let mut props: StdHashMap<String, serde_json::Value> = StdHashMap::new();
+        // `name` drives the Browser's default caption for the schema node.
+        props.insert("name".to_string(), serde_json::Value::String(label.clone()));
+        let element_id = format!("schema-node-{i}");
+        node_bytes.push(Node::new(id, vec![label.clone()], props, element_id).to_packstream());
+    }
+
+    // One virtual relationship per distinct (type, from-label, to-label).
+    let mut rel_bytes: Vec<Vec<u8>> = Vec::new();
+    let mut seen: std::collections::HashSet<(String, String, String)> =
+        std::collections::HashSet::new();
+    for (key, rel) in schema.get_relationships_schemas().iter() {
+        let rel_type = key.split("::").next().unwrap_or(key);
+        if rel_type.is_empty() {
+            continue;
+        }
+        let from_label = rel.from_node.clone();
+        let to_label = rel.to_node.clone();
+        if !seen.insert((rel_type.to_string(), from_label.clone(), to_label.clone())) {
+            continue;
+        }
+        let (Some(&from_id), Some(&to_id)) = (label_id.get(&from_label), label_id.get(&to_label))
+        else {
+            continue;
+        };
+        let rid = rel_bytes.len() as i64;
+        rel_bytes.push(
+            Relationship::new(
+                rid,
+                from_id,
+                to_id,
+                rel_type.to_string(),
+                StdHashMap::new(),
+                format!("schema-rel-{rid}"),
+                format!("schema-node-{from_id}"),
+                format!("schema-node-{to_id}"),
+            )
+            .to_packstream(),
+        );
+    }
+
+    vec![
+        BoltValue::PackstreamBytes(encode_packstream_list(&node_bytes)),
+        BoltValue::PackstreamBytes(encode_packstream_list(&rel_bytes)),
+    ]
+}
+
 fn is_browser_count_union(query_upper: &str) -> bool {
     let normalized: String = query_upper.split_whitespace().collect::<Vec<_>>().join(" ");
     normalized.contains("MATCH (N) RETURN COUNT(N)")
@@ -1424,6 +1496,49 @@ impl BoltHandler {
             result_metadata.insert(
                 "fields".to_string(),
                 serde_json::json!(["name", "versions", "edition"]),
+            );
+            result_metadata.insert("result_consumed_after".to_string(), serde_json::json!(-1));
+            return Ok(vec![BoltMessage::success(result_metadata)]);
+        }
+
+        // Intercept `CALL db.schema.visualization()` — the Browser renders this
+        // as the "Database Information" schema diagram AND uses the labels /
+        // relationship types it returns to build the default graph styling
+        // (per-label colours + captions) applied to query results. The
+        // procedure-registry path can only emit flat JSON, so we build the
+        // virtual graph here where Node/Relationship structures can be
+        // packstream-encoded: one virtual node per label, one virtual
+        // relationship per (type, from-label, to-label) triple.
+        let is_schema_viz = q_norm == "CALL DB.SCHEMA.VISUALIZATION()"
+            || q_norm == "CALL DB.SCHEMA.VISUALIZATION"
+            || q_norm.starts_with("CALL DB.SCHEMA.VISUALIZATION() ")
+            || q_norm.starts_with("CALL DB.SCHEMA.VISUALIZATION()YIELD")
+            || q_norm.starts_with("CALL DB.SCHEMA.VISUALIZATION ");
+        if is_schema_viz {
+            log::info!("🔍 Building CALL db.schema.visualization() virtual graph");
+
+            let effective_schema = schema_name.as_deref().unwrap_or("default").to_string();
+            let schema_guard = crate::server::GLOBAL_SCHEMAS
+                .get()
+                .ok_or_else(|| BoltError::internal("Schema registry not initialized"))?;
+            let schemas = schema_guard.read().await;
+            let schema = schemas
+                .get(&effective_schema)
+                .ok_or_else(|| BoltError::internal("Schema not found"))?;
+
+            let fields = build_schema_visualization_fields(schema);
+            drop(schemas);
+
+            {
+                let mut context = lock_context!(self.context);
+                context.set_state(ConnectionState::Streaming);
+            }
+            self.cached_results = Some(vec![fields]);
+
+            let mut result_metadata = HashMap::new();
+            result_metadata.insert(
+                "fields".to_string(),
+                serde_json::json!(["nodes", "relationships"]),
             );
             result_metadata.insert("result_consumed_after".to_string(), serde_json::json!(-1));
             return Ok(vec![BoltMessage::success(result_metadata)]);
