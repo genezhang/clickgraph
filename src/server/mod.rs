@@ -236,6 +236,15 @@ pub async fn run_with_config(config: ServerConfig) {
             };
 
         let executor: Arc<dyn QueryExecutor> = Arc::new(dbc_executor);
+
+        // Target the Databricks SQL dialect for every server-handled query.
+        // Query rendering reads the dialect from the per-query `QueryContext`,
+        // which seeds from this process-wide default; without it the server
+        // would emit ClickHouse SQL even in `--databricks` mode (e.g. VLP array
+        // syntax `[]`/`Array(T)`/`arrayConcat`/`has` instead of Spark's
+        // `array()`/`ARRAY<T>`/`concat`/`array_contains`).
+        query_context::set_server_dialect(crate::sql_generator::SqlDialect::Databricks);
+
         let app_state = AppState {
             executor,
             clickhouse_client: None,
