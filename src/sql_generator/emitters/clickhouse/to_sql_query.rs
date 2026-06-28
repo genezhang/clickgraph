@@ -4238,7 +4238,23 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
         sql.push('\n');
     }
 
-    sql.push_str(&plan.order_by.to_sql());
+    // Databricks `SELECT DISTINCT` resolves ORDER BY against the aliased
+    // DISTINCT output, not the source relation — so a sort term matching a
+    // projection must reference its alias, not `table.col` (ClickHouse is
+    // lenient here and resolves against the FROM relation).
+    let distinct_spark_order = plan.select.distinct
+        && matches!(
+            crate::server::query_context::get_current_dialect(),
+            crate::sql_generator::SqlDialect::Databricks
+        );
+    if distinct_spark_order {
+        sql.push_str(&render_order_by_with_select_aliases(
+            &plan.order_by,
+            &plan.select,
+        ));
+    } else {
+        sql.push_str(&plan.order_by.to_sql());
+    }
     sql.push_str(&plan.union.to_sql());
 
     sql.push_str(&limit_offset_clause(plan.skip.0, plan.limit.0));
@@ -4486,6 +4502,36 @@ impl ToSql for GroupByExpressions {
         sql.push('\n');
         sql
     }
+}
+
+/// Render ORDER BY for a Databricks `SELECT DISTINCT`. Spark resolves ORDER BY
+/// terms against the (aliased) DISTINCT output, so a term that matches a SELECT
+/// projection is rendered as that projection's alias (backtick-quoted) rather
+/// than the underlying `table.col`, which is no longer in scope after DISTINCT.
+/// Terms with no matching projection fall back to the raw expression.
+fn render_order_by_with_select_aliases(order_by: &OrderByItems, select: &SelectItems) -> String {
+    if order_by.0.is_empty() {
+        return String::new();
+    }
+    let mapper = crate::sql_generator::function_mapper::current_function_mapper();
+    let mut sql = String::from("ORDER BY ");
+    for (i, item) in order_by.0.iter().enumerate() {
+        let term = select
+            .items
+            .iter()
+            .find(|s| s.expression == item.expression)
+            .and_then(|s| s.col_alias.as_ref())
+            .map(|a| mapper.quote_alias(&a.0))
+            .unwrap_or_else(|| item.expression.to_sql());
+        sql.push_str(&term);
+        sql.push(' ');
+        sql.push_str(&item.order.to_sql());
+        if i + 1 < order_by.0.len() {
+            sql.push_str(", ");
+        }
+    }
+    sql.push('\n');
+    sql
 }
 
 impl ToSql for OrderByItems {
