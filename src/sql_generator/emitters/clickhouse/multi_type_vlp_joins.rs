@@ -1096,13 +1096,34 @@ impl<'a> MultiTypeVlpJoinGenerator<'a> {
         // relationships like FOLLOWS where label-matching reversal detection
         // can't distinguish from-side from to-side. Multi-hop paths skip this
         // since paths don't have a single relationship to identify.
-        if hop_count == 1 {
+        //
+        // CRITICAL: only emit these columns when the VLP is a *pure* fixed
+        // single hop (min==max==1). For any variable-length range (e.g.
+        // `*0..`, `*1..3`) the CTE unions branches of differing hop counts —
+        // 0-hop and multi-hop branches do NOT project r_from_id/r_to_id, so
+        // emitting them here would make this 1-hop branch wider than its
+        // siblings and ClickHouse rejects the UNION ("different number of
+        // columns", Code:53). A variable-length path's relationship binds to a
+        // *list* of relationships anyway, so the single-edge element_id dedup
+        // does not apply.
+        if hop_count == 1 && self.min_hops == 1 && self.max_hops == 1 {
             if let Some((rel_alias, from_fk, to_fk)) = hop_rel_fk_info.first() {
                 items.push(format!(
                     "{}({}.{}) AS r_from_id",
                     to_str, rel_alias, from_fk
                 ));
                 items.push(format!("{}({}.{}) AS r_to_id", to_str, rel_alias, to_fk));
+            } else {
+                // `hop_rel_fk_info` is empty for composite-FK relationships
+                // (populated only for single-column FKs). In a *multi-type*
+                // fixed single hop, sibling branches with non-composite FK rels
+                // DO emit r_from_id/r_to_id above, so a composite-FK branch must
+                // emit matching placeholder columns or the UNION column counts
+                // diverge (Code:53) — the same failure this guard prevents for
+                // range VLPs. The element_id dedup is a single-column-FK concern
+                // and does not apply to composite-FK edges, so NULL is correct.
+                items.push("NULL AS r_from_id".to_string());
+                items.push("NULL AS r_to_id".to_string());
             }
         }
 

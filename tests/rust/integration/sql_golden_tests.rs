@@ -136,6 +136,15 @@ const CORPUS: &[(&str, &str)] = &[
     // empty-placeholder CAST sites migrated in this slice) — those remain
     // covered by the `cast_as`/`sql_type_name` unit tests; an integration
     // golden for the no-path empty branch is a deferred follow-up.
+    // Multi-type *variable-length* path. Beyond locking the generator output,
+    // this guards a UNION column-count regression: branches span differing hop
+    // counts (1-hop and 2-hop), and ALL branches must project the SAME columns.
+    // In particular the 1-hop branch must NOT additionally emit the Browser
+    // dedup `r_from_id`/`r_to_id` pair that multi-hop branches lack, or
+    // ClickHouse rejects the UNION ("different number of columns", Code:53) —
+    // the failure seen on LDBC interactive complex-12
+    // (`[:HAS_TYPE|IS_SUBCLASS_OF*0..]`). Those columns are only emitted for a
+    // pure fixed single hop (`*1..1`), where every branch is a uniform 1-hop.
     (
         "vlp_multi_type",
         "MATCH (a:User)-[:FOLLOWS|AUTHORED*1..2]->(b) RETURN b",
