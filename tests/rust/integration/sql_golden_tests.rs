@@ -96,6 +96,8 @@ const CORPUS: &[(&str, &str)] = &[
     ("whole_entity", "MATCH (u:User) RETURN u"),
     // List slicing -> arraySlice (CH) / slice (Spark). Both the 3-arg bounded
     // form and the 2-arg open-ended form (Spark needs a computed length).
+    // Cypher ranges are HALF-OPEN: [1..3] yields indices 1,2 (2 elements), so
+    // the rendered length is `to - from`, not `to - from + 1`.
     (
         "list_slice_bounded",
         "MATCH (u:User) RETURN [10, 20, 30, 40][1..3] AS s",
