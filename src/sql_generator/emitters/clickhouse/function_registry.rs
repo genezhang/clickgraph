@@ -235,8 +235,9 @@ lazy_static::lazy_static! {
         //   CH    -> splitByChar(delim, str)   [name + args swapped]
         //   Spark -> split(str, delim)         [name change only, Cypher arg order]
         // The swap is ClickHouse-only, so the arg_transform reads the active
-        // dialect. (Spark `split` is regex-based; for the literal single-char
-        // delimiters Cypher `split` is used with this is equivalent.)
+        // dialect. (Spark `split` treats arg 2 as a regex, whereas Cypher/CH
+        // split is literal; equivalent for the single-char, non-regex-meta
+        // delimiters Cypher `split` is typically used with.)
         m.insert("split", FunctionMapping {
             neo4j_name: "split",
             clickhouse_name: "splitByChar",
