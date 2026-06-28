@@ -394,6 +394,45 @@ async fn pattern_comprehension_collect_list_per_dialect() {
     );
 }
 
+/// Cypher `split(str, delim)` must map per dialect: CH `splitByChar(delim, str)`
+/// (name + args swapped), Spark `split(str, delim)` (name change, Cypher arg
+/// order). The arg swap is ClickHouse-only.
+#[tokio::test]
+async fn split_function_per_dialect() {
+    let cypher = "MATCH (a:User) RETURN split(a.name, ' ') AS parts";
+
+    let ch = with_query_context(
+        QueryContext {
+            dialect: SqlDialect::ClickHouse,
+            ..QueryContext::default()
+        },
+        async { cypher_to_sql(cypher) },
+    )
+    .await;
+    assert!(
+        ch.contains("splitByChar(' ', "),
+        "CH should emit `splitByChar(delim, str)`; got:\n{ch}"
+    );
+
+    let dbx = with_query_context(
+        QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        },
+        async { cypher_to_sql(cypher) },
+    )
+    .await;
+    assert!(
+        !dbx.contains("splitByChar"),
+        "Databricks SQL leaked CH `splitByChar`; got:\n{dbx}"
+    );
+    // Spark `split(str, delim)` keeps Cypher arg order (str first).
+    assert!(
+        dbx.contains("split(") && dbx.contains(", ' ')"),
+        "Databricks should emit `split(str, delim)` in Cypher arg order; got:\n{dbx}"
+    );
+}
+
 /// Aggregation path — exercises `build_outer_aggregate_select` and the
 /// `extract_outer_aggregation_info` rewrite where ColumnAlias references
 /// in GROUP BY / aggregate args get quoted via `quote_alias`. The plain
