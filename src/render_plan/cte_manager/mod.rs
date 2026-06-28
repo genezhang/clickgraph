@@ -1686,11 +1686,17 @@ impl DenormalizedCteStrategy {
         );
 
         // Build WHERE clause for recursion
+        let cycle_mapper = crate::sql_generator::function_mapper::current_function_mapper();
         let mut where_conditions = vec![
             format!("vp.hop_count < {}", context.spec.max_hops.unwrap_or(10)),
-            // ⚠️ ClickHouse limitation: NOT IN with array doesn't work in recursive CTEs
-            // Use NOT has(array, element) instead for cycle detection
-            format!("NOT has(vp.path_nodes, next.{})", self.to_col), // Cycle prevention
+            // ⚠️ ClickHouse limitation: NOT IN with array doesn't work in recursive CTEs.
+            // Use NOT <array_contains>(array, element) for cycle detection. The membership
+            // function is dialect-specific: CH `has`, Spark `array_contains`.
+            format!(
+                "NOT {}(vp.path_nodes, next.{})",
+                cycle_mapper.array_contains(),
+                self.to_col
+            ), // Cycle prevention
         ];
 
         // Add additional filters if present
@@ -3196,6 +3202,118 @@ mod tests {
         assert!(generation_result.sql.contains(" AS (\n")); // CTE structure with newline
         assert!(generation_result.sql.contains("users_bench"));
         assert!(generation_result.sql.contains("user_follows_bench"));
+    }
+
+    /// Build the denormalized pattern context used by the cycle-check tests.
+    fn denormalized_flights_pattern_ctx() -> PatternSchemaContext {
+        PatternSchemaContext {
+            left_node_alias: "f1".to_string(),
+            right_node_alias: "f2".to_string(),
+            rel_alias: "flights".to_string(),
+            left_node: NodeAccessStrategy::EmbeddedInEdge {
+                edge_alias: "flights".to_string(),
+                properties: HashMap::new(),
+                is_from_node: true,
+            },
+            right_node: NodeAccessStrategy::EmbeddedInEdge {
+                edge_alias: "flights".to_string(),
+                properties: HashMap::new(),
+                is_from_node: false,
+            },
+            edge: EdgeAccessStrategy::SeparateTable {
+                table: "flights".to_string(),
+                from_id: "Origin".to_string(),
+                to_id: "Dest".to_string(),
+                properties: HashMap::new(),
+            },
+            join_strategy: JoinStrategy::SingleTableScan {
+                table: "flights".to_string(),
+            },
+            coupled_context: None,
+            rel_types: vec!["FLIES_TO".to_string()],
+            left_is_polymorphic: false,
+            right_is_polymorphic: false,
+            constraints: None,
+        }
+    }
+
+    fn denormalized_cycle_check_sql() -> (DenormalizedCteStrategy, CteGenerationContext) {
+        let pattern_ctx = denormalized_flights_pattern_ctx();
+        let schema = Arc::new(GraphSchema::build(
+            1,
+            "test".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+        ));
+        let strategy = DenormalizedCteStrategy::new(&pattern_ctx, schema).unwrap();
+        let context = CteGenerationContext::new()
+            .with_spec(VariableLengthSpec {
+                min_hops: Some(1),
+                max_hops: Some(3),
+            })
+            .with_start_cypher_alias("f1".to_string())
+            .with_end_cypher_alias("f2".to_string());
+        (strategy, context)
+    }
+
+    fn empty_filters() -> CategorizedFilters {
+        CategorizedFilters {
+            start_node_filters: None,
+            end_node_filters: None,
+            relationship_filters: None,
+            path_function_filters: None,
+            start_sql: None,
+            end_sql: None,
+            relationship_sql: None,
+        }
+    }
+
+    /// Regression: the recursive VLP cycle check must be dialect-aware. Under
+    /// ClickHouse (default) it uses `has`; under Databricks it must use Spark's
+    /// `array_contains` (Spark has no `has`). Covers the DenormalizedCteStrategy
+    /// recursive builder — the path the server/cg VLP queries route through.
+    #[test]
+    fn test_denormalized_cte_cycle_check_clickhouse_default() {
+        let (strategy, context) = denormalized_cycle_check_sql();
+        let sql = strategy
+            .generate_sql(&context, &[], &empty_filters())
+            .unwrap()
+            .sql;
+        assert!(
+            sql.contains("NOT has(vp.path_nodes"),
+            "CH cycle check should use `has`; got:\n{sql}"
+        );
+        assert!(
+            !sql.contains("array_contains"),
+            "CH SQL leaked Spark `array_contains`; got:\n{sql}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_denormalized_cte_cycle_check_databricks_dialect() {
+        use crate::server::query_context::{with_query_context, QueryContext};
+        use crate::sql_generator::SqlDialect;
+
+        let (strategy, context) = denormalized_cycle_check_sql();
+        let ctx = QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        };
+        let sql = with_query_context(ctx, async {
+            strategy
+                .generate_sql(&context, &[], &empty_filters())
+                .unwrap()
+                .sql
+        })
+        .await;
+        assert!(
+            sql.contains("array_contains(vp.path_nodes"),
+            "Databricks cycle check should use `array_contains`; got:\n{sql}"
+        );
+        assert!(
+            !sql.contains("has(vp.path_nodes"),
+            "Databricks SQL leaked ClickHouse `has(...)` cycle check; got:\n{sql}"
+        );
     }
 
     #[test]
