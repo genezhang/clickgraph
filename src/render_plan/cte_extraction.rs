@@ -4158,22 +4158,28 @@ pub fn extract_ctes_with_context(
                             .collect::<Vec<_>>()
                             .join("");
 
+                        // Dialect-aware array literals: ClickHouse `['x']`/`[expr]`
+                        // vs Spark/Databricks `array('x')`/`array(expr)`. A bare
+                        // `[...]` is a parse error on Databricks.
+                        let fm = crate::sql_generator::function_mapper::current_function_mapper();
+                        let path_relationships_lit =
+                            fm.array_literal(&format!("'{base_rel_type}'"));
+                        let rel_properties_lit = fm.array_literal(&rel_properties_json);
+
                         let branch_sql = format!(
                             "SELECT \
                                 '{from_label}' AS start_type, \
                                 {start_id_expr} as start_id, \
                                 {end_id_expr} as end_id, \
                                 '{to_label}' AS end_type, \
-                                ['{}'] as path_relationships, \
-                                [{}] as rel_properties, \
+                                {path_relationships_lit} as path_relationships, \
+                                {rel_properties_lit} as rel_properties, \
                                 {} as start_properties, \
                                 {} as end_properties{direct_rel_cols} \
                             FROM {rel_table} \
                             INNER JOIN {from_join_expr} ON {from_join_cond} \
                             INNER JOIN {to_join_expr} ON {to_join_cond}{where_clause} \
                             LIMIT 1000",
-                            base_rel_type,
-                            rel_properties_json,
                             start_properties_json,
                             end_properties_json,
                             from_label = combo.from_label,
