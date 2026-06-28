@@ -33,6 +33,7 @@
 
 pub mod apoc_export;
 pub mod apoc_meta_schema;
+pub mod browser_compat;
 pub mod db_labels;
 pub mod db_property_keys;
 pub mod db_relationship_types;
@@ -95,6 +96,20 @@ impl ProcedureRegistry {
 
         // Register APOC procedures for MCP server compatibility
         registry.register("apoc.meta.schema", Arc::new(apoc_meta_schema::execute));
+        registry.register("apoc.meta.stats", Arc::new(browser_compat::apoc_meta_stats));
+
+        // Neo4j Browser sidebar/connect probes — return valid (possibly empty)
+        // results instead of an Unknown-procedure FAILURE, which otherwise
+        // cascades into a blank sidebar and uncaptioned graph rendering.
+        registry.register(
+            "db.schema.visualization",
+            Arc::new(browser_compat::db_schema_visualization),
+        );
+        registry.register("db.indexes", Arc::new(browser_compat::db_indexes));
+        registry.register(
+            "dbms.licenseAgreementDetails",
+            Arc::new(browser_compat::dbms_license_agreement_details),
+        );
 
         // Register dbms.* stubs for Neo4j Browser compatibility
         registry.register("dbms.clientConfig", Arc::new(dbms_stubs::client_config));
@@ -143,8 +158,8 @@ mod tests {
     #[test]
     fn test_registry_creation() {
         let registry = ProcedureRegistry::new();
-        // 12 procedures registered (6 core + 1 apoc + 5 dbms stubs)
-        assert_eq!(registry.names().len(), 12);
+        // 16 procedures (6 core + 2 apoc + 5 dbms stubs + 3 Browser-compat probes)
+        assert_eq!(registry.names().len(), 16);
 
         // Verify all expected procedures are registered
         assert!(registry.contains("db.labels"));
@@ -159,14 +174,18 @@ mod tests {
         assert!(registry.contains("dbms.functions"));
         assert!(registry.contains("dbms.info"));
         assert!(registry.contains("apoc.meta.schema"));
+        assert!(registry.contains("apoc.meta.stats"));
+        assert!(registry.contains("db.schema.visualization"));
+        assert!(registry.contains("db.indexes"));
+        assert!(registry.contains("dbms.licenseAgreementDetails"));
     }
 
     #[test]
     fn test_registry_register_and_lookup() {
         let mut registry = ProcedureRegistry::new();
 
-        // Should already have 12 built-in procedures (6 core + 1 apoc + 5 dbms stubs)
-        assert_eq!(registry.names().len(), 12);
+        // Should already have 16 built-in procedures
+        assert_eq!(registry.names().len(), 16);
 
         // Register a dummy procedure
         let dummy_proc: ProcedureFn = Arc::new(|_schema| {
@@ -180,7 +199,7 @@ mod tests {
 
         assert!(registry.contains("test.procedure"));
         assert!(registry.get("test.procedure").is_some());
-        assert_eq!(registry.names().len(), 13); // 12 built-in + 1 test
+        assert_eq!(registry.names().len(), 17); // 16 built-in + 1 test
     }
 
     #[test]
