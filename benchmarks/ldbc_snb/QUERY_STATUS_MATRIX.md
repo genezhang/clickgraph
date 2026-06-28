@@ -31,7 +31,7 @@
 |-------|--------|-------|-------|
 | IC-1 | 🔄 Test | - | Need to test |
 | IC-2 | ✅ Pass | 1 | Recent messages by friends |
-| IC-3 | 🔄 Test | - | Friends in X-Y countries |
+| IC-3 | ✅ Pass | 1 | Friends in X-Y countries — translates & validates correctly; earlier sweep failure was a seed/DDL mismatch (sf10_normalize exposed PlaceId vs schema's CountryId), fixed (#399) |
 | IC-4 | 🔄 Test | - | Need to test |
 | IC-5 | 🔄 Test | - | New groups |
 | IC-6 | ✅ Pass | 1 | Tag co-occurrence |
@@ -42,7 +42,7 @@
 | IC-11 | 🔄 Test | - | Job referral |
 | IC-12 | ✅ Pass | 1 | Expert search |
 | IC-13 | 🔄 Test | - | Shortest paths |
-| IC-14 | 🔄 Test | - | Weighted paths |
+| IC-14 | ❌ Fail | X | Weighted paths — requires Neo4j GDS + APOC (`gds.graph.project.cypher`, `gds.shortestPath.dijkstra.stream`, `apoc.create.uuidBase64`); untranslatable by a Cypher→SQL engine (out of scope, #399) |
 
 **Summary**: 3 Class 1 confirmed, 1 known failure, 10 need testing
 

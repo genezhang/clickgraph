@@ -326,11 +326,13 @@ UNION ALL
 SELECT CommentId AS MessageId, TagId, creationDate
 FROM ldbc.Comment_hasTag_Tag"
 
+# Expose the location id as CountryId to match the YAML's Message IS_LOCATED_IN
+# Country edge (to_id: CountryId), so queries like LDBC complex-3 resolve (#399).
 ch "CREATE VIEW IF NOT EXISTS ldbc.Message_isLocatedIn_Place AS
-SELECT creationDate, PostId AS MessageId, CountryId AS PlaceId
+SELECT creationDate, PostId AS MessageId, CountryId
 FROM ldbc.Post_isLocatedIn_Place
 UNION ALL
-SELECT creationDate, CommentId AS MessageId, CountryId AS PlaceId
+SELECT creationDate, CommentId AS MessageId, CountryId
 FROM ldbc.Comment_isLocatedIn_Place"
 
 ch "CREATE VIEW IF NOT EXISTS ldbc.Message_replyOf_Message AS
