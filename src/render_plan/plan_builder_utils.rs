@@ -17683,10 +17683,13 @@ pub(super) fn build_pattern_comprehension_sql(
     let agg_fn = match agg_type {
         AggregationType::Count => "COUNT(*)".to_string(),
         AggregationType::GroupArray => {
+            // Dialect-aware list aggregate: CH `groupArray`, Spark `collect_list`.
+            let collect =
+                crate::sql_generator::function_mapper::current_function_mapper().collect_list();
             if target_join_info.is_some() {
-                "groupArray(target_prop)".to_string()
+                format!("{collect}(target_prop)")
             } else {
-                "groupArray(1)".to_string()
+                format!("{collect}(1)")
             }
         }
         AggregationType::Sum => "SUM(1)".to_string(),

@@ -352,6 +352,48 @@ async fn vlp_under_databricks_dialect_emits_spark_spellings() {
     );
 }
 
+/// Pattern comprehension `[(a)-[:R]->(x) | x.p]` lowers to a UNION-ALL branch
+/// aggregated with a list aggregate. That aggregate must be dialect-aware:
+/// CH `groupArray`, Spark `collect_list` (Spark has no `groupArray`).
+#[tokio::test]
+async fn pattern_comprehension_collect_list_per_dialect() {
+    let cypher = "MATCH (a:User) RETURN a.id, [(a)-[:FOLLOWS]->(x:User) | x.id] AS following";
+
+    let ch = with_query_context(
+        QueryContext {
+            dialect: SqlDialect::ClickHouse,
+            ..QueryContext::default()
+        },
+        async { cypher_to_sql(cypher) },
+    )
+    .await;
+    assert!(
+        ch.contains("groupArray"),
+        "CH pattern comprehension should use `groupArray`; got:\n{ch}"
+    );
+    assert!(
+        !ch.contains("collect_list"),
+        "CH SQL leaked Spark `collect_list`; got:\n{ch}"
+    );
+
+    let dbx = with_query_context(
+        QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        },
+        async { cypher_to_sql(cypher) },
+    )
+    .await;
+    assert!(
+        dbx.contains("collect_list"),
+        "Databricks pattern comprehension should use `collect_list`; got:\n{dbx}"
+    );
+    assert!(
+        !dbx.contains("groupArray"),
+        "Databricks SQL leaked CH `groupArray`; got:\n{dbx}"
+    );
+}
+
 /// Aggregation path — exercises `build_outer_aggregate_select` and the
 /// `extract_outer_aggregation_info` rewrite where ColumnAlias references
 /// in GROUP BY / aggregate args get quoted via `quote_alias`. The plain
