@@ -23,7 +23,6 @@ graph_schema:
         database: ecommerce
         table: products
         node_id: product_id
-        label: Product
         property_mappings:
           name: name
           category: category
@@ -39,9 +38,10 @@ graph_schema:
       - type: PURCHASED
         database: ecommerce
         table: orders
+        from_node: Customer
+        to_node: Product
         from_id: customer_id
         to_id: "product_id"
-        type_name: "PURCHASED"
         property_mappings:
           order_id: "order_id"
           quantity: "quantity"
