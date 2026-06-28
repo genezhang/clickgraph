@@ -2232,15 +2232,34 @@ fn generate_id_from_element_id(element_id: &str) -> i64 {
 /// First element as String, or None if not an array or empty
 fn extract_first_from_array(val: &Value) -> Option<String> {
     match val {
-        Value::Array(arr) if !arr.is_empty() => {
-            // Get first element
-            match &arr[0] {
-                Value::String(s) => Some(s.clone()),
-                Value::Number(n) => Some(n.to_string()),
-                Value::Bool(b) => Some(b.to_string()),
-                _ => None,
+        Value::Array(arr) if !arr.is_empty() => scalar_to_string(&arr[0]),
+        // Databricks serializes array-typed columns (e.g. the multi-type CTE
+        // `type` / `properties` columns) as a JSON-array *string* like
+        // `["FOLLOWS"]` rather than a native array. ClickHouse returns a real
+        // array. Parse the string back into JSON so both dialects yield the
+        // same scalar. Without this, node-expand in Neo4j Browser (which fires
+        // multi-type `(a)-[r]-(o)` queries) fails on Databricks with
+        // "Could not extract relationship type from array".
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.starts_with('[') {
+                if let Ok(Value::Array(arr)) = serde_json::from_str::<Value>(trimmed) {
+                    return arr.first().and_then(scalar_to_string);
+                }
             }
+            None
         }
+        _ => None,
+    }
+}
+
+/// Render a JSON scalar (string/number/bool) as a plain string. Returns `None`
+/// for nested arrays/objects/null.
+fn scalar_to_string(val: &Value) -> Option<String> {
+    match val {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
         _ => None,
     }
 }
@@ -2622,6 +2641,50 @@ mod tests {
     fn test_value_to_string_integer() {
         let value = Value::Number(123.into());
         assert_eq!(value_to_string(&value), Some("123".to_string()));
+    }
+
+    #[test]
+    fn test_extract_first_from_native_array() {
+        // ClickHouse path: real JSON array.
+        let value = Value::Array(vec![Value::String("FOLLOWS".to_string())]);
+        assert_eq!(
+            extract_first_from_array(&value),
+            Some("FOLLOWS".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_first_from_stringified_array_databricks() {
+        // Databricks path: array column serialized as a JSON-array string.
+        let value = Value::String("[\"FOLLOWS\"]".to_string());
+        assert_eq!(
+            extract_first_from_array(&value),
+            Some("FOLLOWS".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_first_from_stringified_props_array_databricks() {
+        // The multi-type CTE `properties` column is an array whose single
+        // element is itself a JSON object string. On Databricks the outer array
+        // arrives stringified; the inner element must survive intact for the
+        // caller's serde_json::from_str of the relationship properties.
+        let value = Value::String("[\"{\\\"follow_date\\\":\\\"2021-01-01\\\"}\"]".to_string());
+        assert_eq!(
+            extract_first_from_array(&value),
+            Some("{\"follow_date\":\"2021-01-01\"}".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_first_from_empty_and_scalar() {
+        assert_eq!(extract_first_from_array(&Value::Array(vec![])), None);
+        assert_eq!(
+            extract_first_from_array(&Value::String("FOLLOWS".to_string())),
+            None,
+            "a bare non-array string is not a valid array payload"
+        );
+        assert_eq!(extract_first_from_array(&Value::Null), None);
     }
 
     #[test]
