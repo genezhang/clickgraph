@@ -1014,9 +1014,12 @@ fn coerce_by_type(value: Value, sql_type: &str) -> Value {
 /// `None` for non-array types.
 fn array_element_type(type_text: &str) -> Option<&str> {
     let t = type_text.trim();
-    if t.len() > "ARRAY<>".len()
-        && t[.."ARRAY<".len()].eq_ignore_ascii_case("ARRAY<")
-        && t.ends_with('>')
+    // `str::get` (not byte indexing) so a non-ASCII manifest type_text degrades
+    // to None instead of panicking on a non-char-boundary slice.
+    if t.ends_with('>')
+        && t.len() > "ARRAY<>".len()
+        && t.get(.."ARRAY<".len())
+            .is_some_and(|p| p.eq_ignore_ascii_case("ARRAY<"))
     {
         Some(t["ARRAY<".len()..t.len() - 1].trim())
     } else {
@@ -1882,5 +1885,9 @@ mod wiremock_tests {
         assert_eq!(array_element_type("ARRAY<ARRAY<INT>>"), Some("ARRAY<INT>"));
         assert_eq!(array_element_type("STRING"), None);
         assert_eq!(array_element_type("MAP<STRING,INT>"), None);
+        // Non-ASCII type_text must degrade to None, never panic on a byte slice
+        // that lands inside a multi-byte char (e.g. byte 6 inside 'é').
+        assert_eq!(array_element_type("ARRAYéxx"), None);
+        assert_eq!(array_element_type("«"), None);
     }
 }
