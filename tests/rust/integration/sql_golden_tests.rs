@@ -110,6 +110,12 @@ const CORPUS: &[(&str, &str)] = &[
         "list_slice_to",
         "MATCH (u:User) RETURN [10, 20, 30, 40][..2] AS s",
     ),
+    // from > to is valid Cypher and must yield []. The length must floor at 0:
+    // a negative length is silently wrong on CH arraySlice and errors on Spark slice.
+    (
+        "list_slice_empty",
+        "MATCH (u:User) RETURN [10, 20, 30, 40][3..1] AS s",
+    ),
     // tail() -> CH arraySlice(list, 2) / Spark slice(list, 2, greatest(size-1, 0))
     ("list_tail", "MATCH (u:User) RETURN tail([10, 20, 30]) AS t"),
     // Interval arithmetic on an epoch-millis column -> CH

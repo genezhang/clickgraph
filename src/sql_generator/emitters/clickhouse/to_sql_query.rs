@@ -5878,10 +5878,17 @@ impl RenderExpr {
                 match (from, to) {
                     (Some(from_expr), Some(to_expr)) => {
                         // [from..to) -> 1-based offset + half-open length (to - from).
+                        // Floor at 0: when from > to the slice is empty, but a negative
+                        // length means "drop from the end" on ClickHouse arraySlice
+                        // (silent wrong data) and errors on Databricks slice().
                         mapper.array_slice(
                             &array_sql,
                             &format!("{} + 1", from_expr.to_sql()),
-                            Some(&format!("{} - {}", to_expr.to_sql(), from_expr.to_sql())),
+                            Some(&format!(
+                                "greatest({} - {}, 0)",
+                                to_expr.to_sql(),
+                                from_expr.to_sql()
+                            )),
                         )
                     }
                     (Some(from_expr), None) => {

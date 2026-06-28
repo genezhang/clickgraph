@@ -1249,10 +1249,12 @@ pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, St
                 (Some(from_expr), Some(to_expr)) => {
                     let from_sql = render_expr_to_sql_string(from_expr, alias_mapping);
                     let to_sql = render_expr_to_sql_string(to_expr, alias_mapping);
+                    // Floor at 0 so from > to yields an empty slice (a negative length
+                    // is silently wrong on CH arraySlice and errors on Databricks slice).
                     mapper.array_slice(
                         &array_sql,
                         &format!("{} + 1", from_sql),
-                        Some(&format!("{} - {}", to_sql, from_sql)),
+                        Some(&format!("greatest({} - {}, 0)", to_sql, from_sql)),
                     )
                 }
                 (Some(from_expr), None) => {
