@@ -776,3 +776,47 @@ mod vlp_chained_pattern_filters {
         );
     }
 }
+
+/// Regression tests for issue #400: property references inside an UNWIND
+/// expression after a MATCH must be schema-mapped to their DB column, exactly
+/// like SELECT/WHERE. The schema maps Cypher `full_name` -> DB column `name`.
+#[cfg(test)]
+mod unwind_property_mapping {
+    use super::*;
+
+    #[test]
+    fn test_unwind_function_arg_property_is_mapped() {
+        // `split(u.full_name, ' ')` inside UNWIND: the Cypher property `full_name`
+        // must resolve to the DB column `name`, not leak through as `u.full_name`.
+        let cypher = "MATCH (u:User) UNWIND split(u.full_name, ' ') AS part RETURN part";
+        let sql = cypher_to_sql(cypher);
+
+        println!("UNWIND function-arg property mapping SQL:\n{}", sql);
+
+        assert!(
+            sql.contains("u.name"),
+            "UNWIND expression should map `full_name` -> DB column `name`. Got: {}",
+            sql
+        );
+        assert!(
+            !sql.contains("u.full_name"),
+            "UNWIND expression leaked unmapped Cypher property `u.full_name`. Got: {}",
+            sql
+        );
+    }
+
+    #[test]
+    fn test_unwind_literal_is_unaffected() {
+        // A literal UNWIND has no property to map and must be unchanged.
+        let cypher = "UNWIND [1, 2, 3] AS x RETURN x";
+        let sql = cypher_to_sql(cypher);
+
+        println!("UNWIND literal SQL:\n{}", sql);
+
+        assert!(
+            sql.contains("[1, 2, 3]"),
+            "Literal UNWIND should pass the array through unchanged. Got: {}",
+            sql
+        );
+    }
+}

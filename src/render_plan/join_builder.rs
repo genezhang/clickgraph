@@ -361,7 +361,15 @@ impl JoinBuilder for LogicalPlan {
         match self {
             LogicalPlan::Unwind(u) => {
                 // Convert LogicalExpr to RenderExpr for this UNWIND
-                let render_expr = RenderExpr::try_from(u.expression.clone())?;
+                let mut render_expr = RenderExpr::try_from(u.expression.clone())?;
+                // Apply schema property mapping so Cypher property references inside the
+                // UNWIND expression (e.g. `split(u.name, ' ')`) resolve to their mapped DB
+                // column. Without this, the raw Cypher property leaks into the ARRAY JOIN /
+                // LATERAL VIEW and fails to resolve. (issue #400)
+                crate::render_plan::plan_builder_helpers::apply_property_mapping_to_expr(
+                    &mut render_expr,
+                    &u.input,
+                );
                 array_joins.push(ArrayJoin {
                     expression: render_expr,
                     alias: u.alias.clone(),
