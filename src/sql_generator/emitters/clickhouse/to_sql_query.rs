@@ -797,6 +797,101 @@ fn substitute_alias_refs_in_expr(expr: &mut RenderExpr, alias_map: &HashMap<Stri
     }
 }
 
+/// Resolve Cypher `size(arg)` to a Spark/Databricks function name, or `None`
+/// when no dialect-specific override applies (caller falls back to the registry
+/// default, `length`).
+///
+/// CH `length` is overloaded for strings and arrays; Spark is not — `size` is
+/// collection-only and `length` string-only. The static registry name can't be
+/// right for both, and the argument's type is not always inferable from the
+/// Cypher text (a bare `posts` and a bare `name` both render as a column ref).
+/// So the default stays the string-safe `length` and this returns `Some("size")`
+/// only when the argument is a *detected* collection: an inline list literal, a
+/// `collect`/`groupArray` aggregate, or a variable the registry typed as a
+/// collection (e.g. `WITH collect(post) AS posts`). Schemas that need `size()`
+/// over a non-obvious collection should declare the column's array type so the
+/// registry resolves it. Returns `None` outside Databricks (CH unchanged).
+fn databricks_size_name(
+    arg: Option<&RenderExpr>,
+    dialect: crate::sql_generator::SqlDialect,
+) -> Option<&'static str> {
+    use crate::sql_generator::SqlDialect;
+    if dialect != SqlDialect::Databricks {
+        return None;
+    }
+    arg.filter(|a| render_arg_is_collection(a)).map(|_| "size")
+}
+
+/// True when a `size()` argument is recognizably a collection (vs a string).
+fn render_arg_is_collection(arg: &RenderExpr) -> bool {
+    fn name_is_collection(name: &str) -> bool {
+        // Variable registry (collection-typed vars) OR the array-CTE-column set
+        // collected from the plan (carried-forward collect()/groupArray columns
+        // the registry types only as scalars).
+        crate::server::query_context::get_current_variable_registry()
+            .and_then(|r| r.lookup(name).map(|v| v.is_collection()))
+            .unwrap_or(false)
+            || crate::server::query_context::is_array_cte_column(name)
+    }
+    match arg {
+        RenderExpr::List(_) => true,
+        RenderExpr::AggregateFnCall(a) => is_collection_aggregate(&a.name),
+        RenderExpr::TableAlias(ta) => name_is_collection(&ta.0),
+        RenderExpr::Column(c) => name_is_collection(c.raw()),
+        // A carried-forward CTE column keeps its producing variable's name as the
+        // column (e.g. `posts`); match on that. The table alias is intentionally
+        // not consulted — property access on a collection isn't valid Cypher, so
+        // checking it would only widen the false-positive surface.
+        RenderExpr::PropertyAccessExp(pa) => name_is_collection(pa.column.raw()),
+        _ => false,
+    }
+}
+
+/// True for aggregates that produce an array value.
+fn is_collection_aggregate(name: &str) -> bool {
+    matches!(
+        name.to_lowercase().as_str(),
+        "collect" | "collect_list" | "collect_set" | "grouparray" | "array_agg"
+    )
+}
+
+/// Collect the names of CTE output columns that hold an array/collection value:
+/// a SELECT item whose source expression is a collection aggregate
+/// (`collect`/`groupArray`/…) or a list literal. Walks every structured CTE and
+/// UNION branch. Name-keyed (carried-forward columns keep the producing alias),
+/// which is unambiguous within a single query plan.
+fn collect_array_cte_columns(plan: &RenderPlan) -> HashSet<String> {
+    fn expr_is_collection(expr: &RenderExpr) -> bool {
+        match expr {
+            RenderExpr::List(_) => true,
+            RenderExpr::AggregateFnCall(a) => is_collection_aggregate(&a.name),
+            _ => false,
+        }
+    }
+    fn walk(plan: &RenderPlan, out: &mut HashSet<String>) {
+        for item in &plan.select.items {
+            if let Some(ca) = &item.col_alias {
+                if expr_is_collection(&item.expression) {
+                    out.insert(ca.0.clone());
+                }
+            }
+        }
+        if let Some(union) = plan.union.0.as_ref() {
+            for branch in &union.input {
+                walk(branch, out);
+            }
+        }
+        for cte in &plan.ctes.0 {
+            if let CteContent::Structured(cte_plan) = &cte.content {
+                walk(cte_plan, out);
+            }
+        }
+    }
+    let mut out = HashSet::new();
+    walk(plan, &mut out);
+    out
+}
+
 /// Render the SKIP/LIMIT clause, dialect-aware (no trailing newline; empty when
 /// neither is set). ClickHouse uses the MySQL-style `LIMIT offset, count` and
 /// requires a count when offsetting (so SKIP-only emits a huge upper bound);
@@ -3686,6 +3781,20 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
     // stale whole-node `person`). ClickHouse path is untouched (gated).
     inline_where_alias_refs_for_spark(&mut plan);
 
+    // Record which CTE columns are array/collection-valued so the Databricks
+    // `size()` render can pick Spark `size` vs `length` (see databricks_size_name).
+    // `render_plan_to_sql` is re-entrant (scalar-subquery RenderExprs render their
+    // own sub-plan), so save the parent's set and restore it on every exit — a
+    // nested sub-plan must not clobber the outer scope's array columns.
+    struct ArrayColsGuard(HashSet<String>);
+    impl Drop for ArrayColsGuard {
+        fn drop(&mut self) {
+            crate::server::query_context::set_array_cte_columns(std::mem::take(&mut self.0));
+        }
+    }
+    let _array_cols_guard = ArrayColsGuard(crate::server::query_context::get_array_cte_columns());
+    crate::server::query_context::set_array_cte_columns(collect_array_cte_columns(&plan));
+
     let mut sql = String::new();
 
     // If there's a Union, wrap it in a subquery for correct ClickHouse behavior.
@@ -5048,12 +5157,19 @@ impl RenderExpr {
                             args_sql
                         };
 
+                        let dialect = crate::server::query_context::get_current_dialect();
+                        // Cypher `size()` is dialect-/type-sensitive on Spark: emit
+                        // `size` for a collection argument, else the string-safe
+                        // `length` default. ClickHouse keeps overloaded `length`.
+                        let fn_name = if fn_name_lower == "size" {
+                            databricks_size_name(fn_call.args.first(), dialect)
+                                .unwrap_or_else(|| mapping.name_for(dialect))
+                        } else {
+                            mapping.name_for(dialect)
+                        };
+
                         // Return dialect-appropriate function with transformed args
-                        format!(
-                            "{}({})",
-                            mapping.name_for(crate::server::query_context::get_current_dialect()),
-                            transformed_args.join(", ")
-                        )
+                        format!("{}({})", fn_name, transformed_args.join(", "))
                     }
                     None => {
                         // No mapping found - use original function name (passthrough)
@@ -6455,6 +6571,62 @@ mod tests {
             .unwrap()
             .to_sql();
         assert!(branch_sql.contains("friend.birthday"), "got: {branch_sql}");
+    }
+
+    /// `databricks_size_name`: outside Databricks → None (registry default
+    /// `length`); under Databricks a list-literal arg → Spark `size`.
+    #[test]
+    fn databricks_size_name_dispatches_by_dialect_and_arg() {
+        use crate::sql_generator::SqlDialect;
+        let list = RenderExpr::List(vec![RenderExpr::Literal(Literal::Integer(1))]);
+        assert_eq!(
+            databricks_size_name(Some(&list), SqlDialect::ClickHouse),
+            None
+        );
+        assert_eq!(
+            databricks_size_name(Some(&list), SqlDialect::Databricks),
+            Some("size")
+        );
+        // A bare string-ish arg (no collection signal) → None → falls back to length.
+        let lit = RenderExpr::Literal(Literal::String("abc".to_string()));
+        assert_eq!(
+            databricks_size_name(Some(&lit), SqlDialect::Databricks),
+            None
+        );
+    }
+
+    /// `collect_array_cte_columns` records SELECT aliases whose source is a
+    /// collection aggregate or list literal, across CTEs — so a carried-forward
+    /// `collect()` column (registry-typed as scalar) is still detectable.
+    #[test]
+    fn collect_array_cte_columns_finds_collection_columns() {
+        let mut cte_plan = empty_plan();
+        cte_plan.select = SelectItems {
+            items: vec![
+                SelectItem {
+                    expression: RenderExpr::AggregateFnCall(AggregateFnCall {
+                        name: "collect".to_string(),
+                        args: vec![friend_birthday()],
+                    }),
+                    col_alias: Some(ColumnAlias("posts".to_string())),
+                },
+                SelectItem {
+                    expression: friend_birthday(),
+                    col_alias: Some(ColumnAlias("bday".to_string())),
+                },
+            ],
+            distinct: false,
+        };
+        let mut plan = empty_plan();
+        plan.ctes = CteItems(vec![Cte::new(
+            "with_posts_cte".to_string(),
+            CteContent::Structured(Box::new(cte_plan)),
+            false,
+        )]);
+
+        let cols = collect_array_cte_columns(&plan);
+        assert!(cols.contains("posts"), "got: {cols:?}");
+        assert!(!cols.contains("bday"), "got: {cols:?}");
     }
 
     /// Test: collect(x) + collect(y) → arrayConcat(groupArray(x), groupArray(y))
