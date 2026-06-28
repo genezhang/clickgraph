@@ -874,13 +874,24 @@ pub(crate) fn transform_to_node(
     let prefix = format!("{}.", var_name);
     let mut properties = HashMap::new();
 
+    // VLP/CTE result rows carry a `{var}.properties` JSON blob (parsed below)
+    // and a `{var}.id` id column that are internal plumbing, not real
+    // properties. In that mode they must be skipped. But in the NON-VLP whole-
+    // node path there is no `{var}.properties` column, and `{var}.id` is the
+    // node's genuine id property — for a schema whose node-id column is named
+    // `id` (`node_id: id`), dropping it would leave both element_id lookup AND
+    // label inference (which match the schema id column against this map) unable
+    // to find the id, so the node fails to render in Neo4j Browser. Only drop
+    // `id` when we're actually in VLP mode.
+    let is_vlp_row = row.contains_key(&format!("{}.properties", var_name));
+
     for (key, value) in row.iter() {
         if let Some(prop_name) = key.strip_prefix(&prefix) {
             // Skip internal __label__ and VLP metadata columns from properties
             if prop_name != "__label__"
                 && prop_name != "_label__"
-                && prop_name != "id"
                 && prop_name != "properties"
+                && !(is_vlp_row && prop_name == "id")
             {
                 properties.insert(prop_name.to_string(), value.clone());
             }
@@ -973,12 +984,23 @@ pub(crate) fn transform_to_node(
     // Get ID column names from schema
     let id_columns = node_schema.node_id.id.columns();
 
-    // Extract ID values from properties
+    // Extract ID values for the element_id.
+    //
+    // The `properties` map intentionally drops the literal keys `id` and
+    // `properties` (above), because in VLP results `{var}.id` is the node's
+    // id-string column and `{var}.properties` is a JSON blob — VLP-internal
+    // columns, not real properties. But a schema whose node-id column is
+    // literally named `id` (e.g. `node_id: id`, extremely common — most
+    // Databricks/ClickHouse tables use an `id` primary key) then has its id
+    // value dropped, so `properties.get("id")` misses and the node fails to
+    // render in Neo4j Browser ("Missing ID column 'id'"). Fall back to the raw
+    // row column (`{var}.{col}`) so the id value is recovered regardless.
     let id_values: Vec<String> = id_columns
         .iter()
         .map(|col_name| {
             properties
                 .get(*col_name)
+                .or_else(|| row.get(&format!("{}.{}", var_name, col_name)))
                 .and_then(value_to_string)
                 .ok_or_else(|| format!("Missing ID column '{}' for node '{}'", col_name, var_name))
         })
@@ -2802,4 +2824,52 @@ mod tests {
 
     // Integration-style test (requires more setup)
     // TODO: Add full transform_to_node test with mock schema
+
+    /// Regression: a node whose schema id column is literally named `id`
+    /// (extremely common — most tables use an `id` primary key) must still
+    /// render. The property map intentionally drops the `id`/`properties` keys
+    /// (VLP-internal columns), so the id value is recovered from the raw row
+    /// column. Before the fix this returned `Err("Missing ID column 'id'")` and
+    /// the node never appeared in Neo4j Browser.
+    #[test]
+    fn test_transform_to_node_with_id_named_id_column() {
+        use crate::graph_catalog::config::GraphSchemaConfig;
+        let schema = GraphSchemaConfig::from_yaml_str(
+            r#"
+graph_schema:
+  name: t
+  nodes:
+    - label: Person
+      database: test
+      table: Person
+      node_id: id
+      property_mappings:
+        id: id
+        firstName: firstName
+  relationships: []
+"#,
+        )
+        .expect("parse schema")
+        .to_graph_schema()
+        .expect("to graph schema");
+
+        let mut row: HashMap<String, Value> = HashMap::new();
+        row.insert("p.id".to_string(), Value::from(7));
+        row.insert("p.firstName".to_string(), Value::from("Alice"));
+
+        // Labeled path (e.g. `MATCH (p:Person) RETURN p`).
+        let node = transform_to_node(&row, "p", &["Person".to_string()], &schema)
+            .expect("node should transform even when id column is named 'id'");
+        assert_eq!(node.element_id, "Person:7-");
+        assert_eq!(node.labels, vec!["Person".to_string()]);
+        // The mapped `id` property is kept (non-VLP), so it shows in the Browser.
+        assert_eq!(node.properties.get("id"), Some(&Value::from(7)));
+
+        // Unlabeled path (e.g. `MATCH (n) RETURN n`): the label must be inferred
+        // from the schema id column, which also needs the `id` value present.
+        let inferred = transform_to_node(&row, "p", &[], &schema)
+            .expect("unlabeled node should infer its label from the 'id' id column");
+        assert_eq!(inferred.element_id, "Person:7-");
+        assert_eq!(inferred.labels, vec!["Person".to_string()]);
+    }
 }
