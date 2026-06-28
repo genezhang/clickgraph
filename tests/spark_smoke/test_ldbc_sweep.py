@@ -73,7 +73,10 @@ EXPECTED_FAILURES: dict[str, str] = {
     # C. Other resolution issues — distinct from the dialect-agnostic
     # `with_*_cte_N.col` → `alias.col` rewrite (which now passes 8 queries).
     "bi-14":     "[C] CTE chain: same alias `person1` rebound across 5 chained CTEs; final CTE's `person1.score` doesn't resolve against the previous CTE's schema",
-    "complex-3": "[C] schema mapping: `t5.CountryId` emitted for Place_isPartOf_Place rel (no such column — Place→Place rel uses PlaceId)",
+    # complex-3 fixed (#399): the `t5.CountryId` failure was a benchmark-DDL
+    # inconsistency — the Message_isLocatedIn_Place view exposed PlaceId while the
+    # schema's Message IS_LOCATED_IN Country edge maps to_id: CountryId. All seed
+    # views (incl. mini_delta_seed.sql) now expose CountryId; complex-3 executes.
 }
 
 PARAM_REF = re.compile(r"\$([a-zA-Z_]\w*)")
