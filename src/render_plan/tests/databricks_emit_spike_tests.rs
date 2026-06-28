@@ -476,6 +476,44 @@ async fn unwind_literal_per_dialect() {
     );
 }
 
+/// `RETURN DISTINCT expr ORDER BY expr`: Spark resolves ORDER BY against the
+/// DISTINCT output, so the sort term must reference the projection's backtick
+/// alias, not the underlying `table.col`. ClickHouse keeps `table.col`.
+#[tokio::test]
+async fn distinct_order_by_per_dialect() {
+    let cypher = "MATCH (a:User) RETURN DISTINCT a.name ORDER BY a.name";
+
+    let ch = with_query_context(
+        QueryContext {
+            dialect: SqlDialect::ClickHouse,
+            ..QueryContext::default()
+        },
+        async { cypher_to_sql(cypher) },
+    )
+    .await;
+    assert!(
+        ch.contains("ORDER BY a.name"),
+        "CH DISTINCT should order by `table.col`; got:\n{ch}"
+    );
+
+    let dbx = with_query_context(
+        QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        },
+        async { cypher_to_sql(cypher) },
+    )
+    .await;
+    assert!(
+        dbx.contains("ORDER BY `a.name`"),
+        "Databricks DISTINCT should order by the backtick alias; got:\n{dbx}"
+    );
+    assert!(
+        !dbx.contains("ORDER BY a.name "),
+        "Databricks DISTINCT leaked raw `table.col` in ORDER BY; got:\n{dbx}"
+    );
+}
+
 /// Aggregation path — exercises `build_outer_aggregate_select` and the
 /// `extract_outer_aggregation_info` rewrite where ColumnAlias references
 /// in GROUP BY / aggregate args get quoted via `quote_alias`. The plain
