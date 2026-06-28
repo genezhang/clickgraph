@@ -118,11 +118,36 @@ pub struct QueryContext {
     pub array_cte_columns: HashSet<String>,
 }
 
+/// Process-wide default SQL dialect for server-handled queries. Set once at
+/// server startup (`run_with_config`) from the `--databricks` flag. The
+/// embedded/`cg` paths set the dialect per-query (via `set_current_dialect`)
+/// and never touch this, so it stays at the ClickHouse default for them.
+static SERVER_DIALECT: std::sync::OnceLock<SqlDialect> = std::sync::OnceLock::new();
+
+/// Set the process-wide default dialect for server-handled queries. Idempotent
+/// (first write wins); call once during server init before serving requests.
+pub fn set_server_dialect(dialect: SqlDialect) {
+    let _ = SERVER_DIALECT.set(dialect);
+}
+
+/// The process-wide server dialect, or [`SqlDialect::ClickHouse`] if unset.
+fn server_dialect() -> SqlDialect {
+    SERVER_DIALECT.get().copied().unwrap_or_default()
+}
+
 impl QueryContext {
-    /// Create a new query context with schema name
+    /// Create a new query context with schema name.
+    ///
+    /// Seeds the dialect from the process-wide server default
+    /// ([`set_server_dialect`]) so every server-handled query (HTTP, Bolt,
+    /// export) targets the right SQL dialect. Without this, server queries
+    /// always rendered ClickHouse SQL even in `--databricks` mode. Callers that
+    /// need a different dialect (embedded) override it via `set_current_dialect`
+    /// inside the `with_query_context` scope.
     pub fn new(schema_name: Option<String>) -> Self {
         Self {
             schema_name,
+            dialect: server_dialect(),
             ..Default::default()
         }
     }
@@ -674,6 +699,17 @@ pub fn restore_branch_context(snapshot: BranchContextSnapshot) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn query_context_new_defaults_to_clickhouse_when_server_dialect_unset() {
+        // The embedded/`cg` paths never call `set_server_dialect`, so a fresh
+        // context must default to ClickHouse (the historical behavior). NOTE:
+        // we deliberately do NOT call `set_server_dialect` here — it writes a
+        // process-wide OnceLock that would leak into sibling tests in this
+        // binary. The Databricks path (server sets the global → `new()` reads
+        // it) is covered end-to-end by the DeltaGraph/zeta transport tests.
+        assert_eq!(QueryContext::new(None).dialect, SqlDialect::ClickHouse);
+    }
 
     #[tokio::test]
     async fn test_query_context_isolation() {
