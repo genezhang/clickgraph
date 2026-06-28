@@ -316,7 +316,10 @@ SELECT creationDate, PostId AS MessageId, TagId FROM ldbc_mini.Post_hasTag_Tag
 UNION ALL
 SELECT creationDate, CommentId AS MessageId, TagId FROM ldbc_mini.Comment_hasTag_Tag;
 
+-- Expose the location id as CountryId to match the YAML's Message IS_LOCATED_IN
+-- Country edge (to_id: CountryId). Otherwise queries like LDBC complex-3 generate
+-- `t5.CountryId` against a view that only has PlaceId and fail to resolve (#399).
 CREATE VIEW IF NOT EXISTS ldbc_mini.Message_isLocatedIn_Place AS
-SELECT creationDate, PostId AS MessageId, PlaceId FROM ldbc_mini.Post_isLocatedIn_Place
+SELECT creationDate, PostId AS MessageId, PlaceId AS CountryId FROM ldbc_mini.Post_isLocatedIn_Place
 UNION ALL
-SELECT creationDate, CommentId AS MessageId, PlaceId FROM ldbc_mini.Comment_isLocatedIn_Place;
+SELECT creationDate, CommentId AS MessageId, PlaceId AS CountryId FROM ldbc_mini.Comment_isLocatedIn_Place;
