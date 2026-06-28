@@ -5869,22 +5869,23 @@ impl RenderExpr {
             }
             RenderExpr::ArraySlicing { array, from, to } => {
                 // Array slicing -> arraySlice(arr, offset, length) (CH) / slice (Spark),
-                // both 1-based offset + element count. Cypher indices are 0-based, so
-                // offset = from + 1. NOTE: this computes `to - from + 1` (to-INCLUSIVE),
-                // which differs from Neo4j's half-open `[from..to)` semantics — a
-                // pre-existing discrepancy preserved byte-for-byte here (not introduced
-                // by the dialect refactor); tracked separately.
+                // both 1-based offset + element count. Cypher list ranges are 0-based
+                // and HALF-OPEN: `list[from..to]` yields indices [from, to), i.e.
+                // `to - from` elements. So offset = from + 1 and length = to - from.
                 let array_sql = array.to_sql();
                 let mapper = crate::sql_generator::function_mapper::current_function_mapper();
 
                 match (from, to) {
                     (Some(from_expr), Some(to_expr)) => {
-                        // [from..to] -> 1-based offset + length (to-inclusive, see above).
+                        // [from..to) -> 1-based offset + half-open length (to - from).
+                        // Floor at 0: when from > to the slice is empty, but a negative
+                        // length means "drop from the end" on ClickHouse arraySlice
+                        // (silent wrong data) and errors on Databricks slice().
                         mapper.array_slice(
                             &array_sql,
                             &format!("{} + 1", from_expr.to_sql()),
                             Some(&format!(
-                                "{} - {} + 1",
+                                "greatest({} - {}, 0)",
                                 to_expr.to_sql(),
                                 from_expr.to_sql()
                             )),
@@ -5895,12 +5896,8 @@ impl RenderExpr {
                         mapper.array_slice(&array_sql, &format!("{} + 1", from_expr.to_sql()), None)
                     }
                     (None, Some(to_expr)) => {
-                        // [..to] - from index 1, take to+1 elements.
-                        mapper.array_slice(
-                            &array_sql,
-                            "1",
-                            Some(&format!("{} + 1", to_expr.to_sql())),
-                        )
+                        // [..to) - from index 1, take `to` elements (indices [0, to)).
+                        mapper.array_slice(&array_sql, "1", Some(&to_expr.to_sql()))
                     }
                     (None, None) => {
                         // [..] - no bounds, return entire array (identity operation)

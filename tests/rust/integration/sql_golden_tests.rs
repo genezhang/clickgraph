@@ -96,6 +96,8 @@ const CORPUS: &[(&str, &str)] = &[
     ("whole_entity", "MATCH (u:User) RETURN u"),
     // List slicing -> arraySlice (CH) / slice (Spark). Both the 3-arg bounded
     // form and the 2-arg open-ended form (Spark needs a computed length).
+    // Cypher ranges are HALF-OPEN: [1..3] yields indices 1,2 (2 elements), so
+    // the rendered length is `to - from`, not `to - from + 1`.
     (
         "list_slice_bounded",
         "MATCH (u:User) RETURN [10, 20, 30, 40][1..3] AS s",
@@ -107,6 +109,12 @@ const CORPUS: &[(&str, &str)] = &[
     (
         "list_slice_to",
         "MATCH (u:User) RETURN [10, 20, 30, 40][..2] AS s",
+    ),
+    // from > to is valid Cypher and must yield []. The length must floor at 0:
+    // a negative length is silently wrong on CH arraySlice and errors on Spark slice.
+    (
+        "list_slice_empty",
+        "MATCH (u:User) RETURN [10, 20, 30, 40][3..1] AS s",
     ),
     // tail() -> CH arraySlice(list, 2) / Spark slice(list, 2, greatest(size-1, 0))
     ("list_tail", "MATCH (u:User) RETURN tail([10, 20, 30]) AS t"),
