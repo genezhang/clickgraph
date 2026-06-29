@@ -559,6 +559,47 @@ async fn multi_unwind_in_cte_projects_all_vars() {
     }
 }
 
+/// Regression for issue #405: a bidirectional (undirected) variable-length path
+/// combined with an UNWIND in the same WITH segment produces a *structured* CTE
+/// body with an inline UNION (the two VLP direction branches). The plan-level
+/// UNWIND expansion must appear in EVERY union branch — previously the union
+/// branches of `Cte::to_sql` never emitted `array_join`, so `n` was referenced
+/// but never expanded, yielding invalid SQL.
+#[tokio::test]
+async fn unwind_in_union_cte_body_per_dialect() {
+    let cypher =
+        "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User) UNWIND [1, 2] AS n WITH b, n RETURN b.id, n";
+
+    // ClickHouse: each of the two union branches needs its own ARRAY JOIN.
+    let ch = with_query_context(
+        QueryContext {
+            dialect: SqlDialect::ClickHouse,
+            ..QueryContext::default()
+        },
+        async { cypher_to_sql(cypher) },
+    )
+    .await;
+    assert!(
+        ch.contains("UNION ALL") && ch.matches("ARRAY JOIN [1, 2] AS n").count() >= 2,
+        "CH: each union branch must emit `ARRAY JOIN [1, 2] AS n`; got:\n{ch}"
+    );
+
+    // Databricks: each branch needs its own LATERAL VIEW explode.
+    let dbx = with_query_context(
+        QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        },
+        async { cypher_to_sql(cypher) },
+    )
+    .await;
+    assert!(
+        dbx.contains("UNION ALL")
+            && dbx.matches("LATERAL VIEW explode(array(1, 2)) AS n").count() >= 2,
+        "Databricks: each union branch must emit `LATERAL VIEW explode(array(1, 2)) AS n`; got:\n{dbx}"
+    );
+}
+
 /// `RETURN DISTINCT expr ORDER BY expr`: Spark resolves ORDER BY against the
 /// DISTINCT output, so the sort term must reference the projection's backtick
 /// alias, not the underlying `table.col`. ClickHouse keeps `table.col`.
