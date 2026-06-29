@@ -8749,23 +8749,32 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             }
                         }
 
-                        // Extract UNWIND alias from plan if present — UNWIND aliases are simple
+                        // Extract ALL UNWIND aliases from plan — UNWIND aliases are simple
                         // ARRAY JOIN column references, not table aliases to expand.
                         // Must recurse through wrapping nodes (Filter, Projection, etc.)
-                        // since UNWIND may not be at the top level.
-                        fn find_unwind_alias(plan: &LogicalPlan) -> Option<&str> {
+                        // AND through nested UNWINDs: `UNWIND .. AS x UNWIND .. AS y` binds
+                        // both x and y, and each must be emitted as a column (not expanded
+                        // as a graph alias, which would drop it from the CTE projection). (#404)
+                        fn collect_unwind_aliases(
+                            plan: &LogicalPlan,
+                            out: &mut std::collections::HashSet<String>,
+                        ) {
                             match plan {
-                                LogicalPlan::Unwind(u) => Some(u.alias.as_str()),
-                                LogicalPlan::Filter(f) => find_unwind_alias(&f.input),
-                                LogicalPlan::Projection(p) => find_unwind_alias(&p.input),
-                                LogicalPlan::OrderBy(ob) => find_unwind_alias(&ob.input),
-                                LogicalPlan::Limit(lim) => find_unwind_alias(&lim.input),
-                                LogicalPlan::Skip(s) => find_unwind_alias(&s.input),
-                                LogicalPlan::GroupBy(gb) => find_unwind_alias(&gb.input),
-                                _ => None,
+                                LogicalPlan::Unwind(u) => {
+                                    out.insert(u.alias.clone());
+                                    collect_unwind_aliases(&u.input, out);
+                                }
+                                LogicalPlan::Filter(f) => collect_unwind_aliases(&f.input, out),
+                                LogicalPlan::Projection(p) => collect_unwind_aliases(&p.input, out),
+                                LogicalPlan::OrderBy(ob) => collect_unwind_aliases(&ob.input, out),
+                                LogicalPlan::Limit(lim) => collect_unwind_aliases(&lim.input, out),
+                                LogicalPlan::Skip(s) => collect_unwind_aliases(&s.input, out),
+                                LogicalPlan::GroupBy(gb) => collect_unwind_aliases(&gb.input, out),
+                                _ => {}
                             }
                         }
-                        let unwind_alias = find_unwind_alias(plan_to_render);
+                        let mut unwind_aliases = std::collections::HashSet::new();
+                        collect_unwind_aliases(plan_to_render, &mut unwind_aliases);
 
                         let select_items: Vec<SelectItem> = items.iter()
                                     .flat_map(|item| {
@@ -8773,7 +8782,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                         match &item.expression {
                                             crate::query_planner::logical_expr::LogicalExpr::TableAlias(alias) => {
                                                 // UNWIND aliases are ARRAY JOIN columns — emit a simple column reference
-                                                if unwind_alias == Some(alias.0.as_str()) {
+                                                if unwind_aliases.contains(alias.0.as_str()) {
                                                     log::debug!("🔧 build_chained_with_match_cte_plan: UNWIND alias '{}' — simple column reference", alias.0);
                                                     return vec![SelectItem {
                                                         expression: super::render_expr::RenderExpr::ColumnAlias(
