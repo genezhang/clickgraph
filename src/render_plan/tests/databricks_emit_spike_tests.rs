@@ -516,6 +516,49 @@ async fn unwind_in_cte_per_dialect() {
     );
 }
 
+/// Regression for issue #404: with MULTIPLE UNWINDs in one segment wrapped into
+/// a CTE (`UNWIND .. AS x UNWIND .. AS y WITH x, y ...`), every UNWIND variable
+/// must appear in the CTE projection. Previously only the outermost UNWIND alias
+/// was recognized; the others were treated as graph aliases, expanded to nothing,
+/// and dropped from the SELECT — so the outer query referenced an undefined column.
+#[tokio::test]
+async fn multi_unwind_in_cte_projects_all_vars() {
+    let cypher = "UNWIND [1, 2] AS x UNWIND [3, 4] AS y WITH x, y WHERE x < y RETURN x, y";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = with_query_context(
+            QueryContext {
+                dialect,
+                ..QueryContext::default()
+            },
+            async { cypher_to_sql(cypher) },
+        )
+        .await;
+        // Isolate the CTE body's projection list (between `(SELECT` and its `FROM`)
+        // so we don't accidentally match the OUTER SELECT's `x_y.x AS "x"`.
+        let cte_projection = sql
+            .split("(SELECT")
+            .nth(1)
+            .and_then(|s| s.split("FROM").next())
+            .unwrap_or("");
+        // The bug dropped `x` from this projection, leaving only `y AS "y"`.
+        assert!(
+            cte_projection.contains("x AS") && cte_projection.contains("y AS"),
+            "{dialect:?}: CTE projection must include both x and y; got projection:\n{cte_projection}\n--- full SQL ---\n{sql}"
+        );
+        // Both array expansions must be present (guards the #401 path too).
+        let expansions = if dialect == SqlDialect::Databricks {
+            sql.matches("LATERAL VIEW explode(").count()
+        } else {
+            sql.matches("ARRAY JOIN").count()
+        };
+        assert_eq!(
+            expansions, 2,
+            "{dialect:?}: expected 2 array expansions (x and y); got {expansions} in:\n{sql}"
+        );
+    }
+}
+
 /// `RETURN DISTINCT expr ORDER BY expr`: Spark resolves ORDER BY against the
 /// DISTINCT output, so the sort term must reference the projection's backtick
 /// alias, not the underlying `table.col`. ClickHouse keeps `table.col`.
