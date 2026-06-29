@@ -112,14 +112,14 @@ INSERT INTO ldbc_mini.Person_hasInterest_Tag VALUES
 (1262649600000, 5, 5);
 
 CREATE TABLE IF NOT EXISTS ldbc_mini.Person_workAt_Organisation (
-    creationDate Int64, PersonId UInt64, OrganisationId UInt64, workFrom Int32
+    creationDate Int64, PersonId UInt64, CompanyId UInt64, workFrom Int32
 ) ENGINE = Memory;
 
 INSERT INTO ldbc_mini.Person_workAt_Organisation VALUES
 (1262304000000, 1, 3, 2015), (1262390400000, 2, 4, 2018), (1262649600000, 5, 3, 2020);
 
 CREATE TABLE IF NOT EXISTS ldbc_mini.Person_studyAt_Organisation (
-    creationDate Int64, PersonId UInt64, OrganisationId UInt64, classYear Int32
+    creationDate Int64, PersonId UInt64, UniversityId UInt64, classYear Int32
 ) ENGINE = Memory;
 
 INSERT INTO ldbc_mini.Person_studyAt_Organisation VALUES

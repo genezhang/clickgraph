@@ -106,7 +106,12 @@ def _coerce(v):
         except ValueError:
             return v
     if isinstance(v, list):
-        return [_coerce(x) for x in v]
+        # Order-insensitive list comparison. The sweep already compares ROWS
+        # order-insensitively (canon sorts them), so collected lists without an
+        # inner ORDER BY — e.g. complex-12's `collect(DISTINCT tag.name)` — are
+        # free to come back in any element order on either backend. Sort the
+        # coerced elements so element ordering doesn't produce false MISMATCHes.
+        return sorted((_coerce(x) for x in v), key=lambda x: json.dumps(x, sort_keys=True, default=str))
     if isinstance(v, dict):
         return {k: _coerce(x) for k, x in v.items()}
     return v
