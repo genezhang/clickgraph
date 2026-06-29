@@ -5286,6 +5286,11 @@ fn detect_vlp_endpoint_from_plan(plan: &LogicalPlan, alias: &str) -> Option<VlpE
         LogicalPlan::Filter(filter) => detect_vlp_endpoint_from_plan(&filter.input, alias),
         LogicalPlan::Limit(limit) => detect_vlp_endpoint_from_plan(&limit.input, alias),
         LogicalPlan::GraphJoins(gj) => detect_vlp_endpoint_from_plan(&gj.input, alias),
+        // UNWIND wraps the MATCH in a WITH segment (`MATCH ...VLP... UNWIND ... WITH b,n`),
+        // so recurse into its input to find the VLP GraphRel below — otherwise a VLP
+        // endpoint like `b` is missed here, falls through to STEP 3, and is rendered
+        // against a non-existent base alias instead of the VLP CTE's end_* columns. (#410)
+        LogicalPlan::Unwind(u) => detect_vlp_endpoint_from_plan(&u.input, alias),
         LogicalPlan::WithClause(wc) => detect_vlp_endpoint_from_plan(&wc.input, alias),
         LogicalPlan::OrderBy(ob) => detect_vlp_endpoint_from_plan(&ob.input, alias),
         LogicalPlan::Skip(skip) => detect_vlp_endpoint_from_plan(&skip.input, alias),
