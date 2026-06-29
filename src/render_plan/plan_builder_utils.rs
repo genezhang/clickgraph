@@ -8755,6 +8755,13 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         // AND through nested UNWINDs: `UNWIND .. AS x UNWIND .. AS y` binds
                         // both x and y, and each must be emitted as a column (not expanded
                         // as a graph alias, which would drop it from the CTE projection). (#404)
+                        //
+                        // NOTE: this deliberately STOPS at a WithClause barrier (no
+                        // `WithClause` arm) — `plan_to_render` is already `wc.input`, so any
+                        // deeper WithClause is a prior segment whose UNWIND vars are now CTE
+                        // columns and must NOT be re-emitted as bare columns. The similar
+                        // `find_unwind_aliases` helper below DOES cross the barrier on purpose
+                        // (for ID-column detection), so the two are not interchangeable.
                         fn collect_unwind_aliases(
                             plan: &LogicalPlan,
                             out: &mut std::collections::HashSet<String>,
