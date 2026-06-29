@@ -559,6 +559,36 @@ async fn multi_unwind_in_cte_projects_all_vars() {
     }
 }
 
+/// Regression for issue #410: a VLP endpoint (`b`) carried through a WITH segment
+/// alongside an UNWIND must keep its OWN columns in the CTE projection — including
+/// its id. Previously `detect_vlp_endpoint_from_plan` had no `Unwind` arm, so it
+/// stopped at the UNWIND node and never found the VLP GraphRel below; `b` then fell
+/// through to the base-table expansion and was dropped from the CTE projection,
+/// causing the outer `b.id` to silently resolve to the UNWIND column.
+#[tokio::test]
+async fn vlp_endpoint_kept_in_cte_with_unwind() {
+    // setup_test_schema's User node_id is named `id`, so `b.id` exercises the id path.
+    let cypher =
+        "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) UNWIND [1, 2] AS n WITH b, n RETURN b.id, n";
+    let sql = cypher_to_sql(cypher);
+
+    // The CTE body must project b's id as its own VLP column (end_id → p1_b_id),
+    // not drop it. Before the fix the projection had only `n`.
+    assert!(
+        sql.contains("p1_b_id"),
+        "VLP endpoint b's id must be projected in the CTE (p1_b_id); got:\n{sql}"
+    );
+    assert!(
+        sql.contains("end_id AS \"p1_b_id\""),
+        "b's id must come from the VLP CTE's end_id column; got:\n{sql}"
+    );
+    // The outer `b.id` must resolve to b's own column, never to the UNWIND column `n`.
+    assert!(
+        sql.contains("p1_b_id AS \"b.id\""),
+        "outer b.id must map to b's id column, not the UNWIND column; got:\n{sql}"
+    );
+}
+
 /// Regression for issue #405: a bidirectional (undirected) variable-length path
 /// combined with an UNWIND in the same WITH segment produces a *structured* CTE
 /// body with an inline UNION (the two VLP direction branches). The plan-level
