@@ -4755,11 +4755,12 @@ impl ToSql for Cte {
                                 cte_body.push_str(&plan.select.to_sql());
                                 cte_body.push_str(&plan.from.to_sql());
                                 cte_body.push_str(&plan.joins.to_sql());
-                                // Plan-level UNWIND expansion (#405). Note: the per-branch
-                                // `render_union_branch_sql` below emits each branch's own
-                                // array_join; a plan-level UNWIND combined with this
-                                // no-custom-select shape is not a path the planner currently
-                                // produces (WITH segments always carry a custom select).
+                                // Plan-level UNWIND expansion (#405). Defensive: this
+                                // no-custom-select shape isn't produced for WITH+UNWIND
+                                // (WITH segments always carry a custom select), and the line
+                                // is a no-op when array_join is empty. Note the per-branch
+                                // `render_union_branch_sql` below does NOT emit array_join, so
+                                // this only covers the first (plan-level) branch.
                                 cte_body.push_str(&plan.array_join.to_sql());
                                 cte_body.push_str(&plan.filters.to_sql());
 
