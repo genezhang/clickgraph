@@ -59,24 +59,22 @@ KNOWN_SKIPS: dict[str, str] = {
 EXPECTED_FAILURES: dict[str, str] = {
     # A. FunctionMapper gaps — residual unmapped routines after the
     #    anyLast / countIf / temporal-extraction / has / toString sweep.
-    "bi-6":       "[A] FunctionMapper: bare `tuple(...)` still emitted (NodeId::sql_tuple / VLP path composite)",
     "bi-13":      "[A] FunctionMapper: `caseWithExpression` not mapped to Spark CASE",
-    "bi-17":      "[A] FunctionMapper: `toUnixTimestamp64Milli` leaking in duration-arithmetic path",
-    "complex-5":  "[A] FunctionMapper: `countIf(cond, val)` rewritten to `count_if(cond, val)` but Spark `count_if` takes 1 arg",
-    "complex-12": "[A] FunctionMapper: `formatRowNoNewline` not mapped (composite-key emission helper)",
     "complex-14": "[D] unsupported: query uses GDS (`gds.graph.project.cypher`, `gds.shortestPath.dijkstra.stream`) which we don't translate; once past shortestPath BFS, the trailing `WITH 42 AS dummy` carries through and downstream column refs fail with INVALID_EXTRACT_BASE_FIELD_TYPE",
-    "short-2":    "[A] FunctionMapper: `formatRowNoNewline` not mapped",
     # B. Parse errors
     "bi-8":       "[B] PARSE_SYNTAX_ERROR near `ARRAY` — VLP CTE generation",
     "bi-12":      "[B] PARSE_SYNTAX_ERROR — surfaced after FunctionMapper closure",
-    "complex-10": "[B] PARSE_SYNTAX_ERROR near `\"posts\"` — double-quote identifier vs Spark backtick",
     # C. Other resolution issues — distinct from the dialect-agnostic
     # `with_*_cte_N.col` → `alias.col` rewrite (which now passes 8 queries).
     "bi-14":     "[C] CTE chain: same alias `person1` rebound across 5 chained CTEs; final CTE's `person1.score` doesn't resolve against the previous CTE's schema",
-    # complex-3 fixed (#399): the `t5.CountryId` failure was a benchmark-DDL
-    # inconsistency — the Message_isLocatedIn_Place view exposed PlaceId while the
-    # schema's Message IS_LOCATED_IN Country edge maps to_id: CountryId. All seed
-    # views (incl. mini_delta_seed.sql) now expose CountryId; complex-3 executes.
+    # ---------------------------------------------------------------------------
+    # Refreshed 2026-06-28: a full sweep (CLICKGRAPH_SPARK_TESTS=1) showed the
+    # entries below now PASS — prior dialect/FunctionMapper merges fixed them but
+    # this strict-xfail list was never updated, so each reported XPASS(strict).
+    # Dropped (now passing): complex-3 (#399 seed fix), bi-6 (tuple→struct),
+    # bi-17 (toUnixTimestamp64Milli), complex-5 (countIf 2-arg→count(CASE)),
+    # complex-10 (double-quote→backtick), complex-12 + short-2 (formatRowNoNewline).
+    # ---------------------------------------------------------------------------
 }
 
 PARAM_REF = re.compile(r"\$([a-zA-Z_]\w*)")
