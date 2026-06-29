@@ -350,6 +350,24 @@ impl PropertyRequirementsAnalyzer {
         }
     }
 
+    /// Resolve the Cypher property name that maps to an alias's node_id column.
+    ///
+    /// Returns the property whose schema mapping equals the node's `node_id` column —
+    /// e.g. `"user_id"` for a `User` node whose `node_id` is `user_id`, or `"id"` when
+    /// the schema literally names the id property `id`. Returns `None` if the alias has
+    /// no resolvable label/node schema (e.g. it's a relationship or a CTE projection).
+    fn node_id_property_name(plan_ctx: &PlanCtx, alias: &str) -> Option<String> {
+        let label = plan_ctx.get_table_ctx(alias).ok()?.get_label_opt()?;
+        let node_schema = plan_ctx.schema().node_schema(&label).ok()?;
+        let id_col = node_schema.node_id.column_or_error().ok()?;
+        // Find the Cypher property whose column mapping equals the node_id column.
+        node_schema
+            .property_mappings
+            .iter()
+            .find(|(_, mapped)| mapped.raw() == id_col)
+            .map(|(prop, _)| prop.clone())
+    }
+
     /// Extract property requirements from an expression
     fn analyze_expression(expr: &LogicalExpr, requirements: &mut PropertyRequirements) {
         match expr {
@@ -514,6 +532,41 @@ impl AnalyzerPass for PropertyRequirementsAnalyzer {
                         );
                         requirements.require_all(end);
                     }
+                }
+            }
+        }
+
+        // Post-process: normalize generic `.id` to the node's real node_id property.
+        //
+        // Cypher's `.id` is a synonym for node identity, but property pruning and CTE
+        // column naming key on the Cypher property name. When a schema renames its
+        // node_id (e.g. `User.user_id` instead of a literal `id` property), a generic
+        // `b.id` registers the literal `"id"`, which never matches the schema's
+        // `"user_id"` — so the id gets pruned out of WITH-CTE projections and the outer
+        // post-WITH reference dangles. For each alias that requires generic `"id"`, also
+        // require the node's actual node_id Cypher property so pruning keeps it by name.
+        // (Outer resolution of the generic `.id` is handled in variable_scope::resolve.)
+        // See issue #411.
+        let id_requiring_aliases: Vec<String> = requirements
+            .aliases()
+            .filter(|a| {
+                !requirements.requires_all(a)
+                    && requirements
+                        .get_requirements(a)
+                        .map(|props| props.contains("id"))
+                        .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+        for alias in &id_requiring_aliases {
+            if let Some(id_prop) = Self::node_id_property_name(plan_ctx, alias) {
+                if id_prop != "id" {
+                    log::info!(
+                        "📋 Normalizing generic '.id' for alias '{}' → also require node_id property '{}'",
+                        alias,
+                        id_prop
+                    );
+                    requirements.require_property(alias, &id_prop);
                 }
             }
         }

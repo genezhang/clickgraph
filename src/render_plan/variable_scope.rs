@@ -145,6 +145,14 @@ impl<'a> VariableScope<'a> {
                     column: cypher_property.to_string(),
                 };
             }
+            // Generic `.id` synonym: Cypher's `.id` is the node identity. When a schema
+            // renames its node_id (e.g. `User.user_id`), the CTE projected the identity
+            // column under the real property name (`user_id`), so a literal `.id` lookup
+            // misses the mapping. Retry using the node's actual node_id property. (issue #411)
+            if let Some(resolved) = self.resolve_generic_id_in_cte(alias, cypher_property, cte_info)
+            {
+                return resolved;
+            }
             log::debug!(
                 "VariableScope: {}.{} is CTE-scoped but property not found in mapping",
                 alias,
@@ -177,6 +185,16 @@ impl<'a> VariableScope<'a> {
                     column: cte_col.clone(),
                 };
             }
+            // Generic `.id` synonym for a renamed node_id — see the by-alias branch
+            // above. Retry with the node's actual id property. (issue #411)
+            // NOTE: here `alias` is the CTE *name* (e.g. JOIN-condition references), which
+            // won't resolve via `find_label_for_alias_in_plan`, so this relies on
+            // `cte_info.labels` being populated. When it isn't, generic `.id` stays
+            // Unresolved — matching pre-#411 behavior for this path (no regression).
+            if let Some(resolved) = self.resolve_generic_id_in_cte(alias, cypher_property, cte_info)
+            {
+                return resolved;
+            }
         }
         if found_cte {
             log::debug!(
@@ -202,6 +220,73 @@ impl<'a> VariableScope<'a> {
         }
 
         ResolvedProperty::Unresolved
+    }
+
+    /// Resolve a generic `.id` reference against a CTE variable whose node_id property
+    /// is renamed (e.g. `user_id`). Returns the CTE column the identity was projected
+    /// under, or `None` when `cypher_property` isn't `"id"`, the node_id is literally
+    /// `"id"`, or the CTE doesn't expose the id. Shared by the by-alias and by-cte-name
+    /// resolution branches. (issue #411)
+    fn resolve_generic_id_in_cte(
+        &self,
+        alias: &str,
+        cypher_property: &str,
+        cte_info: &CteVariableInfo,
+    ) -> Option<ResolvedProperty> {
+        if cypher_property != "id" {
+            return None;
+        }
+        let id_prop = self.node_id_property_for_alias(alias, cte_info)?;
+        if id_prop == "id" {
+            return None;
+        }
+        let cte_col = cte_info.property_mapping.get(&id_prop)?;
+        let from_alias = cte_info.effective_from_alias();
+        log::debug!(
+            "VariableScope: {}.id → CTE column {}.{} (via renamed node_id '{}')",
+            alias,
+            from_alias,
+            cte_col,
+            id_prop
+        );
+        Some(ResolvedProperty::CteColumn {
+            cte_name: from_alias,
+            column: cte_col.clone(),
+        })
+    }
+
+    /// Resolve the Cypher property name that maps to an alias's node_id column.
+    ///
+    /// Prefers the labels recorded on the CTE variable (preserved across the WITH
+    /// barrier); falls back to resolving the alias's label from the plan tree. Returns
+    /// the property whose schema mapping equals the node's `node_id` column — e.g.
+    /// `"user_id"` for a renamed node_id, or `"id"` when the schema names it literally.
+    fn node_id_property_for_alias(
+        &self,
+        alias: &str,
+        cte_info: &CteVariableInfo,
+    ) -> Option<String> {
+        let labels: Vec<String> = if !cte_info.labels.is_empty() {
+            cte_info.labels.clone()
+        } else {
+            find_label_for_alias_in_plan(self.plan, alias)
+                .into_iter()
+                .collect()
+        };
+        for label in labels {
+            if let Ok(node_schema) = self.schema.node_schema(&label) {
+                if let Ok(id_col) = node_schema.node_id.column_or_error() {
+                    if let Some((prop, _)) = node_schema
+                        .property_mappings
+                        .iter()
+                        .find(|(_, mapped)| mapped.raw() == id_col)
+                    {
+                        return Some(prop.clone());
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Check if an alias is a CTE-scoped variable.
