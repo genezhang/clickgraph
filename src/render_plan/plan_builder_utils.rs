@@ -5700,13 +5700,16 @@ pub(crate) fn expand_table_alias_to_select_items(
                 // (these are the VLP CTE column names, not raw DB column names)
                 // So we should NOT prefix them again - use them directly
                 if let Ok(id_col) = plan.find_id_column_for_alias(alias) {
-                    // 🔧 FIX: Don't double-prefix VLP ID columns
-                    // If the id_col already starts with the prefix (start_id, end_id), use it directly
-                    // Otherwise, apply the prefix (e.g., user_id -> end_user_id)
+                    // 🔧 FIX: Don't double-prefix VLP ID columns.
+                    // The VLP recursive CTE ALWAYS names the identity column `start_id`/`end_id`
+                    // (generic `_id` suffix), regardless of the schema's node_id property name —
+                    // see `add_property_selections` in cte_manager which skips `prop.alias == "id"`
+                    // and emits the id explicitly as `start_id`/`end_id`. So a renamed node_id
+                    // (e.g. `user_id`) must still reference `end_id`, NOT `end_user_id` (issue #411).
                     let vlp_col_name = if id_col.starts_with(col_prefix) {
                         id_col.clone()
                     } else {
-                        format!("{}_{}", col_prefix, id_col)
+                        format!("{}_id", col_prefix)
                     };
                     // 🔧 CRITICAL FIX (Jan 23, 2026): Don't use explicit table alias for VLP columns during WITH clause expansion
                     // During WITH clause rendering, the FROM alias isn't final yet, so we generate columns without
@@ -11902,14 +11905,23 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     .collect();
 
                 // Get labels from current plan tree — try renamed alias first,
-                // then fall back to original alias (for renamed variables)
-                let labels = crate::query_planner::logical_expr::expression_rewriter::find_label_for_alias_in_plan(
-                    &current_plan, alias,
-                ).or_else(|| {
-                    crate::query_planner::logical_expr::expression_rewriter::find_label_for_alias_in_plan(
-                        &current_plan, lookup_alias,
-                    )
-                }).map(|l| vec![l]).unwrap_or_default();
+                // then fall back to original alias (for renamed variables).
+                // After the WITH→CTE rewrite, `current_plan` may no longer expose the
+                // source node (e.g. a graph-rel MATCH gets restructured), so also fall
+                // back to the WITH bodies (`with_plans`), which still contain the source
+                // GraphNode and its label. Missing labels break generic `.id` resolution
+                // for renamed node_ids. (issue #411)
+                use crate::query_planner::logical_expr::expression_rewriter::find_label_for_alias_in_plan;
+                let labels = find_label_for_alias_in_plan(&current_plan, alias)
+                    .or_else(|| find_label_for_alias_in_plan(&current_plan, lookup_alias))
+                    .or_else(|| {
+                        with_plans.iter().find_map(|p| {
+                            find_label_for_alias_in_plan(p, alias)
+                                .or_else(|| find_label_for_alias_in_plan(p, lookup_alias))
+                        })
+                    })
+                    .map(|l| vec![l])
+                    .unwrap_or_default();
 
                 scope_cte_variables.insert(
                     alias.clone(),
