@@ -4664,11 +4664,15 @@ impl ToSql for Cte {
                             );
 
                             cte_body.push_str(&format!("SELECT {} FROM (\n", outer_select));
+                            // Plan-level UNWIND expansion applies to every union branch
+                            // (see the analogous non-aggregate block below). (#405)
+                            let array_join_sql = plan.array_join.to_sql();
 
                             // First branch with non-aggregate inner SELECT
                             cte_body.push_str(&inner_select_sql);
                             cte_body.push_str(&plan.from.to_sql());
                             cte_body.push_str(&plan.joins.to_sql());
+                            cte_body.push_str(&array_join_sql);
                             cte_body.push_str(&plan.filters.to_sql());
 
                             if let Some(union) = &plan.union.0 {
@@ -4681,6 +4685,11 @@ impl ToSql for Cte {
                                     cte_body.push_str(&inner_select_sql);
                                     cte_body.push_str(&branch.from.to_sql());
                                     cte_body.push_str(&branch.joins.to_sql());
+                                    if branch.array_join.0.is_empty() {
+                                        cte_body.push_str(&array_join_sql);
+                                    } else {
+                                        cte_body.push_str(&branch.array_join.to_sql());
+                                    }
                                     cte_body.push_str(&branch.filters.to_sql());
                                 }
                             }
@@ -4688,6 +4697,12 @@ impl ToSql for Cte {
                             cte_body.push_str(") AS __union\n");
                         } else if has_custom_select && plan.from.0.is_some() {
                             let select_sql = plan.select.to_sql();
+                            // Plan-level UNWIND expansion (ARRAY JOIN / LATERAL VIEW) applies
+                            // to EVERY union branch — e.g. a bidirectional VLP + UNWIND in one
+                            // WITH segment yields `(... FROM vlp_a_b ARRAY JOIN n) UNION ALL
+                            // (... FROM vlp_b_a ARRAY JOIN n)`. Emit it after each branch's
+                            // FROM/JOINs (matching the standard branch's order). (#405)
+                            let array_join_sql = plan.array_join.to_sql();
 
                             if has_modifiers {
                                 // Need wrapper for GROUP BY/HAVING/ORDER BY/LIMIT
@@ -4698,6 +4713,7 @@ impl ToSql for Cte {
                             cte_body.push_str(&select_sql);
                             cte_body.push_str(&plan.from.to_sql());
                             cte_body.push_str(&plan.joins.to_sql());
+                            cte_body.push_str(&array_join_sql);
                             cte_body.push_str(&plan.filters.to_sql());
 
                             if let Some(union) = &plan.union.0 {
@@ -4711,6 +4727,13 @@ impl ToSql for Cte {
                                     cte_body.push_str(&select_sql);
                                     cte_body.push_str(&branch.from.to_sql());
                                     cte_body.push_str(&branch.joins.to_sql());
+                                    // Prefer the branch's own array_join if present, else the
+                                    // shared plan-level UNWIND expansion.
+                                    if branch.array_join.0.is_empty() {
+                                        cte_body.push_str(&array_join_sql);
+                                    } else {
+                                        cte_body.push_str(&branch.array_join.to_sql());
+                                    }
                                     cte_body.push_str(&branch.filters.to_sql());
                                 }
                             }
@@ -4732,6 +4755,13 @@ impl ToSql for Cte {
                                 cte_body.push_str(&plan.select.to_sql());
                                 cte_body.push_str(&plan.from.to_sql());
                                 cte_body.push_str(&plan.joins.to_sql());
+                                // Plan-level UNWIND expansion (#405). Defensive: this
+                                // no-custom-select shape isn't produced for WITH+UNWIND
+                                // (WITH segments always carry a custom select), and the line
+                                // is a no-op when array_join is empty. Note the per-branch
+                                // `render_union_branch_sql` below does NOT emit array_join, so
+                                // this only covers the first (plan-level) branch.
+                                cte_body.push_str(&plan.array_join.to_sql());
                                 cte_body.push_str(&plan.filters.to_sql());
 
                                 if let Some(union) = &plan.union.0 {
