@@ -950,20 +950,42 @@ fn is_valid_direction_branch(plan: &Arc<LogicalPlan>, graph_schema: &GraphSchema
                             all_invalid = false;
                             break;
                         }
+                        // Label-compatibility helpers that mirror the engine's
+                        // canonical matching (match_type_inference::label_matches_*):
+                        // a label is compatible with a schema role if it equals the
+                        // role's node type OR is enumerated in the polymorphic
+                        // from_label_values/to_label_values set. ($any is handled
+                        // above.)
+                        let from_compatible = |l: &String| {
+                            l == schema_from
+                                || rel_schema
+                                    .from_label_values
+                                    .as_ref()
+                                    .is_some_and(|v| v.contains(l))
+                        };
+                        let to_compatible = |l: &String| {
+                            l == schema_to
+                                || rel_schema
+                                    .to_label_values
+                                    .as_ref()
+                                    .is_some_and(|v| v.contains(l))
+                        };
                         // A KNOWN endpoint label that contradicts the schema's
                         // role for this rel_type makes this direction invalid —
                         // even when the OTHER endpoint is unlabeled. Without this,
                         // `(a:Group)-[:MEMBER_OF]-(o)` kept the impossible branch
                         // binding Group as MEMBER_OF's User-typed from_node, which
                         // generated a join on a non-existent column (`a.user_id`).
-                        if from_label.as_ref().is_some_and(|l| l != schema_from)
-                            || to_label.as_ref().is_some_and(|l| l != schema_to)
+                        // A polymorphic subtype label (in *_label_values) is NOT a
+                        // contradiction.
+                        if from_label.as_ref().is_some_and(|l| !from_compatible(l))
+                            || to_label.as_ref().is_some_and(|l| !to_compatible(l))
                         {
                             continue;
                         }
                         // Check explicit labels
                         if let (Some(from), Some(to)) = (&from_label, &to_label) {
-                            if from == schema_from && to == schema_to {
+                            if from_compatible(from) && to_compatible(to) {
                                 all_invalid = false;
                                 break;
                             }
@@ -1724,6 +1746,128 @@ mod tests {
         assert!(
             matches!(result, Transformed::No(_)),
             "Directed VLP multi-type should not be transformed"
+        );
+    }
+
+    // ----- is_valid_direction_branch: label-incompatible direction pruning -----
+
+    use crate::graph_catalog::config::Identifier;
+    use crate::graph_catalog::graph_schema::RelationshipSchema;
+    use crate::graph_catalog::schema_types::SchemaType;
+
+    fn make_rel_schema(
+        from_node: &str,
+        to_node: &str,
+        from_label_values: Option<Vec<String>>,
+    ) -> RelationshipSchema {
+        RelationshipSchema {
+            database: "test_db".to_string(),
+            table_name: "memberships".to_string(),
+            column_names: vec!["from_col".to_string(), "to_col".to_string()],
+            from_node: from_node.to_string(),
+            to_node: to_node.to_string(),
+            from_node_table: "from_tbl".to_string(),
+            to_node_table: "to_tbl".to_string(),
+            from_id: Identifier::from("from_col"),
+            to_id: Identifier::from("to_col"),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::Integer,
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            edge_id: None,
+            type_column: None,
+            from_label_column: from_label_values.as_ref().map(|_| "from_type".to_string()),
+            to_label_column: None,
+            from_label_values,
+            to_label_values: None,
+            from_node_properties: None,
+            to_node_properties: None,
+            is_fk_edge: false,
+            constraints: None,
+            edge_id_types: None,
+            source: None,
+            property_types: HashMap::new(),
+        }
+    }
+
+    /// Build an undirected (`was_undirected = Some(true)`) single-type GraphRel
+    /// between two labeled endpoints.
+    fn make_undirected_rel(
+        left_label: &str,
+        right_label: &str,
+        rel_type: &str,
+    ) -> Arc<LogicalPlan> {
+        let left = make_test_node("from_tbl", "a", left_label);
+        let right = make_test_node("to_tbl", "b", right_label);
+        let mut gr = make_test_graph_rel(
+            left,
+            right,
+            "r",
+            "memberships",
+            "a",
+            "b",
+            Direction::Outgoing,
+            rel_type,
+        );
+        gr.was_undirected = Some(true);
+        Arc::new(LogicalPlan::GraphRel(gr))
+    }
+
+    #[test]
+    fn direction_with_contradicting_known_label_is_pruned() {
+        // MEMBER_OF is User -> Group. The swapped branch binds Group as the
+        // from_node — impossible — and must be rejected.
+        let mut rels = HashMap::new();
+        rels.insert(
+            "MEMBER_OF".to_string(),
+            make_rel_schema("User", "Group", None),
+        );
+        let schema = GraphSchema::build(1, "test_db".to_string(), HashMap::new(), rels);
+
+        let bad = make_undirected_rel("Group", "User", "MEMBER_OF");
+        assert!(
+            !is_valid_direction_branch(&bad, &schema),
+            "Group-as-from_node contradicts MEMBER_OF (User->Group); must be invalid"
+        );
+
+        let good = make_undirected_rel("User", "Group", "MEMBER_OF");
+        assert!(
+            is_valid_direction_branch(&good, &schema),
+            "User->Group is the schema direction; must be valid"
+        );
+    }
+
+    #[test]
+    fn polymorphic_subtype_label_is_not_pruned() {
+        // POSTED's from_node is the concrete label `Account`, but `User` is an
+        // enumerated polymorphic subtype (from_label_values). A `(:User)` endpoint
+        // must NOT be pruned as contradicting — it is a valid from-node.
+        let mut rels = HashMap::new();
+        rels.insert(
+            "POSTED".to_string(),
+            make_rel_schema(
+                "Account",
+                "Group",
+                Some(vec!["User".to_string(), "Bot".to_string()]),
+            ),
+        );
+        let schema = GraphSchema::build(1, "test_db".to_string(), HashMap::new(), rels);
+
+        let poly = make_undirected_rel("User", "Group", "POSTED");
+        assert!(
+            is_valid_direction_branch(&poly, &schema),
+            "User is in POSTED.from_label_values; the direction must remain valid"
+        );
+
+        // A label that is neither the concrete from_node nor a polymorphic subtype
+        // is still correctly pruned.
+        let bad = make_undirected_rel("Group", "Group", "POSTED");
+        assert!(
+            !is_valid_direction_branch(&bad, &schema),
+            "Group is not a valid POSTED from-node (not Account, not a subtype)"
         );
     }
 }
