@@ -4,6 +4,7 @@
 // Note: Helper functions for VLP CTE generation are kept for complex path patterns
 #![allow(dead_code)]
 
+use crate::clickhouse_query_generator::quote_identifier;
 use crate::clickhouse_query_generator::variable_length_cte::NodeProperty;
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
@@ -4015,11 +4016,15 @@ pub fn extract_ctes_with_context(
                             .property_mappings
                             .iter()
                             .map(|(cypher_name, prop_val)| {
-                                let col_name = match prop_val {
-                                    PropertyValue::Column(c) => c.clone(),
-                                    PropertyValue::Expression(e) => e.clone(), // Use expression as-is
+                                // Quote physical columns (dotted names like `id.orig_h` must be
+                                // backtick-quoted); expressions are emitted verbatim.
+                                let col_ref = match prop_val {
+                                    PropertyValue::Column(c) => {
+                                        format!("{rel_table}.{}", quote_identifier(c))
+                                    }
+                                    PropertyValue::Expression(e) => format!("{rel_table}.{e}"),
                                 };
-                                format!("{rel_table}.{col_name} AS {cypher_name}")
+                                format!("{col_ref} AS {cypher_name}")
                             })
                             .collect();
 
@@ -4039,24 +4044,22 @@ pub fn extract_ctes_with_context(
                         let start_prop_cols: Vec<String> = from_node_schema
                             .property_mappings
                             .values()
-                            .map(|prop_val| {
-                                let col_name = match prop_val {
-                                    PropertyValue::Column(c) => c.clone(),
-                                    PropertyValue::Expression(e) => e.clone(),
-                                };
-                                format!("{from_table}.{col_name}")
+                            .map(|prop_val| match prop_val {
+                                PropertyValue::Column(c) => {
+                                    format!("{from_table}.{}", quote_identifier(c))
+                                }
+                                PropertyValue::Expression(e) => format!("{from_table}.{e}"),
                             })
                             .collect();
 
                         let end_prop_cols: Vec<String> = to_node_schema
                             .property_mappings
                             .values()
-                            .map(|prop_val| {
-                                let col_name = match prop_val {
-                                    PropertyValue::Column(c) => c.clone(),
-                                    PropertyValue::Expression(e) => e.clone(),
-                                };
-                                format!("{to_table}.{col_name}")
+                            .map(|prop_val| match prop_val {
+                                PropertyValue::Column(c) => {
+                                    format!("{to_table}.{}", quote_identifier(c))
+                                }
+                                PropertyValue::Expression(e) => format!("{to_table}.{e}"),
                             })
                             .collect();
 
@@ -4081,18 +4084,24 @@ pub fn extract_ctes_with_context(
                         // Build WHERE clauses for polymorphic type filtering
                         let mut where_clauses = Vec::new();
                         if let Some(ref type_col) = rel_schema.type_column {
-                            where_clauses
-                                .push(format!("{rel_table}.{type_col} = '{base_rel_type}'"));
+                            where_clauses.push(format!(
+                                "{rel_table}.{} = '{base_rel_type}'",
+                                quote_identifier(type_col)
+                            ));
                         }
                         if let Some(ref from_lbl_col) = rel_schema.from_label_column {
                             where_clauses.push(format!(
-                                "{rel_table}.{from_lbl_col} = '{}'",
+                                "{rel_table}.{} = '{}'",
+                                quote_identifier(from_lbl_col),
                                 combo.from_label
                             ));
                         }
                         if let Some(ref to_lbl_col) = rel_schema.to_label_column {
-                            where_clauses
-                                .push(format!("{rel_table}.{to_lbl_col} = '{}'", combo.to_label));
+                            where_clauses.push(format!(
+                                "{rel_table}.{} = '{}'",
+                                quote_identifier(to_lbl_col),
+                                combo.to_label
+                            ));
                         }
                         let where_clause = if where_clauses.is_empty() {
                             String::new()
@@ -4104,24 +4113,28 @@ pub fn extract_ctes_with_context(
                         let cast_str = current_function_mapper().cast_string();
                         let start_id_expr = match from_node_id {
                             Identifier::Single(col) => {
-                                format!("{cast_str}({from_table}.{col})")
+                                format!("{cast_str}({from_table}.{})", quote_identifier(col))
                             }
                             Identifier::Composite(cols) => {
                                 let parts: Vec<String> = cols
                                     .iter()
-                                    .map(|c| format!("{cast_str}({from_table}.{c})"))
+                                    .map(|c| {
+                                        format!("{cast_str}({from_table}.{})", quote_identifier(c))
+                                    })
                                     .collect();
                                 format!("concat({})", parts.join(", '|', "))
                             }
                         };
                         let end_id_expr = match to_node_id {
                             Identifier::Single(col) => {
-                                format!("{cast_str}({to_table}.{col})")
+                                format!("{cast_str}({to_table}.{})", quote_identifier(col))
                             }
                             Identifier::Composite(cols) => {
                                 let parts: Vec<String> = cols
                                     .iter()
-                                    .map(|c| format!("{cast_str}({to_table}.{c})"))
+                                    .map(|c| {
+                                        format!("{cast_str}({to_table}.{})", quote_identifier(c))
+                                    })
                                     .collect();
                                 format!("concat({})", parts.join(", '|', "))
                             }
@@ -4132,7 +4145,13 @@ pub fn extract_ctes_with_context(
                             .columns()
                             .iter()
                             .zip(rel_from_col.columns().iter())
-                            .map(|(n, r)| format!("{from_table}.{n} = {rel_table}.{r}"))
+                            .map(|(n, r)| {
+                                format!(
+                                    "{from_table}.{} = {rel_table}.{}",
+                                    quote_identifier(n),
+                                    quote_identifier(r)
+                                )
+                            })
                             .collect();
                         let from_join_cond = from_join_parts.join(" AND ");
 
@@ -4140,7 +4159,13 @@ pub fn extract_ctes_with_context(
                             .columns()
                             .iter()
                             .zip(rel_to_col.columns().iter())
-                            .map(|(n, r)| format!("{to_table}.{n} = {rel_table}.{r}"))
+                            .map(|(n, r)| {
+                                format!(
+                                    "{to_table}.{} = {rel_table}.{}",
+                                    quote_identifier(n),
+                                    quote_identifier(r)
+                                )
+                            })
                             .collect();
                         let to_join_cond = to_join_parts.join(" AND ");
 
@@ -4150,11 +4175,13 @@ pub fn extract_ctes_with_context(
                             .map(|prop_name| {
                                 if let Some(prop_val) = rel_schema.property_mappings.get(prop_name)
                                 {
-                                    let col_name = match prop_val {
-                                        PropertyValue::Column(c) => c.clone(),
-                                        PropertyValue::Expression(e) => e.clone(),
+                                    let col_ref = match prop_val {
+                                        PropertyValue::Column(c) => {
+                                            format!("{rel_table}.{}", quote_identifier(c))
+                                        }
+                                        PropertyValue::Expression(e) => format!("{rel_table}.{e}"),
                                     };
-                                    format!(", {rel_table}.{col_name} AS {prop_name}")
+                                    format!(", {col_ref} AS {prop_name}")
                                 } else {
                                     format!(", NULL AS {prop_name}")
                                 }
