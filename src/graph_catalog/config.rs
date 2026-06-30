@@ -1555,6 +1555,67 @@ fn build_relationship_schema(
     })
 }
 
+/// Resolve the denormalized node properties an edge should carry for one role
+/// (from-side or to-side).
+///
+/// Two cases:
+/// 1. **Coupled** — the denormalized node lives in the *same* physical table as
+///    the edge (the `db::table::label` composite key matches). The edge carries
+///    the node's full `from_properties`/`to_properties` directly.
+/// 2. **Foreign-edge (id-via-FK)** — the node is denormalized on a *different*
+///    source table but is reached through this edge. Only its `node_id` is
+///    available, carried by the edge's FK column (`from_id`/`to_id`). We map the
+///    node_id property name → edge FK column so the node isn't scanned separately.
+///    Non-id denormalized properties (city, state, …) live in the node's source
+///    table and are out of scope here (Stage 2).
+fn resolve_denormalized_edge_props(
+    nodes: &HashMap<String, NodeSchema>,
+    composite_key: &str,
+    label: &str,
+    edge_fk: &Identifier,
+    is_from: bool,
+) -> Option<HashMap<String, String>> {
+    // Case 1 (coupled): node lives on the edge's own table — composite key matches.
+    if let Some(n) = nodes.get(composite_key) {
+        return if is_from {
+            n.from_properties.clone()
+        } else {
+            n.to_properties.clone()
+        };
+    }
+
+    // Case 2 (foreign edge): node found by label only → its table differs from the
+    // edge table. Only synthesize id-via-FK mappings for genuinely denormalized
+    // nodes that declare role properties; everything else keeps the legacy
+    // behavior of contributing no edge-level node properties.
+    let n = nodes.get(label)?;
+    let role_props = if is_from {
+        n.from_properties.as_ref()
+    } else {
+        n.to_properties.as_ref()
+    };
+    let has_role_props = role_props.map(|m| !m.is_empty()).unwrap_or(false);
+    if !n.is_denormalized || !has_role_props {
+        return None;
+    }
+
+    // Map node_id property name(s) → edge FK column(s), element-wise.
+    let id_props = n.node_id.columns();
+    let fk_cols = edge_fk.columns();
+    if id_props.is_empty() || id_props.len() != fk_cols.len() {
+        // Can't cleanly map (e.g. mismatched composite arity) — skip rather than
+        // emit a wrong/phantom mapping. Avoids planner crashes on edge cases.
+        return None;
+    }
+    Some(
+        id_props
+            .iter()
+            .zip(fk_cols.iter())
+            .map(|(p, c)| (p.to_string(), c.to_string()))
+            .collect(),
+    )
+}
+
 /// Build a RelationshipSchema from a StandardEdgeDefinition
 fn build_standard_edge_schema(
     std_edge: &StandardEdgeDefinition,
@@ -1617,14 +1678,20 @@ fn build_standard_edge_schema(
         std_edge.database, std_edge.table, std_edge.to_node
     );
 
-    let from_node_props = nodes
-        .get(&from_composite_key)
-        .or_else(|| nodes.get(&std_edge.from_node))
-        .and_then(|n| n.from_properties.clone());
-    let to_node_props = nodes
-        .get(&to_composite_key)
-        .or_else(|| nodes.get(&std_edge.to_node))
-        .and_then(|n| n.to_properties.clone());
+    let from_node_props = resolve_denormalized_edge_props(
+        nodes,
+        &from_composite_key,
+        &std_edge.from_node,
+        &std_edge.from_id,
+        true,
+    );
+    let to_node_props = resolve_denormalized_edge_props(
+        nodes,
+        &to_composite_key,
+        &std_edge.to_node,
+        &std_edge.to_id,
+        false,
+    );
 
     // Detect FK-edge pattern:
     // The edge is represented by a FK column on one of the node tables.

@@ -1623,14 +1623,23 @@ pub fn is_node_denormalized_on_edge(
     edge: &RelationshipSchema,
     is_from_node: bool,
 ) -> bool {
-    // Must use same physical table (including database prefix)
+    // Foreign-edge (id-via-FK) case: a denormalized node reached through an edge
+    // in a DIFFERENT physical table. Its node_id is carried by the edge's FK
+    // column (build_standard_edge_schema synthesizes the {node_id → from_id/to_id}
+    // mapping into the edge's from/to_node_properties), so the node is embedded in
+    // the edge — no separate scan/join of the node's source table. Treat it as
+    // denormalized-on-edge so join planning picks the embedded strategy instead of
+    // a Traditional self-join of the edge table.
     if node.full_table_name() != edge.full_table_name() {
-        log::debug!(
-            "  ❌ Not denormalized: different tables (node={}, edge={})",
-            node.full_table_name(),
-            edge.full_table_name()
-        );
-        return false;
+        let foreign_embedded = node.is_denormalized && edge_has_node_properties(edge, is_from_node);
+        if !foreign_embedded {
+            log::debug!(
+                "  ❌ Not denormalized: different tables (node={}, edge={})",
+                node.full_table_name(),
+                edge.full_table_name()
+            );
+        }
+        return foreign_embedded;
     }
 
     // 🔄 REFACTORED: Check NODE-LEVEL denormalized properties (not edge-level)

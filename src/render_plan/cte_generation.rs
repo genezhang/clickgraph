@@ -646,42 +646,52 @@ pub fn map_property_to_column_with_relationship_context(
     if node_schema.is_denormalized {
         if let Some(rel_type) = relationship_type {
             if let Ok(rel_schema) = schema.get_rel_schema(rel_type) {
-                // Use the caller-provided role to determine which property map to use
-                match node_role {
-                    Some(NodeRole::From) => {
-                        // Node is on the FROM side - use from_properties
-                        if let Some(from_props) = &node_schema.from_properties {
-                            if let Some(column) = from_props.get(property) {
-                                return Ok(column.clone());
-                            }
-                        }
-                    }
-                    Some(NodeRole::To) => {
-                        // Node is on the TO side - use to_properties
-                        if let Some(to_props) = &node_schema.to_properties {
-                            if let Some(column) = to_props.get(property) {
-                                return Ok(column.clone());
-                            }
-                        }
-                    }
-                    None => {
-                        // Fallback: try to infer from schema (works when labels differ)
-                        if rel_schema.from_node == node_label {
+                // Foreign-edge (id-via-FK) guard: when the node is denormalized on
+                // a DIFFERENT table than this edge, its node-level from/to_properties
+                // point at columns of its own source table (e.g. flights.Origin),
+                // which do NOT exist in the edge table. Skip the node-level mapping
+                // and fall through to the edge-level branch below, which carries the
+                // correct {node_id → edge FK column} mapping for the foreign edge.
+                let coupled_on_this_edge = node_schema.denormalized_source_table.as_deref()
+                    == Some(rel_schema.full_table_name().as_str());
+                if coupled_on_this_edge {
+                    // Use the caller-provided role to determine which property map to use
+                    match node_role {
+                        Some(NodeRole::From) => {
+                            // Node is on the FROM side - use from_properties
                             if let Some(from_props) = &node_schema.from_properties {
                                 if let Some(column) = from_props.get(property) {
                                     return Ok(column.clone());
                                 }
                             }
                         }
-                        if rel_schema.to_node == node_label {
+                        Some(NodeRole::To) => {
+                            // Node is on the TO side - use to_properties
                             if let Some(to_props) = &node_schema.to_properties {
                                 if let Some(column) = to_props.get(property) {
                                     return Ok(column.clone());
                                 }
                             }
                         }
+                        None => {
+                            // Fallback: try to infer from schema (works when labels differ)
+                            if rel_schema.from_node == node_label {
+                                if let Some(from_props) = &node_schema.from_properties {
+                                    if let Some(column) = from_props.get(property) {
+                                        return Ok(column.clone());
+                                    }
+                                }
+                            }
+                            if rel_schema.to_node == node_label {
+                                if let Some(to_props) = &node_schema.to_properties {
+                                    if let Some(column) = to_props.get(property) {
+                                        return Ok(column.clone());
+                                    }
+                                }
+                            }
+                        }
                     }
-                }
+                } // end if coupled_on_this_edge
             }
         } else {
             // No relationship context (standalone node scan).
