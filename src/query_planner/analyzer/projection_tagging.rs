@@ -645,6 +645,29 @@ impl ProjectionTagging {
                     return Ok(());
                 }
 
+                // Multi-type relationship (untyped `[r]` resolving to >1 relationship
+                // type) is rendered via a `pattern_union` CTE that projects each
+                // relationship property under its *property* name (e.g. `... AS
+                // timestamp`). Per CLAUDE.md §2 (forward resolution through a CTE
+                // barrier), the outer reference must use that property-named CTE
+                // column directly, so we must NOT reverse-map the property to a
+                // physical schema column here. Leave it as-is.
+                let is_multi_type_rel = table_ctx.is_relation()
+                    && table_ctx.get_labels().map(|l| l.len() > 1).unwrap_or(false);
+                if is_multi_type_rel {
+                    log::info!(
+                        "🎯 projection_tagging: Skipping property resolution for multi-type relationship '{}' (pattern_union CTE-backed, labels: {:?})",
+                        property_access.table_alias.0,
+                        table_ctx.get_labels()
+                    );
+                    let projection_item = ProjectionItem {
+                        expression: item.expression.clone(),
+                        col_alias: item.col_alias.clone(),
+                    };
+                    table_ctx.insert_projection(projection_item);
+                    return Ok(());
+                }
+
                 // Get label for property resolution
                 let label = match table_ctx.get_label_opt() {
                     Some(l) => l,
