@@ -135,6 +135,25 @@ fn server_dialect() -> SqlDialect {
     SERVER_DIALECT.get().copied().unwrap_or_default()
 }
 
+/// Process-wide Neo4j-compatibility flag for server-handled queries. Set once at
+/// server startup from `--neo4j-compat-mode`. When on, property resolution treats
+/// a property that the schema does not declare as NULL (Neo4j schemaless
+/// semantics) instead of an identity-mapped column that would error at the
+/// database. Off (the default) preserves the identity-mapping wide-table path.
+/// Embedded/`cg` never set this, so they keep the default behavior.
+static SERVER_NEO4J_COMPAT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Enable process-wide Neo4j-compat property resolution. Idempotent (first write
+/// wins); call once during server init before serving requests.
+pub fn set_server_neo4j_compat(enabled: bool) {
+    let _ = SERVER_NEO4J_COMPAT.set(enabled);
+}
+
+/// Whether the server is running in Neo4j-compat mode (default false).
+pub fn server_neo4j_compat() -> bool {
+    SERVER_NEO4J_COMPAT.get().copied().unwrap_or(false)
+}
+
 impl QueryContext {
     /// Create a new query context with schema name.
     ///
