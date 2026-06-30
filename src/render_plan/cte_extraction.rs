@@ -3978,25 +3978,58 @@ pub fn extract_ctes_with_context(
                         let raw_to_table =
                             format!("{}.{}", to_node_schema.database, to_node_schema.table_name);
 
+                        // Denormalized endpoint: the node is embedded in the edge
+                        // table itself, with a VIRTUAL node_id/properties resolved
+                        // through from_properties (when it is this edge's from-node)
+                        // / to_properties (to-node) — e.g. Airport.code → flights.Origin
+                        // (from) / flights.Dest (to). Such an endpoint IS the edge
+                        // row: it must reference rel_table directly, with no alias and
+                        // no join, and its id/properties resolve through the denorm
+                        // property maps (NOT node_id/property_mappings, which are empty
+                        // for a virtual-id node).
+                        //
+                        // The join-skip decision deliberately does NOT depend on which
+                        // property map is present: a node embedded in the edge table is
+                        // never a separate table to join, period. Requiring a specific
+                        // role's map here would, for a self-loop node that defines only
+                        // one of from_/to_properties, leave the other side to emit a
+                        // spurious unaliased self-join on the non-existent virtual
+                        // column. Resolution (below) still prefers the role-appropriate
+                        // map and falls back to the other.
+                        let from_denorm =
+                            from_node_schema.is_denormalized && raw_from_table == rel_table;
+                        let to_denorm = to_node_schema.is_denormalized && raw_to_table == rel_table;
+
                         // Self-join detection: when both endpoints are the same table,
-                        // we need distinct aliases so ClickHouse can distinguish them.
+                        // we need distinct aliases so ClickHouse can distinguish them —
+                        // UNLESS an endpoint is denormalized (it reuses rel_table with
+                        // no alias). Aliasing is only needed for two NON-denorm
+                        // endpoints that genuinely share a table.
                         let is_self_join = raw_from_table == raw_to_table;
-                        let (from_table, from_join_expr, to_table, to_join_expr) = if is_self_join {
-                            let from_alias = "from_node".to_string();
-                            let to_alias = "to_node".to_string();
-                            (
-                                from_alias.clone(),
-                                format!("{} AS {}", raw_from_table, from_alias),
-                                to_alias.clone(),
-                                format!("{} AS {}", raw_to_table, to_alias),
-                            )
+                        let needs_alias = is_self_join && !from_denorm && !to_denorm;
+                        let from_table = if from_denorm {
+                            rel_table.clone()
+                        } else if needs_alias {
+                            "from_node".to_string()
                         } else {
-                            (
-                                raw_from_table.clone(),
-                                raw_from_table.clone(),
-                                raw_to_table.clone(),
-                                raw_to_table.clone(),
-                            )
+                            raw_from_table.clone()
+                        };
+                        let to_table = if to_denorm {
+                            rel_table.clone()
+                        } else if needs_alias {
+                            "to_node".to_string()
+                        } else {
+                            raw_to_table.clone()
+                        };
+                        let from_join_expr = if needs_alias {
+                            format!("{} AS from_node", raw_from_table)
+                        } else {
+                            raw_from_table.clone()
+                        };
+                        let to_join_expr = if needs_alias {
+                            format!("{} AS to_node", raw_to_table)
+                        } else {
+                            raw_to_table.clone()
                         };
 
                         // ID columns (as Identifier for composite support)
@@ -4004,6 +4037,40 @@ pub fn extract_ctes_with_context(
                         let to_node_id = &to_node_schema.node_id.id;
                         let rel_from_col = &rel_schema.from_id;
                         let rel_to_col = &rel_schema.to_id;
+
+                        // For a denormalized endpoint, the node_id is a VIRTUAL
+                        // property: map it through the denorm property map to its
+                        // physical column. Prefer the role-appropriate map
+                        // (from_properties for the from-endpoint, to_properties for
+                        // the to-endpoint); fall back to the other map for a
+                        // partially-specified self-loop node, then to the bare name.
+                        // Non-denorm endpoints pass the column through unchanged.
+                        let from_props = from_node_schema.from_properties.as_ref();
+                        let from_props_alt = from_node_schema.to_properties.as_ref();
+                        let to_props = to_node_schema.to_properties.as_ref();
+                        let to_props_alt = to_node_schema.from_properties.as_ref();
+                        let resolve_from_id_col = |c: &str| -> String {
+                            if from_denorm {
+                                from_props
+                                    .and_then(|m| m.get(c))
+                                    .or_else(|| from_props_alt.and_then(|m| m.get(c)))
+                                    .cloned()
+                                    .unwrap_or_else(|| c.to_string())
+                            } else {
+                                c.to_string()
+                            }
+                        };
+                        let resolve_to_id_col = |c: &str| -> String {
+                            if to_denorm {
+                                to_props
+                                    .and_then(|m| m.get(c))
+                                    .or_else(|| to_props_alt.and_then(|m| m.get(c)))
+                                    .cloned()
+                                    .unwrap_or_else(|| c.to_string())
+                            } else {
+                                c.to_string()
+                            }
+                        };
 
                         // Generate SELECT for this branch
                         // Output columns matching VLP/path pattern expectations:
@@ -4041,27 +4108,55 @@ pub fn extract_ctes_with_context(
                         // as SELECT-level aliases, which conflict when both start_properties and
                         // end_properties reference same-named columns (User→User JOINs).
                         // The result transformer's clean_property_keys() strips table alias prefixes.
-                        let start_prop_cols: Vec<String> = from_node_schema
-                            .property_mappings
-                            .values()
-                            .map(|prop_val| match prop_val {
-                                PropertyValue::Column(c) => {
-                                    format!("{from_table}.{}", quote_identifier(c))
-                                }
-                                PropertyValue::Expression(e) => format!("{from_table}.{e}"),
-                            })
-                            .collect();
+                        // For a denormalized endpoint the properties live in the
+                        // role-appropriate denorm map (from_properties / to_properties),
+                        // NOT property_mappings (which is empty for a virtual-id node).
+                        // Fall back to the other map for a partially-specified self-loop.
+                        let start_prop_cols: Vec<String> = if from_denorm {
+                            from_props
+                                .or(from_props_alt)
+                                .map(|m| {
+                                    m.values()
+                                        .map(|col| {
+                                            format!("{from_table}.{}", quote_identifier(col))
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default()
+                        } else {
+                            from_node_schema
+                                .property_mappings
+                                .values()
+                                .map(|prop_val| match prop_val {
+                                    PropertyValue::Column(c) => {
+                                        format!("{from_table}.{}", quote_identifier(c))
+                                    }
+                                    PropertyValue::Expression(e) => format!("{from_table}.{e}"),
+                                })
+                                .collect()
+                        };
 
-                        let end_prop_cols: Vec<String> = to_node_schema
-                            .property_mappings
-                            .values()
-                            .map(|prop_val| match prop_val {
-                                PropertyValue::Column(c) => {
-                                    format!("{to_table}.{}", quote_identifier(c))
-                                }
-                                PropertyValue::Expression(e) => format!("{to_table}.{e}"),
-                            })
-                            .collect();
+                        let end_prop_cols: Vec<String> = if to_denorm {
+                            to_props
+                                .or(to_props_alt)
+                                .map(|m| {
+                                    m.values()
+                                        .map(|col| format!("{to_table}.{}", quote_identifier(col)))
+                                        .collect()
+                                })
+                                .unwrap_or_default()
+                        } else {
+                            to_node_schema
+                                .property_mappings
+                                .values()
+                                .map(|prop_val| match prop_val {
+                                    PropertyValue::Column(c) => {
+                                        format!("{to_table}.{}", quote_identifier(c))
+                                    }
+                                    PropertyValue::Expression(e) => format!("{to_table}.{e}"),
+                                })
+                                .collect()
+                        };
 
                         let start_properties_json = if start_prop_cols.is_empty() {
                             "'{}'".to_string()
@@ -4113,13 +4208,19 @@ pub fn extract_ctes_with_context(
                         let cast_str = current_function_mapper().cast_string();
                         let start_id_expr = match from_node_id {
                             Identifier::Single(col) => {
-                                format!("{cast_str}({from_table}.{})", quote_identifier(col))
+                                format!(
+                                    "{cast_str}({from_table}.{})",
+                                    quote_identifier(&resolve_from_id_col(col))
+                                )
                             }
                             Identifier::Composite(cols) => {
                                 let parts: Vec<String> = cols
                                     .iter()
                                     .map(|c| {
-                                        format!("{cast_str}({from_table}.{})", quote_identifier(c))
+                                        format!(
+                                            "{cast_str}({from_table}.{})",
+                                            quote_identifier(&resolve_from_id_col(c))
+                                        )
                                     })
                                     .collect();
                                 format!("concat({})", parts.join(", '|', "))
@@ -4127,13 +4228,19 @@ pub fn extract_ctes_with_context(
                         };
                         let end_id_expr = match to_node_id {
                             Identifier::Single(col) => {
-                                format!("{cast_str}({to_table}.{})", quote_identifier(col))
+                                format!(
+                                    "{cast_str}({to_table}.{})",
+                                    quote_identifier(&resolve_to_id_col(col))
+                                )
                             }
                             Identifier::Composite(cols) => {
                                 let parts: Vec<String> = cols
                                     .iter()
                                     .map(|c| {
-                                        format!("{cast_str}({to_table}.{})", quote_identifier(c))
+                                        format!(
+                                            "{cast_str}({to_table}.{})",
+                                            quote_identifier(&resolve_to_id_col(c))
+                                        )
                                     })
                                     .collect();
                                 format!("concat({})", parts.join(", '|', "))
@@ -4220,13 +4327,17 @@ pub fn extract_ctes_with_context(
                         let to_coupled = !is_self_join
                             && raw_to_table == rel_table
                             && to_node_id.columns() == rel_to_col.columns();
+                        // A denormalized endpoint (embedded in the edge table with a
+                        // virtual id) likewise has no separate table to join — its
+                        // columns already reference rel_table via the denorm property
+                        // maps. Skip its join too.
                         let mut node_joins = String::new();
-                        if !from_coupled {
+                        if !from_coupled && !from_denorm {
                             node_joins.push_str(&format!(
                                 " INNER JOIN {from_join_expr} ON {from_join_cond}"
                             ));
                         }
-                        if !to_coupled {
+                        if !to_coupled && !to_denorm {
                             node_joins
                                 .push_str(&format!(" INNER JOIN {to_join_expr} ON {to_join_cond}"));
                         }

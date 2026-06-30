@@ -190,3 +190,126 @@ graph_schema:
         "embedded node with a distinct id column must keep its selective join; SQL:\n{sql}"
     );
 }
+
+/// A DENORMALIZED endpoint with a VIRTUAL node_id — node_id and properties exist
+/// only in the role-appropriate denorm property maps (from_properties /
+/// to_properties), with NO physical node_id column — must resolve through those
+/// maps and emit NO self-join. (Regression for the Zeek/flights
+/// `from_node.code = flights.Origin` bug, where the virtual id referenced a
+/// non-existent column on a spurious self-join alias.)
+#[test]
+fn denormalized_virtual_id_resolves_without_self_join() {
+    const YAML: &str = r#"
+name: virtual_id_denorm_test
+graph_schema:
+  nodes:
+    # Airport is denormalized into the `flights` edge table. Its node_id `code`
+    # is virtual: it maps to Origin (from-role) / Dest (to-role). There is NO
+    # `code` column in flights.
+    - label: Airport
+      database: test_db
+      table: flights
+      node_id: code
+      is_denormalized: true
+      property_mappings: {}
+      from_node_properties:
+        code: Origin
+        city: OriginCity
+      to_node_properties:
+        code: Dest
+        city: DestCity
+  edges:
+    # Both edge types are coupled-denormalized self-refs in `flights`. Two types
+    # force the multi-type pattern-union path.
+    - type: FLIGHT
+      database: test_db
+      table: flights
+      from_node: Airport
+      to_node: Airport
+      from_id: Origin
+      to_id: Dest
+      property_mappings:
+        flight_num: flight_number
+    - type: CODESHARE
+      database: test_db
+      table: flights
+      from_node: Airport
+      to_node: Airport
+      from_id: Origin
+      to_id: Dest
+      property_mappings: {}
+"#;
+    let graph_schema = GraphSchemaConfig::from_yaml_str(YAML)
+        .expect("parse schema yaml")
+        .to_graph_schema()
+        .expect("build graph schema");
+    let ast = open_cypher_parser::parse_query("MATCH p=()-[]->() RETURN p LIMIT 5")
+        .expect("parse cypher");
+    let (logical_plan, mut plan_ctx) =
+        build_logical_plan(&ast, &graph_schema, None, None, None).expect("build logical plan");
+    use crate::query_planner::{analyzer, optimizer};
+    let logical_plan =
+        analyzer::initial_analyzing(logical_plan, &mut plan_ctx, &graph_schema).unwrap();
+    let logical_plan =
+        analyzer::intermediate_analyzing(logical_plan, &mut plan_ctx, &graph_schema).unwrap();
+    let logical_plan = optimizer::initial_optimization(logical_plan, &mut plan_ctx).unwrap();
+    let logical_plan = optimizer::final_optimization(logical_plan, &mut plan_ctx).unwrap();
+    let render_plan = logical_plan.to_render_plan(&graph_schema).expect("render");
+    let sql = clickhouse_query_generator::generate_sql(render_plan, 100);
+
+    // The virtual node_id `code` must NOT be referenced — it is not a real column.
+    assert!(
+        !sql.contains(".code"),
+        "virtual node_id `code` must be resolved away, never referenced; SQL:\n{sql}"
+    );
+    // No spurious self-join aliases for the coupled-denormalized endpoints.
+    assert!(
+        !sql.contains("AS from_node") && !sql.contains("AS to_node"),
+        "coupled denormalized endpoints must not be self-joined; SQL:\n{sql}"
+    );
+    // start_id/end_id resolve through from_properties/to_properties to the real
+    // physical columns (Origin / Dest).
+    assert!(
+        sql.contains("test_db.flights.Origin") && sql.contains("test_db.flights.Dest"),
+        "virtual id must resolve to Origin (from) / Dest (to); SQL:\n{sql}"
+    );
+}
+
+/// A partially-specified denormalized self-loop (a node embedded in the edge
+/// table defining only ONE of from_node_properties / to_node_properties) is
+/// rejected at schema-build time, so the renderer never sees it. This documents
+/// that the validator is the first line of defense; the renderer's join-skip is
+/// additionally decoupled from property-map presence as a belt-and-suspenders
+/// guard (see cte_extraction.rs from_denorm/to_denorm).
+#[test]
+fn partial_denorm_self_loop_rejected_by_schema_validation() {
+    const YAML: &str = r#"
+name: partial_denorm_test
+graph_schema:
+  nodes:
+    - label: Airport
+      database: test_db
+      table: flights
+      node_id: code
+      is_denormalized: true
+      property_mappings: {}
+      from_node_properties:
+        code: Origin
+  edges:
+    - type: FLIGHT
+      database: test_db
+      table: flights
+      from_node: Airport
+      to_node: Airport
+      from_id: Origin
+      to_id: Dest
+      property_mappings: {}
+"#;
+    let result = GraphSchemaConfig::from_yaml_str(YAML)
+        .expect("parse schema yaml")
+        .to_graph_schema();
+    assert!(
+        result.is_err(),
+        "a denormalized self-loop missing to_node_properties must be rejected by validation"
+    );
+}
