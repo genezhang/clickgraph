@@ -14,11 +14,11 @@
 /// - Lambdas: `arrayMap(x -> expr, arr)`
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_until},
+    bytes::complete::{tag, tag_no_case, take_until},
     character::complete::{alphanumeric1, char, digit1, multispace0, one_of},
-    combinator::{map, map_res, opt, recognize},
+    combinator::{map, map_res, not, opt, peek, recognize},
     multi::{many0, separated_list0},
-    sequence::{delimited, preceded},
+    sequence::{delimited, preceded, terminated},
     IResult, Parser,
 };
 use serde::{Deserialize, Serialize};
@@ -247,6 +247,9 @@ pub enum Literal {
     String(String),
     Integer(i64),
     Float(f64),
+    /// SQL NULL literal. Renders as bare `NULL` (no table-alias prefix), used
+    /// for Neo4j-compat resolution of properties not declared in the schema.
+    Null,
 }
 
 impl Literal {
@@ -255,6 +258,7 @@ impl Literal {
             Literal::String(s) => format!("'{}'", s.replace('\'', "''")),
             Literal::Integer(i) => i.to_string(),
             Literal::Float(f) => f.to_string(),
+            Literal::Null => "NULL".to_string(),
         }
     }
 }
@@ -602,6 +606,15 @@ fn parse_identifier_str(input: &str) -> IResult<&str, &str> {
 /// Parse literal: 'string', 123, 45.67
 fn parse_literal_expr(input: &str) -> IResult<&str, ClickHouseExpr> {
     alt((
+        // NULL literal — word-bounded so it doesn't swallow identifiers that
+        // merely start with "null" (e.g. a column named `null_count`).
+        map(
+            terminated(
+                tag_no_case("null"),
+                not(peek(alt((alphanumeric1, tag("_"))))),
+            ),
+            |_| ClickHouseExpr::Literal(Literal::Null),
+        ),
         // String literal: 'hello'
         map(
             delimited(char('\''), take_until("'"), char('\'')),
@@ -642,6 +655,32 @@ mod tests {
     fn test_column_with_underscore() {
         let pv = parse_property_value("first_name").unwrap();
         assert_eq!(pv.to_sql("u"), "u.first_name");
+    }
+
+    #[test]
+    fn test_null_literal_renders_bare() {
+        // Used by Neo4j-compat resolution of schema-undeclared properties: a
+        // NULL literal must render as bare `NULL`, never prefixed with a table
+        // alias. Case-insensitive.
+        let pv = PropertyValue::Expression("NULL".to_string());
+        assert_eq!(pv.to_sql("u"), "NULL");
+        assert_eq!(pv.to_sql_column_only(), "NULL");
+        let lower = PropertyValue::Expression("null".to_string());
+        assert_eq!(lower.to_sql("u"), "NULL");
+    }
+
+    #[test]
+    fn test_null_is_word_bounded() {
+        // Identifiers that merely start with "null" must NOT be parsed as the
+        // NULL literal — they are ordinary columns.
+        assert_eq!(
+            parse_property_value("null_count").unwrap().to_sql("u"),
+            "u.null_count"
+        );
+        assert_eq!(
+            parse_property_value("nullable").unwrap().to_sql("u"),
+            "u.nullable"
+        );
     }
 
     #[test]

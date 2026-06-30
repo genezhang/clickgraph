@@ -138,8 +138,52 @@ impl<'a> ViewResolver<'a> {
             }
         }
 
-        // Fallback to identity mapping (property name = column name)
-        // This supports wide tables without requiring hundreds of explicit mappings
+        // The property is neither a declared property name (checked above) nor a
+        // role-mapped denormalized property. Decide whether it is nonetheless a
+        // real column of this node's table. Property resolution can run in two
+        // passes, so the fallback is also reached with an ALREADY-resolved column
+        // name (e.g. `full_name`, the value of the `name` mapping) — those must
+        // still resolve to a real column, not be nulled. Known columns are: the
+        // node id column(s), every column targeted by a property mapping, and the
+        // denormalized from/to mapping columns.
+        let is_known_column = node_schema.node_id.columns().contains(&property)
+            || node_schema
+                .property_mappings
+                .values()
+                .any(|v| v.get_columns().iter().any(|c| c == property))
+            || node_schema
+                .from_properties
+                .as_ref()
+                .is_some_and(|m| m.values().any(|c| c == property))
+            || node_schema
+                .to_properties
+                .as_ref()
+                .is_some_and(|m| m.values().any(|c| c == property));
+        if is_known_column {
+            return Ok(
+                crate::graph_catalog::expression_parser::PropertyValue::Column(
+                    property.to_string(),
+                ),
+            );
+        }
+
+        // In Neo4j-compat mode, a property that resolves to no known column is
+        // treated as absent and resolves to NULL — matching Neo4j's schemaless
+        // semantics where `n.missing` is null, not an error. This is what lets
+        // Neo4j Browser / graph-notebook work: clicking a property key that
+        // belongs to a different label runs `MATCH (n) WHERE n.prop IS NOT NULL`,
+        // which must return empty rather than a ClickHouse "unknown identifier"
+        // error.
+        if crate::server::query_context::server_neo4j_compat() {
+            return Ok(
+                crate::graph_catalog::expression_parser::PropertyValue::Expression(
+                    "NULL".to_string(),
+                ),
+            );
+        }
+
+        // Default (non-compat): identity mapping (property name = column name).
+        // Supports wide tables without requiring hundreds of explicit mappings.
         Ok(crate::graph_catalog::expression_parser::PropertyValue::Column(property.to_string()))
     }
 
@@ -184,14 +228,42 @@ impl<'a> ViewResolver<'a> {
             rel_schema.table_name
         );
 
-        // Try explicit mapping first, fallback to identity mapping (property name = column name)
-        // This supports wide tables without requiring hundreds of explicit mappings
-        Ok(rel_schema
-            .property_mappings
-            .get(property)
-            .cloned()
-            .unwrap_or_else(|| {
-                crate::graph_catalog::expression_parser::PropertyValue::Column(property.to_string())
-            }))
+        // Try explicit mapping first.
+        if let Some(mapped) = rel_schema.property_mappings.get(property) {
+            return Ok(mapped.clone());
+        }
+
+        // Resolve as a real column when the property is a known column of the
+        // edge table: a structural id column (endpoints + optional edge id) or a
+        // column targeted by a property mapping (the fallback is also reached
+        // with an already-resolved column name). These are never nulled.
+        let is_known_column = rel_schema.from_id.columns().contains(&property)
+            || rel_schema.to_id.columns().contains(&property)
+            || rel_schema
+                .edge_id
+                .as_ref()
+                .is_some_and(|e| e.columns().contains(&property))
+            || rel_schema
+                .property_mappings
+                .values()
+                .any(|v| v.get_columns().iter().any(|c| c == property));
+        if is_known_column {
+            return Ok(
+                crate::graph_catalog::expression_parser::PropertyValue::Column(
+                    property.to_string(),
+                ),
+            );
+        }
+
+        // Undeclared relationship property: NULL in Neo4j-compat mode (Neo4j
+        // schemaless semantics), identity-mapped column otherwise (wide tables).
+        if crate::server::query_context::server_neo4j_compat() {
+            return Ok(
+                crate::graph_catalog::expression_parser::PropertyValue::Expression(
+                    "NULL".to_string(),
+                ),
+            );
+        }
+        Ok(crate::graph_catalog::expression_parser::PropertyValue::Column(property.to_string()))
     }
 }

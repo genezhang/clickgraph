@@ -105,6 +105,13 @@ pub async fn run() {
 pub async fn run_with_config(config: ServerConfig) {
     dotenv().ok();
 
+    // Propagate Neo4j-compat mode process-wide so property resolution can treat
+    // schema-undeclared properties as NULL (Neo4j schemaless semantics) instead
+    // of identity-mapped columns that error at the database. Set once here, used
+    // by the query planner; embedded/`cg` never call this so they keep the
+    // identity-mapping default.
+    query_context::set_server_neo4j_compat(config.neo4j_compat_mode);
+
     // Test that logging is working
     log::debug!("=== SERVER STARTING (debug log test) ===");
     log::info!(

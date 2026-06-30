@@ -552,6 +552,37 @@ mod tests {
         roundtrip(&input, (42, "1337".to_owned()))
     }
 
+    // Bolt message struct fields (RUN, BEGIN, …) arrive as consecutive top-level
+    // values with NO surrounding list marker. These two tests lock that the
+    // deserializer reads such bare fields as a tuple for both arity 2 (query,
+    // parameters) and arity 3 (query, parameters, extra). The arity-3 case is a
+    // regression guard: the RUN `extra` map carries the selected database via
+    // `db`, and it was previously dropped, pinning every Bolt connection to the
+    // default schema.
+    #[test]
+    fn tuple2_bare_struct_fields() {
+        let input = bolt().tiny_string("RETURN 1").tiny_map(0).build();
+        let (query, params): (String, BTreeMap<String, String>) = from_bytes(input).unwrap();
+        assert_eq!(query, "RETURN 1");
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn tuple3_bare_struct_fields() {
+        let input = bolt()
+            .tiny_string("RETURN n") // field 0: query
+            .tiny_map(0) // field 1: parameters {}
+            .tiny_map(1) // field 2: extra { "db": "zeek_dns" }
+            .tiny_string("db")
+            .tiny_string("zeek_dns")
+            .build();
+        let (query, params, extra): (String, BTreeMap<String, String>, BTreeMap<String, String>) =
+            from_bytes(input).unwrap();
+        assert_eq!(query, "RETURN n");
+        assert!(params.is_empty());
+        assert_eq!(extra.get("db").map(String::as_str), Some("zeek_dns"));
+    }
+
     #[test_case(&[0xA0], BTreeMap::new(); "empty")]
     #[test_case(&[0xA1, 0x83, 0x6F, 0x6E, 0x65, 0x2A], [("one".to_owned(), 42)].into_iter().collect(); "tiny")]
     #[test_case(&[0xD8, 0x1A, 0x81, 0x41, 0x01, 0x81, 0x42, 0x02, 0x81, 0x43, 0x03, 0x81, 0x44, 0x04, 0x81, 0x45, 0x05, 0x81, 0x46, 0x06, 0x81, 0x47, 0x07, 0x81, 0x48, 0x08, 0x81, 0x49, 0x09, 0x81, 0x4A, 0x0A, 0x81, 0x4B, 0x0B, 0x81, 0x4C, 0x0C, 0x81, 0x4D, 0x0D, 0x81, 0x4E, 0x0E, 0x81, 0x4F, 0x0F, 0x81, 0x50, 0x10, 0x81, 0x51, 0x11, 0x81, 0x52, 0x12, 0x81, 0x53, 0x13, 0x81, 0x54, 0x14, 0x81, 0x55, 0x15, 0x81, 0x56, 0x16, 0x81, 0x57, 0x17, 0x81, 0x58, 0x18, 0x81, 0x59, 0x19, 0x81, 0x5A, 0x1A], ('A'..='Z').map(|c| (c.to_string(), ((c as u32) - ('@' as u32)) as i64)).collect(); "map_8")]
