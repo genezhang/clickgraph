@@ -1,4 +1,5 @@
 mod databricks_emit_spike_tests;
+mod denormalized_multitype_expand_tests;
 mod denormalized_property_tests;
 mod issue_411_generic_id_tests;
 mod multiple_relationship_tests;
