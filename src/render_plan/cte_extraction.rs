@@ -4170,6 +4170,28 @@ pub fn extract_ctes_with_context(
                             fm.array_literal(&format!("'{base_rel_type}'"));
                         let rel_properties_lit = fm.array_literal(&rel_properties_json);
 
+                        // A denormalized edge embeds an endpoint node in the edge
+                        // table itself (e.g. AUTHORED with Post embedded in
+                        // posts_test, so raw_to_table == rel_table). That endpoint
+                        // IS the edge row — joining its table again would emit a
+                        // spurious unaliased self-join
+                        // (`posts_test.post_id = posts_test.post_id`) that explodes
+                        // the row count. Skip the join for a coupled endpoint; its
+                        // columns already reference rel_table. Not applied to
+                        // self-joins (both endpoints aliased distinctly there).
+                        let from_coupled = !is_self_join && raw_from_table == rel_table;
+                        let to_coupled = !is_self_join && raw_to_table == rel_table;
+                        let mut node_joins = String::new();
+                        if !from_coupled {
+                            node_joins.push_str(&format!(
+                                " INNER JOIN {from_join_expr} ON {from_join_cond}"
+                            ));
+                        }
+                        if !to_coupled {
+                            node_joins
+                                .push_str(&format!(" INNER JOIN {to_join_expr} ON {to_join_cond}"));
+                        }
+
                         let branch_sql = format!(
                             "SELECT \
                                 '{from_label}' AS start_type, \
@@ -4180,9 +4202,7 @@ pub fn extract_ctes_with_context(
                                 {rel_properties_lit} as rel_properties, \
                                 {} as start_properties, \
                                 {} as end_properties{direct_rel_cols} \
-                            FROM {rel_table} \
-                            INNER JOIN {from_join_expr} ON {from_join_cond} \
-                            INNER JOIN {to_join_expr} ON {to_join_cond}{where_clause} \
+                            FROM {rel_table}{node_joins}{where_clause} \
                             LIMIT 1000",
                             start_properties_json,
                             end_properties_json,
