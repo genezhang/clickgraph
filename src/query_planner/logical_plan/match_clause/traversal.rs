@@ -382,7 +382,26 @@ fn traverse_connected_pattern_with_mode<'a>(
                     "  ✓ Both nodes untyped, rel_labels has {} types",
                     types.len()
                 );
-                if types.len() > 1 {
+                // Polymorphic edges (e.g. one `interactions` table holding many edge
+                // types with `$any` endpoints via from_label_column/to_label_column)
+                // have no concrete from_node/to_node to bind unlabeled endpoints to.
+                // Without this, a single-type pattern like `()-[:SHARED]->()` would
+                // fall through with both node scans Empty and the whole pattern would
+                // be pruned to the `SELECT 1 AS "_empty"` placeholder. Route such
+                // patterns through the same deferred-UNION path as multi-type
+                // patterns: `$any` endpoints expand to all concrete node labels (see
+                // `expand_node_type`), producing a real query over the edge table
+                // filtered by the requested type for each (from, type, to) combination.
+                let has_polymorphic_any = {
+                    let graph_schema = plan_ctx.schema();
+                    types.iter().any(|t| {
+                        graph_schema
+                            .rel_schemas_for_type(t)
+                            .iter()
+                            .any(|s| s.from_node == "$any" || s.to_node == "$any")
+                    })
+                };
+                if types.len() > 1 || has_polymorphic_any {
                     log::info!(
                         "🔀 PatternResolver 2.0: Fully untyped multi-type pattern with {} types",
                         types.len()
