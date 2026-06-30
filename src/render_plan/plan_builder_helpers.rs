@@ -2690,7 +2690,14 @@ pub(super) fn normalize_union_branches(
         return union_plans;
     }
 
-    // Collect all unique column aliases across all branches (sorted for deterministic order)
+    // Collect all unique column aliases across all branches (sorted for deterministic order).
+    // Exclude the `_empty` placeholder column emitted by a branch pruned to
+    // `LogicalPlan::Empty` (e.g. an unlabeled `MATCH (n)` whose property no node type
+    // has → `SELECT 1 AS _empty WHERE false`). It must NOT enter the unified column
+    // set: otherwise every branch gets padded with a spurious `NULL AS _empty`, which
+    // breaks the declared RETURN arity (Bolt field-count mismatch / ClickHouse "UNION
+    // different number of columns"). A pruned branch instead adopts the real columns as
+    // NULLs below and still returns 0 rows (its `WHERE false` is preserved).
     let all_aliases: BTreeSet<String> = union_plans
         .iter()
         .flat_map(|plan| {
@@ -2699,6 +2706,7 @@ pub(super) fn normalize_union_branches(
                 .iter()
                 .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
         })
+        .filter(|alias| alias != "_empty")
         .collect();
 
     log::debug!(
@@ -4316,8 +4324,75 @@ fn extract_referenced_aliases_from_expr(expr: &RenderExpr, refs: &mut HashSet<St
 mod tests {
     use super::*;
     use crate::render_plan::render_expr::{
-        ColumnAlias, Literal, Operator, OperatorApplication, TableAlias,
+        ColumnAlias, Literal, Operator, OperatorApplication, RenderExpr, TableAlias,
     };
+    use crate::render_plan::{
+        ArrayJoinItem, CteItems, FilterItems, FromTableItem, GroupByExpressions, JoinItems,
+        LimitItem, OrderByItems, RenderPlan, SelectItem, SelectItems, SkipItem, UnionItems,
+    };
+
+    /// Regression: a UNION branch pruned to the `_empty` placeholder (e.g. an
+    /// unlabeled `MATCH (n)` whose property no node type has → `SELECT 1 AS _empty
+    /// WHERE false`) must NOT inject its `_empty` column into the unified column
+    /// set. Otherwise every branch is padded with a spurious `NULL AS _empty`,
+    /// breaking the declared RETURN arity (Bolt field-count mismatch / ClickHouse
+    /// "UNION different number of columns"). The pruned branch instead adopts the
+    /// real columns (as NULLs) and still returns 0 rows.
+    #[test]
+    fn normalize_union_branches_excludes_empty_placeholder_column() {
+        fn item(alias: &str) -> SelectItem {
+            SelectItem {
+                expression: RenderExpr::Literal(Literal::String(alias.to_string())),
+                col_alias: Some(ColumnAlias(alias.to_string())),
+            }
+        }
+        fn plan(items: Vec<SelectItem>) -> RenderPlan {
+            RenderPlan {
+                ctes: CteItems(vec![]),
+                select: SelectItems {
+                    items,
+                    distinct: false,
+                },
+                from: FromTableItem(None),
+                joins: JoinItems(vec![]),
+                array_join: ArrayJoinItem(vec![]),
+                filters: FilterItems(None),
+                group_by: GroupByExpressions(vec![]),
+                having_clause: None,
+                order_by: OrderByItems(vec![]),
+                skip: SkipItem(None),
+                limit: LimitItem(None),
+                union: UnionItems(None),
+                fixed_path_info: None,
+                is_multi_label_scan: false,
+                variable_registry: None,
+            }
+        }
+        let empty_branch = plan(vec![item("_empty")]);
+        let real_branch = plan(vec![item("entity"), item("joined_at")]);
+        let out = normalize_union_branches(vec![empty_branch, real_branch]);
+        let expected: std::collections::BTreeSet<String> = ["entity", "joined_at"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for b in &out {
+            let aliases: std::collections::BTreeSet<String> = b
+                .select
+                .items
+                .iter()
+                .filter_map(|i| i.col_alias.as_ref().map(|a| a.0.clone()))
+                .collect();
+            assert!(
+                !aliases.contains("_empty"),
+                "the _empty placeholder must not survive into a UNION branch; got {:?}",
+                aliases
+            );
+            assert_eq!(
+                aliases, expected,
+                "every branch must expose exactly the declared RETURN columns"
+            );
+        }
+    }
 
     /// Test for TODO-8: rewrite_with_aliases_to_cte should rewrite TableAlias references
     /// that are in the with_aliases set to CTE references.
