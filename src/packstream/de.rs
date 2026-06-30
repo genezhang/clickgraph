@@ -178,12 +178,19 @@ impl<'de> Deserializer<'de> {
         }
 
         match v {
-            Visitation::SeqAsTuple(2) => {
-                return if self.bytes[0] == 0x92 {
+            // Bolt message struct fields arrive as `n` consecutive top-level
+            // items with no surrounding list marker. Honor an explicit tiny-list
+            // marker when present, otherwise read `n` consecutive items. Arity 3
+            // is required for the RUN message's optional `extra` field (which
+            // carries the selected database, tenant, role, …); previously only
+            // arity 2 was handled and the 3rd field was silently dropped.
+            Visitation::SeqAsTuple(n @ (2 | 3)) => {
+                let tiny_list_marker = 0x90 | (n as u8);
+                return if self.bytes[0] == tiny_list_marker {
                     self.bytes.advance(1);
-                    Self::parse_list(v, 2, self.bytes, visitor)
+                    Self::parse_list(v, n, self.bytes, visitor)
                 } else {
-                    visitor.visit_seq(ItemsParser::new(2, self.bytes))
+                    visitor.visit_seq(ItemsParser::new(n, self.bytes))
                 };
             }
             Visitation::RawBytes => {

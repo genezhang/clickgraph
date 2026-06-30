@@ -353,22 +353,38 @@ where
                 // Parse all fields from the remaining bytes
                 let field_bytes = Bytes::from(cursor[2..].to_vec());
 
-                // Parse as tuple: (String, HashMap<String, Value>, Option<HashMap<String, Value>>)
-                let fields: (String, HashMap<String, serde_json::Value>) =
-                    packstream::from_bytes(field_bytes.clone()).map_err(|e| {
+                // RUN is `query, parameters, extra` in Bolt 4.0+. The optional
+                // 3rd `extra` map carries the selected database (`db`), tenant,
+                // role, etc. — it MUST be parsed so database switching via the
+                // Bolt protocol (Neo4j Browser's database dropdown, driver
+                // `database=`) works. Parsing only the first two fields silently
+                // dropped `db`, pinning every connection to the default schema.
+                let values = if field_count == 3 {
+                    let fields: (
+                        String,
+                        HashMap<String, serde_json::Value>,
+                        HashMap<String, serde_json::Value>,
+                    ) = packstream::from_bytes(field_bytes).map_err(|e| {
                         BoltError::invalid_message(format!("Failed to parse RUN fields: {:?}", e))
                     })?;
-
-                // Convert to BoltMessage values
-                let values = vec![
-                    BoltValue::Json(Value::String(fields.0)), // query
-                    BoltValue::Json(Value::Object(serde_json::Map::from_iter(
-                        fields.1.into_iter(),
-                    ))), // parameters
-                ];
-
-                // If field_count == 3, we'd parse the optional extra map here
-                // For now, RUN with 2 fields is most common
+                    vec![
+                        BoltValue::Json(Value::String(fields.0)), // query
+                        BoltValue::Json(Value::Object(serde_json::Map::from_iter(fields.1))), // parameters
+                        BoltValue::Json(Value::Object(serde_json::Map::from_iter(fields.2))), // extra (db/tenant/role)
+                    ]
+                } else {
+                    let fields: (String, HashMap<String, serde_json::Value>) =
+                        packstream::from_bytes(field_bytes).map_err(|e| {
+                            BoltError::invalid_message(format!(
+                                "Failed to parse RUN fields: {:?}",
+                                e
+                            ))
+                        })?;
+                    vec![
+                        BoltValue::Json(Value::String(fields.0)), // query
+                        BoltValue::Json(Value::Object(serde_json::Map::from_iter(fields.1))), // parameters
+                    ]
+                };
 
                 Ok(BoltMessage::new(signature, values))
             }
@@ -395,6 +411,32 @@ where
                         metadata,
                     )))],
                 ))
+            }
+
+            signatures::BEGIN => {
+                // BEGIN has 1 field: extra metadata map, which may carry the
+                // selected database (`db`) for an explicit transaction (the
+                // Neo4j driver puts `database=` here for tx functions). Parse it
+                // so extract_begin_database() can switch schemas; previously this
+                // fell through to the empty-field default arm and `db` was lost.
+                if field_count >= 1 {
+                    let field_bytes = Bytes::from(cursor[2..].to_vec());
+                    let metadata: HashMap<String, Value> = packstream::from_bytes(field_bytes)
+                        .map_err(|e| {
+                            BoltError::invalid_message(format!(
+                                "Failed to parse BEGIN metadata: {}",
+                                e
+                            ))
+                        })?;
+                    Ok(BoltMessage::new(
+                        signature,
+                        vec![BoltValue::Json(Value::Object(serde_json::Map::from_iter(
+                            metadata,
+                        )))],
+                    ))
+                } else {
+                    Ok(BoltMessage::new(signature, vec![]))
+                }
             }
 
             _ => {
