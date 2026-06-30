@@ -4179,8 +4179,20 @@ pub fn extract_ctes_with_context(
                         // the row count. Skip the join for a coupled endpoint; its
                         // columns already reference rel_table. Not applied to
                         // self-joins (both endpoints aliased distinctly there).
-                        let from_coupled = !is_self_join && raw_from_table == rel_table;
-                        let to_coupled = !is_self_join && raw_to_table == rel_table;
+                        //
+                        // Coupling requires BOTH (a) same physical table AND (b) the
+                        // node-id column == the edge's endpoint-id column. Only then
+                        // is the join condition (`node.id = rel.endpoint_id`) a
+                        // tautology that is safe to drop. If a node is embedded in the
+                        // edge table under a DIFFERENT id column (node_id `user_id` vs
+                        // edge `author_id`), the join is a real selective filter and
+                        // must be kept.
+                        let from_coupled = !is_self_join
+                            && raw_from_table == rel_table
+                            && from_node_id.columns() == rel_from_col.columns();
+                        let to_coupled = !is_self_join
+                            && raw_to_table == rel_table
+                            && to_node_id.columns() == rel_to_col.columns();
                         let mut node_joins = String::new();
                         if !from_coupled {
                             node_joins.push_str(&format!(
