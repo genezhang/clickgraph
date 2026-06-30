@@ -1813,6 +1813,57 @@ impl LogicalPlan {
         }
     }
 
+    /// Extract the physical source table (`db.table`) backing a plan node.
+    /// Walks through GraphNode/Filter wrappers down to the ViewScan.
+    fn plan_source_table(plan: &LogicalPlan) -> Option<String> {
+        match plan {
+            LogicalPlan::ViewScan(vs) => Some(vs.source_table.clone()),
+            LogicalPlan::GraphNode(gn) => Self::plan_source_table(&gn.input),
+            LogicalPlan::Filter(f) => Self::plan_source_table(&f.input),
+            _ => None,
+        }
+    }
+
+    /// For a fixed-hop path whose relationship is denormalized/coupled INTO one of
+    /// its endpoint tables (the edge row lives in the same physical row as that
+    /// endpoint — e.g. a Zeek `dns_log` row, or an `AUTHORED` edge stored in the
+    /// `posts` table), the edge has no separate scan in the FROM clause. Its
+    /// columns must therefore be rendered against the endpoint alias that IS bound.
+    ///
+    /// Returns `Some(alias)` only when that alias differs from `rel_alias` (i.e. the
+    /// edge is genuinely coupled to an endpoint). Returns `None` for a traditional
+    /// separate edge table (group_membership) and for the case where the embedded
+    /// endpoints already map onto the edge alias (ontime: nodes → edge), so the
+    /// existing `rel_alias` rendering is preserved unchanged.
+    fn coupled_edge_render_alias(
+        graph_rel: &crate::query_planner::logical_plan::GraphRel,
+        start_alias: &str,
+        end_alias: &str,
+        rel_alias: &str,
+    ) -> Option<String> {
+        let edge_table = Self::plan_source_table(&graph_rel.center)?;
+        let start_table = Self::plan_source_table(&graph_rel.left);
+        let end_table = Self::plan_source_table(&graph_rel.right);
+
+        // The coupled endpoint is the one whose physical table equals the edge table.
+        // Prefer the end endpoint when both match (fully-denormalized single table).
+        let endpoint_alias = if end_table.as_deref() == Some(edge_table.as_str()) {
+            end_alias
+        } else if start_table.as_deref() == Some(edge_table.as_str()) {
+            start_alias
+        } else {
+            return None; // traditional separate edge table — not coupled
+        };
+
+        // Follow any denormalized-alias remapping so we land on the alias that is
+        // actually bound in FROM. For ontime this resolves the embedded endpoint
+        // back onto the edge alias (== rel_alias), which we then filter out below.
+        let resolved = crate::render_plan::get_denormalized_alias_mapping(endpoint_alias)
+            .unwrap_or_else(|| endpoint_alias.to_string());
+
+        (resolved != rel_alias).then_some(resolved)
+    }
+
     /// Find GraphRel where the given alias is a left or right connection.
     /// Used to detect multi-type VLP context for whole-node expansion.
     fn find_graph_rel_for_alias(
@@ -2327,9 +2378,52 @@ impl LogicalPlan {
                     log::trace!("  ✗ End node '{}' not found in plan_ctx", end_alias);
                 }
 
+                // Relationship/edge property expansion.
+                //
+                // First handle the coupled case: when the edge is denormalized INTO
+                // one of its endpoint tables, the edge row shares that endpoint's
+                // physical row and has no separate scan in FROM. Render its columns
+                // against the endpoint alias that IS bound (e.g. a Zeek `dns_log`
+                // row, or an `AUTHORED` edge stored in the `posts` table) so they
+                // resolve instead of dangling on an unbound `rel_alias` (t3).
+                let coupled_edge_alias = graph_rel_ref.as_ref().and_then(|gr| {
+                    Self::coupled_edge_render_alias(gr, &start_alias, &end_alias, &rel_alias)
+                });
+                if let Some(edge_alias) = coupled_edge_alias {
+                    log::info!(
+                        "  📦 Coupled edge '{}' → binding properties to endpoint alias '{}'",
+                        rel_alias,
+                        edge_alias
+                    );
+                    if let Some(graph_rel) = &graph_rel_ref {
+                        if let Some(ref labels) = graph_rel.labels {
+                            if let Some(rel_type) = labels.first() {
+                                let schema = ctx.schema();
+                                let rel_props = schema
+                                    .get_relationship_properties(std::slice::from_ref(rel_type));
+                                for (prop_name, db_column) in rel_props {
+                                    // Expression uses the bound endpoint alias; the column
+                                    // alias keeps the `rel_alias.` prefix so path assembly
+                                    // (convert_path_branches_to_json) still groups it as the
+                                    // relationship's properties.
+                                    select_items.push(SelectItem {
+                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: RenderTableAlias(edge_alias.clone()),
+                                            column: PropertyValue::Column(db_column),
+                                        }),
+                                        col_alias: Some(ColumnAlias(format!(
+                                            "{}.{}",
+                                            rel_alias, prop_name
+                                        ))),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
                 // Expand relationship properties (ONLY if not denormalized)
                 // Denormalized relationships (e.g., AUTHORED) don't have a separate relationship table
-                if !is_rel_denormalized {
+                else if !is_rel_denormalized {
                     if let Some(typed_var) = ctx.lookup_variable(&rel_alias) {
                         log::debug!(
                             "  ✓ Found relationship '{}' in plan_ctx, is_entity={}, source={:?}",

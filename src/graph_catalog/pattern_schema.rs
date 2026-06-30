@@ -785,7 +785,7 @@ impl PatternSchemaContext {
                 properties: rel_schema
                     .property_mappings
                     .iter()
-                    .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
+                    .map(|(k, v)| (k.clone(), v.raw_column_name()))
                     .collect(),
             }
         } else {
@@ -797,7 +797,7 @@ impl PatternSchemaContext {
                 properties: rel_schema
                     .property_mappings
                     .iter()
-                    .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
+                    .map(|(k, v)| (k.clone(), v.raw_column_name()))
                     .collect(),
             }
         }
@@ -849,7 +849,7 @@ impl PatternSchemaContext {
                     properties: left_node_schema
                         .property_mappings
                         .iter()
-                        .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
+                        .map(|(k, v)| (k.clone(), v.raw_column_name()))
                         .collect(),
                 };
                 let right = NodeAccessStrategy::OwnTable {
@@ -858,7 +858,7 @@ impl PatternSchemaContext {
                     properties: right_node_schema
                         .property_mappings
                         .iter()
-                        .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
+                        .map(|(k, v)| (k.clone(), v.raw_column_name()))
                         .collect(),
                 };
                 (left, right)
@@ -880,7 +880,7 @@ impl PatternSchemaContext {
                         properties: left_node_schema
                             .property_mappings
                             .iter()
-                            .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
+                            .map(|(k, v)| (k.clone(), v.raw_column_name()))
                             .collect(),
                     }
                 };
@@ -897,7 +897,7 @@ impl PatternSchemaContext {
                         properties: right_node_schema
                             .property_mappings
                             .iter()
-                            .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
+                            .map(|(k, v)| (k.clone(), v.raw_column_name()))
                             .collect(),
                     }
                 };
@@ -943,7 +943,7 @@ impl PatternSchemaContext {
                 properties: node_schema
                     .property_mappings
                     .iter()
-                    .map(|(k, v)| (k.clone(), v.to_sql_column_only()))
+                    .map(|(k, v)| (k.clone(), v.raw_column_name()))
                     .collect(),
             })
         }
