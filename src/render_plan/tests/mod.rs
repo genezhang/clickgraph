@@ -3,6 +3,7 @@ mod denormalized_multitype_expand_tests;
 mod denormalized_property_tests;
 mod issue_411_generic_id_tests;
 mod multiple_relationship_tests;
+mod pattern_union_dotted_column_tests;
 mod polymorphic_edge_tests;
 mod variable_length_tests;
 mod vlp_property_pruning_tests;
