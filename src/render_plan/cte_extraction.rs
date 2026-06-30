@@ -3984,15 +3984,21 @@ pub fn extract_ctes_with_context(
                         // / to_properties (to-node) — e.g. Airport.code → flights.Origin
                         // (from) / flights.Dest (to). Such an endpoint IS the edge
                         // row: it must reference rel_table directly, with no alias and
-                        // no join, and its id/properties resolve through the role-
-                        // appropriate denorm property map (NOT node_id/property_mappings,
-                        // which are empty for a virtual-id node).
-                        let from_denorm = from_node_schema.is_denormalized
-                            && from_node_schema.from_properties.is_some()
-                            && raw_from_table == rel_table;
-                        let to_denorm = to_node_schema.is_denormalized
-                            && to_node_schema.to_properties.is_some()
-                            && raw_to_table == rel_table;
+                        // no join, and its id/properties resolve through the denorm
+                        // property maps (NOT node_id/property_mappings, which are empty
+                        // for a virtual-id node).
+                        //
+                        // The join-skip decision deliberately does NOT depend on which
+                        // property map is present: a node embedded in the edge table is
+                        // never a separate table to join, period. Requiring a specific
+                        // role's map here would, for a self-loop node that defines only
+                        // one of from_/to_properties, leave the other side to emit a
+                        // spurious unaliased self-join on the non-existent virtual
+                        // column. Resolution (below) still prefers the role-appropriate
+                        // map and falls back to the other.
+                        let from_denorm =
+                            from_node_schema.is_denormalized && raw_from_table == rel_table;
+                        let to_denorm = to_node_schema.is_denormalized && raw_to_table == rel_table;
 
                         // Self-join detection: when both endpoints are the same table,
                         // we need distinct aliases so ClickHouse can distinguish them —
@@ -4033,16 +4039,21 @@ pub fn extract_ctes_with_context(
                         let rel_to_col = &rel_schema.to_id;
 
                         // For a denormalized endpoint, the node_id is a VIRTUAL
-                        // property: map it through the role-appropriate denorm
-                        // property map (from_properties / to_properties) to its
-                        // physical column. Non-denorm endpoints pass the column
-                        // through unchanged.
+                        // property: map it through the denorm property map to its
+                        // physical column. Prefer the role-appropriate map
+                        // (from_properties for the from-endpoint, to_properties for
+                        // the to-endpoint); fall back to the other map for a
+                        // partially-specified self-loop node, then to the bare name.
+                        // Non-denorm endpoints pass the column through unchanged.
+                        let from_props = from_node_schema.from_properties.as_ref();
+                        let from_props_alt = from_node_schema.to_properties.as_ref();
+                        let to_props = to_node_schema.to_properties.as_ref();
+                        let to_props_alt = to_node_schema.from_properties.as_ref();
                         let resolve_from_id_col = |c: &str| -> String {
                             if from_denorm {
-                                from_node_schema
-                                    .from_properties
-                                    .as_ref()
+                                from_props
                                     .and_then(|m| m.get(c))
+                                    .or_else(|| from_props_alt.and_then(|m| m.get(c)))
                                     .cloned()
                                     .unwrap_or_else(|| c.to_string())
                             } else {
@@ -4051,10 +4062,9 @@ pub fn extract_ctes_with_context(
                         };
                         let resolve_to_id_col = |c: &str| -> String {
                             if to_denorm {
-                                to_node_schema
-                                    .to_properties
-                                    .as_ref()
+                                to_props
                                     .and_then(|m| m.get(c))
+                                    .or_else(|| to_props_alt.and_then(|m| m.get(c)))
                                     .cloned()
                                     .unwrap_or_else(|| c.to_string())
                             } else {
@@ -4101,10 +4111,10 @@ pub fn extract_ctes_with_context(
                         // For a denormalized endpoint the properties live in the
                         // role-appropriate denorm map (from_properties / to_properties),
                         // NOT property_mappings (which is empty for a virtual-id node).
+                        // Fall back to the other map for a partially-specified self-loop.
                         let start_prop_cols: Vec<String> = if from_denorm {
-                            from_node_schema
-                                .from_properties
-                                .as_ref()
+                            from_props
+                                .or(from_props_alt)
                                 .map(|m| {
                                     m.values()
                                         .map(|col| {
@@ -4127,9 +4137,8 @@ pub fn extract_ctes_with_context(
                         };
 
                         let end_prop_cols: Vec<String> = if to_denorm {
-                            to_node_schema
-                                .to_properties
-                                .as_ref()
+                            to_props
+                                .or(to_props_alt)
                                 .map(|m| {
                                     m.values()
                                         .map(|col| format!("{to_table}.{}", quote_identifier(col)))

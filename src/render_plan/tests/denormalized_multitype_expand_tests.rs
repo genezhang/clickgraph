@@ -274,3 +274,42 @@ graph_schema:
         "virtual id must resolve to Origin (from) / Dest (to); SQL:\n{sql}"
     );
 }
+
+/// A partially-specified denormalized self-loop (a node embedded in the edge
+/// table defining only ONE of from_node_properties / to_node_properties) is
+/// rejected at schema-build time, so the renderer never sees it. This documents
+/// that the validator is the first line of defense; the renderer's join-skip is
+/// additionally decoupled from property-map presence as a belt-and-suspenders
+/// guard (see cte_extraction.rs from_denorm/to_denorm).
+#[test]
+fn partial_denorm_self_loop_rejected_by_schema_validation() {
+    const YAML: &str = r#"
+name: partial_denorm_test
+graph_schema:
+  nodes:
+    - label: Airport
+      database: test_db
+      table: flights
+      node_id: code
+      is_denormalized: true
+      property_mappings: {}
+      from_node_properties:
+        code: Origin
+  edges:
+    - type: FLIGHT
+      database: test_db
+      table: flights
+      from_node: Airport
+      to_node: Airport
+      from_id: Origin
+      to_id: Dest
+      property_mappings: {}
+"#;
+    let result = GraphSchemaConfig::from_yaml_str(YAML)
+        .expect("parse schema yaml")
+        .to_graph_schema();
+    assert!(
+        result.is_err(),
+        "a denormalized self-loop missing to_node_properties must be rejected by validation"
+    );
+}
