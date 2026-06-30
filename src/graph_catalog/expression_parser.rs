@@ -106,6 +106,22 @@ impl PropertyValue {
         }
     }
 
+    /// Return the bare physical column name for a `Column`, leaving it UNQUOTED
+    /// so a downstream consumer can quote it exactly once at render time.
+    ///
+    /// This is the counterpart to [`to_sql_column_only`](Self::to_sql_column_only),
+    /// which quotes special-character columns itself. Strategy/property maps that
+    /// are later wrapped in `PropertyValue::Column` (and re-quoted by the renderer)
+    /// must use THIS method — otherwise a column like `id.orig_h` is quoted twice
+    /// (`"""id.orig_h"""`). `Expression` values have no single-column form, so they
+    /// fall back to rendered SQL to preserve existing behavior.
+    pub fn raw_column_name(&self) -> String {
+        match self {
+            PropertyValue::Column(col) => col.clone(),
+            PropertyValue::Expression(_) => self.to_sql_column_only(),
+        }
+    }
+
     /// Get raw value (for debugging)
     pub fn raw(&self) -> &str {
         match self {
