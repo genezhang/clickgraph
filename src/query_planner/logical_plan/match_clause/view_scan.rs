@@ -70,7 +70,23 @@ pub fn try_generate_view_scan(
         if let Some(metadata) = schema.get_denormalized_node_metadata(label) {
             let rel_types = metadata.get_relationship_types();
 
-            if rel_types.len() > 1 || metadata.id_sources.values().any(|v| v.len() > 1) {
+            // Materialize the node from its SOURCE table(s) ONLY. A denormalized
+            // node may participate in many relationship types, but its non-id
+            // properties live exclusively in its denormalized source table(s) —
+            // never in foreign edge tables (e.g. `airport_cities`/`city_airports`
+            // for Airport, which carry only the edge FK, not OriginCityName).
+            // Drive the multi-branch UNION off the number of distinct denormalized
+            // NODE DEFINITIONS (= distinct source tables, e.g. zeek `IP` in
+            // `dns_log` and `conn_log`), NOT the relationship count. A single-source
+            // node (e.g. Airport in `flights`) falls through to the SINGLE-TABLE
+            // case below, which builds the from/to dimension over that one table.
+            let base_label = label.rsplit("::").next().unwrap_or(label);
+            let denorm_def_count = schema
+                .get_all_node_schemas_for_label(base_label)
+                .iter()
+                .filter(|(_, s)| s.is_denormalized)
+                .count();
+            if denorm_def_count > 1 {
                 // MULTI-TABLE CASE: Node appears in multiple tables/positions
                 log::info!(
                     "✓ Denormalized node '{}' appears in {} relationship type(s) - creating multi-table UNION",

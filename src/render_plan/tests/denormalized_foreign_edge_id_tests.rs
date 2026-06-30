@@ -124,3 +124,76 @@ fn coupled_flight_edge_unchanged() {
         "coupled FLIGHT must scan flights exactly once (no extra joins); SQL:\n{sql}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Stage 2 — B2: node-only denormalized materialization (the "dimension")
+// ---------------------------------------------------------------------------
+
+/// A denormalized node referenced on its own (`MATCH (a:Airport) RETURN ...`)
+/// must materialize from its `denormalized_source_table` (`flights`) ONLY,
+/// exposing PROPERTY-named columns, via a DISTINCT union over the from/to
+/// positions. It must NEVER enumerate the foreign edge tables
+/// (`airport_cities`/`city_airports`) that carry only the edge FK and lack the
+/// node's property columns (`OriginCityName`, etc.).
+#[test]
+fn node_only_airport_dimension_unions_over_source_table_only() {
+    let sql = translate("MATCH (a:Airport) RETURN a.code, a.city");
+
+    // Materializes over the source table on BOTH positions.
+    assert!(
+        sql.contains(r#"Origin AS "a.code""#) && sql.contains(r#"OriginCityName AS "a.city""#),
+        "FROM-position branch must select source-table columns; SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains(r#"Dest AS "a.code""#) && sql.contains(r#"DestCityName AS "a.city""#),
+        "TO-position branch must select source-table columns; SQL:\n{sql}"
+    );
+
+    // The source table is scanned (one branch per position).
+    assert_eq!(
+        sql.matches("test_integration.flights").count(),
+        2,
+        "node-only dimension must union the two source-table positions; SQL:\n{sql}"
+    );
+
+    // It must NOT enumerate the foreign edge tables — those have no
+    // OriginCityName/DestCityName columns.
+    assert!(
+        !sql.contains("airport_cities") && !sql.contains("city_airports"),
+        "node-only must not union over foreign edge tables; SQL:\n{sql}"
+    );
+}
+
+/// Full-node expansion (`RETURN a`) of a denormalized node also materializes
+/// the source-table dimension only, expanding every declared property.
+#[test]
+fn node_only_airport_full_expansion_over_source_table_only() {
+    let sql = translate("MATCH (a:Airport) RETURN a");
+
+    assert!(
+        !sql.contains("airport_cities") && !sql.contains("city_airports"),
+        "full node expansion must not union over foreign edge tables; SQL:\n{sql}"
+    );
+    // All three declared properties present from the source table.
+    assert!(
+        sql.contains(r#"OriginState AS "a.state""#) || sql.contains(r#"DestState AS "a.state""#),
+        "state property must come from the source table; SQL:\n{sql}"
+    );
+}
+
+/// LAZY guarantee (Stage 1 preserved): when ONLY the node_id is used through a
+/// foreign edge, NO dimension/source-table join is introduced — the id is read
+/// straight from the edge FK and `flights` is never touched.
+#[test]
+fn located_in_id_only_has_no_source_table_join() {
+    let sql = translate("MATCH (a:Airport)-[:LOCATED_IN]->(c:City) RETURN a.code, c.name");
+
+    assert!(
+        sql.contains(r#"airport_code AS "a.code""#),
+        "id-only a.code must read the edge FK; SQL:\n{sql}"
+    );
+    assert!(
+        !sql.contains("flights"),
+        "id-only access must NOT introduce a source-table (flights) join; SQL:\n{sql}"
+    );
+}
