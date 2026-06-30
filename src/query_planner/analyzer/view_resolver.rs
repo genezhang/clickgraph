@@ -146,7 +146,7 @@ impl<'a> ViewResolver<'a> {
         // still resolve to a real column, not be nulled. Known columns are: the
         // node id column(s), every column targeted by a property mapping, and the
         // denormalized from/to mapping columns.
-        let is_known_column = node_schema.node_id.columns().iter().any(|c| *c == property)
+        let is_known_column = node_schema.node_id.columns().contains(&property)
             || node_schema
                 .property_mappings
                 .values()
@@ -237,12 +237,12 @@ impl<'a> ViewResolver<'a> {
         // edge table: a structural id column (endpoints + optional edge id) or a
         // column targeted by a property mapping (the fallback is also reached
         // with an already-resolved column name). These are never nulled.
-        let is_known_column = rel_schema.from_id.columns().iter().any(|c| *c == property)
-            || rel_schema.to_id.columns().iter().any(|c| *c == property)
+        let is_known_column = rel_schema.from_id.columns().contains(&property)
+            || rel_schema.to_id.columns().contains(&property)
             || rel_schema
                 .edge_id
                 .as_ref()
-                .is_some_and(|e| e.columns().iter().any(|c| *c == property))
+                .is_some_and(|e| e.columns().contains(&property))
             || rel_schema
                 .property_mappings
                 .values()
