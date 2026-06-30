@@ -2690,9 +2690,42 @@ pub(super) fn normalize_union_branches(
         return union_plans;
     }
 
-    // Collect all unique column aliases across all branches (sorted for deterministic order)
+    // A branch pruned to `LogicalPlan::Empty` renders as exactly the placeholder
+    // `SELECT 1 AS "_empty" WHERE false` (e.g. an unlabeled `MATCH (n)` whose
+    // property no node type has). Its `_empty` column must NOT enter the unified
+    // column set, or every branch gets padded with a spurious `NULL AS "_empty"`
+    // that breaks the declared RETURN arity (Bolt field-count mismatch / ClickHouse
+    // "UNION different number of columns"). Detect such branches by their exact
+    // SHAPE — not by the alias name — so a column a user legitimately aliases
+    // `_empty` (`RETURN x AS _empty`) is preserved.
+    fn is_empty_placeholder(p: &super::RenderPlan) -> bool {
+        use crate::render_plan::render_expr::{Literal, RenderExpr};
+        p.select.items.len() == 1
+            && p.select.items[0].col_alias.as_ref().map(|a| a.0.as_str()) == Some("_empty")
+            && matches!(
+                p.select.items[0].expression,
+                RenderExpr::Literal(Literal::Integer(1))
+            )
+            && matches!(
+                p.filters.0,
+                Some(RenderExpr::Literal(Literal::Boolean(false)))
+            )
+    }
+
+    // If every branch is an empty placeholder (the whole UNION pruned to 0 rows),
+    // leave them untouched: that already renders valid 0-row SQL. Normalizing to an
+    // empty column set would emit a column-less `SELECT WHERE false`, which is invalid.
+    if union_plans.iter().all(is_empty_placeholder) {
+        return union_plans;
+    }
+
+    // Collect the unified column aliases from the REAL (non-placeholder) branches
+    // only (sorted for deterministic order). Pruned placeholder branches then adopt
+    // these columns as NULLs below and still return 0 rows (their `WHERE false` is
+    // preserved); real branches keep their exact columns.
     let all_aliases: BTreeSet<String> = union_plans
         .iter()
+        .filter(|plan| !is_empty_placeholder(plan))
         .flat_map(|plan| {
             plan.select
                 .items
@@ -4316,8 +4349,119 @@ fn extract_referenced_aliases_from_expr(expr: &RenderExpr, refs: &mut HashSet<St
 mod tests {
     use super::*;
     use crate::render_plan::render_expr::{
-        ColumnAlias, Literal, Operator, OperatorApplication, TableAlias,
+        ColumnAlias, Literal, Operator, OperatorApplication, RenderExpr, TableAlias,
     };
+    use crate::render_plan::{
+        ArrayJoinItem, CteItems, FilterItems, FromTableItem, GroupByExpressions, JoinItems,
+        LimitItem, OrderByItems, RenderPlan, SelectItem, SelectItems, SkipItem, UnionItems,
+    };
+
+    /// Regression: handling of the `_empty` placeholder a UNION branch renders when
+    /// pruned to `LogicalPlan::Empty` (`SELECT 1 AS "_empty" WHERE false`, e.g. an
+    /// unlabeled `MATCH (n)` whose property no node type has). Covers three cases:
+    ///   1. placeholder + real branch → `_empty` dropped; both branches expose the
+    ///      real RETURN columns (the placeholder adopts them as NULLs).
+    ///   2. all branches pruned → returned unchanged (valid 0-row SQL, not a
+    ///      column-less `SELECT WHERE false`).
+    ///   3. a user column legitimately aliased `_empty` (NOT the placeholder shape)
+    ///      is preserved — detection is shape-based, not name-based.
+    #[test]
+    fn normalize_union_branches_handles_empty_placeholder() {
+        fn item(alias: &str) -> SelectItem {
+            SelectItem {
+                expression: RenderExpr::Literal(Literal::String(alias.to_string())),
+                col_alias: Some(ColumnAlias(alias.to_string())),
+            }
+        }
+        fn plan(items: Vec<SelectItem>, where_false: bool) -> RenderPlan {
+            RenderPlan {
+                ctes: CteItems(vec![]),
+                select: SelectItems {
+                    items,
+                    distinct: false,
+                },
+                from: FromTableItem(None),
+                joins: JoinItems(vec![]),
+                array_join: ArrayJoinItem(vec![]),
+                filters: FilterItems(if where_false {
+                    Some(RenderExpr::Literal(Literal::Boolean(false)))
+                } else {
+                    None
+                }),
+                group_by: GroupByExpressions(vec![]),
+                having_clause: None,
+                order_by: OrderByItems(vec![]),
+                skip: SkipItem(None),
+                limit: LimitItem(None),
+                union: UnionItems(None),
+                fixed_path_info: None,
+                is_multi_label_scan: false,
+                variable_registry: None,
+            }
+        }
+        // The exact placeholder a pruned branch renders: `SELECT 1 AS "_empty" WHERE false`.
+        fn placeholder() -> RenderPlan {
+            plan(
+                vec![SelectItem {
+                    expression: RenderExpr::Literal(Literal::Integer(1)),
+                    col_alias: Some(ColumnAlias("_empty".to_string())),
+                }],
+                true,
+            )
+        }
+        fn aliases_of(b: &RenderPlan) -> std::collections::BTreeSet<String> {
+            b.select
+                .items
+                .iter()
+                .filter_map(|i| i.col_alias.as_ref().map(|a| a.0.clone()))
+                .collect()
+        }
+        let real_cols: std::collections::BTreeSet<String> = ["entity", "joined_at"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        // (1) placeholder + real branch
+        let out = normalize_union_branches(vec![
+            placeholder(),
+            plan(vec![item("entity"), item("joined_at")], false),
+        ]);
+        for b in &out {
+            assert!(
+                !aliases_of(b).contains("_empty"),
+                "placeholder _empty must not survive: {:?}",
+                aliases_of(b)
+            );
+            assert_eq!(
+                aliases_of(b),
+                real_cols,
+                "every branch must expose the declared RETURN columns"
+            );
+        }
+
+        // (2) all branches pruned → unchanged (valid 0-row SQL)
+        let out = normalize_union_branches(vec![placeholder(), placeholder()]);
+        assert_eq!(out.len(), 2);
+        let only_empty: std::collections::BTreeSet<String> =
+            ["_empty".to_string()].into_iter().collect();
+        for b in &out {
+            assert_eq!(aliases_of(b), only_empty);
+        }
+
+        // (3) user column legitimately aliased `_empty` (string expr, no WHERE false)
+        // is NOT a placeholder and must be preserved.
+        let out = normalize_union_branches(vec![
+            plan(vec![item("_empty"), item("x")], false),
+            plan(vec![item("_empty")], false),
+        ]);
+        for b in &out {
+            assert!(
+                aliases_of(b).contains("_empty"),
+                "a real user column aliased _empty must be preserved: {:?}",
+                aliases_of(b)
+            );
+        }
+    }
 
     /// Test for TODO-8: rewrite_with_aliases_to_cte should rewrite TableAlias references
     /// that are in the with_aliases set to CTE references.
