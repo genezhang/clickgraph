@@ -1844,6 +1844,42 @@ pub(crate) fn get_relationship_type_for_alias(alias: &str, plan: &LogicalPlan) -
     }
 }
 
+/// Returns `true` when the relationship `alias` is backed by a multi-type
+/// `pattern_union` CTE (i.e. its `GraphRel` carries `pattern_combinations`).
+///
+/// When this is the case, the relationship's properties are projected by the
+/// CTE under their *property* names (e.g. `... AS timestamp`), so downstream
+/// references to `alias.<property>` must use the property-named CTE column and
+/// must NOT be reverse-mapped to the physical schema column (CLAUDE.md §2:
+/// forward-resolution through a CTE barrier).
+pub(crate) fn is_pattern_union_rel_alias(alias: &str, plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::GraphRel(rel) if rel.alias == alias => rel.pattern_combinations.is_some(),
+        LogicalPlan::GraphRel(rel) => {
+            is_pattern_union_rel_alias(alias, &rel.left)
+                || is_pattern_union_rel_alias(alias, &rel.center)
+                || is_pattern_union_rel_alias(alias, &rel.right)
+        }
+        LogicalPlan::GraphNode(node) => is_pattern_union_rel_alias(alias, &node.input),
+        LogicalPlan::Filter(filter) => is_pattern_union_rel_alias(alias, &filter.input),
+        LogicalPlan::Projection(proj) => is_pattern_union_rel_alias(alias, &proj.input),
+        LogicalPlan::GraphJoins(joins) => is_pattern_union_rel_alias(alias, &joins.input),
+        LogicalPlan::OrderBy(order_by) => is_pattern_union_rel_alias(alias, &order_by.input),
+        LogicalPlan::Skip(skip) => is_pattern_union_rel_alias(alias, &skip.input),
+        LogicalPlan::Limit(limit) => is_pattern_union_rel_alias(alias, &limit.input),
+        LogicalPlan::GroupBy(group_by) => is_pattern_union_rel_alias(alias, &group_by.input),
+        LogicalPlan::Cte(cte) => is_pattern_union_rel_alias(alias, &cte.input),
+        LogicalPlan::WithClause(with_clause) => {
+            is_pattern_union_rel_alias(alias, &with_clause.input)
+        }
+        LogicalPlan::Union(union) => union
+            .inputs
+            .iter()
+            .any(|input| is_pattern_union_rel_alias(alias, input)),
+        _ => false,
+    }
+}
+
 /// For denormalized schemas: get the relationship alias and ID column for a node alias
 /// Returns (rel_alias, id_column) if the node is denormalized, None otherwise
 fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option<(String, String)> {

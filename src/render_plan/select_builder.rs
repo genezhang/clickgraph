@@ -905,6 +905,34 @@ impl SelectBuilder for LogicalPlan {
                                 col_name
                             );
 
+                            // Multi-type relationship backed by a `pattern_union` CTE:
+                            // the CTE projects this relationship's properties as direct
+                            // columns under their PROPERTY names (e.g. `... AS timestamp`).
+                            // Per CLAUDE.md §2 (forward resolution through a CTE barrier),
+                            // reference the property-named CTE column directly — do NOT
+                            // remap it to the physical schema column via
+                            // get_properties_with_table_alias() below (that would emit
+                            // e.g. `r.ts`, which does not exist in the CTE → CH Code 47).
+                            if crate::render_plan::cte_extraction::is_pattern_union_rel_alias(
+                                cypher_alias,
+                                self,
+                            ) {
+                                log::info!(
+                                    "🔀 pattern_union relationship property '{}.{}': passing through property-named CTE column (no physical-column remap)",
+                                    cypher_alias,
+                                    col_name
+                                );
+                                select_items.push(SelectItem {
+                                    expression: item.expression.clone().try_into()?,
+                                    col_alias: item
+                                        .col_alias
+                                        .as_ref()
+                                        .map(|ca| ca.clone().try_into())
+                                        .transpose()?,
+                                });
+                                continue;
+                            }
+
                             // 🔧 FIX: Check if this is a multi-type VLP endpoint first
                             // Multi-type VLP endpoints need JSON extraction, not direct column access
                             if let Some(gr) = self.find_graph_rel_for_alias(cypher_alias) {
