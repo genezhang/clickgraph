@@ -950,6 +950,17 @@ fn is_valid_direction_branch(plan: &Arc<LogicalPlan>, graph_schema: &GraphSchema
                             all_invalid = false;
                             break;
                         }
+                        // A KNOWN endpoint label that contradicts the schema's
+                        // role for this rel_type makes this direction invalid —
+                        // even when the OTHER endpoint is unlabeled. Without this,
+                        // `(a:Group)-[:MEMBER_OF]-(o)` kept the impossible branch
+                        // binding Group as MEMBER_OF's User-typed from_node, which
+                        // generated a join on a non-existent column (`a.user_id`).
+                        if from_label.as_ref().is_some_and(|l| l != schema_from)
+                            || to_label.as_ref().is_some_and(|l| l != schema_to)
+                        {
+                            continue;
+                        }
                         // Check explicit labels
                         if let (Some(from), Some(to)) = (&from_label, &to_label) {
                             if from == schema_from && to == schema_to {
