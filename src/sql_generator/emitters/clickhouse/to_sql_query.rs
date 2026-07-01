@@ -3921,7 +3921,17 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                         })
                         .collect::<Vec<_>>()
                         .join(", ");
-                    sql.push_str(&alias_select);
+                    // A whole-node `RETURN n` over a heterogeneous denormalized
+                    // union carries no explicit outer SELECT items (the aligned
+                    // node columns live in each union branch). Emitting an empty
+                    // projection produces invalid `SELECT  FROM (...)` (ClickHouse
+                    // Code 62). Pass the union's aligned columns straight through
+                    // with `*` in that case.
+                    if alias_select.is_empty() {
+                        sql.push('*');
+                    } else {
+                        sql.push_str(&alias_select);
+                    }
                 }
             } else if !plan.select.items.is_empty() {
                 sql.push_str(&plan.select.to_sql());
