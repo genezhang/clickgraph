@@ -1061,6 +1061,15 @@ impl LogicalPlan {
                     log::debug!("🔍 find_multi_type_graph_rel: Checking GraphNode input");
                     find_multi_type_graph_rel(&gn.input)
                 }
+                // Presentation wrappers must not block multi-type CTE detection.
+                // A per-label UNION split places LIMIT INSIDE each branch as
+                // `GraphJoins → Limit → GraphJoins → … → GraphRel`; without these
+                // arms the outer GraphJoins' input (Limit) short-circuits detection,
+                // and FROM falls back to a raw node table instead of the
+                // vlp_multi_type CTE, producing invalid SQL.
+                LogicalPlan::Limit(l) => find_multi_type_graph_rel(&l.input),
+                LogicalPlan::Skip(s) => find_multi_type_graph_rel(&s.input),
+                LogicalPlan::OrderBy(o) => find_multi_type_graph_rel(&o.input),
                 _ => {
                     log::debug!(
                         "🔍 find_multi_type_graph_rel: No match for plan type {:?}",

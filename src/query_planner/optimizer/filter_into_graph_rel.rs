@@ -88,6 +88,133 @@ fn extract_referenced_aliases(expr: &LogicalExpr, aliases: &mut std::collections
     }
 }
 
+/// Collect the columns referenced under a specific alias in an expression.
+///
+/// Returns the raw column names of every `PropertyAccessExp` whose table alias
+/// equals `alias`. Used to detect predicates that reference a column the target
+/// scan does not have.
+fn columns_for_alias(expr: &LogicalExpr, alias: &str, out: &mut std::collections::HashSet<String>) {
+    match expr {
+        LogicalExpr::PropertyAccessExp(pa) if pa.table_alias.0 == alias => {
+            out.insert(pa.column.raw().to_string());
+        }
+        LogicalExpr::PropertyAccessExp(_) => {}
+        LogicalExpr::OperatorApplicationExp(op) | LogicalExpr::Operator(op) => {
+            for o in &op.operands {
+                columns_for_alias(o, alias, out);
+            }
+        }
+        LogicalExpr::ScalarFnCall(f) => {
+            for a in &f.args {
+                columns_for_alias(a, alias, out);
+            }
+        }
+        LogicalExpr::AggregateFnCall(f) => {
+            for a in &f.args {
+                columns_for_alias(a, alias, out);
+            }
+        }
+        LogicalExpr::Case(c) => {
+            if let Some(e) = &c.expr {
+                columns_for_alias(e, alias, out);
+            }
+            for (w, t) in &c.when_then {
+                columns_for_alias(w, alias, out);
+                columns_for_alias(t, alias, out);
+            }
+            if let Some(e) = &c.else_expr {
+                columns_for_alias(e, alias, out);
+            }
+        }
+        LogicalExpr::List(items) => {
+            for i in items {
+                columns_for_alias(i, alias, out);
+            }
+        }
+        LogicalExpr::InSubquery(s) => columns_for_alias(&s.expr, alias, out),
+        _ => {}
+    }
+}
+
+/// Build the set of DB columns a node ViewScan can legitimately be filtered on:
+/// its property-mapping keys (Cypher property names) and column values, plus the
+/// id column and any from/to id columns.
+fn scan_known_columns(
+    view_scan: &crate::query_planner::logical_plan::ViewScan,
+) -> std::collections::HashSet<String> {
+    let mut cols = std::collections::HashSet::new();
+    for (prop, val) in &view_scan.property_mapping {
+        cols.insert(prop.clone());
+        cols.insert(val.raw().to_string());
+    }
+    cols.insert(view_scan.id_column.clone());
+    if let Some(from_id) = &view_scan.from_id {
+        for c in from_id.columns() {
+            cols.insert(c.to_string());
+        }
+    }
+    if let Some(to_id) = &view_scan.to_id {
+        for c in to_id.columns() {
+            cols.insert(c.to_string());
+        }
+    }
+    cols
+}
+
+/// Drop predicates that reference `alias` columns which the target `view_scan`
+/// does not have. This prevents cross-branch contamination when a UNION splits a
+/// single anchor variable into per-label branches: the shared `PlanCtx` holds the
+/// filters of ALL branches under the same alias (e.g. `a.ip IN [...]` from the IP
+/// branch and `a.query IN [...]` from the Domain branch). Pushing every one into
+/// every scan yields invalid predicates like `a.query` on a table that has no
+/// `query` column (ClickHouse Code 47).
+///
+/// The tell-tale of that cross-label merge is that a SINGLE alias carries filters
+/// on TWO OR MORE distinct id columns (one per label). Only then do we prune:
+/// keep the predicates whose columns exist on this scan, drop the definitively
+/// foreign ones. When the alias references at most one distinct column we return
+/// the filters untouched — this leaves ordinary single-label pushdown AND
+/// polymorphic multi-type expands (e.g. an unlabeled endpoint `b.post_id IN [...]`
+/// that legitimately spans User|Post and is rewritten to `t.end_id` downstream)
+/// completely unaffected.
+fn retain_filters_for_scan(
+    filters: &[LogicalExpr],
+    alias: &str,
+    view_scan: &crate::query_planner::logical_plan::ViewScan,
+) -> Vec<LogicalExpr> {
+    // Distinct columns this alias is filtered on across all its predicates.
+    let mut all_cols = std::collections::HashSet::new();
+    for f in filters {
+        columns_for_alias(f, alias, &mut all_cols);
+    }
+    // <2 distinct columns ⇒ no per-label merge possible ⇒ nothing to prune.
+    if all_cols.len() < 2 {
+        return filters.to_vec();
+    }
+
+    let known = scan_known_columns(view_scan);
+    filters
+        .iter()
+        .filter(|f| {
+            let mut referenced = std::collections::HashSet::new();
+            columns_for_alias(f, alias, &mut referenced);
+            // Keep if it references no alias columns, or at least one valid column.
+            referenced.is_empty() || referenced.iter().any(|c| known.contains(c))
+        })
+        .cloned()
+        .collect()
+}
+
+/// Find the node ViewScan directly under a GraphRel connection subtree.
+/// Handles `GraphNode(ViewScan)` and bare `ViewScan`; returns None otherwise.
+fn scan_under(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::ViewScan> {
+    match plan {
+        LogicalPlan::ViewScan(vs) => Some(vs),
+        LogicalPlan::GraphNode(gn) => scan_under(gn.input.as_ref()),
+        _ => None,
+    }
+}
+
 /// Optimizer pass that pushes Filter predicates into GraphRel.where_predicate
 ///
 /// This pass looks for patterns like:
@@ -330,7 +457,14 @@ impl OptimizerPass for FilterIntoGraphRel {
                 if let LogicalPlan::ViewScan(view_scan) = graph_node.input.as_ref() {
                     // Get filters for THIS specific alias only
                     if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&graph_node.alias) {
-                        let filters = table_ctx.get_filters();
+                        // Drop predicates that reference columns this scan's label does
+                        // not have (cross-branch contamination via shared PlanCtx when a
+                        // UNION splits one anchor variable into per-label branches).
+                        let filters = retain_filters_for_scan(
+                            table_ctx.get_filters(),
+                            &graph_node.alias,
+                            view_scan,
+                        );
                         log::info!(
                             "FilterIntoGraphRel: Found table_ctx for alias '{}', filters.len() = {}",
                             graph_node.alias,
@@ -514,16 +648,21 @@ impl OptimizerPass for FilterIntoGraphRel {
                         };
 
                         if matches_viewscan {
+                            // Drop predicates referencing columns this scan does not have
+                            // (cross-branch contamination via shared PlanCtx in a per-label
+                            // UNION split — see retain_filters_for_scan docs).
+                            let kept = retain_filters_for_scan(filters, alias, view_scan);
                             log::trace!(
-                                "FilterIntoGraphRel: Found {} matching filters for alias '{}': {:?}",
+                                "FilterIntoGraphRel: Found {} matching filters for alias '{}' ({} kept after column guard): {:?}",
                                 filters.len(),
                                 alias,
+                                kept.len(),
                                 filters
                             );
 
                             // For ViewScan, filters are already in Column form (not PropertyAccess)
                             // So we just use them directly without qualification
-                            filters_to_apply.extend(filters.clone());
+                            filters_to_apply.extend(kept);
                         }
                     }
 
@@ -618,7 +757,13 @@ impl OptimizerPass for FilterIntoGraphRel {
                                 if let Ok(table_ctx) = plan_ctx
                                     .get_table_ctx_from_alias_opt(&Some(graph_node.alias.clone()))
                                 {
-                                    let filters = table_ctx.get_filters();
+                                    // Guard against foreign-column predicates (shared-PlanCtx
+                                    // cross-branch contamination in per-label UNION splits).
+                                    let filters = retain_filters_for_scan(
+                                        table_ctx.get_filters(),
+                                        &graph_node.alias,
+                                        view_scan,
+                                    );
                                     if !filters.is_empty() {
                                         log::trace!(
                                         "FilterIntoGraphRel: Found {} filters for GraphNode alias '{}': {:?}",
@@ -626,7 +771,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                                         graph_node.alias,
                                         filters
                                     );
-                                        filters_to_apply.extend(filters.clone());
+                                        filters_to_apply.extend(filters);
                                     }
                                 }
 
@@ -787,7 +932,13 @@ impl OptimizerPass for FilterIntoGraphRel {
                     if let Ok(table_ctx) = plan_ctx
                         .get_table_ctx_from_alias_opt(&Some(graph_rel.left_connection.clone()))
                     {
-                        let filters = table_ctx.get_filters().clone();
+                        let mut filters = table_ctx.get_filters().clone();
+                        // Drop foreign-column predicates for this connection's label
+                        // (cross-branch contamination via shared PlanCtx).
+                        if let Some(scan) = scan_under(graph_rel.left.as_ref()) {
+                            filters =
+                                retain_filters_for_scan(&filters, &graph_rel.left_connection, scan);
+                        }
                         if !filters.is_empty() {
                             log::debug!(
                                 "FilterIntoGraphRel: Found {} filters for left connection alias '{}' in GraphRel",
@@ -818,7 +969,14 @@ impl OptimizerPass for FilterIntoGraphRel {
                     if let Ok(table_ctx) = plan_ctx
                         .get_table_ctx_from_alias_opt(&Some(graph_rel.right_connection.clone()))
                     {
-                        let filters = table_ctx.get_filters().clone();
+                        let mut filters = table_ctx.get_filters().clone();
+                        if let Some(scan) = scan_under(graph_rel.right.as_ref()) {
+                            filters = retain_filters_for_scan(
+                                &filters,
+                                &graph_rel.right_connection,
+                                scan,
+                            );
+                        }
                         if !filters.is_empty() {
                             log::trace!(
                                 "FilterIntoGraphRel: Found {} filters for right connection alias '{}' in GraphRel",

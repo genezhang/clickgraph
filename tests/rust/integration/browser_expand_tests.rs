@@ -18,6 +18,214 @@ use clickgraph::{
     server::query_context::{set_current_schema, with_query_context, QueryContext},
 };
 
+/// Full SERVER pipeline: parse → transform_id_functions (runs split_query_by_labels)
+/// → plan → render → SQL. This mirrors `src/server/handlers.rs` exactly and is the
+/// ONLY path that reproduces the mixed-label anchor bug (cg / generate_expand_sql
+/// feed post-rewrite Cypher without the transform's label-split side effects).
+async fn generate_expand_sql_via_server(
+    schema: &GraphSchema,
+    cypher: &str,
+    element_ids: &[&str],
+) -> String {
+    use clickgraph::query_planner::ast_transform;
+    use clickgraph::query_planner::evaluate_read_statement;
+    use clickgraph::server::bolt_protocol::id_mapper::IdMapper;
+
+    let schema = schema.clone();
+    let cypher = cypher.to_string();
+    let element_ids: Vec<String> = element_ids.iter().map(|s| s.to_string()).collect();
+
+    let ctx = QueryContext::new(Some("default".to_string()));
+    with_query_context(ctx, async move {
+        set_current_schema(std::sync::Arc::new(schema.clone()));
+
+        // Mirror the server's Bolt pipeline: substitute_cypher_parameters (Pass 3)
+        // rewrites `elementId(a) IN $nodeIds` into `id(a) IN [encoded_ints]` using
+        // compute_deterministic_id, and primes the IdMapper cache when Browser first
+        // fetched those nodes. We reproduce that state by priming the mapper here so
+        // transform_id_functions can decode each encoded int back to (label, id).
+        let mut id_mapper = IdMapper::new();
+        id_mapper.set_scope(Some("default".to_string()), None);
+        for eid in &element_ids {
+            id_mapper.get_or_assign(eid); // caches element_id <-> encoded int both ways
+        }
+
+        let (_rest, statement) = clickgraph::open_cypher_parser::parse_cypher_statement(&cypher)
+            .unwrap_or_else(|e| panic!("parse: {e:?}\nCypher: {cypher}"));
+
+        let arena = ast_transform::StringArena::new();
+        let (transformed, _labels) =
+            ast_transform::transform_id_functions(&arena, statement, &id_mapper, Some(&schema));
+
+        clickgraph::query_planner::logical_plan::reset_all_counters();
+
+        let (logical_plan, plan_ctx) =
+            evaluate_read_statement(transformed, &schema, None, None, None)
+                .unwrap_or_else(|e| panic!("plan: {e:?}\nCypher: {cypher}"));
+
+        // Server parity: render WITH plan_ctx (VLP endpoints / multi-type joins).
+        let render_plan = clickgraph::render_plan::logical_plan_to_render_plan_with_ctx(
+            logical_plan,
+            &schema,
+            Some(&plan_ctx),
+        )
+        .unwrap_or_else(|e| panic!("render: {e:?}\nCypher: {cypher}"));
+
+        clickgraph::clickhouse_query_generator::generate_sql(render_plan, 20)
+    })
+    .await
+}
+
+/// Build the post-`substitute_cypher_parameters` query form for a mixed/single
+/// anchor browser expand: `elementId(a) IN $nodeIds` becomes `id(a) IN [ints]`.
+fn encode_ids(element_ids: &[&str]) -> String {
+    use clickgraph::server::bolt_protocol::id_mapper::IdMapper;
+    element_ids
+        .iter()
+        .map(|e| IdMapper::compute_deterministic_id(e).to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn zeek_dns_schema() -> GraphSchema {
+    clickgraph::graph_catalog::config::GraphSchemaConfig::from_yaml_str(include_str!(
+        "zeek_dns_graph.yaml"
+    ))
+    .expect("parse zeek_dns_graph.yaml")
+    .to_graph_schema()
+    .expect("convert zeek schema")
+}
+
+/// Returns the SQL from the start of the OUTER query onward (after the WITH/CTE
+/// list closes), so assertions don't match inside CTE bodies. The CTE list ends
+/// with `)\nSELECT` (the last CTE closes with `)` + newline, not `),`).
+fn outer_query_fragment(sql: &str) -> &str {
+    if let Some(pos) = sql.find(")\nSELECT") {
+        // Skip the closing paren + newline, start at the outer SELECT.
+        return &sql[pos + 2..];
+    }
+    // No CTEs — the whole thing is the outer query.
+    let pos = sql.find("SELECT ").unwrap_or(0);
+    &sql[pos..]
+}
+
+/// Assert the outer FROM/JOIN clauses only reference `t` / `t_fi_*` / CTE names —
+/// never a bare Cypher anchor alias (`a`) or endpoint alias (`o`), which would be
+/// out of scope in the outer query and yield ClickHouse Code 47.
+fn assert_no_bare_anchor_aliases_in_outer(sql: &str) {
+    let outer = outer_query_fragment(sql);
+    for pat in [" AS a\n", " AS a ", " AS o\n", " AS o ", " AS a,", " AS o,"] {
+        assert!(
+            !outer.contains(pat),
+            "outer query must not bind bare anchor/endpoint alias ('{}'):\n{}",
+            pat.trim(),
+            outer
+        );
+    }
+    // The dotted node-materialisation column that leaked in the live capture.
+    assert!(
+        !outer.contains("id.orig_h"),
+        "outer query must not reference the phantom node-materialisation column `id.orig_h`:\n{outer}"
+    );
+}
+
+/// REGRESSION (mixed-label anchor expand → ClickHouse Code 47).
+///
+/// A Neo4j-Browser multi-node "expand" whose selected `nodeIds` are of MIXED
+/// labels (`IP` + `Domain`, backed by different tables) sends
+/// `MATCH (a)-[r]-(o) WHERE elementId(a) IN $nodeIds ...`. `transform_id_functions`
+/// runs `split_query_by_labels`, producing a per-label UNION. This used to emit
+/// invalid SQL: the two per-label anchor CTEs were combined with a `_fi_` INNER
+/// JOIN (they are ALTERNATIVE anchors, not a fan-in), plus a phantom node
+/// materialisation JOIN referencing out-of-scope `a`/`o` aliases → Code 47.
+///
+/// The fix must emit a valid UNION ALL of the two single-anchor expands.
+#[tokio::test]
+async fn mixed_label_anchor_expand_emits_valid_union() {
+    let schema = zeek_dns_schema();
+    let ids = ["IP:104.16.133.229-", "Domain:cloudflare.com-"];
+    // Post-substitute_cypher_parameters form: `elementId(a) IN $nodeIds`
+    // → `id(a) IN [encoded ints]`; the dedupe-CASE for `o` collapses to bare `o`.
+    let cypher = format!(
+        "MATCH (a)-[r]-(o) WHERE id(a) IN [{}] RETURN r, o LIMIT 100",
+        encode_ids(&ids)
+    );
+    let sql = generate_expand_sql_via_server(&schema, &cypher, &ids).await;
+
+    // Two per-label anchor CTEs combined with UNION ALL, not a `_fi_` INNER JOIN.
+    assert!(
+        sql.contains("vlp_multi_type_a_o") && sql.contains("vlp_multi_type_a_o_2"),
+        "expected two per-label anchor CTEs:\n{sql}"
+    );
+    assert!(
+        sql.contains("UNION ALL"),
+        "the two anchor branches must be combined with UNION ALL:\n{sql}"
+    );
+    assert!(
+        !sql.contains("t_fi_"),
+        "alternative anchors must NOT be joined via the filter-injection `_fi_` INNER JOIN:\n{sql}"
+    );
+
+    // Outer query must be scoped to the VLP CTE alias `t` only.
+    assert_no_bare_anchor_aliases_in_outer(&sql);
+    let outer = outer_query_fragment(&sql);
+    assert!(
+        outer.contains("FROM vlp_multi_type_a_o AS t")
+            && outer.contains("FROM vlp_multi_type_a_o_2 AS t"),
+        "each outer branch must select FROM its own VLP CTE aliased `t`:\n{outer}"
+    );
+
+    // Each branch filters on ITS OWN CTE's start column (no cross-branch leak).
+    assert!(
+        outer.contains("t.start_ip IN ['104.16.133.229']"),
+        "IP anchor branch must filter on t.start_ip:\n{outer}"
+    );
+    assert!(
+        outer.contains("t.start_query IN ['cloudflare.com']"),
+        "Domain anchor branch must filter on t.start_query:\n{outer}"
+    );
+    // The IP anchor's column must never be applied to the Domain CTE and vice versa.
+    assert!(
+        !outer.contains("t.start_query IN ['104.16.133.229']")
+            && !outer.contains("t.start_ip IN ['cloudflare.com']"),
+        "branch filters must not be cross-contaminated:\n{outer}"
+    );
+
+    // Both UNION branches must project the same number of columns (arity-safe).
+    let branch_col_counts: Vec<usize> = outer
+        .split("UNION ALL")
+        .map(|b| b.matches("AS \"").count())
+        .collect();
+    assert!(
+        branch_col_counts.windows(2).all(|w| w[0] == w[1]),
+        "UNION branches must have equal column arity, got {branch_col_counts:?}:\n{outer}"
+    );
+}
+
+/// Single-label anchor expand (only one label in `nodeIds`) must stay valid and
+/// unchanged: one VLP CTE, FROM `t`, filter on its own start column, no UNION.
+#[tokio::test]
+async fn single_label_anchor_expand_unchanged() {
+    let schema = zeek_dns_schema();
+    let ids = ["IP:104.16.133.229-"];
+    let cypher = format!(
+        "MATCH (a)-[r]-(o) WHERE id(a) IN [{}] RETURN r, o LIMIT 100",
+        encode_ids(&ids)
+    );
+    let sql = generate_expand_sql_via_server(&schema, &cypher, &ids).await;
+
+    assert!(sql.contains("FROM vlp_multi_type_a_o AS t"), "SQL:\n{sql}");
+    assert!(
+        sql.contains("t.start_ip = '104.16.133.229'"),
+        "single anchor must filter on its own start column:\n{sql}"
+    );
+    assert!(
+        !sql.contains("vlp_multi_type_a_o_2"),
+        "single-label anchor must not create a second CTE:\n{sql}"
+    );
+    assert_no_bare_anchor_aliases_in_outer(&sql);
+}
+
 use super::browser_test_schemas::*;
 
 // ---------------------------------------------------------------------------
