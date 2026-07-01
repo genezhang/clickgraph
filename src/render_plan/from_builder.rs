@@ -964,6 +964,17 @@ impl LogicalPlan {
                 LogicalPlan::GroupBy(group_by) => find_graph_rel(&group_by.input),
                 LogicalPlan::Unwind(u) => find_graph_rel(&u.input),
                 LogicalPlan::GraphJoins(gj) => find_graph_rel(&gj.input),
+                LogicalPlan::GraphNode(gn) => find_graph_rel(&gn.input),
+                // Pagination wrappers may sit between an outer GraphJoins and the
+                // GraphRel — e.g. a top-level Cypher UNION branch renders as
+                // GraphJoins → Limit → GraphJoins → Projection → GraphRel. Without
+                // traversing these, a multi-type rel's pattern_combinations check is
+                // bypassed and the FROM collapses to a single raw edge table instead
+                // of the self-contained pattern_union CTE (mirrors join_builder's
+                // find_graph_rel, which already descends through them).
+                LogicalPlan::OrderBy(order_by) => find_graph_rel(&order_by.input),
+                LogicalPlan::Skip(skip) => find_graph_rel(&skip.input),
+                LogicalPlan::Limit(limit) => find_graph_rel(&limit.input),
                 // For multi-hop patterns: CartesianProduct(GraphRel(r1), GraphRel(r2))
                 // Traverse left to find the first (FROM anchor) GraphRel
                 LogicalPlan::CartesianProduct(cp) => find_graph_rel(&cp.left),

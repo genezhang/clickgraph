@@ -118,6 +118,104 @@ fn multi_type_rel_property_resolves_to_cte_column_not_physical() {
     );
 }
 
+// Two edge types sharing a `timestamp` property (mapped to physical column
+// `ts`) whose tables are DIFFERENT (`dns_log` vs `dns_resolutions`). The
+// multi-type expansion must still build a `pattern_union` CTE even when the rel
+// pattern is one branch of a top-level Cypher UNION.
+const SCHEMA_YAML_DIFFERENT_TABLES: &str = r#"
+name: pattern_union_rel_prop_multitable_test
+graph_schema:
+  nodes:
+    - label: IP
+      database: zeek
+      table: all_ips
+      node_id: ip
+      property_mappings:
+        ip: ip
+    - label: Domain
+      database: zeek
+      table: dns_log
+      node_id: query
+      property_mappings:
+        name: query
+  edges:
+    - type: REQUESTED
+      database: zeek
+      table: dns_log
+      from_node: IP
+      to_node: Domain
+      from_id: "id.orig_h"
+      to_id: query
+      property_mappings:
+        timestamp: ts
+        uid: uid
+    - type: RESOLVED_TO
+      database: zeek
+      table: dns_resolutions
+      from_node: Domain
+      to_node: IP
+      from_id: domain
+      to_id: resolved_ip
+      property_mappings:
+        timestamp: ts
+"#;
+
+// Full statement path (handles top-level Cypher UNION, which `parse_query`
+// does not) reusing the production translator entry point.
+fn cypher_to_sql_with(schema_yaml: &str, cypher: &str) -> String {
+    let graph_schema = GraphSchemaConfig::from_yaml_str(schema_yaml)
+        .expect("parse schema yaml")
+        .to_graph_schema()
+        .expect("build graph schema");
+    let (sql, _lp, _ctx) = crate::sql_generator::emitters::clickhouse::cypher_to_sql_with_metadata(
+        cypher,
+        &graph_schema,
+        100,
+    )
+    .expect("translate cypher to sql");
+    sql
+}
+
+#[test]
+fn multi_type_rel_property_in_top_level_union_keeps_pattern_union() {
+    // Browser property-key probe shape: a node branch (dropped — no node has
+    // `timestamp`) UNION ALL a relationship branch. The rel branch's multi-type
+    // expansion, whose two edge types live in DIFFERENT tables, must still build
+    // a pattern_union CTE and reference the property-named CTE column — NOT
+    // collapse to a single raw edge table with a `r.timestamp` column that does
+    // not exist there.
+    let sql = cypher_to_sql_with(
+        SCHEMA_YAML_DIFFERENT_TABLES,
+        "MATCH (n) WHERE n.timestamp IS NOT NULL \
+         RETURN DISTINCT 'node' AS entity, n.timestamp AS timestamp LIMIT 25\n\
+         UNION ALL\n\
+         MATCH ()-[r]-() WHERE r.timestamp IS NOT NULL \
+         RETURN DISTINCT 'relationship' AS entity, r.timestamp AS timestamp LIMIT 25",
+    );
+
+    // The multi-type expansion must survive the enclosing UNION as a CTE with
+    // both edge types' tables present.
+    assert!(
+        sql.contains("pattern_union_r"),
+        "expected a pattern_union CTE for the multi-type relationship inside the top-level UNION; SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains("zeek.dns_log") && sql.contains("zeek.dns_resolutions"),
+        "pattern_union CTE must span BOTH edge tables; SQL:\n{sql}"
+    );
+
+    // The outer query must reference the property-named CTE column, never emit a
+    // bare `r.timestamp` against a raw edge table that lacks that column.
+    assert!(
+        sql.contains("FROM pattern_union_r AS r"),
+        "outer query must read from the pattern_union CTE; SQL:\n{sql}"
+    );
+    assert!(
+        !sql.contains("FROM zeek.dns_log AS r"),
+        "outer query must NOT collapse to a single raw edge table; SQL:\n{sql}"
+    );
+}
+
 #[test]
 fn single_type_rel_property_still_uses_physical_column() {
     // `server` exists on only the REQUESTED edge → single-type, no pattern_union.
