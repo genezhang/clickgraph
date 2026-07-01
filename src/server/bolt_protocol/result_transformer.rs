@@ -1257,6 +1257,18 @@ pub(crate) fn transform_to_relationship(
     // element_id construction near the end of this function.
     let start_id_val = properties.get("start_id").and_then(value_to_string);
     let end_id_val = properties.get("end_id").and_then(value_to_string);
+    // Capture the OTHER (end-side, `o`) node's ACTUAL label from its
+    // `<other_alias>.__label__` projection — this is exactly how the returned
+    // end node is labeled, so the relationship's endpoint element_ids must use it.
+    // The multi-type (vlp/pattern_union) outer projection renames end_type →
+    // `o.__label__` and DROPS start_type, so start_type/end_type are not available
+    // as columns; `o.__label__` is the reliable source. The anchor (start-side)
+    // label is derived below as the schema from/to label that isn't the o-side's.
+    let other_label = row.iter().find_map(|(key, value)| {
+        key.strip_suffix(".__label__")
+            .filter(|rest| *rest != var_name)
+            .and_then(|_| value_to_string(value))
+    });
 
     // Detect when the SQL's `start_id`/`end_id` projection is reversed from the
     // schema's natural from→to direction. This happens for undirected matches
@@ -1420,20 +1432,36 @@ pub(crate) fn transform_to_relationship(
     // both schema-canonical ids are present (multi-type 1-hop); otherwise fall
     // back to the traversal-order labels unchanged (the fixed-schema and
     // reversal-detection paths already agree in that case).
-    let (from_node_label, to_node_label): (&str, &str) =
+    let (from_node_label, to_node_label): (String, String) =
         if canonical_from.is_some() && canonical_to.is_some() {
-            // Pick the label of the node whose traversal-order id equals `canon`.
-            let label_for = |canon: &str| -> &str {
+            // Pick the label of the node that actually carries each schema-canonical
+            // id, so the relationship's endpoint element_ids equal the returned
+            // nodes' element_ids (else Neo4j Browser can't attach the rel → crash).
+            //   * The end-side (`o`) node's REAL label is `o.__label__` (captured as
+            //     `other_label`) — the multi-type outer projection renames end_type
+            //     to `o.__label__` and drops start_type, so the schema from/to labels
+            //     are NOT a reliable substitute (they coincide only for polymorphic
+            //     edges; for a concrete edge whose anchor sits on the schema to-side,
+            //     e.g. expanding a Domain over REQUESTED (IP→Domain), they diverge).
+            //   * The start-side (anchor `a`) label is the schema from/to label that
+            //     isn't the o-side's.
+            let o_label = other_label.clone();
+            let anchor_label = match o_label.as_deref() {
+                Some(ol) if ol == resolved_from_label => resolved_to_label.clone(),
+                Some(ol) if ol == resolved_to_label => resolved_from_label.clone(),
+                // o's label matches neither (or labels equal, e.g. User↔User) —
+                // the from-side schema label is the safe choice.
+                _ => resolved_from_label.clone(),
+            };
+            let label_for = |canon: &str| -> String {
                 let matches_start = start_id_val.as_deref() == Some(canon);
                 let matches_end = end_id_val.as_deref() == Some(canon);
                 if matches_end && !matches_start {
-                    // This canonical endpoint is the end-side (`o`) node.
-                    &resolved_to_label
+                    // end-side (`o`) node — use its actual projected label.
+                    o_label.clone().unwrap_or_else(|| resolved_to_label.clone())
                 } else {
-                    // Matches the start-side (anchor `a`), or is ambiguous
-                    // (self-loop where start_id == end_id) — the start-side
-                    // label is correct either way.
-                    &resolved_from_label
+                    // start-side (anchor `a`), or self-loop (start_id == end_id).
+                    anchor_label.clone()
                 }
             };
             (
@@ -1441,11 +1469,11 @@ pub(crate) fn transform_to_relationship(
                 label_for(canonical_to.as_deref().unwrap_or("")),
             )
         } else {
-            (from_node_label, to_node_label)
+            (from_node_label.to_string(), to_node_label.to_string())
         };
 
-    let start_node_element_id = generate_node_element_id(from_node_label, &from_id_refs);
-    let end_node_element_id = generate_node_element_id(to_node_label, &to_id_refs);
+    let start_node_element_id = generate_node_element_id(&from_node_label, &from_id_refs);
+    let end_node_element_id = generate_node_element_id(&to_node_label, &to_id_refs);
 
     // Derive integer IDs from element_ids (ensures uniqueness across labels)
     let rel_id = generate_id_from_element_id(&element_id);
@@ -3027,6 +3055,97 @@ mod tests {
         //       direction is reversed. Endpoints: User:7 (from) → User:4 (to).
         let row_iii = make_row("User", "User", 4, 7, "7", "4");
         assert_endpoints("FOLLOWS", &row_iii, &user7, &user4);
+    }
+
+    /// Regression: for a CONCRETE-label multi-type expand where the anchor sits on
+    /// the schema's TO-side, the relationship endpoint labels must come from the
+    /// TRAVERSAL node labels (start_type/end_type), not the schema from/to labels.
+    /// (zeek_dns_graph: REQUESTED is IP→Domain; expanding a Domain yields
+    /// start_type=Domain/end_type=IP but r_from_id=<ip>/r_to_id=<domain>. Using the
+    /// schema labels mislabels the endpoint as "Domain:<ip>", so the relationship no
+    /// longer matches the IP node and Neo4j Browser detaches it / crashes.)
+    #[test]
+    fn test_concrete_multi_type_expand_to_side_anchor_endpoint_labels_match_nodes() {
+        use crate::graph_catalog::graph_schema::RelationshipSchema;
+        use std::collections::HashMap;
+
+        let mut schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+        // REQUESTED: concrete IP -> Domain, edge table with string ids.
+        schema.insert_relationship_schema(
+            "REQUESTED".to_string(),
+            RelationshipSchema {
+                database: "zeek".to_string(),
+                table_name: "dns_log".to_string(),
+                column_names: vec!["id.orig_h".to_string(), "query".to_string()],
+                from_node: "IP".to_string(),
+                to_node: "Domain".to_string(),
+                from_node_table: "all_ips".to_string(),
+                to_node_table: "dns_log".to_string(),
+                from_id: Identifier::from("id.orig_h"),
+                to_id: Identifier::from("query"),
+                from_node_id_dtype: SchemaType::String,
+                to_node_id_dtype: SchemaType::String,
+                property_mappings: HashMap::new(),
+                view_parameters: None,
+                engine: None,
+                use_final: None,
+                filter: None,
+                edge_id: None,
+                type_column: None,
+                from_label_column: None,
+                to_label_column: None,
+                from_label_values: None,
+                to_label_values: None,
+                from_node_properties: None,
+                to_node_properties: None,
+                is_fk_edge: false,
+                constraints: None,
+                edge_id_types: None,
+                source: None,
+                property_types: HashMap::new(),
+            },
+        );
+
+        // Expanding Domain `cloudflare.com` (schema to-side): traversal start=Domain,
+        // end=IP; schema-from id = the IP, schema-to id = the domain. This mirrors the
+        // REAL vlp_multi_type outer projection: start_id/end_id in traversal order,
+        // r_from_id/r_to_id in schema from→to order, and the end node's label as
+        // `o.__label__` — start_type is NOT projected (so we must read the label from
+        // o.__label__, not from a nonexistent start_type/end_type column).
+        let mut row = HashMap::new();
+        row.insert(
+            "r.start_id".to_string(),
+            Value::String("cloudflare.com".into()),
+        );
+        row.insert("r.end_id".to_string(), Value::String("192.168.1.30".into()));
+        row.insert(
+            "r.r_from_id".to_string(),
+            Value::String("192.168.1.30".into()),
+        );
+        row.insert(
+            "r.r_to_id".to_string(),
+            Value::String("cloudflare.com".into()),
+        );
+        // The other (end-side) node `o` is the IP — projected as o.__label__ / o.id.
+        row.insert("o.__label__".to_string(), Value::String("IP".into()));
+        row.insert("o.id".to_string(), Value::String("192.168.1.30".into()));
+
+        let rel =
+            transform_to_relationship(&row, "r", &["REQUESTED".to_string()], None, None, &schema)
+                .expect("transform should succeed");
+
+        // The returned nodes are IP:192.168.1.30 (o) and Domain:cloudflare.com (a).
+        let node_ip = generate_node_element_id("IP", &["192.168.1.30"]);
+        let node_domain = generate_node_element_id("Domain", &["cloudflare.com"]);
+        // REQUESTED is IP→Domain: from-endpoint = the IP node, to-endpoint = the Domain.
+        assert_eq!(
+            rel.start_node_element_id, node_ip,
+            "from-endpoint must equal the IP node (not Domain:<ip>)"
+        );
+        assert_eq!(
+            rel.end_node_element_id, node_domain,
+            "to-endpoint must equal the Domain node"
+        );
     }
 
     /// Regression test: parse_composite_rel_key correctly splits "FOLLOWS::User::User" format
