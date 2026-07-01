@@ -26,6 +26,21 @@ pub async fn execute_procedure_by_name(
         .get(procedure_name)
         .ok_or_else(|| format!("Unknown procedure: {}", procedure_name))?;
 
+    // Neo4j reserves the `system` database for administrative state; it holds no
+    // user graph. Neo4j Browser routes housekeeping/introspection CALLs (id()
+    // resolution, db.* metadata) to it, which arrive here with schema_name
+    // "system". There is no such user schema, so get_schema() would fail with
+    // "Schema not found: system" and surface as a FAILURE popup in Browser.
+    // Match Neo4j semantics instead: return an empty result for the reserved
+    // system database.
+    if schema_name.eq_ignore_ascii_case("system") {
+        log::debug!(
+            "Procedure '{}' targeted the reserved 'system' database — returning empty result",
+            procedure_name
+        );
+        return Ok(Vec::new());
+    }
+
     // Get the schema
     let schema = get_schema(schema_name).await?;
 
@@ -357,6 +372,21 @@ pub fn format_as_json(results: Vec<HashMap<String, serde_json::Value>>) -> serde
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn procedure_against_reserved_system_database_returns_empty() {
+        // Neo4j Browser routes housekeeping/introspection CALLs to the reserved
+        // `system` database. There is no user schema named "system", so this must
+        // return an empty result rather than a "Schema not found: system" error.
+        let registry = crate::procedures::ProcedureRegistry::new();
+        for db in ["system", "System", "SYSTEM"] {
+            let result = execute_procedure_by_name("db.labels", db, &registry).await;
+            assert!(
+                matches!(result, Ok(ref rows) if rows.is_empty()),
+                "procedure against reserved '{db}' database must return Ok(empty), got {result:?}"
+            );
+        }
+    }
 
     #[test]
     fn test_format_as_json() {

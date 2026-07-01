@@ -173,35 +173,30 @@ pub fn get_graph_context<'a>(
             source: e,
         })?;
 
-    // Try to get left label, or infer from relationship if anonymous
-    // IMPORTANT: Must consider direction when inferring labels!
-    // For (a)<-[:REL]-(b) with Incoming direction:
-    //   - left (a) connects to to_id, so left label is rel.to_node
-    //   - right (b) connects to from_id, so right label is rel.from_node
-    // For (a)-[:REL]->(b) with Outgoing direction:
-    //   - left (a) connects to from_id, so left label is rel.from_node
-    //   - right (b) connects to to_id, so right label is rel.to_node
+    // Try to get left label, or infer from relationship if anonymous.
+    //
+    // The parser NORMALIZES connection aliases so that `left_connection` is
+    // ALWAYS the relationship's from-side and `right_connection` the to-side,
+    // regardless of the arrow direction — see `compute_connection_aliases`
+    // (Incoming swaps start/end so left = from-node). BidirectionalUnion's
+    // Incoming branch performs the same swap. So an anonymous node's inferred
+    // label follows position, NOT `graph_rel.direction`: left = from_node,
+    // right = to_node. This matches `compute_pattern_context`'s anonymous
+    // inference. Flipping by direction here (the old behavior) was a latent
+    // bug — masked whenever TypeInference had already filled the label, but
+    // surfacing for BidirectionalUnion-generated Incoming branches over
+    // FK-edges, where the anonymous endpoint stayed unlabeled and got resolved
+    // to the wrong node table (Code 47: reading `from_id`/`to_id` off the node
+    // table instead of the FK-edge table).
     let left_label = match left_ctx.get_label_str() {
         Ok(label) => label,
-        Err(_) => {
-            // Anonymous node - infer from relationship schema considering direction
-            match graph_rel.direction {
-                Direction::Incoming => rel_schema_for_inference.to_node.clone(),
-                _ => rel_schema_for_inference.from_node.clone(),
-            }
-        }
+        Err(_) => rel_schema_for_inference.from_node.clone(),
     };
 
     // Try to get right label, or infer from relationship if anonymous
     let right_label = match right_ctx.get_label_str() {
         Ok(label) => label,
-        Err(_) => {
-            // Anonymous node - infer from relationship schema considering direction
-            match graph_rel.direction {
-                Direction::Incoming => rel_schema_for_inference.from_node.clone(),
-                _ => rel_schema_for_inference.to_node.clone(),
-            }
-        }
+        Err(_) => rel_schema_for_inference.to_node.clone(),
     };
 
     // NOTE: For polymorphic $any nodes, this function should not be called.
