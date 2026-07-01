@@ -212,6 +212,49 @@ async fn test_fk_edge_customer_simple() {
     assert!(sql_lower.contains("select"), "Should produce valid SQL");
 }
 
+/// REGRESSION (bug G): undirected FK-edge expand with a typed anchor and an
+/// anonymous other endpoint (`(c:Customer)-[r:PLACED_BY]-(o)`) must read the
+/// edge id columns from the FK-edge table (orders) and use the correct FK join
+/// key — NOT from the customers node table.
+///
+/// PLACED_BY is Order→Customer and IS the orders table (FK column customer_id).
+/// BidirectionalUnion prunes the invalid Outgoing branch and keeps the Incoming
+/// branch, which swaps left/right so `o` (from-side = Order) becomes the FROM
+/// anchor. Because TypeInference leaves `o` unlabeled under Direction::Either,
+/// `get_graph_context` previously flipped the anonymous role by direction and
+/// resolved `o` to the customers table, generating
+/// `FROM customers AS o INNER JOIN orders AS r ON r.order_id = o.order_id`
+/// (ClickHouse Code 47 — customers has no order_id). The endpoint's inferred
+/// label must follow position (left = from_node), matching compute_pattern_context.
+#[tokio::test]
+async fn test_fk_edge_undirected_reads_edge_ids_from_edge_table() {
+    let schema = create_fk_edge_schema();
+    let sql = generate_expand_sql(
+        &schema,
+        "MATCH (c:Customer)-[r:PLACED_BY]-(o) WHERE c.customer_id = 103 RETURN r",
+    )
+    .await;
+
+    let sql_lower = sql.to_lowercase();
+    assert!(sql_lower.contains("select"), "Should produce valid SQL");
+    // The FK-edge (orders) table is the anchor supplying r.from_id/r.to_id.
+    assert!(
+        sql_lower.contains("test.orders"),
+        "Undirected FK-edge expand must scan the orders (FK-edge) table:\n{sql}"
+    );
+    // Broken output joined the edge on a non-existent node-table order_id.
+    assert!(
+        !sql_lower.contains("r.order_id = o.order_id"),
+        "Must not join the FK-edge on a node-table order_id key:\n{sql}"
+    );
+    // With RETURN r + FK collapse, the customers node table is not referenced;
+    // its presence would mean `o` was mis-resolved to the customers table.
+    assert!(
+        !sql_lower.contains("customers"),
+        "Undirected FK-edge RETURN r must not read from the customers node table:\n{sql}"
+    );
+}
+
 // ===========================================================================
 // Denormalized schema tests
 // ===========================================================================

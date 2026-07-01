@@ -160,6 +160,45 @@ fn unlabeled_node_is_not_null_filter_over_all_denormalized_schema_materializes_u
 }
 
 #[test]
+fn whole_node_return_over_heterogeneous_denormalized_schema_has_aligned_union() {
+    // Whole-node `RETURN n` over a heterogeneous all-denormalized schema (IP,
+    // Domain, ResolvedIP — each with a DIFFERENT property set) expands into a
+    // UNION where every label-position leaf branch must project the SAME aligned
+    // column set (each label's real columns + NULL for the others), wrapped in a
+    // subquery whose OUTER SELECT projects those columns.
+    //
+    // Two historical defects this guards against:
+    //   1. An EMPTY outer projection (`SELECT  FROM (...)`) — ClickHouse Code 62.
+    //   2. Nested per-label `UNION DISTINCT` sub-branches padded inconsistently,
+    //      giving mismatched column counts across leaves.
+    let sql = cypher_to_sql("MATCH (n) RETURN n LIMIT 5");
+
+    // Defect 1: the outer SELECT over the union must NOT be empty.
+    assert!(
+        !sql.contains("SELECT  FROM"),
+        "outer SELECT over the heterogeneous union must not be empty; SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains(") AS __union"),
+        "heterogeneous whole-node union must be wrapped in a subquery; SQL:\n{sql}"
+    );
+
+    // Defect 2: every leaf branch must project the SAME aligned column set. This
+    // heterogeneous schema yields three distinct node properties (ip_address,
+    // domain_name, answers); each of those aligned column aliases must appear the
+    // same number of times — once per leaf branch. Equal, non-zero counts prove
+    // consistent arity across all leaves (padded with NULL where absent).
+    let answers = count(&sql, "AS \"n.answers\"");
+    let domain = count(&sql, "AS \"n.domain_name\"");
+    let ip = count(&sql, "AS \"n.ip_address\"");
+    assert!(
+        answers > 0 && answers == domain && domain == ip,
+        "every leaf branch must project the same aligned column set \
+         (answers={answers}, domain_name={domain}, ip_address={ip}); SQL:\n{sql}"
+    );
+}
+
+#[test]
 fn labeled_denormalized_node_property_is_unchanged() {
     // Control: the LABELED form already worked and must be byte-for-byte preserved
     // (the UNLABELED fix must compose with, not alter, the labeled path).
