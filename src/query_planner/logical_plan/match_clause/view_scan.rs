@@ -19,6 +19,33 @@ use crate::query_planner::logical_plan::plan_builder::LogicalPlanResult;
 use crate::query_planner::logical_plan::{LogicalPlan, Union, UnionType, ViewScan};
 use crate::query_planner::plan_ctx::PlanCtx;
 
+/// Ensure a denormalized node's declared `node_id` is projectable as its own property.
+///
+/// Denormalized nodes expose their properties via `from_node_properties` /
+/// `to_node_properties` (Cypher-name → DB-column). The Bolt result transformer
+/// (`server/bolt_protocol/result_transformer.rs`) builds a node's `elementId` by
+/// looking up the node's declared `node_id` NAME among the projected properties.
+///
+/// When `node_id` is also a normal property (e.g. Airport `node_id: code` with a
+/// `code` property), the id is already projected and nothing is needed. But when
+/// `node_id` is a VIRTUAL id whose name is NOT a property key (e.g. zeek Domain
+/// `node_id: query` exposed only as `name: query`), the whole-node `RETURN n`
+/// projection never emits a column the transformer recognizes as the id, so the
+/// node is dropped and Neo4j Browser shows "unknown error" ("Missing ID column").
+///
+/// This injects an explicit `{id_prop_name → id_column}` entry (only when absent)
+/// so `RETURN n` also projects `{alias}.{id_prop_name}`, mirroring how a normal
+/// node projects its id column. No-op when the id name is already a property.
+fn ensure_node_id_property(
+    props: &mut HashMap<String, PropertyValue>,
+    id_prop_name: &str,
+    id_column: &str,
+) {
+    props
+        .entry(id_prop_name.to_string())
+        .or_insert_with(|| PropertyValue::Column(id_column.to_string()));
+}
+
 /// Try to generate a ViewScan for a node by looking up the label in the schema from plan_ctx.
 ///
 /// This function handles several complex cases:
@@ -114,10 +141,11 @@ pub fn try_generate_view_scan(
                                 );
 
                                 // Populate property_mapping from from_props so full node expansion works
-                                let property_mapping: HashMap<String, PropertyValue> = from_props
-                                    .iter()
-                                    .map(|(k, v)| (k.clone(), PropertyValue::Column(v.clone())))
-                                    .collect();
+                                let mut property_mapping: HashMap<String, PropertyValue> =
+                                    from_props
+                                        .iter()
+                                        .map(|(k, v)| (k.clone(), PropertyValue::Column(v.clone())))
+                                        .collect();
 
                                 // Get the actual ID column name from node_id property
                                 let id_prop_name = node_schema
@@ -130,6 +158,14 @@ pub fn try_generate_view_scan(
                                     .get(&id_prop_name)
                                     .cloned()
                                     .unwrap_or_else(|| id_prop_name.clone());
+
+                                // Make the node_id projectable so the Bolt transformer can
+                                // build the elementId for whole-node `RETURN n` viz.
+                                ensure_node_id_property(
+                                    &mut property_mapping,
+                                    &id_prop_name,
+                                    &id_column,
+                                );
 
                                 log::info!(
                                     "✓ FROM branch for '{}': id_prop='{}', id_column='{}', {} properties",
@@ -187,7 +223,7 @@ pub fn try_generate_view_scan(
                                 );
 
                                 // Populate property_mapping from to_props so full node expansion works
-                                let property_mapping: HashMap<String, PropertyValue> = to_props
+                                let mut property_mapping: HashMap<String, PropertyValue> = to_props
                                     .iter()
                                     .map(|(k, v)| (k.clone(), PropertyValue::Column(v.clone())))
                                     .collect();
@@ -203,6 +239,14 @@ pub fn try_generate_view_scan(
                                     .get(&id_prop_name)
                                     .cloned()
                                     .unwrap_or_else(|| id_prop_name.clone());
+
+                                // Make the node_id projectable so the Bolt transformer can
+                                // build the elementId for whole-node `RETURN n` viz.
+                                ensure_node_id_property(
+                                    &mut property_mapping,
+                                    &id_prop_name,
+                                    &id_column,
+                                );
 
                                 log::info!(
                                     "✓ TO branch for '{}': id_prop='{}', id_column='{}', {} properties",
@@ -362,7 +406,7 @@ pub fn try_generate_view_scan(
                 full_table_name.clone(),
                 None,
                 from_property_mapping, // Use FROM properties as property_mapping
-                from_id_column,
+                from_id_column.clone(),
                 vec![],
                 vec![],
             );
@@ -373,6 +417,10 @@ pub fn try_generate_view_scan(
                     .map(|(k, v)| (k.clone(), PropertyValue::Column(v.clone())))
                     .collect()
             });
+            // Make the node_id projectable for whole-node `RETURN n` viz (Bolt transformer).
+            if let Some(props) = from_scan.from_node_properties.as_mut() {
+                ensure_node_id_property(props, &id_prop_name, &from_id_column);
+            }
             from_scan.schema_filter = node_schema.filter.clone();
             from_scan.node_label = Some(base_label.to_string());
             // Note: to_node_properties is None - this is the FROM branch
@@ -382,7 +430,7 @@ pub fn try_generate_view_scan(
                 full_table_name,
                 None,
                 to_property_mapping, // Use TO properties as property_mapping
-                to_id_column,
+                to_id_column.clone(),
                 vec![],
                 vec![],
             );
@@ -393,6 +441,10 @@ pub fn try_generate_view_scan(
                     .map(|(k, v)| (k.clone(), PropertyValue::Column(v.clone())))
                     .collect()
             });
+            // Make the node_id projectable for whole-node `RETURN n` viz (Bolt transformer).
+            if let Some(props) = to_scan.to_node_properties.as_mut() {
+                ensure_node_id_property(props, &id_prop_name, &to_id_column);
+            }
             to_scan.schema_filter = node_schema.filter.clone();
             to_scan.node_label = Some(base_label.to_string());
             // Note: from_node_properties is None - this is the TO branch
@@ -437,7 +489,7 @@ pub fn try_generate_view_scan(
             full_table_name,
             None,
             HashMap::new(),
-            single_id_column,
+            single_id_column.clone(),
             vec![],
             vec![],
         );
@@ -455,6 +507,13 @@ pub fn try_generate_view_scan(
                 .map(|(k, v)| (k.clone(), PropertyValue::Column(v.clone())))
                 .collect()
         });
+        // Make the node_id projectable for whole-node `RETURN n` viz (Bolt transformer).
+        if let Some(props) = view_scan.from_node_properties.as_mut() {
+            ensure_node_id_property(props, &id_prop_name, &single_id_column);
+        }
+        if let Some(props) = view_scan.to_node_properties.as_mut() {
+            ensure_node_id_property(props, &id_prop_name, &single_id_column);
+        }
         view_scan.schema_filter = node_schema.filter.clone();
         // Extract base label from potentially qualified name (e.g., "brahmand::flights_denorm::Airport" -> "Airport")
         let base_label = if label.contains("::") {

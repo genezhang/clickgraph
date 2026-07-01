@@ -49,7 +49,7 @@ impl ProjectedColumnsResolver {
         let view_scan = Self::find_view_scan(&node.input)?;
 
         // Use PatternSchemaContext to determine node access strategy
-        match plan_ctx.get_node_strategy(&node.alias, rel_alias) {
+        let computed = match plan_ctx.get_node_strategy(&node.alias, rel_alias) {
             Some(NodeAccessStrategy::EmbeddedInEdge { .. }) => {
                 // Denormalized node: properties come from edge table
                 Self::compute_denormalized_properties(
@@ -90,7 +90,59 @@ impl ProjectedColumnsResolver {
                 properties.sort_by(|a, b| a.0.cmp(&b.0));
                 Some(properties)
             }
+        };
+
+        Self::ensure_node_id_projected(computed, node, view_scan, plan_ctx)
+    }
+
+    /// Ensure a denormalized node's declared `node_id` appears among its projected columns.
+    ///
+    /// The Bolt result transformer (`server/bolt_protocol/result_transformer.rs`) builds a
+    /// node's `elementId` by matching the node's declared `node_id` NAME against the projected
+    /// property names. For a denormalized node whose `node_id` is virtual — i.e. its name is
+    /// NOT itself one of the exposed properties (e.g. zeek Domain `node_id: query`, exposed
+    /// only as `name: query`) — the projected list omits any column the transformer recognizes
+    /// as the id. Whole-node `RETURN n` then runs, but the transformer logs "Missing ID column"
+    /// and drops the node, so Neo4j Browser shows "unknown error".
+    ///
+    /// This appends `{id_name → alias.id_column}` when the id name is absent, so `RETURN n`
+    /// also projects `{alias}.{id_name}`, mirroring how a normal node projects its id column.
+    /// No-op when the id name is already projected (e.g. Airport `code`, or any normal node
+    /// whose id is in `property_mappings`) or for non-denormalized nodes.
+    fn ensure_node_id_projected(
+        cols: Option<Vec<(String, String)>>,
+        node: &GraphNode,
+        view_scan: &ViewScan,
+        plan_ctx: &PlanCtx,
+    ) -> Option<Vec<(String, String)>> {
+        let mut cols = cols?;
+
+        // Only denormalized nodes can have a node_id absent from their projected
+        // properties; normal nodes always carry their id via property_mappings.
+        if !view_scan.is_denormalized {
+            return Some(cols);
         }
+
+        let label = node.label.as_deref()?;
+        let id_name = plan_ctx
+            .schema()
+            .node_schema(label)
+            .ok()
+            .and_then(|ns| ns.node_id.columns().first().map(|s| s.to_string()))?;
+
+        let already_projected = cols.iter().any(|(prop_name, _)| prop_name == &id_name);
+        if !already_projected {
+            let qualified = format!("{}.{}", node.alias, view_scan.id_column);
+            log::debug!(
+                "🔧 ProjectedColumnsResolver: injecting node_id '{}' → '{}' for denormalized node '{}' (whole-node viz id)",
+                id_name,
+                qualified,
+                node.alias
+            );
+            cols.push((id_name, qualified));
+        }
+
+        Some(cols)
     }
 
     /// Find ViewScan in the plan (might be wrapped in Filters, etc.)

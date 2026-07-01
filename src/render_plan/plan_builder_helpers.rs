@@ -2761,76 +2761,104 @@ pub(super) fn normalize_union_branches(
         "DEBUG: normalize_union_branches - branches have different aliases, normalizing..."
     );
 
+    // Normalize a single branch's SELECT to the unified `all_aliases`: wrap each
+    // present column in a string cast and pad missing columns with NULL.
+    //
+    // CRITICAL: a branch may itself carry sibling UNION sub-branches in its
+    // `union` field. The two direction branches of an undirected/bidirectional
+    // relationship expansion render into ONE RenderPlan whose primary
+    // SELECT/FROM is direction A and whose `union.input` holds direction B.
+    // Both directions project the SAME RETURN columns, so they MUST receive the
+    // SAME type coercion — otherwise direction A emits `toString(col)` while
+    // direction B emits the raw column, and the UNION fails with ClickHouse
+    // Code 386 NO_COMMON_TYPE (e.g. String vs Date). We therefore recurse into
+    // the nested sub-branches and apply the identical coercion to each.
+    fn normalize_branch(
+        plan: super::RenderPlan,
+        all_aliases: &BTreeSet<String>,
+    ) -> super::RenderPlan {
+        // Collect valid table aliases from FROM and JOINs for this branch
+        let mut valid_aliases: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if let Some(ref from_ref) = plan.from.0 {
+            if let Some(ref alias) = from_ref.alias {
+                valid_aliases.insert(alias.clone());
+            }
+        }
+        for join in &plan.joins.0 {
+            valid_aliases.insert(join.table_alias.clone());
+        }
+        log::debug!(
+            "normalize_union_branches: valid table aliases for branch: {:?}",
+            valid_aliases
+        );
+
+        // Build a map of existing column aliases in this branch
+        let existing: std::collections::HashMap<String, SelectItem> = plan
+            .select
+            .items
+            .iter()
+            .filter_map(|item| item.col_alias.as_ref().map(|a| (a.0.clone(), item.clone())))
+            .collect();
+
+        // Build normalized SELECT items in consistent order
+        // IMPORTANT: Wrap all expressions in toString() to ensure type compatibility across UNION branches
+        // This is needed because different node types may have different property types (e.g., Array vs Scalar)
+        let normalized_items: Vec<SelectItem> = all_aliases
+            .iter()
+            .map(|alias| {
+                if let Some(item) = existing.get(alias) {
+                    // CRITICAL FIX: For denormalized relationships, the SELECT may reference
+                    // a table alias (e.g., `r`) that doesn't exist in FROM/JOINs.
+                    // We need to fix the table alias to a valid one.
+                    let fixed_expr =
+                        fix_invalid_table_aliases(&item.expression, &valid_aliases, &plan);
+
+                    // Wrap the expression in a string cast for type
+                    // compatibility across UNION branches.
+                    SelectItem {
+                        expression: RenderExpr::ScalarFnCall(super::render_expr::ScalarFnCall {
+                            name: current_function_mapper().cast_string().to_string(),
+                            args: vec![fixed_expr],
+                        }),
+                        col_alias: item.col_alias.clone(),
+                    }
+                } else {
+                    // Missing column - use NULL (which is compatible with any toString() result)
+                    SelectItem {
+                        expression: RenderExpr::Literal(Literal::Null),
+                        col_alias: Some(super::ColumnAlias(alias.clone())),
+                    }
+                }
+            })
+            .collect();
+
+        // Recurse into nested sibling UNION sub-branches (bidirectional
+        // expansion) so every direction receives the identical coercion.
+        let normalized_union = super::UnionItems(plan.union.0.map(|u| {
+            super::Union {
+                input: u
+                    .input
+                    .into_iter()
+                    .map(|b| normalize_branch(b, all_aliases))
+                    .collect(),
+                union_type: u.union_type,
+            }
+        }));
+
+        RenderPlan {
+            select: SelectItems {
+                items: normalized_items,
+                distinct: plan.select.distinct,
+            },
+            union: normalized_union,
+            ..plan
+        }
+    }
+
     // Normalize each branch
     union_plans
         .into_iter()
-        .map(|plan| {
-            // Collect valid table aliases from FROM and JOINs for this branch
-            let mut valid_aliases: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
-            if let Some(ref from_ref) = plan.from.0 {
-                if let Some(ref alias) = from_ref.alias {
-                    valid_aliases.insert(alias.clone());
-                }
-            }
-            for join in &plan.joins.0 {
-                valid_aliases.insert(join.table_alias.clone());
-            }
-            log::debug!(
-                "normalize_union_branches: valid table aliases for branch: {:?}",
-                valid_aliases
-            );
-
-            // Build a map of existing column aliases in this branch
-            let existing: std::collections::HashMap<String, SelectItem> = plan
-                .select
-                .items
-                .iter()
-                .filter_map(|item| item.col_alias.as_ref().map(|a| (a.0.clone(), item.clone())))
-                .collect();
-
-            // Build normalized SELECT items in consistent order
-            // IMPORTANT: Wrap all expressions in toString() to ensure type compatibility across UNION branches
-            // This is needed because different node types may have different property types (e.g., Array vs Scalar)
-            let normalized_items: Vec<SelectItem> = all_aliases
-                .iter()
-                .map(|alias| {
-                    if let Some(item) = existing.get(alias) {
-                        // CRITICAL FIX: For denormalized relationships, the SELECT may reference
-                        // a table alias (e.g., `r`) that doesn't exist in FROM/JOINs.
-                        // We need to fix the table alias to a valid one.
-                        let fixed_expr =
-                            fix_invalid_table_aliases(&item.expression, &valid_aliases, &plan);
-
-                        // Wrap the expression in a string cast for type
-                        // compatibility across UNION branches.
-                        SelectItem {
-                            expression: RenderExpr::ScalarFnCall(
-                                super::render_expr::ScalarFnCall {
-                                    name: current_function_mapper().cast_string().to_string(),
-                                    args: vec![fixed_expr],
-                                },
-                            ),
-                            col_alias: item.col_alias.clone(),
-                        }
-                    } else {
-                        // Missing column - use NULL (which is compatible with any toString() result)
-                        SelectItem {
-                            expression: RenderExpr::Literal(Literal::Null),
-                            col_alias: Some(super::ColumnAlias(alias.clone())),
-                        }
-                    }
-                })
-                .collect();
-
-            RenderPlan {
-                select: SelectItems {
-                    items: normalized_items,
-                    distinct: plan.select.distinct,
-                },
-                ..plan
-            }
-        })
+        .map(|plan| normalize_branch(plan, &all_aliases))
         .collect()
 }
 
@@ -4461,6 +4489,108 @@ mod tests {
                 aliases_of(b)
             );
         }
+    }
+
+    /// Regression: an undirected/bidirectional relationship expands into TWO
+    /// direction branches that render into a SINGLE RenderPlan — the primary
+    /// SELECT/FROM is direction A and the nested `union.input` holds direction B.
+    /// When `normalize_union_branches` coerces columns (e.g. a sibling placeholder
+    /// branch forces `all_same=false`), BOTH directions must receive the IDENTICAL
+    /// type coercion. Previously only the primary SELECT got wrapped in
+    /// `toString(...)` while the nested direction kept the raw column, so a UNION
+    /// over a non-String property (e.g. a Date) failed in ClickHouse with
+    /// Code 386 NO_COMMON_TYPE. This asserts no mixed coercion across the
+    /// nested sibling branch.
+    #[test]
+    fn normalize_union_branches_coerces_nested_bidirectional_branches_consistently() {
+        fn item(alias: &str) -> SelectItem {
+            // A raw column-style reference (NOT a string literal) — the kind that
+            // would surface a String-vs-Date mismatch if coerced inconsistently.
+            SelectItem {
+                expression: RenderExpr::TableAlias(TableAlias(format!("r.{alias}"))),
+                col_alias: Some(ColumnAlias(alias.to_string())),
+            }
+        }
+        fn base(items: Vec<SelectItem>, union: UnionItems, where_false: bool) -> RenderPlan {
+            RenderPlan {
+                ctes: CteItems(vec![]),
+                select: SelectItems {
+                    items,
+                    distinct: true,
+                },
+                from: FromTableItem(None),
+                joins: JoinItems(vec![]),
+                array_join: ArrayJoinItem(vec![]),
+                filters: FilterItems(if where_false {
+                    Some(RenderExpr::Literal(Literal::Boolean(false)))
+                } else {
+                    None
+                }),
+                group_by: GroupByExpressions(vec![]),
+                having_clause: None,
+                order_by: OrderByItems(vec![]),
+                skip: SkipItem(None),
+                limit: LimitItem(None),
+                union,
+                fixed_path_info: None,
+                is_multi_label_scan: false,
+                variable_registry: None,
+            }
+        }
+        // Pruned node branch → exact placeholder shape; forces normalization.
+        let placeholder = base(
+            vec![SelectItem {
+                expression: RenderExpr::Literal(Literal::Integer(1)),
+                col_alias: Some(ColumnAlias("_empty".to_string())),
+            }],
+            UnionItems(None),
+            true,
+        );
+        // Direction B (nested) — same RETURN columns as direction A.
+        let direction_b = base(
+            vec![item("entity"), item("since_date")],
+            UnionItems(None),
+            false,
+        );
+        // Direction A (primary) carrying direction B in its `union` field, exactly
+        // as a bidirectional expansion renders.
+        let bidirectional = base(
+            vec![item("entity"), item("since_date")],
+            UnionItems(Some(crate::render_plan::Union {
+                input: vec![direction_b],
+                union_type: crate::render_plan::UnionType::All,
+            })),
+            false,
+        );
+
+        let out = normalize_union_branches(vec![placeholder, bidirectional]);
+
+        // Locate the real (non-placeholder) branch.
+        let real = out
+            .iter()
+            .find(|b| b.union.0.is_some())
+            .expect("bidirectional branch with nested union must survive");
+
+        let all_cast = |items: &[SelectItem]| {
+            items
+                .iter()
+                .all(|i| matches!(i.expression, RenderExpr::ScalarFnCall(_)))
+        };
+
+        // Primary direction columns are coerced...
+        assert!(
+            all_cast(&real.select.items),
+            "primary direction columns must all be cast-wrapped: {:?}",
+            real.select.items
+        );
+        // ...and the nested sibling direction must be coerced IDENTICALLY (no mix).
+        let nested = real.union.0.as_ref().unwrap();
+        assert_eq!(nested.input.len(), 1);
+        assert!(
+            all_cast(&nested.input[0].select.items),
+            "nested bidirectional direction columns must be cast-wrapped consistently: {:?}",
+            nested.input[0].select.items
+        );
     }
 
     /// Test for TODO-8: rewrite_with_aliases_to_cte should rewrite TableAlias references
