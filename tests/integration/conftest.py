@@ -20,11 +20,29 @@ import requests
 import clickhouse_connect
 import time
 import os
+import json
+import re
+import subprocess
 from typing import Dict, Any, List
 
 
 # Configuration
 CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
+
+# ── DeltaGraph (Databricks) parity backend ──────────────────────────────────
+# CG_TEST_BACKEND=databricks routes execute_cypher() through `cg --dialect
+# databricks` against a Databricks warehouse instead of the ClickHouse-backed
+# server, so the (result-asserting) integration suite doubles as a CH↔Databricks
+# parity gate. Requires DATABRICKS_* env (see ~/.dbx.env) and Delta fixtures
+# loaded via scripts/load_social_integration_databricks.py.
+CG_TEST_BACKEND = os.getenv("CG_TEST_BACKEND", "clickhouse")
+CG_BIN = os.getenv("CG_BIN", "/mnt/cargo-sd/cargo/target/debug/cg")
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+# schema_name -> schema YAML path (extend as more schemas get Delta fixtures)
+DATABRICKS_SCHEMA_FILES = {
+    "social_integration": os.path.join(_PROJECT_ROOT, "schemas/test/social_integration.yaml"),
+}
+
 CLICKHOUSE_HOST = os.getenv("CLICKHOUSE_HOST", "localhost")
 CLICKHOUSE_PORT = int(os.getenv("CLICKHOUSE_PORT", "8123"))
 CLICKHOUSE_USER = os.getenv("CLICKHOUSE_USER", "test_user")
@@ -124,6 +142,27 @@ def clean_database(clickhouse_client, test_database):
             pass
 
 
+def _execute_cypher_databricks(query: str, schema_name: str, raise_on_error: bool) -> Dict[str, Any]:
+    """Run a Cypher query through `cg --dialect databricks` and shape the result
+    like the server's /query response (`{"results": [...], "columns": [...]}`)."""
+    schema_file = DATABRICKS_SCHEMA_FILES.get(schema_name)
+    if not schema_file:
+        pytest.skip(f"no Databricks Delta fixtures/schema mapping for '{schema_name}' yet")
+    # cg selects the graph via --schema; strip any leading `USE <schema>` clause.
+    q = re.sub(r"^\s*USE\s+\w+\s+", "", query, flags=re.IGNORECASE).strip()
+    cmd = [CG_BIN, "query", "--schema", schema_file,
+           "--dialect", "databricks", "--format", "json", q]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout).strip()
+        if not raise_on_error:
+            return {"status": "error", "error": err, "status_code": 500}
+        raise requests.HTTPError(f"cg --dialect databricks failed:\n{err}\nquery: {q}")
+    rows = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+    columns = list(rows[0].keys()) if rows else []
+    return {"results": rows, "columns": columns}
+
+
 def execute_cypher(query: str, schema_name: str = "social_integration", raise_on_error: bool = True) -> Dict[str, Any]:
     """
     Execute a Cypher query via ClickGraph HTTP API.
@@ -151,11 +190,15 @@ def execute_cypher(query: str, schema_name: str = "social_integration", raise_on
     Raises:
         requests.HTTPError: If query execution fails and raise_on_error=True
     """
+    # DeltaGraph parity mode: run the SAME Cypher through cg against Databricks.
+    if CG_TEST_BACKEND == "databricks":
+        return _execute_cypher_databricks(query, schema_name, raise_on_error)
+
     # Auto-prepend USE clause if not already present
     query_upper = query.strip().upper()
     if not query_upper.startswith("USE "):
         query = f"USE {schema_name} {query}"
-    
+
     response = requests.post(
         f"{CLICKGRAPH_URL}/query",
         json={"query": query},
