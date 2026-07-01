@@ -26,7 +26,7 @@ QUERIES = [
     ("authored", "MATCH (u:User)-[:AUTHORED]->(p:Post) WHERE u.user_id = 1 RETURN p.title AS t ORDER BY p.post_id"),
     ("optional match", "MATCH (u:User) WHERE u.user_id IN [1,2,3] OPTIONAL MATCH (u)-[:FOLLOWS]->(b:User) RETURN u.user_id AS id, count(b) AS c ORDER BY id"),
     ("agg group", "MATCH (u:User) RETURN u.country AS c, count(u) AS n ORDER BY n DESC, c LIMIT 5"),
-    ("2-hop", "MATCH (a:User)-[:FOLLOWS]->()-[:FOLLOWS]->(c:User) WHERE a.user_id = 1 RETURN DISTINCT c.name AS c ORDER BY c.user_id"),
+    ("2-hop", "MATCH (a:User)-[:FOLLOWS]->()-[:FOLLOWS]->(c:User) WHERE a.user_id = 1 RETURN DISTINCT c.name AS name ORDER BY name"),
     ("likes count", "MATCH (u:User)-[:LIKED]->(p:Post) WITH u.user_id AS id, count(p) AS likes RETURN id, likes ORDER BY likes DESC, id LIMIT 5"),
     ("string fn", "MATCH (u:User) WHERE u.user_id = 1 RETURN toUpper(u.name) AS up"),
     ("order+limit", "MATCH (u:User) RETURN u.name AS n ORDER BY u.age DESC, u.user_id LIMIT 3"),

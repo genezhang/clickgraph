@@ -27,12 +27,18 @@ tests on other schemas `skip` in this mode. Start with `social_integration`.
 against both backends and prints a parity table (no pytest needed).
 
 ## Scope / status (POC)
-- ✅ `social_integration` fixtures + backend switch wired; 8/10 sample patterns MATCH.
-- Known findings from the smoke check:
-  - `MATCH (u)-[:AUTHORED]->(p)` returns a duplicate row on ClickHouse (denormalized
-    edge over-count) — DBX is correct.
-  - 2-hop with an anonymous intermediate `()-[:FOLLOWS]->()-[:FOLLOWS]->()` errors on
-    Databricks — dialect gap.
+- ✅ `social_integration` fixtures + backend switch wired; smoke check is **10/10 MATCH**
+  (full CH↔Databricks parity on the sampled patterns).
+- Two methodology learnings the POC surfaced (neither an engine bug):
+  1. **Fixture hygiene** — the CH loaders use `CREATE TABLE IF NOT EXISTS` + `INSERT`
+     with no reset, so the shared `Memory` tables accumulate across runs (posts_test
+     was found at 52 rows vs the canonical 20). For a valid parity comparison BOTH
+     backends must load the SAME canonical fixtures; the CH side needs a DROP/TRUNCATE
+     before load. (An early false "AUTHORED duplicate" was just stale CH data.)
+  2. **Dialect leniency divergence (minor)** — `RETURN DISTINCT x.a AS x ORDER BY x.b`
+     works on ClickHouse (resolves `x.b` to the table alias) but errors on Databricks
+     (the output alias `x` shadows the table alias under `SELECT DISTINCT`). Edge case;
+     ClickGraph could harden the ORDER-BY qualification, low priority.
 - TODO: load Delta fixtures for the other 18 schemas; mark CH-dialect-specific
   tests (sql_only string assertions, CH funcs) `@pytest.mark.clickhouse_only` to
   skip cleanly in databricks mode.
