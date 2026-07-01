@@ -3683,26 +3683,38 @@ fn rewrite_cte_body_vlp_refs(plan: &mut RenderPlan, vlp_info: &VlpAliasInfo) {
                 None => continue,
             };
 
-            // Filters: if this branch already carries its OWN filter, rewrite that
-            // in place with the branch's own VLP aliases. Only fall back to cloning
-            // the base plan's filter when the branch has none.
+            // A mixed-label anchor UNION split reads a DIFFERENT per-label VLP CTE
+            // per branch (`vlp_multi_type_a_o` vs `vlp_multi_type_a_o_2`) and each
+            // branch already holds its OWN per-label predicate (`a.ip IN [...]` vs
+            // `a.query IN [...]`). For those branches we must use the branch's own
+            // filter/joins and NEVER clone the base plan's — cloning the base's
+            // `a.query` predicate onto the `start_ip`-only CTE produced Code 47.
             //
-            // Cloning-from-base is correct for an undirected VLP's reverse arm, which
-            // shares the base's start-node predicate and has no independent filter.
-            // It is WRONG for a mixed-label anchor UNION split, where each branch
-            // reads a DIFFERENT per-label VLP CTE and already holds its own predicate
-            // (e.g. `a.ip IN [...]` for the IP anchor vs `a.query IN [...]` for the
-            // Domain anchor). Overwriting with the base's predicate produced
-            // `t.start_query IN [...]` against a CTE that only has `start_ip`
-            // (ClickHouse Code 47).
-            if let Some(branch_own) = branch.filters.0.clone() {
-                branch.filters = FilterItems(Some(rewrite_expr_for_vlp(
-                    &branch_own,
-                    &reverse_aliases.0,
-                    &reverse_aliases.1,
-                    &reverse_aliases.2,
-                    false,
-                )));
+            // An undirected VLP's reverse arm is the OPPOSITE: it reads the SAME base
+            // VLP CTE, shares the base's start-node predicate, and depends on the base
+            // plan's filter AND joins (e.g. the anti-self CTE join in LDBC complex-3,
+            // `cities_countryX_countryY_person`). For those we must clone the base's
+            // filter/joins as before, or the referenced CTE is never joined (Code 47).
+            //
+            // Discriminate by the branch's FROM: only a per-label mixed-anchor CTE
+            // (`vlp_multi_type_*`) takes the branch-own path.
+            let is_mixed_anchor_branch = branch
+                .from
+                .0
+                .as_ref()
+                .is_some_and(|f| f.name.starts_with("vlp_multi_type_"));
+
+            // Filters
+            if is_mixed_anchor_branch {
+                if let Some(branch_own) = branch.filters.0.clone() {
+                    branch.filters = FilterItems(Some(rewrite_expr_for_vlp(
+                        &branch_own,
+                        &reverse_aliases.0,
+                        &reverse_aliases.1,
+                        &reverse_aliases.2,
+                        false,
+                    )));
+                }
             } else if let Some(ref filter) = original_filters {
                 branch.filters = FilterItems(Some(rewrite_expr_for_vlp(
                     filter,
@@ -3713,10 +3725,11 @@ fn rewrite_cte_body_vlp_refs(plan: &mut RenderPlan, vlp_info: &VlpAliasInfo) {
                 )));
             }
 
-            // JOINs: rewrite the branch's own JOINs if present; otherwise clone the
-            // base plan's (same reverse-arm vs. independent-branch reasoning).
-            if !branch.joins.0.is_empty() {
-                rewrite_joins_for_vlp(&mut branch.joins.0, &reverse_aliases);
+            // JOINs (same reverse-arm vs. mixed-anchor reasoning)
+            if is_mixed_anchor_branch {
+                if !branch.joins.0.is_empty() {
+                    rewrite_joins_for_vlp(&mut branch.joins.0, &reverse_aliases);
+                }
             } else if !original_joins.is_empty() {
                 branch.joins = JoinItems(original_joins.clone());
                 rewrite_joins_for_vlp(&mut branch.joins.0, &reverse_aliases);
