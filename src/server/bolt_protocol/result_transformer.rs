@@ -1228,8 +1228,8 @@ pub(crate) fn transform_to_relationship(
         resolved_to_label = schema_to_label.to_string();
     }
 
-    let from_node_label = &resolved_from_label;
-    let to_node_label = &resolved_to_label;
+    let from_node_label: &str = &resolved_from_label;
+    let to_node_label: &str = &resolved_to_label;
 
     // Prefer schema-natural FK projections when the SQL gen provided them.
     // The multi-type VLP CTE projects `r_from_id` / `r_to_id` for 1-hop
@@ -1249,6 +1249,14 @@ pub(crate) fn transform_to_relationship(
         .filter(|s| !s.is_empty());
     properties.remove("r_from_id");
     properties.remove("r_to_id");
+
+    // Capture the traversal-direction endpoint ids (start = the bound anchor,
+    // end = the other node) before they are stripped from `properties` below.
+    // These let us re-pair the schema-canonical ids (`canonical_from`/
+    // `canonical_to`) with the correct node label further down — see the
+    // element_id construction near the end of this function.
+    let start_id_val = properties.get("start_id").and_then(value_to_string);
+    let end_id_val = properties.get("end_id").and_then(value_to_string);
 
     // Detect when the SQL's `start_id`/`end_id` projection is reversed from the
     // schema's natural from→to direction. This happens for undirected matches
@@ -1392,6 +1400,49 @@ pub(crate) fn transform_to_relationship(
     // Generate node elementIds for start and end nodes (with composite ID support)
     let from_id_refs: Vec<&str> = from_id_values.iter().map(|s| s.as_str()).collect();
     let to_id_refs: Vec<&str> = to_id_values.iter().map(|s| s.as_str()).collect();
+
+    // Re-pair endpoint labels with the schema-canonical ids.
+    //
+    // For a polymorphic multi-type 1-hop expand the CTE projects the node
+    // *labels* (`start_type`/`end_type` → `resolved_from_label`/
+    // `resolved_to_label`) in *traversal* order (start = the bound anchor `a`)
+    // but projects `r_from_id`/`r_to_id` (→ `canonical_from`/`canonical_to`) in
+    // the schema's from→to order. For an undirected `(a)-[r]-(o)` match that
+    // binds the anchor to the schema *to-side* (e.g. a Post→User branch where
+    // `a` is the User), these two orders disagree: pairing
+    // `resolved_from_label` with `canonical_from` mislabels the endpoint (the
+    // anchor's label gets the *other* node's id, e.g. "User:<post_id>"), so the
+    // relationship's endpoint element_ids no longer equal the returned nodes'
+    // element_ids and Neo4j Browser cannot attach the relationship to its nodes.
+    //
+    // Re-pair each canonical id with the label of the physical node
+    // (start-side or end-side) that actually carries that id. Only applies when
+    // both schema-canonical ids are present (multi-type 1-hop); otherwise fall
+    // back to the traversal-order labels unchanged (the fixed-schema and
+    // reversal-detection paths already agree in that case).
+    let (from_node_label, to_node_label): (&str, &str) =
+        if canonical_from.is_some() && canonical_to.is_some() {
+            // Pick the label of the node whose traversal-order id equals `canon`.
+            let label_for = |canon: &str| -> &str {
+                let matches_start = start_id_val.as_deref() == Some(canon);
+                let matches_end = end_id_val.as_deref() == Some(canon);
+                if matches_end && !matches_start {
+                    // This canonical endpoint is the end-side (`o`) node.
+                    &resolved_to_label
+                } else {
+                    // Matches the start-side (anchor `a`), or is ambiguous
+                    // (self-loop where start_id == end_id) — the start-side
+                    // label is correct either way.
+                    &resolved_from_label
+                }
+            };
+            (
+                label_for(canonical_from.as_deref().unwrap_or("")),
+                label_for(canonical_to.as_deref().unwrap_or("")),
+            )
+        } else {
+            (from_node_label, to_node_label)
+        };
 
     let start_node_element_id = generate_node_element_id(from_node_label, &from_id_refs);
     let end_node_element_id = generate_node_element_id(to_node_label, &to_id_refs);
@@ -2825,6 +2876,157 @@ mod tests {
             rel.properties.get("follow_date").unwrap(),
             &Value::String("2024-01-15".to_string())
         );
+    }
+
+    /// Regression: polymorphic multi-type EXPAND where the anchor `User` appears
+    /// on BOTH the from-side and the to-side across interaction types.
+    ///
+    /// For an undirected `(a)-[r]-(o)` expand the multi-type CTE projects node
+    /// *labels* (start_type/end_type) in traversal order (start = the bound
+    /// anchor `a`) but projects r_from_id/r_to_id in the schema's from→to order.
+    /// When a branch binds the anchor to the schema *to-side* (e.g. a Post→User
+    /// interaction where `a` is the User) these disagree, and before the fix the
+    /// relationship's endpoint element_ids paired the wrong label with the wrong
+    /// id (e.g. "User:<post_id>" / "Post:<user_id>"), so neither equalled the
+    /// returned nodes' element_ids and Neo4j Browser could not attach the
+    /// relationship to its nodes ("node separated from its link").
+    ///
+    /// Asserts each relationship endpoint element_id EXACTLY equals the
+    /// element_id of the corresponding node (built via generate_node_element_id),
+    /// for User-from (User→Post), User-to (Post→User), and User→User branches.
+    #[test]
+    fn test_polymorphic_multi_type_expand_endpoint_element_ids_match_nodes() {
+        use crate::graph_catalog::graph_schema::RelationshipSchema;
+        use std::collections::HashMap;
+
+        // Build a polymorphic ("$any") relationship schema, registered under the
+        // interaction type names — mirrors build_polymorphic_edge_schemas().
+        let mut schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+        let make_poly_rel = || RelationshipSchema {
+            database: "brahmand".to_string(),
+            table_name: "interactions".to_string(),
+            column_names: vec!["from_id".to_string(), "to_id".to_string()],
+            from_node: "$any".to_string(),
+            to_node: "$any".to_string(),
+            from_node_table: "$any".to_string(),
+            to_node_table: "$any".to_string(),
+            from_id: Identifier::from("from_id"),
+            to_id: Identifier::from("to_id"),
+            from_node_id_dtype: SchemaType::Integer,
+            to_node_id_dtype: SchemaType::Integer,
+            property_mappings: HashMap::new(),
+            view_parameters: None,
+            engine: None,
+            use_final: None,
+            filter: None,
+            edge_id: None,
+            type_column: Some("interaction_type".to_string()),
+            from_label_column: Some("from_type".to_string()),
+            to_label_column: Some("to_type".to_string()),
+            from_label_values: None,
+            to_label_values: None,
+            from_node_properties: None,
+            to_node_properties: None,
+            is_fk_edge: false,
+            constraints: None,
+            edge_id_types: None,
+            source: None,
+            property_types: HashMap::new(),
+        };
+        for ty in ["AUTHORED", "COMMENTED", "FOLLOWS"] {
+            schema.insert_relationship_schema(ty.to_string(), make_poly_rel());
+        }
+
+        // Build one multi-type-CTE result row for a 1-hop expand, matching the
+        // outer projection column names (`r.` prefix). `start_type`/`end_type`/
+        // `start_id`/`end_id` are traversal order (start = anchor `a`);
+        // `r_from_id`/`r_to_id` are schema from→to order (toString → String).
+        let make_row = |start_type: &str,
+                        end_type: &str,
+                        start_id: i64,
+                        end_id: i64,
+                        r_from_id: &str,
+                        r_to_id: &str|
+         -> HashMap<String, Value> {
+            let mut row = HashMap::new();
+            row.insert("r.start_type".to_string(), Value::String(start_type.into()));
+            row.insert("r.end_type".to_string(), Value::String(end_type.into()));
+            // Native ints, as the CTE projects the anchor/other node ids.
+            row.insert("r.start_id".to_string(), Value::Number(start_id.into()));
+            row.insert("r.end_id".to_string(), Value::Number(end_id.into()));
+            // Schema-natural FK ids, projected via toString() → String.
+            row.insert("r.r_from_id".to_string(), Value::String(r_from_id.into()));
+            row.insert("r.r_to_id".to_string(), Value::String(r_to_id.into()));
+            row
+        };
+
+        // For a row, assert both endpoints exactly equal the corresponding node
+        // element_ids. The from-endpoint must match the node carrying the
+        // schema-from id (r_from_id); the to-endpoint the schema-to id (r_to_id).
+        let assert_endpoints = |rel_type: &str,
+                                row: &HashMap<String, Value>,
+                                expected_start: &str,
+                                expected_end: &str| {
+            let rel = transform_to_relationship(
+                row,
+                "r",
+                &[rel_type.to_string()],
+                None, // polymorphic: labels come from start_type/end_type
+                None,
+                &schema,
+            )
+            .expect("transform should succeed");
+
+            // The two returned/known nodes, element_id'd exactly like transform_to_node.
+            let start_type = value_to_string(row.get("r.start_type").unwrap()).unwrap();
+            let end_type = value_to_string(row.get("r.end_type").unwrap()).unwrap();
+            let start_id = value_to_string(row.get("r.start_id").unwrap()).unwrap();
+            let end_id = value_to_string(row.get("r.end_id").unwrap()).unwrap();
+            let node_a = generate_node_element_id(&start_type, &[start_id.as_str()]);
+            let node_o = generate_node_element_id(&end_type, &[end_id.as_str()]);
+
+            assert_eq!(
+                rel.start_node_element_id, expected_start,
+                "rel_type={rel_type}: start endpoint element_id mismatch"
+            );
+            assert_eq!(
+                rel.end_node_element_id, expected_end,
+                "rel_type={rel_type}: end endpoint element_id mismatch"
+            );
+            // Every endpoint must be attachable to one of the two nodes.
+            assert!(
+                rel.start_node_element_id == node_a || rel.start_node_element_id == node_o,
+                "rel_type={rel_type}: start endpoint {} matches neither node ({node_a} / {node_o})",
+                rel.start_node_element_id
+            );
+            assert!(
+                rel.end_node_element_id == node_a || rel.end_node_element_id == node_o,
+                "rel_type={rel_type}: end endpoint {} matches neither node ({node_a} / {node_o})",
+                rel.end_node_element_id
+            );
+        };
+
+        let user4 = generate_node_element_id("User", &["4"]);
+        let post2 = generate_node_element_id("Post", &["2"]);
+        let post9 = generate_node_element_id("Post", &["9"]);
+        let user7 = generate_node_element_id("User", &["7"]);
+
+        // (i) User→Post, User is the schema FROM-side (outgoing, not reversed):
+        //     schema from=User(a=4), to=Post(o=2). Endpoints: User:4 → Post:2.
+        let row_i = make_row("User", "Post", 4, 2, "4", "2");
+        assert_endpoints("AUTHORED", &row_i, &user4, &post2);
+
+        // (ii) Post→User, User is the schema TO-side (reversed branch):
+        //      traversal a(User:4)→o(Post:9); schema from=Post(o=9), to=User(a=4).
+        //      Endpoints must be Post:9 (from) → User:4 (to). Before the fix this
+        //      produced "User:9" / "Post:4" — matching NEITHER node.
+        let row_ii = make_row("User", "Post", 4, 9, "9", "4");
+        assert_endpoints("COMMENTED", &row_ii, &post9, &user4);
+
+        // (iii) User→User, anchor is the followed (to-side) — labels agree, only
+        //       direction is reversed. Endpoints: User:7 (from) → User:4 (to).
+        let row_iii = make_row("User", "User", 4, 7, "7", "4");
+        assert_endpoints("FOLLOWS", &row_iii, &user7, &user4);
     }
 
     /// Regression test: parse_composite_rel_key correctly splits "FOLLOWS::User::User" format
