@@ -1620,6 +1620,22 @@ impl TypeInference {
             typed_nodes.len()
         );
 
+        // Determine which untyped nodes are STANDALONE (node-only) — i.e. not an
+        // endpoint of any relationship pattern. For these, Phase 3's denormalized
+        // skip (which relies on an enclosing GraphRel for direction context) leaves
+        // the GraphNode with an Empty input, producing a FROM-less SELECT / empty
+        // UNION. We materialize their denormalized node-only scans below, mirroring
+        // the LABELED form.
+        let rel_aliases: HashSet<&str> = relationships
+            .iter()
+            .flat_map(|r| [r.left_alias.as_str(), r.right_alias.as_str()])
+            .collect();
+        let standalone_denorm_aliases: HashSet<String> = untyped_nodes
+            .iter()
+            .filter(|a| !rel_aliases.contains(a.as_str()))
+            .cloned()
+            .collect();
+
         // Generate type combinations (cartesian product).
         // Use MAX_RAW_COMBINATIONS as the generation cap — high enough that the full
         // cartesian product for typical schemas fits before validity filtering.
@@ -1662,6 +1678,15 @@ impl TypeInference {
             for (var_name, type_name) in &valid_combinations[0] {
                 self.update_plan_ctx_with_label(var_name, type_name, plan_ctx)?;
             }
+            // Materialize denormalized node-only scans for standalone untyped nodes
+            // (no-op for non-denormalized labels, which Phase 3 resolves from label).
+            let plan = Arc::new(materialize_standalone_denorm_scans(
+                &plan,
+                &valid_combinations[0],
+                &standalone_denorm_aliases,
+                plan_ctx,
+                graph_schema,
+            ));
             return Ok(plan);
         }
 
@@ -1706,6 +1731,13 @@ impl TypeInference {
             for combo in valid_combinations {
                 let scan_branch =
                     clone_plan_with_labels(&extract_scan_part(&plan), &combo, &all_labels_per_var);
+                let scan_branch = materialize_standalone_denorm_scans(
+                    &scan_branch,
+                    &combo,
+                    &standalone_denorm_aliases,
+                    plan_ctx,
+                    graph_schema,
+                );
                 log::debug!("✅ Generated scan branch for combination: {:?}", combo);
                 union_branches.push(Arc::new(scan_branch));
             }
@@ -1738,6 +1770,13 @@ impl TypeInference {
 
             for combo in valid_combinations {
                 let branch_plan = clone_plan_with_labels(inner_plan, &combo, &all_labels_per_var);
+                let branch_plan = materialize_standalone_denorm_scans(
+                    &branch_plan,
+                    &combo,
+                    &standalone_denorm_aliases,
+                    plan_ctx,
+                    graph_schema,
+                );
                 log::debug!("✅ Generated UNION branch for combination: {:?}", combo);
                 union_branches.push(Arc::new(branch_plan));
             }
@@ -5002,4 +5041,235 @@ fn prune_union_for_label(
     }
     // Not a Union — just recurse
     clone_plan_with_labels(input, combo, all_candidates)
+}
+
+/// Materialize denormalized node-only scans for STANDALONE untyped nodes.
+///
+/// When an unlabeled `(n)` is not an endpoint of any relationship pattern (a
+/// node-only query) and TypeInference resolves it to a DENORMALIZED candidate
+/// label, the GraphNode is left with an `Empty` input. Phase 3
+/// (`push_inferred_table_names_to_scan`) deliberately SKIPS ViewScan resolution
+/// for denormalized labels because, for relationship endpoints, the render phase
+/// materializes the node from the enclosing GraphRel's direction context. A
+/// standalone node has no GraphRel, so nothing materializes the scan and the
+/// query renders a FROM-less SELECT (or an empty UNION).
+///
+/// For the LABELED form, the node scan is already a `Union` (built by
+/// `try_generate_view_scan`) when `evaluate_return_clause` runs, so that builder
+/// distributes the surrounding `Projection`/`Filter` *into* each Union branch,
+/// yielding `Union[ Projection(Filter(GraphNode(ViewScan))) ]`. For an unlabeled
+/// node the scan is still `Empty` at build time, so this never happens. This
+/// helper replicates that distribution AFTER TypeInference assigns the label:
+/// it materializes the denormalized node-only scan via the same
+/// `try_generate_view_scan`, wraps each scan branch in a per-branch GraphNode,
+/// and distributes any enclosing non-aggregating `Projection`/`Filter` over the
+/// branches — producing exactly the LABELED shape. Pagination wrappers
+/// (`Limit`/`Skip`/`OrderBy`) and aggregating projections stay on top so they
+/// apply once over the combined result.
+///
+/// Non-denormalized standalone nodes are left untouched (Phase 3 resolves them
+/// from the label), as are relationship-endpoint nodes (whose aliases are
+/// excluded from `standalone_aliases`).
+fn materialize_standalone_denorm_scans(
+    plan: &LogicalPlan,
+    combo: &HashMap<String, String>,
+    standalone_aliases: &HashSet<String>,
+    plan_ctx: &PlanCtx,
+    graph_schema: &GraphSchema,
+) -> LogicalPlan {
+    use crate::query_planner::logical_plan::{Filter, Projection};
+
+    let recurse = |child: &Arc<LogicalPlan>| -> Arc<LogicalPlan> {
+        Arc::new(materialize_standalone_denorm_scans(
+            child,
+            combo,
+            standalone_aliases,
+            plan_ctx,
+            graph_schema,
+        ))
+    };
+
+    match plan {
+        LogicalPlan::GraphNode(node) if standalone_aliases.contains(&node.alias) => {
+            // Resolve the label: prefer the label already set on the node (multi-combo
+            // branches via clone_plan_with_labels), fall back to this combination's
+            // assignment (single-combo path leaves node.label = None in the plan).
+            let label = node
+                .label
+                .clone()
+                .or_else(|| combo.get(&node.alias).cloned());
+
+            if let Some(label) = label {
+                if matches!(node.input.as_ref(), LogicalPlan::Empty)
+                    && graph_schema.is_denormalized_node(&label)
+                {
+                    if let Ok(Some(scan)) =
+                        crate::query_planner::logical_plan::match_clause::try_generate_view_scan(
+                            &node.alias,
+                            &label,
+                            plan_ctx,
+                        )
+                    {
+                        log::info!(
+                            "✓ Materialized standalone denormalized node-only scan for '{}' (label '{}')",
+                            node.alias,
+                            label
+                        );
+                        // Wrap each denormalized scan branch in its own GraphNode,
+                        // mirroring how the LABELED node-only scan is distributed
+                        // (Union[ GraphNode(ViewScan) ]). For a single-position
+                        // denormalized node this is just one GraphNode (no Union).
+                        let wrap = |scan_branch: Arc<LogicalPlan>| -> Arc<LogicalPlan> {
+                            Arc::new(LogicalPlan::GraphNode(GraphNode {
+                                input: scan_branch,
+                                alias: node.alias.clone(),
+                                label: Some(label.clone()),
+                                is_denormalized: true,
+                                projected_columns: node.projected_columns.clone(),
+                                node_types: None,
+                            }))
+                        };
+                        return match scan.as_ref() {
+                            LogicalPlan::Union(scan_union) => LogicalPlan::Union(Union {
+                                inputs: scan_union.inputs.iter().cloned().map(wrap).collect(),
+                                union_type: scan_union.union_type.clone(),
+                            }),
+                            _ => (*wrap(scan)).clone(),
+                        };
+                    }
+                    log::warn!(
+                        "materialize_standalone_denorm_scans: failed to build denormalized scan for '{}' (label '{}')",
+                        node.alias,
+                        label
+                    );
+                }
+            }
+
+            let mut cloned = node.clone();
+            cloned.input = recurse(&node.input);
+            LogicalPlan::GraphNode(cloned)
+        }
+
+        LogicalPlan::GraphNode(node) => {
+            let mut cloned = node.clone();
+            cloned.input = recurse(&node.input);
+            LogicalPlan::GraphNode(cloned)
+        }
+
+        // Non-aggregating Projection over a materialized Union: push the Projection
+        // INTO each branch (the LABELED build-time behavior in evaluate_return_clause).
+        // Aggregating projections stay on top so the aggregate spans all branches.
+        LogicalPlan::Projection(p) => {
+            let child = recurse(&p.input);
+            if let LogicalPlan::Union(child_union) = child.as_ref() {
+                if !plan_has_aggregation(plan) {
+                    let union_type = if p.distinct {
+                        UnionType::Distinct
+                    } else {
+                        child_union.union_type.clone()
+                    };
+                    return LogicalPlan::Union(Union {
+                        inputs: child_union
+                            .inputs
+                            .iter()
+                            .map(|branch| {
+                                Arc::new(LogicalPlan::Projection(Projection {
+                                    input: branch.clone(),
+                                    items: p.items.clone(),
+                                    distinct: p.distinct,
+                                    pattern_comprehensions: p.pattern_comprehensions.clone(),
+                                }))
+                            })
+                            .collect(),
+                        union_type,
+                    });
+                }
+            }
+            LogicalPlan::Projection(Projection {
+                input: child,
+                items: p.items.clone(),
+                distinct: p.distinct,
+                pattern_comprehensions: p.pattern_comprehensions.clone(),
+            })
+        }
+
+        // Filter over a materialized Union: push the Filter INTO each branch.
+        LogicalPlan::Filter(f) => {
+            let child = recurse(&f.input);
+            if let LogicalPlan::Union(child_union) = child.as_ref() {
+                return LogicalPlan::Union(Union {
+                    inputs: child_union
+                        .inputs
+                        .iter()
+                        .map(|branch| {
+                            Arc::new(LogicalPlan::Filter(Filter {
+                                input: branch.clone(),
+                                predicate: f.predicate.clone(),
+                            }))
+                        })
+                        .collect(),
+                    union_type: child_union.union_type.clone(),
+                });
+            }
+            LogicalPlan::Filter(Filter {
+                input: child,
+                predicate: f.predicate.clone(),
+            })
+        }
+
+        LogicalPlan::GraphJoins(j) => {
+            let mut cloned = j.clone();
+            cloned.input = recurse(&j.input);
+            LogicalPlan::GraphJoins(cloned)
+        }
+        LogicalPlan::GroupBy(g) => {
+            let mut cloned = g.clone();
+            cloned.input = recurse(&g.input);
+            LogicalPlan::GroupBy(cloned)
+        }
+        LogicalPlan::OrderBy(o) => {
+            let mut cloned = o.clone();
+            cloned.input = recurse(&o.input);
+            LogicalPlan::OrderBy(cloned)
+        }
+        LogicalPlan::Limit(l) => {
+            let mut cloned = l.clone();
+            cloned.input = recurse(&l.input);
+            LogicalPlan::Limit(cloned)
+        }
+        LogicalPlan::Skip(s) => {
+            let mut cloned = s.clone();
+            cloned.input = recurse(&s.input);
+            LogicalPlan::Skip(cloned)
+        }
+        LogicalPlan::WithClause(w) => {
+            let mut cloned = w.clone();
+            cloned.input = recurse(&w.input);
+            LogicalPlan::WithClause(cloned)
+        }
+        LogicalPlan::Unwind(u) => {
+            let mut cloned = u.clone();
+            cloned.input = recurse(&u.input);
+            LogicalPlan::Unwind(cloned)
+        }
+        LogicalPlan::Cte(c) => {
+            let mut cloned = c.clone();
+            cloned.input = recurse(&c.input);
+            LogicalPlan::Cte(cloned)
+        }
+        LogicalPlan::Union(u) => {
+            let mut cloned = u.clone();
+            cloned.inputs = u.inputs.iter().map(&recurse).collect();
+            LogicalPlan::Union(cloned)
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            let mut cloned = cp.clone();
+            cloned.left = recurse(&cp.left);
+            cloned.right = recurse(&cp.right);
+            LogicalPlan::CartesianProduct(cloned)
+        }
+        // GraphRel and leaf/other variants: standalone aliases never live inside a
+        // GraphRel, so there is nothing to materialize here — clone unchanged.
+        other => other.clone(),
+    }
 }
