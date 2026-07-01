@@ -56,13 +56,18 @@ graph_schema:
 
     # A SUBSET of the SAME view via `filter:` — public/external IPs only.
     # Shows how one view serves multiple labels/positions without extra views.
-    - label: ExternalIP
-      database: zeek
-      table: all_ips
-      node_id: ip
-      property_mappings:
-        ip: ip
-      filter: "NOT startsWith(ip, '192.168.') AND NOT startsWith(ip, '10.')"
+    #
+    # DISABLED: no edge references ExternalIP, so it renders as isolated dots in a
+    # graph browser (every relationship uses IP/Domain). Kept here, commented, as a
+    # `filter:` usage example. To use it, give it an edge (e.g. an ACCESS edge whose
+    # endpoint is ExternalIP) or query it directly with `MATCH (n:ExternalIP)`.
+    # - label: ExternalIP
+    #   database: zeek
+    #   table: all_ips
+    #   node_id: ip
+    #   property_mappings:
+    #     ip: ip
+    #   filter: "NOT startsWith(ip, '192.168.') AND NOT startsWith(ip, '10.')"
 
     - label: Domain
       database: zeek
