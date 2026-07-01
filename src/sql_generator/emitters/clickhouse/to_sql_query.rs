@@ -1125,6 +1125,163 @@ fn build_multi_type_vlp_aliases(plan: &RenderPlan) -> HashMap<String, String> {
 /// Rewrite property access in SELECT, GROUP BY items for VLP queries
 /// Maps Cypher aliases (a, b) to CTE column names (start_xxx, end_xxx)
 /// For VLP, the CTE includes properties named using the Cypher property name: start_email, start_name, etc.
+/// True if `expr` references `alias` anywhere as a PropertyAccess table alias.
+fn render_expr_references_alias(expr: &RenderExpr, alias: &str) -> bool {
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => pa.table_alias.0 == alias,
+        // Some render paths carry qualified columns as a bare `Column("t.col")`
+        // string rather than a structured PropertyAccess.
+        RenderExpr::Column(col) => col
+            .raw()
+            .strip_prefix(alias)
+            .is_some_and(|rest| rest.starts_with('.')),
+        RenderExpr::OperatorApplicationExp(op) => op
+            .operands
+            .iter()
+            .any(|o| render_expr_references_alias(o, alias)),
+        RenderExpr::ScalarFnCall(f) => f
+            .args
+            .iter()
+            .any(|a| render_expr_references_alias(a, alias)),
+        RenderExpr::AggregateFnCall(f) => f
+            .args
+            .iter()
+            .any(|a| render_expr_references_alias(a, alias)),
+        RenderExpr::List(items) => items.iter().any(|i| render_expr_references_alias(i, alias)),
+        _ => false,
+    }
+}
+
+/// Drop *disconnected* JOINs — those whose entire ON condition never references
+/// the joined table's own alias — when the FROM is a multi-type VLP CTE.
+///
+/// A per-label anchor UNION split materialises the end node inside each
+/// `vlp_multi_type_*` CTE (its `end_*` columns), yet the outer GraphJoins still
+/// emits a node-materialisation JOIN for that endpoint (e.g.
+/// `INNER JOIN zeek.all_ips AS o ON t.end_ip = t.start_query`). Its ON compares
+/// two VLP CTE columns and never mentions `o`, so it is a disconnected cross
+/// join against an alias nothing in the outer query reads — always spurious and
+/// invalid. Removing it is safe: the endpoint's properties already flow from the
+/// CTE's `end_*` projection.
+fn drop_disconnected_vlp_joins(plan: &mut RenderPlan) {
+    fn clean(from: &FromTableItem, joins: &mut JoinItems) {
+        let from_is_vlp = from
+            .0
+            .as_ref()
+            .is_some_and(|f| f.name.starts_with("vlp_multi_type_"));
+        if !from_is_vlp {
+            return;
+        }
+        joins.0.retain(|j| {
+            let connected = j
+                .joining_on
+                .iter()
+                .any(|op| op.operands.iter().any(|o| render_expr_references_alias(o, &j.table_alias)));
+            if !connected {
+                log::info!(
+                    "🧹 Dropping disconnected JOIN '{} AS {}' (ON never references its own alias) under VLP CTE FROM",
+                    j.table_name,
+                    j.table_alias
+                );
+            }
+            connected
+        });
+    }
+    let from = plan.from.clone();
+    clean(&from, &mut plan.joins);
+    if let Some(ref mut union) = plan.union.0 {
+        for branch in union.input.iter_mut() {
+            let bfrom = branch.from.clone();
+            clean(&bfrom, &mut branch.joins);
+        }
+    }
+}
+
+/// Strip a trailing `_<digits>` disambiguation suffix from a CTE name.
+/// `vlp_multi_type_a_o_2` → `vlp_multi_type_a_o`; `vlp_multi_type_a_o` unchanged.
+fn strip_cte_dedup_suffix(name: &str) -> &str {
+    if let Some(pos) = name.rfind('_') {
+        if name[pos + 1..].chars().all(|c| c.is_ascii_digit()) && pos + 1 < name.len() {
+            return &name[..pos];
+        }
+    }
+    name
+}
+
+/// Unify the projected columns of mixed-label anchor UNION branches.
+///
+/// A per-label anchor split produces one `vlp_multi_type_<a>_<o>` CTE per label
+/// (the duplicate renamed `..._2`, `..._3`). All of them share the SAME pattern
+/// and therefore the SAME CTE-column shape (`start_*`, `end_*`, `r_from_id`, …),
+/// each read through the same alias `t`. Sibling branches rendered independently
+/// can end up with FEWER columns (e.g. missing `t.r_from_id`), making the UNION
+/// ALL arity-inconsistent (ClickHouse rejects it).
+///
+/// Rebuild each same-pattern branch's SELECT to the base's column ORDER: for each
+/// base column, keep the BRANCH's own item when it already projects that alias
+/// (preserving per-branch literals like `'Domain' AS __start_label__`), otherwise
+/// borrow the base's item — which references only `t.<col>` present identically in
+/// the branch's CTE. Branch-specific label literals are thus preserved while
+/// missing CTE columns are filled in.
+fn unify_mixed_anchor_branch_selects(plan: &mut RenderPlan) {
+    let base_from = match plan.from.0.as_ref() {
+        Some(f) if f.name.starts_with("vlp_multi_type_") => f.name.clone(),
+        _ => return,
+    };
+    let base_pattern = strip_cte_dedup_suffix(&base_from).to_string();
+    let base_items = plan.select.items.clone();
+    if let Some(ref mut union) = plan.union.0 {
+        for branch in union.input.iter_mut() {
+            let same_pattern = branch
+                .from
+                .0
+                .as_ref()
+                .is_some_and(|f| strip_cte_dedup_suffix(&f.name) == base_pattern);
+            if !same_pattern || branch.select.items.len() == base_items.len() {
+                continue;
+            }
+            // Only borrow base columns that reference a CTE column (`t.<col>`),
+            // which is present identically in the branch's same-pattern CTE. Never
+            // fabricate a per-branch literal (e.g. a label constant) from the base.
+            let branch_from_alias = branch
+                .from
+                .0
+                .as_ref()
+                .and_then(|f| f.alias.clone())
+                .unwrap_or_else(|| VLP_CTE_FROM_ALIAS.to_string());
+            let unified: Vec<crate::render_plan::SelectItem> = base_items
+                .iter()
+                .filter_map(|base_item| {
+                    let alias = base_item.col_alias.as_ref();
+                    if let Some(own) = branch
+                        .select
+                        .items
+                        .iter()
+                        .find(|bi| bi.col_alias.as_ref() == alias && alias.is_some())
+                    {
+                        Some(own.clone())
+                    } else if render_expr_references_alias(
+                        &base_item.expression,
+                        &branch_from_alias,
+                    ) {
+                        Some(base_item.clone())
+                    } else {
+                        // Missing and not a borrowable CTE column — leave it out
+                        // rather than invent a value; arity handled by other means.
+                        None
+                    }
+                })
+                .collect();
+            log::info!(
+                "🧩 Unifying mixed-anchor branch SELECT ({} → {} columns) to base order",
+                branch.select.items.len(),
+                unified.len()
+            );
+            branch.select.items = unified;
+        }
+    }
+}
+
 fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
     log::debug!("🔍 TRACING: rewrite_vlp_select_aliases called - checking for VLP CTEs");
     // 🔧 FIX: If FROM references a WITH CTE (not the raw VLP CTE), skip this rewriting
@@ -1164,7 +1321,23 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                 .iter()
                 .all(|c| c.vlp_cypher_end_alias.as_deref() == first_end);
 
-        if fan_in_ctes.len() > 1 && all_same_end {
+        // A genuine spoke/fan-in `(a)-->(x), (b)-->(x), (c)-->(x)` has DISTINCT
+        // start aliases converging on one end — those CTEs are conjunctive and
+        // must be INNER JOINed on end_id. In contrast, a mixed-label anchor
+        // expand `MATCH (a)-[r]-(o)` whose `a` was split by elementId into per-label
+        // UNION-ALL branches produces multiple VLP CTEs that ALL share the SAME
+        // start alias (`a`) and end alias (`o`). Those are ALTERNATIVE anchors
+        // (one per label), not a fan-in: they belong to separate UNION branches and
+        // must NOT be joined. Joining them yields an invalid cross-branch INNER JOIN
+        // (`vlp_multi_type_a_o INNER JOIN vlp_multi_type_a_o_2 ON ... end_id`) and
+        // suppresses per-branch VLP rewriting. Require >1 distinct start alias.
+        let distinct_start_aliases: std::collections::HashSet<&str> = fan_in_ctes
+            .iter()
+            .filter_map(|c| c.vlp_cypher_start_alias.as_deref())
+            .collect();
+        let is_genuine_fan_in = distinct_start_aliases.len() > 1;
+
+        if fan_in_ctes.len() > 1 && all_same_end && is_genuine_fan_in {
             log::info!(
                 "🔀 Fan-in VLP detected: {} CTEs all targeting '{}'",
                 fan_in_ctes.len(),
@@ -3510,8 +3683,27 @@ fn rewrite_cte_body_vlp_refs(plan: &mut RenderPlan, vlp_info: &VlpAliasInfo) {
                 None => continue,
             };
 
-            // Clone and rewrite filters for reverse branch
-            if let Some(ref filter) = original_filters {
+            // Filters: if this branch already carries its OWN filter, rewrite that
+            // in place with the branch's own VLP aliases. Only fall back to cloning
+            // the base plan's filter when the branch has none.
+            //
+            // Cloning-from-base is correct for an undirected VLP's reverse arm, which
+            // shares the base's start-node predicate and has no independent filter.
+            // It is WRONG for a mixed-label anchor UNION split, where each branch
+            // reads a DIFFERENT per-label VLP CTE and already holds its own predicate
+            // (e.g. `a.ip IN [...]` for the IP anchor vs `a.query IN [...]` for the
+            // Domain anchor). Overwriting with the base's predicate produced
+            // `t.start_query IN [...]` against a CTE that only has `start_ip`
+            // (ClickHouse Code 47).
+            if let Some(branch_own) = branch.filters.0.clone() {
+                branch.filters = FilterItems(Some(rewrite_expr_for_vlp(
+                    &branch_own,
+                    &reverse_aliases.0,
+                    &reverse_aliases.1,
+                    &reverse_aliases.2,
+                    false,
+                )));
+            } else if let Some(ref filter) = original_filters {
                 branch.filters = FilterItems(Some(rewrite_expr_for_vlp(
                     filter,
                     &reverse_aliases.0,
@@ -3521,8 +3713,11 @@ fn rewrite_cte_body_vlp_refs(plan: &mut RenderPlan, vlp_info: &VlpAliasInfo) {
                 )));
             }
 
-            // Clone and rewrite JOINs for reverse branch
-            if !original_joins.is_empty() {
+            // JOINs: rewrite the branch's own JOINs if present; otherwise clone the
+            // base plan's (same reverse-arm vs. independent-branch reasoning).
+            if !branch.joins.0.is_empty() {
+                rewrite_joins_for_vlp(&mut branch.joins.0, &reverse_aliases);
+            } else if !original_joins.is_empty() {
                 branch.joins = JoinItems(original_joins.clone());
                 rewrite_joins_for_vlp(&mut branch.joins.0, &reverse_aliases);
             }
@@ -3632,6 +3827,14 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
     // Rewrite VLP SELECT aliases before SQL generation
     // Maps Cypher aliases (a, b) to CTE column prefixes (start_, end_)
     plan = rewrite_vlp_select_aliases(plan);
+
+    // Remove spurious disconnected node-materialisation JOINs left over when a
+    // multi-type VLP CTE already materialises the endpoint (mixed-label anchor
+    // expand). See drop_disconnected_vlp_joins.
+    drop_disconnected_vlp_joins(&mut plan);
+
+    // Make per-label anchor UNION branches column-consistent (arity-safe).
+    unify_mixed_anchor_branch_selects(&mut plan);
 
     // 🔧 CRITICAL FIX: Sort JOINs by dependency to ensure correct SQL ordering
     // Topological sort ensures that if JOIN A references table B in its ON clause,

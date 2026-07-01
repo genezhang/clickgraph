@@ -101,6 +101,23 @@ pub fn logical_plan_to_render_plan(
     logical_plan.to_render_plan(schema)
 }
 
+/// Public wrapper over `to_render_plan_with_ctx`, mirroring the server pipeline.
+///
+/// The server (HTTP + Bolt handlers) always renders via `to_render_plan_with_ctx`
+/// so that analysis-phase metadata in `PlanCtx` (VLP endpoints, multi-type joins,
+/// etc.) is available during rendering. The bare `logical_plan_to_render_plan`
+/// wrapper omits that context and can diverge from server output for polymorphic /
+/// multi-type expands. Use this wrapper when faithful server-parity rendering is
+/// required (e.g. regression tests for browser expand SQL).
+pub fn logical_plan_to_render_plan_with_ctx(
+    logical_plan: crate::query_planner::logical_plan::LogicalPlan,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+    plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
+) -> Result<RenderPlan, errors::RenderBuildError> {
+    use plan_builder::RenderPlanBuilder;
+    logical_plan.to_render_plan_with_ctx(schema, plan_ctx, None)
+}
+
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct RenderPlan {
     pub ctes: CteItems,

@@ -1,0 +1,109 @@
+# Zeek DNS — Graph model with ARRAY-FLATTENING VIEWS (reference example)
+# =============================================================================
+# Demonstrates modeling an ARRAY column (dns_log.answers — the list of resolved
+# IPs) as first-class graph NODES, without any array-valued node_id.
+#
+# Key technique (views are an under-used lever in schema mapping):
+#   1. Do the array flattening + column normalization in ClickHouse VIEWS.
+#   2. Point the schema's `table:` at the view; its `to_id:`/`node_id:` at the
+#      now-scalar column. A view is queried exactly like a table.
+#   3. Carve per-position SUBSETS of a view with `filter:` (a WHERE expression),
+#      instead of proliferating views or denormalized from/to property maps.
+#
+# Why not use the raw `answers` array as ResolvedIP.node_id?
+#   A node identity must be SCALAR (elementId, joins, dedup, filters). An
+#   Array(String) breaks all of that. The `arrayJoin` view turns the array into
+#   one scalar `resolved_ip` per row → each resolved IP becomes a proper node,
+#   unified with source IPs as ONE `IP` type. That unlocks pivots the array
+#   model can't express, e.g. domains sharing infrastructure:
+#     MATCH (d1:Domain)-[:RESOLVED_TO]->(ip:IP)<-[:RESOLVED_TO]-(d2:Domain)
+#     RETURN d1.name, ip.ip, d2.name
+#
+# -----------------------------------------------------------------------------
+# REQUIRED VIEWS (create once in ClickHouse; ALIAS/VIEW = computed on read, no
+# storage — "ClickHouse doesn't care"):
+#
+#   CREATE OR REPLACE VIEW zeek.dns_resolutions AS
+#     SELECT `id.orig_h`      AS src_ip,
+#            query            AS domain,
+#            arrayJoin(answers) AS resolved_ip,   -- 1 row per resolved IP
+#            ts, uid, qtype_name AS qtype, rcode_name AS rcode
+#     FROM zeek.dns_log;
+#
+#   CREATE OR REPLACE VIEW zeek.all_ips AS
+#     SELECT `id.orig_h` AS ip FROM zeek.dns_log
+#     UNION DISTINCT SELECT resolved_ip FROM zeek.dns_resolutions;
+#     -- add more IP-bearing sources here as they arrive, e.g.:
+#     -- UNION DISTINCT SELECT src_ip FROM zeek.access_log
+#     -- UNION DISTINCT SELECT dst_ip FROM zeek.access_log
+# =============================================================================
+
+name: zeek_dns_graph
+version: "1.0"
+
+graph_schema:
+  nodes:
+    # Unified IP node — source AND resolved IPs are the same entity.
+    # ONE table (the union view), ONE node_id, ONE property mapping: the
+    # per-position column difference (id.orig_h vs resolved_ip vs …) is absorbed
+    # by the view's UNION branches, NOT by denormalized from/to property maps.
+    - label: IP
+      database: zeek
+      table: all_ips
+      node_id: ip
+      property_mappings:
+        ip: ip
+
+    # A SUBSET of the SAME view via `filter:` — public/external IPs only.
+    # Shows how one view serves multiple labels/positions without extra views.
+    - label: ExternalIP
+      database: zeek
+      table: all_ips
+      node_id: ip
+      property_mappings:
+        ip: ip
+      filter: "NOT startsWith(ip, '192.168.') AND NOT startsWith(ip, '10.')"
+
+    - label: Domain
+      database: zeek
+      table: dns_log
+      node_id: query
+      property_mappings:
+        name: query
+
+  edges:
+    # Source IP queried a Domain (straight off dns_log).
+    - type: REQUESTED
+      database: zeek
+      table: dns_log
+      from_id: "id.orig_h"
+      to_id: query
+      from_node: IP
+      to_node: Domain
+      property_mappings:
+        timestamp: ts
+        uid: uid
+
+    # Domain resolved to each individual IP (from the arrayJoin view).
+    # to_id is the SCALAR `resolved_ip`, never the array.
+    # Optional per-edge subset: restrict to successful A-records with
+    #   filter: "qtype = 'A' AND rcode = 'NOERROR'"
+    - type: RESOLVED_TO
+      database: zeek
+      table: dns_resolutions
+      from_id: domain
+      to_id: resolved_ip
+      from_node: Domain
+      to_node: IP
+      property_mappings:
+        timestamp: ts
+
+    # Follow-on (add when the access_log table is available): IP -> IP.
+    # - type: ACCESS
+    #   database: zeek
+    #   table: access_log
+    #   from_id: src_ip
+    #   to_id: dst_ip
+    #   from_node: IP
+    #   to_node: IP
+    #   property_mappings: { timestamp: ts }
