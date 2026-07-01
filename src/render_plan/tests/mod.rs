@@ -2,6 +2,7 @@ mod databricks_emit_spike_tests;
 mod denormalized_foreign_edge_id_tests;
 mod denormalized_multitype_expand_tests;
 mod denormalized_property_tests;
+mod denormalized_unlabeled_node_tests;
 mod denormalized_virtual_id_viz_tests;
 mod fixed_path_denormalized_edge_tests;
 mod issue_411_generic_id_tests;
