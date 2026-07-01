@@ -1450,7 +1450,12 @@ impl TypeInference {
                             graph_schema
                                 .get_all_rel_schemas_for_type(rel_type)
                                 .into_iter()
-                                .map(|rs| rs.from_node.clone())
+                                // Polymorphic edges store `$any` as their from_node — a
+                                // sentinel, not a real label. Expand it to every concrete
+                                // node type so an unlabeled endpoint keeps all candidates
+                                // instead of being narrowed to the literal "$any" (which
+                                // matches nothing and would collapse the plan to Empty).
+                                .flat_map(|rs| graph_schema.expand_node_type(&rs.from_node))
                         })
                         .collect();
                     if !valid_types.is_empty() {
@@ -1471,7 +1476,9 @@ impl TypeInference {
                             graph_schema
                                 .get_all_rel_schemas_for_type(rel_type)
                                 .into_iter()
-                                .map(|rs| rs.to_node.clone())
+                                // Expand polymorphic `$any` to_node to all concrete node
+                                // types (see the from_node branch above).
+                                .flat_map(|rs| graph_schema.expand_node_type(&rs.to_node))
                         })
                         .collect();
                     if !valid_types.is_empty() {

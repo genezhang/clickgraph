@@ -9,6 +9,7 @@ mod multiple_relationship_tests;
 mod pattern_union_dotted_column_tests;
 mod pattern_union_rel_property_tests;
 mod polymorphic_edge_tests;
+mod polymorphic_unlabeled_path_tests;
 mod variable_length_tests;
 mod vlp_property_pruning_tests;
 mod where_clause_filter_tests;
