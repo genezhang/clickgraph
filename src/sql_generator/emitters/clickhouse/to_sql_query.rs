@@ -6158,9 +6158,12 @@ impl RenderExpr {
                     init_sql
                 };
 
-                format!(
-                    "arrayFold({}, {} -> {}, {}, {})",
-                    reduce.variable, reduce.accumulator, expr_sql, list_sql, init_cast
+                super::common::reduce_fold_sql(
+                    &reduce.variable,
+                    &reduce.accumulator,
+                    &expr_sql,
+                    &list_sql,
+                    &init_cast,
                 )
             }
             RenderExpr::MapLiteral(entries) => {
