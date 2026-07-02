@@ -417,3 +417,21 @@ fn test_function_on_parameter_in_return() {
     // Verify function applied to parameter
     assert!(sql.to_lowercase().contains("upper(") || sql.to_lowercase().contains("ucase("));
 }
+
+#[test]
+fn test_list_comprehension_in_return_errors_not_panics() {
+    // Regression: a list comprehension in RETURN reaches ProjectionItem
+    // conversion without any rewrite pass having lowered it. That conversion
+    // used to `.expect()` on the failing `LogicalExpr::try_from`, PANICKING the
+    // worker thread and taking down the whole server on otherwise-valid Cypher.
+    // It must now surface as a clean planning error (Err), not a panic.
+    let query = "MATCH (n:User) RETURN [x IN [1, 2, 3, 4] WHERE x > 2] AS r";
+    let ast = parse_query(query).expect("Failed to parse query");
+    let schema = create_test_schema();
+
+    let result = build_logical_plan(&ast, &schema, None, None, None);
+    assert!(
+        result.is_err(),
+        "list comprehension in RETURN should return a planning error, not panic"
+    );
+}

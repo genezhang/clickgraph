@@ -141,14 +141,22 @@ lazy_static::lazy_static! {
             }),
         });
 
-        // date() -> toDate(arg) or today() if no args
+        // date() -> CH toDate(arg) / Spark to_date(arg). No-arg = current date:
+        // CH today() / Spark current_date(). Spark has no toDate/today().
         m.insert("date", FunctionMapping {
             neo4j_name: "date",
             clickhouse_name: "toDate",
-            databricks_name: None,
+            databricks_name: Some("to_date"),
             arg_transform: Some(|args| {
                 if args.is_empty() {
-                    vec!["today()".to_string()]
+                    use crate::server::query_context::get_current_dialect;
+                    use crate::sql_generator::SqlDialect;
+                    let now = if matches!(get_current_dialect(), SqlDialect::Databricks) {
+                        "current_date()"
+                    } else {
+                        "today()"
+                    };
+                    vec![now.to_string()]
                 } else {
                     vec![args[0].clone()]
                 }
@@ -581,19 +589,19 @@ lazy_static::lazy_static! {
 
         // ===== ADDITIONAL STRING FUNCTIONS =====
 
-        // ltrim() -> trimLeft()
+        // ltrim() -> CH trimLeft() / Spark ltrim(). Spark has no trimLeft.
         m.insert("ltrim", FunctionMapping {
             neo4j_name: "lTrim",
             clickhouse_name: "trimLeft",
-            databricks_name: None,
+            databricks_name: Some("ltrim"),
             arg_transform: None,
         });
 
-        // rtrim() -> trimRight()
+        // rtrim() -> CH trimRight() / Spark rtrim(). Spark has no trimRight.
         m.insert("rtrim", FunctionMapping {
             neo4j_name: "rTrim",
             clickhouse_name: "trimRight",
-            databricks_name: None,
+            databricks_name: Some("rtrim"),
             arg_transform: None,
         });
 
