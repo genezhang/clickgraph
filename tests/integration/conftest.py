@@ -989,6 +989,30 @@ def load_all_test_data(clickhouse_client, test_database, setup_test_database):
         except Exception as e:
             print(f"  ⚠ zeek data load failed: {e}")
 
+    # Reset all shared fixture tables FIRST so repeated pytest sessions against a
+    # persistent ClickHouse server start from a clean, canonical state. The loaders
+    # use `CREATE TABLE IF NOT EXISTS` + `INSERT` on ENGINE=Memory tables, so without
+    # this drop the INSERTs ACCUMULATE across runs (e.g. posts_test grew to 52 rows
+    # vs the canonical 20), causing non-deterministic tests and false CH↔Databricks
+    # parity diffs. DROP (not TRUNCATE) also picks up any fixture DDL changes.
+    _FIXTURE_TABLES = [
+        "test_integration.users", "test_integration.follows", "test_integration.products",
+        "test_integration.purchases", "test_integration.friendships",
+        "brahmand.users_bench", "brahmand.user_follows_bench", "brahmand.posts_bench",
+        "brahmand.post_likes_bench", "brahmand.interactions",
+        "default.flights",
+        "test_integration.fs_objects", "test_integration.fs_parent",
+        "test_integration.gm_users", "test_integration.gm_groups", "test_integration.gm_memberships",
+        "test_integration.users_test", "test_integration.posts_test",
+        "test_integration.user_follows_test", "test_integration.post_likes_test",
+        "zeek.dns_log", "zeek.conn_log",
+    ]
+    for _t in _FIXTURE_TABLES:
+        try:
+            clickhouse_client.command(f"DROP TABLE IF EXISTS {_t}")
+        except Exception as _e:
+            print(f"  ⚠ could not drop {_t}: {_e}")
+
     # Load each schema's data independently
     load_test_integration_data()
     load_brahmand_data()
