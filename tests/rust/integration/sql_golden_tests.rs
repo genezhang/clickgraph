@@ -166,6 +166,16 @@ const CORPUS: &[(&str, &str)] = &[
         "multi_type_rel_type_fn",
         "MATCH (a:User)-[r:FOLLOWS|AUTHORED]->(b) RETURN type(r) AS t",
     ),
+    // Negative list index: Cypher `[-1]` = last element. Both CH arrayElement and
+    // Spark element_at already treat -1 as last, so it must render UNCHANGED (not
+    // offset by +1). The old +1 shifted -1 -> 0, and CH `arr[0]` silently returned
+    // the type default (0) instead of the last element. Guards CH `[-1]` /
+    // Databricks `element_at(..., -1)`; a non-negative index (index0 -> [1]) is the
+    // control.
+    (
+        "list_index_negative",
+        "MATCH (u:User) RETURN [10, 20, 30][-1] AS last, [10, 20, 30][0] AS first",
+    ),
     // Dialect function-name mappings (regression for the Databricks overrides):
     // replace -> CH replaceAll / Spark replace; head/last -> CH arrayElement /
     // Spark element_at; stdev -> CH stddevSamp / Spark stddev_samp. Previously all

@@ -6211,9 +6211,25 @@ impl RenderExpr {
                         // 1-based index (Cypher 0-based + 1). CH `arr[i]` is 1-based;
                         // Spark `arr[i]` is 0-based, so Databricks must use the 1-based
                         // `element_at(arr, i)` instead. CH form is left byte-identical.
+                        //
+                        // Negative indices (Cypher `-1` = last) map UNCHANGED: both CH
+                        // arrayElement(arr,-1) and Spark element_at(arr,-1) already mean
+                        // "last", so a blind +1 wrongly shifts `-1`->`0` (CH then returns
+                        // the type default, silently wrong). Cypher `-1` reaches here as
+                        // the expression `0 - 1` (the parser lowers unary minus that way),
+                        // so a literal-only guard misses it — the runtime `if` below
+                        // handles both literal and computed negative indices.
                         let idx_1based = match index.as_ref() {
-                            RenderExpr::Literal(Literal::Integer(n)) => format!("{}", n + 1),
-                            _ => format!("({})+1", index.to_sql()),
+                            // Non-negative integer literal: clean compile-time +1.
+                            RenderExpr::Literal(Literal::Integer(n)) if *n >= 0 => {
+                                format!("{}", n + 1)
+                            }
+                            // General/runtime index: +1 only when non-negative. `if` is
+                            // spelled the same and evaluates identically on CH and Spark.
+                            _ => {
+                                let i = index.to_sql();
+                                format!("if(({i}) >= 0, ({i})+1, ({i}))")
+                            }
                         };
                         match crate::server::query_context::get_current_dialect() {
                             crate::sql_generator::SqlDialect::Databricks => {
