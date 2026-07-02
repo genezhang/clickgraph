@@ -449,18 +449,14 @@ lazy_static::lazy_static! {
             arg_transform: None,
         });
 
-        // toBoolean() -> if(arg, 1, 0) - ClickHouse doesn't have native boolean conversion
+        // toBoolean() -> toBool() (CH) / boolean() (Spark). Both accept string
+        // ('true'/'false') and numeric args; the old if(arg,1,0) form broke on
+        // string inputs (CH: "Illegal type String ... of function if").
         m.insert("toboolean", FunctionMapping {
             neo4j_name: "toBoolean",
-            clickhouse_name: "if",
-            databricks_name: None,
-            arg_transform: Some(|args| {
-                if !args.is_empty() {
-                    vec![args[0].clone(), "1".to_string(), "0".to_string()]
-                } else {
-                    args.to_vec()
-                }
-            }),
+            clickhouse_name: "toBool",
+            databricks_name: Some("boolean"),
+            arg_transform: None,
         });
 
         // ===== AGGREGATION FUNCTIONS =====
