@@ -9,18 +9,22 @@ Databricks dialect/parity gap (or a genuine engine bug affecting both).
 ## One-time setup
 1. Databricks creds in env (see `~/.dbx.env`): `DATABRICKS_HOST`, `DATABRICKS_TOKEN`,
    `DATABRICKS_WAREHOUSE_ID`, `DATABRICKS_CATALOG`.
-2. Load the Delta fixtures:
+2. Load the Delta fixtures (schema-driven; loads all mapped schemas, or name specific ones):
    ```
-   python3 scripts/load_social_integration_databricks.py
+   python3 scripts/load_databricks_fixtures.py                 # all mapped schemas
+   python3 scripts/load_databricks_fixtures.py social_integration
    ```
-   (creates `<catalog>.test_integration.{users_test,posts_test,user_follows_test,post_likes_test}`)
+   Currently covers `social_integration` and `group_membership`. To add a schema,
+   append it to `SCHEMAS` in that script (list its CH tables) AND to
+   `conftest.DATABRICKS_SCHEMA_FILES` (schema_name → YAML) — the DDL is
+   auto-translated from conftest and row VALUES reused verbatim.
 
 ## Run
 ```
 CG_TEST_BACKEND=databricks pytest tests/integration/test_optional_match.py -q
 ```
 Only schemas listed in `conftest.DATABRICKS_SCHEMA_FILES` have Delta fixtures;
-tests on other schemas `skip` in this mode. Start with `social_integration`.
+tests on other schemas `skip` in this mode.
 
 ## No-pytest smoke check
 `python3 scripts/social_integration_parity_check.py` runs representative patterns

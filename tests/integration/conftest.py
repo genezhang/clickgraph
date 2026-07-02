@@ -38,9 +38,11 @@ CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 CG_TEST_BACKEND = os.getenv("CG_TEST_BACKEND", "clickhouse")
 CG_BIN = os.getenv("CG_BIN", "/mnt/cargo-sd/cargo/target/debug/cg")
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-# schema_name -> schema YAML path (extend as more schemas get Delta fixtures)
+# schema_name -> schema YAML path (extend as more schemas get Delta fixtures via
+# scripts/load_databricks_fixtures.py). Keep in sync with that script's SCHEMAS.
 DATABRICKS_SCHEMA_FILES = {
     "social_integration": os.path.join(_PROJECT_ROOT, "schemas/test/social_integration.yaml"),
+    "group_membership": os.path.join(_PROJECT_ROOT, "schemas/test/group_membership_simple.yaml"),
 }
 
 CLICKHOUSE_HOST = os.getenv("CLICKHOUSE_HOST", "localhost")
