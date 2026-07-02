@@ -45,6 +45,27 @@ DATABRICKS_SCHEMA_FILES = {
     "group_membership": os.path.join(_PROJECT_ROOT, "schemas/test/group_membership_simple.yaml"),
 }
 
+def pytest_configure(config):
+    """Register the `clickhouse_only` marker (tests that assert CH-dialect-specific
+    behaviour — CH functions, CH error messages, generated-SQL strings — and are
+    not meaningful under CG_TEST_BACKEND=databricks)."""
+    config.addinivalue_line(
+        "markers",
+        "clickhouse_only: test asserts ClickHouse-specific behaviour; skipped when "
+        "CG_TEST_BACKEND=databricks",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """In Databricks parity mode, skip tests marked `clickhouse_only`."""
+    if CG_TEST_BACKEND != "databricks":
+        return
+    skip = pytest.mark.skip(reason="clickhouse_only: not applicable in CG_TEST_BACKEND=databricks")
+    for item in items:
+        if "clickhouse_only" in item.keywords:
+            item.add_marker(skip)
+
+
 CLICKHOUSE_HOST = os.getenv("CLICKHOUSE_HOST", "localhost")
 CLICKHOUSE_PORT = int(os.getenv("CLICKHOUSE_PORT", "8123"))
 CLICKHOUSE_USER = os.getenv("CLICKHOUSE_USER", "test_user")

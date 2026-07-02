@@ -43,6 +43,14 @@ against both backends and prints a parity table (no pytest needed).
      works on ClickHouse (resolves `x.b` to the table alias) but errors on Databricks
      (the output alias `x` shadows the table alias under `SELECT DISTINCT`). Edge case;
      ClickGraph could harden the ORDER-BY qualification, low priority.
-- TODO: load Delta fixtures for the other 18 schemas; mark CH-dialect-specific
-  tests (sql_only string assertions, CH funcs) `@pytest.mark.clickhouse_only` to
-  skip cleanly in databricks mode.
+- ✅ Generalized loader (`scripts/load_databricks_fixtures.py`) + a 2nd schema
+  (`group_membership`) wired and parity-verified.
+- ✅ `@pytest.mark.clickhouse_only` marker registered; marked tests auto-skip when
+  `CG_TEST_BACKEND=databricks`. Apply it to tests that assert CH-specific behaviour
+  (CH functions, CH error messages) once a full databricks run surfaces them.
+  (Note: `sql_only` string-assertion tests POST to the CH server directly rather
+  than via `execute_cypher`, so they still run/pass against CH in this mode and do
+  NOT need the marker — they simply don't contribute Databricks signal.)
+- TODO: load Delta fixtures for the remaining schemas (extend `SCHEMAS` +
+  `DATABRICKS_SCHEMA_FILES`); wire the parity sweep + a databricks-mode suite run
+  into CI.
