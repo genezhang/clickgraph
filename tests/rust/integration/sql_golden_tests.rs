@@ -189,6 +189,12 @@ const CORPUS: &[(&str, &str)] = &[
         "fn_toboolean",
         "MATCH (u:User) RETURN toBoolean('true') AS r",
     ),
+    // date() -> CH toDate / Spark to_date. Spark has no toDate; the entry
+    // previously fell back to the CH name on Databricks (UNRESOLVED_ROUTINE).
+    (
+        "fn_date",
+        "MATCH (u:User) RETURN date('2020-01-15') AS d",
+    ),
     (
         "optional_match",
         "MATCH (u:User) OPTIONAL MATCH (u)-[:AUTHORED]->(p:Post) RETURN u.name, p.title",
