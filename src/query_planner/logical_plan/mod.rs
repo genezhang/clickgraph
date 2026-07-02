@@ -1505,8 +1505,10 @@ impl Union {
     }
 }
 
-impl<'a> From<CypherReturnItem<'a>> for ProjectionItem {
-    fn from(value: CypherReturnItem<'a>) -> Self {
+impl<'a> TryFrom<CypherReturnItem<'a>> for ProjectionItem {
+    type Error = crate::query_planner::logical_expr::errors::LogicalExprError;
+
+    fn try_from(value: CypherReturnItem<'a>) -> Result<Self, Self::Error> {
         // Determine the column alias using this priority:
         // 1. Explicit AS alias (highest priority)
         // 2. Original text from the query (preserves user input exactly)
@@ -1533,11 +1535,10 @@ impl<'a> From<CypherReturnItem<'a>> for ProjectionItem {
             }
         };
 
-        ProjectionItem {
-            expression: LogicalExpr::try_from(value.expression)
-                .expect("Failed to convert RETURN expression - invalid Cypher syntax"),
+        Ok(ProjectionItem {
+            expression: LogicalExpr::try_from(value.expression)?,
             col_alias,
-        }
+        })
     }
 }
 
@@ -2106,7 +2107,7 @@ mod tests {
             original_text: None,
         };
 
-        let projection_item = ProjectionItem::from(ast_return_item);
+        let projection_item = ProjectionItem::try_from(ast_return_item).unwrap();
 
         match projection_item.expression {
             LogicalExpr::TableAlias(alias) => assert_eq!(alias.0, "customer_name"),
