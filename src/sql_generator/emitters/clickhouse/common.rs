@@ -85,6 +85,33 @@ pub fn regex_match_predicate(haystack: &str, pattern: &str) -> String {
     }
 }
 
+/// Render a Cypher `reduce(acc = init, x IN list | expr)` fold for the active
+/// dialect, from its already-rendered component strings.
+///
+/// ClickHouse has `arrayFold((x, acc) -> expr, list, init)`; Spark/Databricks
+/// has no `arrayFold` and uses `aggregate(list, init, (acc, x) -> expr)` (same
+/// semantics, different arg order + spelling). Emitted from every `ReduceExpr`
+/// render site so the two dialects stay in sync.
+pub fn reduce_fold_sql(
+    variable: &str,
+    accumulator: &str,
+    expr_sql: &str,
+    list_sql: &str,
+    init_sql: &str,
+) -> String {
+    use crate::sql_generator::SqlDialect;
+    match crate::server::query_context::get_current_dialect() {
+        SqlDialect::Databricks => format!(
+            "aggregate({}, {}, ({}, {}) -> {})",
+            list_sql, init_sql, accumulator, variable, expr_sql
+        ),
+        _ => format!(
+            "arrayFold({}, {} -> {}, {}, {})",
+            variable, accumulator, expr_sql, list_sql, init_sql
+        ),
+    }
+}
+
 /// Resolve a SQL function name to its active-dialect spelling via the function
 /// registry, falling back to `name` unchanged when it has no registry entry.
 ///

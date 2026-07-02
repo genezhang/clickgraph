@@ -392,9 +392,12 @@ impl ToSql for LogicalExpr {
                     init_sql
                 };
 
-                Ok(format!(
-                    "arrayFold({}, {} -> {}, {}, {})",
-                    reduce.variable, reduce.accumulator, expr_sql, list_sql, init_cast
+                Ok(super::common::reduce_fold_sql(
+                    &reduce.variable,
+                    &reduce.accumulator,
+                    &expr_sql,
+                    &list_sql,
+                    &init_cast,
                 ))
             }
             LogicalExpr::MapLiteral(entries) => {
