@@ -199,6 +199,12 @@ const CORPUS: &[(&str, &str)] = &[
         "fn_toboolean",
         "MATCH (u:User) RETURN toBoolean('true') AS r",
     ),
+    // trim -> bare trim(arg) on both dialects. The old arg_transform emitted
+    // `trim(BOTH arg)` (missing `' ' FROM`), invalid SQL that 500'd on CH.
+    (
+        "fn_trim",
+        "MATCH (u:User) RETURN trim(u.name) AS r",
+    ),
     // date() -> CH toDate / Spark to_date. Spark has no toDate; the entry
     // previously fell back to the CH name on Databricks (UNRESOLVED_ROUTINE).
     (
