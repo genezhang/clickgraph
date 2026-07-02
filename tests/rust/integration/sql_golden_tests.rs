@@ -157,6 +157,15 @@ const CORPUS: &[(&str, &str)] = &[
         "vlp_multi_type",
         "MATCH (a:User)-[:FOLLOWS|AUTHORED*1..2]->(b) RETURN b",
     ),
+    // type(r) on a multi-type edge reads the CTE's `path_relationships` array.
+    // Regression guard for the array-index fix: the FIRST relationship is index 0
+    // (Cypher 0-based) -> renders 1-based as CH `path_relationships[1]` and
+    // Databricks `element_at(path_relationships, 1)`. The previous `[2]` was out of
+    // bounds on a 1-element array (CH silently returned ""; Databricks errored).
+    (
+        "multi_type_rel_type_fn",
+        "MATCH (a:User)-[r:FOLLOWS|AUTHORED]->(b) RETURN type(r) AS t",
+    ),
     (
         "optional_match",
         "MATCH (u:User) OPTIONAL MATCH (u)-[:AUTHORED]->(p:Post) RETURN u.name, p.title",

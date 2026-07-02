@@ -929,8 +929,14 @@ impl ProjectionTagging {
                                                     table_alias: TableAlias("t".to_string()), // VLP CTE uses 't' alias
                                                     column: crate::graph_catalog::expression_parser::PropertyValue::Column("path_relationships".to_string()),
                                                 })),
+                                                // ArraySubscript uses the 0-based Cypher convention (the
+                                                // renderer adds +1 for CH's 1-based arrays). type(r) on a
+                                                // 1-hop wants the FIRST relationship → index 0, not 1.
+                                                // (Index 1 rendered as [2], out of bounds on a 1-element
+                                                // path_relationships array: CH silently returned "" while
+                                                // Spark/Databricks errored INVALID_ARRAY_INDEX.)
                                                 index: Box::new(LogicalExpr::Literal(
-                                                    crate::query_planner::logical_expr::Literal::Integer(1),
+                                                    crate::query_planner::logical_expr::Literal::Integer(0),
                                                 )),
                                             };
                                             return Ok(());

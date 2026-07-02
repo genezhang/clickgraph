@@ -6190,21 +6190,39 @@ impl RenderExpr {
                 pc.sql.clone()
             }
             RenderExpr::ArraySubscript { array, index } => {
-                // Array subscript in ClickHouse: array[index]
-                // Cypher uses 0-based indexing; ClickHouse uses 1-based.
-                // For integer literals we add +1 at compile time.
-                // For expression indices we emit (expr)+1 without an explicit cast
-                // so ClickHouse's own type checker catches bad types (e.g. floats,
-                // strings) rather than silently coercing them.
-                // Exception: string-literal indices are map-key accesses
-                //   (e.g. top['score']) and must NOT be offset.
+                // Cypher uses 0-based indexing; array element access is 1-based on
+                // both CH (`arr[i]`) and Spark (`element_at(arr, i)` — Spark's own
+                // `arr[i]` subscript is 0-based, so it can't be used directly). The
+                // mapper picks the right 1-based accessor per dialect.
+                // For integer literals we add +1 at compile time; for expression
+                // indices we emit (expr)+1 without a cast so the engine's type
+                // checker catches bad types (floats, strings) rather than coercing.
+                // Exception: string-literal indices are MAP-KEY accesses
+                //   (e.g. top['score']) — `arr['key']` works on both dialects and
+                //   must NOT be offset or routed through element_at.
                 let array_sql = array.to_sql();
-                let index_sql = match index.as_ref() {
-                    RenderExpr::Literal(Literal::Integer(n)) => format!("{}", n + 1),
-                    RenderExpr::Literal(Literal::String(_)) => index.to_sql(),
-                    _ => format!("({})+1", index.to_sql()),
-                };
-                format!("{}[{}]", array_sql, index_sql)
+                match index.as_ref() {
+                    RenderExpr::Literal(Literal::String(_)) => {
+                        // Map-key access (e.g. top['score']) — `arr['key']` works on
+                        // both dialects and must NOT be offset or use element_at.
+                        format!("{}[{}]", array_sql, index.to_sql())
+                    }
+                    _ => {
+                        // 1-based index (Cypher 0-based + 1). CH `arr[i]` is 1-based;
+                        // Spark `arr[i]` is 0-based, so Databricks must use the 1-based
+                        // `element_at(arr, i)` instead. CH form is left byte-identical.
+                        let idx_1based = match index.as_ref() {
+                            RenderExpr::Literal(Literal::Integer(n)) => format!("{}", n + 1),
+                            _ => format!("({})+1", index.to_sql()),
+                        };
+                        match crate::server::query_context::get_current_dialect() {
+                            crate::sql_generator::SqlDialect::Databricks => {
+                                format!("element_at({}, {})", array_sql, idx_1based)
+                            }
+                            _ => format!("{}[{}]", array_sql, idx_1based),
+                        }
+                    }
+                }
             }
             RenderExpr::ArraySlicing { array, from, to } => {
                 // Array slicing -> arraySlice(arr, offset, length) (CH) / slice (Spark),
