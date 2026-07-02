@@ -236,7 +236,7 @@ pub fn build_logical_plan(
 
     if let Some(return_clause) = &query_ast.return_clause {
         logical_plan =
-            return_clause::evaluate_return_clause(return_clause, logical_plan, &mut plan_ctx);
+            return_clause::evaluate_return_clause(return_clause, logical_plan, &mut plan_ctx)?;
     }
 
     if let Some(order_clause) = &query_ast.order_by_clause {

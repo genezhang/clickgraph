@@ -532,7 +532,7 @@ pub fn evaluate_return_clause<'a>(
     return_clause: &ReturnClause<'a>,
     plan: Arc<LogicalPlan>,
     plan_ctx: &mut PlanCtx,
-) -> Arc<LogicalPlan> {
+) -> Result<Arc<LogicalPlan>, crate::query_planner::logical_plan::errors::LogicalPlanError> {
     crate::debug_print!("========================================");
     crate::debug_print!("⚠️ RETURN CLAUSE DISTINCT = {}", return_clause.distinct);
     crate::debug_print!(
@@ -553,10 +553,14 @@ pub fn evaluate_return_clause<'a>(
     let (rewritten_return_items, plan, pattern_comp_metas) =
         rewrite_pattern_comprehensions(return_clause.return_items.clone(), plan, plan_ctx);
 
+    // Fallible: a RETURN expression may fail to lower (e.g. a list comprehension
+    // that no rewrite pass handled). Propagate as a clean planning error instead
+    // of panicking the worker (was `ProjectionItem::from(...)` with an internal
+    // `.expect()`, which crashed the whole server on otherwise-valid Cypher).
     let projection_items: Vec<ProjectionItem> = rewritten_return_items
         .iter()
-        .map(|item| ProjectionItem::from(item.clone()))
-        .collect();
+        .map(|item| ProjectionItem::try_from(item.clone()))
+        .collect::<Result<Vec<_>, _>>()?;
 
     // If input is a Union, handle specially
     if let LogicalPlan::Union(union) = plan.as_ref() {
@@ -565,7 +569,11 @@ pub fn evaluate_return_clause<'a>(
         // Check if we have aggregations
         if has_aggregation(&projection_items) {
             crate::debug_println!("DEBUG: Union + aggregation detected - using subquery pattern");
-            return build_union_with_aggregation(union, &projection_items, return_clause.distinct);
+            return Ok(build_union_with_aggregation(
+                union,
+                &projection_items,
+                return_clause.distinct,
+            ));
         }
 
         // No aggregation - push Projection into each branch as before
@@ -594,10 +602,10 @@ pub fn evaluate_return_clause<'a>(
             union.union_type.clone()
         };
 
-        return Arc::new(LogicalPlan::Union(Union {
+        return Ok(Arc::new(LogicalPlan::Union(Union {
             inputs: projected_branches,
             union_type,
-        }));
+        })));
     }
 
     let result = Arc::new(LogicalPlan::Projection(Projection {
@@ -614,7 +622,7 @@ pub fn evaluate_return_clause<'a>(
             false
         }
     );
-    result
+    Ok(result)
 }
 
 /// Build a Union with aggregation using subquery pattern.
