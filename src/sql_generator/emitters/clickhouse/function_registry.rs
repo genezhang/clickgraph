@@ -422,12 +422,32 @@ lazy_static::lazy_static! {
             }),
         });
 
-        // range(start, end [, step]) -> range(start, end [, step])
+        // range(start, end [, step]) — Cypher range is INCLUSIVE of `end`.
+        //   CH `range(start, end [, step])` is EXCLUSIVE of `end`  -> bump end +1
+        //     (range(1,5) gave [1,2,3,4], must be [1,2,3,4,5]; silently wrong).
+        //   Spark has no `range`; `sequence(start, end [, step])` is inclusive -> use as-is.
         m.insert("range", FunctionMapping {
             neo4j_name: "range",
             clickhouse_name: "range",
-            databricks_name: None,
-            arg_transform: None,
+            databricks_name: Some("sequence"),
+            arg_transform: Some(|args| {
+                use crate::server::query_context::get_current_dialect;
+                use crate::sql_generator::SqlDialect;
+                // Spark sequence() is already inclusive — leave args untouched.
+                if matches!(get_current_dialect(), SqlDialect::Databricks) {
+                    return args.to_vec();
+                }
+                // ClickHouse range() is exclusive of `end`; make it inclusive by
+                // bumping the end bound (2nd arg) by 1. Works for the 2-arg and
+                // 3-arg (step) ascending forms.
+                if args.len() >= 2 {
+                    let mut out = args.to_vec();
+                    out[1] = format!("({}) + 1", args[1]);
+                    out
+                } else {
+                    args.to_vec()
+                }
+            }),
         });
 
         // ===== TYPE CONVERSION FUNCTIONS =====

@@ -232,6 +232,13 @@ const CORPUS: &[(&str, &str)] = &[
         "fn_reduce",
         "MATCH (u:User) RETURN reduce(s = 0, x IN [1, 2, 3] | s + x) AS r",
     ),
+    // range is INCLUSIVE in Cypher. CH range() is exclusive -> end bumped +1
+    // (was silently wrong: range(1,5) gave [1,2,3,4]); Spark has no range() ->
+    // sequence() (already inclusive).
+    (
+        "fn_range",
+        "MATCH (u:User) RETURN range(1, 5) AS r",
+    ),
     (
         "optional_match",
         "MATCH (u:User) OPTIONAL MATCH (u)-[:AUTHORED]->(p:Post) RETURN u.name, p.title",
