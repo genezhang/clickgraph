@@ -199,6 +199,20 @@ const CORPUS: &[(&str, &str)] = &[
         "fn_toboolean",
         "MATCH (u:User) RETURN toBoolean('true') AS r",
     ),
+    // Dialect string-fn mappings: ltrim/rtrim -> CH trimLeft/trimRight but Spark
+    // has no trimLeft/trimRight (uses ltrim/rtrim). Previously emitted the CH name
+    // on Databricks (UNRESOLVED_ROUTINE `trimLeft`).
+    (
+        "fn_ltrim_rtrim",
+        "MATCH (u:User) RETURN ltrim(u.name) AS l, rtrim(u.name) AS r",
+    ),
+    // `=~` regex match -> CH match() / Spark rlike(). Spark has no match(); the
+    // previous hardcoded match() at every RegexMatch render site errored on
+    // Databricks (UNRESOLVED_ROUTINE `match`).
+    (
+        "fn_regex_match",
+        "MATCH (u:User) WHERE u.name =~ '.*a.*' RETURN u.user_id",
+    ),
     (
         "optional_match",
         "MATCH (u:User) OPTIONAL MATCH (u)-[:AUTHORED]->(p:Post) RETURN u.name, p.title",

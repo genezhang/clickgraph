@@ -272,8 +272,11 @@ impl ToSql for LogicalExpr {
                         Ok(format!("({} >= {})", operands_sql[0], operands_sql[1]))
                     }
                     Operator::RegexMatch => {
-                        // ClickHouse uses match() function for regex matching
-                        Ok(format!("match({}, {})", operands_sql[0], operands_sql[1]))
+                        // CH match() / Spark rlike() — dialect-aware.
+                        Ok(super::common::regex_match_predicate(
+                            &operands_sql[0],
+                            &operands_sql[1],
+                        ))
                     }
                     Operator::And => Ok(format!("({} AND {})", operands_sql[0], operands_sql[1])),
                     Operator::Or => Ok(format!("({} OR {})", operands_sql[0], operands_sql[1])),

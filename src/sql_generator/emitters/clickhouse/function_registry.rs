@@ -582,19 +582,19 @@ lazy_static::lazy_static! {
 
         // ===== ADDITIONAL STRING FUNCTIONS =====
 
-        // ltrim() -> trimLeft()
+        // ltrim() -> CH trimLeft() / Spark ltrim(). Spark has no trimLeft.
         m.insert("ltrim", FunctionMapping {
             neo4j_name: "lTrim",
             clickhouse_name: "trimLeft",
-            databricks_name: None,
+            databricks_name: Some("ltrim"),
             arg_transform: None,
         });
 
-        // rtrim() -> trimRight()
+        // rtrim() -> CH trimRight() / Spark rtrim(). Spark has no trimRight.
         m.insert("rtrim", FunctionMapping {
             neo4j_name: "rTrim",
             clickhouse_name: "trimRight",
-            databricks_name: None,
+            databricks_name: Some("rtrim"),
             arg_transform: None,
         });
 

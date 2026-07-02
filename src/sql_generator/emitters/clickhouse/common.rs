@@ -72,6 +72,19 @@ pub fn contains_predicate(haystack: &str, needle: &str) -> String {
     }
 }
 
+/// Render a Cypher `=~` regex match (`RegexMatch` operator) for the active dialect.
+///
+/// ClickHouse spells it `match(haystack, pattern)`; Spark/Databricks has no
+/// `match` function and uses `rlike(str, regexp)` (both return a boolean).
+/// Emitted from every `RegexMatch` render site so the two dialects stay in sync.
+pub fn regex_match_predicate(haystack: &str, pattern: &str) -> String {
+    use crate::sql_generator::SqlDialect;
+    match crate::server::query_context::get_current_dialect() {
+        SqlDialect::Databricks => format!("rlike({}, {})", haystack, pattern),
+        _ => format!("match({}, {})", haystack, pattern),
+    }
+}
+
 /// Resolve a SQL function name to its active-dialect spelling via the function
 /// registry, falling back to `name` unchanged when it has no registry entry.
 ///

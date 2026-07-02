@@ -5930,7 +5930,7 @@ impl RenderExpr {
 
                 // Special handling for RegexMatch - ClickHouse uses match() function
                 if op.operator == Operator::RegexMatch && rendered.len() == 2 {
-                    return format!("match({}, {})", &rendered[0], &rendered[1]);
+                    return super::common::regex_match_predicate(&rendered[0], &rendered[1]);
                 }
 
                 // IN/NOT IN with CTE entity column → subquery for set membership.
@@ -6343,7 +6343,7 @@ impl RenderExpr {
 
                 // Special handling for RegexMatch - ClickHouse uses match() function
                 if op.operator == Operator::RegexMatch && rendered.len() == 2 {
-                    return format!("match({}, {})", &rendered[0], &rendered[1]);
+                    return super::common::regex_match_predicate(&rendered[0], &rendered[1]);
                 }
 
                 // IN/NOT IN with CTE entity column → subquery for set membership.
@@ -6540,7 +6540,7 @@ impl ToSql for OperatorApplication {
 
         // Special handling for RegexMatch - ClickHouse uses match() function
         if self.operator == Operator::RegexMatch && rendered.len() == 2 {
-            return format!("match({}, {})", &rendered[0], &rendered[1]);
+            return super::common::regex_match_predicate(&rendered[0], &rendered[1]);
         }
 
         // IN/NOT IN with CTE entity column → subquery for set membership.
