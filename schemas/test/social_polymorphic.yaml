@@ -1,0 +1,47 @@
+# social_polymorphic — standalone schema for the Databricks parity harness.
+# Extracted from schemas/test/unified_test_multi_schema.yaml (the `social_polymorphic`
+# graph). Polymorphic edge table `brahmand.interactions` with a type_column and
+# from/to label columns — exercises the polymorphic-edge translation on Databricks.
+name: social_polymorphic
+version: "1.0"
+
+graph_schema:
+  nodes:
+    - label: User
+      database: brahmand
+      table: users_bench
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: full_name
+        email: email_address
+
+    - label: Post
+      database: brahmand
+      table: posts_bench
+      node_id: post_id
+      property_mappings:
+        post_id: post_id
+        title: content
+        content: content
+        created: created_at
+
+  edges:
+    - polymorphic: true
+      database: brahmand
+      table: interactions
+      from_id: from_id
+      to_id: to_id
+      type_column: interaction_type
+      from_label_column: from_type
+      to_label_column: to_type
+      type_values:
+        - FOLLOWS
+        - LIKES
+        - AUTHORED
+        - COMMENTED
+        - SHARED
+      edge_id: [from_id, to_id, interaction_type, timestamp]
+      property_mappings:
+        created_at: timestamp
+        weight: interaction_weight

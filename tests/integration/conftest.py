@@ -20,11 +20,53 @@ import requests
 import clickhouse_connect
 import time
 import os
+import json
+import re
+import subprocess
 from typing import Dict, Any, List
 
 
 # Configuration
 CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
+
+# ── DeltaGraph (Databricks) parity backend ──────────────────────────────────
+# CG_TEST_BACKEND=databricks routes execute_cypher() through `cg --dialect
+# databricks` against a Databricks warehouse instead of the ClickHouse-backed
+# server, so the (result-asserting) integration suite doubles as a CH↔Databricks
+# parity gate. Requires DATABRICKS_* env (see ~/.dbx.env) and Delta fixtures
+# loaded via scripts/load_databricks_fixtures.py.
+CG_TEST_BACKEND = os.getenv("CG_TEST_BACKEND", "clickhouse")
+CG_BIN = os.getenv("CG_BIN", "/mnt/cargo-sd/cargo/target/debug/cg")
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+# schema_name -> schema YAML path (extend as more schemas get Delta fixtures via
+# scripts/load_databricks_fixtures.py). Keep in sync with that script's SCHEMAS.
+DATABRICKS_SCHEMA_FILES = {
+    "social_integration": os.path.join(_PROJECT_ROOT, "schemas/test/social_integration.yaml"),
+    "group_membership": os.path.join(_PROJECT_ROOT, "schemas/test/group_membership_simple.yaml"),
+    "social_polymorphic": os.path.join(_PROJECT_ROOT, "schemas/test/social_polymorphic.yaml"),
+}
+
+def pytest_configure(config):
+    """Register the `clickhouse_only` marker (tests that assert CH-dialect-specific
+    behaviour — CH functions, CH error messages, generated-SQL strings — and are
+    not meaningful under CG_TEST_BACKEND=databricks)."""
+    config.addinivalue_line(
+        "markers",
+        "clickhouse_only: test asserts ClickHouse-specific behaviour; skipped when "
+        "CG_TEST_BACKEND=databricks",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """In Databricks parity mode, skip tests marked `clickhouse_only`."""
+    if CG_TEST_BACKEND != "databricks":
+        return
+    skip = pytest.mark.skip(reason="clickhouse_only: not applicable in CG_TEST_BACKEND=databricks")
+    for item in items:
+        if "clickhouse_only" in item.keywords:
+            item.add_marker(skip)
+
+
 CLICKHOUSE_HOST = os.getenv("CLICKHOUSE_HOST", "localhost")
 CLICKHOUSE_PORT = int(os.getenv("CLICKHOUSE_PORT", "8123"))
 CLICKHOUSE_USER = os.getenv("CLICKHOUSE_USER", "test_user")
@@ -124,6 +166,32 @@ def clean_database(clickhouse_client, test_database):
             pass
 
 
+def _execute_cypher_databricks(query: str, schema_name: str, raise_on_error: bool) -> Dict[str, Any]:
+    """Run a Cypher query through `cg --dialect databricks` and shape the result
+    like the server's /query response (`{"results": [...], "columns": [...]}`)."""
+    # An embedded `USE <schema>` clause wins over the schema_name arg (matches the
+    # CH server path, which honors an explicit USE). cg selects the graph via
+    # --schema, so resolve the effective schema name, then strip the clause.
+    use_match = re.match(r"^\s*USE\s+(\w+)\s+", query, flags=re.IGNORECASE)
+    if use_match:
+        schema_name = use_match.group(1)
+    schema_file = DATABRICKS_SCHEMA_FILES.get(schema_name)
+    if not schema_file:
+        pytest.skip(f"no Databricks Delta fixtures/schema mapping for '{schema_name}' yet")
+    q = re.sub(r"^\s*USE\s+\w+\s+", "", query, flags=re.IGNORECASE).strip()
+    cmd = [CG_BIN, "query", "--schema", schema_file,
+           "--dialect", "databricks", "--format", "json", q]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout).strip()
+        if not raise_on_error:
+            return {"status": "error", "error": err, "status_code": 500}
+        raise requests.HTTPError(f"cg --dialect databricks failed:\n{err}\nquery: {q}")
+    rows = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+    columns = list(rows[0].keys()) if rows else []
+    return {"results": rows, "columns": columns}
+
+
 def execute_cypher(query: str, schema_name: str = "social_integration", raise_on_error: bool = True) -> Dict[str, Any]:
     """
     Execute a Cypher query via ClickGraph HTTP API.
@@ -151,11 +219,15 @@ def execute_cypher(query: str, schema_name: str = "social_integration", raise_on
     Raises:
         requests.HTTPError: If query execution fails and raise_on_error=True
     """
+    # DeltaGraph parity mode: run the SAME Cypher through cg against Databricks.
+    if CG_TEST_BACKEND == "databricks":
+        return _execute_cypher_databricks(query, schema_name, raise_on_error)
+
     # Auto-prepend USE clause if not already present
     query_upper = query.strip().upper()
     if not query_upper.startswith("USE "):
         query = f"USE {schema_name} {query}"
-    
+
     response = requests.post(
         f"{CLICKGRAPH_URL}/query",
         json={"query": query},
@@ -945,6 +1017,30 @@ def load_all_test_data(clickhouse_client, test_database, setup_test_database):
             print("  ✓ zeek (dns_log + conn_log) data loaded")
         except Exception as e:
             print(f"  ⚠ zeek data load failed: {e}")
+
+    # Reset all shared fixture tables FIRST so repeated pytest sessions against a
+    # persistent ClickHouse server start from a clean, canonical state. The loaders
+    # use `CREATE TABLE IF NOT EXISTS` + `INSERT` on ENGINE=Memory tables, so without
+    # this drop the INSERTs ACCUMULATE across runs (e.g. posts_test grew to 52 rows
+    # vs the canonical 20), causing non-deterministic tests and false CH↔Databricks
+    # parity diffs. DROP (not TRUNCATE) also picks up any fixture DDL changes.
+    _FIXTURE_TABLES = [
+        "test_integration.users", "test_integration.follows", "test_integration.products",
+        "test_integration.purchases", "test_integration.friendships",
+        "brahmand.users_bench", "brahmand.user_follows_bench", "brahmand.posts_bench",
+        "brahmand.post_likes_bench", "brahmand.interactions",
+        "default.flights",
+        "test_integration.fs_objects", "test_integration.fs_parent",
+        "test_integration.gm_users", "test_integration.gm_groups", "test_integration.gm_memberships",
+        "test_integration.users_test", "test_integration.posts_test",
+        "test_integration.user_follows_test", "test_integration.post_likes_test",
+        "zeek.dns_log", "zeek.conn_log",
+    ]
+    for _t in _FIXTURE_TABLES:
+        try:
+            clickhouse_client.command(f"DROP TABLE IF EXISTS {_t}")
+        except Exception as _e:
+            print(f"  ⚠ could not drop {_t}: {_e}")
 
     # Load each schema's data independently
     load_test_integration_data()
