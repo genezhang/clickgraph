@@ -257,7 +257,7 @@ lazy_static::lazy_static! {
         m.insert("replace", FunctionMapping {
             neo4j_name: "replace",
             clickhouse_name: "replaceAll",
-            databricks_name: None,
+            databricks_name: Some("replace"), // Spark literal 3-arg replace
             arg_transform: None,
         });
 
@@ -365,7 +365,7 @@ lazy_static::lazy_static! {
         m.insert("head", FunctionMapping {
             neo4j_name: "head",
             clickhouse_name: "arrayElement",
-            databricks_name: None,
+            databricks_name: Some("element_at"), // Spark 1-based element access
             arg_transform: Some(|args| {
                 if !args.is_empty() {
                     vec![args[0].clone(), "1".to_string()]
@@ -405,7 +405,7 @@ lazy_static::lazy_static! {
         m.insert("last", FunctionMapping {
             neo4j_name: "last",
             clickhouse_name: "arrayElement",
-            databricks_name: None,
+            databricks_name: Some("element_at"), // Spark element_at supports -1 (last)
             arg_transform: Some(|args| {
                 if !args.is_empty() {
                     vec![args[0].clone(), "-1".to_string()]
@@ -608,7 +608,7 @@ lazy_static::lazy_static! {
         m.insert("stdev", FunctionMapping {
             neo4j_name: "stDev",
             clickhouse_name: "stddevSamp",
-            databricks_name: None,
+            databricks_name: Some("stddev_samp"),
             arg_transform: None,
         });
 
@@ -616,7 +616,7 @@ lazy_static::lazy_static! {
         m.insert("stdevp", FunctionMapping {
             neo4j_name: "stDevP",
             clickhouse_name: "stddevPop",
-            databricks_name: None,
+            databricks_name: Some("stddev_pop"),
             arg_transform: None,
         });
 

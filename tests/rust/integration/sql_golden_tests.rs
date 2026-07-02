@@ -166,6 +166,22 @@ const CORPUS: &[(&str, &str)] = &[
         "multi_type_rel_type_fn",
         "MATCH (a:User)-[r:FOLLOWS|AUTHORED]->(b) RETURN type(r) AS t",
     ),
+    // Dialect function-name mappings (regression for the Databricks overrides):
+    // replace -> CH replaceAll / Spark replace; head/last -> CH arrayElement /
+    // Spark element_at; stdev -> CH stddevSamp / Spark stddev_samp. Previously all
+    // emitted the CH name on Databricks (unmapped function -> execution error).
+    (
+        "fn_replace",
+        "MATCH (u:User) RETURN replace(u.name, 'a', 'X') AS r",
+    ),
+    (
+        "fn_head_last",
+        "MATCH (u:User) WITH collect(u.name) AS ns RETURN head(ns) AS h, last(ns) AS l",
+    ),
+    (
+        "fn_stdev",
+        "MATCH (u:User) RETURN stdev(u.user_id) AS s",
+    ),
     (
         "optional_match",
         "MATCH (u:User) OPTIONAL MATCH (u)-[:AUTHORED]->(p:Post) RETURN u.name, p.title",
