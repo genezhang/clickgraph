@@ -187,15 +187,14 @@ lazy_static::lazy_static! {
             arg_transform: None,
         });
 
-        // trim() -> trim(BOTH ' ' FROM arg) - ClickHouse trim removes all whitespace by default
+        // trim() -> trim(arg). Bare trim(str) removes leading/trailing whitespace
+        // on both CH and Spark. The old arg_transform emitted `trim(BOTH arg)`
+        // (missing the `' ' FROM`), which is invalid SQL and 500'd on CH.
         m.insert("trim", FunctionMapping {
             neo4j_name: "trim",
             clickhouse_name: "trim",
             databricks_name: None,
-            arg_transform: Some(|args| {
-                // ClickHouse: trim(BOTH str)
-                vec![format!("BOTH {}", args[0])]
-            }),
+            arg_transform: None,
         });
 
         // substring(str, start [, length]) -> substring(str, start+1, length)
