@@ -43,6 +43,7 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")
 DATABRICKS_SCHEMA_FILES = {
     "social_integration": os.path.join(_PROJECT_ROOT, "schemas/test/social_integration.yaml"),
     "group_membership": os.path.join(_PROJECT_ROOT, "schemas/test/group_membership_simple.yaml"),
+    "social_polymorphic": os.path.join(_PROJECT_ROOT, "schemas/test/social_polymorphic.yaml"),
 }
 
 def pytest_configure(config):

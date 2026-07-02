@@ -14,7 +14,7 @@ Databricks dialect/parity gap (or a genuine engine bug affecting both).
    python3 scripts/load_databricks_fixtures.py                 # all mapped schemas
    python3 scripts/load_databricks_fixtures.py social_integration
    ```
-   Currently covers `social_integration` and `group_membership`. To add a schema,
+   Currently covers `social_integration`, `group_membership`, and `social_polymorphic`. To add a schema,
    append it to `SCHEMAS` in that script (list its CH tables) AND to
    `conftest.DATABRICKS_SCHEMA_FILES` (schema_name → YAML) — the DDL is
    auto-translated from conftest and row VALUES reused verbatim.

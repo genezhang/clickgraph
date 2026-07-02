@@ -30,6 +30,9 @@ SCHEMAS = {
         "test_integration.gm_users", "test_integration.gm_groups",
         "test_integration.gm_memberships",
     ],
+    "social_polymorphic": [
+        "brahmand.users_bench", "brahmand.posts_bench", "brahmand.interactions",
+    ],
 }
 
 # ClickHouse -> Spark/Delta type map (whole-word).
