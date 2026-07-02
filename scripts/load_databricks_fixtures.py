@@ -82,6 +82,15 @@ def translate_ddl(table):
     cols = m.group(1)
     for pat, repl in TYPE_MAP:
         cols = re.sub(pat, repl, cols)
+    # Guard: any remaining CH type with parentheses (Decimal(...), Array(...),
+    # Nullable(...), FixedString(...)) or an untranslated CH type would emit invalid
+    # Spark DDL. Fail loudly rather than silently producing a broken table.
+    leftover = re.findall(r"\b(Decimal|Array|Nullable|FixedString|Tuple|Map|LowCardinality|Enum\d*)\b", cols)
+    if leftover:
+        raise RuntimeError(
+            f"{table}: unsupported CH type(s) {sorted(set(leftover))} — extend TYPE_MAP "
+            f"in load_databricks_fixtures.py before adding this schema"
+        )
     return "(" + cols.strip().rstrip(",") + "\n)"
 
 

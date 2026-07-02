@@ -34,7 +34,7 @@ CLICKGRAPH_URL = os.getenv("CLICKGRAPH_URL", "http://localhost:7475")
 # databricks` against a Databricks warehouse instead of the ClickHouse-backed
 # server, so the (result-asserting) integration suite doubles as a CH↔Databricks
 # parity gate. Requires DATABRICKS_* env (see ~/.dbx.env) and Delta fixtures
-# loaded via scripts/load_social_integration_databricks.py.
+# loaded via scripts/load_databricks_fixtures.py.
 CG_TEST_BACKEND = os.getenv("CG_TEST_BACKEND", "clickhouse")
 CG_BIN = os.getenv("CG_BIN", "/mnt/cargo-sd/cargo/target/debug/cg")
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
@@ -169,10 +169,15 @@ def clean_database(clickhouse_client, test_database):
 def _execute_cypher_databricks(query: str, schema_name: str, raise_on_error: bool) -> Dict[str, Any]:
     """Run a Cypher query through `cg --dialect databricks` and shape the result
     like the server's /query response (`{"results": [...], "columns": [...]}`)."""
+    # An embedded `USE <schema>` clause wins over the schema_name arg (matches the
+    # CH server path, which honors an explicit USE). cg selects the graph via
+    # --schema, so resolve the effective schema name, then strip the clause.
+    use_match = re.match(r"^\s*USE\s+(\w+)\s+", query, flags=re.IGNORECASE)
+    if use_match:
+        schema_name = use_match.group(1)
     schema_file = DATABRICKS_SCHEMA_FILES.get(schema_name)
     if not schema_file:
         pytest.skip(f"no Databricks Delta fixtures/schema mapping for '{schema_name}' yet")
-    # cg selects the graph via --schema; strip any leading `USE <schema>` clause.
     q = re.sub(r"^\s*USE\s+\w+\s+", "", query, flags=re.IGNORECASE).strip()
     cmd = [CG_BIN, "query", "--schema", schema_file,
            "--dialect", "databricks", "--format", "json", q]

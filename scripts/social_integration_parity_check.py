@@ -5,7 +5,7 @@ Runs representative Cypher patterns (the kinds the pytest integration suite
 asserts) against BOTH backends and compares results order-insensitively:
   - ClickHouse: the running ClickGraph server (POST /query, USE social_integration)
   - Databricks: `cg --dialect databricks` (Delta fixtures loaded via
-    scripts/load_social_integration_databricks.py)
+    scripts/load_databricks_fixtures.py)
 
 This mirrors what `CG_TEST_BACKEND=databricks pytest` would do, but needs no
 pytest (unavailable in this env). Env: DATABRICKS_* sourced (~/.dbx.env).
