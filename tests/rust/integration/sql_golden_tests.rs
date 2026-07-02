@@ -192,6 +192,13 @@ const CORPUS: &[(&str, &str)] = &[
         "fn_stdev",
         "MATCH (u:User) RETURN stdev(u.user_id) AS s",
     ),
+    // toBoolean -> CH toBool / Spark boolean. Both accept string ('true'/'false')
+    // and numeric args; the old if(arg,1,0) form emitted invalid SQL for string
+    // inputs (CH: "Illegal type String ... of function if").
+    (
+        "fn_toboolean",
+        "MATCH (u:User) RETURN toBoolean('true') AS r",
+    ),
     (
         "optional_match",
         "MATCH (u:User) OPTIONAL MATCH (u)-[:AUTHORED]->(p:Post) RETURN u.name, p.title",
