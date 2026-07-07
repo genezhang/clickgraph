@@ -248,6 +248,21 @@ let anchor_on_right = graph_rel.anchor_connection.as_ref()
 
 **Bug History**: Code comment (lines 459-463) described this scenario since initial implementation, stating "This case needs special handling", but the handling was never implemented until Feb 2026. Fixed in three commits: FROM clause, JOIN order reversal, predicate extraction.
 
+**Post-WITH variant (#453)**: The anchor-aware from/join builders above only run
+when the OPTIONAL MATCH is rendered directly. When an OPTIONAL MATCH comes
+*after* a WITH barrier (`MATCH (c) WITH c OPTIONAL MATCH (o)-[:R]->(c)`), the
+required side (`c`) arrives as a `with_..._cte_N` CTE reference and the whole
+optional pattern is rebuilt by `build_chained_with_match_cte_plan`. That path's
+`has_optional_match_input` flag only inspects the WITH-clause *bodies*, so a
+post-WITH optional pattern used to fall through to the plain hardcoded
+`JoinType::Inner` CTE-join emission (optional table as FROM driver, required CTE
+INNER-joined — dropping no-match anchor rows). Fixed by a targeted restructure in
+`build_chained_with_match_cte_plan` (search `post_with_optional_restructure`):
+when `current_plan.is_optional_pattern()` holds for a correlated single-branch
+pattern, promote the CTE to the FROM anchor and LEFT-join the optional pattern
+(demoting inner/cross pattern joins to LEFT). Schema-pattern-agnostic (keys off
+`is_optional_pattern()` + CTE-name prefixes, not schema flags).
+
 ### 6. WITH Clause Processing Must Traverse All Plan Node Types ⚠️ CRITICAL
 
 **Background**: `build_chained_with_match_cte_plan` iterates to extract WITH clauses. Each iteration:
