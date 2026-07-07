@@ -1565,7 +1565,8 @@ async fn fk_edge_post_with_optional_where_filters_inside_left_join_460() {
     ] {
         // Since #459 the harness `render()` IS the production (plan_ctx) path;
         // the drop was observed there (and on the since-deleted ctx-less path).
-        for (sql, path) in [(render(&schema, cypher, dialect).await, "render")] {
+        {
+            let (sql, path) = (render(&schema, cypher, dialect).await, "render");
             // Optional-side predicate is INSIDE the LEFT JOIN (correct place).
             assert!(
                 sql.contains(pre_filter),
