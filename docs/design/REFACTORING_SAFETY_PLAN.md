@@ -621,8 +621,9 @@ drop the id differently, and 7.2 has made resolution forward-only.
 
 ## 9. Slice checklist / status
 
-Guardrails (anytime, first): ☐ G.1 ratchet test + baselines · ☐ G.2
-CLAUDE.md/AGENTS.md dispatch-rule checklist
+Guardrails (anytime, first): ☑ G.1 ratchet test + baselines
+(`tests/rust/ratchet/`, 2026-07-06) · ☐ G.2 CLAUDE.md/AGENTS.md
+dispatch-rule checklist
 
 Phase 0: ☑ P0.1 golden schema-dimension + FK-edge (`test/p01-golden-schema-dimension-fk-edge`:
 harness gains a `SchemaId` dimension; goldens now `golden/sql_ir/{schema}/{case}__{dialect}.sql`;
