@@ -702,7 +702,7 @@ coverage for the fully/partially UNLABELED shapes Neo4j Browser emits — node
 scan, undirected/directed expand, path render, VLP path, and the sidebar
 count/labels/type-probes — which route through `pattern_union`/`fixed_path`/
 multi-type-VLP and had near-zero coverage before this slice. +38 byte goldens
-(19 cases × 2 dialects: 13 on Standard incl. one extra property-probe case,
+(19 cases × 2 dialects: 12 on Standard incl. one extra property-probe case,
 5 on FK-edge, 2 on Denormalized as a deliberate correct-behavior contrast),
 +6 dedicated regression/structural tests, all executed live (6 representative
 queries against a locally-seeded `social`/`db_fk_edge`/`db_denormalized`).
