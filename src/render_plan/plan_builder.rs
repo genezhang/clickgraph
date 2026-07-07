@@ -136,6 +136,81 @@ fn apply_anylast_wrapping_for_group_by(
     Ok(wrapped_items)
 }
 
+/// Return the `pre_filter` carried by a GraphJoins' FROM-marker join, converted
+/// to a `RenderExpr`, so the caller can promote it into the WHERE clause —
+/// but ONLY when the marker's own table is what `extract_from` actually
+/// rendered as the FROM.
+///
+/// A FROM marker is a join with an empty `joining_on` whose alias is the anchor
+/// table; `extract_from` renders it as a bare `FROM table AS alias`, so any
+/// `pre_filter` on it would otherwise be silently discarded. The analyzer's
+/// `SingleTableScan` strategy is the only path that attaches a `pre_filter` to a
+/// FROM marker: when a whole-edge projection (e.g. `RETURN r`) prunes both
+/// labeled endpoints, the polymorphic edge itself becomes the FROM marker while
+/// keeping its type/label discriminators (`interaction_type = 'FOLLOWS' AND
+/// from_type = 'User' AND to_type = 'User'`). Without promotion these filters
+/// vanish and the query returns every edge type (#458 / #433 family — edge-own
+/// filters must survive endpoint pruning). Ordinary node FROM markers carry
+/// `pre_filter: None`, so this is a no-op for them.
+///
+/// The `rendered_from` gate is load-bearing: when the pattern's endpoints are
+/// UNLABELED (or the rel is multi-type / VLP), `extract_from` resolves the FROM
+/// to a `pattern_union_*` / rel / VLP CTE instead of the marker's raw edge
+/// table, while the marker join still sits in `gj.joins` carrying only the
+/// FIRST union branch's discriminator. Promoting that would reference raw edge
+/// columns the CTE never projects (unknown-identifier error on ClickHouse) AND
+/// semantically collapse the union to one branch. Rather than re-deriving
+/// `extract_from`'s CTE-preference logic here (multi-type / pattern_combinations
+/// / VLP), compare against what it actually returned: promote only if the
+/// rendered FROM is the marker's own table (name, and alias when set). In the
+/// CTE case the per-branch discriminators inside the CTE bodies already filter
+/// correctly and no outer WHERE is needed.
+fn from_marker_pre_filter(
+    gj: &crate::query_planner::logical_plan::GraphJoins,
+    rendered_from: Option<&super::ViewTableRef>,
+) -> Option<RenderExpr> {
+    let anchor = gj.anchor_table.as_deref()?;
+    let from = rendered_from?;
+    let marker = gj
+        .joins
+        .iter()
+        .find(|j| j.joining_on.is_empty() && j.table_alias == anchor)?;
+    if from.name != marker.table_name {
+        // FROM is a CTE (pattern_union/multi-type/VLP) or another table — not
+        // the marker. Its pre_filter must NOT leak into the outer WHERE.
+        return None;
+    }
+    if let Some(ref from_alias) = from.alias {
+        if from_alias != &marker.table_alias {
+            return None; // Same table name but a different scan — not the marker.
+        }
+    }
+    marker
+        .pre_filter
+        .clone()
+        .and_then(|pf| RenderExpr::try_from(pf).ok())
+}
+
+/// Find the `GraphJoins` node inside a plan that may be wrapped in the usual
+/// read-modifier chain (Limit / Skip / OrderBy / Filter / GroupBy / Unwind).
+/// Mirrors the unwrapping in `contains_graph_joins`. Used to reach the marker
+/// join for `from_marker_pre_filter` from the `to_render_plan_with_ctx` entry
+/// point, which operates on the wrapped root plan rather than the bare node.
+fn find_graph_joins_node(
+    plan: &LogicalPlan,
+) -> Option<&crate::query_planner::logical_plan::GraphJoins> {
+    match plan {
+        LogicalPlan::GraphJoins(gj) => Some(gj),
+        LogicalPlan::Limit(l) => find_graph_joins_node(&l.input),
+        LogicalPlan::Skip(s) => find_graph_joins_node(&s.input),
+        LogicalPlan::OrderBy(o) => find_graph_joins_node(&o.input),
+        LogicalPlan::Filter(f) => find_graph_joins_node(&f.input),
+        LogicalPlan::Unwind(u) => find_graph_joins_node(&u.input),
+        LogicalPlan::GroupBy(gb) => find_graph_joins_node(&gb.input),
+        _ => None,
+    }
+}
+
 /// Helper to check if two RenderExpr are functionally equivalent
 /// Used to determine if a SELECT item is in the GROUP BY
 fn expressions_match(expr1: &RenderExpr, expr2: &RenderExpr) -> bool {
@@ -880,7 +955,21 @@ impl RenderPlanBuilder for LogicalPlan {
                 let joins = JoinItems::new(raw_joins);
 
                 let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
-                let filters = FilterItems(FilterBuilder::extract_filters(self)?);
+                let mut filters = FilterItems(FilterBuilder::extract_filters(self)?);
+                // Promote a FROM-marker edge's pre_filter (e.g. the polymorphic
+                // type/label discriminators the SingleTableScan strategy keeps on
+                // the edge for a whole-edge projection like `RETURN r`) into WHERE.
+                // extract_from renders the marker as a bare `FROM tbl AS alias`, so
+                // otherwise the discriminator is dropped (#458 / #433).
+                if let Some(marker_filter) = from_marker_pre_filter(gj, from.0.as_ref()) {
+                    filters.0 = Some(match filters.0.take() {
+                        Some(existing) => RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::And,
+                            operands: vec![existing, marker_filter],
+                        }),
+                        None => marker_filter,
+                    });
+                }
                 let group_by =
                     GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(self)?);
                 // 🔧 FIX: Use utility function that properly handles GroupBy wrappers
@@ -3958,7 +4047,25 @@ impl RenderPlanBuilder for LogicalPlan {
             let from = FromTableItem(self.extract_from()?.and_then(|ft| ft.table));
             let joins = JoinItems::new(RenderPlanBuilder::extract_joins(self, schema)?);
             let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
-            let filters = FilterItems(FilterBuilder::extract_filters(self)?);
+            let mut filters = FilterItems(FilterBuilder::extract_filters(self)?);
+            // Promote a FROM-marker edge's pre_filter (e.g. the polymorphic
+            // type/label discriminators the SingleTableScan strategy keeps on the
+            // edge for a whole-edge projection like `RETURN r`) into WHERE, or the
+            // discriminator is silently dropped since extract_from renders the
+            // marker as a bare `FROM tbl AS alias` (#458 / #433). This is the
+            // plan_ctx (server/cg) render path; the ctx-less `to_render_plan`
+            // GraphJoins arm applies the same promotion.
+            if let Some(gj) = find_graph_joins_node(self) {
+                if let Some(marker_filter) = from_marker_pre_filter(gj, from.0.as_ref()) {
+                    filters.0 = Some(match filters.0.take() {
+                        Some(existing) => RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::And,
+                            operands: vec![existing, marker_filter],
+                        }),
+                        None => marker_filter,
+                    });
+                }
+            }
             let group_by =
                 GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(self)?);
             // 🔧 FIX: Use utility function that properly handles GroupBy wrappers (like OrderBy/Limit/Skip)
@@ -4343,7 +4450,25 @@ impl RenderPlanBuilder for LogicalPlan {
             let from = FromTableItem(self.extract_from()?.and_then(|ft| ft.table));
             let joins = JoinItems::new(RenderPlanBuilder::extract_joins(self, schema)?);
             let array_join = ArrayJoinItem(RenderPlanBuilder::extract_array_join(self)?);
-            let filters = FilterItems(FilterBuilder::extract_filters(self)?);
+            let mut filters = FilterItems(FilterBuilder::extract_filters(self)?);
+            // Promote a FROM-marker edge's pre_filter (e.g. the polymorphic
+            // type/label discriminators the SingleTableScan strategy keeps on the
+            // edge for a whole-edge projection like `RETURN r`) into WHERE, or the
+            // discriminator is silently dropped since extract_from renders the
+            // marker as a bare `FROM tbl AS alias` (#458 / #433). This is the
+            // plan_ctx (server/cg) render path; the ctx-less `to_render_plan`
+            // GraphJoins arm applies the same promotion.
+            if let Some(gj) = find_graph_joins_node(self) {
+                if let Some(marker_filter) = from_marker_pre_filter(gj, from.0.as_ref()) {
+                    filters.0 = Some(match filters.0.take() {
+                        Some(existing) => RenderExpr::OperatorApplicationExp(OperatorApplication {
+                            operator: Operator::And,
+                            operands: vec![existing, marker_filter],
+                        }),
+                        None => marker_filter,
+                    });
+                }
+            }
             let group_by =
                 GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(self)?);
             // 🔧 FIX: Use utility function that properly handles GroupBy wrappers (like OrderBy/Limit/Skip)

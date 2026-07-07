@@ -4,3 +4,4 @@ SELECT
       r.timestamp AS "r.created_at", 
       r.interaction_weight AS "r.weight"
 FROM brahmand.interactions AS r
+WHERE r.interaction_type = 'FOLLOWS' AND r.from_type = 'User' AND r.to_type = 'User'

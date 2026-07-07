@@ -4122,22 +4122,31 @@ pub fn extract_ctes_with_context(
                         // - path_relationships (array with relationship type)
                         // - rel_properties (array with relationship properties as JSON)
 
-                        // Collect relationship properties for formatRowNoNewline
-                        let rel_prop_cols: Vec<String> = rel_schema
-                            .property_mappings
-                            .iter()
-                            .map(|(cypher_name, prop_val)| {
-                                // Quote physical columns (dotted names like `id.orig_h` must be
-                                // backtick-quoted); expressions are emitted verbatim.
-                                let col_ref = match prop_val {
-                                    PropertyValue::Column(c) => {
-                                        format!("{rel_table}.{}", quote_identifier(c))
-                                    }
-                                    PropertyValue::Expression(e) => format!("{rel_table}.{e}"),
-                                };
-                                format!("{col_ref} AS {cypher_name}")
-                            })
-                            .collect();
+                        // Collect relationship properties for formatRowNoNewline.
+                        // Iterate in sorted cypher-property order so the emitted
+                        // column order (and thus the runtime JSON blob) is
+                        // deterministic run-to-run — `property_mappings` is a
+                        // HashMap, whose iteration order varies per process. This
+                        // mirrors the vlp_multi_type / json_builder path, which
+                        // already sorts (see json_builder.rs `sorted_keys`).
+                        let rel_prop_cols: Vec<String> = {
+                            let mut entries: Vec<_> = rel_schema.property_mappings.iter().collect();
+                            entries.sort_by_key(|(k, _)| k.as_str());
+                            entries
+                                .into_iter()
+                                .map(|(cypher_name, prop_val)| {
+                                    // Quote physical columns (dotted names like `id.orig_h` must be
+                                    // backtick-quoted); expressions are emitted verbatim.
+                                    let col_ref = match prop_val {
+                                        PropertyValue::Column(c) => {
+                                            format!("{rel_table}.{}", quote_identifier(c))
+                                        }
+                                        PropertyValue::Expression(e) => format!("{rel_table}.{e}"),
+                                    };
+                                    format!("{col_ref} AS {cypher_name}")
+                                })
+                                .collect()
+                        };
 
                         let rel_properties_json = if rel_prop_cols.is_empty() {
                             "'{}'".to_string() // Empty JSON object
@@ -4156,22 +4165,30 @@ pub fn extract_ctes_with_context(
                         // role-appropriate denorm map (from_properties / to_properties),
                         // NOT property_mappings (which is empty for a virtual-id node).
                         // Fall back to the other map for a partially-specified self-loop.
+                        // Sort by cypher-property key so the emitted column order
+                        // (and the runtime JSON blob key order) is deterministic —
+                        // both source maps are HashMaps (nondeterministic iteration).
                         let start_prop_cols: Vec<String> = if from_denorm {
                             from_props
                                 .or(from_props_alt)
                                 .map(|m| {
-                                    m.values()
-                                        .map(|col| {
+                                    let mut entries: Vec<_> = m.iter().collect();
+                                    entries.sort_by_key(|(k, _)| k.as_str());
+                                    entries
+                                        .into_iter()
+                                        .map(|(_, col)| {
                                             format!("{from_table}.{}", quote_identifier(col))
                                         })
                                         .collect()
                                 })
                                 .unwrap_or_default()
                         } else {
-                            from_node_schema
-                                .property_mappings
-                                .values()
-                                .map(|prop_val| match prop_val {
+                            let mut entries: Vec<_> =
+                                from_node_schema.property_mappings.iter().collect();
+                            entries.sort_by_key(|(k, _)| k.as_str());
+                            entries
+                                .into_iter()
+                                .map(|(_, prop_val)| match prop_val {
                                     PropertyValue::Column(c) => {
                                         format!("{from_table}.{}", quote_identifier(c))
                                     }
@@ -4184,16 +4201,23 @@ pub fn extract_ctes_with_context(
                             to_props
                                 .or(to_props_alt)
                                 .map(|m| {
-                                    m.values()
-                                        .map(|col| format!("{to_table}.{}", quote_identifier(col)))
+                                    let mut entries: Vec<_> = m.iter().collect();
+                                    entries.sort_by_key(|(k, _)| k.as_str());
+                                    entries
+                                        .into_iter()
+                                        .map(|(_, col)| {
+                                            format!("{to_table}.{}", quote_identifier(col))
+                                        })
                                         .collect()
                                 })
                                 .unwrap_or_default()
                         } else {
-                            to_node_schema
-                                .property_mappings
-                                .values()
-                                .map(|prop_val| match prop_val {
+                            let mut entries: Vec<_> =
+                                to_node_schema.property_mappings.iter().collect();
+                            entries.sort_by_key(|(k, _)| k.as_str());
+                            entries
+                                .into_iter()
+                                .map(|(_, prop_val)| match prop_val {
                                     PropertyValue::Column(c) => {
                                         format!("{to_table}.{}", quote_identifier(c))
                                     }
