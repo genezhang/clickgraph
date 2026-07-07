@@ -13,7 +13,7 @@ use clickgraph::{
     graph_catalog::{config::GraphSchemaConfig, graph_schema::GraphSchema},
     open_cypher_parser::strip_comments,
     query_planner::evaluate_read_statement,
-    render_plan::{logical_plan_to_render_plan, ToSql},
+    render_plan::{logical_plan_to_render_plan_with_ctx, ToSql},
     server::query_context::{set_current_schema, with_query_context, QueryContext},
 };
 
@@ -44,12 +44,13 @@ async fn generate_sql(schema: &GraphSchema, cypher_path: &str) -> String {
             clickgraph::open_cypher_parser::parse_cypher_statement(&cleaned)
                 .unwrap_or_else(|e| panic!("Failed to parse {}: {:?}", path, e));
 
-        let (logical_plan, _plan_ctx) =
+        let (logical_plan, plan_ctx) =
             evaluate_read_statement(statement, &schema, None, None, None)
                 .unwrap_or_else(|e| panic!("Failed to plan {}: {:?}", path, e));
 
-        let render_plan = logical_plan_to_render_plan(logical_plan, &schema)
-            .unwrap_or_else(|e| panic!("Failed to render {}: {:?}", path, e));
+        let render_plan =
+            logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx))
+                .unwrap_or_else(|e| panic!("Failed to render {}: {:?}", path, e));
         render_plan.to_sql()
     })
     .await

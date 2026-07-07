@@ -14,7 +14,7 @@ use clickgraph::{
     graph_catalog::graph_schema::GraphSchema,
     open_cypher_parser::parse_query,
     query_planner::evaluate_read_query,
-    render_plan::{logical_plan_to_render_plan, ToSql},
+    render_plan::{logical_plan_to_render_plan_with_ctx, ToSql},
     server::query_context::{set_current_schema, with_query_context, QueryContext},
 };
 
@@ -244,11 +244,12 @@ async fn generate_expand_sql(schema: &GraphSchema, cypher: &str) -> String {
         let ast = parse_query(&cypher)
             .unwrap_or_else(|e| panic!("Failed to parse: {:?}\nCypher: {}", e, cypher));
 
-        let (logical_plan, _plan_ctx) = evaluate_read_query(ast, &schema, None, None)
+        let (logical_plan, plan_ctx) = evaluate_read_query(ast, &schema, None, None)
             .unwrap_or_else(|e| panic!("Failed to plan: {:?}\nCypher: {}", e, cypher));
 
-        let render_plan = logical_plan_to_render_plan(logical_plan, &schema)
-            .unwrap_or_else(|e| panic!("Failed to render: {:?}\nCypher: {}", e, cypher));
+        let render_plan =
+            logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx))
+                .unwrap_or_else(|e| panic!("Failed to render: {:?}\nCypher: {}", e, cypher));
 
         render_plan.to_sql()
     })
@@ -269,12 +270,12 @@ async fn try_generate_expand_sql(schema: &GraphSchema, cypher: &str) -> Result<S
             Err(e) => return Err(format!("Parse error: {:?}", e)),
         };
 
-        let (logical_plan, _plan_ctx) = match evaluate_read_query(ast, &schema, None, None) {
+        let (logical_plan, plan_ctx) = match evaluate_read_query(ast, &schema, None, None) {
             Ok(result) => result,
             Err(e) => return Err(format!("Plan error: {:?}", e)),
         };
 
-        match logical_plan_to_render_plan(logical_plan, &schema) {
+        match logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx)) {
             Ok(render_plan) => Ok(render_plan.to_sql()),
             Err(e) => Err(format!("Render error: {:?}", e)),
         }

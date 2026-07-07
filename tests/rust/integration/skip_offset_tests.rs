@@ -12,7 +12,7 @@ use clickgraph::{
     },
     open_cypher_parser::parse_query,
     query_planner::evaluate_read_query,
-    render_plan::{logical_plan_to_render_plan, ToSql},
+    render_plan::{logical_plan_to_render_plan_with_ctx, ToSql},
 };
 use std::collections::HashMap;
 
@@ -106,10 +106,10 @@ fn create_test_schema() -> GraphSchema {
 fn cypher_to_sql(cypher: &str) -> String {
     let schema = create_test_schema();
     let ast = parse_query(cypher).expect("Failed to parse Cypher");
-    let (logical_plan, _plan_ctx) =
+    let (logical_plan, plan_ctx) =
         evaluate_read_query(ast, &schema, None, None).expect("Failed to build logical plan");
-    let render_plan =
-        logical_plan_to_render_plan(logical_plan, &schema).expect("Failed to render plan");
+    let render_plan = logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx))
+        .expect("Failed to render plan");
     render_plan.to_sql()
 }
 

@@ -8,7 +8,7 @@ use clickgraph::{
     },
     open_cypher_parser::parse_query,
     query_planner::logical_plan::plan_builder::build_logical_plan,
-    render_plan::{logical_plan_to_render_plan, ToSql},
+    render_plan::{logical_plan_to_render_plan_with_ctx, ToSql},
 };
 use std::collections::HashMap;
 
@@ -103,12 +103,13 @@ fn test_path_variable_sql_generation() {
     let schema = create_test_schema();
 
     // Build logical plan
-    let (logical_plan, _plan_ctx) =
+    let (logical_plan, plan_ctx) =
         build_logical_plan(&ast, &schema, None, None, None).expect("Failed to build logical plan");
 
     // Build render plan
-    let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
-        .expect("Failed to build render plan");
+    let render_plan =
+        logical_plan_to_render_plan_with_ctx((*logical_plan).clone(), &schema, Some(&plan_ctx))
+            .expect("Failed to build render plan");
 
     // Convert to SQL
     let sql = render_plan.to_sql();
@@ -148,12 +149,13 @@ fn test_path_variable_with_properties() {
     let schema = create_test_schema();
 
     // Build logical plan
-    let (logical_plan, _plan_ctx) =
+    let (logical_plan, plan_ctx) =
         build_logical_plan(&ast, &schema, None, None, None).expect("Failed to build logical plan");
 
     // Build render plan
-    let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
-        .expect("Failed to build render plan");
+    let render_plan =
+        logical_plan_to_render_plan_with_ctx((*logical_plan).clone(), &schema, Some(&plan_ctx))
+            .expect("Failed to build render plan");
 
     // Convert to SQL
     let sql = render_plan.to_sql();
@@ -184,12 +186,13 @@ fn test_non_path_variable_unchanged() {
     let schema = create_test_schema();
 
     // Build logical plan
-    let (logical_plan, _plan_ctx) =
+    let (logical_plan, plan_ctx) =
         build_logical_plan(&ast, &schema, None, None, None).expect("Failed to build logical plan");
 
     // Build render plan
-    let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
-        .expect("Failed to build render plan");
+    let render_plan =
+        logical_plan_to_render_plan_with_ctx((*logical_plan).clone(), &schema, Some(&plan_ctx))
+            .expect("Failed to build render plan");
 
     // Convert to SQL
     let sql = render_plan.to_sql();

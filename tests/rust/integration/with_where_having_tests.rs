@@ -13,7 +13,7 @@ use clickgraph::{
     },
     open_cypher_parser::parse_query,
     query_planner::evaluate_read_query,
-    render_plan::{logical_plan_to_render_plan, ToSql},
+    render_plan::{logical_plan_to_render_plan_with_ctx, ToSql},
 };
 use std::collections::HashMap;
 
@@ -65,12 +65,12 @@ fn test_with_aggregation_where_generates_having() {
     let ast = parse_query(cypher).expect("Failed to parse Cypher query");
 
     // Build logical plan
-    let (logical_plan, _plan_ctx) =
+    let (logical_plan, plan_ctx) =
         evaluate_read_query(ast, &schema, None, None).expect("Failed to build logical plan");
 
     // Render to SQL
-    let render_plan =
-        logical_plan_to_render_plan(logical_plan, &schema).expect("Failed to render plan");
+    let render_plan = logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx))
+        .expect("Failed to render plan");
 
     let sql = render_plan.to_sql();
 
@@ -122,12 +122,12 @@ fn test_with_where_without_aggregation() {
     let ast = parse_query(cypher).expect("Failed to parse Cypher query");
 
     // Build logical plan
-    let (logical_plan, _plan_ctx) =
+    let (logical_plan, plan_ctx) =
         evaluate_read_query(ast, &schema, None, None).expect("Failed to build logical plan");
 
     // Render to SQL
-    let render_plan =
-        logical_plan_to_render_plan(logical_plan, &schema).expect("Failed to render plan");
+    let render_plan = logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx))
+        .expect("Failed to render plan");
 
     let sql = render_plan.to_sql();
 
@@ -171,12 +171,12 @@ fn test_with_aggregation_multiple_conditions() {
     let ast = parse_query(cypher).expect("Failed to parse Cypher query");
 
     // Build logical plan
-    let (logical_plan, _plan_ctx) =
+    let (logical_plan, plan_ctx) =
         evaluate_read_query(ast, &schema, None, None).expect("Failed to build logical plan");
 
     // Render to SQL
-    let render_plan =
-        logical_plan_to_render_plan(logical_plan, &schema).expect("Failed to render plan");
+    let render_plan = logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx))
+        .expect("Failed to render plan");
 
     let sql = render_plan.to_sql();
 
