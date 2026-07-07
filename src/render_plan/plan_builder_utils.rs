@@ -7402,7 +7402,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
     // These predicates (e.g., a.user_id = c.user_id from WHERE clause in cross-table WITH patterns)
     // are stored in CartesianProduct.join_condition and will be lost after the plan is transformed.
     // We need them later to create proper JOIN ON conditions for CTE joins.
-    let original_correlation_predicates = extract_correlation_predicates(&current_plan);
+    let mut original_correlation_predicates = extract_correlation_predicates(&current_plan);
     log::debug!(
         "🔧 build_chained_with_match_cte_plan: Extracted {} correlation predicates from ORIGINAL plan",
         original_correlation_predicates.len()
@@ -12179,12 +12179,27 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 "🔀 UNION_TRACE before prune_joins: has_union={}",
                 current_plan.has_union_anywhere()
             );
+            // Cross-barrier correlations that prune removes (e.g. the FK-edge join
+            // `c.customer_id = o.customer_id` connecting the CTE alias to a fresh
+            // post-WITH node) are captured here and folded into the correlation
+            // predicates so the CTE JOIN is rebuilt with the real ON condition
+            // instead of a cartesian `ON 1 = 1`. #451
+            let mut pruned_correlations: Vec<crate::query_planner::logical_expr::LogicalExpr> =
+                Vec::new();
             current_plan = prune_joins_covered_by_cte(
                 &current_plan,
                 last_cte_name,
                 &exported_aliases_set,
                 &cte_schemas,
+                &mut pruned_correlations,
             )?;
+            if !pruned_correlations.is_empty() {
+                log::info!(
+                    "🔧 build_chained_with_match_cte_plan: Recovered {} cross-barrier correlation(s) from pruned joins",
+                    pruned_correlations.len()
+                );
+                original_correlation_predicates.extend(pruned_correlations);
+            }
 
             // CRITICAL: Update all GraphJoins.cte_references with the latest CTE mapping
             // After replacement, the plan may have GraphJoins with stale cte_references from analyzer
@@ -12676,8 +12691,26 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     }
                 }
 
-                // Create the JOIN (use ON 1=1 for scalar CTEs with no correlation conditions)
+                // Create the JOIN. `ON 1 = 1` (cartesian) is only correct for a
+                // scalar / uncorrelated CTE carry-forward. If the CTE alias is
+                // pattern-correlated to a fresh node (a graph edge connects them)
+                // but we failed to resolve a join key, emitting `ON 1 = 1` would
+                // silently produce a cartesian product with the wrong row count —
+                // a semantics change the engine must never make. Return a clean
+                // error instead. #451
                 let cte_join_conditions = if join_conditions.is_empty() {
+                    let correlated = aliases
+                        .iter()
+                        .any(|a| alias_has_pattern_correlation(&current_plan, a))
+                        || alias_has_pattern_correlation(&current_plan, &cte_alias);
+                    if correlated {
+                        return Err(RenderBuildError::InvalidRenderPlan(format!(
+                            "WITH-CTE '{}' is pattern-correlated to a fresh node via alias(es) {:?}, \
+                             but no join key could be resolved; refusing to emit a cartesian \
+                             `ON 1 = 1` join (would silently change query semantics)",
+                            cte_name, aliases
+                        )));
+                    }
                     use crate::render_plan::render_expr::Literal as RenderLiteral;
                     vec![OperatorApplication {
                         operator: Operator::Equal,
@@ -14080,6 +14113,97 @@ pub(crate) fn collapse_passthrough_with(
     }
 }
 
+/// Find a `GraphNode` with the given `alias` anywhere in the plan and report
+/// whether it is a *concrete, resolvable* node — i.e. it carries an explicit
+/// label. Unlabeled endpoints (e.g. the `(o)` in a Neo4j-Browser `(a)--(o)`
+/// expand) are the separate browser/denorm-foreign-edge bug family (see the
+/// `browser-*` and `denorm-foreign-edge` notes) whose correlation resolution is
+/// not solved here; requiring a label on BOTH endpoints keeps the CTE-join
+/// hardening scoped to the labeled node-to-node family this fix addresses.
+fn node_is_concrete_labeled(plan: &LogicalPlan, alias: &str) -> bool {
+    use crate::query_planner::logical_plan::LogicalPlan;
+    match plan {
+        LogicalPlan::GraphNode(gn) if gn.alias == alias => gn.label.is_some(),
+        LogicalPlan::GraphNode(gn) => node_is_concrete_labeled(&gn.input, alias),
+        LogicalPlan::GraphRel(gr) => {
+            node_is_concrete_labeled(&gr.left, alias)
+                || node_is_concrete_labeled(&gr.center, alias)
+                || node_is_concrete_labeled(&gr.right, alias)
+        }
+        LogicalPlan::GraphJoins(gj) => node_is_concrete_labeled(&gj.input, alias),
+        LogicalPlan::Projection(p) => node_is_concrete_labeled(&p.input, alias),
+        LogicalPlan::Filter(f) => node_is_concrete_labeled(&f.input, alias),
+        LogicalPlan::GroupBy(g) => node_is_concrete_labeled(&g.input, alias),
+        LogicalPlan::OrderBy(o) => node_is_concrete_labeled(&o.input, alias),
+        LogicalPlan::Skip(s) => node_is_concrete_labeled(&s.input, alias),
+        LogicalPlan::Limit(l) => node_is_concrete_labeled(&l.input, alias),
+        LogicalPlan::Unwind(u) => node_is_concrete_labeled(&u.input, alias),
+        LogicalPlan::WithClause(w) => node_is_concrete_labeled(&w.input, alias),
+        LogicalPlan::CartesianProduct(cp) => {
+            node_is_concrete_labeled(&cp.left, alias) || node_is_concrete_labeled(&cp.right, alias)
+        }
+        LogicalPlan::Union(u) => u.inputs.iter().any(|i| node_is_concrete_labeled(i, alias)),
+        _ => false,
+    }
+}
+
+/// Returns true if `alias` is joined by a *resolvable* graph-pattern edge to a
+/// distinct node — a non-VLP `GraphRel` whose BOTH endpoints are concrete,
+/// labeled, non-denormalized nodes. When true, a WITH-CTE JOIN to `alias` MUST
+/// carry a real ON condition; a cartesian `ON 1 = 1` would silently change the
+/// query's semantics (wrong row count), so the renderer errors instead of
+/// emitting it. Deliberately narrow: a scalar carry-forward (`WITH count(*)`)
+/// has no such edge, and the denormalized / unlabeled-endpoint browser family
+/// is intentionally excluded (its correlation gaps predate and are out of scope
+/// for this fix — see #451 scope note). Used to harden the CTE-JOIN fallback.
+fn alias_has_pattern_correlation(root: &LogicalPlan, alias: &str) -> bool {
+    fn walk(node: &LogicalPlan, root: &LogicalPlan, alias: &str) -> bool {
+        use crate::query_planner::logical_plan::LogicalPlan;
+        match node {
+            LogicalPlan::GraphRel(gr) => {
+                let l = gr.left_connection.as_str();
+                let r = gr.right_connection.as_str();
+                let counterpart = if l == alias {
+                    Some(r)
+                } else if r == alias {
+                    Some(l)
+                } else {
+                    None
+                };
+                if let Some(cp) = counterpart {
+                    if cp != alias
+                        && !cp.is_empty()
+                        && gr.variable_length.is_none()
+                        && node_is_concrete_labeled(root, alias)
+                        && node_is_concrete_labeled(root, cp)
+                    {
+                        return true;
+                    }
+                }
+                walk(&gr.left, root, alias)
+                    || walk(&gr.center, root, alias)
+                    || walk(&gr.right, root, alias)
+            }
+            LogicalPlan::GraphJoins(gj) => walk(&gj.input, root, alias),
+            LogicalPlan::Projection(p) => walk(&p.input, root, alias),
+            LogicalPlan::Filter(f) => walk(&f.input, root, alias),
+            LogicalPlan::GraphNode(gn) => walk(&gn.input, root, alias),
+            LogicalPlan::GroupBy(g) => walk(&g.input, root, alias),
+            LogicalPlan::OrderBy(o) => walk(&o.input, root, alias),
+            LogicalPlan::Skip(s) => walk(&s.input, root, alias),
+            LogicalPlan::Limit(l) => walk(&l.input, root, alias),
+            LogicalPlan::Unwind(u) => walk(&u.input, root, alias),
+            LogicalPlan::WithClause(w) => walk(&w.input, root, alias),
+            LogicalPlan::CartesianProduct(cp) => {
+                walk(&cp.left, root, alias) || walk(&cp.right, root, alias)
+            }
+            LogicalPlan::Union(u) => u.inputs.iter().any(|i| walk(i, root, alias)),
+            _ => false,
+        }
+    }
+    walk(root, root, alias)
+}
+
 /// When we have a query like:
 ///   WITH a MATCH (a)-[:F]->(b) WITH a,b MATCH (b)-[:F]->(c)
 ///
@@ -14101,6 +14225,7 @@ pub(crate) fn prune_joins_covered_by_cte(
     cte_name: &str,
     exported_aliases: &std::collections::HashSet<&str>,
     _cte_schemas: &crate::render_plan::CteSchemas,
+    removed_correlations: &mut Vec<crate::query_planner::logical_expr::LogicalExpr>,
 ) -> RenderPlanBuilderResult<LogicalPlan> {
     use crate::query_planner::logical_plan::*;
     use std::sync::Arc;
@@ -14236,6 +14361,39 @@ pub(crate) fn prune_joins_covered_by_cte(
                         idx,
                         join.table_alias
                     );
+                    // Capture cross-barrier correlations: a removed join whose ON
+                    // condition references at least one NON-removable (fresh, post-WITH)
+                    // alias is a graph-pattern correlation between the CTE and a fresh
+                    // node (e.g. an FK-edge `c.customer_id = o.customer_id`). It is NOT
+                    // reproduced by `original_correlation_predicates` (which only carries
+                    // explicit WHERE-style predicates), so without capturing it here the
+                    // CTE JOIN would degrade to a cartesian `ON 1 = 1`. #451
+                    for op in &join.joining_on {
+                        let mut cond_aliases = std::collections::HashSet::new();
+                        extract_condition_aliases(&op.operands, &mut cond_aliases);
+                        // Cross-barrier iff the condition ties a CTE-exported alias to a
+                        // fresh (non-exported) alias. Compare against `exported_aliases`,
+                        // NOT `removable` — the fixed-point expansion may have pulled the
+                        // fresh endpoint into `removable`, which would mask the correlation.
+                        let references_exported = cond_aliases
+                            .iter()
+                            .any(|a| exported_aliases.contains(a.as_str()));
+                        let references_fresh = cond_aliases
+                            .iter()
+                            .any(|a| !exported_aliases.contains(a.as_str()));
+                        if references_exported && references_fresh {
+                            log::info!(
+                                "🔧 prune_joins_covered_by_cte: Capturing cross-barrier correlation from removed join '{}': {:?}",
+                                join.table_alias,
+                                op
+                            );
+                            removed_correlations.push(
+                                crate::query_planner::logical_expr::LogicalExpr::OperatorApplicationExp(
+                                    op.clone(),
+                                ),
+                            );
+                        }
+                    }
                     removed_joins.push(join.clone());
                 } else {
                     log::info!(
@@ -14270,8 +14428,13 @@ pub(crate) fn prune_joins_covered_by_cte(
             };
 
             // Recursively process the input
-            let new_input =
-                prune_joins_covered_by_cte(&gj.input, cte_name, exported_aliases, _cte_schemas)?;
+            let new_input = prune_joins_covered_by_cte(
+                &gj.input,
+                cte_name,
+                exported_aliases,
+                _cte_schemas,
+                removed_correlations,
+            )?;
 
             Ok(LogicalPlan::GraphJoins(GraphJoins {
                 input: Arc::new(new_input),
@@ -14283,8 +14446,13 @@ pub(crate) fn prune_joins_covered_by_cte(
             }))
         }
         LogicalPlan::Projection(proj) => {
-            let new_input =
-                prune_joins_covered_by_cte(&proj.input, cte_name, exported_aliases, _cte_schemas)?;
+            let new_input = prune_joins_covered_by_cte(
+                &proj.input,
+                cte_name,
+                exported_aliases,
+                _cte_schemas,
+                removed_correlations,
+            )?;
             Ok(LogicalPlan::Projection(Projection {
                 input: Arc::new(new_input),
                 items: proj.items.clone(),
@@ -14293,16 +14461,26 @@ pub(crate) fn prune_joins_covered_by_cte(
             }))
         }
         LogicalPlan::Limit(limit) => {
-            let new_input =
-                prune_joins_covered_by_cte(&limit.input, cte_name, exported_aliases, _cte_schemas)?;
+            let new_input = prune_joins_covered_by_cte(
+                &limit.input,
+                cte_name,
+                exported_aliases,
+                _cte_schemas,
+                removed_correlations,
+            )?;
             Ok(LogicalPlan::Limit(Limit {
                 input: Arc::new(new_input),
                 count: limit.count,
             }))
         }
         LogicalPlan::OrderBy(order) => {
-            let new_input =
-                prune_joins_covered_by_cte(&order.input, cte_name, exported_aliases, _cte_schemas)?;
+            let new_input = prune_joins_covered_by_cte(
+                &order.input,
+                cte_name,
+                exported_aliases,
+                _cte_schemas,
+                removed_correlations,
+            )?;
             Ok(LogicalPlan::OrderBy(OrderBy {
                 input: Arc::new(new_input),
                 items: order.items.clone(),

@@ -310,8 +310,8 @@ const CORPUS: &[(&str, &str)] = &[
 ///     skips.
 ///
 /// KNOWN-SUSPICIOUS (locked as current behavior, see the test-file NOTE and the
-/// slice report): `with_match_chain` (confirmed wrong on live CH),
-/// `optional_match` (redundant phantom self-join, result-correct).
+/// slice report): `optional_match` (redundant phantom self-join, result-correct).
+/// `with_match_chain` was confirmed wrong (cartesian) and is now FIXED (#451).
 const FK_EDGE_CORPUS: &[(&str, &str)] = &[
     // --- node scans (both node types) ---
     ("node_scan_order", "MATCH (o:Order) RETURN o.order_id"),
@@ -502,12 +502,16 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 // from inspecting SQL + comparing result-set row counts to Cypher semantics.
 // If you touch FK-edge rendering, inspect these first:
 //
-//   - fk_edge/with_match_chain: CONFIRMED WRONG. The WITH->MATCH chain emits
-//     `INNER JOIN with_c_cte_0 AS c ON 1 = 1` — a CARTESIAN product — because
-//     the WITH CTE projects only `c.name`, dropping the `customer_id` join key.
-//     On live CH it returns 24 rows (8 orders x 3 customers) where correct
-//     Cypher semantics are 5 (only orders of customers with customer_id > 100).
-//     Locked as characterization so a fix shows up as a reviewable golden diff.
+//   - fk_edge/with_match_chain: FIXED (#451). The WITH->MATCH chain now emits
+//     `INNER JOIN with_c_cte_0 AS c ON c.p1_c_customer_id = o.customer_id` and
+//     the CTE force-includes the `customer_id` join key. Previously it dropped
+//     the key and cross-joined `ON 1 = 1` (24 rows on live CH); now it returns
+//     the correct 5 rows. Root cause: `prune_joins_covered_by_cte` removed the
+//     analyzer's FK-edge correlation join and the ON-condition rebuild had no
+//     matching entry in `original_correlation_predicates` (those only carry
+//     explicit WHERE-style predicates, not graph-pattern edges), so it fell
+//     back to a cartesian join. The pruned cross-barrier correlation is now
+//     recovered and folded back into the rebuild. Kept as a normal lock.
 //
 //   - fk_edge/optional_match: result-correct (8 rows on live CH) but emits a
 //     redundant PHANTOM self-join — `LEFT JOIN orders_fk AS t0 ON t0.order_id =
@@ -574,4 +578,37 @@ async fn sql_golden_snapshots() {
         mismatches.len(),
         mismatches.join("\n")
     );
+}
+
+/// Regression: #451 — an FK-edge `WITH c ... MATCH (c)<-[:PLACED_BY]-(o)` chain
+/// must join the WITH-CTE on the exported node's id key, NOT cartesian `ON 1 = 1`.
+/// Previously `prune_joins_covered_by_cte` dropped the analyzer's FK correlation
+/// join and the id column was pruned from the CTE, yielding a cross product
+/// (24 rows on live CH instead of 5).
+#[tokio::test]
+async fn with_cte_join_key_is_correlated_not_cartesian_451() {
+    let schema = load_schema("schemas/test/fk_edge.yaml");
+    let cypher = "MATCH (c:Customer) WITH c WHERE c.customer_id > 100 \
+                  MATCH (c)<-[:PLACED_BY]-(o:Order) RETURN c.name, o.order_id";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(&schema, cypher, dialect).await;
+
+        // The CTE JOIN must carry the real correlation on the customer id key.
+        assert!(
+            sql.contains("c.p1_c_customer_id = o.customer_id"),
+            "expected CTE join on the customer_id key for {dialect:?}, got:\n{sql}"
+        );
+        // And must NOT degrade to a cartesian product.
+        assert!(
+            !sql.contains("ON 1 = 1"),
+            "CTE join must not be a cartesian `ON 1 = 1` for {dialect:?}, got:\n{sql}"
+        );
+        // The exported node's id column must be force-included in the CTE body,
+        // even though only `c.name` is projected downstream.
+        assert!(
+            sql.contains("p1_c_customer_id"),
+            "expected CTE to project the customer_id join key for {dialect:?}, got:\n{sql}"
+        );
+    }
 }
