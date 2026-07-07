@@ -2525,6 +2525,109 @@ async fn browser_unlabeled_undirected_expand_emits_reverse_branches() {
     );
 }
 
+/// #466 follow-up regression (adversarial-review finding): a node-property
+/// WHERE on a fully-unlabeled pattern that renders through a `pattern_union`
+/// CTE must be resolved PER-BRANCH inside the CTE — the CTE projection does
+/// not expose node property columns, and which physical table/label an alias
+/// binds to differs per combination and (for undirected) per traversal
+/// orientation. The old outer-WHERE fallback silently degraded ANY node
+/// property to a start_id/end_id comparison (`o.name = 'Alice'` became
+/// `r.end_id = 'Alice'` — comparing a customer ID to a name, always false).
+///
+/// Live-verified (db_fk_edge fixture, Alice = customer 100 with 3 orders):
+///   - undirected `WHERE o.name='Alice'` → 3 (was 0 after the first #466
+///     commit; 3 on main via the plain-join path)
+///   - undirected `WHERE n.name='Alice'` → 3 (reverse orientation binds
+///     n=Customer)
+///   - undirected `WHERE o.amount > 100` → 4 (renamed property `amount` →
+///     `total_amount`, resolved on the Order-bound orientation only)
+///   - undirected `WHERE o.name IS NULL` → 8 / `IS NOT NULL` → 8 (a property
+///     missing on a branch's bound label is NULL per Cypher, so IS NULL is
+///     TRUE for the Order-bound orientation)
+/// Standard (multi-type) directed control `WHERE o.name IS NOT NULL` → 10
+/// (10 FOLLOWS; was 23 = filter silently dropped — pre-existing looseness
+/// fixed by the same per-branch mechanism); undirected → 33 (5 AUTHORED-rev
+/// + 10 FOLLOWS-fwd + 10 FOLLOWS-rev + 8 LIKED-rev).
+#[tokio::test]
+async fn pattern_union_where_resolves_node_properties_per_branch() {
+    // FK-edge: single edge type, undirected → pattern_union with 2 branches.
+    let fk = load_schema(SchemaId::FkEdge.yaml_path());
+    let sql = render(
+        &fk,
+        "MATCH (n)-[r]-(o) WHERE o.name = 'Alice' RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("db_fk_edge.customers_fk.name = 'Alice'"),
+        "forward branch (o=Customer) must filter on the customers table's \
+         physical name column:\n{sql}"
+    );
+    assert!(
+        sql.contains("NULL = 'Alice'"),
+        "reverse branch (o=Order, no `name` property) must resolve the \
+         reference to NULL (Cypher: missing property = NULL → comparison \
+         false, branch contributes nothing):\n{sql}"
+    );
+    assert!(
+        !sql.contains("end_id = 'Alice'") && !sql.contains("start_id = 'Alice'"),
+        "the node-property predicate must NOT degrade to an id-column \
+         comparison in the outer WHERE (the original silent-wrong \
+         behavior):\n{sql}"
+    );
+
+    // Renamed property on the other side: `o.amount` → physical total_amount,
+    // resolved only on the orientation that binds o to Order.
+    let sql = render(
+        &fk,
+        "MATCH (n)-[r]-(o) WHERE o.amount > 100 RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("db_fk_edge.orders_fk.total_amount > 100"),
+        "reverse branch (o=Order) must resolve renamed property amount → \
+         total_amount:\n{sql}"
+    );
+    assert!(
+        sql.contains("NULL > 100"),
+        "forward branch (o=Customer, no `amount`) must resolve to NULL:\n{sql}"
+    );
+
+    // Directed FK control stays on the plain node-to-node join path with a
+    // normal WHERE on the aliased customers table (main behavior, unchanged).
+    let sql = render(
+        &fk,
+        "MATCH (n)-[r]->(o) WHERE o.name = 'Alice' RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("o.name = 'Alice'") && !sql.contains("pattern_union"),
+        "directed FK form must stay on the plain join path with the filter \
+         resolved against the o alias:\n{sql}"
+    );
+
+    // Standard multi-type: the same per-branch mechanism applies the renamed
+    // property (`name` → full_name) on User-bound branches and NULL elsewhere.
+    let std_schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &std_schema,
+        "MATCH (n)-[r]->(o) WHERE o.name IS NOT NULL RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("full_name IS NOT NULL"),
+        "User-bound branches must filter on the physical full_name column:\n{sql}"
+    );
+    assert!(
+        sql.contains("NULL IS NOT NULL"),
+        "Post-bound branches must resolve o.name to NULL (filters the branch \
+         out for IS NOT NULL):\n{sql}"
+    );
+}
+
 /// P0.5 characterization: `MATCH (n) RETURN count(n)` over a heterogeneous
 /// (multi-label) unlabeled node scan renders `count(<id column of ONE
 /// arbitrary label>)` over a UNION of per-label branches — every OTHER

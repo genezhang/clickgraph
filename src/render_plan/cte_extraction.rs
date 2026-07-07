@@ -1017,6 +1017,246 @@ fn extract_view_parameter_values(
     }
 }
 
+/// #466: Does this predicate conjunct reference a PROPERTY of one of the
+/// given node aliases? Such conjuncts cannot be applied as an outer WHERE on
+/// a `pattern_union` CTE — the CTE projection does not expose node property
+/// columns (only ids/types/JSON blobs), and the alias's binding (label +
+/// physical table) differs per combination AND per traversal orientation.
+/// They must be resolved per-branch INSIDE the CTE instead (see
+/// `substitute_pattern_branch_refs`).
+pub(crate) fn conjunct_references_node_property(
+    expr: &crate::query_planner::logical_expr::LogicalExpr,
+    node_aliases: &[&str],
+) -> bool {
+    use crate::query_planner::logical_expr::LogicalExpr as LE;
+    match expr {
+        LE::PropertyAccessExp(p) => node_aliases.contains(&p.table_alias.0.as_str()),
+        LE::OperatorApplicationExp(op) | LE::Operator(op) => op
+            .operands
+            .iter()
+            .any(|o| conjunct_references_node_property(o, node_aliases)),
+        LE::ScalarFnCall(f) => f
+            .args
+            .iter()
+            .any(|a| conjunct_references_node_property(a, node_aliases)),
+        LE::AggregateFnCall(f) => f
+            .args
+            .iter()
+            .any(|a| conjunct_references_node_property(a, node_aliases)),
+        LE::List(items) => items
+            .iter()
+            .any(|i| conjunct_references_node_property(i, node_aliases)),
+        LE::Case(c) => {
+            c.expr
+                .as_deref()
+                .is_some_and(|e| conjunct_references_node_property(e, node_aliases))
+                || c.when_then.iter().any(|(w, t)| {
+                    conjunct_references_node_property(w, node_aliases)
+                        || conjunct_references_node_property(t, node_aliases)
+                })
+                || c.else_expr
+                    .as_deref()
+                    .is_some_and(|e| conjunct_references_node_property(e, node_aliases))
+        }
+        _ => false,
+    }
+}
+
+/// #466: What one endpoint alias of an undirected/multi-type `pattern_union`
+/// branch is bound to, for per-branch WHERE resolution. Bindings differ per
+/// combination and — for undirected patterns — per traversal orientation
+/// (the reverse branch binds the aliases to the opposite sides).
+pub(crate) struct PatternBranchBinding<'a> {
+    /// Cypher alias (e.g. `n` / `o`).
+    pub alias: &'a str,
+    /// Node label this alias is bound to in this branch.
+    pub label: &'a str,
+    /// SQL table reference for this side in this branch (may be a self-join
+    /// alias like `from_node`, or the edge table for a denormalized endpoint).
+    pub table: &'a str,
+    /// Rendered id expression for this side (for `id(alias)`).
+    pub id_expr: &'a str,
+    /// Denormalized endpoint: resolve via the role property maps below.
+    pub denorm: bool,
+    pub denorm_props: Option<&'a std::collections::HashMap<String, String>>,
+    pub denorm_props_alt: Option<&'a std::collections::HashMap<String, String>>,
+    /// Normal endpoint: resolve via the node schema's property mappings.
+    pub property_mappings: &'a std::collections::HashMap<String, PropertyValue>,
+}
+
+/// Resolve a cypher property name against a branch binding. `None` = the
+/// bound label has no such property → the reference is NULL in this branch
+/// (Cypher: a missing property evaluates to NULL, so e.g. an equality
+/// comparison is false for the branch while `IS NULL` is true).
+fn resolve_branch_property(binding: &PatternBranchBinding, prop: &str) -> Option<String> {
+    if binding.denorm {
+        binding
+            .denorm_props
+            .and_then(|m| m.get(prop))
+            .or_else(|| binding.denorm_props_alt.and_then(|m| m.get(prop)))
+            .map(|col| format!("{}.{}", binding.table, quote_identifier(col)))
+    } else {
+        binding.property_mappings.get(prop).map(|pv| match pv {
+            PropertyValue::Column(c) => format!("{}.{}", binding.table, quote_identifier(c)),
+            PropertyValue::Expression(e) => format!("{}.{}", binding.table, e),
+        })
+    }
+}
+
+/// #466: Rewrite a WHERE conjunct for ONE `pattern_union` branch, resolving
+/// every node-alias/rel-alias reference against that branch's bindings:
+///
+/// - `alias.prop` → the bound label's physical column (missing → NULL)
+/// - `id(alias)` / `elementId(alias)` → the branch's id expression
+/// - `labels(alias)` / `label(alias)` → the bound label as a string literal
+/// - `rel_alias.prop` → the edge table's physical column (missing → NULL)
+///
+/// Any reference that cannot be resolved per-branch (bare alias equality,
+/// EXISTS/pattern subqueries, unknown aliases) is a clean error — NEVER
+/// silently drop or degrade a predicate (ground rule #1; precedent 99ae1473).
+fn substitute_pattern_branch_refs(
+    expr: &RenderExpr,
+    node_bindings: &[PatternBranchBinding<'_>],
+    rel_alias: &str,
+    rel_table: &str,
+    rel_props: &std::collections::HashMap<String, PropertyValue>,
+) -> Result<RenderExpr, RenderBuildError> {
+    use super::render_expr::Literal as RLit;
+    let recurse = |e: &RenderExpr| {
+        substitute_pattern_branch_refs(e, node_bindings, rel_alias, rel_table, rel_props)
+    };
+    match expr {
+        RenderExpr::PropertyAccessExp(p) => {
+            let alias = p.table_alias.0.as_str();
+            let prop = p.column.raw();
+            if let Some(binding) = node_bindings.iter().find(|b| b.alias == alias) {
+                Ok(match resolve_branch_property(binding, prop) {
+                    Some(sql) => RenderExpr::Raw(sql),
+                    None => RenderExpr::Literal(RLit::Null),
+                })
+            } else if alias == rel_alias {
+                let resolved = rel_props.get(prop).map(|pv| match pv {
+                    PropertyValue::Column(c) => {
+                        format!("{rel_table}.{}", quote_identifier(c))
+                    }
+                    PropertyValue::Expression(e) => format!("{rel_table}.{e}"),
+                });
+                Ok(match resolved {
+                    Some(sql) => RenderExpr::Raw(sql),
+                    None => RenderExpr::Literal(RLit::Null),
+                })
+            } else {
+                Err(RenderBuildError::UnsupportedFeature(format!(
+                    "WHERE predicate on a multi-type/undirected pattern references \
+                     alias '{alias}' (property '{prop}') which is not part of the \
+                     pattern; cannot resolve it per UNION branch"
+                )))
+            }
+        }
+        RenderExpr::ScalarFnCall(f) => {
+            // id(alias) / labels(alias) resolve directly against the binding
+            if f.args.len() == 1 {
+                if let RenderExpr::TableAlias(t) = &f.args[0] {
+                    if let Some(binding) = node_bindings.iter().find(|b| b.alias == t.0) {
+                        match f.name.to_lowercase().as_str() {
+                            "id" | "elementid" => {
+                                return Ok(RenderExpr::Raw(binding.id_expr.to_string()))
+                            }
+                            "labels" | "label" => {
+                                return Ok(RenderExpr::Raw(format!(
+                                    "'{}'",
+                                    binding.label.replace('\'', "''")
+                                )))
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            let args: Result<Vec<_>, _> = f.args.iter().map(recurse).collect();
+            Ok(RenderExpr::ScalarFnCall(super::render_expr::ScalarFnCall {
+                name: f.name.clone(),
+                args: args?,
+            }))
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            let operands: Result<Vec<_>, _> = op.operands.iter().map(recurse).collect();
+            Ok(RenderExpr::OperatorApplicationExp(
+                super::render_expr::OperatorApplication {
+                    operator: op.operator,
+                    operands: operands?,
+                },
+            ))
+        }
+        RenderExpr::List(items) => {
+            let items: Result<Vec<_>, _> = items.iter().map(recurse).collect();
+            Ok(RenderExpr::List(items?))
+        }
+        RenderExpr::Case(c) => {
+            let case_expr = match &c.expr {
+                Some(e) => Some(Box::new(recurse(e)?)),
+                None => None,
+            };
+            let when_then: Result<Vec<_>, _> = c
+                .when_then
+                .iter()
+                .map(|(w, t)| Ok::<_, RenderBuildError>((recurse(w)?, recurse(t)?)))
+                .collect();
+            let else_expr = match &c.else_expr {
+                Some(e) => Some(Box::new(recurse(e)?)),
+                None => None,
+            };
+            Ok(RenderExpr::Case(super::render_expr::RenderCase {
+                expr: case_expr,
+                when_then: when_then?,
+                else_expr,
+            }))
+        }
+        RenderExpr::ArraySubscript { array, index } => Ok(RenderExpr::ArraySubscript {
+            array: Box::new(recurse(array)?),
+            index: Box::new(recurse(index)?),
+        }),
+        RenderExpr::ArraySlicing { array, from, to } => Ok(RenderExpr::ArraySlicing {
+            array: Box::new(recurse(array)?),
+            from: match from {
+                Some(f) => Some(Box::new(recurse(f)?)),
+                None => None,
+            },
+            to: match to {
+                Some(t) => Some(Box::new(recurse(t)?)),
+                None => None,
+            },
+        }),
+        RenderExpr::MapLiteral(entries) => {
+            let entries: Result<Vec<_>, _> = entries
+                .iter()
+                .map(|(k, v)| Ok::<_, RenderBuildError>((k.clone(), recurse(v)?)))
+                .collect();
+            Ok(RenderExpr::MapLiteral(entries?))
+        }
+        RenderExpr::TableAlias(t)
+            if node_bindings.iter().any(|b| b.alias == t.0) || t.0 == rel_alias =>
+        {
+            Err(RenderBuildError::UnsupportedFeature(format!(
+                "WHERE predicate on a multi-type/undirected pattern uses whole-entity \
+                 reference '{}'; cannot resolve it per UNION branch",
+                t.0
+            )))
+        }
+        RenderExpr::InSubquery(_)
+        | RenderExpr::ExistsSubquery(_)
+        | RenderExpr::PatternCount(_)
+        | RenderExpr::ReduceExpr(_)
+        | RenderExpr::CteEntityRef(_) => Err(RenderBuildError::UnsupportedFeature(
+            "WHERE predicate on a multi-type/undirected pattern contains a subquery or \
+             entity reference that cannot be resolved per UNION branch"
+                .to_string(),
+        )),
+        // Leaves without alias references pass through unchanged
+        other => Ok(other.clone()),
+    }
+}
+
 /// Convert a RenderExpr to a SQL string for use in CTE WHERE clauses
 pub fn render_expr_to_sql_string(expr: &RenderExpr, alias_mapping: &[(String, String)]) -> String {
     match expr {
@@ -3992,6 +4232,41 @@ pub fn extract_ctes_with_context(
                     == crate::query_planner::logical_expr::Direction::Either
                     || graph_rel.was_undirected == Some(true);
 
+                // #466: node-property WHERE conjuncts (e.g. `o.name = 'Alice'`)
+                // must be resolved PER-BRANCH inside the CTE: the CTE projection
+                // does not expose node property columns, and which physical
+                // table/label an alias binds to differs per combination and per
+                // traversal orientation. The outer-WHERE rewriter
+                // (`filter_builder::rewrite_predicate_for_pattern_cte`) skips
+                // exactly these conjuncts using the same classifier. A property
+                // missing on a branch's bound label resolves to NULL — the
+                // branch then contributes nothing for comparisons (Cypher:
+                // missing property = NULL) while `IS NULL` stays true.
+                let branch_local_conjuncts: Vec<crate::query_planner::logical_expr::LogicalExpr> =
+                    graph_rel
+                        .where_predicate
+                        .as_ref()
+                        .map(|pred| {
+                            let mut parts = Vec::new();
+                            crate::render_plan::filter_builder::split_and_predicates(
+                                pred, &mut parts,
+                            );
+                            parts
+                                .into_iter()
+                                .filter(|p| {
+                                    conjunct_references_node_property(
+                                        p,
+                                        &[
+                                            graph_rel.left_connection.as_str(),
+                                            graph_rel.right_connection.as_str(),
+                                        ],
+                                    )
+                                })
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
                 // Generate SELECT(s) for each combination: full pattern JOIN
                 // Each branch: (from_node_table JOIN rel_table JOIN to_node_table)
                 let union_branches: Result<Vec<Vec<String>>, RenderBuildError> = combinations
@@ -4451,35 +4726,102 @@ pub fn extract_ctes_with_context(
                         // Build one branch SELECT. `swap=false` is the forward
                         // orientation (n=from, o=to); `swap=true` traverses the
                         // SAME edge with start/end (n/o) swapped for undirected.
-                        let build_branch = |swap: bool| -> String {
-                            let (s_type, e_type) = if swap {
-                                (&combo.to_label, &combo.from_label)
-                            } else {
-                                (&combo.from_label, &combo.to_label)
-                            };
-                            let (s_id, e_id) = if swap {
-                                (&end_id_expr, &start_id_expr)
-                            } else {
-                                (&start_id_expr, &end_id_expr)
-                            };
-                            let (s_props, e_props) = if swap {
-                                (&end_properties_json, &start_properties_json)
-                            } else {
-                                (&start_properties_json, &end_properties_json)
-                            };
-                            let mut extra_where = where_clauses.clone();
-                            if swap {
-                                if let Some(ref g) = self_loop_guard {
-                                    extra_where.push(g.clone());
+                        let build_branch =
+                            |swap: bool| -> Result<String, RenderBuildError> {
+                                let (s_type, e_type) = if swap {
+                                    (&combo.to_label, &combo.from_label)
+                                } else {
+                                    (&combo.from_label, &combo.to_label)
+                                };
+                                let (s_id, e_id) = if swap {
+                                    (&end_id_expr, &start_id_expr)
+                                } else {
+                                    (&start_id_expr, &end_id_expr)
+                                };
+                                let (s_props, e_props) = if swap {
+                                    (&end_properties_json, &start_properties_json)
+                                } else {
+                                    (&start_properties_json, &end_properties_json)
+                                };
+                                let mut extra_where = where_clauses.clone();
+                                if swap {
+                                    if let Some(ref g) = self_loop_guard {
+                                        extra_where.push(g.clone());
+                                    }
                                 }
-                            }
-                            let branch_where = if extra_where.is_empty() {
-                                String::new()
-                            } else {
-                                format!(" WHERE {}", extra_where.join(" AND "))
-                            };
-                            format!(
-                                "SELECT \
+
+                                // #466: apply node-property WHERE conjuncts with
+                                // this branch's alias bindings. left_connection
+                                // binds the from-side in the forward orientation
+                                // and the to-side in the reverse; right_connection
+                                // the opposite.
+                                if !branch_local_conjuncts.is_empty() {
+                                    let from_binding_alias = if swap {
+                                        graph_rel.right_connection.as_str()
+                                    } else {
+                                        graph_rel.left_connection.as_str()
+                                    };
+                                    let to_binding_alias = if swap {
+                                        graph_rel.left_connection.as_str()
+                                    } else {
+                                        graph_rel.right_connection.as_str()
+                                    };
+                                    let node_bindings = [
+                                        PatternBranchBinding {
+                                            alias: from_binding_alias,
+                                            label: &combo.from_label,
+                                            table: &from_table,
+                                            id_expr: &start_id_expr,
+                                            denorm: from_denorm,
+                                            denorm_props: from_props,
+                                            denorm_props_alt: from_props_alt,
+                                            property_mappings: &from_node_schema
+                                                .property_mappings,
+                                        },
+                                        PatternBranchBinding {
+                                            alias: to_binding_alias,
+                                            label: &combo.to_label,
+                                            table: &to_table,
+                                            id_expr: &end_id_expr,
+                                            denorm: to_denorm,
+                                            denorm_props: to_props,
+                                            denorm_props_alt: to_props_alt,
+                                            property_mappings: &to_node_schema
+                                                .property_mappings,
+                                        },
+                                    ];
+                                    for conjunct in &branch_local_conjuncts {
+                                        let render_expr = RenderExpr::try_from(
+                                            conjunct.clone(),
+                                        )
+                                        .map_err(|e| {
+                                            RenderBuildError::UnsupportedFeature(format!(
+                                                "WHERE predicate on a multi-type/undirected \
+                                                 pattern could not be converted for per-branch \
+                                                 resolution: {e:?}"
+                                            ))
+                                        })?;
+                                        let substituted = substitute_pattern_branch_refs(
+                                            &render_expr,
+                                            &node_bindings,
+                                            &graph_rel.alias,
+                                            &rel_table,
+                                            &rel_schema.property_mappings,
+                                        )?;
+                                        extra_where.push(format!(
+                                            "({})",
+                                            render_expr_to_sql_string(&substituted, &[])
+                                        ));
+                                    }
+                                }
+
+                                let branch_where = if extra_where.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" WHERE {}", extra_where.join(" AND "))
+                                };
+                                Ok(format!(
+                                    "SELECT \
                                 '{s_type}' AS start_type, \
                                 {s_id} as start_id, \
                                 {e_id} as end_id, \
@@ -4490,8 +4832,8 @@ pub fn extract_ctes_with_context(
                                 {e_props} as end_properties{direct_rel_cols} \
                             FROM {rel_table}{node_joins}{branch_where} \
                             LIMIT 1000",
-                            )
-                        };
+                                ))
+                            };
 
                         log::debug!(
                             "  Branch: (:{from_label})-[:{rel_type}]->(:{to_label}) undirected={is_undirected}",
@@ -4500,9 +4842,9 @@ pub fn extract_ctes_with_context(
                             to_label = combo.to_label
                         );
 
-                        let mut branch_sqls = vec![build_branch(false)];
+                        let mut branch_sqls = vec![build_branch(false)?];
                         if is_undirected {
-                            branch_sqls.push(build_branch(true));
+                            branch_sqls.push(build_branch(true)?);
                         }
                         Ok(branch_sqls)
                     })

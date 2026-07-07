@@ -541,6 +541,24 @@ fn rewrite_predicate_for_pattern_cte(
     let mut rewritten = Vec::new();
 
     for part in &parts {
+        // #466: conjuncts referencing NODE PROPERTIES are resolved per-branch
+        // INSIDE the pattern_union CTE (each branch knows which label/table the
+        // alias binds to — see cte_extraction::substitute_pattern_branch_refs).
+        // They must not appear in the outer WHERE: the CTE projection has no
+        // node property columns, and the old fallback silently degraded them to
+        // start_id/end_id comparisons (e.g. `o.name = 'Alice'` became
+        // `r.end_id = 'Alice'` — always false).
+        if crate::render_plan::cte_extraction::conjunct_references_node_property(
+            part,
+            &[left_alias, right_alias],
+        ) {
+            log::debug!(
+                "🔀 PatternResolver 2.0: node-property conjunct handled inside the \
+                 pattern_union CTE, skipping outer rewrite: {:?}",
+                part
+            );
+            continue;
+        }
         if let Some(sql) =
             rewrite_single_predicate_for_cte(part, cte_alias, left_alias, right_alias)
         {
@@ -556,7 +574,7 @@ fn rewrite_predicate_for_pattern_cte(
 }
 
 /// Split an AND-combined predicate into individual parts.
-fn split_and_predicates<'a>(expr: &'a LogicalExpr, out: &mut Vec<&'a LogicalExpr>) {
+pub(crate) fn split_and_predicates<'a>(expr: &'a LogicalExpr, out: &mut Vec<&'a LogicalExpr>) {
     if let LogicalExpr::OperatorApplicationExp(op_app) = expr {
         if op_app.operator == crate::query_planner::logical_expr::Operator::And {
             for operand in &op_app.operands {
@@ -634,19 +652,12 @@ fn rewrite_single_predicate_for_cte(
                         let op_str = render_operator(&op_app.operator);
                         return Some(format!("{} {} {}", cte_col, op_str, rhs_sql));
                     }
-                    let position = if alias == left_alias {
-                        "start"
-                    } else if alias == right_alias {
-                        "end"
-                    } else {
-                        return None;
-                    };
-                    // For CTE outer WHERE, node properties map to start_id/end_id
-                    // (the optimizer only resolves id() to property access, not arbitrary properties)
-                    let cte_col = format!("{}.{}_id", cte_alias, position);
-                    let rhs_sql = render_rhs_to_sql(rhs, true);
-                    let op_str = render_operator(&op_app.operator);
-                    return Some(format!("{} {} {}", cte_col, op_str, rhs_sql));
+                    // #466: node-alias property access is handled per-branch
+                    // INSIDE the pattern_union CTE (the caller skips such
+                    // conjuncts before reaching here). The old fallback mapped
+                    // ANY node property to start_id/end_id, silently degrading
+                    // e.g. `o.name = 'Alice'` to `r.end_id = 'Alice'`.
+                    return None;
                 }
 
                 // Case 3: "Label" IN labels(alias) — reversed operand order
