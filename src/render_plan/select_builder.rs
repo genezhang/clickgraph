@@ -95,11 +95,16 @@ impl SelectBuilder for LogicalPlan {
                     // SAME order or `code` in one branch aligns with `state` in the
                     // other (live: 14 rows with `a.code` holding STATE values).
                     //
-                    // The two branches carry identical cypher-property key sets (the
-                    // node's own properties, e.g. {code, city, state}), so sorting each
-                    // branch by that shared key is the SINGLE canonical ordering both
-                    // branches derive from — alignment-by-position is then structurally
-                    // correct, not coincidental. Mirrors the #458 fix in
+                    // When the two branches carry identical cypher-property key sets
+                    // (the node's own properties, e.g. {code, city, state}), sorting
+                    // each branch by that shared key yields the single canonical
+                    // ordering both branches derive from — alignment-by-position is
+                    // then structurally correct. NOTE: identical key sets are NOT
+                    // validated by the schema loader (validate_denormalized_nodes only
+                    // checks non-emptiness); a schema whose from/to property sets
+                    // differ still misaligns here (the whole-node RETURN path in
+                    // plan_builder.rs handles that case via union-of-keys + NULL
+                    // padding; this fallback does not). Mirrors the #458 fix in
                     // cte_extraction.rs (sort denorm property-blob columns by key).
                     let mut entries: Vec<(&String, &PropertyValue)> =
                         view_scan.property_mapping.iter().collect();
