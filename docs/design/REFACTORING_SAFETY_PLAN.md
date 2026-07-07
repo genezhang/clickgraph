@@ -631,7 +631,14 @@ standard 88 byte-identical, +52 FK-edge goldens (26 cases × 2 dialects), all 26
 goldens execute on live `db_fk_edge`; the 2 known-suspicious locks documented
 in the test file have both since been fixed — `with_match_chain` cartesian in
 #451, `optional_match` phantom self-join in #452) ·
-☐ P0.2 denormalized ·
+☑ P0.2 denormalized (`test/p02-golden-denormalized`: +52 goldens (26 cases × 2
+dialects) on the coupled-denorm `schemas/dev/flights_denormalized.yaml`; all 26
+CH goldens executed on live `db_denormalized`; 15 verified correct (hops/VLP/
+whole-edge/WITH-agg), 11 locked as characterization of documented bugs — 7
+node-only cases collapse to invalid `flights_denorm.code` (virtual-id unresolved,
+#427/#429 class), 2 ORDER BY mis-qualify `a.origin_code`, `with_match_chain`
+returns 7≠4 (dest-branch filters wrong column), `optional_match` renders as an
+inner hop; all documented in the test's known-suspicious block) ·
 ☐ P0.3 polymorphic · ☐ P0.4 composite-id · ☐ P0.5 Browser-shaped patterns ·
 ☐ P0.6 corpus sweep · ☐ P0.7 CI push+smoke · ☐ P0.8 nightly
 
