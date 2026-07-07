@@ -3978,9 +3978,23 @@ pub fn extract_ctes_with_context(
                     props.into_iter().collect()
                 };
 
-                // Generate a SELECT for each combination: full pattern JOIN
+                // #466: An UNDIRECTED expand binds each endpoint to BOTH roles.
+                // For every combination we emit the FORWARD branch (n = from-node,
+                // o = to-node) and, when undirected, an additional REVERSE branch
+                // that traverses the SAME physical edge with start/end swapped
+                // (n = to-node, o = from-node). The join is identical; only the
+                // projected start_*/end_* columns swap. UNION ALL (no dedup): each
+                // edge yields two rows, matching Cypher semantics. Self-loops
+                // (from-id == to-id, only possible when both endpoints share a
+                // table) are emitted ONCE — the reverse branch excludes them via a
+                // guard — matching Neo4j (a self-loop appears once for `-[r]-`).
+                let is_undirected = graph_rel.direction
+                    == crate::query_planner::logical_expr::Direction::Either
+                    || graph_rel.was_undirected == Some(true);
+
+                // Generate SELECT(s) for each combination: full pattern JOIN
                 // Each branch: (from_node_table JOIN rel_table JOIN to_node_table)
-                let union_branches: Result<Vec<String>, RenderBuildError> = combinations
+                let union_branches: Result<Vec<Vec<String>>, RenderBuildError> = combinations
                     .iter()
                     .map(|combo| {
                         // Get schemas for this combination
@@ -4266,11 +4280,9 @@ pub fn extract_ctes_with_context(
                                 combo.to_label
                             ));
                         }
-                        let where_clause = if where_clauses.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" WHERE {}", where_clauses.join(" AND "))
-                        };
+                        // (The per-branch WHERE is assembled in `build_branch`
+                        // below from `where_clauses` plus the reverse-only
+                        // self-loop guard.)
 
                         // Generate start_id and end_id expressions for composite support
                         let cast_str = current_function_mapper().cast_string();
@@ -4410,36 +4422,93 @@ pub fn extract_ctes_with_context(
                                 .push_str(&format!(" INNER JOIN {to_join_expr} ON {to_join_cond}"));
                         }
 
-                        let branch_sql = format!(
-                            "SELECT \
-                                '{from_label}' AS start_type, \
-                                {start_id_expr} as start_id, \
-                                {end_id_expr} as end_id, \
-                                '{to_label}' AS end_type, \
+                        // #466 self-loop guard: when both endpoints share a
+                        // physical table a row can be a self-loop (from-id ==
+                        // to-id). Neo4j returns a self-loop ONCE for `-[r]-`, so
+                        // the REVERSE branch must exclude self-loop rows (the
+                        // forward branch already emits them once). For non-self
+                        // patterns (distinct tables) no row can be a self-loop, so
+                        // no guard is needed. Composite ids: differ if ANY column
+                        // differs.
+                        let self_loop_guard: Option<String> = if is_self_join {
+                            let parts: Vec<String> = rel_from_col
+                                .columns()
+                                .iter()
+                                .zip(rel_to_col.columns().iter())
+                                .map(|(f, t)| {
+                                    format!(
+                                        "{rel_table}.{} != {rel_table}.{}",
+                                        quote_identifier(f),
+                                        quote_identifier(t)
+                                    )
+                                })
+                                .collect();
+                            Some(format!("({})", parts.join(" OR ")))
+                        } else {
+                            None
+                        };
+
+                        // Build one branch SELECT. `swap=false` is the forward
+                        // orientation (n=from, o=to); `swap=true` traverses the
+                        // SAME edge with start/end (n/o) swapped for undirected.
+                        let build_branch = |swap: bool| -> String {
+                            let (s_type, e_type) = if swap {
+                                (&combo.to_label, &combo.from_label)
+                            } else {
+                                (&combo.from_label, &combo.to_label)
+                            };
+                            let (s_id, e_id) = if swap {
+                                (&end_id_expr, &start_id_expr)
+                            } else {
+                                (&start_id_expr, &end_id_expr)
+                            };
+                            let (s_props, e_props) = if swap {
+                                (&end_properties_json, &start_properties_json)
+                            } else {
+                                (&start_properties_json, &end_properties_json)
+                            };
+                            let mut extra_where = where_clauses.clone();
+                            if swap {
+                                if let Some(ref g) = self_loop_guard {
+                                    extra_where.push(g.clone());
+                                }
+                            }
+                            let branch_where = if extra_where.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" WHERE {}", extra_where.join(" AND "))
+                            };
+                            format!(
+                                "SELECT \
+                                '{s_type}' AS start_type, \
+                                {s_id} as start_id, \
+                                {e_id} as end_id, \
+                                '{e_type}' AS end_type, \
                                 {path_relationships_lit} as path_relationships, \
                                 {rel_properties_lit} as rel_properties, \
-                                {} as start_properties, \
-                                {} as end_properties{direct_rel_cols} \
-                            FROM {rel_table}{node_joins}{where_clause} \
+                                {s_props} as start_properties, \
+                                {e_props} as end_properties{direct_rel_cols} \
+                            FROM {rel_table}{node_joins}{branch_where} \
                             LIMIT 1000",
-                            start_properties_json,
-                            end_properties_json,
-                            from_label = combo.from_label,
-                            to_label = combo.to_label,
-                        );
+                            )
+                        };
 
                         log::debug!(
-                            "  Branch: (:{from_label})-[:{rel_type}]->(:{to_label})",
+                            "  Branch: (:{from_label})-[:{rel_type}]->(:{to_label}) undirected={is_undirected}",
                             from_label = combo.from_label,
                             rel_type = combo.rel_type,
                             to_label = combo.to_label
                         );
 
-                        Ok(branch_sql)
+                        let mut branch_sqls = vec![build_branch(false)];
+                        if is_undirected {
+                            branch_sqls.push(build_branch(true));
+                        }
+                        Ok(branch_sqls)
                     })
                     .collect();
 
-                let union_branches = union_branches?;
+                let union_branches: Vec<String> = union_branches?.into_iter().flatten().collect();
                 // Each branch carries a `LIMIT 1000` safety cap. Spark/Databricks
                 // forbids a bare per-branch LIMIT in a set operation
                 // (`SELECT … LIMIT n UNION ALL …` → parse error "Expected ), found

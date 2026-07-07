@@ -327,22 +327,27 @@ const CORPUS: &[(&str, &str)] = &[
 /// schema-sensitive subset (node scan / expand / path / count) on the other
 /// two patterns.
 ///
+/// FIXED (#466):
+///
+///   - `unlabeled_expand` (`MATCH (n)-[r]-(o) RETURN n, r, o`, fully
+///     unlabeled + multi-edge-type UNDIRECTED) now renders DIFFERENT SQL from
+///     `unlabeled_expand_directed` (the DIRECTED form): the `pattern_union`
+///     branch generator emits a REVERSE-direction branch (same edge/join,
+///     start and end swapped) for each combination. Confirmed live (local
+///     `social` fixture): the undirected form returns 46 rows (23 forward
+///     edges — 10 FOLLOWS + 5 AUTHORED + 8 LIKED — each also traversable
+///     backward, 0 self-loops), while the directed control is unchanged at 23.
+///     Self-loops (from-id == to-id) are excluded from the reverse branch
+///     (WHERE guard on the FOLLOWS self-join) so they appear ONCE, per Neo4j.
+///     This closed the "GROUP 3b" gap in the browser-unlabeled-pattern-bugs
+///     catalog. Contrast: `anchored_unlabeled_expand` (one side labeled, 33
+///     rows) and `unlabeled_rel_typed` (single relationship type, 20 rows)
+///     route through `vlp_multi_type` / `bidirectional_union` and were already
+///     correct.
+///
 /// KNOWN BROKEN (locked as characterization — this is a TEST-ONLY slice, not
 /// fixed here; each is a candidate follow-up issue):
 ///
-///   - `unlabeled_expand` (`MATCH (n)-[r]-(o) RETURN n, r, o`, fully
-///     unlabeled + multi-edge-type UNDIRECTED) renders BYTE-IDENTICAL SQL to
-///     `unlabeled_expand_directed` (the DIRECTED form) — the `pattern_union`
-///     branch generator never emits the reverse-direction branches for this
-///     shape. Confirmed live (local `social` fixture): BOTH variants return
-///     23 rows (10 FOLLOWS + 5 AUTHORED + 8 LIKED — the forward direction
-///     only); true undirected Cypher semantics require the reverse-direction
-///     rows too. This is the pre-existing "GROUP 3b" gap in the
-///     browser-unlabeled-pattern-bugs catalog. Contrast: `anchored_
-///     unlabeled_expand` (one side labeled) and `unlabeled_rel_typed`
-///     (single relationship type) BOTH correctly emit reverse-direction
-///     branches (33 rows / 20 rows respectively, live-verified) — the gap is
-///     specific to the fully-unlabeled MULTI-edge-type `pattern_union` path.
 ///   - `browser_style_count` (`MATCH (n) RETURN count(n)`, heterogeneous
 ///     unlabeled scan) renders `count(<id column of ONE arbitrary label>)`
 ///     (here `n.post_id`, Post's id) over a UNION of per-label branches where
@@ -1149,12 +1154,15 @@ const POLYMORPHIC_CORPUS: &[(&str, &str)] = &[
 /// edge type — the edge table IS a node table). Confirms the standard-schema
 /// findings above are NOT standard-schema-specific:
 ///
-///   - `fk_unlabeled_expand`: the undirected fully-unlabeled expand
-///     `(n)-[r]-(o)` renders only the Order->Customer direction (single-table
-///     join, no `pattern_union` needed since there is only one edge type) —
-///     the reverse Customer->Order binding is missing, same root cause as
-///     `unlabeled_expand` above (confirmed: Cypher requires both bindings
-///     when neither endpoint is labeled).
+///   - `fk_unlabeled_expand`: FIXED (#466). The undirected fully-unlabeled
+///     expand `(n)-[r]-(o)` now routes through a `pattern_union` CTE (a
+///     single NON-self-referential edge type stored as `pattern_combinations`
+///     specifically because the pattern is undirected — see
+///     `logical_plan::match_clause::traversal`) and emits BOTH the
+///     Order->Customer forward branch AND the Customer->Order reverse branch
+///     (same edge/join, start and end swapped). Confirmed live: returns 16,
+///     not 8 (8 forward × 2 orientations). The DIRECTED form `(n)-[r]->(o)`
+///     stays on the plain single-table join path (control unchanged at 8).
 ///   - `fk_browser_style_count`: `count(n)` renders `count(n.customer_id)`
 ///     (Customer's id) — every Order-branch row emits NULL for that column.
 ///     Confirmed live: returns 4, not 12 (4 Customers + 8 Orders).
@@ -1180,16 +1188,20 @@ const FK_EDGE_BROWSER_CORPUS: &[(&str, &str)] = &[
 /// Browser-shaped patterns (P0.5), Denormalized variation: the
 /// schema-sensitive subset re-run on `schemas/dev/flights_denormalized.yaml`
 /// (single self-referential Airport/FLIGHT coupled-denorm table). A
-/// deliberate CONTRAST set: unlike Standard/FK-edge, the fully-unlabeled
-/// undirected expand and the heterogeneous count are BOTH correct here —
-/// documented so a future fix to the Standard/FK-edge bugs above doesn't
-/// accidentally regress this schema.
+/// deliberate CONTRAST set: the heterogeneous count is correct here (unlike
+/// Standard/FK-edge), and the fully-unlabeled undirected expand was ALREADY
+/// correct before #466 — documented so the #466 reverse-branch fix (and any
+/// future count fix) does not accidentally regress this schema. The
+/// `dn_unlabeled_expand` golden is UNCHANGED by #466.
 ///
 ///   - `dn_unlabeled_expand` correctly emits BOTH direction branches (the
-///     `pattern_union`-style UNION ALL over the single `flights_denorm`
-///     table with from/to swapped) — there is only ONE edge type here, so
-///     this hits the simpler bidirectional_union path, not the multi-type
-///     `pattern_union` renderer that has the reverse-branch gap.
+///     `bidirectional_union` UNION ALL over the single `flights_denorm` table
+///     with from/to swapped). FLIGHT is SELF-referential (Airport->Airport),
+///     so the reverse branch is schema-valid on the plain bidirectional_union
+///     path — it never hit the non-self-referential reverse-branch gap that
+///     #466 fixed for Standard/FK-edge, and is deliberately left on that path
+///     (only non-self-referential single-type undirected patterns are routed
+///     to `pattern_union` by the #466 fix) so its SQL is unchanged.
 ///   - `dn_browser_style_count`: `count(a)` renders `count(a.code)`, and
 ///     `code` (the virtual node_id, mapped via from/to_node_properties) is
 ///     populated on EVERY UNION branch (origin_code / dest_code), so unlike
@@ -2423,27 +2435,35 @@ async fn denorm_order_by_uses_table_alias_not_cypher_alias_455() {
     }
 }
 
-/// P0.5 characterization: a FULLY-unlabeled, multi-edge-type UNDIRECTED
-/// expand `MATCH (n)-[r]-(o) RETURN n, r, o` renders BYTE-IDENTICAL SQL to
-/// the DIRECTED form `MATCH (n)-[r]->(o) RETURN n, r, o` on both Standard and
-/// FK-edge — the `pattern_union` branch generator never emits the
-/// reverse-direction branches for this shape. Confirmed live (this slice's
-/// `social`/`db_fk_edge` fixtures): both variants return the SAME row count
-/// (23 on Standard: 10 FOLLOWS + 5 AUTHORED + 8 LIKED; 8 on FK-edge, only the
-/// Order->Customer direction) — true undirected Cypher semantics require the
-/// reverse-direction rows too. This is the pre-existing "GROUP 3b" gap in the
-/// `browser-unlabeled-pattern-bugs` memory catalog (surfaced 2026-06-30, still
-/// open). NOT fixed here (test-only slice) — locked as current behavior so a
-/// future fix shows up as a reviewable diff on this test AND on the
-/// `unlabeled_expand`/`fk_unlabeled_expand` goldens.
+/// #466 regression: a FULLY-unlabeled UNDIRECTED expand
+/// `MATCH (n)-[r]-(o) RETURN n, r, o` must render DIFFERENT SQL from the
+/// DIRECTED form `MATCH (n)-[r]->(o) RETURN n, r, o` on both Standard
+/// (multi-edge-type) and FK-edge (single-edge-type) — the `pattern_union`
+/// CTE renderer now emits a REVERSE-direction branch (same edge/join, start
+/// and end swapped) for each combination when the pattern is undirected.
+/// Confirmed live (this slice's `social`/`db_fk_edge` fixtures): the
+/// undirected form now returns 46 rows on Standard (23 forward edges — 10
+/// FOLLOWS + 5 AUTHORED + 8 LIKED — each also traversable backward, 0
+/// self-loops) and 16 on FK-edge (8 forward × 2), while the directed control
+/// is unchanged at 23 / 8. Self-loops (from-id == to-id) are excluded from
+/// the reverse branch so they appear ONCE, matching Neo4j. Previously both
+/// variants were byte-identical (the "GROUP 3b" gap in the
+/// `browser-unlabeled-pattern-bugs` catalog, surfaced 2026-06-30); fixed here.
 ///
-/// Contrast (NOT affected by this gap, asserted here too): anchoring ONE side
+/// FK-edge (single-edge-type) now also routes through `pattern_union`: a
+/// fully-unlabeled UNDIRECTED expand over a single NON-self-referential edge
+/// is stored as `pattern_combinations` (see
+/// `logical_plan::match_clause::traversal`) so the same reverse-branch
+/// renderer applies. The DIRECTED FK form stays on the plain node-to-node
+/// join path (control unchanged).
+///
+/// Contrast (asserted here too): anchoring ONE side
 /// (`anchored_unlabeled_expand`) or fixing the relationship type
-/// (`unlabeled_rel_typed`) both correctly produce DIFFERENT SQL for the
-/// undirected vs. directed forms (they route through `vlp_multi_type_a_o` /
-/// `bidirectional_union` instead of the buggy `pattern_union` path).
+/// (`unlabeled_rel_typed`) also produce DIFFERENT SQL for the undirected vs.
+/// directed forms (they route through `vlp_multi_type_a_o` /
+/// `bidirectional_union`).
 #[tokio::test]
-async fn browser_unlabeled_undirected_expand_drops_reverse_branches() {
+async fn browser_unlabeled_undirected_expand_emits_reverse_branches() {
     for (schema_id, undirected, directed) in [
         (
             SchemaId::Standard,
@@ -2460,14 +2480,23 @@ async fn browser_unlabeled_undirected_expand_drops_reverse_branches() {
         for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
             let u_sql = render(&schema, undirected, dialect).await;
             let d_sql = render(&schema, directed, dialect).await;
-            assert_eq!(
+            assert_ne!(
                 u_sql,
                 d_sql,
-                "{:?}/{dialect:?}: expected the KNOWN-BROKEN byte-identical \
-                 undirected==directed SQL (missing reverse-direction \
-                 pattern_union branches); the shapes now DIFFER — if this is \
-                 an intentional fix, update this test's expectation and the \
-                 corresponding golden(s):\nundirected:\n{u_sql}\ndirected:\n{d_sql}",
+                "{:?}/{dialect:?}: undirected expand must render DIFFERENT SQL \
+                 from the directed form (reverse-direction pattern_union \
+                 branches, #466); the shapes are byte-identical — the \
+                 reverse-branch fix regressed:\nundirected:\n{u_sql}\ndirected:\n{d_sql}",
+                schema_id.dir()
+            );
+            // The undirected form carries the reverse orientation: its FIRST
+            // branch's start_type reappears as some branch's end_type (and vice
+            // versa), which never happens in the forward-only directed SQL for
+            // these fixtures' heterogeneous edges.
+            assert!(
+                u_sql.matches(" AS start_type").count() > d_sql.matches(" AS start_type").count(),
+                "{:?}/{dialect:?}: undirected expand must have MORE branches than \
+                 directed (forward + reverse):\nundirected:\n{u_sql}",
                 schema_id.dir()
             );
         }

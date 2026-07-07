@@ -401,7 +401,33 @@ fn traverse_connected_pattern_with_mode<'a>(
                             .any(|s| s.from_node == "$any" || s.to_node == "$any")
                     })
                 };
-                if types.len() > 1 || has_polymorphic_any {
+                // #466: A fully-unlabeled UNDIRECTED expand over a single
+                // NON-self-referential edge type (e.g. FK-edge `(n)-[r]-(o)`
+                // resolving to the sole Order-PLACED_BY->Customer edge) must
+                // still bind each endpoint to BOTH roles. The plain node-to-node
+                // join path can only render ONE orientation (BidirectionalUnion's
+                // edge-reversal model is invalid for a directed non-self edge, so
+                // its reverse branch is dropped — see `is_valid_direction_branch`).
+                // Route it through the deferred-UNION `pattern_union` CTE instead,
+                // whose renderer emits a reverse branch (start/end swapped, same
+                // join) for undirected patterns. SELF-referential single types
+                // (User-FOLLOWS->User, Airport-FLIGHT->Airport) already render
+                // both directions correctly via BidirectionalUnion — leave them on
+                // that path so their existing (correct) SQL is unchanged.
+                let is_undirected = matches!(rel.direction, ast::Direction::Either);
+                let has_non_self_ref_type = {
+                    let graph_schema = plan_ctx.schema();
+                    types.iter().any(|t| {
+                        graph_schema
+                            .rel_schemas_for_type(t)
+                            .iter()
+                            .any(|s| s.from_node != s.to_node)
+                    })
+                };
+                if types.len() > 1
+                    || has_polymorphic_any
+                    || (is_undirected && has_non_self_ref_type)
+                {
                     log::info!(
                         "🔀 PatternResolver 2.0: Fully untyped multi-type pattern with {} types",
                         types.len()

@@ -88,6 +88,29 @@ fn transform_bidirectional(
                     return Ok(Transformed::Yes(new_graph_rel));
                 }
 
+                // #466: Skip the Union split for multi-type / deferred-UNION
+                // patterns (`pattern_combinations` present). Such a GraphRel
+                // renders as a single `pattern_union_<alias>` CTE whose branch
+                // generator emits BOTH direction branches internally (forward +
+                // reverse with start/end swapped) when marked undirected. The
+                // renderer ignores `GraphRel.direction`, so splitting here would
+                // either duplicate the forward rows (two identical CTEs) or leave
+                // the reverse unrendered. Mark undirected, keep Outgoing, and let
+                // the CTE renderer handle both directions — mirrors the VLP skip.
+                if graph_rel.pattern_combinations.is_some()
+                    && graph_rel.direction == Direction::Either
+                {
+                    crate::debug_print!(
+                        "🔄 BidirectionalUnion: pattern_combinations (deferred-UNION) undirected pattern, skipping Union split — pattern_union CTE handles both directions"
+                    );
+                    let new_graph_rel = Arc::new(LogicalPlan::GraphRel(GraphRel {
+                        direction: Direction::Outgoing,
+                        was_undirected: Some(true),
+                        ..graph_rel.clone()
+                    }));
+                    return Ok(Transformed::Yes(new_graph_rel));
+                }
+
                 // NOTE: Previously skipped Union split for nested undirected edges,
                 // but this left Direction::Either unhandled (OR fallback was never
                 // implemented in GraphJoinInference path). The Incoming branch swap
@@ -173,6 +196,30 @@ fn transform_bidirectional(
                 if is_vlp_multi_type_subtree(&proj.input) {
                     crate::debug_print!(
                         "🔄 BidirectionalUnion: VLP multi-type in Projection subtree, skipping Union split"
+                    );
+                    let transformed = transform_bidirectional(&proj.input, plan_ctx, graph_schema)?;
+                    let new_input = match transformed {
+                        Transformed::Yes(p) => p,
+                        Transformed::No(p) => p,
+                    };
+                    let new_proj = Projection {
+                        input: new_input,
+                        items: proj.items.clone(),
+                        distinct: proj.distinct,
+                        pattern_comprehensions: proj.pattern_comprehensions.clone(),
+                    };
+                    return Ok(Transformed::Yes(Arc::new(LogicalPlan::Projection(
+                        new_proj,
+                    ))));
+                }
+
+                // #466: Skip Union split for deferred-UNION (pattern_combinations)
+                // undirected patterns — the pattern_union CTE renderer emits both
+                // direction branches internally. Recurse so the GraphRel-level skip
+                // marks it undirected (mirrors the VLP multi-type case above).
+                if has_undirected_pattern_combinations_subtree(&proj.input) {
+                    crate::debug_print!(
+                        "🔄 BidirectionalUnion: deferred-UNION (pattern_combinations) undirected pattern in Projection subtree, skipping Union split"
                     );
                     let transformed = transform_bidirectional(&proj.input, plan_ctx, graph_schema)?;
                     let new_input = match transformed {
@@ -680,6 +727,24 @@ fn has_nested_undirected_edge(plan: &Arc<LogicalPlan>) -> bool {
         }
         LogicalPlan::Projection(p) => has_nested_undirected_edge(&p.input),
         LogicalPlan::Filter(f) => has_nested_undirected_edge(&f.input),
+        _ => false,
+    }
+}
+
+/// #466: Detect an undirected GraphRel carrying `pattern_combinations`
+/// (deferred-UNION / `pattern_union_<alias>` CTE) anywhere in the subtree.
+/// Such a pattern must NOT be split into directed branches here: the CTE
+/// renderer emits both direction branches internally (see
+/// `render_plan::cte_extraction` pattern-combinations block).
+fn has_undirected_pattern_combinations_subtree(plan: &Arc<LogicalPlan>) -> bool {
+    match plan.as_ref() {
+        LogicalPlan::GraphRel(gr) => {
+            (gr.direction == Direction::Either && gr.pattern_combinations.is_some())
+                || has_undirected_pattern_combinations_subtree(&gr.left)
+                || has_undirected_pattern_combinations_subtree(&gr.right)
+        }
+        LogicalPlan::Projection(p) => has_undirected_pattern_combinations_subtree(&p.input),
+        LogicalPlan::Filter(f) => has_undirected_pattern_combinations_subtree(&f.input),
         _ => false,
     }
 }
