@@ -5219,8 +5219,27 @@ impl ToSql for Join {
 
         // Only add ON clause if there are joining conditions
         if !self.joining_on.is_empty() {
-            let joining_on_str_vec: Vec<String> =
-                self.joining_on.iter().map(|cond| cond.to_sql()).collect();
+            // Conditions are AND-joined below. When there is more than one, a
+            // condition that is itself a top-level `AND`/`OR` (e.g. a cross-alias
+            // `OR` predicate moved into the ON by the #462 post-WITH OPTIONAL fix)
+            // must be parenthesized, or `key AND a OR b` would mis-parse as
+            // `(key AND a) OR b`. `OperatorApplication::to_sql` does not wrap
+            // AND/OR (unlike `RenderExpr::to_sql`), so wrap here at the join site.
+            // A lone condition needs no wrapping (nothing is AND-joined onto it),
+            // which keeps single composite-key `ON (a AND b)` joins paren-free.
+            let multi = self.joining_on.len() > 1;
+            let joining_on_str_vec: Vec<String> = self
+                .joining_on
+                .iter()
+                .map(|cond| {
+                    let s = cond.to_sql();
+                    if multi && matches!(cond.operator, Operator::And | Operator::Or) {
+                        format!("({})", s)
+                    } else {
+                        s
+                    }
+                })
+                .collect();
 
             let mut joining_on_str = joining_on_str_vec.join(" AND ");
 

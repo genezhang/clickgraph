@@ -262,9 +262,9 @@ pub trait ExprVisitor {
     }
 }
 
-/// Check if a RenderExpr references a specific table alias
-/// Used by tests for validation
-#[allow(dead_code)]
+/// Check if a RenderExpr references a specific table alias.
+/// Used by the #462 post-WITH OPTIONAL restructure to route cross-alias WHERE
+/// conjuncts into the LEFT JOIN ON condition, and by tests for validation.
 pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
     match expr {
         RenderExpr::PropertyAccessExp(prop) => prop.table_alias.0 == alias,
