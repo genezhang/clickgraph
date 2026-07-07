@@ -594,6 +594,19 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
         "optional_after_with_where_rel_and_node",
         "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[r:PLACED_BY]->(c) WHERE r.order_id > 3 AND o.total_amount > 100 RETURN c.customer_id, o.order_id",
     ),
+    // KNOWN LIMITATIONS adjacent to the #462 shapes above (all PRE-EXISTING,
+    // found by the #462 adversarial review; none regressed by the fix):
+    //   #472 — a PURE-ANCHOR conjunct (e.g. `WHERE c.customer_id > 101`) stays in
+    //          the outer WHERE and drops NULL-extended anchor rows (should move
+    //          into the LEFT JOIN ON — always safe for a LEFT JOIN).
+    //   #473 — cross-WITH-barrier conversion corrupts `IS NULL` (operator
+    //          vanishes: `(o.total_amount OR ...)`) and `NOT(..) OR ..`
+    //          (the OR becomes an AND split). Plain non-WITH forms are fine.
+    //   #474 — plain OPTIONAL MATCH *without* WITH (reversed-anchor FK-edge
+    //          shape) silently drops its WHERE entirely (separate code path).
+    // Also: ClickHouse rejects cross-table comparisons in a NULL-preserving
+    // LEFT JOIN ON (join_use_nulls, error 386) — the `_cross` golden above is
+    // correct SQL that executes on Databricks; on ClickHouse it errors cleanly.
     // --- WITH + aggregation (count per customer), and its HAVING form ---
     (
         "with_agg_count",
