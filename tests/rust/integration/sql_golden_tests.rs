@@ -40,6 +40,7 @@ use clickgraph::{
 enum SchemaId {
     Standard,
     FkEdge,
+    Denormalized,
 }
 
 impl SchemaId {
@@ -48,6 +49,7 @@ impl SchemaId {
         match self {
             SchemaId::Standard => "standard",
             SchemaId::FkEdge => "fk_edge",
+            SchemaId::Denormalized => "denormalized",
         }
     }
 
@@ -56,6 +58,12 @@ impl SchemaId {
         match self {
             SchemaId::Standard => "benchmarks/social_network/schemas/social_benchmark.yaml",
             SchemaId::FkEdge => "schemas/test/fk_edge.yaml",
+            // Coupled-denormalized single-graph schema: the `flights_denorm` table
+            // IS the FLIGHT edge AND the source of Airport node properties (Airport
+            // is a virtual node — `node_id: code` maps to origin_code/dest_code via
+            // from_node_properties/to_node_properties). Has matching live data in
+            // `db_denormalized` (scripts/setup/setup_denormalized_data.sh).
+            SchemaId::Denormalized => "schemas/dev/flights_denormalized.yaml",
         }
     }
 }
@@ -426,6 +434,154 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Denormalized variation (`schemas/dev/flights_denormalized.yaml`): a single
+/// `flights_denorm` table that IS the `FLIGHT` edge AND embeds the `Airport`
+/// node properties. Airport is a *virtual* node — `node_id: code` maps to
+/// `origin_code` (from-side) / `dest_code` (to-side) via
+/// from_node_properties/to_node_properties; `city`/`state` map to
+/// origin_/dest_ columns likewise. FLIGHT carries a composite `edge_id`
+/// `[flight_id, flight_number]` and a renamed edge property `flight_num` ->
+/// physical `flight_number`.
+///
+/// This is the schema pattern with the heaviest documented bug history, so the
+/// axes below deliberately exercise the repaired paths:
+///   - denorm node materialization (bug class B / #429/#423): a labeled node
+///     scan `MATCH (a:Airport)` has no physical Airport table, so it must
+///     UNION the origin- and dest-side projections of `flights_denorm`.
+///   - whole-node `RETURN a` (bug class A / #427): must project the virtual
+///     node_id `code` (resolved to a physical column), never a bare `code`.
+///   - from-side vs to-side property sourcing across a directed hop.
+///   - fixed-path / pattern-union renderers (#419/#420/#421/#425 family):
+///     no spurious self-join of the single edge table; virtual ids resolved to
+///     physical columns.
+///   - VLP `*1..2` routes through `DenormalizedCteStrategy`.
+///
+/// Intentionally omitted (document skips): multi-type `[:A|B]` (only one edge
+/// type, FLIGHT); UNWIND/arrayJoin shapes (same Spark structural gap the other
+/// corpora skip). `from_node == to_node == Airport`, so every node position is
+/// the same denormalized table — undirected/reverse hops still exercise the
+/// from/to sourcing switch.
+///
+/// KNOWN-SUSPICIOUS: see the comment block above `sql_golden_snapshots`.
+const DENORM_CORPUS: &[(&str, &str)] = &[
+    // --- node scan: denorm node materialization (bug class B / #429). No
+    // Airport table exists; must UNION origin/dest projections of flights_denorm. ---
+    ("node_scan", "MATCH (a:Airport) RETURN a.code"),
+    // whole-node RETURN a: must project the virtual node_id `code` (bug class A / #427).
+    ("whole_node", "MATCH (a:Airport) RETURN a"),
+    // property projection incl. the virtual-id property `code` + denorm props.
+    (
+        "project_node_props",
+        "MATCH (a:Airport) RETURN a.code, a.city, a.state",
+    ),
+    ("distinct_node_state", "MATCH (a:Airport) RETURN DISTINCT a.state"),
+    ("aggregate_count_node", "MATCH (a:Airport) RETURN count(a)"),
+    // --- WHERE on denorm node props (state) and on the virtual id (code) ---
+    (
+        "where_denorm_prop",
+        "MATCH (a:Airport) WHERE a.state = 'CA' RETURN a.code",
+    ),
+    (
+        "where_virtual_id",
+        "MATCH (a:Airport) WHERE a.code = 'LAX' RETURN a.city",
+    ),
+    // --- directed hop (from-side + to-side). Both endpoints are the SAME
+    // denormalized table; sourcing must switch origin_ (a) vs dest_ (b). ---
+    (
+        "directed_hop_ids",
+        "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code",
+    ),
+    (
+        "directed_hop_props",
+        "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) RETURN a.city, a.state, b.city, b.state",
+    ),
+    // Reverse-written directed hop (right-to-left).
+    (
+        "reverse_hop",
+        "MATCH (b:Airport)<-[:FLIGHT]-(a:Airport) RETURN a.code, b.code",
+    ),
+    // Undirected hop — must read edge id columns from the correct alias.
+    (
+        "undirected_hop",
+        "MATCH (a:Airport)-[:FLIGHT]-(b:Airport) RETURN a.code, b.code",
+    ),
+    // hop projecting edge properties incl. the renamed `flight_num` -> flight_number.
+    (
+        "hop_edge_props",
+        "MATCH (a:Airport)-[r:FLIGHT]->(b:Airport) RETURN a.code, r.carrier, r.flight_num, r.distance, b.code",
+    ),
+    // WHERE on an edge property across the hop.
+    (
+        "where_edge_prop",
+        "MATCH (a:Airport)-[r:FLIGHT]->(b:Airport) WHERE r.distance > 1000 RETURN a.code, b.code",
+    ),
+    // Filter on BOTH endpoints across the hop (from-side + to-side denorm props).
+    (
+        "hop_filter_both",
+        "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) WHERE a.state = 'CA' AND b.state = 'NY' RETURN a.code, b.code",
+    ),
+    // Whole-edge RETURN r on the FLIGHT relationship (composite edge_id).
+    (
+        "whole_edge_r",
+        "MATCH (a:Airport)-[r:FLIGHT]->(b:Airport) RETURN r",
+    ),
+    // path MATCH p=()-[]->() -> fixed_path / pattern_union renderers
+    // (#419/#420/#421/#425 family): virtual ids resolved to physical columns,
+    // no spurious self-join of the single edge table.
+    (
+        "path_return",
+        "MATCH p = (a:Airport)-[:FLIGHT]->(b:Airport) RETURN p",
+    ),
+    // --- OPTIONAL MATCH (anchored on Airport, optional outgoing flight) ---
+    (
+        "optional_match",
+        "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code",
+    ),
+    // --- WITH + aggregation (out-degree per origin airport), and its HAVING form ---
+    (
+        "with_agg_count",
+        "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) WITH a.code AS origin, count(b) AS flights RETURN origin, flights",
+    ),
+    (
+        "with_having",
+        "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) WITH a.code AS origin, count(b) AS n WHERE n > 1 RETURN origin, n",
+    ),
+    // --- WITH -> MATCH chain (filter CA airports, then their outgoing flights) ---
+    (
+        "with_match_chain",
+        "MATCH (a:Airport) WITH a WHERE a.state = 'CA' MATCH (a)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code",
+    ),
+    // SKIP/LIMIT inside a WITH -> CTE-body LIMIT emission path.
+    (
+        "with_skip_limit",
+        "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) WITH a.code AS c ORDER BY c SKIP 1 LIMIT 3 RETURN c",
+    ),
+    // --- ordering / paging over a hop ---
+    (
+        "order_skip_limit",
+        "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code ORDER BY a.code DESC SKIP 1 LIMIT 3",
+    ),
+    (
+        "skip_only",
+        "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) RETURN a.code ORDER BY a.code SKIP 2",
+    ),
+    // Group by two denorm keys across the hop.
+    (
+        "group_two_keys",
+        "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) RETURN a.state, b.state, count(*) AS n",
+    ),
+    // DISTINCT over a hop projection.
+    (
+        "distinct_hop",
+        "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) RETURN DISTINCT a.state",
+    ),
+    // Variable-length path *1..2 -> DenormalizedCteStrategy (recursive CTE).
+    (
+        "vlp_recursive",
+        "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport) RETURN b.code",
+    ),
+];
+
 fn load_schema(yaml_path: &str) -> GraphSchema {
     GraphSchemaConfig::from_yaml_file(yaml_path)
         .unwrap_or_else(|e| panic!("load schema {yaml_path}: {e:?}"))
@@ -527,6 +683,76 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 // whole_edge_r projects the FK-edge row (order_id AS from_id, customer_id AS
 // to_id), 8 rows.
 
+// KNOWN-SUSPICIOUS/KNOWN-BROKEN denormalized goldens (P0.2). The denorm
+// variation has the heaviest documented bug history, so — per the plan's
+// characterization-net philosophy (`REFACTORING_SAFETY_PLAN.md` §3.1/§3.2, which
+// locks even error-producing translations) — these lock *current* behavior,
+// INCLUDING output that is invalid or semantically wrong, so any fix shows up as
+// a reviewable golden diff. All 26 cases RENDER (no Rust panic); the notes below
+// are from executing every ClickHouse golden against live `db_denormalized`
+// (scripts/setup/setup_denormalized_data.sh, 8 flights). If you touch denorm
+// rendering, inspect these first.
+//
+// GROUP A — node-only virtual-id NOT resolved to a physical column (bug class A
+// #427 / bug class B #429 territory, still live for a LABELED coupled-denorm
+// node). The 7 node-only cases (node_scan, whole_node, project_node_props,
+// where_denorm_prop, where_virtual_id, distinct_node_state,
+// aggregate_count_node) ALL render BYTE-IDENTICAL output:
+//   `WITH __multi_label_union AS (SELECT 'Airport' as _label,
+//    toString(code) as _id, formatRowNoNewline('JSONEachRow',
+//    flights_denorm.code AS code) as _properties FROM db_denormalized.flights_denorm)`
+// The virtual node_id `code` (which maps to origin_code/dest_code via
+// from/to_node_properties, and has NO standalone physical column) is emitted
+// verbatim as `flights_denorm.code` — a non-existent column. Live CH:
+// `DB::Exception: Identifier 'flights_denorm.code' cannot be resolved`. Note the
+// RETURN projection, WHERE filter, DISTINCT, and count() are ALL dropped — every
+// node-only shape collapses to the same whole-node Browser format. The 7 cases
+// are kept DISTINCT on purpose: when the node materialization is fixed they must
+// DIVERGE (each projecting/filtering as written), and the golden diffs will show
+// each correction independently.
+//
+// GROUP B — ORDER BY over a denorm hop mis-qualifies the node-id column
+// (order_skip_limit, skip_only). The SELECT is correct
+// (`t0.origin_code AS "a.code"` from `flights_denorm AS t0`) but the ORDER BY
+// emits the CYPHER alias, not the table alias: `ORDER BY a.origin_code`. Live CH:
+// `DB::Exception: Unknown expression identifier 'a.origin_code'`. The paging
+// mechanics (`LIMIT off, n`, and the CH huge-upper-bound for bare SKIP) are
+// correct; only the ORDER BY term qualification is wrong. (The WITH-form paging
+// `with_skip_limit` is unaffected and executes — 3 rows — so a valid denorm
+// paging lock exists.)
+//
+// GROUP C — semantically wrong result, but VALID SQL (executes):
+//   - with_match_chain: `MATCH (a:Airport) WITH a WHERE a.state='CA'
+//     MATCH (a)-[:FLIGHT]->(b)` should yield flights FROM CA airports (4 rows).
+//     It returns 7. The WITH-CTE materializes `a` as a UNION of an origin branch
+//     AND a dest branch, but the dest branch ALSO filters `WHERE a.origin_state
+//     = 'CA'` (should be dest_state / or be the same node set), so the airport
+//     set is polluted with destinations of CA-origin flights (LAX,SFO,JFK,ORD,ATL
+//     instead of {CA airports}). Kept as a lock; a fix should collapse/​correct
+//     the dest branch and drop to 4 rows.
+//   - optional_match: `MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b)`
+//     renders IDENTICALLY to the inner directed hop — a plain
+//     `FROM flights_denorm AS t0` with NO LEFT JOIN and no node materialization
+//     (8 rows). For the coupled-same-row shape (the node IS the edge row) every
+//     origin trivially has its flight, so no NULL-extension rows are produced;
+//     this is degenerate-but-current. A real node-materialization fix (Group A)
+//     would change this too.
+//
+// Verified CORRECT (normal locks, not suspicious) — executed on live CH:
+// directed_hop_ids (8), directed_hop_props, reverse_hop (8), undirected_hop (16,
+// each edge both directions), hop_edge_props (renamed flight_num -> physical
+// flight_number), where_edge_prop (distance>1000 -> 6), hop_filter_both
+// (CA->NY -> 1), whole_edge_r (8, composite edge_id + all edge props),
+// path_return (8), vlp_recursive *1..2 (DenormalizedCteStrategy, 15),
+// with_agg_count (out-degree per origin, 6), with_having (>1 -> 1),
+// with_skip_limit (3), group_two_keys (distinct state pairs, 7), distinct_hop
+// (5 origin states). All hop cases render from the SINGLE `flights_denorm` table
+// with NO spurious edge self-join (the #419 class is clean) and correct
+// from-side (origin_*) vs to-side (dest_*) column sourcing.
+//
+// Databricks goldens for all 26 cases are locked but NOT executed (no live Spark
+// here); they render without panic and mirror the CH structure.
+
 #[tokio::test]
 async fn sql_golden_snapshots() {
     let update = std::env::var("UPDATE_GOLDEN").as_deref() == Ok("1");
@@ -535,6 +761,7 @@ async fn sql_golden_snapshots() {
     for (schema_id, corpus) in [
         (SchemaId::Standard, CORPUS),
         (SchemaId::FkEdge, FK_EDGE_CORPUS),
+        (SchemaId::Denormalized, DENORM_CORPUS),
     ] {
         let schema = load_schema(schema_id.yaml_path());
         let schema_dir = schema_id.dir();
