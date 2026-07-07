@@ -6,8 +6,14 @@
 //! goldens **byte-identical**, and any intended Databricks change shows up as a
 //! reviewable golden diff rather than silently.
 //!
-//! Goldens live in `tests/rust/integration/golden/sql_ir/{name}__{dialect}.sql`.
-//! Regenerate after an *intended* change with:
+//! Goldens live in `tests/rust/integration/golden/sql_ir/{schema}/{name}__{dialect}.sql`,
+//! where `{schema}` is the schema-variation subdirectory (`standard`, `fk_edge`,
+//! …). The `standard` set (loaded from `social_benchmark.yaml`) is the original
+//! 44-case corpus; additional variations lock the SAME feature axes against
+//! other schema-pattern shapes so a refactor of the shared render paths proves
+//! no-op-ness across variations, not just the standard schema (see
+//! `docs/design/REFACTORING_SAFETY_PLAN.md` §3.1). Regenerate after an
+//! *intended* change with:
 //!
 //! ```text
 //! UPDATE_GOLDEN=1 cargo test -p clickgraph --test integration sql_golden -- --nocapture
@@ -25,6 +31,34 @@ use clickgraph::{
     server::query_context::{set_current_schema, with_query_context, QueryContext},
     sql_generator::SqlDialect,
 };
+
+/// A schema variation. Each variation loads its own YAML and its goldens live
+/// under `golden/sql_ir/{dir}/`. The corpus is intentionally NOT portable
+/// across variations (labels/properties differ), so each schema carries its own
+/// case list mirroring the standard set's feature axes.
+#[derive(Clone, Copy)]
+enum SchemaId {
+    Standard,
+    FkEdge,
+}
+
+impl SchemaId {
+    /// Subdirectory under `golden/sql_ir/` holding this variation's goldens.
+    fn dir(self) -> &'static str {
+        match self {
+            SchemaId::Standard => "standard",
+            SchemaId::FkEdge => "fk_edge",
+        }
+    }
+
+    /// YAML schema file loaded for this variation.
+    fn yaml_path(self) -> &'static str {
+        match self {
+            SchemaId::Standard => "benchmarks/social_network/schemas/social_benchmark.yaml",
+            SchemaId::FkEdge => "schemas/test/fk_edge.yaml",
+        }
+    }
+}
 
 /// Representative corpus exercising the RenderPlan -> SQL surface. Chosen to
 /// render cleanly on BOTH dialects (no UNWIND/arrayJoin or array_count, which
@@ -263,11 +297,140 @@ const CORPUS: &[(&str, &str)] = &[
     // additional schemas / not-yet-implemented Spark structural support.
 ];
 
-fn load_schema() -> GraphSchema {
-    GraphSchemaConfig::from_yaml_file("benchmarks/social_network/schemas/social_benchmark.yaml")
-        .expect("load social_benchmark.yaml")
+/// FK-edge variation (`schemas/test/fk_edge.yaml`): Order/Customer where the
+/// orders_fk table IS the PLACED_BY edge table (customer_id FK column is the
+/// relationship — no separate edge table, not denormalized). Mirrors the
+/// standard corpus's feature axes for the FK-edge schema pattern.
+///
+/// Not expressible in this schema (single edge type, from_node Order != to_node
+/// Customer, so an edge cannot chain into itself), intentionally omitted:
+///   - VLP `*1..N` / multi-hop — no second hop exists out of Customer.
+///   - multi-type `[:A|B]` — only one edge type (PLACED_BY).
+///   - UNWIND/arrayJoin shapes — same Spark structural gap the standard corpus
+///     skips.
+///
+/// KNOWN-SUSPICIOUS (locked as current behavior, see the test-file NOTE and the
+/// slice report): `with_match_chain` (confirmed wrong on live CH),
+/// `optional_match` (redundant phantom self-join, result-correct).
+const FK_EDGE_CORPUS: &[(&str, &str)] = &[
+    // --- node scans (both node types) ---
+    ("node_scan_order", "MATCH (o:Order) RETURN o.order_id"),
+    (
+        "node_scan_customer",
+        "MATCH (c:Customer) RETURN c.customer_id",
+    ),
+    // --- property projection, incl. the renamed property `amount` (-> column
+    // total_amount) ---
+    (
+        "project_order",
+        "MATCH (o:Order) RETURN o.order_id, o.order_date, o.amount",
+    ),
+    (
+        "project_customer",
+        "MATCH (c:Customer) RETURN c.customer_id, c.name, c.email",
+    ),
+    (
+        "distinct_customer_name",
+        "MATCH (c:Customer) RETURN DISTINCT c.name",
+    ),
+    // --- WHERE filters on both node types (renamed prop, string, AND, IN) ---
+    (
+        "where_order_amount",
+        "MATCH (o:Order) WHERE o.amount > 100 RETURN o.order_id",
+    ),
+    (
+        "where_customer_name",
+        "MATCH (c:Customer) WHERE c.name = 'Alice' RETURN c.email",
+    ),
+    (
+        "where_and",
+        "MATCH (o:Order) WHERE o.amount > 50 AND o.order_id < 5 RETURN o.order_id",
+    ),
+    (
+        "where_in_list",
+        "MATCH (c:Customer) WHERE c.name IN ['Alice', 'Bob'] RETURN c.email",
+    ),
+    // --- ordering / paging ---
+    (
+        "order_skip_limit",
+        "MATCH (o:Order) RETURN o.order_id, o.amount ORDER BY o.amount DESC SKIP 1 LIMIT 3",
+    ),
+    (
+        "skip_only",
+        "MATCH (o:Order) RETURN o.order_id ORDER BY o.order_id SKIP 2",
+    ),
+    ("aggregate_count", "MATCH (o:Order) RETURN count(o)"),
+    // --- single hop, both directions. FK-edge: the join is node-to-node on
+    // orders_fk.customer_id = customers_fk.customer_id, no phantom third table. ---
+    (
+        "single_hop",
+        "MATCH (o:Order)-[:PLACED_BY]->(c:Customer) RETURN o.order_id, c.name",
+    ),
+    // Reverse pattern (same directed edge, written right-to-left).
+    (
+        "single_hop_reverse",
+        "MATCH (c:Customer)<-[:PLACED_BY]-(o:Order) RETURN c.name, o.amount",
+    ),
+    // UNDIRECTED single hop — the ERR-G bug class (fixed in PR #432): undirected
+    // forms must read the edge id columns from the correct alias.
+    (
+        "undirected_hop",
+        "MATCH (o:Order)-[:PLACED_BY]-(c:Customer) RETURN o.order_id, c.name",
+    ),
+    // Filter on BOTH node types across the hop.
+    (
+        "hop_filter_both",
+        "MATCH (o:Order)-[:PLACED_BY]->(c:Customer) WHERE o.amount > 100 AND c.name = 'Alice' RETURN o.order_id",
+    ),
+    // Whole-edge RETURN r on an FK-edge relationship.
+    (
+        "whole_edge_r",
+        "MATCH (o:Order)-[r:PLACED_BY]->(c:Customer) RETURN r",
+    ),
+    // --- OPTIONAL MATCH (anchored on Customer, optional incoming order) ---
+    (
+        "optional_match",
+        "MATCH (c:Customer) OPTIONAL MATCH (c)<-[:PLACED_BY]-(o:Order) RETURN c.name, o.order_id",
+    ),
+    // --- WITH + aggregation (count per customer), and its HAVING form ---
+    (
+        "with_agg_count",
+        "MATCH (o:Order)-[:PLACED_BY]->(c:Customer) WITH c.name AS name, count(o) AS orders RETURN name, orders",
+    ),
+    (
+        "with_having",
+        "MATCH (o:Order)-[:PLACED_BY]->(c:Customer) WITH c.name AS name, count(o) AS n WHERE n > 1 RETURN name, n",
+    ),
+    // --- WITH -> MATCH chain (filter customers, then match their orders) ---
+    (
+        "with_match_chain",
+        "MATCH (c:Customer) WITH c WHERE c.customer_id > 100 MATCH (c)<-[:PLACED_BY]-(o:Order) RETURN c.name, o.order_id",
+    ),
+    // SKIP/LIMIT inside a WITH -> CTE-body LIMIT emission path.
+    (
+        "with_skip_limit",
+        "MATCH (o:Order) WITH o.amount AS a ORDER BY a SKIP 1 LIMIT 2 RETURN a",
+    ),
+    // Group by two keys across the hop.
+    (
+        "group_two_keys",
+        "MATCH (o:Order)-[:PLACED_BY]->(c:Customer) RETURN c.name, c.email, count(o) AS n",
+    ),
+    // --- whole-entity RETURN n (both node types) ---
+    ("whole_entity_order", "MATCH (o:Order) RETURN o"),
+    ("whole_entity_customer", "MATCH (c:Customer) RETURN c"),
+    // DISTINCT over a hop projection.
+    (
+        "distinct_hop",
+        "MATCH (o:Order)-[:PLACED_BY]->(c:Customer) RETURN DISTINCT c.name",
+    ),
+];
+
+fn load_schema(yaml_path: &str) -> GraphSchema {
+    GraphSchemaConfig::from_yaml_file(yaml_path)
+        .unwrap_or_else(|e| panic!("load schema {yaml_path}: {e:?}"))
         .to_graph_schema()
-        .expect("convert to GraphSchema")
+        .unwrap_or_else(|e| panic!("convert {yaml_path} to GraphSchema: {e:?}"))
 }
 
 async fn render(schema: &GraphSchema, cypher: &str, dialect: SqlDialect) -> String {
@@ -322,48 +485,84 @@ fn normalize(sql: &str) -> String {
     remap(&s, r"\bcte\d+\b", "cte")
 }
 
-fn golden_path(name: &str, dialect: &str) -> String {
+fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
     format!(
-        "{}/tests/rust/integration/golden/sql_ir/{}__{}.sql",
+        "{}/tests/rust/integration/golden/sql_ir/{}/{}__{}.sql",
         env!("CARGO_MANIFEST_DIR"),
+        schema_dir,
         name,
         dialect
     )
 }
 
+// KNOWN-SUSPICIOUS FK-edge goldens — locked as *current behavior* (a
+// characterization net locks what the engine does today, including any latent
+// wrongness, so a refactor's diff is visible). All 26 CH goldens EXECUTE on a
+// live db_fk_edge (scripts/setup/setup_fk_edge_data.sh); the notes below are
+// from inspecting SQL + comparing result-set row counts to Cypher semantics.
+// If you touch FK-edge rendering, inspect these first:
+//
+//   - fk_edge/with_match_chain: CONFIRMED WRONG. The WITH->MATCH chain emits
+//     `INNER JOIN with_c_cte_0 AS c ON 1 = 1` — a CARTESIAN product — because
+//     the WITH CTE projects only `c.name`, dropping the `customer_id` join key.
+//     On live CH it returns 24 rows (8 orders x 3 customers) where correct
+//     Cypher semantics are 5 (only orders of customers with customer_id > 100).
+//     Locked as characterization so a fix shows up as a reviewable golden diff.
+//
+//   - fk_edge/optional_match: result-correct (8 rows on live CH) but emits a
+//     redundant PHANTOM self-join — `LEFT JOIN orders_fk AS t0 ON t0.order_id =
+//     o.order_id` re-materializes the edge table separately from the Order
+//     node even though for an FK-edge they are the SAME row. A 1:1 self-join so
+//     it doesn't change results, but it's the FK-edge-collapse smell in the
+//     OPTIONAL MATCH path (a perf/clarity issue, not a correctness bug).
+//
+// Verified CORRECT (kept as normal locks, not suspicious): single_hop /
+// single_hop_reverse / undirected_hop all render the node-to-node FK join
+// `customers_fk.customer_id = orders_fk.customer_id` with the edge id column
+// read from the correct (orders_fk) alias — no ERR-G regression, 8 rows each;
+// whole_edge_r projects the FK-edge row (order_id AS from_id, customer_id AS
+// to_id), 8 rows.
+
 #[tokio::test]
 async fn sql_golden_snapshots() {
-    let schema = load_schema();
     let update = std::env::var("UPDATE_GOLDEN").as_deref() == Ok("1");
     let mut mismatches: Vec<String> = Vec::new();
 
-    for (name, cypher) in CORPUS {
-        for (dialect, dname) in [
-            (SqlDialect::ClickHouse, "clickhouse"),
-            (SqlDialect::Databricks, "databricks"),
-        ] {
-            let sql = normalize(&render(&schema, cypher, dialect).await);
-            // Guard against a vacuous pass (e.g. a future to_sql() returning "").
-            assert!(
-                sql.contains("SELECT"),
-                "{name}__{dname} produced SQL without SELECT:\n{sql}"
-            );
-            let path = golden_path(name, dname);
+    for (schema_id, corpus) in [
+        (SchemaId::Standard, CORPUS),
+        (SchemaId::FkEdge, FK_EDGE_CORPUS),
+    ] {
+        let schema = load_schema(schema_id.yaml_path());
+        let schema_dir = schema_id.dir();
 
-            if update {
-                if let Some(dir) = std::path::Path::new(&path).parent() {
-                    std::fs::create_dir_all(dir).expect("create golden dir");
-                }
-                std::fs::write(&path, &sql).expect("write golden");
-            } else {
-                match std::fs::read_to_string(&path) {
-                    Ok(expected) if expected == sql => {}
-                    Ok(expected) => mismatches.push(format!(
-                        "--- {name}__{dname} MISMATCH ---\nEXPECTED:\n{expected}\nACTUAL:\n{sql}\n"
-                    )),
-                    Err(_) => mismatches.push(format!(
-                        "--- {name}__{dname} MISSING golden (run UPDATE_GOLDEN=1) ---"
-                    )),
+        for (name, cypher) in corpus {
+            for (dialect, dname) in [
+                (SqlDialect::ClickHouse, "clickhouse"),
+                (SqlDialect::Databricks, "databricks"),
+            ] {
+                let sql = normalize(&render(&schema, cypher, dialect).await);
+                // Guard against a vacuous pass (e.g. a future to_sql() returning "").
+                assert!(
+                    sql.contains("SELECT"),
+                    "{schema_dir}/{name}__{dname} produced SQL without SELECT:\n{sql}"
+                );
+                let path = golden_path(schema_dir, name, dname);
+
+                if update {
+                    if let Some(dir) = std::path::Path::new(&path).parent() {
+                        std::fs::create_dir_all(dir).expect("create golden dir");
+                    }
+                    std::fs::write(&path, &sql).expect("write golden");
+                } else {
+                    match std::fs::read_to_string(&path) {
+                        Ok(expected) if expected == sql => {}
+                        Ok(expected) => mismatches.push(format!(
+                            "--- {schema_dir}/{name}__{dname} MISMATCH ---\nEXPECTED:\n{expected}\nACTUAL:\n{sql}\n"
+                        )),
+                        Err(_) => mismatches.push(format!(
+                            "--- {schema_dir}/{name}__{dname} MISSING golden (run UPDATE_GOLDEN=1) ---"
+                        )),
+                    }
                 }
             }
         }

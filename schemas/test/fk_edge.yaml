@@ -1,0 +1,51 @@
+# FK-edge single-graph schema — extracted from the `fk_edge` variation of
+# schemas/test/unified_test_multi_schema.yaml so the byte-exact golden harness
+# (tests/rust/integration/sql_golden_tests.rs) can load it directly via
+# GraphSchemaConfig::from_yaml_file (the multi-schema list form does not load
+# through that single-graph entry point).
+#
+# FK-edge pattern: the orders_fk table IS the edge table for PLACED_BY — the
+# customer_id FK column on orders_fk is the relationship. There is NO separate
+# edge table and NO node properties embedded on the edge (that would be
+# denormalized, a different pattern). A (o:Order)-[:PLACED_BY]->(c:Customer)
+# hop must therefore join node-to-node on orders_fk.customer_id =
+# customers_fk.customer_id, with no phantom third table.
+#
+# Physical tables (db_fk_edge, created by scripts/setup/setup_fk_edge_data.sh):
+#   customers_fk(customer_id UInt64, name String, email String)
+#   orders_fk(order_id UInt64, customer_id UInt64, order_date Date, total_amount Float64)
+#
+# NOTE the renamed property `amount` -> physical column `total_amount` on Order:
+# it exercises the renamed-property projection axis while staying executable
+# against the real table columns.
+
+name: fk_edge
+
+graph_schema:
+  nodes:
+    - label: Order
+      database: db_fk_edge
+      table: orders_fk
+      node_id: order_id
+      property_mappings:
+        order_id: order_id
+        order_date: order_date
+        amount: total_amount
+
+    - label: Customer
+      database: db_fk_edge
+      table: customers_fk
+      node_id: customer_id
+      property_mappings:
+        customer_id: customer_id
+        name: name
+        email: email
+
+  edges:
+    - type: PLACED_BY
+      database: db_fk_edge
+      table: orders_fk
+      from_id: order_id
+      to_id: customer_id
+      from_node: Order
+      to_node: Customer
