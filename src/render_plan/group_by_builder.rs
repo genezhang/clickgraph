@@ -180,7 +180,20 @@ fn process_group_by_expressions(group_by: &GroupBy) -> GroupByBuilderResult<Vec<
 /// The returned columns mirror how `ViewScan.id_column` is derived for
 /// non-denormalized nodes (`node_id.columns()` used directly as DB column names),
 /// so the first element is always identical to the previous single-column key.
-fn composite_id_group_by_columns(input: &LogicalPlan, alias: &str) -> Option<Vec<String>> {
+///
+/// NOTE — deliberate multiplication of the consumer (refactor plan §1.4 disease):
+/// the whole-node GROUP BY id-optimization exists in FOUR places today —
+/// `handle_table_alias_group_by` / `handle_wildcard_group_by` here, plus their
+/// near-verbatim duplicates in `plan_builder_utils.rs`: `extract_group_by`'s
+/// GroupBy arm AND `expand_table_alias_to_group_by_id_only` (the WITH→CTE
+/// render path — the copy that actually fires for `WITH a, count(..)` shapes).
+/// ALL of them must call this helper so composite ids behave identically on
+/// both sides of a WITH barrier; the eventual Phase-2 dedup should collapse
+/// the `plan_builder_utils.rs` copies onto this module.
+pub(super) fn composite_id_group_by_columns(
+    input: &LogicalPlan,
+    alias: &str,
+) -> Option<Vec<String>> {
     let schema = crate::server::query_context::get_current_schema_with_fallback()?;
     let label = super::cte_extraction::get_node_label_for_alias(alias, input)?;
     let node_schema = schema.node_schema(&label).ok()?;
@@ -206,7 +219,8 @@ fn composite_id_group_by_columns(input: &LogicalPlan, alias: &str) -> Option<Vec
 
 /// Push one GROUP BY key per composite-id column for `table_alias`.
 /// The caller dedups at the alias level (via `seen_aliases`) before calling this.
-fn push_composite_id_group_by(
+/// Shared by all three whole-node GROUP BY sites (see `composite_id_group_by_columns`).
+pub(super) fn push_composite_id_group_by(
     result: &mut Vec<RenderExpr>,
     table_alias: &str,
     id_columns: &[String],

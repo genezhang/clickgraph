@@ -667,7 +667,12 @@ silently merging distinct nodes that share it. FIXED in #457
 `node_id.columns()` key via the schema catalog (gated on `is_composite()`, no raw
 pattern-axis flag); goldens regenerated (`group_by_whole_node__{clickhouse,
 databricks}.sql`), live-verified 6 per-account buckets vs. the old 2, regression
-`composite_group_by_whole_node_keys_on_all_id_columns_457`) ·
+`composite_group_by_whole_node_keys_on_all_id_columns_457`; review found the SAME
+collapse behind the WITH barrier via the §1.4-duplicated copies in
+`plan_builder_utils.rs` (`extract_group_by`'s GroupBy arm,
+`expand_table_alias_to_group_by_id_only`) — all four sites now share the
+`composite_id_group_by_columns` helper, WITH-form live-verified 6 buckets vs. 2,
+regression `composite_group_by_whole_node_behind_with_barrier_457`) ·
 ☐ P0.5 Browser-shaped patterns ·
 ☐ P0.6 corpus sweep · ☐ P0.7 CI push+smoke · ☐ P0.8 nightly
 

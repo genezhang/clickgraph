@@ -1142,8 +1142,16 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 //     value is STILL used (unchanged, harmlessly) for `count(a)`-style aggregates
 //     (`aggregate_count`, `group_by_composite_columns`'s own `count(a2)`): COUNT
 //     only needs one non-null column to detect row existence, so its argument is
-//     deliberately left alone. Regression test:
-//     `composite_group_by_whole_node_keys_on_all_id_columns_457`.
+//     deliberately left alone. The SAME collapse also existed on the WITH→CTE
+//     render path (near-verbatim copies of the optimization in
+//     `plan_builder_utils.rs`: `extract_group_by`'s GroupBy arm and
+//     `expand_table_alias_to_group_by_id_only` — the latter fires for
+//     `WITH a, count(a2) AS n` shapes and rendered `GROUP BY a.bank_id` inside
+//     the CTE body, 2 collapsed bank buckets live instead of 6); all copies now
+//     route through the shared `composite_id_group_by_columns` helper (see its
+//     §1.4 multiplication note). Regression tests:
+//     `composite_group_by_whole_node_keys_on_all_id_columns_457`,
+//     `composite_group_by_whole_node_behind_with_barrier_457`.
 
 // KNOWN-SUSPICIOUS Polymorphic goldens — locked as *current behavior* (the net
 // characterizes what the engine does today, including latent wrongness, so a
@@ -1323,6 +1331,38 @@ async fn composite_group_by_whole_node_keys_on_all_id_columns_457() {
             !sql.contains("anyLast(a.account_number)")
                 && !sql.contains("any_value(a.account_number)"),
             "account_number is a GROUP BY key and must not be aggregate-wrapped for {dialect:?}, got:\n{sql}"
+        );
+    }
+}
+
+/// Regression for #457, WITH-barrier form: the same whole-node GROUP BY
+/// collapse existed on the WITH→CTE render path (a separate near-verbatim copy
+/// of the id-only optimization: `expand_table_alias_to_group_by_id_only` /
+/// `extract_group_by` in `plan_builder_utils.rs` — see the §1.4 triplication
+/// note on `composite_id_group_by_columns`). `MATCH (a:Account)-[:TRANSFERRED]->
+/// (a2:Account) WITH a, count(a2) AS n RETURN a, n` previously rendered
+/// `GROUP BY a.bank_id` inside the CTE body (2 collapsed bank buckets on the
+/// live fixture instead of 6 per-account buckets). All copies now share
+/// `composite_id_group_by_columns` and emit every id column.
+#[tokio::test]
+async fn composite_group_by_whole_node_behind_with_barrier_457() {
+    let schema = load_schema(SchemaId::CompositeId.yaml_path());
+    let cypher =
+        "MATCH (a:Account)-[:TRANSFERRED]->(a2:Account) WITH a, count(a2) AS n RETURN a, n";
+    // The old bug emitted `GROUP BY a.bank_id` with no second key anywhere.
+    let collapsed = regex::Regex::new(r"GROUP BY a\.bank_id\s*(\)|$)").unwrap();
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(&schema, cypher, dialect).await;
+
+        // The CTE body's GROUP BY must carry BOTH composite-id columns.
+        assert!(
+            sql.contains("GROUP BY a.bank_id, a.account_number"),
+            "expected the WITH-CTE GROUP BY to key on BOTH composite id columns for {dialect:?}, got:\n{sql}"
+        );
+        assert!(
+            !collapsed.is_match(&sql),
+            "WITH-CTE GROUP BY must not collapse to the first id column only for {dialect:?}, got:\n{sql}"
         );
     }
 }

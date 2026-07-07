@@ -3089,6 +3089,25 @@ pub fn extract_group_by(plan: &LogicalPlan) -> RenderPlanBuilderResult<Vec<Rende
                         }
                         seen_group_by_aliases.insert(table_alias_to_use.clone());
 
+                        // Composite-id nodes: emit EVERY identity column as a GROUP BY
+                        // key (issue #457) — same expansion as the twin sites in
+                        // group_by_builder.rs (`handle_table_alias_group_by`); this is
+                        // the WITH→CTE copy of that optimization (see the §1.4
+                        // triplication note on `composite_id_group_by_columns`).
+                        if let Some(id_columns) =
+                            super::group_by_builder::composite_id_group_by_columns(
+                                &group_by.input,
+                                &alias.0,
+                            )
+                        {
+                            super::group_by_builder::push_composite_id_group_by(
+                                &mut result,
+                                &table_alias_to_use,
+                                &id_columns,
+                            );
+                            continue;
+                        }
+
                         // Get the ID column from the schema (via ViewScan.id_column)
                         // This is the proper way - use schema definition, not pattern matching
                         let id_col = group_by
@@ -3167,8 +3186,26 @@ pub fn extract_group_by(plan: &LogicalPlan) -> RenderPlanBuilderResult<Vec<Rende
                             continue;
                         }
 
-                        // Fallback: use ID column from schema
+                        // Fallback: use ID column(s) from schema
                         if !properties.is_empty() {
+                            // Composite-id nodes: emit EVERY identity column (issue
+                            // #457) — mirrors `handle_wildcard_group_by` Case B in
+                            // group_by_builder.rs (see the §1.4 triplication note on
+                            // `composite_id_group_by_columns`).
+                            if let Some(id_columns) =
+                                super::group_by_builder::composite_id_group_by_columns(
+                                    &group_by.input,
+                                    &prop_access.table_alias.0,
+                                )
+                            {
+                                super::group_by_builder::push_composite_id_group_by(
+                                    &mut result,
+                                    &table_alias_to_use,
+                                    &id_columns,
+                                );
+                                continue;
+                            }
+
                             let id_col = group_by
                                 .input
                                 .find_id_column_for_alias(&prop_access.table_alias.0)
@@ -6022,7 +6059,26 @@ pub(crate) fn expand_table_alias_to_group_by_id_only(
         }
     }
 
-    // SECOND: Use find_id_column_for_alias which traverses the plan to find ViewScan.id_column
+    // SECOND (composite guard, issue #457): a composite-id node must contribute
+    // EVERY identity column as a GROUP BY key. `find_id_column_for_alias` below
+    // returns only the FIRST id column and would short-circuit before the
+    // composite-aware label fallback further down, silently merging distinct
+    // nodes that share the first component. Same expansion as the sites in
+    // group_by_builder.rs (see the §1.4 triplication note on
+    // `composite_id_group_by_columns`).
+    if let Some(id_columns) = super::group_by_builder::composite_id_group_by_columns(plan, alias) {
+        log::debug!(
+            "🔧 expand_table_alias_to_group_by_id_only: Using {} composite ID columns {:?} for alias '{}'",
+            id_columns.len(),
+            id_columns,
+            alias
+        );
+        let mut result = Vec::new();
+        super::group_by_builder::push_composite_id_group_by(&mut result, alias, &id_columns);
+        return result;
+    }
+
+    // THIRD: Use find_id_column_for_alias which traverses the plan to find ViewScan.id_column
     // This is more reliable than find_label_for_alias because it directly gets the ID from the schema
     if let Ok(id_col) = plan.find_id_column_for_alias(alias) {
         log::debug!("🔧 expand_table_alias_to_group_by_id_only: Using ID column '{}' from ViewScan for alias '{}'", id_col, alias);

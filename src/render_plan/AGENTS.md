@@ -139,6 +139,14 @@ and emits one GROUP BY key per `node_id.columns()`, instead of forwarding the
 single column. Non-composite/denormalized/VLP/CTE aliases keep the single-column
 path unchanged.
 
+⚠️ The whole-node GROUP BY id-optimization is duplicated in FOUR places (§1.4
+disease): `handle_table_alias_group_by`/`handle_wildcard_group_by` in
+`group_by_builder.rs`, plus `extract_group_by`'s GroupBy arm and
+`expand_table_alias_to_group_by_id_only` in `plan_builder_utils.rs` (the WITH→CTE
+render path — the copy that fires for `WITH a, count(..)` shapes). All four must
+call `composite_id_group_by_columns` or composite ids silently collapse behind a
+WITH barrier. If you add a fifth site, route it through the same helper.
+
 ### 3. build_chained_with_match_cte_plan Flow
 This is the most complex function (~3500 lines in plan_builder_utils.rs):
 ```

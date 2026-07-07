@@ -1777,6 +1777,14 @@ pub(crate) fn get_node_label_for_alias(alias: &str, plan: &LogicalPlan) -> Optio
         LogicalPlan::GroupBy(group_by) => get_node_label_for_alias(alias, &group_by.input),
         LogicalPlan::Cte(cte) => get_node_label_for_alias(alias, &cte.input),
         LogicalPlan::Union(union) => {
+            // CAVEAT: returns the FIRST branch that resolves the alias. Today's
+            // UNION shapes (multi-table label, denormalized from/to dimension,
+            // polymorphic) all carry the SAME label for a given alias across
+            // branches, so first-match is safe — but if a UNION ever mixed
+            // DIFFERENT labels (hence possibly different id schemas, e.g.
+            // composite vs. single-column) for one alias, first-match would
+            // silently pick one branch's identity. Callers needing per-branch
+            // precision should query the specific branch plan instead.
             for input in &union.inputs {
                 if let Some(label) = get_node_label_for_alias(alias, input) {
                     return Some(label);
