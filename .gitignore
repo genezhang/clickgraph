@@ -1,4 +1,5 @@
 /target
+/target-fix
 /test_data
 /clickhouse_data
 
