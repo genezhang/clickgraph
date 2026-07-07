@@ -1796,11 +1796,23 @@ impl RenderPlanBuilder for LogicalPlan {
                 // For OrderBy, convert the input plan and set order_by
                 let mut render_plan = ob.input.to_render_plan(schema)?;
 
-                // Convert logical OrderByItems to render OrderByItems
+                // Convert logical OrderByItems to render OrderByItems, then apply the
+                // same property/alias resolution the SELECT and WHERE paths use.
+                // Without this, a denormalized node alias in ORDER BY survives as the
+                // raw Cypher alias (`ORDER BY a.origin_code` — invalid, `a` is not a
+                // table) even though SELECT correctly emits `t0.origin_code`; the
+                // column was resolved at planning but the alias→edge-table remap was
+                // skipped. This mirrors `extract_order_by` used by the server render
+                // path (`to_render_plan_with_ctx`), keeping golden/server parity (#455).
                 let order_by_items: Result<Vec<OrderByItem>, _> = ob
                     .items
                     .iter()
-                    .map(|item| item.clone().try_into())
+                    .map(|item| {
+                        item.clone().try_into().map(|mut order_item: OrderByItem| {
+                            apply_property_mapping_to_expr(&mut order_item.expression, &ob.input);
+                            order_item
+                        })
+                    })
                     .collect();
                 render_plan.order_by = OrderByItems(order_by_items?);
 

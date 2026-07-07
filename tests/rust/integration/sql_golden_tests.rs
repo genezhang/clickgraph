@@ -1063,15 +1063,18 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 // live `db_denormalized` (7 distinct airports; see
 // `denorm_labeled_node_scan_resolves_virtual_id_454`).
 //
-// GROUP B — ORDER BY over a denorm hop mis-qualifies the node-id column
-// (order_skip_limit, skip_only). The SELECT is correct
+// GROUP B — RESOLVED (#455). ORDER BY over a denorm hop previously mis-qualified
+// the node-id column (order_skip_limit, skip_only): the SELECT was correct
 // (`t0.origin_code AS "a.code"` from `flights_denorm AS t0`) but the ORDER BY
-// emits the CYPHER alias, not the table alias: `ORDER BY a.origin_code`. Live CH:
-// `DB::Exception: Unknown expression identifier 'a.origin_code'`. The paging
-// mechanics (`LIMIT off, n`, and the CH huge-upper-bound for bare SKIP) are
-// correct; only the ORDER BY term qualification is wrong. (The WITH-form paging
-// `with_skip_limit` is unaffected and executes — 3 rows — so a valid denorm
-// paging lock exists.)
+// emitted the CYPHER alias — `ORDER BY a.origin_code` — which CH rejects
+// (`Unknown expression identifier 'a.origin_code'`). Root cause: the non-ctx
+// `to_render_plan` OrderBy handler converted items with a bare `try_into()` and
+// skipped the alias→edge-table resolution that SELECT/WHERE (and the server's
+// `extract_order_by`) apply; the column was resolved at planning but the alias was
+// not. Fixed by running `apply_property_mapping_to_expr` on the order-by items in
+// that handler (golden/server parity). Both now emit `ORDER BY t0.origin_code` and
+// execute on live CH with correct ordered slices. Paging mechanics (`LIMIT off, n`,
+// CH huge-upper-bound for bare SKIP) were already correct.
 //
 // GROUP C — semantically wrong result, but VALID SQL (executes):
 //   - with_match_chain: `MATCH (a:Airport) WITH a WHERE a.state='CA'
@@ -1543,5 +1546,43 @@ async fn denorm_labeled_node_scan_resolves_virtual_id_454() {
             "#454 ({dname}): count(a) over the denorm union must wrap the branches \
              in a `__union` subquery:\n{count_sql}"
         );
+    }
+}
+
+/// #455 regression: ORDER BY over a denormalized hop must qualify the sort term
+/// with the resolved TABLE alias (`t0.origin_code`), not the raw Cypher node
+/// alias (`a.origin_code`, which CH rejects with `Unknown expression identifier`).
+/// The column was resolved at planning but the non-ctx OrderBy render handler
+/// skipped the alias→edge-table remap that SELECT/WHERE apply.
+#[tokio::test]
+async fn denorm_order_by_uses_table_alias_not_cypher_alias_455() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+
+    for (dialect, dname) in [
+        (SqlDialect::ClickHouse, "clickhouse"),
+        (SqlDialect::Databricks, "databricks"),
+    ] {
+        for cypher in [
+            "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code ORDER BY a.code DESC SKIP 1 LIMIT 3",
+            "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) RETURN a.code ORDER BY a.code SKIP 2",
+        ] {
+            let sql = render(&schema, cypher, dialect).await;
+            // The single denorm table gets an anonymized alias (t{n}); the ORDER BY
+            // must reference that alias' physical column, never the Cypher alias `a`.
+            let order_line = sql
+                .lines()
+                .find(|l| l.trim_start().starts_with("ORDER BY"))
+                .unwrap_or_else(|| panic!("#455 ({dname}) [{cypher}]: no ORDER BY line:\n{sql}"));
+            assert!(
+                !order_line.contains("a.origin_code") && !order_line.contains("a.dest_code"),
+                "#455 ({dname}) [{cypher}]: ORDER BY still uses the raw Cypher alias \
+                 instead of the resolved table alias:\n{sql}"
+            );
+            assert!(
+                order_line.contains("origin_code"),
+                "#455 ({dname}) [{cypher}]: ORDER BY must sort by the resolved \
+                 physical column origin_code:\n{sql}"
+            );
+        }
     }
 }
