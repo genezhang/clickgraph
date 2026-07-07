@@ -1290,25 +1290,18 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 //         UNION-ALL branches, each with its own interaction_type/from_type/
 //         to_type filter, NEVER the `SELECT 1 AS "_empty" WHERE false`
 //         placeholder.
-//       * `polymorphic_unlabeled_endpoints_current_row_multiplication`
-//         [HARNESS ARTIFACT — NOT a production bug; investigated in #458]: the
-//         OUTER query selects from the already-complete CTE FOUR times,
-//         UNION-ALL'd with byte-identical projections, so every path row is
-//         emitted 4×. CRITICAL: this 4× appears ONLY on the ctx-less render path
-//         (`logical_plan_to_render_plan`) that this golden harness's `render()`
-//         helper uses — which has NO production callers. The production path
+//       * `polymorphic_unlabeled_endpoints_single_outer_read`
+//         [GOOD — production, #459]: the OUTER query reads the already-complete
+//         `pattern_union_*` CTE exactly ONCE, so each enumerated path row is
+//         emitted a single time. `render()` IS the production path
 //         (`to_render_plan_with_ctx`, used by every server/cg/embedded query)
-//         collapses the outer union to a single `FROM pattern_union_*` and is
-//         CORRECT for this shape: live CH via cg returns
-//         `(a)-[:FOLLOWS]->(b) RETURN a, b` = 10 and
-//         `(a)-[:SHARED]->(b) RETURN a, b` = 3 (NOT 40 / 12). The earlier
-//         "live 12/40" note was measured on the ctx-less harness SQL, not
-//         production. (Whole-edge `RETURN r` over these unlabeled shapes is a
-//         separate axis — see the whole_edge_r note above.) The test
-//         below still asserts the ctx-less 4× (characterizing the harness path);
-//         making the ctx-less path collapse too would touch the multi-type
-//         expand/Union machinery and only change a test-only path, so it was
-//         deliberately not attempted (see #458 diagnosis).
+//         since #459; live CH via cg returns `(a)-[:FOLLOWS]->(b) RETURN a, b`
+//         = 10 and `(a)-[:SHARED]->(b) RETURN a, b` = 3 (correct). Historical
+//         note: the removed ctx-less render path emitted a 4× outer UNION-ALL
+//         over this CTE (row multiplication) — a harness-only artifact with no
+//         production callers, gone with that path in #459. (Whole-edge
+//         `RETURN r` over these unlabeled shapes is a separate axis — see the
+//         whole_edge_r note above.)
 //
 // Verified CORRECT (kept as normal locks, not suspicious): follows_hop (10,
 // self-referential User->User with distinct a/b aliases) / authored_hop (5,

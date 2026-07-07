@@ -92,23 +92,18 @@ pub trait ToSql {
     fn to_sql(&self) -> String;
 }
 
-/// Convert a LogicalPlan to a RenderPlan
-pub fn logical_plan_to_render_plan(
-    logical_plan: crate::query_planner::logical_plan::LogicalPlan,
-    schema: &crate::graph_catalog::graph_schema::GraphSchema,
-) -> Result<RenderPlan, errors::RenderBuildError> {
-    use plan_builder::RenderPlanBuilder;
-    logical_plan.to_render_plan(schema)
-}
-
 /// Public wrapper over `to_render_plan_with_ctx`, mirroring the server pipeline.
 ///
-/// The server (HTTP + Bolt handlers) always renders via `to_render_plan_with_ctx`
-/// so that analysis-phase metadata in `PlanCtx` (VLP endpoints, multi-type joins,
-/// etc.) is available during rendering. The bare `logical_plan_to_render_plan`
-/// wrapper omits that context and can diverge from server output for polymorphic /
-/// multi-type expands. Use this wrapper when faithful server-parity rendering is
-/// required (e.g. regression tests for browser expand SQL).
+/// The server (HTTP + Bolt handlers), `cg`, and embedded all render via
+/// `to_render_plan_with_ctx` so that analysis-phase metadata in `PlanCtx` (VLP
+/// endpoints, multi-type joins, etc.) is available during rendering. This is the
+/// ONLY public entry point for whole-plan rendering — the former ctx-less
+/// `logical_plan_to_render_plan` wrapper was removed in #459 (it had no production
+/// callers and demonstrably diverged from server output for polymorphic /
+/// multi-type expands, denorm node-scan unions, ORDER BY alias resolution, and the
+/// OPTIONAL denorm hop). The underlying ctx-less `RenderPlanBuilder::to_render_plan`
+/// method remains — it is the recursive sub-plan workhorse used internally (EXISTS
+/// subqueries, write plans, CTE extraction) and by `to_render_plan_with_ctx` itself.
 pub fn logical_plan_to_render_plan_with_ctx(
     logical_plan: crate::query_planner::logical_plan::LogicalPlan,
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
