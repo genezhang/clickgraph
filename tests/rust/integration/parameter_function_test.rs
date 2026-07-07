@@ -6,7 +6,7 @@ use clickgraph::{
     },
     open_cypher_parser::parse_query,
     query_planner::{evaluate_read_query, logical_plan::plan_builder::build_logical_plan},
-    render_plan::{logical_plan_to_render_plan, ToSql},
+    render_plan::{logical_plan_to_render_plan_with_ctx, ToSql},
 };
 use std::collections::HashMap;
 
@@ -242,10 +242,11 @@ fn test_parameter_in_where_with_function_in_return() {
 
     let schema = create_test_schema();
 
-    let (logical_plan, _plan_ctx) =
+    let (logical_plan, plan_ctx) =
         build_logical_plan(&ast, &schema, None, None, None).expect("Failed to plan query");
-    let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
-        .expect("Failed to render SQL");
+    let render_plan =
+        logical_plan_to_render_plan_with_ctx((*logical_plan).clone(), &schema, Some(&plan_ctx))
+            .expect("Failed to render SQL");
     let sql = render_plan.to_sql();
 
     println!("Generated SQL:\n{}", sql);
@@ -262,10 +263,11 @@ fn test_function_with_parameter_in_where() {
 
     let schema = create_test_schema();
 
-    let (logical_plan, _plan_ctx) =
+    let (logical_plan, plan_ctx) =
         build_logical_plan(&ast, &schema, None, None, None).expect("Failed to plan query");
-    let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
-        .expect("Failed to render SQL");
+    let render_plan =
+        logical_plan_to_render_plan_with_ctx((*logical_plan).clone(), &schema, Some(&plan_ctx))
+            .expect("Failed to render SQL");
     let sql = render_plan.to_sql();
 
     println!("Generated SQL:\n{}", sql);
@@ -282,10 +284,11 @@ fn test_multiple_parameters_with_multiple_functions() {
 
     let schema = create_test_schema();
 
-    let (logical_plan, _plan_ctx) =
+    let (logical_plan, plan_ctx) =
         build_logical_plan(&ast, &schema, None, None, None).expect("Failed to plan query");
-    let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
-        .expect("Failed to render SQL");
+    let render_plan =
+        logical_plan_to_render_plan_with_ctx((*logical_plan).clone(), &schema, Some(&plan_ctx))
+            .expect("Failed to render SQL");
     let sql = render_plan.to_sql();
 
     println!("Generated SQL:\n{}", sql);
@@ -303,10 +306,11 @@ fn test_math_function_in_where_with_parameter() {
 
     let schema = create_test_schema();
 
-    let (logical_plan, _plan_ctx) =
+    let (logical_plan, plan_ctx) =
         build_logical_plan(&ast, &schema, None, None, None).expect("Failed to plan query");
-    let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
-        .expect("Failed to render SQL");
+    let render_plan =
+        logical_plan_to_render_plan_with_ctx((*logical_plan).clone(), &schema, Some(&plan_ctx))
+            .expect("Failed to render SQL");
     let sql = render_plan.to_sql();
 
     println!("Generated SQL:\n{}", sql);
@@ -323,10 +327,11 @@ fn test_string_function_with_parameters_in_return() {
 
     let schema = create_test_schema();
 
-    let (logical_plan, _plan_ctx) =
+    let (logical_plan, plan_ctx) =
         build_logical_plan(&ast, &schema, None, None, None).expect("Failed to plan query");
-    let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
-        .expect("Failed to render SQL");
+    let render_plan =
+        logical_plan_to_render_plan_with_ctx((*logical_plan).clone(), &schema, Some(&plan_ctx))
+            .expect("Failed to render SQL");
     let sql = render_plan.to_sql();
 
     println!("Generated SQL:\n{}", sql);
@@ -344,10 +349,10 @@ async fn test_aggregation_function_with_parameter_filter() {
     let schema = create_test_schema();
 
     // Use full pipeline so projection_tagging resolves count(n) → count(n.id)
-    let (logical_plan, _plan_ctx) =
+    let (logical_plan, plan_ctx) =
         evaluate_read_query(ast, &schema, None, None).expect("Failed to plan query");
-    let render_plan =
-        logical_plan_to_render_plan(logical_plan, &schema).expect("Failed to render SQL");
+    let render_plan = logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx))
+        .expect("Failed to render SQL");
     let sql = render_plan.to_sql();
 
     println!("Generated SQL:\n{}", sql);
@@ -365,10 +370,11 @@ fn test_nested_functions_with_properties() {
 
     let schema = create_test_schema();
 
-    let (logical_plan, _plan_ctx) =
+    let (logical_plan, plan_ctx) =
         build_logical_plan(&ast, &schema, None, None, None).expect("Failed to plan query");
-    let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
-        .expect("Failed to render SQL");
+    let render_plan =
+        logical_plan_to_render_plan_with_ctx((*logical_plan).clone(), &schema, Some(&plan_ctx))
+            .expect("Failed to render SQL");
     let sql = render_plan.to_sql();
 
     println!("Generated SQL:\n{}", sql);
@@ -386,10 +392,11 @@ fn test_case_expression_with_parameters() {
 
     let schema = create_test_schema();
 
-    let (logical_plan, _plan_ctx) =
+    let (logical_plan, plan_ctx) =
         build_logical_plan(&ast, &schema, None, None, None).expect("Failed to plan query");
-    let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
-        .expect("Failed to render SQL");
+    let render_plan =
+        logical_plan_to_render_plan_with_ctx((*logical_plan).clone(), &schema, Some(&plan_ctx))
+            .expect("Failed to render SQL");
     let sql = render_plan.to_sql();
 
     println!("Generated SQL:\n{}", sql);
@@ -406,10 +413,11 @@ fn test_function_on_parameter_in_return() {
 
     let schema = create_test_schema();
 
-    let (logical_plan, _plan_ctx) =
+    let (logical_plan, plan_ctx) =
         build_logical_plan(&ast, &schema, None, None, None).expect("Failed to plan query");
-    let render_plan = logical_plan_to_render_plan((*logical_plan).clone(), &schema)
-        .expect("Failed to render SQL");
+    let render_plan =
+        logical_plan_to_render_plan_with_ctx((*logical_plan).clone(), &schema, Some(&plan_ctx))
+            .expect("Failed to render SQL");
     let sql = render_plan.to_sql();
 
     println!("Generated SQL:\n{}", sql);

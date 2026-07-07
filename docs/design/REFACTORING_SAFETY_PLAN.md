@@ -673,6 +673,30 @@ collapse behind the WITH barrier via the §1.4-duplicated copies in
 `expand_table_alias_to_group_by_id_only`) — all four sites now share the
 `composite_id_group_by_columns` helper, WITH-form live-verified 6 buckets vs. 2,
 regression `composite_group_by_whole_node_behind_with_barrier_457`) ·
+☑ P0.x golden harness → production render path (`fix/459-harness-production-path`,
+#459): the `sql_golden_tests.rs` harness rendered via the ctx-less
+`logical_plan_to_render_plan` (no `PlanCtx`) — a path with NO production callers
+that demonstrably diverged from server/cg/embedded SQL. The two helpers (`render`
++ `render_ctx`) are unified into one production-faithful `render()` calling
+`logical_plan_to_render_plan_with_ctx`, step-for-step equivalent to
+`Connection::query_to_sql`. Net now locks the production artifact. Golden diff
+audit (6 cases, all where the ctx-less net had locked WRONG/incomplete SQL):
+`standard/union` (ctx-less collapsed to the `__multi_label_union` whole-node scan
+dropping the RETURN projections → production emits the correct projection UNION
+DISTINCT; live 5 rows), `standard/vlp_multi_type` + `standard/multi_type_rel_type_fn`
++ `polymorphic/rel_type_fn` (ctx-less dropped whole edge-type/end-type branches of
+the multi-type expand → production enumerates all; live-verified both branches
+present), `denormalized/optional_match` + `denormalized/path_return` REMOVED from
+the byte-net (production materializes the from/to-union node scan / path property
+columns in nondeterministic HashMap column order — same latent defect as the
+polymorphic `pattern_union_*` blobs — so not byte-lockable; locked instead by
+structural tests `denorm_optional_match_resolves_to_node_onto_edge_456` /
+`denorm_path_return_materializes_node_edge_props_459`). ISSUE-WORTHY finding: the
+denorm `__denorm_scan_a` OPTIONAL from/to union additionally scrambles `code`↔`state`
+via positional UNION over differently-ordered branches (live 14 rows with
+state-as-code, not the intended 9 — file a follow-up). The `4×` polymorphic
+row-multiplication characterization was flipped to lock the production single read.
+No production-caller migration / ctx-less-path deletion yet (follow-up commits) ·
 ☐ P0.5 Browser-shaped patterns ·
 ☐ P0.6 corpus sweep ·
 ☑ P0.7 CI push+smoke (`test/p07-p08-ci-wiring`: re-enabled the `push:main` trigger
