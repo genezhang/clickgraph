@@ -639,7 +639,18 @@ node-only cases collapse to invalid `flights_denorm.code` (virtual-id unresolved
 #427/#429 class), 2 ORDER BY mis-qualify `a.origin_code`, `with_match_chain`
 returns 7≠4 (dest-branch filters wrong column), `optional_match` renders as an
 inner hop; all documented in the test's known-suspicious block) ·
-☐ P0.3 polymorphic · ☑ P0.4 composite-id (`test/p04-golden-composite-id`:
+☑ P0.3 polymorphic (`test/p03-golden-polymorphic`: harness gains a `Polymorphic`
+`SchemaId` (`schemas/test/social_polymorphic.yaml` — single `interactions` edge
+table, type_column + from/to label columns); +58 byte-goldens (29 cases × 2
+dialects) under `golden/sql_ir/polymorphic/`, all 29 CH goldens executed on a
+live `brahmand` fixture; standard+fk_edge goldens byte-identical, `normalize()`
+untouched. Findings: `whole_edge_r` drops the type discriminator when only the
+edge is projected (byte-locked; returns all 29 rows, not 10 FOLLOWS). The
+fully-unlabeled `pattern_union_*` cases (`(a)-[:SHARED]->(b)`, `p=()-[]->()`)
+emit property blobs in nondeterministic HashMap order so they are NOT
+byte-locked — instead two dedicated tests lock the #428 "real scan, not `_empty`"
+invariant and characterize the current 4× outer-union row-multiplication) ·
+☑ P0.4 composite-id (`test/p04-golden-composite-id`:
 `schemas/test/composite_node_ids.yaml` rewritten to the loadable single-graph
 shape — extracted/adapted from `schemas/examples/composite_node_id_test.yaml`,
 same `db_composite_id` tables/data — Account composite `(bank_id,
