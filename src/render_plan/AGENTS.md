@@ -129,6 +129,16 @@ In `plan_builder.rs`, this function traverses the plan to find a node's ID colum
 
 If you reverse this order, WITH CTE JOINs break (the `a_start_id` regression).
 
+`find_id_column_for_alias()` returns a SINGLE column (the first, for composite
+ids). That is correct for JOIN keys (composite JOINs are built column-pairwise
+elsewhere) and harmless for `count(a)` aggregates, but a **bare-node GROUP BY key
+needs the FULL composite key** or distinct nodes collapse into one bucket
+(issue #457). `group_by_builder.rs` therefore special-cases composite ids
+(`composite_id_group_by_columns`, gated on schema-catalog `node_id.is_composite()`)
+and emits one GROUP BY key per `node_id.columns()`, instead of forwarding the
+single column. Non-composite/denormalized/VLP/CTE aliases keep the single-column
+path unchanged.
+
 ### 3. build_chained_with_match_cte_plan Flow
 This is the most complex function (~3500 lines in plan_builder_utils.rs):
 ```

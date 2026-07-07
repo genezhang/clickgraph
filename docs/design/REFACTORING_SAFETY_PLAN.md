@@ -659,11 +659,15 @@ account_number)` mixed with single-column Customer; +68 goldens (34 cases ×
 FK-edge goldens byte-identical/untouched; composite-to-composite (`TRANSFERRED`)
 and single-to-composite (`OWNS`) JOINs, the WITH→MATCH CTE-barrier correlation,
 and VLP all correctly carry ALL id components on both sides — 1 CONFIRMED BUG
-found and locked as known-suspicious, NOT fixed here (no drive-by fixes):
-`group_by_whole_node` — grouping by a bare composite-id node variable collapses
-GROUP BY to the node id's FIRST column only, silently merging distinct nodes
-that share it; see the test file's known-suspicious comment block for full
-root-cause analysis) ·
+found and locked as known-suspicious: `group_by_whole_node` — grouping by a bare
+composite-id node variable collapsed GROUP BY to the node id's FIRST column only,
+silently merging distinct nodes that share it. FIXED in #457
+(`fix/457-composite-group-by`): the whole-node GROUP BY optimization in
+`group_by_builder.rs` now resolves the node label and emits every
+`node_id.columns()` key via the schema catalog (gated on `is_composite()`, no raw
+pattern-axis flag); goldens regenerated (`group_by_whole_node__{clickhouse,
+databricks}.sql`), live-verified 6 per-account buckets vs. the old 2, regression
+`composite_group_by_whole_node_keys_on_all_id_columns_457`) ·
 ☐ P0.5 Browser-shaped patterns ·
 ☐ P0.6 corpus sweep · ☐ P0.7 CI push+smoke · ☐ P0.8 nightly
 

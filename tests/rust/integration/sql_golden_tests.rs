@@ -604,9 +604,10 @@ const DENORM_CORPUS: &[(&str, &str)] = &[
 ///   - multi-type `[:A|B]` — only one edge type between any given node pair.
 ///   - UNWIND/arrayJoin shapes — same Spark structural gap the other corpora skip.
 ///
-/// KNOWN-SUSPICIOUS: see the comment block above `sql_golden_snapshots` — the
-/// `group_by_whole_node` case locks a confirmed GROUP BY correctness bug specific
-/// to composite ids (grouping collapses to the FIRST id column only).
+/// NOTE: the `group_by_whole_node` case previously locked a composite-id GROUP BY
+/// correctness bug (grouping collapsed to the FIRST id column only); FIXED in
+/// issue #457 — it now keys on the full `node_id.columns()` set. See the comment
+/// block above `sql_golden_snapshots` for the resolution.
 const COMPOSITE_ID_CORPUS: &[(&str, &str)] = &[
     // --- node scans (both node types) ---
     ("node_scan_account", "MATCH (a:Account) RETURN a.account_number"),
@@ -711,9 +712,10 @@ const COMPOSITE_ID_CORPUS: &[(&str, &str)] = &[
         "group_by_composite_columns",
         "MATCH (a:Account)-[:TRANSFERRED]->(a2:Account) RETURN a.bank_id, a.account_number, count(a2) AS n",
     ),
-    // KNOWN-SUSPICIOUS (see comment block below): grouping by the bare node
-    // variable `a` (not its explicit properties) collapses GROUP BY to the
-    // FIRST id column only (`a.bank_id`), NOT the full composite key.
+    // Grouping by the bare node variable `a` (not its explicit properties) now
+    // keys on the FULL composite id (`a.bank_id, a.account_number`), matching
+    // `group_by_composite_columns` above. Regression for issue #457 — see the
+    // comment block below and `composite_group_by_whole_node_keys_on_all_id_columns_457`.
     (
         "group_by_whole_node",
         "MATCH (a:Account)-[:TRANSFERRED]->(a2:Account) RETURN a, count(a2) AS n",
@@ -1119,40 +1121,29 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 // ids can never satisfy `Identifier::Single`, so it is conservatively skipped
 // regardless).
 //
-//   - composite_id/group_by_whole_node: CONFIRMED BUG, locked as current
-//     behavior (not fixed in this slice — Phase-0 golden-locking only, no
-//     drive-by fixes). `MATCH (a:Account)-[:TRANSFERRED]->(a2:Account) RETURN a,
-//     count(a2) AS n` renders `GROUP BY a.bank_id` — ONLY the FIRST composite-id
-//     column, silently dropping `account_number`. Any bank with >1 account (e.g.
-//     CHASE, which owns 4 accounts in the fixture data) collapses ALL of that
-//     bank's accounts into a single GROUP BY bucket: `count(a2)` sums transfers
-//     across every CHASE account as if they were one entity, and the `anyLast()`-
-//     wrapped non-aggregated columns (including `a.account_number`, the SECOND
-//     half of the node's own identity) return an ARBITRARY one of the collapsed
-//     accounts' values. Contrast with `group_by_composite_columns`, which asks
-//     for the same shape via explicit properties (`RETURN a.bank_id,
-//     a.account_number, count(a2)`) and correctly emits `GROUP BY a.bank_id,
-//     a.account_number` — the bug is specific to the bare-node-variable path.
-//     Root cause: `ViewScan.id_column` (`src/query_planner/logical_plan/view_scan.rs`)
-//     is a single `String`, populated at ViewScan-construction time from only
-//     `node_schema.node_id.columns().first()` for ANY node, composite or not
-//     (`src/query_planner/logical_plan/match_clause/view_scan.rs`, the
-//     non-denormalized branch around the "For non-denormalized nodes, node_id IS
-//     the actual column name" comment). `find_id_column_for_alias`
-//     (`src/render_plan/plan_builder.rs`) forwards that single column straight
-//     through to the GROUP BY node-alias optimization in
+//   - composite_id/group_by_whole_node: FIXED (issue #457). Now renders
+//     `GROUP BY a.bank_id, a.account_number` — the FULL composite key — so each
+//     distinct Account is its own bucket (8 buckets on the fixture, not 2), and
+//     `account_number` is projected as a bare grouping key rather than
+//     `anyLast()`-wrapped. `MATCH (a:Account)-[:TRANSFERRED]->(a2:Account)
+//     RETURN a, count(a2) AS n` used to emit `GROUP BY a.bank_id` only, silently
+//     merging every Account sharing a bank_id (e.g. CHASE's 4 accounts) into one
+//     row. Contrast unchanged: `group_by_composite_columns` (explicit
+//     `RETURN a.bank_id, a.account_number, count(a2)`) always keyed correctly.
+//     Fix: the whole-node GROUP BY optimization in
 //     `handle_table_alias_group_by`/`handle_wildcard_group_by`
-//     (`src/render_plan/group_by_builder.rs`), which pushes exactly one
-//     `PropertyAccessExp` instead of one per `node_id.columns()`. The same
-//     first-column-only value is ALSO used for `count(a)`-style aggregates
-//     (`aggregate_count`, `group_by_composite_columns`'s own `count(a2)`), where
-//     it is harmless (COUNT only needs one non-null column to detect row
-//     existence, not the full identity) — but the GROUP BY consumer needs the
-//     FULL key, and gets only the first column. Fixing this needs either a
-//     `Vec<String>`-capable id representation on `ViewScan`/`find_id_column_for_alias`,
-//     or a composite-aware GROUP BY expansion in `group_by_builder.rs` that calls
-//     `node_schema.node_id.columns()` instead. Filed as a follow-up (not fixed
-//     here per the Phase-0 protocol — no drive-by fixes).
+//     (`src/render_plan/group_by_builder.rs`) now resolves the node label from
+//     the plan and asks the task-local schema for the complete
+//     `node_id.columns()` set (via `composite_id_group_by_columns`), pushing one
+//     `PropertyAccessExp` per identity column instead of forwarding the single
+//     `ViewScan.id_column`. Only composite ids take this path; single-column,
+//     denormalized/virtual, VLP and CTE-backed aliases keep the established
+//     single-column `find_id_column_for_alias` behavior. The first-column-only
+//     value is STILL used (unchanged, harmlessly) for `count(a)`-style aggregates
+//     (`aggregate_count`, `group_by_composite_columns`'s own `count(a2)`): COUNT
+//     only needs one non-null column to detect row existence, so its argument is
+//     deliberately left alone. Regression test:
+//     `composite_group_by_whole_node_keys_on_all_id_columns_457`.
 
 // KNOWN-SUSPICIOUS Polymorphic goldens — locked as *current behavior* (the net
 // characterizes what the engine does today, including latent wrongness, so a
@@ -1297,6 +1288,41 @@ async fn with_cte_join_key_is_correlated_not_cartesian_451() {
         assert!(
             sql.contains("p1_c_customer_id"),
             "expected CTE to project the customer_id join key for {dialect:?}, got:\n{sql}"
+        );
+    }
+}
+
+/// Regression for #457: GROUP BY on a bare composite-id node variable must key
+/// on ALL id columns, not just the first. `MATCH (a:Account)-[:TRANSFERRED]->
+/// (a2:Account) RETURN a, count(a2)` previously emitted `GROUP BY a.bank_id`
+/// only, silently collapsing every Account that shared a bank_id into one bucket
+/// (count summed across them, other identity columns returned an arbitrary
+/// member's value). The whole-node GROUP BY optimization in `group_by_builder.rs`
+/// now expands to the full `node_id.columns()` set via the schema.
+#[tokio::test]
+async fn composite_group_by_whole_node_keys_on_all_id_columns_457() {
+    let schema = load_schema(SchemaId::CompositeId.yaml_path());
+    let cypher = "MATCH (a:Account)-[:TRANSFERRED]->(a2:Account) RETURN a, count(a2) AS n";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(&schema, cypher, dialect).await;
+
+        // BOTH composite-id columns must appear as GROUP BY keys.
+        assert!(
+            sql.contains("GROUP BY a.bank_id, a.account_number"),
+            "expected GROUP BY on BOTH composite id columns for {dialect:?}, got:\n{sql}"
+        );
+        // The old bug emitted a bare `GROUP BY a.bank_id` (no second key).
+        assert!(
+            !sql.trim_end().ends_with("GROUP BY a.bank_id"),
+            "GROUP BY must not collapse to the first id column only for {dialect:?}, got:\n{sql}"
+        );
+        // account_number is a grouping key now, so it must NOT be wrapped in an
+        // aggregate (anyLast/any_value) in the SELECT list.
+        assert!(
+            !sql.contains("anyLast(a.account_number)")
+                && !sql.contains("any_value(a.account_number)"),
+            "account_number is a GROUP BY key and must not be aggregate-wrapped for {dialect:?}, got:\n{sql}"
         );
     }
 }

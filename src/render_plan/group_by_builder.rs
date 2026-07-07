@@ -161,11 +161,70 @@ fn process_group_by_expressions(group_by: &GroupBy) -> GroupByBuilderResult<Vec<
     Ok(result)
 }
 
+/// Resolve the full set of node-identity columns to use as GROUP BY keys for a
+/// node alias, via the task-local graph schema (NOT raw ViewScan flags).
+///
+/// For a **composite-id** node (e.g. Account keyed by `(bank_id, account_number)`)
+/// the single-column `ViewScan.id_column` path only emits the FIRST id column,
+/// silently collapsing distinct nodes that share that first component (issue #457).
+/// This resolves the node's label from the plan and asks the schema for the
+/// complete `node_id.columns()` set so every identity column becomes a GROUP BY key.
+///
+/// Returns `Some(cols)` only for composite ids (the case that needs expansion) —
+/// gated purely on `node_id.is_composite()`, a schema-catalog property, so no raw
+/// pattern-axis flag is branched on. Returns `None` for single-column ids,
+/// denormalized/virtual nodes (always single-column here), VLP endpoints,
+/// CTE-backed aliases, or when the schema/label cannot be resolved — leaving the
+/// established single-column `find_id_column_for_alias` path untouched.
+///
+/// The returned columns mirror how `ViewScan.id_column` is derived for
+/// non-denormalized nodes (`node_id.columns()` used directly as DB column names),
+/// so the first element is always identical to the previous single-column key.
+fn composite_id_group_by_columns(input: &LogicalPlan, alias: &str) -> Option<Vec<String>> {
+    let schema = crate::server::query_context::get_current_schema_with_fallback()?;
+    let label = super::cte_extraction::get_node_label_for_alias(alias, input)?;
+    let node_schema = schema.node_schema(&label).ok()?;
+
+    // Only composite ids need multi-column expansion. Gated purely on the
+    // schema-catalog `is_composite()` property — no raw pattern-axis flag. In
+    // this engine denormalized/virtual nodes are always single-column, so
+    // `is_composite()` already excludes them and they keep their existing
+    // DB-column resolution via the single-column `find_id_column_for_alias` path.
+    if !node_schema.node_id.is_composite() {
+        return None;
+    }
+
+    Some(
+        node_schema
+            .node_id
+            .columns()
+            .iter()
+            .map(|c| c.to_string())
+            .collect(),
+    )
+}
+
+/// Push one GROUP BY key per composite-id column for `table_alias`.
+/// The caller dedups at the alias level (via `seen_aliases`) before calling this.
+fn push_composite_id_group_by(
+    result: &mut Vec<RenderExpr>,
+    table_alias: &str,
+    id_columns: &[String],
+) {
+    for id_col in id_columns {
+        result.push(RenderExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: TableAlias(table_alias.to_string()),
+            column: PropertyValue::Column(id_col.clone()),
+        }));
+    }
+}
+
 /// Handle GROUP BY for table alias expressions (e.g., `GROUP BY a`)
 ///
 /// Applies the ID column optimization: instead of grouping by all node properties,
-/// we only group by the ID column since all other properties are functionally
-/// dependent on it.
+/// we only group by the ID column(s) since all other properties are functionally
+/// dependent on them. For composite-id nodes, ALL identity columns are emitted
+/// (issue #457) so distinct nodes are never collapsed.
 ///
 /// Returns `true` if the alias was successfully handled, `false` otherwise.
 fn handle_table_alias_group_by(
@@ -192,7 +251,20 @@ fn handle_table_alias_group_by(
     }
     seen_aliases.insert(table_alias_to_use.clone());
 
-    // Get the ID column from the schema (via ViewScan.id_column)
+    // Composite-id nodes: emit EVERY identity column as a GROUP BY key so distinct
+    // nodes sharing a first id component are not silently merged (issue #457).
+    if let Some(id_columns) = composite_id_group_by_columns(input, alias) {
+        log::debug!(
+            "🔧 GROUP BY optimization: Using {} composite ID columns {:?} for alias '{}'",
+            id_columns.len(),
+            id_columns,
+            table_alias_to_use
+        );
+        push_composite_id_group_by(result, &table_alias_to_use, &id_columns);
+        return Ok(true);
+    }
+
+    // Single-column id: get the ID column from the schema (via ViewScan.id_column)
     let id_col = input.find_id_column_for_alias(alias).unwrap_or_else(|_| {
         log::warn!(
             "⚠️ Could not find ID column for alias '{}', using fallback",
@@ -272,8 +344,20 @@ fn handle_wildcard_group_by(
         return Ok(true);
     }
 
-    // Case B: Regular node alias - use ID column
+    // Case B: Regular node alias - use ID column(s)
     if !properties.is_empty() {
+        // Composite-id nodes: emit EVERY identity column (issue #457).
+        if let Some(id_columns) = composite_id_group_by_columns(input, &prop_access.table_alias.0) {
+            log::debug!(
+                "🔧 GROUP BY optimization: Using {} composite ID columns {:?} for alias '{}'",
+                id_columns.len(),
+                id_columns,
+                table_alias_to_use
+            );
+            push_composite_id_group_by(result, &table_alias_to_use, &id_columns);
+            return Ok(true);
+        }
+
         let id_col = input
             .find_id_column_for_alias(&prop_access.table_alias.0)
             .map_err(|e| {
