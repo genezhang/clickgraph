@@ -27,7 +27,7 @@ use clickgraph::{
     graph_catalog::{config::GraphSchemaConfig, graph_schema::GraphSchema},
     open_cypher_parser::{parse_cypher_statement, strip_comments},
     query_planner::evaluate_read_statement,
-    render_plan::{logical_plan_to_render_plan, logical_plan_to_render_plan_with_ctx, ToSql},
+    render_plan::{logical_plan_to_render_plan_with_ctx, ToSql},
     server::query_context::{set_current_schema, with_query_context, QueryContext},
     sql_generator::SqlDialect,
 };
@@ -292,9 +292,12 @@ const CORPUS: &[(&str, &str)] = &[
         "MATCH (u:User) OPTIONAL MATCH (u)-[:AUTHORED]->(p:Post) RETURN u.name, p.title",
     ),
     (
-        // NB: the engine currently renders this via the multi-label entity-union
-        // path (a `__multi_label_union` CTE), not a projection-list UNION — the
-        // golden locks that current behavior.
+        // Production (#459) renders this as a genuine projection-list UNION
+        // DISTINCT (`u.full_name AS "x"` UNION DISTINCT `p.post_title AS "x"`) —
+        // the correct Cypher UNION shape (live-verified: 3 user names + 2 post
+        // titles = 5 rows). The pre-#459 ctx-less harness path wrongly collapsed
+        // it to the `__multi_label_union` whole-node Browser scan (dropping the
+        // RETURN projections); switching the net to production fixed the golden.
         "union",
         "MATCH (u:User) RETURN u.name AS x UNION MATCH (p:Post) RETURN p.title AS x",
     ),
@@ -540,18 +543,18 @@ const DENORM_CORPUS: &[(&str, &str)] = &[
         "whole_edge_r",
         "MATCH (a:Airport)-[r:FLIGHT]->(b:Airport) RETURN r",
     ),
-    // path MATCH p=()-[]->() -> fixed_path / pattern_union renderers
-    // (#419/#420/#421/#425 family): virtual ids resolved to physical columns,
-    // no spurious self-join of the single edge table.
-    (
-        "path_return",
-        "MATCH p = (a:Airport)-[:FLIGHT]->(b:Airport) RETURN p",
-    ),
-    // --- OPTIONAL MATCH (anchored on Airport, optional outgoing flight) ---
-    (
-        "optional_match",
-        "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code",
-    ),
+    // NOTE (#459): `path_return` (`MATCH p = (a:Airport)-[:FLIGHT]->(b:Airport)
+    // RETURN p`) and `optional_match` (`MATCH (a:Airport) OPTIONAL MATCH
+    // (a)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code`) are NOT byte-goldens on
+    // the production render path: production materializes the path's node/edge
+    // property columns (path_return) and the from/to-union node scan
+    // `__denorm_scan_a` (optional_match) with columns emitted in nondeterministic
+    // HashMap order — the same latent defect that keeps the polymorphic
+    // `pattern_union_*` cases out of the byte-net. They are locked instead by the
+    // dedicated structural tests below (`denorm_path_return_materializes_node_edge_props_459`,
+    // `denorm_optional_match_resolves_to_node_onto_edge_456`). See the
+    // known-suspicious block above `sql_golden_snapshots` for the full finding
+    // (optional_match additionally has a positional-UNION column-scramble bug).
     // --- WITH + aggregation (out-degree per origin airport), and its HAVING form ---
     (
         "with_agg_count",
@@ -949,36 +952,20 @@ fn load_schema(yaml_path: &str) -> GraphSchema {
         .unwrap_or_else(|e| panic!("convert {yaml_path} to GraphSchema: {e:?}"))
 }
 
-async fn render(schema: &GraphSchema, cypher: &str, dialect: SqlDialect) -> String {
-    let schema = schema.clone();
-    let cypher = cypher.to_string();
-    let ctx = QueryContext {
-        dialect,
-        ..QueryContext::default()
-    };
-    with_query_context(ctx, async move {
-        set_current_schema(Arc::new(schema.clone()));
-        let cleaned = strip_comments(&cypher);
-        let (_rest, statement) =
-            parse_cypher_statement(&cleaned).unwrap_or_else(|e| panic!("parse: {e:?}"));
-        let (logical_plan, _plan_ctx) =
-            evaluate_read_statement(statement, &schema, None, None, None)
-                .unwrap_or_else(|e| panic!("plan: {e:?}"));
-        let render_plan = logical_plan_to_render_plan(logical_plan, &schema)
-            .unwrap_or_else(|e| panic!("render: {e:?}"));
-        render_plan.to_sql()
-    })
-    .await
-}
-
 /// Render through the PRODUCTION path: `to_render_plan_with_ctx` with the
 /// planner's `PlanCtx`, exactly as `cypher_to_sql` (server / cg / embedded)
-/// does. The `render()` helper above uses the ctx-less wrapper, which is known
-/// to diverge for polymorphic / multi-type expands (see
-/// `logical_plan_to_render_plan`'s doc comment) — regressions that only
-/// manifest with plan_ctx present (e.g. the #458 FROM-marker promotion) need
-/// this helper.
-async fn render_ctx(schema: &GraphSchema, cypher: &str, dialect: SqlDialect) -> String {
+/// does — the single, production-faithful render function for the golden net
+/// (issue #459). It is step-for-step equivalent to `Connection::query_to_sql`:
+/// parse → `evaluate_read_statement` → `logical_plan_to_render_plan_with_ctx`
+/// (passing the planner's `PlanCtx`) → `to_sql()`.
+///
+/// Before #459 the harness rendered via the ctx-less `logical_plan_to_render_plan`
+/// wrapper (no `PlanCtx`), which has NO production callers and demonstrably
+/// diverges from server output for polymorphic / multi-type expands, denorm
+/// node-scan unions, ORDER BY alias resolution, and the OPTIONAL denorm hop
+/// (see #454/#455/#456/#458). The net now locks the artifact production actually
+/// emits.
+async fn render(schema: &GraphSchema, cypher: &str, dialect: SqlDialect) -> String {
     let schema = schema.clone();
     let cypher = cypher.to_string();
     let ctx = QueryContext {
@@ -1155,36 +1142,57 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 //     golden updated (dest branch now `WHERE a.dest_state = 'CA'`); live 4 rows.
 //     Regression: `denorm_with_match_chain_filters_per_branch_column_456`.
 //   - optional_match: `MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b)`.
-//     PRODUCTION FIXED (#456) — the golden (ctx-less `render()`) below still
-//     locks the WRONG shape and DIVERGES from production (a #459 instance):
-//       * GOLDEN (ctx-less harness path): renders IDENTICALLY to the inner
-//         directed hop — a plain `FROM flights_denorm AS t0` with NO LEFT JOIN
-//         and no node materialization (8 rows, drops PHX — the destination-only
-//         airport with no outgoing flight). Still locked here as-is; converging
-//         this path is bug 2(b) / #459 (not attempted — the ctx-less path reaches
-//         this shape by a different route than production).
-//       * PRODUCTION (`to_render_plan_with_ctx`: server/cg/embedded): correctly
-//         materializes `a` as the from/to UNION CTE (`__denorm_scan_a`) and
-//         LEFT-JOINs the edge — but USED TO emit invalid SQL: the to-node `b`'s
-//         columns live on the LEFT-joined edge row (`t1.dest_code`), yet a stale
-//         edge→node reverse-map rewrote the resolved `t1.dest_code` back to the
-//         raw `b.code`, a phantom table → ClickHouse `UNKNOWN_IDENTIFIER` (HTTP
-//         500). Fixed by dropping `to_node_properties` from that reverse-map so
-//         to-node columns stay on the edge alias (`plan_builder.rs`, the ctx
-//         OPTIONAL-denorm handler). Live: correct 9 rows (8 flights + PHX
-//         null-extended). Regression: `denorm_optional_match_resolves_to_node_onto_edge_456`.
+//     NOT A BYTE-GOLDEN post-#459 (removed from DENORM_CORPUS; locked by
+//     `denorm_optional_match_resolves_to_node_onto_edge_456`). History: before
+//     #459 the harness rendered via the ctx-less path, which emitted a degenerate
+//     inner scan (`FROM flights_denorm AS t0`, no LEFT JOIN, 8 rows, dropped PHX —
+//     the destination-only airport). #459 re-points the net at production
+//     (`to_render_plan_with_ctx`: server/cg/embedded), which materializes `a` as
+//     the from/to UNION CTE `__denorm_scan_a` and LEFT-JOINs the edge (the correct
+//     OPTIONAL shape — this is where #456's `to_node_properties` reverse-map fix
+//     keeps `b.code` resolved to the edge's `t1.dest_code`, not a phantom table).
+//     Two reasons it is NOT byte-lockable and is issue-worthy (KNOWN-SUSPICIOUS,
+//     for a follow-up bug report):
+//       1. NONDETERMINISTIC COLUMN ORDER: the `__denorm_scan_a` from/to-union
+//          branches project their node-property columns in HashMap iteration
+//          order (the same latent defect that keeps the polymorphic
+//          `pattern_union_*` blobs out of the byte-net). The order flips across
+//          process runs, so no stable golden exists. (Contrast `whole_node` /
+//          `project_node_props`, whose from/to union IS deterministically ordered
+//          — a different, sorted materialization path.)
+//       2. POSITIONAL-UNION COLUMN SCRAMBLE (semantic bug): because the origin
+//          and dest branches can receive DIFFERENT column orders, and SQL UNION
+//          aligns by POSITION, the CTE's `code`/`state` columns get swapped on
+//          one branch. Live on `db_denormalized` (2026-07-06) this produced 14
+//          rows with `a.code` holding STATE values (NY, IL, CA, …) instead of
+//          airport codes — NOT the intended 9 (8 flights + PHX). Both the ctx-less
+//          8-row inner scan and this production output are wrong, differently;
+//          the production nondeterminism is the one users actually hit. Fixing the
+//          `__denorm_scan_a` branch column ordering is out of scope for this
+//          net-repointing slice (file a follow-up).
 //
 // Verified CORRECT (normal locks, not suspicious) — executed on live CH:
 // directed_hop_ids (8), directed_hop_props, reverse_hop (8), undirected_hop (16,
 // each edge both directions), hop_edge_props (renamed flight_num -> physical
 // flight_number), where_edge_prop (distance>1000 -> 6), hop_filter_both
 // (CA->NY -> 1), whole_edge_r (8, composite edge_id + all edge props),
-// path_return (8), vlp_recursive *1..2 (DenormalizedCteStrategy, 15),
+// vlp_recursive *1..2 (DenormalizedCteStrategy, 15),
 // with_agg_count (out-degree per origin, 6), with_having (>1 -> 1),
 // with_skip_limit (3), group_two_keys (distinct state pairs, 7), distinct_hop
 // (5 origin states). All hop cases render from the SINGLE `flights_denorm` table
 // with NO spurious edge self-join (the #419 class is clean) and correct
 // from-side (origin_*) vs to-side (dest_*) column sourcing.
+//
+//   - path_return (`MATCH p = (a:Airport)-[:FLIGHT]->(b:Airport) RETURN p`): also
+//     NOT A BYTE-GOLDEN post-#459 (removed; locked by
+//     `denorm_path_return_materializes_node_edge_props_459`). The ctx-less path
+//     emitted ONLY the `tuple('fixed_path', 'a', 'b', 't0')` path marker with no
+//     underlying columns — a path with no reconstructable node/edge data.
+//     Production correctly materializes every a.*/b.*/t0.* property column of the
+//     path off the single `flights_denorm` scan, but (like optional_match) in
+//     nondeterministic HashMap column order, so it cannot be byte-locked. The
+//     column *set* and per-column mappings are stable and are what the structural
+//     test asserts.
 //
 // Databricks goldens for all 26 cases are locked but NOT executed (no live Spark
 // here); they render without panic and mirror the CH structure.
@@ -1572,24 +1580,14 @@ async fn polymorphic_whole_edge_r_keeps_discriminator() {
             "whole_edge_r ({dname}) must scan the edge table as FROM:\n{sql}"
         );
         // …and the discriminator + label filters must survive as a WHERE clause.
+        // `render()` is the production (plan_ctx) path post-#459 — the same path
+        // server / cg / embedded use.
         assert!(
             sql.contains("r.interaction_type = 'FOLLOWS'")
                 && sql.contains("r.from_type = 'User'")
                 && sql.contains("r.to_type = 'User'"),
             "whole_edge_r ({dname}) dropped the polymorphic type/label \
              discriminator on the pruned-endpoint edge scan (#458):\n{sql}"
-        );
-
-        // Same invariants on the PRODUCTION (plan_ctx) render path — the two
-        // paths diverge for polymorphic patterns, so lock both.
-        let sql_prod = render_ctx(&schema, cypher, dialect).await;
-        assert!(
-            sql_prod.contains("brahmand.interactions AS r")
-                && sql_prod.contains("r.interaction_type = 'FOLLOWS'")
-                && sql_prod.contains("r.from_type = 'User'")
-                && sql_prod.contains("r.to_type = 'User'"),
-            "whole_edge_r ({dname}, production ctx path) dropped the \
-             discriminator (#458):\n{sql_prod}"
         );
     }
 }
@@ -1607,9 +1605,10 @@ async fn polymorphic_whole_edge_r_keeps_discriminator() {
 /// projects (unknown-identifier error on live ClickHouse) and semantically a
 /// collapse of the union to one branch. The existing structural tests all use
 /// `RETURN a, b` (endpoints referenced ⇒ no SingleTableScan marker), which is
-/// how this escaped. Uses the PRODUCTION (plan_ctx) render path where the
-/// regression was proven; asserts the outer query never references the raw
-/// discriminator columns through the CTE alias.
+/// how this escaped. `render()` is the PRODUCTION (plan_ctx) render path where
+/// the regression was proven (the golden net's only path post-#459); asserts the
+/// outer query never references the raw discriminator columns through the CTE
+/// alias.
 #[tokio::test]
 async fn polymorphic_unlabeled_whole_edge_no_outer_discriminator() {
     let schema = load_schema(SchemaId::Polymorphic.yaml_path());
@@ -1625,30 +1624,26 @@ async fn polymorphic_unlabeled_whole_edge_no_outer_discriminator() {
             (SqlDialect::ClickHouse, "clickhouse"),
             (SqlDialect::Databricks, "databricks"),
         ] {
-            for (path_name, sql) in [
-                ("production ctx", render_ctx(&schema, cypher, dialect).await),
-                ("ctx-less", render(&schema, cypher, dialect).await),
-            ] {
-                // The unlabeled/multi-type/VLP whole-edge shape routes through
-                // the pattern-union CTE…
+            let sql = render(&schema, cypher, dialect).await;
+            // The unlabeled/multi-type/VLP whole-edge shape routes through
+            // the pattern-union CTE…
+            assert!(
+                sql.contains("pattern_union_"),
+                "`{cypher}` ({dname}) expected the \
+                 pattern_union CTE as FROM:\n{sql}"
+            );
+            // …and the outer query must NOT reference the raw edge
+            // discriminator columns through the CTE alias — the CTE does
+            // not project them, and the per-branch filters inside the CTE
+            // already discriminate (#458 follow-up).
+            for col in ["r.interaction_type", "r.from_type", "r.to_type"] {
                 assert!(
-                    sql.contains("pattern_union_"),
-                    "`{cypher}` ({dname}, {path_name}) expected the \
-                     pattern_union CTE as FROM:\n{sql}"
+                    !sql.contains(col),
+                    "`{cypher}` ({dname}) leaked the \
+                     FROM-marker pre_filter into the outer WHERE — `{col}` \
+                     is not a column of the pattern_union CTE (#458 \
+                     follow-up regression):\n{sql}"
                 );
-                // …and the outer query must NOT reference the raw edge
-                // discriminator columns through the CTE alias — the CTE does
-                // not project them, and the per-branch filters inside the CTE
-                // already discriminate (#458 follow-up).
-                for col in ["r.interaction_type", "r.from_type", "r.to_type"] {
-                    assert!(
-                        !sql.contains(col),
-                        "`{cypher}` ({dname}, {path_name}) leaked the \
-                         FROM-marker pre_filter into the outer WHERE — `{col}` \
-                         is not a column of the pattern_union CTE (#458 \
-                         follow-up regression):\n{sql}"
-                    );
-                }
             }
         }
     }
@@ -1710,21 +1705,19 @@ async fn polymorphic_unlabeled_endpoints_are_real_scans_not_empty() {
 
 /// Characterization of the ctx-less HARNESS render path for the fully-unlabeled
 /// polymorphic pattern. The `pattern_union_*` CTE enumerates all four
-/// (from_label, to_label) branches; on the ctx-less path (`render()` here uses
-/// `logical_plan_to_render_plan`) the OUTER query then selects from it FOUR
-/// times UNION-ALL'd with identical projections, emitting every path row 4×.
+/// (from_label, to_label) branches; the outer query then reads from it exactly
+/// ONCE — every enumerated path row is emitted a single time.
 ///
-/// #458 finding: this 4× is a HARNESS ARTIFACT, NOT a production bug. The
-/// production path (`to_render_plan_with_ctx`, used by all server/cg/embedded
-/// queries) collapses the outer union to a single `FROM pattern_union_*` — live
-/// CH via cg returns `(a)-[:SHARED]->(b)` = 3 and `(a)-[:FOLLOWS]->(b)` = 10
-/// (correct). The ctx-less wrapper has no production callers. Fixing the ctx-less
-/// collapse would touch the multi-type expand/Union machinery for a test-only
-/// path, so it was deliberately deferred. This test therefore locks the ctx-less
-/// 4× as the harness's current behavior; if a future change makes the ctx-less
-/// path also collapse to 1, that is fine — update this expectation and the note.
+/// #458/#459 finding: the ctx-less render path (`logical_plan_to_render_plan`)
+/// used to emit a 4× outer UNION-ALL over `pattern_union_*` (row multiplication)
+/// for this shape, but that path had NO production callers and was removed in
+/// #459. Post-#459 `render()` IS the production path (`to_render_plan_with_ctx`,
+/// used by all server/cg/embedded queries), which collapses the outer union to a
+/// single `FROM pattern_union_*` — live CH via cg returns `(a)-[:SHARED]->(b)`
+/// = 3 and `(a)-[:FOLLOWS]->(b)` = 10 (correct, NOT 12 / 40). This test now
+/// locks that correct single read as the production count.
 #[tokio::test]
-async fn polymorphic_unlabeled_endpoints_current_row_multiplication() {
+async fn polymorphic_unlabeled_endpoints_single_outer_read() {
     let schema = load_schema(SchemaId::Polymorphic.yaml_path());
 
     for (dialect, dname) in [
@@ -1738,14 +1731,14 @@ async fn polymorphic_unlabeled_endpoints_current_row_multiplication() {
             sql.contains("pattern_union_t"),
             "expected a pattern_union CTE for the unlabeled polymorphic pattern ({dname}):\n{sql}"
         );
-        // CURRENT behavior: 4 outer `FROM pattern_union_*` selects (the 4× bug).
+        // PRODUCTION behavior (#459): the outer query reads the already-complete
+        // `pattern_union_*` CTE exactly ONCE — no 4× row multiplication.
         let outer_reads = sql.matches("FROM pattern_union_t").count();
         assert_eq!(
-            outer_reads, 4,
-            "polymorphic unlabeled pattern ({dname}): expected the current \
-             (suspicious) 4× outer union over pattern_union_* (row multiplication, \
-             see KNOWN-SUSPICIOUS block); got {outer_reads} outer reads. A drop to \
-             1 is the FIX — update this expectation:\n{sql}"
+            outer_reads, 1,
+            "polymorphic unlabeled pattern ({dname}): production path must read \
+             pattern_union_* exactly ONCE (no 4× outer-union row multiplication); \
+             got {outer_reads} outer reads:\n{sql}"
         );
     }
 }
@@ -1843,30 +1836,26 @@ async fn denorm_with_match_chain_filters_per_branch_column_456() {
                   MATCH (a)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code";
 
     for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
-        // Both render paths shared the bug; lock both.
-        for (path, sql) in [
-            ("ctx-less", render(&schema, cypher, dialect).await),
-            ("production", render_ctx(&schema, cypher, dialect).await),
-        ] {
-            // The from/origin branch keeps the origin column…
-            assert!(
-                sql.contains("a.origin_state = 'CA'"),
-                "#456 ({dialect:?}/{path}): origin branch must filter origin_state:\n{sql}"
-            );
-            // …and the dest branch must filter its OWN dest column, not origin.
-            assert!(
-                sql.contains("a.dest_state = 'CA'"),
-                "#456 ({dialect:?}/{path}): dest branch must filter dest_state \
-                 (was origin_state — polluted the exported node set):\n{sql}"
-            );
-            // The dest branch must NOT carry the from-side column (the bug).
-            assert_eq!(
-                sql.matches("a.origin_state = 'CA'").count(),
-                1,
-                "#456 ({dialect:?}/{path}): exactly one branch may filter \
-                 origin_state (the origin branch); the dest branch leaked it:\n{sql}"
-            );
-        }
+        // `render()` is the production (plan_ctx) path post-#459.
+        let sql = render(&schema, cypher, dialect).await;
+        // The from/origin branch keeps the origin column…
+        assert!(
+            sql.contains("a.origin_state = 'CA'"),
+            "#456 ({dialect:?}): origin branch must filter origin_state:\n{sql}"
+        );
+        // …and the dest branch must filter its OWN dest column, not origin.
+        assert!(
+            sql.contains("a.dest_state = 'CA'"),
+            "#456 ({dialect:?}): dest branch must filter dest_state \
+             (was origin_state — polluted the exported node set):\n{sql}"
+        );
+        // The dest branch must NOT carry the from-side column (the bug).
+        assert_eq!(
+            sql.matches("a.origin_state = 'CA'").count(),
+            1,
+            "#456 ({dialect:?}): exactly one branch may filter \
+             origin_state (the origin branch); the dest branch leaked it:\n{sql}"
+        );
     }
 
     // Follow-up (review finding): the per-branch remap must also descend into
@@ -1881,27 +1870,20 @@ async fn denorm_with_match_chain_filters_per_branch_column_456() {
                        MATCH (a)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code";
 
     for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
-        for (path, sql) in [
-            ("ctx-less", render(&schema, case_cypher, dialect).await),
-            (
-                "production",
-                render_ctx(&schema, case_cypher, dialect).await,
-            ),
-        ] {
-            // The dest branch's CASE must test its OWN column…
-            assert!(
-                sql.contains("CASE WHEN a.dest_state = 'CA'"),
-                "#456 follow-up ({dialect:?}/{path}): dest branch must remap the \
-                 column INSIDE the CASE wrapper to dest_state:\n{sql}"
-            );
-            // …and the origin column may appear in exactly one branch's CASE.
-            assert_eq!(
-                sql.matches("CASE WHEN a.origin_state = 'CA'").count(),
-                1,
-                "#456 follow-up ({dialect:?}/{path}): the dest branch leaked \
-                 origin_state inside the CASE (wrapper not descended):\n{sql}"
-            );
-        }
+        let sql = render(&schema, case_cypher, dialect).await;
+        // The dest branch's CASE must test its OWN column…
+        assert!(
+            sql.contains("CASE WHEN a.dest_state = 'CA'"),
+            "#456 follow-up ({dialect:?}): dest branch must remap the \
+             column INSIDE the CASE wrapper to dest_state:\n{sql}"
+        );
+        // …and the origin column may appear in exactly one branch's CASE.
+        assert_eq!(
+            sql.matches("CASE WHEN a.origin_state = 'CA'").count(),
+            1,
+            "#456 follow-up ({dialect:?}): the dest branch leaked \
+             origin_state inside the CASE (wrapper not descended):\n{sql}"
+        );
     }
 }
 
@@ -1930,7 +1912,7 @@ async fn denorm_optional_match_resolves_to_node_onto_edge_456() {
         (SqlDialect::Databricks, "databricks"),
     ] {
         // Production render path — the one server / cg / embedded actually use.
-        let sql = render_ctx(&schema, cypher, dialect).await;
+        let sql = render(&schema, cypher, dialect).await;
         // Alias quoting differs per dialect (CH: "…", Databricks: `…`).
         let q = if dname == "databricks" { '`' } else { '"' };
 
@@ -1957,6 +1939,57 @@ async fn denorm_optional_match_resolves_to_node_onto_edge_456() {
             !sql.contains(&format!("      b.code AS {q}b.code{q}")),
             "#456 ({dname}): to-node reference leaked as the unresolvable raw \
              `b.code` (phantom table), got:\n{sql}"
+        );
+    }
+}
+
+/// #459 structural lock for the denorm `path_return` case
+/// (`MATCH p = (a:Airport)-[:FLIGHT]->(b:Airport) RETURN p`), which is NOT a
+/// byte-golden: production materializes the path's node/edge property columns off
+/// the single `flights_denorm` scan in nondeterministic HashMap column order, so
+/// the byte layout flips across runs (see the denorm known-suspicious block). The
+/// pre-#459 ctx-less path emitted ONLY the `tuple('fixed_path', …)` marker with no
+/// underlying columns — a path with no reconstructable data. This locks the stable
+/// invariants: the fixed-path tuple is present, the node endpoints resolve to the
+/// denorm virtual-id columns (`origin_code AS "a.code"` / `dest_code AS "b.code"`),
+/// and the edge properties are sourced — order-independent.
+#[tokio::test]
+async fn denorm_path_return_materializes_node_edge_props_459() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+    let cypher = "MATCH p = (a:Airport)-[:FLIGHT]->(b:Airport) RETURN p";
+
+    for (dialect, dname) in [
+        (SqlDialect::ClickHouse, "clickhouse"),
+        (SqlDialect::Databricks, "databricks"),
+    ] {
+        let sql = render(&schema, cypher, dialect).await;
+        let q = if dname == "databricks" { '`' } else { '"' };
+        // CH renders the fixed-path tuple as `tuple(...)`, Databricks as `struct(...)`.
+        let marker = if dname == "databricks" {
+            "struct('fixed_path', 'a', 'b',"
+        } else {
+            "tuple('fixed_path', 'a', 'b',"
+        };
+
+        // The fixed-path marker tuple must be present.
+        assert!(
+            sql.contains(marker),
+            "#459 ({dname}): path_return must emit the fixed_path marker:\n{sql}"
+        );
+        // Both node endpoints resolve to the denorm virtual-id physical columns…
+        assert!(
+            sql.contains(&format!("origin_code AS {q}a.code{q}")),
+            "#459 ({dname}): from-node code must resolve to origin_code:\n{sql}"
+        );
+        assert!(
+            sql.contains(&format!("dest_code AS {q}b.code{q}")),
+            "#459 ({dname}): to-node code must resolve to dest_code:\n{sql}"
+        );
+        // …and the edge's own properties are materialized for the path.
+        assert!(
+            sql.contains("flights_denorm") && sql.contains("carrier"),
+            "#459 ({dname}): path edge properties must be sourced from \
+             flights_denorm:\n{sql}"
         );
     }
 }
