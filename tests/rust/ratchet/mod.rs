@@ -21,6 +21,13 @@
 //! fine — what matters is that the same file produces the same count run to
 //! run, so any *change* is a signal.
 //!
+//! Known evasion (accepted): the dialect axis is detected via the
+//! `databricks`/`Dialect::` substrings, so a dialect branch written without
+//! either (e.g. a boolean helper with a neutral name, or matching variants
+//! through a `use SqlDialect::*` glob) would not be counted. Today every
+//! dialect branch in the tree uses `SqlDialect::` syntax; reviewers should
+//! keep it that way.
+//!
 //! - A file whose count for a token **increases** vs. baseline (including a
 //!   brand-new file, treated as an increase from 0) fails the test: route the
 //!   new code through `PatternSchemaContext`/schema-catalog APIs or `Dialect`/
@@ -111,12 +118,17 @@ fn baseline_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/rust/ratchet/baseline.txt")
 }
 
-/// Should this source file be scanned at all? Excludes anything under a
-/// `tests/` directory component and any file whose name ends `_tests.rs`
-/// (per the ratchet's exclusion contract — deliberately simple; see module
-/// docs on false positives).
+/// Should this source file be scanned at all? Excludes test code in all four
+/// conventions used in this codebase: a `tests/` directory component, a
+/// `*_tests.rs` suffix, a file literally named `tests.rs` (`mod tests;`), and
+/// a `test_*.rs` prefix. Test fixtures aren't production branching debt; the
+/// ratchet polices production code only.
 fn is_scannable(rel_path: &str) -> bool {
-    !rel_path.contains("/tests/") && !rel_path.ends_with("_tests.rs")
+    if rel_path.contains("/tests/") || rel_path.ends_with("_tests.rs") {
+        return false;
+    }
+    let basename = rel_path.rsplit('/').next().unwrap_or(rel_path);
+    basename != "tests.rs" && !basename.starts_with("test_")
 }
 
 /// Count occurrences of `token` in `content`. The literal token
@@ -296,6 +308,19 @@ fn ratchet_schema_and_dialect_axis_counts() {
     }
 
     if !increases.is_empty() {
+        // Report any coincident decreases too, so a mixed run surfaces the
+        // full picture in one failure instead of hiding the decrease until
+        // the increase is fixed and the test rerun.
+        let decrease_note = if decreases.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n\nAdditionally, {} count decrease(s) were detected in the same run \
+                 (ratchet these down when regenerating):\n{}",
+                decreases.len(),
+                decreases.join("\n")
+            )
+        };
         panic!(
             "Ratchet FAILED: {} raw axis-token count increase(s) vs. baseline \
              (tests/rust/ratchet/baseline.txt):\n{}\n\n\
@@ -305,9 +330,10 @@ fn ratchet_schema_and_dialect_axis_counts() {
              FunctionMapper (dialect axis) per docs/design/REFACTORING_SAFETY_PLAN.md §2.1. \
              If this increase is genuinely justified, regenerate the baseline with \
              `UPDATE_RATCHET=1 cargo test --test ratchet -- --nocapture` and justify it \
-             explicitly in your PR description.",
+             explicitly in your PR description.{}",
             increases.len(),
-            increases.join("\n")
+            increases.join("\n"),
+            decrease_note
         );
     }
 
