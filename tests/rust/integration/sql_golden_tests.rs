@@ -1164,18 +1164,19 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 // from that live run vs. Cypher semantics. If you touch polymorphic rendering,
 // inspect these first:
 //
-//   - polymorphic/whole_edge_r  [SUSPICIOUS — missing type discriminator]:
-//     `MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN r` renders
-//     `FROM brahmand.interactions AS r` with NO WHERE clause — no
-//     `interaction_type = 'FOLLOWS'`, no from_type/to_type label filter. Because
-//     only `r` is projected, the labeled User endpoints are pruned and the type
-//     discriminator is lost with them, so it returns ALL 29 interaction rows
-//     instead of the 10 FOLLOWS edges. The edge columns (from_id/to_id/timestamp/
-//     interaction_weight) themselves project correctly. This is the whole-edge-
-//     projection sibling of the #433 element-id/edge-linkage class: the
-//     discriminator must survive endpoint pruning on a polymorphic edge. Locked
-//     as-is; a fix should filter the edge scan by the pattern's type + label
-//     columns even when the endpoints are not otherwise referenced.
+//   - polymorphic/whole_edge_r  [FIXED in #458]:
+//     `MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN r` now renders
+//     `FROM brahmand.interactions AS r WHERE r.interaction_type = 'FOLLOWS' AND
+//     r.from_type = 'User' AND r.to_type = 'User'` and returns the 10 FOLLOWS
+//     edges (was: all 29 rows, no WHERE). Root cause: projecting only `r` prunes
+//     the labeled endpoints, so the analyzer switches to the `SingleTableScan`
+//     strategy, which makes the polymorphic edge itself the FROM marker while
+//     keeping the type/label discriminators on its `pre_filter`. The render
+//     pipeline discarded FROM-marker `pre_filter`s; the fix promotes that
+//     pre_filter into the WHERE clause (`from_marker_pre_filter` in
+//     plan_builder.rs) so the edge-own filters survive endpoint pruning
+//     (whole-edge-projection sibling of the #433 element-id/edge-linkage class).
+//     Locked as correct; regression `polymorphic_whole_edge_r_keeps_discriminator`.
 //
 //   - FULLY-unlabeled patterns (`(a)-[:SHARED]->(b)`, `p=()-[:SHARED]->()`) are
 //     NOT byte-goldens (their `pattern_union_*` property blobs are emitted in
@@ -1374,6 +1375,40 @@ async fn fk_edge_optional_match_preserves_fanout_self_join() {
             "FK-edge fan-out OPTIONAL MATCH ({dname}) must preserve the o2 \
              self-join on customer_id (non-unique FK — removing it changes the \
              row count from 18 to 8):\n{sql}"
+        );
+    }
+}
+
+/// #458 regression: a whole-edge projection over a polymorphic edge
+/// (`MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN r`) prunes the labeled
+/// endpoints (only `r` is projected), switching the analyzer to the
+/// `SingleTableScan` strategy that makes the edge the FROM marker. The type +
+/// from/to label discriminators the analyzer attaches to that marker's
+/// `pre_filter` must be PROMOTED into the WHERE clause, not dropped — otherwise
+/// the scan returns every interaction type (29 rows) instead of the 10 FOLLOWS
+/// edges. Locks the WHERE presence on both dialects.
+#[tokio::test]
+async fn polymorphic_whole_edge_r_keeps_discriminator() {
+    let schema = load_schema(SchemaId::Polymorphic.yaml_path());
+    let cypher = "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN r";
+
+    for (dialect, dname) in [
+        (SqlDialect::ClickHouse, "clickhouse"),
+        (SqlDialect::Databricks, "databricks"),
+    ] {
+        let sql = render(&schema, cypher, dialect).await;
+        // The polymorphic edge is the FROM table (endpoints pruned)…
+        assert!(
+            sql.contains("brahmand.interactions AS r"),
+            "whole_edge_r ({dname}) must scan the edge table as FROM:\n{sql}"
+        );
+        // …and the discriminator + label filters must survive as a WHERE clause.
+        assert!(
+            sql.contains("r.interaction_type = 'FOLLOWS'")
+                && sql.contains("r.from_type = 'User'")
+                && sql.contains("r.to_type = 'User'"),
+            "whole_edge_r ({dname}) dropped the polymorphic type/label \
+             discriminator on the pruned-endpoint edge scan (#458):\n{sql}"
         );
     }
 }
