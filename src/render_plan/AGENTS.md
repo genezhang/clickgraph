@@ -598,6 +598,8 @@ Every function in this module may behave differently based on:
 
 When fixing a bug, always check: does this fix work for ALL 5 variations?
 
+**Axis-Dispatch Rule** (enforce from PR review): Changes that differ per schema pattern must consume `PatternSchemaContext` / schema-catalog APIs (`src/graph_catalog/pattern_schema.rs`, `graph_schema.rs`) instead of branching on raw flags (`is_denormalized`, `is_fk_edge`, `type_column`, table-name comparisons). Similarly, dialect-specific SQL changes must route through `Dialect`/`FunctionMapper`, not inline branching. The ratchet test (`cargo test --test ratchet`) tracks predicate counts and prevents re-accretion. See `docs/design/REFACTORING_SAFETY_PLAN.md` §2.1 for detail; reject raw-flag branches in new code during review.
+
 ### Schema Compatibility Matrix
 
 | Feature / Area                               | Standard | FK-edge | Denormalized | Polymorphic | Composite ID |
