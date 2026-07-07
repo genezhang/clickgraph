@@ -603,10 +603,45 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
     //          vanishes: `(o.total_amount OR ...)`) and `NOT(..) OR ..`
     //          (the OR becomes an AND split). Plain non-WITH forms are fine.
     //   #474 — plain OPTIONAL MATCH *without* WITH (reversed-anchor FK-edge
-    //          shape) silently drops its WHERE entirely (separate code path).
+    //          shape) silently drops its optional-node WHERE entirely (a separate
+    //          code path from #460/#462). Characterized by `optional_where_no_with*`
+    //          below.
     // Also: ClickHouse rejects cross-table comparisons in a NULL-preserving
     // LEFT JOIN ON (join_use_nulls, error 386) — the `_cross` golden above is
     // correct SQL that executes on Databricks; on ClickHouse it errors cleanly.
+    // --- #474: plain OPTIONAL MATCH (NO WITH barrier), reversed anchor ---
+    // The anchor Customer arrives from the first MATCH and is the right connection
+    // of the optional pattern `(o:Order)-[:PLACED_BY]->(c)`; the Order node is the
+    // OPTIONAL (left) connection. A WHERE on the optional Order node must filter
+    // the LEFT JOIN subquery (pre_filter) so customers with no qualifying order
+    // stay NULL-extended — NOT the outer WHERE (drops them) and NOT dropped
+    // entirely. FK-edge: the Order node IS the orders_fk edge table, so the whole
+    // optional pattern is a single LEFT JOIN and the pre_filter gates it correctly.
+    // KNOWN BROKEN (#474): the WHERE is silently DROPPED — this golden currently
+    // renders NO pre_filter and NO outer WHERE, returning an unfiltered 8 rows on
+    // live db_fk_edge. Correct is 4 rows (each customer's single order with
+    // total_amount>100; with `> 130` c102 NULL-extended).
+    (
+        "optional_where_no_with",
+        "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE o.total_amount > 100 RETURN c.customer_id, o.order_id",
+    ),
+    // Same shape, WHERE on the relationship alias r (order_date). Already correct
+    // before #474 (rel-alias pre_filter recovery): r and o share orders_fk, so the
+    // predicate sits in the LEFT JOIN pre_filter. Locked to prove #474 did not
+    // disturb it.
+    (
+        "optional_where_no_with_rel",
+        "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[r:PLACED_BY]->(c) WHERE r.order_date > '2024-01-01' RETURN c.customer_id, o.order_id",
+    ),
+    // Mixed conjunction: optional-node predicate AND pure-anchor predicate.
+    // KNOWN BROKEN (#474): the optional-node conjunct (o.total_amount) is DROPPED
+    // and only the pure-anchor conjunct (c.customer_id) survives, in the outer
+    // WHERE — which additionally drops NULL-extended anchor rows (the pre-existing
+    // #472 disease). Correct: o.total_amount belongs in the LEFT JOIN pre_filter.
+    (
+        "optional_where_no_with_mixed",
+        "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE o.total_amount > 100 AND c.customer_id > 101 RETURN c.customer_id, o.order_id",
+    ),
     // --- WITH + aggregation (count per customer), and its HAVING form ---
     (
         "with_agg_count",
