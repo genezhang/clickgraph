@@ -1,4 +1,4 @@
-SELECT count(`n.customer_id`) AS "count(n)" FROM (
+SELECT count(coalesce(`n.customer_id`, `n.order_id`)) AS "count(n)" FROM (
 SELECT 
       NULL AS "amount",
       toString(n.customer_id) AS "customer_id",
@@ -6,7 +6,8 @@ SELECT
       toString(n.name) AS "name",
       NULL AS "order_date",
       NULL AS "order_id",
-      toString(n.customer_id) AS "n.customer_id"
+      toString(n.customer_id) AS "n.customer_id",
+      NULL AS "n.order_id"
 FROM db_fk_edge.customers_fk AS n
 UNION ALL 
 SELECT 
@@ -16,6 +17,7 @@ SELECT
       NULL AS "name",
       toString(n.order_date) AS "order_date",
       toString(n.order_id) AS "order_id",
-      NULL AS "n.customer_id"
+      NULL AS "n.customer_id",
+      toString(n.order_id) AS "n.order_id"
 FROM db_fk_edge.orders_fk AS n
 ) AS __union
