@@ -3294,16 +3294,15 @@ impl RenderPlanBuilder for LogicalPlan {
                                     );
                                 }
                             }
-                            // to_node_properties map to the right-side alias (b)
-                            if let Some(ref to_props) = edge_vs.to_node_properties {
-                                let right_alias = &gr.right_connection;
-                                for (prop, val) in to_props {
-                                    col_map.insert(
-                                        val.raw().to_string(),
-                                        (right_alias.clone(), prop.clone()),
-                                    );
-                                }
-                            }
+                            // The to-node (`gr.right_connection`, e.g. `b`) is NOT
+                            // materialized as its own table here — its columns live on the
+                            // LEFT-JOINed edge row (`edge_alias`, e.g. `t1`) as the edge's
+                            // `to_node_properties` (code→dest_code). So `b.code` IS
+                            // `t1.dest_code` and must stay on the edge alias: rewriting it
+                            // to `b.code` references a non-existent table (invalid SQL / CH
+                            // 500 — #456). Keeping it on `t1` also yields correct OPTIONAL
+                            // NULL-extension (t1 is NULL on no-match). Only the from-node is
+                            // remapped to the CTE below. Do NOT add to_node_properties here.
 
                             // Recursive rewrite: edge_alias.db_col → node_alias.cypher_prop
                             fn rewrite_denorm_refs(

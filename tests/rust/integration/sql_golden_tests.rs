@@ -1126,13 +1126,25 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 //     set is polluted with destinations of CA-origin flights (LAX,SFO,JFK,ORD,ATL
 //     instead of {CA airports}). Kept as a lock; a fix should collapse/​correct
 //     the dest branch and drop to 4 rows.
-//   - optional_match: `MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b)`
-//     renders IDENTICALLY to the inner directed hop — a plain
-//     `FROM flights_denorm AS t0` with NO LEFT JOIN and no node materialization
-//     (8 rows). For the coupled-same-row shape (the node IS the edge row) every
-//     origin trivially has its flight, so no NULL-extension rows are produced;
-//     this is degenerate-but-current. A real node-materialization fix (Group A)
-//     would change this too.
+//   - optional_match: `MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b)`.
+//     PRODUCTION FIXED (#456) — the golden (ctx-less `render()`) below still
+//     locks the WRONG shape and DIVERGES from production (a #459 instance):
+//       * GOLDEN (ctx-less harness path): renders IDENTICALLY to the inner
+//         directed hop — a plain `FROM flights_denorm AS t0` with NO LEFT JOIN
+//         and no node materialization (8 rows, drops PHX — the destination-only
+//         airport with no outgoing flight). Still locked here as-is; converging
+//         this path is bug 2(b) / #459 (not attempted — the ctx-less path reaches
+//         this shape by a different route than production).
+//       * PRODUCTION (`to_render_plan_with_ctx`: server/cg/embedded): correctly
+//         materializes `a` as the from/to UNION CTE (`__denorm_scan_a`) and
+//         LEFT-JOINs the edge — but USED TO emit invalid SQL: the to-node `b`'s
+//         columns live on the LEFT-joined edge row (`t1.dest_code`), yet a stale
+//         edge→node reverse-map rewrote the resolved `t1.dest_code` back to the
+//         raw `b.code`, a phantom table → ClickHouse `UNKNOWN_IDENTIFIER` (HTTP
+//         500). Fixed by dropping `to_node_properties` from that reverse-map so
+//         to-node columns stay on the edge alias (`plan_builder.rs`, the ctx
+//         OPTIONAL-denorm handler). Live: correct 9 rows (8 flights + PHX
+//         null-extended). Regression: `denorm_optional_match_resolves_to_node_onto_edge_456`.
 //
 // Verified CORRECT (normal locks, not suspicious) — executed on live CH:
 // directed_hop_ids (8), directed_hop_props, reverse_hop (8), undirected_hop (16,
@@ -1780,6 +1792,62 @@ async fn denorm_labeled_node_scan_resolves_virtual_id_454() {
             count_sql.contains("__union"),
             "#454 ({dname}): count(a) over the denorm union must wrap the branches \
              in a `__union` subquery:\n{count_sql}"
+        );
+    }
+}
+
+/// #456 regression (OPTIONAL, production path): `MATCH (a:Airport) OPTIONAL MATCH
+/// (a)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code` on the coupled-denormalized
+/// schema. The production render path (`to_render_plan_with_ctx`) restructures the
+/// OPTIONAL denorm hop into `FROM __denorm_scan_a AS a LEFT JOIN flights_denorm AS
+/// t1` (the from-node `a` materialized as a from/to UNION CTE, the edge LEFT-joined
+/// for OPTIONAL NULL-extension). The to-node `b`'s properties live on the LEFT-joined
+/// edge row (`t1.dest_code`), NOT a table named `b`. A stale rewrite mapped the
+/// resolved `t1.dest_code` back to the raw `b.code`, referencing a non-existent
+/// table → ClickHouse `UNKNOWN_IDENTIFIER` (HTTP 500 in server/cg). The fix drops
+/// `to_node_properties` from the edge→node reverse map so to-node columns stay on
+/// the edge alias. Live: correct 9 rows (8 flights + PHX null-extended, the only
+/// airport with no outgoing flight). This is the PRODUCTION path only; the golden
+/// harness (`render()`, ctx-less) renders a degenerate inner scan for this shape
+/// (a separate #459 divergence, still locked in `denormalized/optional_match`).
+#[tokio::test]
+async fn denorm_optional_match_resolves_to_node_onto_edge_456() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+    let cypher =
+        "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code";
+
+    for (dialect, dname) in [
+        (SqlDialect::ClickHouse, "clickhouse"),
+        (SqlDialect::Databricks, "databricks"),
+    ] {
+        // Production render path — the one server / cg / embedded actually use.
+        let sql = render_ctx(&schema, cypher, dialect).await;
+        // Alias quoting differs per dialect (CH: "…", Databricks: `…`).
+        let q = if dname == "databricks" { '`' } else { '"' };
+
+        // The OPTIONAL hop must be a LEFT JOIN (NULL-extends airports with no
+        // outgoing flight), not an inner scan that drops them.
+        assert!(
+            sql.to_uppercase().contains("LEFT JOIN"),
+            "#456 ({dname}): OPTIONAL denorm hop must render a LEFT JOIN:\n{sql}"
+        );
+        // The from-node is materialized as the from/to union CTE.
+        assert!(
+            sql.contains("__denorm_scan_a"),
+            "#456 ({dname}): expected the from-node materialization CTE:\n{sql}"
+        );
+        // The to-node property must resolve to the edge row's dest column…
+        assert!(
+            sql.contains(&format!("dest_code AS {q}b.code{q}")),
+            "#456 ({dname}): to-node `b.code` must resolve to the edge's \
+             dest_code, got:\n{sql}"
+        );
+        // …and must NOT leak the unresolvable raw `b.code` reference (the bug:
+        // a phantom table `b` → ClickHouse UNKNOWN_IDENTIFIER / 500).
+        assert!(
+            !sql.contains(&format!("      b.code AS {q}b.code{q}")),
+            "#456 ({dname}): to-node reference leaked as the unresolvable raw \
+             `b.code` (phantom table), got:\n{sql}"
         );
     }
 }
