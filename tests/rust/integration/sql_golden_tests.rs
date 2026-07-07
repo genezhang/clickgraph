@@ -314,6 +314,133 @@ const CORPUS: &[(&str, &str)] = &[
     // additional schemas / not-yet-implemented Spark structural support.
 ];
 
+/// Browser-shaped patterns (Phase 0 slice P0.5): the fully/partially
+/// UNLABELED query shapes Neo4j Browser emits by default — node scan,
+/// undirected/directed expand, path render, VLP path, and the sidebar
+/// count/labels/type probes. These route through the `pattern_union` /
+/// `fixed_path` / multi-type-VLP renderers, which had near-zero golden
+/// coverage before this slice. See
+/// `docs/design/REFACTORING_SAFETY_PLAN.md` §3.1 and the
+/// `browser-unlabeled-pattern-bugs` catalog (surfaced 2026-06-30) for
+/// background. Standard schema only (`social_benchmark.yaml`, User/Post);
+/// `FK_EDGE_BROWSER_CORPUS`/`DENORM_BROWSER_CORPUS` below mirror the
+/// schema-sensitive subset (node scan / expand / path / count) on the other
+/// two patterns.
+///
+/// KNOWN BROKEN (locked as characterization — this is a TEST-ONLY slice, not
+/// fixed here; each is a candidate follow-up issue):
+///
+///   - `unlabeled_expand` (`MATCH (n)-[r]-(o) RETURN n, r, o`, fully
+///     unlabeled + multi-edge-type UNDIRECTED) renders BYTE-IDENTICAL SQL to
+///     `unlabeled_expand_directed` (the DIRECTED form) — the `pattern_union`
+///     branch generator never emits the reverse-direction branches for this
+///     shape. Confirmed live (local `social` fixture): BOTH variants return
+///     23 rows (10 FOLLOWS + 5 AUTHORED + 8 LIKED — the forward direction
+///     only); true undirected Cypher semantics require the reverse-direction
+///     rows too. This is the pre-existing "GROUP 3b" gap in the
+///     browser-unlabeled-pattern-bugs catalog. Contrast: `anchored_
+///     unlabeled_expand` (one side labeled) and `unlabeled_rel_typed`
+///     (single relationship type) BOTH correctly emit reverse-direction
+///     branches (33 rows / 20 rows respectively, live-verified) — the gap is
+///     specific to the fully-unlabeled MULTI-edge-type `pattern_union` path.
+///   - `browser_style_count` (`MATCH (n) RETURN count(n)`, heterogeneous
+///     unlabeled scan) renders `count(<id column of ONE arbitrary label>)`
+///     (here `n.post_id`, Post's id) over a UNION of per-label branches where
+///     every OTHER branch emits NULL for that column — so COUNT silently
+///     excludes every row not belonging to that one label. Confirmed live:
+///     `count(n)` returns 5, not 13 (8 Users + 5 Posts). Reproduced
+///     cross-schema on FK-edge (`fk_browser_style_count`: returns 4, not 12 —
+///     4 Customers + 8 Orders). Real, previously-undocumented correctness
+///     bug (ground rule #1: "return exactly what's asked, no more, no
+///     less"). NOT a bug on Denormalized (`dn_browser_style_count`): its one
+///     virtual id column is populated on every UNION branch, so the count is
+///     correct there — see that golden's note.
+///   - `browser_type_probe` (`MATCH ()-[r]->() RETURN DISTINCT type(r)`)
+///     renders `FROM pattern_union_r AS r` but the outer SELECT references
+///     `t.path_relationships[1]` — alias `t` is never bound anywhere in the
+///     query (the CTE is aliased `r`). Confirmed live: ClickHouse rejects
+///     with `Code: 47 ... Unknown expression or function identifier
+///     't.path_relationships' ... Maybe you meant: ['r.path_relationships']`.
+///     Translates cleanly (no Rust error/panic) but is invalid SQL.
+///   - `path_vlp` (`MATCH p=(a:User)-[:FOLLOWS*1..2]->(b) RETURN p`) renders
+///     a path tuple referencing `t.path_edges`, a column the recursive VLP
+///     CTE never defines (it only projects `start_id`/`end_id`/`hop_count`/
+///     `path_relationships`/`path_nodes`). Confirmed live: ClickHouse rejects
+///     with `Code: 47 ... Identifier 't.path_edges' cannot be resolved ...
+///     Maybe you meant: ['t.path_nodes']`. Same class as `browser_type_probe`
+///     — clean translation, invalid SQL.
+///
+/// Verified CORRECT (normal locks, not suspicious) — all live-verified
+/// against the local `social` fixture (8 Users, 5 Posts, 10 FOLLOWS,
+/// 5 AUTHORED, 8 LIKED) set up for this slice:
+/// `unlabeled_node_scan` (heterogeneous UNION ALL, deterministic column
+/// order, 13 rows); `unlabeled_node_props` (the property `name` is unique to
+/// User in this schema, so it optimizes to a plain single-label scan — it
+/// does NOT exercise the cross-label property-key-probe UNION path; see
+/// `unlabeled_node_props_absent` below for that path, which hits the #417
+/// `_empty`-placeholder route); `anchored_unlabeled_expand` (33 rows);
+/// `unlabeled_rel_typed` (20 rows); `path_assignment` (clean fixed-path
+/// render, 10 rows); `browser_labels_probe` (clean per-label UNION ALL).
+///
+/// `path_unlabeled` (`MATCH p=()-[]->() RETURN p LIMIT 10`) is NOT a byte
+/// golden: it routes through `pattern_union_{alias}` where `alias` is an
+/// AUTO-GENERATED anonymous name (e.g. `t3`) drawn from the same
+/// process-global counter `normalize()` remaps elsewhere — but here the
+/// counter is embedded INSIDE an identifier (`pattern_union_t3`), not as its
+/// own token, so `normalize()`'s `\bt\d+\b` (word-boundary) regex does not
+/// match it (`_` is a word character, so there is no boundary before the
+/// `t`). The CTE name therefore varies run-to-run and cannot be byte-locked
+/// without widening `normalize()` (out of scope for this slice — it would
+/// touch every existing golden's normalization). Locked instead by the
+/// structural test `standard_path_unlabeled_pattern_union_name_is_unstable`
+/// below, which also documents the harness gap itself as a follow-up.
+const BROWSER_CORPUS: &[(&str, &str)] = &[
+    ("unlabeled_node_scan", "MATCH (n) RETURN n LIMIT 25"),
+    ("unlabeled_node_props", "MATCH (n) RETURN n.name LIMIT 25"),
+    // Property `follow_date` belongs to NO node label (it's a FOLLOWS edge
+    // property) — this is the genuine cross-label property-key-probe route:
+    // TypeInference finds no valid node type, so the scan collapses to the
+    // `_empty` placeholder (the #417 fix domain). Locked as characterization:
+    // the placeholder is valid SQL (0 rows) but the declared RETURN alias
+    // `n.follow_date` is silently replaced by `_empty` in the result schema.
+    (
+        "unlabeled_node_props_absent",
+        "MATCH (n) RETURN n.follow_date LIMIT 25",
+    ),
+    (
+        "unlabeled_expand",
+        "MATCH (n)-[r]-(o) RETURN n, r, o LIMIT 25",
+    ),
+    (
+        "unlabeled_expand_directed",
+        "MATCH (n)-[r]->(o) RETURN n, r, o",
+    ),
+    (
+        "anchored_unlabeled_expand",
+        "MATCH (a:User)-[r]-(o) RETURN a, r, o",
+    ),
+    (
+        "unlabeled_rel_typed",
+        "MATCH (n)-[r:FOLLOWS]-(o) RETURN n, o",
+    ),
+    (
+        "path_assignment",
+        "MATCH p=(a:User)-[:FOLLOWS]->(b) RETURN p",
+    ),
+    // "path_unlabeled" intentionally NOT in this corpus — see the doc comment
+    // above; it's locked by `standard_path_unlabeled_pattern_union_name_is_unstable`.
+    ("path_vlp", "MATCH p=(a:User)-[:FOLLOWS*1..2]->(b) RETURN p"),
+    ("browser_style_count", "MATCH (n) RETURN count(n)"),
+    (
+        "browser_labels_probe",
+        "MATCH (n) RETURN DISTINCT labels(n)",
+    ),
+    (
+        "browser_type_probe",
+        "MATCH ()-[r]->() RETURN DISTINCT type(r) LIMIT 25",
+    ),
+];
+
 /// FK-edge variation (`schemas/test/fk_edge.yaml`): Order/Customer where the
 /// orders_fk table IS the PLACED_BY edge table (customer_id FK column is the
 /// relationship — no separate edge table, not denormalized). Mirrors the
@@ -954,6 +1081,73 @@ const POLYMORPHIC_CORPUS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Browser-shaped patterns (P0.5), FK-edge variation: the schema-sensitive
+/// subset of `BROWSER_CORPUS` (node scan / expand / path / count / labels)
+/// re-run on `schemas/test/fk_edge.yaml` (Order/Customer, single PLACED_BY
+/// edge type — the edge table IS a node table). Confirms the standard-schema
+/// findings above are NOT standard-schema-specific:
+///
+///   - `fk_unlabeled_expand`: the undirected fully-unlabeled expand
+///     `(n)-[r]-(o)` renders only the Order->Customer direction (single-table
+///     join, no `pattern_union` needed since there is only one edge type) —
+///     the reverse Customer->Order binding is missing, same root cause as
+///     `unlabeled_expand` above (confirmed: Cypher requires both bindings
+///     when neither endpoint is labeled).
+///   - `fk_browser_style_count`: `count(n)` renders `count(n.customer_id)`
+///     (Customer's id) — every Order-branch row emits NULL for that column.
+///     Confirmed live: returns 4, not 12 (4 Customers + 8 Orders).
+///
+/// Verified CORRECT: `fk_unlabeled_node_scan` (heterogeneous UNION ALL,
+/// deterministic); `fk_path_unlabeled` (fixed_path over the FK-edge join, no
+/// separate edge table to join since PLACED_BY IS orders_fk, deterministic);
+/// `fk_browser_labels_probe` (clean per-label UNION ALL).
+const FK_EDGE_BROWSER_CORPUS: &[(&str, &str)] = &[
+    ("fk_unlabeled_node_scan", "MATCH (n) RETURN n LIMIT 25"),
+    (
+        "fk_unlabeled_expand",
+        "MATCH (n)-[r]-(o) RETURN n, r, o LIMIT 25",
+    ),
+    ("fk_path_unlabeled", "MATCH p=()-[]->() RETURN p LIMIT 10"),
+    ("fk_browser_style_count", "MATCH (n) RETURN count(n)"),
+    (
+        "fk_browser_labels_probe",
+        "MATCH (n) RETURN DISTINCT labels(n)",
+    ),
+];
+
+/// Browser-shaped patterns (P0.5), Denormalized variation: the
+/// schema-sensitive subset re-run on `schemas/dev/flights_denormalized.yaml`
+/// (single self-referential Airport/FLIGHT coupled-denorm table). A
+/// deliberate CONTRAST set: unlike Standard/FK-edge, the fully-unlabeled
+/// undirected expand and the heterogeneous count are BOTH correct here —
+/// documented so a future fix to the Standard/FK-edge bugs above doesn't
+/// accidentally regress this schema.
+///
+///   - `dn_unlabeled_expand` correctly emits BOTH direction branches (the
+///     `pattern_union`-style UNION ALL over the single `flights_denorm`
+///     table with from/to swapped) — there is only ONE edge type here, so
+///     this hits the simpler bidirectional_union path, not the multi-type
+///     `pattern_union` renderer that has the reverse-branch gap.
+///   - `dn_browser_style_count`: `count(a)` renders `count(a.code)`, and
+///     `code` (the virtual node_id, mapped via from/to_node_properties) is
+///     populated on EVERY UNION branch (origin_code / dest_code), so unlike
+///     Standard/FK-edge this does NOT undercount.
+///
+/// `dn_path_unlabeled` is NOT a byte-golden: the fixed_path edge-property
+/// column order (`t3.distance`/`t3.flight_num`/`t3.carrier`/...) is emitted
+/// in nondeterministic HashMap order (verified: 3 independent process runs
+/// produced 3 different orderings) — the same latent defect documented for
+/// `denorm_path_return` in the P0.2/#459 known-suspicious block above. Locked
+/// instead by the structural test `denorm_path_unlabeled_column_set_is_stable`
+/// below.
+const DENORM_BROWSER_CORPUS: &[(&str, &str)] = &[
+    (
+        "dn_unlabeled_expand",
+        "MATCH (a)-[r]-(b) RETURN a, r, b LIMIT 25",
+    ),
+    ("dn_browser_style_count", "MATCH (a) RETURN count(a)"),
+];
+
 fn load_schema(yaml_path: &str) -> GraphSchema {
     GraphSchemaConfig::from_yaml_file(yaml_path)
         .unwrap_or_else(|e| panic!("load schema {yaml_path}: {e:?}"))
@@ -1346,6 +1540,10 @@ async fn sql_golden_snapshots() {
         (SchemaId::Denormalized, DENORM_CORPUS),
         (SchemaId::CompositeId, COMPOSITE_ID_CORPUS),
         (SchemaId::Polymorphic, POLYMORPHIC_CORPUS),
+        // P0.5 — Browser-shaped (unlabeled) patterns.
+        (SchemaId::Standard, BROWSER_CORPUS),
+        (SchemaId::FkEdge, FK_EDGE_BROWSER_CORPUS),
+        (SchemaId::Denormalized, DENORM_BROWSER_CORPUS),
     ] {
         let schema = load_schema(schema_id.yaml_path());
         let schema_dir = schema_id.dir();
@@ -2096,5 +2294,324 @@ async fn denorm_order_by_uses_table_alias_not_cypher_alias_455() {
                  physical column origin_code:\n{sql}"
             );
         }
+    }
+}
+
+/// P0.5 characterization: a FULLY-unlabeled, multi-edge-type UNDIRECTED
+/// expand `MATCH (n)-[r]-(o) RETURN n, r, o` renders BYTE-IDENTICAL SQL to
+/// the DIRECTED form `MATCH (n)-[r]->(o) RETURN n, r, o` on both Standard and
+/// FK-edge — the `pattern_union` branch generator never emits the
+/// reverse-direction branches for this shape. Confirmed live (this slice's
+/// `social`/`db_fk_edge` fixtures): both variants return the SAME row count
+/// (23 on Standard: 10 FOLLOWS + 5 AUTHORED + 8 LIKED; 8 on FK-edge, only the
+/// Order->Customer direction) — true undirected Cypher semantics require the
+/// reverse-direction rows too. This is the pre-existing "GROUP 3b" gap in the
+/// `browser-unlabeled-pattern-bugs` memory catalog (surfaced 2026-06-30, still
+/// open). NOT fixed here (test-only slice) — locked as current behavior so a
+/// future fix shows up as a reviewable diff on this test AND on the
+/// `unlabeled_expand`/`fk_unlabeled_expand` goldens.
+///
+/// Contrast (NOT affected by this gap, asserted here too): anchoring ONE side
+/// (`anchored_unlabeled_expand`) or fixing the relationship type
+/// (`unlabeled_rel_typed`) both correctly produce DIFFERENT SQL for the
+/// undirected vs. directed forms (they route through `vlp_multi_type_a_o` /
+/// `bidirectional_union` instead of the buggy `pattern_union` path).
+#[tokio::test]
+async fn browser_unlabeled_undirected_expand_drops_reverse_branches() {
+    for (schema_id, undirected, directed) in [
+        (
+            SchemaId::Standard,
+            "MATCH (n)-[r]-(o) RETURN n, r, o LIMIT 25",
+            "MATCH (n)-[r]->(o) RETURN n, r, o LIMIT 25",
+        ),
+        (
+            SchemaId::FkEdge,
+            "MATCH (n)-[r]-(o) RETURN n, r, o LIMIT 25",
+            "MATCH (n)-[r]->(o) RETURN n, r, o LIMIT 25",
+        ),
+    ] {
+        let schema = load_schema(schema_id.yaml_path());
+        for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+            let u_sql = render(&schema, undirected, dialect).await;
+            let d_sql = render(&schema, directed, dialect).await;
+            assert_eq!(
+                u_sql,
+                d_sql,
+                "{:?}/{dialect:?}: expected the KNOWN-BROKEN byte-identical \
+                 undirected==directed SQL (missing reverse-direction \
+                 pattern_union branches); the shapes now DIFFER — if this is \
+                 an intentional fix, update this test's expectation and the \
+                 corresponding golden(s):\nundirected:\n{u_sql}\ndirected:\n{d_sql}",
+                schema_id.dir()
+            );
+        }
+    }
+
+    // Contrast: anchoring one side DOES correctly differ between undirected
+    // and single-direction forms (no reverse-branch gap here).
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let anchored_undirected = render(
+        &schema,
+        "MATCH (a:User)-[r]-(o) RETURN a, r, o",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    let anchored_directed = render(
+        &schema,
+        "MATCH (a:User)-[r]->(o) RETURN a, r, o",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert_ne!(
+        anchored_undirected, anchored_directed,
+        "anchored (labeled-endpoint) unlabeled expand must NOT collapse \
+         undirected to the directed-only SQL (the bug is specific to the \
+         fully-unlabeled multi-type pattern_union path):\n{anchored_undirected}"
+    );
+}
+
+/// P0.5 characterization: `MATCH (n) RETURN count(n)` over a heterogeneous
+/// (multi-label) unlabeled node scan renders `count(<id column of ONE
+/// arbitrary label>)` over a UNION of per-label branches — every OTHER
+/// branch emits NULL for that specific column, so COUNT silently excludes
+/// every row not belonging to that one label. Confirmed live:
+///   - Standard (`social` fixture, 8 Users + 5 Posts): `count(n)` picks
+///     Post's `post_id` and returns 5, not 13.
+///   - FK-edge (`db_fk_edge` fixture, 4 Customers + 8 Orders): `count(n)`
+///     picks Customer's `customer_id` and returns 4, not 12.
+/// This is a real, previously-undocumented correctness bug (ground rule #1:
+/// "return exactly what's asked, no more, no less") — NOT fixed here
+/// (test-only slice); locked as current behavior via the `count(` argument
+/// column so a future fix is a reviewable diff.
+///
+/// Contrast: Denormalized is NOT affected (`dn_browser_style_count` golden) —
+/// its single virtual id column (`code`) is populated on EVERY UNION branch
+/// (both `origin_code` and `dest_code` alias to it), so the count already
+/// includes every row; asserted here too as the negative control.
+#[tokio::test]
+async fn browser_whole_node_count_undercounts_heterogeneous_scan() {
+    for (schema_id, expected_col) in [
+        (SchemaId::Standard, "n.post_id"),
+        (SchemaId::FkEdge, "n.customer_id"),
+    ] {
+        let schema = load_schema(schema_id.yaml_path());
+        let sql = render(&schema, "MATCH (n) RETURN count(n)", SqlDialect::ClickHouse).await;
+        // The COUNT argument is a SINGLE label's id column, not a
+        // label-independent discriminator (e.g. a literal `1` or a
+        // COALESCE across every label's id) that would count every row.
+        assert!(
+            sql.contains(&format!("count(`{expected_col}`)")),
+            "{:?}: expected the KNOWN-BROKEN count(n) to collapse to a \
+             single label's id column `{expected_col}` — if this now counts \
+             every row correctly, update this test (and add a byte golden \
+             for the fix):\n{sql}",
+            schema_id.dir()
+        );
+        // And that column must indeed be NULL in at least one other UNION
+        // branch (the actual mechanism of the undercount).
+        assert!(
+            sql.contains(&format!("NULL AS \"{expected_col}\"")),
+            "{:?}: expected `{expected_col}` to be NULL-padded in another \
+             UNION branch (the undercount mechanism):\n{sql}",
+            schema_id.dir()
+        );
+    }
+
+    // Negative control: Denormalized's single virtual id is non-null on
+    // every branch, so no NULL-padding occurs for it.
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+    let sql = render(&schema, "MATCH (a) RETURN count(a)", SqlDialect::ClickHouse).await;
+    assert!(
+        sql.contains("count(`a.code`)"),
+        "denormalized count(a) should still reduce to the single virtual id \
+         column:\n{sql}"
+    );
+    assert!(
+        !sql.contains("NULL AS \"a.code\""),
+        "denormalized count(a)'s id column must be non-null on every UNION \
+         branch (this is the negative control for the undercount bug):\n{sql}"
+    );
+}
+
+/// P0.5 characterization: `MATCH ()-[r]->() RETURN DISTINCT type(r) LIMIT 25`
+/// renders `FROM pattern_union_r AS r` but the outer SELECT references
+/// `t.path_relationships[1]` — alias `t` is never bound anywhere in the
+/// query (the CTE is aliased `r`). Confirmed live: ClickHouse rejects with
+/// `Code: 47 ... Unknown expression or function identifier
+/// 't.path_relationships' ... Maybe you meant: ['r.path_relationships']`.
+/// Translates cleanly (no Rust error/panic) but is invalid SQL — an
+/// outer-alias bug in the pattern_union DISTINCT-type-probe renderer. NOT
+/// fixed here (test-only slice); locked so a future fix is a reviewable
+/// diff (and should be paired with a live-execution check).
+#[tokio::test]
+async fn browser_type_probe_pattern_union_outer_alias_mismatch() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH ()-[r]->() RETURN DISTINCT type(r) LIMIT 25";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(&schema, cypher, dialect).await;
+
+        assert!(
+            sql.contains("pattern_union_r AS ("),
+            "expected the pattern_union CTE for {dialect:?}:\n{sql}"
+        );
+        // The CTE is read under alias `r`…
+        assert!(
+            sql.contains("FROM pattern_union_r AS r"),
+            "expected the outer query to read the CTE as alias `r` for \
+             {dialect:?}:\n{sql}"
+        );
+        // …but the outer SELECT references the STALE/UNBOUND alias `t` — the
+        // KNOWN-BROKEN bug this test characterizes. If this now says `r.` the
+        // bug is fixed: update this test and add a byte golden.
+        assert!(
+            sql.contains("t.path_relationships"),
+            "expected the KNOWN-BROKEN unbound `t.path_relationships` \
+             reference for {dialect:?} — if this now reads `r.path_relationships` \
+             the outer-alias bug is fixed; update this test:\n{sql}"
+        );
+    }
+}
+
+/// P0.5 characterization: `MATCH p=(a:User)-[:FOLLOWS*1..2]->(b) RETURN p`
+/// renders a path tuple referencing `t.path_edges`, a column the recursive
+/// VLP CTE never defines (it only projects `start_id`/`end_id`/`hop_count`/
+/// `path_relationships`/`path_nodes` — no `path_edges`). Confirmed live:
+/// ClickHouse rejects with `Code: 47 ... Identifier 't.path_edges' cannot be
+/// resolved ... Maybe you meant: ['t.path_nodes']`. Same class as
+/// `browser_type_probe_pattern_union_outer_alias_mismatch` — clean
+/// translation, invalid SQL. NOT fixed here (test-only slice).
+#[tokio::test]
+async fn browser_vlp_path_return_references_undefined_path_edges_column() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH p=(a:User)-[:FOLLOWS*1..2]->(b) RETURN p";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(&schema, cypher, dialect).await;
+
+        // The recursive CTE body must NOT define a `path_edges` column...
+        let cte_body_end = sql.find(") \n").or_else(|| sql.find("SELECT \n      "));
+        let cte_body = match cte_body_end {
+            Some(idx) => &sql[..idx],
+            None => &sql,
+        };
+        assert!(
+            !cte_body.contains("path_edges"),
+            "expected the recursive VLP CTE body to NOT project `path_edges` \
+             for {dialect:?} (that's the bug this test characterizes) — if it \
+             now does, the bug is fixed; update this test and add a byte \
+             golden:\n{sql}"
+        );
+        // ...but the final SELECT references it anyway (the KNOWN-BROKEN bug).
+        assert!(
+            sql.contains("path_edges"),
+            "expected the KNOWN-BROKEN reference to the undefined \
+             `path_edges` column in the final SELECT for {dialect:?}:\n{sql}"
+        );
+    }
+}
+
+/// P0.5 structural lock for the Denormalized `path_unlabeled` case
+/// (`MATCH p=()-[]->() RETURN p LIMIT 10`), which is NOT a byte-golden: the
+/// fixed_path edge-property column order (`t3.distance`/`t3.flight_num`/
+/// `t3.carrier`/`t3.departure_time`/`t3.arrival_time`) is emitted in
+/// nondeterministic HashMap order — verified by 3 independent process
+/// invocations producing 3 different orderings. This is the same latent
+/// defect documented for `denorm_path_return` in the P0.2/#459
+/// known-suspicious block above. Locks the stable invariants instead: the
+/// fixed_path marker, the virtual-id node endpoints, and the presence (not
+/// order) of every edge property column.
+#[tokio::test]
+async fn denorm_path_unlabeled_column_set_is_stable() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+    let cypher = "MATCH p=()-[]->() RETURN p LIMIT 10";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(&schema, cypher, dialect).await;
+        let q = if dialect == SqlDialect::Databricks {
+            '`'
+        } else {
+            '"'
+        };
+        let marker_fn = if dialect == SqlDialect::Databricks {
+            "struct"
+        } else {
+            "tuple"
+        };
+
+        // Anonymous-alias NAMES (the `t<n>` in `t1`/`t2`/`t0` below) are
+        // assigned from a process-global counter shared across the whole
+        // test binary, so their exact numbers are order-dependent — extract
+        // the from/to/rel alias names from the marker itself rather than
+        // hardcoding them (unlike `sql_golden_snapshots`'s byte-goldens, this
+        // structural test isn't going through `normalize()`).
+        let marker_re = regex::Regex::new(&format!(
+            r"{marker_fn}\('fixed_path', '(t\d+)', '(t\d+)', '(t\d+)'\)"
+        ))
+        .unwrap();
+        let caps = marker_re
+            .captures(&sql)
+            .unwrap_or_else(|| panic!("{dialect:?}: expected the fixed_path marker:\n{sql}"));
+        let (from_alias, to_alias) = (&caps[1], &caps[2]);
+
+        assert!(
+            sql.contains(&format!("origin_code AS {q}{from_alias}.code{q}")),
+            "{dialect:?}: from-node code must resolve to origin_code:\n{sql}"
+        );
+        assert!(
+            sql.contains(&format!("dest_code AS {q}{to_alias}.code{q}")),
+            "{dialect:?}: to-node code must resolve to dest_code:\n{sql}"
+        );
+        // Every edge property must be sourced, regardless of column order.
+        for col in ["distance", "carrier", "departure_time", "arrival_time"] {
+            assert!(
+                sql.contains(col),
+                "{dialect:?}: path edge properties must include `{col}`:\n{sql}"
+            );
+        }
+    }
+}
+
+/// P0.5 structural lock for the Standard `path_unlabeled` case
+/// (`MATCH p=()-[]->() RETURN p LIMIT 10`), which is NOT a byte-golden.
+/// Unlike the Denormalized case above (nondeterministic COLUMN ORDER), this
+/// shape's instability is in the CTE NAME itself: it routes through
+/// `pattern_union_{alias}` where `alias` is an anonymous name auto-assigned
+/// from the SAME process-global counter that produces the `t<n>` tokens
+/// `normalize()` remaps elsewhere in this file (`from_builder.rs`:
+/// `format!("pattern_union_{}", graph_rel.alias)`). Because the counter value
+/// is embedded INSIDE the identifier (`pattern_union_t3`) rather than as its
+/// own token, `normalize()`'s `\bt\d+\b` regex does not match it — `_` is a
+/// word character, so there is no boundary before the `t`. Confirmed: two
+/// back-to-back `cargo test` runs of the byte-golden suite produced
+/// `pattern_union_t173` and `pattern_union_t123` for otherwise byte-identical
+/// SQL. This is a harness gap (`normalize()` itself), not a production bug —
+/// documented here as a candidate follow-up (widen `normalize()`'s regex to
+/// also catch `_t\d+` suffixes) rather than fixed in this test-only slice
+/// (widening it would touch every existing golden's normalization, which is
+/// its own reviewed slice). Locks the stable invariants: the CTE prefix, and
+/// that the outer SELECT reads whatever name the CTE was given.
+#[tokio::test]
+async fn standard_path_unlabeled_pattern_union_name_is_unstable() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH p=()-[]->() RETURN p LIMIT 10";
+    let name_re = regex::Regex::new(r"pattern_union_(t\d+)").unwrap();
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(&schema, cypher, dialect).await;
+
+        let caps = name_re
+            .captures(&sql)
+            .unwrap_or_else(|| panic!("{dialect:?}: expected a `pattern_union_t<n>` CTE:\n{sql}"));
+        let cte_name = format!("pattern_union_{}", &caps[1]);
+
+        // The outer query must read the SAME (whatever-numbered) CTE name —
+        // this is the actual invariant a refactor must preserve, even though
+        // the exact number is unlocked.
+        assert!(
+            sql.matches(&cte_name).count() >= 2,
+            "{dialect:?}: expected the CTE name `{cte_name}` to appear at \
+             least twice (definition + outer FROM):\n{sql}"
+        );
     }
 }
