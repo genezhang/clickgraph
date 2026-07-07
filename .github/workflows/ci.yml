@@ -1,9 +1,8 @@
 name: Rust
 
 on:
-  # Disabled push trigger - tests require ClickHouse infrastructure
-  # push:
-  #   branches: [ "main" ]
+  push:
+    branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
 
@@ -56,6 +55,16 @@ jobs:
       run: |
         chmod +x scripts/test/setup_social_integration_data.sh
         scripts/test/setup_social_integration_data.sh
+        # Schema-variation data for the smoke subset (P0.7): these back the
+        # fk_edge/polymorphic/composite_id/denormalized_flights schemas in
+        # schemas/test/unified_test_multi_schema.yaml (db_fk_edge, db_polymorphic,
+        # db_composite_id, db_denormalized). Not needed by the 2 regression
+        # tests above, but required for `pytest -m smoke`.
+        chmod +x scripts/setup/setup_fk_edge_data.sh scripts/setup/setup_polymorphic_data.sh scripts/setup/setup_composite_id_data.sh scripts/setup/setup_denormalized_data.sh
+        scripts/setup/setup_fk_edge_data.sh
+        scripts/setup/setup_polymorphic_data.sh
+        scripts/setup/setup_composite_id_data.sh
+        scripts/setup/setup_denormalized_data.sh
 
     - name: Start ClickGraph server
       run: |
@@ -92,6 +101,21 @@ jobs:
       run: |
         pytest tests/integration/test_return_only_regression.py -v
         pytest tests/integration/test_optional_match_where_regression.py -v
+
+    - name: Run per-variation smoke subset
+      run: |
+        # Explicit file list (not `pytest tests/integration -m smoke`): several
+        # unrelated files under tests/integration/ fail to COLLECT without
+        # extra deps this job doesn't install (neo4j, numpy, clickhouse_driver),
+        # which would abort the whole run before marker filtering ever applies.
+        pytest \
+          tests/integration/test_basic_queries.py \
+          tests/integration/test_optional_match.py \
+          tests/integration/test_with_cte_node_expansion.py \
+          tests/integration/test_variable_length_paths.py \
+          tests/integration/test_graphrag_schema_variations.py \
+          tests/integration/test_smoke_schema_variations.py \
+          -m smoke -v
 
     - name: Cleanup
       if: always()

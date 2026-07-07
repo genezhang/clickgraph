@@ -274,6 +274,7 @@ class TestPolymorphicEdgeVLP:
         
         print("✅ Polymorphic multi-type VLP generates correct SQL")
     
+    @pytest.mark.smoke
     def test_polymorphic_vlp_execution(self, schema_variation_data):
         """
         Test that polymorphic single-type VLP actually executes and returns results.
@@ -377,6 +378,7 @@ class TestFKEdgeVLP:
         
         print("✅ FK-edge constraint appears in SQL")
     
+    @pytest.mark.smoke
     def test_fk_edge_vlp_execution(self, schema_variation_data):
         """
         Test FK-edge VLP execution with constraint filtering.
@@ -453,6 +455,7 @@ class TestDenormalizedMultiTypeVLP:
         
         print("✅ Denormalized VLP range generates correct SQL")
     
+    @pytest.mark.smoke
     def test_denormalized_vlp_execution(self, schema_variation_data):
         """
         Test denormalized VLP execution.
@@ -529,6 +532,7 @@ class TestMultiTypeAcrossSchemas:
         
         print("✅ Lineage multi-type VLP generates UNION ALL structure")
     
+    @pytest.mark.smoke
     def test_multi_type_vlp_execution(self, schema_variation_data):
         """
         Test multi-type VLP execution returns results from both types.

@@ -18,6 +18,10 @@ from conftest import (
     assert_contains_value
 )
 
+# Whole file: cheap, standard-schema, result-asserting MATCH/WHERE/ORDER BY/
+# LIMIT/aggregation coverage — smoke subset core-feature baseline (P0.7).
+pytestmark = pytest.mark.smoke
+
 
 class TestBasicMatch:
     """Test basic MATCH patterns."""

@@ -22,6 +22,7 @@ from conftest import (
 class TestFixedLengthPaths:
     """Test fixed-length variable path patterns (*N)."""
     
+    @pytest.mark.smoke
     def test_exact_two_hops(self, simple_graph):
         """Test *2 pattern (exactly 2 hops)."""
         response = execute_cypher(
@@ -82,6 +83,7 @@ class TestFixedLengthPaths:
 class TestRangePaths:
     """Test range variable-length patterns (*N..M)."""
     
+    @pytest.mark.smoke
     def test_one_to_two_hops(self, simple_graph):
         """Test *1..2 pattern (1 or 2 hops)."""
         response = execute_cypher(
@@ -164,6 +166,7 @@ class TestRangePaths:
 class TestUnboundedPaths:
     """Test unbounded variable-length patterns."""
     
+    @pytest.mark.smoke
     def test_zero_or_more_hops(self, simple_graph):
         """Test *0.. pattern (includes self)."""
         response = execute_cypher(
@@ -223,6 +226,7 @@ class TestUnboundedPaths:
 class TestVariableLengthWithFilters:
     """Test variable-length paths with WHERE clauses."""
     
+    @pytest.mark.smoke
     def test_filter_start_node(self, simple_graph):
         """Test variable-length with start node filter."""
         response = execute_cypher(
@@ -384,6 +388,7 @@ class TestVariableLengthBidirectional:
 class TestVariableLengthAggregation:
     """Test aggregations with variable-length paths."""
     
+    @pytest.mark.smoke
     def test_count_paths_by_length(self, simple_graph):
         """Test counting paths of different lengths."""
         response = execute_cypher(

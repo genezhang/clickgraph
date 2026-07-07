@@ -49,6 +49,7 @@ def get_var_columns(columns, var):
 class TestWithBasicNodeExpansion:
     """Test 1: Basic WITH node export."""
 
+    @pytest.mark.smoke
     def test_with_single_node_export(self):
         """
         Test basic WITH node export.
@@ -88,6 +89,7 @@ class TestWithBasicNodeExpansion:
 class TestWithMultipleVariableExport:
     """Test 2: Multi-variable WITH export."""
 
+    @pytest.mark.smoke
     def test_with_two_node_export(self):
         """
         Test WITH exporting two related nodes.
@@ -156,6 +158,7 @@ class TestWithMultipleVariableExport:
 class TestWithChaining:
     """Test 3: WITH chaining (nested CTEs)."""
 
+    @pytest.mark.smoke
     def test_with_chaining_two_levels(self):
         """
         Test WITH chaining - nested WITH clauses.
@@ -225,6 +228,7 @@ class TestWithChaining:
 class TestWithScalarExport:
     """Test 4: WITH scalar export (aggregates)."""
 
+    @pytest.mark.smoke
     def test_with_scalar_count(self):
         """
         Test WITH scalar - aggregation should NOT expand.
@@ -291,6 +295,7 @@ class TestWithScalarExport:
 class TestWithPropertyRename:
     """Test 5: WITH property rename."""
 
+    @pytest.mark.smoke
     def test_with_node_rename(self):
         """
         Test WITH node aliased with AS clause.

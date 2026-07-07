@@ -24,6 +24,7 @@ from conftest import (
 class TestSingleOptionalMatch:
     """Test single OPTIONAL MATCH patterns."""
     
+    @pytest.mark.smoke
     def test_optional_match_existing_node(self, simple_graph):
         """Test OPTIONAL MATCH when node exists."""
         response = execute_cypher(
@@ -43,6 +44,7 @@ class TestSingleOptionalMatch:
         assert_contains_value(response, "b.name", "Bob")
         assert_contains_value(response, "b.name", "Charlie")
     
+    @pytest.mark.smoke
     def test_optional_match_no_relationship(self, simple_graph):
         """Test OPTIONAL MATCH when relationship doesn't exist."""
         response = execute_cypher(
@@ -67,6 +69,7 @@ class TestSingleOptionalMatch:
             assert results[0][0] == "Eve"
             assert results[0][1] is None
     
+    @pytest.mark.smoke
     def test_optional_match_incoming_relationship(self, simple_graph):
         """Test OPTIONAL MATCH with incoming relationship."""
         response = execute_cypher(
@@ -103,6 +106,7 @@ class TestSingleOptionalMatch:
 class TestMultipleOptionalMatch:
     """Test multiple OPTIONAL MATCH clauses."""
     
+    @pytest.mark.smoke
     def test_two_optional_matches_both_exist(self, simple_graph):
         """Test two OPTIONAL MATCH when both relationships exist."""
         response = execute_cypher(
@@ -297,6 +301,7 @@ class TestOptionalMatchWithProperties:
         assert_column_exists(response, "b.name")
         assert_column_exists(response, "b.age")
     
+    @pytest.mark.smoke
     def test_optional_match_null_property_access(self, simple_graph):
         """Test accessing properties when optional match returns NULL."""
         response = execute_cypher(
