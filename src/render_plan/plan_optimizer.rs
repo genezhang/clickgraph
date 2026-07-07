@@ -1401,17 +1401,54 @@ fn column_defines_alias(col_trimmed: &str, alias: &str) -> bool {
 /// the OPTIONAL path bypasses that collapse because its joins are extracted at
 /// render time with the anchor as FROM, so the phantom survives to here.
 ///
-/// This pass removes such a phantom: an edge join `J` (one carrying relationship
-/// id columns) whose sole `ON` condition is an identity `J.k = A.k` (the SAME
-/// column name on both sides, and `k` is `J`'s own edge key) where `A` is another
-/// relation — the FROM table or another JOIN — on the SAME physical table as `J`,
-/// and `J`'s alias is referenced nowhere else in the plan. Dropping a join that is
-/// a 1:1 identity self-join to an already-present relation, whose alias supplies
-/// no columns, preserves both the row set (including OPTIONAL-MATCH NULL rows —
-/// the genuinely-optional relation `A` and its LEFT JOIN are untouched) and every
-/// value. Non-FK-edge schemas never hit this: their edge tables are distinct from
-/// every node table, so the same-physical-table guard fails.
+/// This pass removes such a phantom: a LEFT edge join `J` (one carrying
+/// relationship id columns) whose sole `ON` condition is an identity `J.k = A.k`
+/// (the SAME column name on both sides, where `k` is the PRIMARY KEY — `node_id`
+/// — of the node mapped to `J`'s physical table) where `A` is another relation —
+/// the FROM table or another JOIN — on the SAME physical table as `J`, and `J`'s
+/// alias is referenced nowhere else in the plan.
+///
+/// The PK requirement is what proves the join is exactly 1:1. An identity join
+/// on a NON-unique column fans out and MUST be preserved: e.g.
+/// `MATCH (o:Order) OPTIONAL MATCH (o)-[:PLACED_BY]->(c)<-[:PLACED_BY]-(o2:Order)`
+/// emits `LEFT JOIN orders_fk AS o2 ON o2.customer_id = o.customer_id`, an
+/// identity self-join on the edge's `to_id` FK that expands each order to all
+/// sibling orders of the same customer — semantically load-bearing, not phantom.
+/// (Review finding on #452: an earlier draft accepted `from_id OR to_id` here;
+/// `to_id` is that non-unique FK, so the check is now strictly the node PK.)
+///
+/// The LEFT-only requirement makes the pass locally provable: an INNER identity
+/// self-join to a LEFT-joined twin acts as a NOT-NULL filter on the twin, so
+/// removing it could resurrect NULL-extended rows.
+///
+/// Dropping a 1:1 PK identity LEFT self-join to an already-present relation,
+/// whose alias supplies no columns, preserves both the row set (including
+/// OPTIONAL-MATCH NULL rows — the genuinely-optional relation `A` and its LEFT
+/// JOIN are untouched) and every value. Non-FK-edge schemas never hit this:
+/// their edge tables are distinct from every node table, so the
+/// same-physical-table guard fails.
 fn remove_redundant_edge_self_joins(plan: &mut RenderPlan) {
+    // The PK (node_id) lookup needs the schema. Query-processing code accesses it
+    // via the task-local QueryContext; if it's unavailable we cannot prove any
+    // join is 1:1, so remove nothing.
+    let schema = match crate::server::query_context::get_current_schema() {
+        Some(s) => s,
+        None => return,
+    };
+    // A single-column identity join is provably 1:1 only if that column is the
+    // PRIMARY KEY (node_id) of a node mapped to this physical table. Composite
+    // node ids can never be covered by a single-column condition, so they never
+    // match (correctly conservative).
+    let is_node_pk_of_table = |table_name: &str, col: &str| -> bool {
+        schema.all_node_schemas().values().any(|ns| {
+            ns.full_table_name() == table_name
+                && matches!(
+                    &ns.node_id.id,
+                    crate::graph_catalog::config::Identifier::Single(pk) if pk == col
+                )
+        })
+    };
+
     loop {
         let mut victim: Option<usize> = None;
 
@@ -1419,6 +1456,12 @@ fn remove_redundant_edge_self_joins(plan: &mut RenderPlan) {
             // Must be an edge join (carries relationship id columns). Node joins
             // are handled by bridge elimination; only the edge relation is phantom.
             if j.from_id_column.is_none() && j.to_id_column.is_none() {
+                continue;
+            }
+            // Only nullable LEFT joins qualify (the OPTIONAL MATCH phantom is
+            // always LEFT). Removing an INNER self-join to a LEFT-joined twin
+            // would drop its implicit NOT-NULL filtering.
+            if j.join_type != JoinType::Left {
                 continue;
             }
             // A pre_filter (schema/view filter or compiled edge constraint) narrows
@@ -1460,12 +1503,13 @@ fn remove_redundant_edge_self_joins(plan: &mut RenderPlan) {
             if self_col != twin_col {
                 continue;
             }
-            // The identity column must be this edge's own key (from_id/to_id).
-            // For an FK-edge that key is the node's primary key, so the join is
-            // exactly 1:1 — this is what makes the edge row duplicate the node row.
-            let is_edge_key = j.from_id_column.as_deref() == Some(self_col.as_str())
-                || j.to_id_column.as_deref() == Some(self_col.as_str());
-            if !is_edge_key {
+            // The identity column must be the PRIMARY KEY (node_id) of the node
+            // mapped to this physical table — that is what makes the join exactly
+            // 1:1 (the edge row IS the node row). Do NOT accept the edge's
+            // from_id/to_id here: to_id is a non-unique FK on an FK-edge table,
+            // and an identity join on it fans out to sibling rows (see doc
+            // comment for the `(o)-[:PLACED_BY]->(c)<-[:PLACED_BY]-(o2)` case).
+            if !is_node_pk_of_table(&j.table_name, &self_col) {
                 continue;
             }
 
@@ -1494,19 +1538,22 @@ fn remove_redundant_edge_self_joins(plan: &mut RenderPlan) {
                 continue;
             }
             // ...and no OTHER join's ON / pre_filter may reference it either.
+            // Use the same combined check as is_alias_referenced_in_plan:
+            // references_alias() alone misses aliases embedded in pre-rendered
+            // correlated SQL (ExistsSubquery/PatternCount), which
+            // expr_has_correlated_ref() covers.
+            let refs_phantom = |e: &RenderExpr| {
+                references_alias(e, &j.table_alias) || expr_has_correlated_ref(e, &j.table_alias)
+            };
             let referenced_in_other_join = plan.joins.0.iter().enumerate().any(|(i, other)| {
                 if i == idx {
                     return false;
                 }
-                let in_on = other.joining_on.iter().any(|c| {
-                    c.operands
-                        .iter()
-                        .any(|op| references_alias(op, &j.table_alias))
-                });
-                let in_pf = other
-                    .pre_filter
-                    .as_ref()
-                    .is_some_and(|pf| references_alias(pf, &j.table_alias));
+                let in_on = other
+                    .joining_on
+                    .iter()
+                    .any(|c| c.operands.iter().any(&refs_phantom));
+                let in_pf = other.pre_filter.as_ref().is_some_and(&refs_phantom);
                 in_on || in_pf
             });
             if referenced_in_other_join {

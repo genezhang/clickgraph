@@ -658,3 +658,34 @@ async fn fk_edge_optional_match_has_no_phantom_edge_self_join() {
         );
     }
 }
+
+/// Guard for the #452 review's blocking finding: an identity self-join of the
+/// edge table on a NON-unique column is NOT phantom and must be preserved.
+///
+/// `MATCH (o:Order) OPTIONAL MATCH (o)-[:PLACED_BY]->(c:Customer)<-[:PLACED_BY]-(o2:Order)`
+/// emits `LEFT JOIN orders_fk AS o2 ON o2.customer_id = o.customer_id` — an
+/// identity join on the edge's `to_id` FK (`customer_id`), which fans out each
+/// order to all sibling orders of the same customer (18 rows on the committed
+/// fixture data, not 8). An earlier draft of `remove_redundant_edge_self_joins`
+/// accepted `from_id OR to_id` as the identity key and deleted this join; the
+/// pass now requires the node PRIMARY KEY (order_id), so `o2` survives.
+#[tokio::test]
+async fn fk_edge_optional_match_preserves_fanout_self_join() {
+    let schema = load_schema(SchemaId::FkEdge.yaml_path());
+    let cypher = "MATCH (o:Order) OPTIONAL MATCH (o)-[:PLACED_BY]->(c:Customer)<-[:PLACED_BY]-(o2:Order) RETURN o.order_id";
+
+    for (dialect, dname) in [
+        (SqlDialect::ClickHouse, "clickhouse"),
+        (SqlDialect::Databricks, "databricks"),
+    ] {
+        let sql = render(&schema, cypher, dialect).await;
+
+        // The fan-out self-join on the non-unique FK must survive.
+        assert!(
+            sql.contains("LEFT JOIN db_fk_edge.orders_fk AS o2 ON o2.customer_id = o.customer_id"),
+            "FK-edge fan-out OPTIONAL MATCH ({dname}) must preserve the o2 \
+             self-join on customer_id (non-unique FK — removing it changes the \
+             row count from 18 to 8):\n{sql}"
+        );
+    }
+}
