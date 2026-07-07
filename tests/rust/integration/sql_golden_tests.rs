@@ -1141,22 +1141,38 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 // execute on live CH with correct ordered slices. Paging mechanics (`LIMIT off, n`,
 // CH huge-upper-bound for bare SKIP) were already correct.
 //
-// GROUP C — semantically wrong result, but VALID SQL (executes):
-//   - with_match_chain: `MATCH (a:Airport) WITH a WHERE a.state='CA'
-//     MATCH (a)-[:FLIGHT]->(b)` should yield flights FROM CA airports (4 rows).
-//     It returns 7. The WITH-CTE materializes `a` as a UNION of an origin branch
-//     AND a dest branch, but the dest branch ALSO filters `WHERE a.origin_state
-//     = 'CA'` (should be dest_state / or be the same node set), so the airport
-//     set is polluted with destinations of CA-origin flights (LAX,SFO,JFK,ORD,ATL
-//     instead of {CA airports}). Kept as a lock; a fix should collapse/​correct
-//     the dest branch and drop to 4 rows.
-//   - optional_match: `MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b)`
-//     renders IDENTICALLY to the inner directed hop — a plain
-//     `FROM flights_denorm AS t0` with NO LEFT JOIN and no node materialization
-//     (8 rows). For the coupled-same-row shape (the node IS the edge row) every
-//     origin trivially has its flight, so no NULL-extension rows are produced;
-//     this is degenerate-but-current. A real node-materialization fix (Group A)
-//     would change this too.
+// GROUP C:
+//   - with_match_chain: RESOLVED (#456). `MATCH (a:Airport) WITH a WHERE
+//     a.state='CA' MATCH (a)-[:FLIGHT]->(b)` yields flights FROM CA airports
+//     (4 rows). Previously returned 7: `WITH a` materializes `a` as a from/to
+//     UNION, and the post-WITH `WHERE a.state='CA'` — resolved position-blind to
+//     the origin column and copied verbatim to every branch — filtered the dest
+//     branch on `a.origin_state` instead of `a.dest_state`, polluting the airport
+//     set with the destinations of CA-origin flights (LAX,SFO,JFK,ORD,ATL). Fixed
+//     by re-pointing the propagated WHERE per UNION branch to that branch's own
+//     column for the same exported property (`plan_builder_utils.rs`,
+//     build_chained_with_match_cte_plan). Both render paths shared the bug, so the
+//     golden updated (dest branch now `WHERE a.dest_state = 'CA'`); live 4 rows.
+//     Regression: `denorm_with_match_chain_filters_per_branch_column_456`.
+//   - optional_match: `MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b)`.
+//     PRODUCTION FIXED (#456) — the golden (ctx-less `render()`) below still
+//     locks the WRONG shape and DIVERGES from production (a #459 instance):
+//       * GOLDEN (ctx-less harness path): renders IDENTICALLY to the inner
+//         directed hop — a plain `FROM flights_denorm AS t0` with NO LEFT JOIN
+//         and no node materialization (8 rows, drops PHX — the destination-only
+//         airport with no outgoing flight). Still locked here as-is; converging
+//         this path is bug 2(b) / #459 (not attempted — the ctx-less path reaches
+//         this shape by a different route than production).
+//       * PRODUCTION (`to_render_plan_with_ctx`: server/cg/embedded): correctly
+//         materializes `a` as the from/to UNION CTE (`__denorm_scan_a`) and
+//         LEFT-JOINs the edge — but USED TO emit invalid SQL: the to-node `b`'s
+//         columns live on the LEFT-joined edge row (`t1.dest_code`), yet a stale
+//         edge→node reverse-map rewrote the resolved `t1.dest_code` back to the
+//         raw `b.code`, a phantom table → ClickHouse `UNKNOWN_IDENTIFIER` (HTTP
+//         500). Fixed by dropping `to_node_properties` from that reverse-map so
+//         to-node columns stay on the edge alias (`plan_builder.rs`, the ctx
+//         OPTIONAL-denorm handler). Live: correct 9 rows (8 flights + PHX
+//         null-extended). Regression: `denorm_optional_match_resolves_to_node_onto_edge_456`.
 //
 // Verified CORRECT (normal locks, not suspicious) — executed on live CH:
 // directed_hop_ids (8), directed_hop_props, reverse_hop (8), undirected_hop (16,
@@ -1804,6 +1820,143 @@ async fn denorm_labeled_node_scan_resolves_virtual_id_454() {
             count_sql.contains("__union"),
             "#454 ({dname}): count(a) over the denorm union must wrap the branches \
              in a `__union` subquery:\n{count_sql}"
+        );
+    }
+}
+
+/// #456 regression (WITH→MATCH chain, both render paths): `MATCH (a:Airport)
+/// WITH a WHERE a.state = 'CA' MATCH (a)-[:FLIGHT]->(b:Airport) RETURN a.code,
+/// b.code` on the coupled-denormalized schema. `WITH a` materializes the Airport
+/// node as a from/to UNION CTE (origin branch projects origin_*, dest branch
+/// projects dest_*). The post-WITH `WHERE a.state='CA'` was resolved position-blind
+/// (the label→column map always yields the from/origin column) and then copied
+/// VERBATIM to every UNION branch, so the dest branch filtered `a.origin_state`
+/// instead of `a.dest_state`. That polluted the exported airport set with the
+/// destinations of CA-origin flights (live: 7 rows instead of 4). The fix re-points
+/// the propagated predicate per branch to that branch's own column for the same
+/// exported property. Live: correct 4 rows (flights FROM the CA airports LAX/SFO).
+/// Both paths were broken identically, so the golden updates as an intended diff.
+#[tokio::test]
+async fn denorm_with_match_chain_filters_per_branch_column_456() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+    let cypher = "MATCH (a:Airport) WITH a WHERE a.state = 'CA' \
+                  MATCH (a)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // Both render paths shared the bug; lock both.
+        for (path, sql) in [
+            ("ctx-less", render(&schema, cypher, dialect).await),
+            ("production", render_ctx(&schema, cypher, dialect).await),
+        ] {
+            // The from/origin branch keeps the origin column…
+            assert!(
+                sql.contains("a.origin_state = 'CA'"),
+                "#456 ({dialect:?}/{path}): origin branch must filter origin_state:\n{sql}"
+            );
+            // …and the dest branch must filter its OWN dest column, not origin.
+            assert!(
+                sql.contains("a.dest_state = 'CA'"),
+                "#456 ({dialect:?}/{path}): dest branch must filter dest_state \
+                 (was origin_state — polluted the exported node set):\n{sql}"
+            );
+            // The dest branch must NOT carry the from-side column (the bug).
+            assert_eq!(
+                sql.matches("a.origin_state = 'CA'").count(),
+                1,
+                "#456 ({dialect:?}/{path}): exactly one branch may filter \
+                 origin_state (the origin branch); the dest branch leaked it:\n{sql}"
+            );
+        }
+    }
+
+    // Follow-up (review finding): the per-branch remap must also descend into
+    // expression WRAPPERS. The original remapper hand-rolled its recursion over
+    // only PropertyAccess/Operator/Aggregate/ScalarFnCall, so a CASE-wrapped
+    // predicate left the dest branch filtering `a.origin_state` INSIDE the CASE
+    // (live: 7 rows again). Now implemented on `ExprVisitor::transform_expr`
+    // (expression_utils.rs), whose default walk covers Case/List/subscripts/
+    // slices/subqueries. Live after: 4 rows.
+    let case_cypher = "MATCH (a:Airport) \
+                       WITH a WHERE (CASE WHEN a.state = 'CA' THEN 1 ELSE 0 END) = 1 \
+                       MATCH (a)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        for (path, sql) in [
+            ("ctx-less", render(&schema, case_cypher, dialect).await),
+            (
+                "production",
+                render_ctx(&schema, case_cypher, dialect).await,
+            ),
+        ] {
+            // The dest branch's CASE must test its OWN column…
+            assert!(
+                sql.contains("CASE WHEN a.dest_state = 'CA'"),
+                "#456 follow-up ({dialect:?}/{path}): dest branch must remap the \
+                 column INSIDE the CASE wrapper to dest_state:\n{sql}"
+            );
+            // …and the origin column may appear in exactly one branch's CASE.
+            assert_eq!(
+                sql.matches("CASE WHEN a.origin_state = 'CA'").count(),
+                1,
+                "#456 follow-up ({dialect:?}/{path}): the dest branch leaked \
+                 origin_state inside the CASE (wrapper not descended):\n{sql}"
+            );
+        }
+    }
+}
+
+/// #456 regression (OPTIONAL, production path): `MATCH (a:Airport) OPTIONAL MATCH
+/// (a)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code` on the coupled-denormalized
+/// schema. The production render path (`to_render_plan_with_ctx`) restructures the
+/// OPTIONAL denorm hop into `FROM __denorm_scan_a AS a LEFT JOIN flights_denorm AS
+/// t1` (the from-node `a` materialized as a from/to UNION CTE, the edge LEFT-joined
+/// for OPTIONAL NULL-extension). The to-node `b`'s properties live on the LEFT-joined
+/// edge row (`t1.dest_code`), NOT a table named `b`. A stale rewrite mapped the
+/// resolved `t1.dest_code` back to the raw `b.code`, referencing a non-existent
+/// table → ClickHouse `UNKNOWN_IDENTIFIER` (HTTP 500 in server/cg). The fix drops
+/// `to_node_properties` from the edge→node reverse map so to-node columns stay on
+/// the edge alias. Live: correct 9 rows (8 flights + PHX null-extended, the only
+/// airport with no outgoing flight). This is the PRODUCTION path only; the golden
+/// harness (`render()`, ctx-less) renders a degenerate inner scan for this shape
+/// (a separate #459 divergence, still locked in `denormalized/optional_match`).
+#[tokio::test]
+async fn denorm_optional_match_resolves_to_node_onto_edge_456() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+    let cypher =
+        "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code";
+
+    for (dialect, dname) in [
+        (SqlDialect::ClickHouse, "clickhouse"),
+        (SqlDialect::Databricks, "databricks"),
+    ] {
+        // Production render path — the one server / cg / embedded actually use.
+        let sql = render_ctx(&schema, cypher, dialect).await;
+        // Alias quoting differs per dialect (CH: "…", Databricks: `…`).
+        let q = if dname == "databricks" { '`' } else { '"' };
+
+        // The OPTIONAL hop must be a LEFT JOIN (NULL-extends airports with no
+        // outgoing flight), not an inner scan that drops them.
+        assert!(
+            sql.to_uppercase().contains("LEFT JOIN"),
+            "#456 ({dname}): OPTIONAL denorm hop must render a LEFT JOIN:\n{sql}"
+        );
+        // The from-node is materialized as the from/to union CTE.
+        assert!(
+            sql.contains("__denorm_scan_a"),
+            "#456 ({dname}): expected the from-node materialization CTE:\n{sql}"
+        );
+        // The to-node property must resolve to the edge row's dest column…
+        assert!(
+            sql.contains(&format!("dest_code AS {q}b.code{q}")),
+            "#456 ({dname}): to-node `b.code` must resolve to the edge's \
+             dest_code, got:\n{sql}"
+        );
+        // …and must NOT leak the unresolvable raw `b.code` reference (the bug:
+        // a phantom table `b` → ClickHouse UNKNOWN_IDENTIFIER / 500).
+        assert!(
+            !sql.contains(&format!("      b.code AS {q}b.code{q}")),
+            "#456 ({dname}): to-node reference leaked as the unresolvable raw \
+             `b.code` (phantom table), got:\n{sql}"
         );
     }
 }
