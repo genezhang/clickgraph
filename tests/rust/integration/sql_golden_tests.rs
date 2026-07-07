@@ -2423,6 +2423,71 @@ async fn denorm_order_by_uses_table_alias_not_cypher_alias_455() {
     }
 }
 
+/// #470 regression: on a COUPLED-denormalized schema (`zeek_merged_test.yaml`)
+/// where a node's `node_id` Cypher name (`id.orig_h`) differs from a property
+/// that maps to the SAME db column (`ip: id.orig_h`), the OPTIONAL-MATCH denorm
+/// LEFT JOIN key was resolved by iterating a `HashMap` of anchor properties and
+/// picking the first whose column matched the edge `from_id`. Both `ip` and the
+/// raw self-mapping `id.orig_h` matched, so the pick was NONDETERMINISTIC across
+/// fresh processes (~50/50): half the renders keyed on `a.ip` (VALID — the
+/// `__denorm_scan_a` CTE exposes `ip`) and half on `a."id.orig_h"` (INVALID —
+/// the CTE does NOT expose that column; ClickHouse errors UNKNOWN_IDENTIFIER).
+///
+/// The fix resolves the join key FORWARD through the CTE's actually-exposed
+/// columns (CLAUDE.md rule 2), deterministically. This test locks BOTH the
+/// determinism (repeated renders are byte-identical — `HashMap` seeds differ per
+/// map, so a nondeterministic site flips within a single process) AND the
+/// correctness (the CTE-side join key is the exposed property `a.ip`, never the
+/// unexposed raw node_id `a."id.orig_h"`).
+#[tokio::test]
+async fn denorm_optional_join_key_forward_resolved_and_deterministic_470() {
+    let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+    let repro = "MATCH (a:IP) OPTIONAL MATCH (a)-[:REQUESTED]->(d) RETURN a.ip, a.port, d.name";
+
+    // Determinism: many fresh renders in-process must all be byte-identical.
+    let first = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+    for _ in 0..30 {
+        let again = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#470: OPTIONAL denorm join-key render is nondeterministic:\n\
+             FIRST:\n{first}\nAGAIN:\n{again}"
+        );
+    }
+
+    // Correctness: the LEFT JOIN's CTE-side key must be the CTE-exposed property
+    // `a.ip`, NOT the raw node_id `a."id.orig_h"` (which the CTE does not expose).
+    let join_line = first
+        .lines()
+        .find(|l| l.contains("LEFT JOIN"))
+        .unwrap_or_else(|| panic!("#470: no LEFT JOIN line:\n{first}"));
+    assert!(
+        join_line.contains("ON a.ip ="),
+        "#470: OPTIONAL denorm join must key on the CTE-exposed column a.ip:\n{first}"
+    );
+    assert!(
+        !join_line.contains(r#"a."id.orig_h""#),
+        "#470: OPTIONAL denorm join must NOT key on the unexposed raw node_id \
+         a.\"id.orig_h\" (invalid — CTE exposes only ip/port):\n{first}"
+    );
+
+    // Sibling coupled shapes from the same table must also render deterministically.
+    for cypher in [
+        "MATCH (d:Domain) OPTIONAL MATCH (d)-[:RESOLVED_TO]->(r) RETURN d.name, r.ip",
+        "MATCH (a:IP) OPTIONAL MATCH (a)-[:ACCESSED]->(b) RETURN a.ip, b.ip",
+    ] {
+        let base = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+        for _ in 0..10 {
+            let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(
+                base, again,
+                "#470: coupled shape render is nondeterministic [{cypher}]:\n\
+                 BASE:\n{base}\nAGAIN:\n{again}"
+            );
+        }
+    }
+}
+
 /// P0.5 characterization: a FULLY-unlabeled, multi-edge-type UNDIRECTED
 /// expand `MATCH (n)-[r]-(o) RETURN n, r, o` renders BYTE-IDENTICAL SQL to
 /// the DIRECTED form `MATCH (n)-[r]->(o) RETURN n, r, o` on both Standard and
