@@ -323,9 +323,11 @@ const CORPUS: &[(&str, &str)] = &[
 ///   - UNWIND/arrayJoin shapes — same Spark structural gap the standard corpus
 ///     skips.
 ///
-/// KNOWN-SUSPICIOUS: none currently. `with_match_chain` was confirmed wrong
-/// (cartesian) and is FIXED (#451); `optional_match`'s redundant phantom
-/// self-join is FIXED (#452).
+/// KNOWN-SUSPICIOUS: `optional_after_with` (#453) — a post-WITH OPTIONAL MATCH
+/// renders INNER + mis-anchored, dropping no-order customers (locked as current
+/// behavior, see note below). `with_match_chain` was confirmed wrong (cartesian)
+/// and is FIXED (#451); `optional_match`'s redundant phantom self-join is
+/// FIXED (#452).
 const FK_EDGE_CORPUS: &[(&str, &str)] = &[
     // --- node scans (both node types) ---
     ("node_scan_order", "MATCH (o:Order) RETURN o.order_id"),
@@ -405,6 +407,14 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
     (
         "optional_match",
         "MATCH (c:Customer) OPTIONAL MATCH (c)<-[:PLACED_BY]-(o:Order) RETURN c.name, o.order_id",
+    ),
+    // OPTIONAL MATCH *after* a WITH barrier: the required Customer arrives as a
+    // CTE (with_c_cte_0) and the fresh Order pattern is optional. The CTE is the
+    // anchor, so it must be the FROM driver and the Order pattern LEFT-joined to
+    // it, preserving customers with no orders. #453.
+    (
+        "optional_after_with",
+        "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) RETURN c.name, o.order_id",
     ),
     // --- WITH + aggregation (count per customer), and its HAVING form ---
     (
@@ -1056,6 +1066,18 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 // the PK). Now collapsed by `remove_redundant_edge_self_joins` in
 // `plan_optimizer.rs`; still 8 rows on live CH, one fewer JOIN. Kept as a normal
 // (no longer suspicious) golden lock.
+//
+//   - fk_edge/optional_after_with: KNOWN-BROKEN (#453), locked as current
+//     behavior. `MATCH (c:Customer) WITH c OPTIONAL MATCH
+//     (o:Order)-[:PLACED_BY]->(c)` renders the required Customer as
+//     `with_c_cte_0` and the fresh Order pattern as optional. It currently emits
+//     `FROM orders_fk AS o INNER JOIN with_c_cte_0 AS c` — the optional side
+//     drives the query and the required CTE is INNER-joined, dropping every
+//     customer with no order (4 rows on live CH instead of 5, wrong OPTIONAL
+//     semantics). Root cause: `has_optional_match_input` only inspects
+//     WITH-clause *bodies*, so a post-WITH OPTIONAL MATCH falls through to the
+//     plain hardcoded `JoinType::Inner` CTE-join emission. Fix is tracked in
+//     #453; this golden characterizes the pre-fix output.
 //
 // Verified CORRECT (kept as normal locks, not suspicious): single_hop /
 // single_hop_reverse / undirected_hop all render the node-to-node FK join
