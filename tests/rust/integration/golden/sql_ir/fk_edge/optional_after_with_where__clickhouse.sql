@@ -7,4 +7,4 @@ SELECT
       c.p1_c_name AS "c.name", 
       o.order_id AS "o.order_id"
 FROM with_c_cte_0 AS c
-LEFT JOIN db_fk_edge.orders_fk AS o ON o.customer_id = c.p1_c_customer_id
+LEFT JOIN (SELECT * FROM db_fk_edge.orders_fk WHERE total_amount > 100) AS o ON o.customer_id = c.p1_c_customer_id

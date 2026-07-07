@@ -7386,6 +7386,26 @@ fn try_flatten_head_collect_map_literal(
     Some((flattened_items, compound_keys))
 }
 
+/// Find the `where_predicate` of the first `GraphRel` reachable through the
+/// common single-branch wrappers (`GraphJoins`/`Projection`/`Filter`/…). Used by
+/// the #460 post-WITH OPTIONAL restructure to recover the optional pattern's
+/// WHERE predicate, which is otherwise dropped for the reversed-anchor shape.
+fn find_graphrel_where_predicate(plan: &LogicalPlan) -> Option<&Option<LogicalExpr>> {
+    match plan {
+        LogicalPlan::GraphRel(gr) => Some(&gr.where_predicate),
+        LogicalPlan::GraphJoins(gj) => find_graphrel_where_predicate(&gj.input),
+        LogicalPlan::Projection(proj) => find_graphrel_where_predicate(&proj.input),
+        LogicalPlan::Filter(f) => find_graphrel_where_predicate(&f.input),
+        LogicalPlan::GroupBy(g) => find_graphrel_where_predicate(&g.input),
+        LogicalPlan::OrderBy(o) => find_graphrel_where_predicate(&o.input),
+        LogicalPlan::Limit(l) => find_graphrel_where_predicate(&l.input),
+        LogicalPlan::Skip(s) => find_graphrel_where_predicate(&s.input),
+        LogicalPlan::GraphNode(gn) => find_graphrel_where_predicate(&gn.input),
+        LogicalPlan::Unwind(u) => find_graphrel_where_predicate(&u.input),
+        _ => None,
+    }
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -12934,12 +12954,39 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         .alias
                         .clone()
                         .unwrap_or_else(|| old_from.name.clone());
+
+                    // #460: Recover the OPTIONAL pattern's WHERE predicate. A
+                    // `WHERE` attached to the post-WITH OPTIONAL MATCH (e.g.
+                    // `OPTIONAL MATCH (o)-[:R]->(c) WHERE o.amount > 100`) lives
+                    // on the fresh pattern's `GraphRel.where_predicate`. In this
+                    // reversed-anchor shape `to_render_plan_with_ctx` routes the
+                    // anchor-side portion into the outer WHERE but SILENTLY DROPS
+                    // the optional-side portion (it was destined for a pre_filter
+                    // on a join this restructure rebuilds from scratch) — the
+                    // predicate vanished, returning MORE rows than asked
+                    // (ground-rule #1 violation). Re-extract the predicates that
+                    // reference ONLY the optional table alias and place them in
+                    // the LEFT JOIN's pre_filter (subquery form), so the filter
+                    // applies BEFORE the join and non-matching anchor rows stay
+                    // NULL-extended (correct OPTIONAL MATCH semantics). Anchor-
+                    // side predicates are untouched (already in the outer WHERE).
+                    let optional_pre_filter = find_graphrel_where_predicate(&current_plan)
+                        .and_then(|wp| {
+                            extract_predicates_for_alias_logical(wp, &optional_from_alias).0
+                        });
+                    if optional_pre_filter.is_some() {
+                        log::info!(
+                            "🔧 build_chained_with_match_cte_plan: #460 recovered optional-side WHERE predicate into LEFT JOIN pre_filter for alias '{}'",
+                            optional_from_alias
+                        );
+                    }
+
                     let optional_from_join = super::Join {
                         table_name: old_from.name.clone(),
                         table_alias: optional_from_alias.clone(),
                         joining_on: join_conditions.clone(),
                         join_type: super::JoinType::Left,
-                        pre_filter: None,
+                        pre_filter: optional_pre_filter,
                         from_id_column: None,
                         to_id_column: None,
                         graph_rel: None,
