@@ -697,7 +697,36 @@ via positional UNION over differently-ordered branches (live 14 rows with
 state-as-code, not the intended 9 — file a follow-up). The `4×` polymorphic
 row-multiplication characterization was flipped to lock the production single read.
 No production-caller migration / ctx-less-path deletion yet (follow-up commits) ·
-☐ P0.5 Browser-shaped patterns ·
+☑ P0.5 Browser-shaped patterns (`test/p05-golden-browser-patterns`): golden
+coverage for the fully/partially UNLABELED shapes Neo4j Browser emits — node
+scan, undirected/directed expand, path render, VLP path, and the sidebar
+count/labels/type-probes — which route through `pattern_union`/`fixed_path`/
+multi-type-VLP and had near-zero coverage before this slice. +38 byte goldens
+(19 cases × 2 dialects: 13 on Standard incl. one extra property-probe case,
+5 on FK-edge, 2 on Denormalized as a deliberate correct-behavior contrast),
++6 dedicated regression/structural tests, all executed live (6 representative
+queries against a locally-seeded `social`/`db_fk_edge`/`db_denormalized`).
+4 CONFIRMED, previously-undocumented bugs locked as characterization (not
+fixed — test-only slice): (1) a fully-unlabeled multi-edge-type UNDIRECTED
+expand `(n)-[r]-(o)` renders BYTE-IDENTICAL SQL to the directed form —
+`pattern_union` never emits reverse-direction branches (live: both return only
+the forward-direction rows; the pre-existing "GROUP 3b" catalog gap);
+anchored/single-type-relationship unlabeled-undirected forms are NOT affected
+(contrast-verified). (2) `MATCH (n) RETURN count(n)` on a heterogeneous
+unlabeled scan collapses to `count(<one arbitrary label's id column>)`, NULL
+in every other label's branch — undercounts (live: Standard 5≠13, FK-edge
+4≠12); Denormalized is unaffected (single virtual id, populated on every
+branch — locked as the negative control). (3) `browser_type_probe`
+(`RETURN DISTINCT type(r)`) renders `FROM pattern_union_r AS r` but the outer
+SELECT references the unbound alias `t.path_relationships` — Code 47 live.
+(4) `path_vlp` (`RETURN p` over `*1..2`) references `t.path_edges`, a column
+the recursive CTE never defines — Code 47 live. Also surfaced (test-harness
+gap, not production): the `pattern_union_{alias}` CTE name embeds the
+process-global anonymous-alias counter directly in the identifier, which
+`normalize()`'s `\bt\d+\b` regex doesn't catch (no word boundary after `_`) —
+`path_unlabeled` on Standard is therefore not byte-lockable (locked instead by
+a structural test, alongside the pre-existing Denormalized
+`path_unlabeled`/HashMap-column-order instability) ·
 ☐ P0.6 corpus sweep ·
 ☑ P0.7 CI push+smoke (`test/p07-p08-ci-wiring`: re-enabled the `push:main` trigger
 in ci.yml; registered a `smoke` pytest marker and tagged 50 existing+new tests
