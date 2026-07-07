@@ -329,7 +329,8 @@ const CORPUS: &[(&str, &str)] = &[
 /// KNOWN-SUSPICIOUS: none currently. `with_match_chain` was confirmed wrong
 /// (cartesian) and is FIXED (#451); `optional_match`'s redundant phantom
 /// self-join is FIXED (#452); `optional_after_with`'s INNER + mis-anchor is
-/// FIXED (#453).
+/// FIXED (#453); `optional_after_with_where`'s silently-dropped optional-side
+/// predicate is FIXED (#460 — now a LEFT JOIN pre_filter subquery).
 const FK_EDGE_CORPUS: &[(&str, &str)] = &[
     // --- node scans (both node types) ---
     ("node_scan_order", "MATCH (o:Order) RETURN o.order_id"),
@@ -417,6 +418,14 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
     (
         "optional_after_with",
         "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) RETURN c.name, o.order_id",
+    ),
+    // Same shape with a WHERE on the OPTIONAL pattern's optional side. The
+    // predicate must filter the optional matches INSIDE the LEFT JOIN (pre_filter
+    // subquery), keeping customers with no qualifying order NULL-extended — never
+    // in the outer WHERE (which would drop the NULL rows). #460.
+    (
+        "optional_after_with_where",
+        "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE o.amount > 100 RETURN c.name, o.order_id",
     ),
     // --- WITH + aggregation (count per customer), and its HAVING form ---
     (
@@ -1068,6 +1077,16 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 //     restructure in `build_chained_with_match_cte_plan` that promotes the CTE to
 //     FROM and LEFT-joins the optional pattern. Kept as a normal lock.
 //
+//   - fk_edge/optional_after_with_where: FIXED (#460). The same shape with a
+//     `WHERE o.amount > 100` on the optional side previously rendered BYTE-
+//     IDENTICALLY to optional_after_with (predicate silently dropped, every order
+//     returned). The #453 restructure discarded the join the optional-side
+//     predicate was destined for; the fix re-extracts predicates referencing only
+//     the optional alias and attaches them to the demoted LEFT JOIN's pre_filter,
+//     rendering `LEFT JOIN (SELECT * FROM db_fk_edge.orders_fk WHERE
+//     total_amount > 100) AS o` — filter before the join, no-match customers stay
+//     NULL-extended. Live: 7 rows (was an unfiltered 12). Kept as a normal lock.
+//
 // Verified CORRECT (kept as normal locks, not suspicious): single_hop /
 // single_hop_reverse / undirected_hop all render the node-to-node FK join
 // `customers_fk.customer_id = orders_fk.customer_id` with the edge id column
@@ -1515,6 +1534,62 @@ async fn fk_edge_optional_match_has_no_phantom_edge_self_join() {
             "FK-edge OPTIONAL MATCH ({dname}) must keep the LEFT JOIN for the \
              optional Order:\n{sql}"
         );
+    }
+}
+
+/// Regression for #460: a WHERE on a post-WITH OPTIONAL MATCH that references
+/// the optional side must FILTER THE OPTIONAL MATCH — the predicate lands inside
+/// the LEFT JOIN (pre_filter subquery), keeping customers with no qualifying
+/// order NULL-extended. Previously the predicate was SILENTLY DROPPED (the
+/// reversed-anchor post-WITH shape routed the anchor-side portion of the WHERE
+/// to the outer clause but lost the optional-side portion), so the query
+/// returned every order — more rows than asked (ground-rule #1). The fix
+/// re-extracts the optional-only predicate in the #453 restructure and attaches
+/// it to the demoted LEFT JOIN's pre_filter. Locks BOTH render paths + dialects:
+/// predicate present INSIDE the LEFT JOIN, and NOT duplicated into an outer WHERE.
+#[tokio::test]
+async fn fk_edge_post_with_optional_where_filters_inside_left_join_460() {
+    let schema = load_schema(SchemaId::FkEdge.yaml_path());
+    let cypher = "MATCH (c:Customer) WITH c \
+                  OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE o.amount > 100 \
+                  RETURN c.name, o.order_id";
+
+    // The predicate must render exactly once, inside the LEFT JOIN pre_filter
+    // subquery over the optional Order table — dialect-neutral (subquery form +
+    // physical column name `total_amount` are the same on both dialects).
+    let pre_filter = "LEFT JOIN (SELECT * FROM db_fk_edge.orders_fk WHERE total_amount > 100) AS o";
+
+    for (dialect, dname) in [
+        (SqlDialect::ClickHouse, "clickhouse"),
+        (SqlDialect::Databricks, "databricks"),
+    ] {
+        // Assert on BOTH the ctx-less golden-harness path and the production
+        // (plan_ctx) render path — the drop was observed on both.
+        for (sql, path) in [
+            (render(&schema, cypher, dialect).await, "render"),
+            (render_ctx(&schema, cypher, dialect).await, "render_ctx"),
+        ] {
+            // Optional-side predicate is INSIDE the LEFT JOIN (correct place).
+            assert!(
+                sql.contains(pre_filter),
+                "post-WITH OPTIONAL WHERE ({dname}/{path}) must filter inside the \
+                 LEFT JOIN pre_filter subquery (predicate was dropped, #460):\n{sql}"
+            );
+            // The predicate must appear EXACTLY once — never also promoted into an
+            // outer WHERE (which would kill the NULL-extended no-match customers).
+            assert_eq!(
+                sql.matches("total_amount > 100").count(),
+                1,
+                "post-WITH OPTIONAL WHERE ({dname}/{path}) predicate must appear once \
+                 (inside the LEFT JOIN only, not duplicated into an outer WHERE):\n{sql}"
+            );
+            // The join stays a LEFT JOIN (no-match customers preserved).
+            assert!(
+                sql.contains("LEFT JOIN (SELECT"),
+                "post-WITH OPTIONAL WHERE ({dname}/{path}) must keep the optional \
+                 Order as a LEFT JOIN:\n{sql}"
+            );
+        }
     }
 }
 
