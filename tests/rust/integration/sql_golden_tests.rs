@@ -40,6 +40,7 @@ use clickgraph::{
 enum SchemaId {
     Standard,
     FkEdge,
+    Polymorphic,
 }
 
 impl SchemaId {
@@ -48,6 +49,7 @@ impl SchemaId {
         match self {
             SchemaId::Standard => "standard",
             SchemaId::FkEdge => "fk_edge",
+            SchemaId::Polymorphic => "polymorphic",
         }
     }
 
@@ -56,6 +58,7 @@ impl SchemaId {
         match self {
             SchemaId::Standard => "benchmarks/social_network/schemas/social_benchmark.yaml",
             SchemaId::FkEdge => "schemas/test/fk_edge.yaml",
+            SchemaId::Polymorphic => "schemas/test/social_polymorphic.yaml",
         }
     }
 }
@@ -426,6 +429,174 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Polymorphic variation (`schemas/test/social_polymorphic.yaml`): a SINGLE
+/// `brahmand.interactions` edge table holds ALL edge types (FOLLOWS / LIKES /
+/// AUTHORED / COMMENTED / SHARED), discriminated by `interaction_type`, with
+/// `from_type` / `to_type` label columns resolving the endpoints at query time.
+/// FOLLOWS is User->User (self-referential — both endpoints scan `users_bench`,
+/// so from/to need distinct aliases); LIKES/AUTHORED/COMMENTED/SHARED are
+/// User->Post. Mirrors the standard corpus's feature axes for the polymorphic
+/// pattern, and adds the polymorphic-specific axes: the type discriminator must
+/// be visible in the SQL, the label columns must be quoted correctly, and the
+/// `[:A|B]` multi-type unlabeled-endpoint case (`multi_type_hop`) must expand to
+/// a real pattern-union scan, NOT the `SELECT 1 AS "_empty" WHERE false`
+/// placeholder (the ERR-E / #428 pruning bug class).
+///
+/// Intentionally omitted / skipped:
+///   - UNWIND/arrayJoin shapes — the same Spark structural gap the standard and
+///     FK-edge corpora skip.
+///   - Post-anchored VLP — no Post->X edge type exists, so a VLP can only start
+///     at User over FOLLOWS (User->User is the only self-chainable edge type).
+///   - FULLY-unlabeled single-type / any-type patterns (`(a)-[:SHARED]->(b)`,
+///     `p=()-[:SHARED]->()`) — the `pattern_union_*` path emits property blobs in
+///     nondeterministic HashMap order, so they cannot be byte-locked; their
+///     #428 / ERR-E invariants are locked by dedicated structural tests below
+///     (see also `src/render_plan/tests/polymorphic_unlabeled_path_tests.rs`).
+const POLYMORPHIC_CORPUS: &[(&str, &str)] = &[
+    // --- node scans (both node types) ---
+    ("node_scan_user", "MATCH (u:User) RETURN u.user_id"),
+    ("node_scan_post", "MATCH (p:Post) RETURN p.post_id"),
+    // --- property projection incl. renamed props (name->full_name,
+    // email->email_address, title/content->content, created->created_at) ---
+    (
+        "project_user",
+        "MATCH (u:User) RETURN u.user_id, u.name, u.email",
+    ),
+    (
+        "project_post",
+        "MATCH (p:Post) RETURN p.post_id, p.title, p.content, p.created",
+    ),
+    ("distinct_user_name", "MATCH (u:User) RETURN DISTINCT u.name"),
+    // --- WHERE filters on both node types (renamed prop, string, AND, IN) ---
+    (
+        "where_user_name",
+        "MATCH (u:User) WHERE u.name = 'Alice Smith' RETURN u.email",
+    ),
+    (
+        "where_and",
+        "MATCH (u:User) WHERE u.user_id > 2 AND u.name = 'Bob Jones' RETURN u.user_id",
+    ),
+    (
+        "where_in_list",
+        "MATCH (u:User) WHERE u.name IN ['Alice Smith', 'Bob Jones'] RETURN u.email",
+    ),
+    // --- ordering / paging ---
+    (
+        "order_skip_limit",
+        "MATCH (u:User) RETURN u.name ORDER BY u.name DESC SKIP 1 LIMIT 3",
+    ),
+    (
+        "skip_only",
+        "MATCH (u:User) RETURN u.name ORDER BY u.name SKIP 2",
+    ),
+    ("aggregate_count", "MATCH (u:User) RETURN count(u)"),
+    // --- single edge-type hop, labeled BOTH ends. FOLLOWS is User->User, so
+    // this is the self-referential case: both endpoints scan users_bench and
+    // MUST get distinct aliases. The interaction_type='FOLLOWS' discriminator
+    // AND the from_type='User'/to_type='User' label filters must be visible. ---
+    (
+        "follows_hop",
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) RETURN a.name, b.name",
+    ),
+    // Cross-type hop (User->Post): AUTHORED. The discriminator + differing
+    // from_type='User'/to_type='Post' label filters must both appear.
+    (
+        "authored_hop",
+        "MATCH (u:User)-[:AUTHORED]->(p:Post) RETURN u.name, p.title",
+    ),
+    // Reverse-written directed hop (same edge, right-to-left).
+    (
+        "single_hop_reverse",
+        "MATCH (p:Post)<-[:AUTHORED]-(u:User) RETURN p.title, u.name",
+    ),
+    // UNDIRECTED hop over the polymorphic edge (ERR-G class): the edge id
+    // columns must be read from the correct alias for both directions.
+    (
+        "undirected_hop",
+        "MATCH (a:User)-[:FOLLOWS]-(b:User) RETURN a.name, b.name",
+    ),
+    // Filter on BOTH node types across the hop.
+    (
+        "hop_filter_both",
+        "MATCH (u:User)-[:LIKES]->(p:Post) WHERE u.name = 'Alice Smith' AND p.title = 'Hello world!' RETURN u.user_id",
+    ),
+    // Edge property projection (weight->interaction_weight) read off the
+    // polymorphic edge table.
+    (
+        "edge_property",
+        "MATCH (u:User)-[r:LIKES]->(p:Post) RETURN u.name, r.weight",
+    ),
+    // Whole-edge RETURN r on a polymorphic relationship.
+    (
+        "whole_edge_r",
+        "MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN r",
+    ),
+    // type(r) projection over a MULTI-type edge — reads the discriminator/
+    // path_relationships back out.
+    (
+        "rel_type_fn",
+        "MATCH (a:User)-[r:FOLLOWS|LIKES]->(b) RETURN type(r) AS t",
+    ),
+    // --- multi-type hop [:A|B]. FOLLOWS (User->User) | LIKES (User->Post):
+    // endpoint `b` is unlabeled and the two branches have DIFFERENT to-labels,
+    // so this drives the polymorphic (vlp_)multi-type pattern-union path. This
+    // is the byte-lockable unlabeled-endpoint case (the multi-type path sorts
+    // its property columns deterministically). ---
+    (
+        "multi_type_hop",
+        "MATCH (u:User)-[:FOLLOWS|LIKES]->(b) RETURN u.name",
+    ),
+    // NOTE: the FULLY-unlabeled single-type / any-type forms
+    // `MATCH (a)-[:SHARED]->(b) RETURN a, b` and `MATCH p=()-[:SHARED]->()
+    // RETURN p` (the ERR-E / #428 class) are NOT byte-locked here: they route
+    // through the `pattern_union_*` CTE, whose node-property blobs
+    // (`formatRowNoNewline(...)` / `to_json(struct(...))`) are emitted in
+    // nondeterministic HashMap order (a documented latent defect — see the
+    // dedicated tests `polymorphic_unlabeled_endpoints_are_real_scans_not_empty`
+    // and `polymorphic_unlabeled_endpoints_current_row_multiplication`, which
+    // lock the stable structural invariants instead of the flaky bytes).
+    // --- OPTIONAL MATCH (anchored on User, optional AUTHORED->Post) ---
+    (
+        "optional_match",
+        "MATCH (u:User) OPTIONAL MATCH (u)-[:AUTHORED]->(p:Post) RETURN u.name, p.title",
+    ),
+    // --- WITH + aggregation (followee count per user), and its HAVING form ---
+    (
+        "with_agg_count",
+        "MATCH (u:User)-[:FOLLOWS]->(f:User) WITH u.name AS name, count(f) AS followees RETURN name, followees",
+    ),
+    (
+        "with_having",
+        "MATCH (u:User)-[:FOLLOWS]->(f:User) WITH u.name AS name, count(f) AS n WHERE n > 1 RETURN name, n",
+    ),
+    // --- WITH -> MATCH chain (filter users, then match their follows) ---
+    (
+        "with_match_chain",
+        "MATCH (u:User) WITH u WHERE u.user_id > 2 MATCH (u)-[:FOLLOWS]->(f:User) RETURN u.name, f.name",
+    ),
+    // SKIP/LIMIT inside a WITH -> CTE-body LIMIT emission path.
+    (
+        "with_skip_limit",
+        "MATCH (u:User) WITH u.name AS n ORDER BY n SKIP 1 LIMIT 2 RETURN n",
+    ),
+    // Group by two keys.
+    (
+        "group_two_keys",
+        "MATCH (u:User) RETURN u.name, u.email, count(u) AS n",
+    ),
+    // --- whole-entity RETURN n (both node types) ---
+    ("whole_entity_user", "MATCH (u:User) RETURN u"),
+    ("whole_entity_post", "MATCH (p:Post) RETURN p"),
+    // --- VLP *1..2 over the single self-chainable edge type (FOLLOWS,
+    // User->User). Multi-type VLP is intentionally NOT locked: no second
+    // User->User edge type exists to chain, so a multi-type VLP over the
+    // polymorphic edge has no meaningful corpus query here. ---
+    (
+        "vlp_follows",
+        "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN b.user_id",
+    ),
+];
+
 fn load_schema(yaml_path: &str) -> GraphSchema {
     GraphSchemaConfig::from_yaml_file(yaml_path)
         .unwrap_or_else(|e| panic!("load schema {yaml_path}: {e:?}"))
@@ -527,6 +698,64 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 // whole_edge_r projects the FK-edge row (order_id AS from_id, customer_id AS
 // to_id), 8 rows.
 
+// KNOWN-SUSPICIOUS Polymorphic goldens — locked as *current behavior* (the net
+// characterizes what the engine does today, including latent wrongness, so a
+// refactor's diff is visible). All 32 CH goldens EXECUTE on the live
+// `clickhouse-test` container with the polymorphic fixture seeded into
+// `brahmand.{users_bench,posts_bench,interactions}` (10 FOLLOWS User->User,
+// 6 LIKES / 5 AUTHORED / 5 COMMENTED / 3 SHARED, all User->Post; 29 rows total,
+// same data as scripts/setup/setup_polymorphic_data.sh). Row counts below are
+// from that live run vs. Cypher semantics. If you touch polymorphic rendering,
+// inspect these first:
+//
+//   - polymorphic/whole_edge_r  [SUSPICIOUS — missing type discriminator]:
+//     `MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN r` renders
+//     `FROM brahmand.interactions AS r` with NO WHERE clause — no
+//     `interaction_type = 'FOLLOWS'`, no from_type/to_type label filter. Because
+//     only `r` is projected, the labeled User endpoints are pruned and the type
+//     discriminator is lost with them, so it returns ALL 29 interaction rows
+//     instead of the 10 FOLLOWS edges. The edge columns (from_id/to_id/timestamp/
+//     interaction_weight) themselves project correctly. This is the whole-edge-
+//     projection sibling of the #433 element-id/edge-linkage class: the
+//     discriminator must survive endpoint pruning on a polymorphic edge. Locked
+//     as-is; a fix should filter the edge scan by the pattern's type + label
+//     columns even when the endpoints are not otherwise referenced.
+//
+//   - FULLY-unlabeled patterns (`(a)-[:SHARED]->(b)`, `p=()-[:SHARED]->()`) are
+//     NOT byte-goldens (their `pattern_union_*` property blobs are emitted in
+//     nondeterministic HashMap order — a documented latent defect). Their two
+//     findings are locked instead by dedicated tests below:
+//       * `polymorphic_unlabeled_endpoints_are_real_scans_not_empty`
+//         [GOOD, #428 fixed]: the edge IS scanned — the `pattern_union_*` CTE
+//         enumerates all four (from_label, to_label) combinations as real
+//         UNION-ALL branches, each with its own interaction_type/from_type/
+//         to_type filter, NEVER the `SELECT 1 AS "_empty" WHERE false`
+//         placeholder.
+//       * `polymorphic_unlabeled_endpoints_current_row_multiplication`
+//         [SUSPICIOUS — pattern_union row multiplication]: the OUTER query then
+//         selects from that already-complete CTE FOUR times, UNION-ALL'd, with
+//         byte-identical projections — so every path row is emitted 4×. Live:
+//         `(a)-[:FOLLOWS]->(b)` returns 40 rows (should be 10 FOLLOWS),
+//         `(a)-[:SHARED]->(b)` / `p=()-[:SHARED]->()` return 12 (should be 3
+//         SHARED) — exactly 4× the correct count. The 4 outer copies appear to
+//         be a mis-lowering of the endpoint-label cross-product (2 labels × 2
+//         labels) onto the outer projection, which the CTE has already accounted
+//         for. Asserted as current behavior; a fix should collapse the outer
+//         union to a single `SELECT ... FROM pattern_union_*`.
+//
+// Verified CORRECT (kept as normal locks, not suspicious): follows_hop (10,
+// self-referential User->User with distinct a/b aliases) / authored_hop (5,
+// User->Post) / single_hop_reverse (5) / edge_property (6) / hop_filter_both (1)
+// all render `interaction_type` + `from_type`/`to_type` filters on the edge
+// scan; multi_type_hop and rel_type_fn (16 = 10 FOLLOWS + 6 LIKES) route the
+// `[:A|B]` unlabeled-endpoint pattern through the multi-type pattern-union CTE
+// with per-branch discriminators; undirected_hop (20 = 10 edges × both
+// directions) is the standard 2-direction union; optional_match (5, LEFT JOIN
+// with the discriminator pushed into the joined subquery); with_agg_count /
+// with_having (5) / with_match_chain (6, WITH-CTE join on the exported user_id) /
+// vlp_follows (24, recursive CTE with the discriminator in both base and step)
+// all carry the type filter correctly.
+
 #[tokio::test]
 async fn sql_golden_snapshots() {
     let update = std::env::var("UPDATE_GOLDEN").as_deref() == Ok("1");
@@ -535,6 +764,7 @@ async fn sql_golden_snapshots() {
     for (schema_id, corpus) in [
         (SchemaId::Standard, CORPUS),
         (SchemaId::FkEdge, FK_EDGE_CORPUS),
+        (SchemaId::Polymorphic, POLYMORPHIC_CORPUS),
     ] {
         let schema = load_schema(schema_id.yaml_path());
         let schema_dir = schema_id.dir();
@@ -686,6 +916,97 @@ async fn fk_edge_optional_match_preserves_fanout_self_join() {
             "FK-edge fan-out OPTIONAL MATCH ({dname}) must preserve the o2 \
              self-join on customer_id (non-unique FK — removing it changes the \
              row count from 18 to 8):\n{sql}"
+        );
+    }
+}
+
+/// #428 / ERR-E invariant on the POLYMORPHIC schema: a FULLY-unlabeled pattern
+/// over the polymorphic edge (`(a)-[:SHARED]->(b)`, or the Browser path form
+/// `p=()-[:SHARED]->()`) must expand to a REAL scan of the `interactions` table
+/// filtered by the requested type, NEVER the pruned
+/// `SELECT 1 AS "_empty" WHERE false` placeholder. These forms route through the
+/// `pattern_union_*` CTE whose property blobs are emitted in nondeterministic
+/// HashMap order, so they cannot be byte-locked as goldens (see the
+/// POLYMORPHIC_CORPUS note); this test locks the stable structural invariants
+/// instead. Mirrors `src/render_plan/tests/polymorphic_unlabeled_path_tests.rs`
+/// through the golden harness's render path (both dialects).
+#[tokio::test]
+async fn polymorphic_unlabeled_endpoints_are_real_scans_not_empty() {
+    let schema = load_schema(SchemaId::Polymorphic.yaml_path());
+    // (cypher, type_value) — one has data (FOLLOWS/SHARED), the placeholder bug
+    // was never about missing rows, so a zero-row type must ALSO be a real query.
+    let cases = [
+        ("MATCH (a)-[:SHARED]->(b) RETURN a, b", "SHARED"),
+        ("MATCH (a)-[:FOLLOWS]->(b) RETURN a, b", "FOLLOWS"),
+        ("MATCH p=()-[:SHARED]->() RETURN p", "SHARED"),
+    ];
+
+    for (cypher, ty) in cases {
+        for (dialect, dname) in [
+            (SqlDialect::ClickHouse, "clickhouse"),
+            (SqlDialect::Databricks, "databricks"),
+        ] {
+            let sql = render(&schema, cypher, dialect).await;
+
+            // Must NOT prune to the `_empty` placeholder (the #428 bug).
+            assert!(
+                !(sql.contains("_empty") && sql.contains("WHERE false")),
+                "unlabeled polymorphic `{cypher}` ({dname}) pruned to the _empty \
+                 placeholder (#428 regression):\n{sql}"
+            );
+            // Must be a real query over the polymorphic edge table.
+            assert!(
+                sql.contains("interactions"),
+                "unlabeled polymorphic `{cypher}` ({dname}) must scan `interactions`:\n{sql}"
+            );
+            // Must carry the type discriminator AND the endpoint label columns.
+            assert!(
+                sql.contains(&format!("interaction_type = '{ty}'")),
+                "unlabeled polymorphic `{cypher}` ({dname}) must filter \
+                 interaction_type = '{ty}':\n{sql}"
+            );
+            assert!(
+                sql.contains("from_type = ") && sql.contains("to_type = "),
+                "unlabeled polymorphic `{cypher}` ({dname}) must filter the \
+                 from_type/to_type label columns:\n{sql}"
+            );
+        }
+    }
+}
+
+/// Companion characterization of the CURRENT (suspicious) behavior of the
+/// fully-unlabeled polymorphic path: the `pattern_union_*` CTE already
+/// enumerates all four (from_label, to_label) branches, yet the OUTER query
+/// selects from it FOUR times UNION-ALL'd with identical projections, so every
+/// path row is emitted 4×. Live CH (brahmand fixture): `(a)-[:FOLLOWS]->(b)`
+/// returns 40 rows (should be 10), `(a)-[:SHARED]->(b)` returns 12 (should be 3)
+/// — exactly 4×. Locked as current behavior so a fix (collapse the outer union
+/// to a single `SELECT ... FROM pattern_union_*`) shows as a diff here. If this
+/// starts failing because the count dropped to 1, that is the FIX — update the
+/// expected count and the KNOWN-SUSPICIOUS note.
+#[tokio::test]
+async fn polymorphic_unlabeled_endpoints_current_row_multiplication() {
+    let schema = load_schema(SchemaId::Polymorphic.yaml_path());
+
+    for (dialect, dname) in [
+        (SqlDialect::ClickHouse, "clickhouse"),
+        (SqlDialect::Databricks, "databricks"),
+    ] {
+        let sql = render(&schema, "MATCH (a)-[:SHARED]->(b) RETURN a, b", dialect).await;
+
+        // Sanity: the pattern-union CTE is present.
+        assert!(
+            sql.contains("pattern_union_t"),
+            "expected a pattern_union CTE for the unlabeled polymorphic pattern ({dname}):\n{sql}"
+        );
+        // CURRENT behavior: 4 outer `FROM pattern_union_*` selects (the 4× bug).
+        let outer_reads = sql.matches("FROM pattern_union_t").count();
+        assert_eq!(
+            outer_reads, 4,
+            "polymorphic unlabeled pattern ({dname}): expected the current \
+             (suspicious) 4× outer union over pattern_union_* (row multiplication, \
+             see KNOWN-SUSPICIOUS block); got {outer_reads} outer reads. A drop to \
+             1 is the FIX — update this expectation:\n{sql}"
         );
     }
 }

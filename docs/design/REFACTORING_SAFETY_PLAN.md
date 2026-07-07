@@ -632,7 +632,18 @@ goldens execute on live `db_fk_edge`; the 2 known-suspicious locks documented
 in the test file have both since been fixed — `with_match_chain` cartesian in
 #451, `optional_match` phantom self-join in #452) ·
 ☐ P0.2 denormalized ·
-☐ P0.3 polymorphic · ☐ P0.4 composite-id · ☐ P0.5 Browser-shaped patterns ·
+☑ P0.3 polymorphic (`test/p03-golden-polymorphic`: harness gains a `Polymorphic`
+`SchemaId` (`schemas/test/social_polymorphic.yaml` — single `interactions` edge
+table, type_column + from/to label columns); +58 byte-goldens (29 cases × 2
+dialects) under `golden/sql_ir/polymorphic/`, all 29 CH goldens executed on a
+live `brahmand` fixture; standard+fk_edge goldens byte-identical, `normalize()`
+untouched. Findings: `whole_edge_r` drops the type discriminator when only the
+edge is projected (byte-locked; returns all 29 rows, not 10 FOLLOWS). The
+fully-unlabeled `pattern_union_*` cases (`(a)-[:SHARED]->(b)`, `p=()-[]->()`)
+emit property blobs in nondeterministic HashMap order so they are NOT
+byte-locked — instead two dedicated tests lock the #428 "real scan, not `_empty`"
+invariant and characterize the current 4× outer-union row-multiplication) ·
+☐ P0.4 composite-id · ☐ P0.5 Browser-shaped patterns ·
 ☐ P0.6 corpus sweep · ☐ P0.7 CI push+smoke · ☐ P0.8 nightly
 
 Phase 1: ☐ P1.1 `children()`/`walk()` + mod.rs walkers · ☐ P1.2 five WITH fns
