@@ -7386,23 +7386,45 @@ fn try_flatten_head_collect_map_literal(
     Some((flattened_items, compound_keys))
 }
 
-/// Find the `where_predicate` of the first `GraphRel` reachable through the
-/// common single-branch wrappers (`GraphJoins`/`Projection`/`Filter`/…). Used by
-/// the #460 post-WITH OPTIONAL restructure to recover the optional pattern's
-/// WHERE predicate, which is otherwise dropped for the reversed-anchor shape.
-fn find_graphrel_where_predicate(plan: &LogicalPlan) -> Option<&Option<LogicalExpr>> {
+/// Find the first `GraphRel` reachable through the common single-branch wrappers
+/// (`GraphJoins`/`Projection`/`Filter`/…). Used by the #460/#462 post-WITH
+/// OPTIONAL restructure to recover the optional pattern's WHERE predicate and
+/// relationship alias, otherwise dropped for the reversed-anchor shape.
+fn find_graphrel(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_plan::GraphRel> {
     match plan {
-        LogicalPlan::GraphRel(gr) => Some(&gr.where_predicate),
-        LogicalPlan::GraphJoins(gj) => find_graphrel_where_predicate(&gj.input),
-        LogicalPlan::Projection(proj) => find_graphrel_where_predicate(&proj.input),
-        LogicalPlan::Filter(f) => find_graphrel_where_predicate(&f.input),
-        LogicalPlan::GroupBy(g) => find_graphrel_where_predicate(&g.input),
-        LogicalPlan::OrderBy(o) => find_graphrel_where_predicate(&o.input),
-        LogicalPlan::Limit(l) => find_graphrel_where_predicate(&l.input),
-        LogicalPlan::Skip(s) => find_graphrel_where_predicate(&s.input),
-        LogicalPlan::GraphNode(gn) => find_graphrel_where_predicate(&gn.input),
-        LogicalPlan::Unwind(u) => find_graphrel_where_predicate(&u.input),
+        LogicalPlan::GraphRel(gr) => Some(gr),
+        LogicalPlan::GraphJoins(gj) => find_graphrel(&gj.input),
+        LogicalPlan::Projection(proj) => find_graphrel(&proj.input),
+        LogicalPlan::Filter(f) => find_graphrel(&f.input),
+        LogicalPlan::GroupBy(g) => find_graphrel(&g.input),
+        LogicalPlan::OrderBy(o) => find_graphrel(&o.input),
+        LogicalPlan::Limit(l) => find_graphrel(&l.input),
+        LogicalPlan::Skip(s) => find_graphrel(&s.input),
+        LogicalPlan::GraphNode(gn) => find_graphrel(&gn.input),
+        LogicalPlan::Unwind(u) => find_graphrel(&u.input),
         _ => None,
+    }
+}
+
+/// Find the `where_predicate` of the first `GraphRel` reachable through the
+/// common single-branch wrappers. Used by the #460 post-WITH OPTIONAL
+/// restructure to recover the optional pattern's WHERE predicate.
+fn find_graphrel_where_predicate(plan: &LogicalPlan) -> Option<&Option<LogicalExpr>> {
+    find_graphrel(plan).map(|gr| &gr.where_predicate)
+}
+
+/// Flatten a (possibly nested) `AND` chain of a rendered predicate into its
+/// individual conjuncts. Non-`AND` expressions (including `OR`) return as a
+/// single element — an unsplittable OR must stay whole. Used by the #462 GAP 1
+/// move of cross-alias WHERE conjuncts into a LEFT JOIN ON condition.
+fn split_render_and_conjuncts(expr: RenderExpr) -> Vec<RenderExpr> {
+    match expr {
+        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::And => op
+            .operands
+            .into_iter()
+            .flat_map(split_render_and_conjuncts)
+            .collect(),
+        other => vec![other],
     }
 }
 
@@ -12955,36 +12977,142 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         .clone()
                         .unwrap_or_else(|| old_from.name.clone());
 
-                    // #460: Recover the OPTIONAL pattern's WHERE predicate. A
-                    // `WHERE` attached to the post-WITH OPTIONAL MATCH (e.g.
-                    // `OPTIONAL MATCH (o)-[:R]->(c) WHERE o.amount > 100`) lives
-                    // on the fresh pattern's `GraphRel.where_predicate`. In this
-                    // reversed-anchor shape `to_render_plan_with_ctx` routes the
-                    // anchor-side portion into the outer WHERE but SILENTLY DROPS
-                    // the optional-side portion (it was destined for a pre_filter
-                    // on a join this restructure rebuilds from scratch) — the
-                    // predicate vanished, returning MORE rows than asked
-                    // (ground-rule #1 violation). Re-extract the predicates that
-                    // reference ONLY the optional table alias and place them in
-                    // the LEFT JOIN's pre_filter (subquery form), so the filter
-                    // applies BEFORE the join and non-matching anchor rows stay
-                    // NULL-extended (correct OPTIONAL MATCH semantics). Anchor-
-                    // side predicates are untouched (already in the outer WHERE).
-                    let optional_pre_filter = find_graphrel_where_predicate(&current_plan)
-                        .and_then(|wp| {
-                            extract_predicates_for_alias_logical(wp, &optional_from_alias).0
-                        });
+                    // Recover the OPTIONAL pattern's WHERE predicate. A `WHERE`
+                    // attached to the post-WITH OPTIONAL MATCH lives on the fresh
+                    // pattern's `GraphRel.where_predicate`. In this reversed-anchor
+                    // shape `collect_graphrel_predicates` DROPS the conjuncts that
+                    // reference ONLY the optional node or ONLY the relationship
+                    // alias from the outer WHERE (destined for a pre_filter on a
+                    // join this restructure rebuilds), while cross-alias / OR
+                    // conjuncts are (wrongly) routed to the outer WHERE. Without
+                    // recovery those predicates change query semantics (ground-rule
+                    // #1). We re-place each predicate class in its correct spot:
+                    //
+                    //   • optional-NODE-only conjuncts  -> LEFT JOIN pre_filter (#460)
+                    //   • relationship-alias-only conjuncts, on FK-edge where the
+                    //     rel shares the optional node's physical table, remap to
+                    //     that table's column and also go in the pre_filter (#462
+                    //     GAP 2). Applied BEFORE the join so no-match anchor rows
+                    //     stay NULL-extended.
+                    //   • conjuncts spanning the optional side AND the anchor CTE
+                    //     (incl. unsplittable OR) -> LEFT JOIN ON condition (#462
+                    //     GAP 1), handled after the join is built (below), so the
+                    //     predicate filters the match, never the anchor rows.
+                    let opt_where = find_graphrel_where_predicate(&current_plan);
+                    let node_pre_filter = opt_where.and_then(|wp| {
+                        extract_predicates_for_alias_logical(wp, &optional_from_alias).0
+                    });
+
+                    // #462 GAP 2: recover relationship-alias-only conjuncts. Only
+                    // safe to fold into the optional NODE's pre_filter when the rel
+                    // and the node share the same physical table (the FK-edge
+                    // pattern), because the pre_filter renders as
+                    // `SELECT * FROM <node table> WHERE …` — the rel's columns must
+                    // exist on that table. Detect via the schema catalog (edge/node
+                    // `full_table_name()` equality, the same structural signal
+                    // `is_node_denormalized_on_edge` uses), never a raw pattern-flag
+                    // branch (axis-dispatch rule).
+                    let opt_graphrel = find_graphrel(&current_plan);
+                    let rel_pre_filter = match (opt_where, opt_graphrel) {
+                        (Some(wp), Some(gr)) if !gr.alias.is_empty() => {
+                            let rel_shares_node_table = gr
+                                .labels
+                                .as_ref()
+                                .and_then(|ls| ls.first())
+                                .and_then(|rel_type| schema.get_relationships_schema_opt(rel_type))
+                                .map(|rel_schema| rel_schema.full_table_name() == old_from.name)
+                                .unwrap_or(false);
+                            if rel_shares_node_table {
+                                extract_predicates_for_alias_logical(wp, &gr.alias).0
+                            } else {
+                                // Rel is a distinct table: a separate join would be
+                                // required, which this restructure does not build.
+                                // Refuse to silently drop the predicate (#462).
+                                let rel_only =
+                                    extract_predicates_for_alias_logical(wp, &gr.alias).0;
+                                if rel_only.is_some() {
+                                    return Err(RenderBuildError::InvalidRenderPlan(format!(
+                                        "post-WITH OPTIONAL MATCH has a WHERE on relationship alias '{}' \
+                                         whose edge table is not the optional node '{}' table; the \
+                                         predicate cannot be placed without a separate edge join and \
+                                         must not be silently dropped (would change semantics)",
+                                        gr.alias, optional_from_alias
+                                    )));
+                                }
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+
+                    let optional_pre_filter =
+                        combine_optional_filters_with_and(vec![node_pre_filter, rel_pre_filter]);
                     if optional_pre_filter.is_some() {
                         log::info!(
-                            "🔧 build_chained_with_match_cte_plan: #460 recovered optional-side WHERE predicate into LEFT JOIN pre_filter for alias '{}'",
+                            "🔧 build_chained_with_match_cte_plan: #460/#462 recovered optional-side WHERE predicate into LEFT JOIN pre_filter for alias '{}'",
                             optional_from_alias
                         );
                     }
 
+                    // #462 GAP 1: cross-alias / OR conjuncts were routed to the
+                    // outer WHERE (`render_plan.filters`) by
+                    // `collect_graphrel_predicates` — wrong for OPTIONAL MATCH, as
+                    // the outer WHERE drops the NULL-extended no-match anchor rows.
+                    // Move every already-resolved filter conjunct that references
+                    // the optional node alias into the LEFT JOIN's ON condition
+                    // (anchor `c` references were already resolved to CTE columns,
+                    // e.g. `c.p1_c_customer_id`, when the filter was rendered).
+                    // Pure-anchor conjuncts stay in the outer WHERE.
+                    let mut extra_on_conditions: Vec<OperatorApplication> = Vec::new();
+                    if let Some(filter_expr) = render_plan.filters.0.take() {
+                        let mut kept: Vec<RenderExpr> = Vec::new();
+                        for conj in split_render_and_conjuncts(filter_expr) {
+                            if super::expression_utils::references_alias(
+                                &conj,
+                                &optional_from_alias,
+                            ) {
+                                match conj {
+                                    RenderExpr::OperatorApplicationExp(op) => {
+                                        extra_on_conditions.push(op);
+                                    }
+                                    // A boolean conjunct that is not an operator
+                                    // application (e.g. a bare scalar-fn predicate)
+                                    // cannot be expressed as a joining_on
+                                    // `OperatorApplication`. Rather than silently
+                                    // leave it in the outer WHERE (wrong semantics)
+                                    // or drop it, refuse with a clean error (#462).
+                                    other => {
+                                        return Err(RenderBuildError::InvalidRenderPlan(format!(
+                                            "post-WITH OPTIONAL MATCH WHERE conjunct referencing \
+                                             optional alias '{}' is not an operator application and \
+                                             cannot be moved into the LEFT JOIN ON condition; \
+                                             refusing to place it in the outer WHERE (would drop \
+                                             NULL-extended rows): {:?}",
+                                            optional_from_alias, other
+                                        )));
+                                    }
+                                }
+                            } else {
+                                kept.push(conj);
+                            }
+                        }
+                        render_plan.filters.0 = combine_render_exprs_with_and(kept);
+                    }
+                    if !extra_on_conditions.is_empty() {
+                        log::info!(
+                            "🔧 build_chained_with_match_cte_plan: #462 moved {} cross-alias/OR WHERE conjunct(s) into LEFT JOIN ON for alias '{}'",
+                            extra_on_conditions.len(),
+                            optional_from_alias
+                        );
+                    }
+
+                    let mut optional_joining_on = join_conditions.clone();
+                    optional_joining_on.extend(extra_on_conditions);
+
                     let optional_from_join = super::Join {
                         table_name: old_from.name.clone(),
                         table_alias: optional_from_alias.clone(),
-                        joining_on: join_conditions.clone(),
+                        joining_on: optional_joining_on,
                         join_type: super::JoinType::Left,
                         pre_filter: optional_pre_filter,
                         from_id_column: None,

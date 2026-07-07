@@ -427,36 +427,42 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
         "optional_after_with_where",
         "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE o.amount > 100 RETURN c.name, o.order_id",
     ),
-    // KNOWN BROKEN (#462 GAP 1 cross): a WHERE spanning BOTH the optional side (o)
-    // and the anchor CTE (c) is routed to the OUTER WHERE, which drops the
-    // NULL-extended no-match customers OPTIONAL MATCH must preserve. Correct
-    // target: the LEFT JOIN ON condition (`... ON o.customer_id =
-    // c.p1_c_customer_id AND o.total_amount > c.p1_c_customer_id`). Golden locks
-    // the current (wrong) outer-WHERE placement.
+    // #462 GAP 1 (cross) — FIXED. A WHERE spanning BOTH the optional side (o) and
+    // the anchor CTE (c) now lands in the LEFT JOIN ON condition
+    // (`... ON o.customer_id = c.p1_c_customer_id AND o.total_amount >
+    // c.p1_c_customer_id`), so no-match customers stay NULL-extended (was the
+    // outer WHERE, which dropped them). This is correct dialect-neutral SQL and
+    // executes on Spark/Databricks; NOTE ClickHouse rejects a DIRECT cross-table
+    // comparison in a NULL-preserving LEFT JOIN ON (join_use_nulls), so this exact
+    // shape surfaces a clean ClickHouse engine error rather than silently wrong
+    // rows — an engine limitation, not a translation bug.
     (
         "optional_after_with_where_cross",
         "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE o.total_amount > c.customer_id RETURN c.customer_id, o.order_id",
     ),
-    // KNOWN BROKEN (#462 GAP 1 OR): an unsplittable OR spanning both sides is
-    // routed to the OUTER WHERE (dropping NULL-extended no-match customers).
-    // Correct target: the whole OR in the LEFT JOIN ON condition. Golden locks the
-    // current (wrong) outer-WHERE placement.
+    // #462 GAP 1 (unsplittable OR) — FIXED. The whole OR now sits in the LEFT JOIN
+    // ON condition (parenthesized so `key AND (a OR b)` parses correctly), never
+    // the outer WHERE. Each OR leaf compares to a literal (no single cross-table
+    // comparison), so this executes on ClickHouse too. Live: 6 rows, all customers
+    // preserved.
     (
         "optional_after_with_where_or",
         "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE o.total_amount > 100 OR c.customer_id > 100 RETURN c.customer_id, o.order_id",
     ),
-    // KNOWN BROKEN (#462 GAP 2 rel): a predicate on the relationship alias (r) is
-    // SILENTLY DROPPED — this golden is byte-identical to optional_after_with
-    // (no WHERE). On FK-edge r and o share the orders_fk table, so r.order_id
-    // remaps to the shared table's column and belongs in the LEFT JOIN pre_filter.
+    // #462 GAP 2 (rel) — FIXED. A predicate on the relationship alias (r) was
+    // SILENTLY DROPPED (rendered byte-identically to optional_after_with). On
+    // FK-edge r and o share the orders_fk table, so r.order_id remaps to the
+    // shared table's column and now sits in the LEFT JOIN pre_filter
+    // (`LEFT JOIN (SELECT * FROM db_fk_edge.orders_fk WHERE order_id > 3) AS o`).
+    // Live: 5 rows (was an unfiltered 8).
     (
         "optional_after_with_where_rel",
         "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[r:PLACED_BY]->(c) WHERE r.order_id > 3 RETURN c.customer_id, o.order_id",
     ),
-    // KNOWN BROKEN (#462 GAP 2 mixed): rel-alias conjunct AND optional-node
-    // conjunct. The o-conjunct is recovered into the pre_filter (#460) but the
-    // r-conjunct is SILENTLY DROPPED — partial filter application (fewer filters
-    // than asked). Correct target: BOTH conjuncts in the LEFT JOIN pre_filter.
+    // #462 GAP 2 (mixed) — FIXED. rel-alias conjunct AND optional-node conjunct.
+    // The r-conjunct was SILENTLY DROPPED while the o-conjunct was recovered (#460)
+    // — partial filter application. BOTH now sit in the LEFT JOIN pre_filter.
+    // Live: 4 rows, c100 correctly NULL-extended (its only order fails order_id>3).
     (
         "optional_after_with_where_rel_and_node",
         "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[r:PLACED_BY]->(c) WHERE r.order_id > 3 AND o.total_amount > 100 RETURN c.customer_id, o.order_id",
@@ -1620,6 +1626,73 @@ async fn fk_edge_post_with_optional_where_filters_inside_left_join_460() {
                 sql.contains("LEFT JOIN (SELECT"),
                 "post-WITH OPTIONAL WHERE ({dname}/{path}) must keep the optional \
                  Order as a LEFT JOIN:\n{sql}"
+            );
+        }
+    }
+}
+
+/// Regression for #462: two residual predicate shapes on a post-WITH OPTIONAL
+/// MATCH WHERE, both pre-existing before #460 (which fixed only the optional-NODE
+/// alias shape). All must preserve OPTIONAL MATCH semantics (no dropped
+/// NULL-extended rows, no dropped/partial filters):
+///
+///   GAP 1 — a predicate spanning both the optional side (o) and the anchor CTE
+///   (c), including an unsplittable OR, must land in the LEFT JOIN ON condition,
+///   never the outer WHERE (which would drop no-match customers). The anchor
+///   references resolve to CTE columns (`c.p1_c_customer_id`).
+///
+///   GAP 2 — a predicate on the relationship alias (r). On FK-edge r and o share
+///   the orders_fk table, so it remaps to that table's column and lands in the
+///   LEFT JOIN pre_filter (never silently dropped).
+#[tokio::test]
+async fn fk_edge_post_with_optional_where_462_predicate_placement() {
+    let schema = load_schema(SchemaId::FkEdge.yaml_path());
+
+    // (cypher, must-contain) — dialect-neutral fragments.
+    let cases: &[(&str, &str)] = &[
+        // GAP 1 cross: cross-alias comparison in the ON, nothing in outer WHERE.
+        (
+            "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) \
+             WHERE o.total_amount > c.customer_id RETURN c.customer_id, o.order_id",
+            "ON o.customer_id = c.p1_c_customer_id AND o.total_amount > c.p1_c_customer_id",
+        ),
+        // GAP 1 OR: whole (parenthesized) OR in the ON, nothing in outer WHERE.
+        (
+            "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) \
+             WHERE o.total_amount > 100 OR c.customer_id > 100 RETURN c.customer_id, o.order_id",
+            "ON o.customer_id = c.p1_c_customer_id AND (o.total_amount > 100 OR c.p1_c_customer_id > 100)",
+        ),
+        // GAP 2 rel: r.order_id remapped to the shared table column in pre_filter.
+        (
+            "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[r:PLACED_BY]->(c) \
+             WHERE r.order_id > 3 RETURN c.customer_id, o.order_id",
+            "LEFT JOIN (SELECT * FROM db_fk_edge.orders_fk WHERE order_id > 3) AS o",
+        ),
+        // GAP 2 mixed: BOTH conjuncts recovered into the pre_filter.
+        (
+            "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[r:PLACED_BY]->(c) \
+             WHERE r.order_id > 3 AND o.total_amount > 100 RETURN c.customer_id, o.order_id",
+            "LEFT JOIN (SELECT * FROM db_fk_edge.orders_fk WHERE (total_amount > 100 AND order_id > 3)) AS o",
+        ),
+    ];
+
+    for (cypher, must_contain) in cases {
+        for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+            let sql = render(&schema, cypher, dialect).await;
+            assert!(
+                sql.contains(must_contain),
+                "#462 placement ({dialect:?}) for `{cypher}`\nexpected to contain:\n  {must_contain}\ngot:\n{sql}"
+            );
+            // No OUTER WHERE: every predicate belongs to the OPTIONAL match (ON
+            // condition or LEFT JOIN pre_filter). A top-level WHERE line would mean
+            // a predicate was promoted to filter the anchor rows, dropping the
+            // NULL-extended no-match customers. (The pre_filter's own `WHERE` is
+            // nested inside the `(SELECT … )` subquery, never at line start.)
+            let has_outer_where = sql.lines().any(|l| l.trim_start().starts_with("WHERE "));
+            assert!(
+                !has_outer_where,
+                "#462 placement ({dialect:?}) for `{cypher}`\nmust NOT emit an outer WHERE \
+                 (predicate must stay in the OPTIONAL match, not filter the anchor rows):\n{sql}"
             );
         }
     }
