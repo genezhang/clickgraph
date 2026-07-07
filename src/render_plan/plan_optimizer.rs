@@ -1442,6 +1442,10 @@ fn remove_redundant_edge_self_joins(plan: &mut RenderPlan) {
     let is_node_pk_of_table = |table_name: &str, col: &str| -> bool {
         schema.all_node_schemas().values().any(|ns| {
             ns.full_table_name() == table_name
+                // A denormalized node's id column repeats per fact-table row BY
+                // DESIGN (not unique in the table), so its node_id must not be
+                // trusted as a 1:1 key here (#452 re-review residual finding).
+                && !crate::graph_catalog::node_classification::is_node_denormalized(ns)
                 && matches!(
                     &ns.node_id.id,
                     crate::graph_catalog::config::Identifier::Single(pk) if pk == col
