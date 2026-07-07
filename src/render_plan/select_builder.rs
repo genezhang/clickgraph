@@ -83,10 +83,29 @@ impl SelectBuilder for LogicalPlan {
                         })
                         .collect::<Result<Vec<SelectItem>, RenderBuildError>>()?
                 } else if !view_scan.property_mapping.is_empty() {
-                    // Fall back to property mappings - build select items for each property
-                    view_scan
-                        .property_mapping
-                        .iter()
+                    // Fall back to property mappings - build select items for each property.
+                    //
+                    // Iterate in sorted cypher-property (key) order. `property_mapping`
+                    // is a HashMap, whose iteration order varies per process. For a
+                    // denormalized node materialization (#464) this SELECT is one branch
+                    // of a positional `UNION DISTINCT` (the origin-side and dest-side
+                    // scans of the same `flights_denorm` table). SQL UNION aligns
+                    // branches BY POSITION, but the emitted column alias is the cypher
+                    // property name — so both branches MUST emit their columns in the
+                    // SAME order or `code` in one branch aligns with `state` in the
+                    // other (live: 14 rows with `a.code` holding STATE values).
+                    //
+                    // The two branches carry identical cypher-property key sets (the
+                    // node's own properties, e.g. {code, city, state}), so sorting each
+                    // branch by that shared key is the SINGLE canonical ordering both
+                    // branches derive from — alignment-by-position is then structurally
+                    // correct, not coincidental. Mirrors the #458 fix in
+                    // cte_extraction.rs (sort denorm property-blob columns by key).
+                    let mut entries: Vec<(&String, &PropertyValue)> =
+                        view_scan.property_mapping.iter().collect();
+                    entries.sort_by(|a, b| a.0.cmp(b.0));
+                    entries
+                        .into_iter()
                         .map(|(prop_name, prop_value): (&String, &PropertyValue)| {
                             Ok(SelectItem {
                                 expression: RenderExpr::Column(Column(prop_value.clone())),
@@ -2427,8 +2446,13 @@ impl LogicalPlan {
                         if let Some(ref labels) = graph_rel.labels {
                             if let Some(rel_type) = labels.first() {
                                 let schema = ctx.schema();
-                                let rel_props = schema
+                                let mut rel_props = schema
                                     .get_relationship_properties(std::slice::from_ref(rel_type));
+                                // Sort by cypher property name for a deterministic column
+                                // order — `get_relationship_properties` iterates a HashMap
+                                // (#464). A RETURN p path materializes these edge columns;
+                                // unsorted, the byte output flips run-to-run.
+                                rel_props.sort_by(|a, b| a.0.cmp(&b.0));
                                 for (prop_name, db_column) in rel_props {
                                     // Expression uses the bound endpoint alias; the column
                                     // alias keeps the `rel_alias.` prefix so path assembly
@@ -2495,8 +2519,13 @@ impl LogicalPlan {
                             if let Some(rel_type) = labels.first() {
                                 // Get property mappings from schema via plan_ctx
                                 let schema = ctx.schema();
-                                let rel_props = schema
+                                let mut rel_props = schema
                                     .get_relationship_properties(std::slice::from_ref(rel_type));
+                                // Sort by cypher property name for a deterministic column
+                                // order — `get_relationship_properties` iterates a HashMap
+                                // (#464). A RETURN p path materializes these edge columns;
+                                // unsorted, the byte output flips run-to-run.
+                                rel_props.sort_by(|a, b| a.0.cmp(&b.0));
                                 log::info!(
                                     "  🔍 Found {} properties for denormalized rel '{}': {:?}",
                                     rel_props.len(),

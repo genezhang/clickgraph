@@ -679,18 +679,27 @@ const DENORM_CORPUS: &[(&str, &str)] = &[
         "whole_edge_r",
         "MATCH (a:Airport)-[r:FLIGHT]->(b:Airport) RETURN r",
     ),
-    // NOTE (#459): `path_return` (`MATCH p = (a:Airport)-[:FLIGHT]->(b:Airport)
-    // RETURN p`) and `optional_match` (`MATCH (a:Airport) OPTIONAL MATCH
-    // (a)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code`) are NOT byte-goldens on
-    // the production render path: production materializes the path's node/edge
-    // property columns (path_return) and the from/to-union node scan
-    // `__denorm_scan_a` (optional_match) with columns emitted in nondeterministic
-    // HashMap order — the same latent defect that keeps the polymorphic
-    // `pattern_union_*` cases out of the byte-net. They are locked instead by the
-    // dedicated structural tests below (`denorm_path_return_materializes_node_edge_props_459`,
-    // `denorm_optional_match_resolves_to_node_onto_edge_456`). See the
-    // known-suspicious block above `sql_golden_snapshots` for the full finding
-    // (optional_match additionally has a positional-UNION column-scramble bug).
+    // RESTORED (#464): `optional_match` and `path_return` are byte-goldens again.
+    // They were removed in #459 because production emitted their denorm
+    // node/edge property columns in nondeterministic HashMap order — for
+    // `optional_match` the `__denorm_scan_a` from/to-UNION branches, whose
+    // positional misalignment additionally SCRAMBLED values (live: 14 rows with
+    // `a.code` holding STATE strings instead of 9 correct rows). #464 sorts both
+    // the denorm node-scan branch projection (select_builder ViewScan
+    // property_mapping fallback) and the path edge-property expansion
+    // (get_relationship_properties call sites) by cypher property name, so the
+    // UNION branches derive their column order from a single canonical ordering
+    // and align by position. Byte-stable across 15+ process runs; live on
+    // `db_denormalized`: optional_match = 9 rows (8 flights + PHX, the dest-only
+    // airport, with NULL b), path_return materializes every a.*/b.*/t1.* column.
+    // The dedicated structural tests (`denorm_optional_match_resolves_to_node_onto_edge_456`,
+    // `denorm_path_return_materializes_node_edge_props_459`) still lock the
+    // semantic shape.
+    (
+        "optional_match",
+        "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code",
+    ),
+    ("path_return", "MATCH p = (a:Airport)-[:FLIGHT]->(b:Airport) RETURN p"),
     // --- WITH + aggregation (out-degree per origin airport), and its HAVING form ---
     (
         "with_agg_count",
@@ -1355,7 +1364,7 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 //     golden updated (dest branch now `WHERE a.dest_state = 'CA'`); live 4 rows.
 //     Regression: `denorm_with_match_chain_filters_per_branch_column_456`.
 //   - optional_match: `MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b)`.
-//     NOT A BYTE-GOLDEN post-#459 (removed from DENORM_CORPUS; locked by
+//     RESTORED as a BYTE-GOLDEN by #464 (back in DENORM_CORPUS; also locked by
 //     `denorm_optional_match_resolves_to_node_onto_edge_456`). History: before
 //     #459 the harness rendered via the ctx-less path, which emitted a degenerate
 //     inner scan (`FROM flights_denorm AS t0`, no LEFT JOIN, 8 rows, dropped PHX —
@@ -1363,26 +1372,21 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 //     (`to_render_plan_with_ctx`: server/cg/embedded), which materializes `a` as
 //     the from/to UNION CTE `__denorm_scan_a` and LEFT-JOINs the edge (the correct
 //     OPTIONAL shape — this is where #456's `to_node_properties` reverse-map fix
-//     keeps `b.code` resolved to the edge's `t1.dest_code`, not a phantom table).
-//     Two reasons it is NOT byte-lockable and is issue-worthy (KNOWN-SUSPICIOUS,
-//     for a follow-up bug report):
-//       1. NONDETERMINISTIC COLUMN ORDER: the `__denorm_scan_a` from/to-union
-//          branches project their node-property columns in HashMap iteration
-//          order (the same latent defect that keeps the polymorphic
-//          `pattern_union_*` blobs out of the byte-net). The order flips across
-//          process runs, so no stable golden exists. (Contrast `whole_node` /
-//          `project_node_props`, whose from/to union IS deterministically ordered
-//          — a different, sorted materialization path.)
-//       2. POSITIONAL-UNION COLUMN SCRAMBLE (semantic bug): because the origin
-//          and dest branches can receive DIFFERENT column orders, and SQL UNION
-//          aligns by POSITION, the CTE's `code`/`state` columns get swapped on
-//          one branch. Live on `db_denormalized` (2026-07-06) this produced 14
+//     keeps `b.code` resolved to the edge's `t0.dest_code`, not a phantom table).
+//     #459 could not byte-lock it for TWO reasons, BOTH fixed by #464:
+//       1. NONDETERMINISTIC COLUMN ORDER (fixed #464): the `__denorm_scan_a`
+//          from/to-union branches projected their node-property columns in HashMap
+//          iteration order (select_builder ViewScan `property_mapping` fallback).
+//          #464 sorts that projection by cypher property name, so the order is
+//          stable across process runs.
+//       2. POSITIONAL-UNION COLUMN SCRAMBLE (semantic bug, fixed #464): because
+//          the origin and dest branches received DIFFERENT column orders, and SQL
+//          UNION aligns by POSITION, the CTE's `code`/`state` columns got swapped
+//          on one branch. Live on `db_denormalized` (2026-07-06) this produced 14
 //          rows with `a.code` holding STATE values (NY, IL, CA, …) instead of
-//          airport codes — NOT the intended 9 (8 flights + PHX). Both the ctx-less
-//          8-row inner scan and this production output are wrong, differently;
-//          the production nondeterminism is the one users actually hit. Fixing the
-//          `__denorm_scan_a` branch column ordering is out of scope for this
-//          net-repointing slice (file a follow-up).
+//          airport codes — NOT the intended 9 (8 flights + PHX). The #464 sort
+//          gives both branches the same canonical order, so alignment-by-position
+//          is now structurally correct; live re-verified 9 correct rows.
 //
 // Verified CORRECT (normal locks, not suspicious) — executed on live CH:
 // directed_hop_ids (8), directed_hop_props, reverse_hop (8), undirected_hop (16,
@@ -1396,16 +1400,18 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 // with NO spurious edge self-join (the #419 class is clean) and correct
 // from-side (origin_*) vs to-side (dest_*) column sourcing.
 //
-//   - path_return (`MATCH p = (a:Airport)-[:FLIGHT]->(b:Airport) RETURN p`): also
-//     NOT A BYTE-GOLDEN post-#459 (removed; locked by
+//   - path_return (`MATCH p = (a:Airport)-[:FLIGHT]->(b:Airport) RETURN p`):
+//     RESTORED as a BYTE-GOLDEN by #464 (back in DENORM_CORPUS; also locked by
 //     `denorm_path_return_materializes_node_edge_props_459`). The ctx-less path
 //     emitted ONLY the `tuple('fixed_path', 'a', 'b', 't0')` path marker with no
 //     underlying columns — a path with no reconstructable node/edge data.
 //     Production correctly materializes every a.*/b.*/t0.* property column of the
-//     path off the single `flights_denorm` scan, but (like optional_match) in
-//     nondeterministic HashMap column order, so it cannot be byte-locked. The
-//     column *set* and per-column mappings are stable and are what the structural
-//     test asserts.
+//     path off the single `flights_denorm` scan; #459 could not byte-lock it
+//     because the edge property columns came out in HashMap order
+//     (`get_relationship_properties`, iterated at the denorm-rel path expansion in
+//     select_builder). #464 sorts that expansion by cypher property name (the
+//     node a.*/b.* columns were already sorted), so the whole path projection is
+//     byte-stable.
 //
 // Databricks goldens for all 26 cases are locked but NOT executed (no live Spark
 // here); they render without panic and mirror the CH structure.
