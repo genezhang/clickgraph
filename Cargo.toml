@@ -114,6 +114,14 @@ path = "tests/rust/integration/mod.rs"
 name = "e2e"
 path = "tests/rust/e2e/mod.rs"
 
+# Guardrail G.1 (docs/design/REFACTORING_SAFETY_PLAN.md §2.1): ratchets raw
+# schema-pattern/dialect axis token counts across src/**/*.rs so new inline
+# branching can't silently accrete while the schema-pattern/dialect dispatch
+# refactor is in flight. Plain #[test], no external infra.
+[[test]]
+name = "ratchet"
+path = "tests/rust/ratchet/mod.rs"
+
 # Standalone smoke test for the `deltagraph` binary (Phase 4.1). Spawns
 # the already-built bin via `assert_cmd::Command::cargo_bin` (which
 # resolves the `CARGO_BIN_EXE_deltagraph` env var cargo sets for tests)

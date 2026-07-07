@@ -76,6 +76,8 @@ clickgraph_server.log
 debug_server.log
 server*.log
 *.txt
+# ...but the ratchet-test baseline (guardrail G.1) is source-of-truth and committed
+!tests/rust/ratchet/baseline.txt
 
 # Temporary scripts and files
 cleanup_*.ps1
