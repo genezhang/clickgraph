@@ -9447,20 +9447,117 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         // We must also apply the post-WITH WHERE to all remaining branches.
                         // Use where_render_expr (the raw WHERE predicate), not new_filter
                         // (which already includes branch 1's existing filters).
+                        //
+                        // For a coupled-denormalized from/to UNION, `where_render_expr` was
+                        // resolved position-blind — the label→column mapping always yields
+                        // the from/origin column (e.g. `a.origin_state`). Copying it verbatim
+                        // to the dest branch filters the WRONG physical column (`origin_state`
+                        // instead of `dest_state`), polluting the exported node set (#456,
+                        // with_match_chain: 7 rows vs 4). Re-point each column reference per
+                        // branch to that branch's OWN column for the same exported property,
+                        // using the branch SELECT items (property alias ↔ db column). For a
+                        // homogeneous UNION (non-denorm BidirectionalUnion) every branch
+                        // projects the same columns, so the remap is the identity.
                         if let Some(ref mut union) = rendered.union.0 {
                             log::info!(
                                 "🔧 build_chained_with_match_cte_plan: Propagating post-WITH WHERE to {} UNION branches",
                                 union.input.len()
                             );
+
+                            /// Re-point a filter's column references to a target
+                            /// branch's columns: `db_col → exported alias → branch db_col`.
+                            fn remap_where_cols_for_branch(
+                                expr: &mut RenderExpr,
+                                col_to_alias: &std::collections::HashMap<String, String>,
+                                alias_to_col: &std::collections::HashMap<String, String>,
+                            ) {
+                                match expr {
+                                    RenderExpr::PropertyAccessExp(pa) => {
+                                        let cur = pa.column.raw().to_string();
+                                        if let Some(alias) = col_to_alias.get(&cur) {
+                                            if let Some(new_col) = alias_to_col.get(alias) {
+                                                if *new_col != cur {
+                                                    pa.column =
+                                                        PropertyValue::Column(new_col.clone());
+                                                }
+                                            }
+                                        }
+                                    }
+                                    RenderExpr::OperatorApplicationExp(op) => {
+                                        for o in &mut op.operands {
+                                            remap_where_cols_for_branch(
+                                                o,
+                                                col_to_alias,
+                                                alias_to_col,
+                                            );
+                                        }
+                                    }
+                                    RenderExpr::AggregateFnCall(agg) => {
+                                        for a in &mut agg.args {
+                                            remap_where_cols_for_branch(
+                                                a,
+                                                col_to_alias,
+                                                alias_to_col,
+                                            );
+                                        }
+                                    }
+                                    RenderExpr::ScalarFnCall(f) => {
+                                        for a in &mut f.args {
+                                            remap_where_cols_for_branch(
+                                                a,
+                                                col_to_alias,
+                                                alias_to_col,
+                                            );
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+
+                            // Global db_column → exported property alias (col_alias),
+                            // gathered across all branches (e.g. origin_state→p1_a_state
+                            // AND dest_state→p1_a_state).
+                            let mut col_to_alias: std::collections::HashMap<String, String> =
+                                std::collections::HashMap::new();
+                            for branch in union.input.iter() {
+                                for item in &branch.select.items {
+                                    if let (RenderExpr::PropertyAccessExp(pa), Some(ca)) =
+                                        (&item.expression, &item.col_alias)
+                                    {
+                                        col_to_alias
+                                            .insert(pa.column.raw().to_string(), ca.0.clone());
+                                    }
+                                }
+                            }
+
                             for branch in union.input.iter_mut() {
+                                // This branch's exported alias → db column.
+                                let mut alias_to_col: std::collections::HashMap<String, String> =
+                                    std::collections::HashMap::new();
+                                for item in &branch.select.items {
+                                    if let (RenderExpr::PropertyAccessExp(pa), Some(ca)) =
+                                        (&item.expression, &item.col_alias)
+                                    {
+                                        alias_to_col
+                                            .insert(ca.0.clone(), pa.column.raw().to_string());
+                                    }
+                                }
+
+                                let mut branch_where = where_render_expr.clone();
+                                remap_where_cols_for_branch(
+                                    &mut branch_where,
+                                    &col_to_alias,
+                                    &alias_to_col,
+                                );
+
                                 branch.filters = match branch.filters.0.take() {
                                     Some(existing) => FilterItems(Some(
                                         RenderExpr::OperatorApplicationExp(OperatorApplication {
                                             operator: Operator::And,
-                                            operands: vec![existing, where_render_expr.clone()],
+                                            operands: vec![existing, branch_where],
                                         }),
                                     )),
-                                    None => FilterItems(Some(where_render_expr.clone())),
+                                    None => FilterItems(Some(branch_where)),
                                 };
                             }
                         }

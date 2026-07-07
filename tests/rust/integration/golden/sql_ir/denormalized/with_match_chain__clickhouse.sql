@@ -10,7 +10,7 @@ SELECT DISTINCT
       a.dest_code AS "p1_a_code", 
       a.dest_state AS "p1_a_state"
 FROM db_denormalized.flights_denorm AS a
-WHERE a.origin_state = 'CA'
+WHERE a.dest_state = 'CA'
 )
 SELECT 
       a.p1_a_code AS "a.code", 

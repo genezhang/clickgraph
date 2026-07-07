@@ -1117,15 +1117,19 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 // execute on live CH with correct ordered slices. Paging mechanics (`LIMIT off, n`,
 // CH huge-upper-bound for bare SKIP) were already correct.
 //
-// GROUP C — semantically wrong result, but VALID SQL (executes):
-//   - with_match_chain: `MATCH (a:Airport) WITH a WHERE a.state='CA'
-//     MATCH (a)-[:FLIGHT]->(b)` should yield flights FROM CA airports (4 rows).
-//     It returns 7. The WITH-CTE materializes `a` as a UNION of an origin branch
-//     AND a dest branch, but the dest branch ALSO filters `WHERE a.origin_state
-//     = 'CA'` (should be dest_state / or be the same node set), so the airport
-//     set is polluted with destinations of CA-origin flights (LAX,SFO,JFK,ORD,ATL
-//     instead of {CA airports}). Kept as a lock; a fix should collapse/​correct
-//     the dest branch and drop to 4 rows.
+// GROUP C:
+//   - with_match_chain: RESOLVED (#456). `MATCH (a:Airport) WITH a WHERE
+//     a.state='CA' MATCH (a)-[:FLIGHT]->(b)` yields flights FROM CA airports
+//     (4 rows). Previously returned 7: `WITH a` materializes `a` as a from/to
+//     UNION, and the post-WITH `WHERE a.state='CA'` — resolved position-blind to
+//     the origin column and copied verbatim to every branch — filtered the dest
+//     branch on `a.origin_state` instead of `a.dest_state`, polluting the airport
+//     set with the destinations of CA-origin flights (LAX,SFO,JFK,ORD,ATL). Fixed
+//     by re-pointing the propagated WHERE per UNION branch to that branch's own
+//     column for the same exported property (`plan_builder_utils.rs`,
+//     build_chained_with_match_cte_plan). Both render paths shared the bug, so the
+//     golden updated (dest branch now `WHERE a.dest_state = 'CA'`); live 4 rows.
+//     Regression: `denorm_with_match_chain_filters_per_branch_column_456`.
 //   - optional_match: `MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b)`.
 //     PRODUCTION FIXED (#456) — the golden (ctx-less `render()`) below still
 //     locks the WRONG shape and DIVERGES from production (a #459 instance):
@@ -1793,6 +1797,52 @@ async fn denorm_labeled_node_scan_resolves_virtual_id_454() {
             "#454 ({dname}): count(a) over the denorm union must wrap the branches \
              in a `__union` subquery:\n{count_sql}"
         );
+    }
+}
+
+/// #456 regression (WITH→MATCH chain, both render paths): `MATCH (a:Airport)
+/// WITH a WHERE a.state = 'CA' MATCH (a)-[:FLIGHT]->(b:Airport) RETURN a.code,
+/// b.code` on the coupled-denormalized schema. `WITH a` materializes the Airport
+/// node as a from/to UNION CTE (origin branch projects origin_*, dest branch
+/// projects dest_*). The post-WITH `WHERE a.state='CA'` was resolved position-blind
+/// (the label→column map always yields the from/origin column) and then copied
+/// VERBATIM to every UNION branch, so the dest branch filtered `a.origin_state`
+/// instead of `a.dest_state`. That polluted the exported airport set with the
+/// destinations of CA-origin flights (live: 7 rows instead of 4). The fix re-points
+/// the propagated predicate per branch to that branch's own column for the same
+/// exported property. Live: correct 4 rows (flights FROM the CA airports LAX/SFO).
+/// Both paths were broken identically, so the golden updates as an intended diff.
+#[tokio::test]
+async fn denorm_with_match_chain_filters_per_branch_column_456() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+    let cypher = "MATCH (a:Airport) WITH a WHERE a.state = 'CA' \
+                  MATCH (a)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        // Both render paths shared the bug; lock both.
+        for (path, sql) in [
+            ("ctx-less", render(&schema, cypher, dialect).await),
+            ("production", render_ctx(&schema, cypher, dialect).await),
+        ] {
+            // The from/origin branch keeps the origin column…
+            assert!(
+                sql.contains("a.origin_state = 'CA'"),
+                "#456 ({dialect:?}/{path}): origin branch must filter origin_state:\n{sql}"
+            );
+            // …and the dest branch must filter its OWN dest column, not origin.
+            assert!(
+                sql.contains("a.dest_state = 'CA'"),
+                "#456 ({dialect:?}/{path}): dest branch must filter dest_state \
+                 (was origin_state — polluted the exported node set):\n{sql}"
+            );
+            // The dest branch must NOT carry the from-side column (the bug).
+            assert_eq!(
+                sql.matches("a.origin_state = 'CA'").count(),
+                1,
+                "#456 ({dialect:?}/{path}): exactly one branch may filter \
+                 origin_state (the origin branch); the dest branch leaked it:\n{sql}"
+            );
+        }
     }
 }
 
