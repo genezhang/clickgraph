@@ -1,8 +1,11 @@
-WITH __multi_label_union AS (
-SELECT 'Airport' as _label, string(code) as _id, to_json(struct(flights_denorm.code AS code)) as _properties FROM db_denormalized.flights_denorm
-)
 SELECT 
-      n._label AS `n_label`, 
-      n._id AS `n_id`, 
-      n._properties AS `n_properties`
-FROM __multi_label_union AS n
+      a.origin_code AS `a.code`, 
+      a.origin_city AS `a.city`, 
+      a.origin_state AS `a.state`
+FROM db_denormalized.flights_denorm AS a
+UNION DISTINCT 
+SELECT 
+      a.dest_code AS `a.code`, 
+      a.dest_city AS `a.city`, 
+      a.dest_state AS `a.state`
+FROM db_denormalized.flights_denorm AS a
