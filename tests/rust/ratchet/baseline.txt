@@ -67,7 +67,7 @@ schema	is_denormalized	src/query_planner/analyzer/graph_join/metadata.rs	1
 schema	is_denormalized	src/query_planner/analyzer/match_type_inference.rs	3
 schema	is_denormalized	src/query_planner/analyzer/multi_type_vlp_expansion.rs	4
 schema	is_denormalized	src/query_planner/analyzer/projected_columns_resolver.rs	5
-schema	is_denormalized	src/query_planner/analyzer/projection_tagging.rs	2
+schema	is_denormalized	src/query_planner/analyzer/projection_tagging.rs	1
 schema	is_denormalized	src/query_planner/analyzer/type_inference.rs	22
 schema	is_denormalized	src/query_planner/analyzer/union_distribution.rs	6
 schema	is_denormalized	src/query_planner/analyzer/variable_resolver.rs	2
