@@ -1044,6 +1044,15 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 // (scripts/setup/setup_denormalized_data.sh, 8 flights). If you touch denorm
 // rendering, inspect these first.
 //
+// SCOPE NOTE for Groups A and B (#454/#455, established at review): both defects
+// lived ONLY in the ctx-less `to_render_plan` path that this golden harness
+// renders through — the production path (`to_render_plan_with_ctx`: server, cg,
+// embedded) emitted CORRECT SQL for all these shapes the whole time (verified by
+// running the repros through a merge-base `cg` build). Users never saw the broken
+// SQL. The fixes converge the harness path onto production output, so these
+// goldens now lock the real thing — two more confirmed instances of the
+// golden-vs-production divergence tracked as issue #459.
+//
 // GROUP A — RESOLVED (#454). The 7 node-only cases (node_scan, whole_node,
 // project_node_props, where_denorm_prop, where_virtual_id, distinct_node_state,
 // aggregate_count_node) previously ALL rendered BYTE-IDENTICAL broken output:
