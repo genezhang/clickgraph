@@ -1,0 +1,160 @@
+name: Nightly Full Suite
+
+# P0.8 (docs/design/REFACTORING_SAFETY_PLAN.md §3.3): the PR/push gate
+# (ci.yml) only runs 2 regression files + a small per-variation smoke subset
+# to keep PR latency low. This workflow runs the FULL Python integration
+# suite (~1,030 result-asserting tests across all 6 schema variations) plus
+# the full cargo test, on a schedule, so regressions the smoke subset misses
+# are still caught within a day instead of only when someone runs the live
+# suite manually.
+#
+# Schedule: weekdays at 08:00 UTC (~1am-5am US time, off business hours;
+# skips weekends since no one is watching for failures then). Adjust to a
+# daily cron ('0 8 * * *') if weekend coverage is wanted later.
+on:
+  schedule:
+    - cron: '0 8 * * 1-5'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  full-integration:
+    name: Full cargo test + full pytest integration suite
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.92.0
+        components: rustfmt, clippy
+
+    - name: Code format check
+      run: cargo fmt --all -- --check
+
+    - name: Lint
+      run: cargo clippy --all-targets -- -D warnings
+
+    - name: Build
+      run: cargo build --verbose
+
+    - name: Run full cargo test suite
+      run: cargo test --verbose
+
+    - name: Start ClickHouse test infrastructure
+      run: docker compose -f docker-compose.test.yaml up -d
+
+    - name: Wait for ClickHouse to be ready
+      run: |
+        for i in {1..30}; do
+          if curl -s http://localhost:8123/ping > /dev/null; then
+            echo "ClickHouse is ready"
+            exit 0
+          fi
+          echo "Waiting for ClickHouse... ($i/30)"
+          sleep 2
+        done
+        echo "ClickHouse failed to start"
+        exit 1
+
+    - name: Setup test data (all schema variations)
+      run: |
+        chmod +x scripts/test/setup_social_integration_data.sh
+        scripts/test/setup_social_integration_data.sh
+        chmod +x scripts/setup/setup_fk_edge_data.sh scripts/setup/setup_polymorphic_data.sh scripts/setup/setup_composite_id_data.sh scripts/setup/setup_denormalized_data.sh
+        scripts/setup/setup_fk_edge_data.sh
+        scripts/setup/setup_polymorphic_data.sh
+        scripts/setup/setup_composite_id_data.sh
+        scripts/setup/setup_denormalized_data.sh
+
+    - name: Start ClickGraph server
+      run: |
+        export CLICKHOUSE_URL="http://localhost:8123"
+        export CLICKHOUSE_USER="test_user"
+        export CLICKHOUSE_PASSWORD="test_pass"
+        export CLICKHOUSE_DATABASE="test_integration"
+        export GRAPH_CONFIG_PATH="./schemas/test/unified_test_multi_schema.yaml"
+        ./target/debug/clickgraph --http-port 7475 --bolt-port 7687 > server.log 2>&1 &
+
+        # Wait for server to be fully ready (health + query execution)
+        for i in {1..30}; do
+          if curl -s http://localhost:7475/health > /dev/null; then
+            if curl -s -X POST http://localhost:7475/query \
+              -H "Content-Type: application/json" \
+              -d '{"query":"RETURN 1"}' > /dev/null; then
+              echo "ClickGraph server is fully ready"
+              exit 0
+            fi
+          fi
+          echo "Waiting for ClickGraph... ($i/30)"
+          sleep 2
+        done
+        echo "ClickGraph server failed to start"
+        cat server.log
+        exit 1
+
+    - name: Install Python test dependencies
+      run: |
+        python3 -m pip install --upgrade pip
+        # Superset of ci.yml's deps: the full suite (unlike the 2-file/smoke
+        # subsets ci.yml runs) also collects tests/integration/bolt/* (neo4j
+        # driver against the Bolt server this job already starts on 7687),
+        # a vector-similarity test (numpy), and a native-protocol test
+        # (clickhouse-driver) — without these, those files fail to even
+        # collect and the run would red every night regardless of real
+        # regressions.
+        pip3 install pytest requests clickhouse-connect neo4j numpy clickhouse-driver
+
+    - name: Run full Python integration suite
+      run: |
+        # --ignore: tests/integration/bolt/test_graph_notebook_compatibility.py
+        # needs the `graph_notebook` package (AWS-Neptune-oriented, not
+        # installed above — heavier/niche dep, out of scope for this wiring).
+        # Using --ignore (not --continue-on-collection-errors) keeps the run's
+        # exit code a true pass/fail signal: a collection error would leave
+        # pytest exiting non-zero every night regardless of real regressions.
+        pytest tests/integration/ -v \
+          --ignore=tests/integration/bolt/test_graph_notebook_compatibility.py
+
+    - name: Cleanup
+      if: always()
+      run: |
+        pkill -f clickgraph || true
+        docker compose -f docker-compose.test.yaml down
+
+  # ---------------------------------------------------------------------------
+  # Databricks parity sweep (scripts/ldbc_parity_sweep.py) — STUB, disabled.
+  #
+  # Not wired up: it needs a live Databricks SQL warehouse + Delta fixtures
+  # (scripts/load_databricks_fixtures.py) and credentials this repo's CI does
+  # not currently have configured as secrets. Enable by:
+  #   1. Adding these repository secrets: DATABRICKS_HOST, DATABRICKS_TOKEN
+  #      (or DATABRICKS_CLIENT_ID/DATABRICKS_CLIENT_SECRET for OAuth),
+  #      DATABRICKS_WAREHOUSE_ID, DATABRICKS_CATALOG, DATABRICKS_SCHEMA.
+  #   2. Running scripts/load_databricks_fixtures.py once to seed the Delta
+  #      tables scripts/ldbc_parity_sweep.py queries.
+  #   3. Uncommenting the job below and removing `if: false`.
+  # databricks-parity:
+  #   name: CH <-> Databricks LDBC parity sweep
+  #   runs-on: ubuntu-latest
+  #   if: false  # flip on once the secrets above exist
+  #   needs: full-integration
+  #   env:
+  #     DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  #     DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+  #     DATABRICKS_WAREHOUSE_ID: ${{ secrets.DATABRICKS_WAREHOUSE_ID }}
+  #     DATABRICKS_CATALOG: ${{ secrets.DATABRICKS_CATALOG }}
+  #     DATABRICKS_SCHEMA: ${{ secrets.DATABRICKS_SCHEMA }}
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #       with:
+  #         toolchain: 1.92.0
+  #     - name: Build cg CLI
+  #       run: cargo build -p clickgraph-tool --bin cg
+  #     - name: Run LDBC parity sweep
+  #       run: python3 scripts/ldbc_parity_sweep.py

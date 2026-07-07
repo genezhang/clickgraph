@@ -674,7 +674,46 @@ collapse behind the WITH barrier via the §1.4-duplicated copies in
 `composite_id_group_by_columns` helper, WITH-form live-verified 6 buckets vs. 2,
 regression `composite_group_by_whole_node_behind_with_barrier_457`) ·
 ☐ P0.5 Browser-shaped patterns ·
-☐ P0.6 corpus sweep · ☐ P0.7 CI push+smoke · ☐ P0.8 nightly
+☐ P0.6 corpus sweep ·
+☑ P0.7 CI push+smoke (`test/p07-p08-ci-wiring`: re-enabled the `push:main` trigger
+in ci.yml; registered a `smoke` pytest marker and tagged 50 existing+new tests
+covering standard/social (19, test_basic_queries.py), OPTIONAL MATCH (5), WITH→CTE
+(5), VLP (5), plus 4 already-executing FK-edge/polymorphic/denormalized VLP tests
+in test_graphrag_schema_variations.py and 12 new runtime (non-sql_only) tests in
+test_smoke_schema_variations.py — 3 each for FK-edge, polymorphic, composite-id,
+denormalized, asserting actual row values/counts, not generated-SQL substrings
+(the #439 lesson). Extended ci.yml's data-setup step with
+setup_fk_edge/polymorphic/composite_id/denormalized_data.sh (previously only
+setup_social_integration_data.sh ran, so those 4 variations' databases didn't
+exist yet). Found and fixed a real footgun along the way: conftest.py's autouse
+`load_all_test_schemas` re-registers the bare names "fk_edge"/"polymorphic" against
+DIFFERENT (mismatched-database) YAML files than the ones the setup scripts
+populate — the new tests self-load their schemas under collision-free `smoke_*`
+names instead of fighting that fixture. Added a `pytest -m smoke` CI step after
+the existing 2-file regression step, targeting explicit filenames rather than the
+whole `tests/integration/` tree (8 unrelated files fail to *collect* without
+neo4j/numpy/clickhouse_driver, which ci.yml doesn't install — collection errors
+would abort the whole step). Local validation: stood up ClickHouse + all 5 setup
+scripts + server against `unified_test_multi_schema.yaml` exactly as ci.yml does
+(remapped host ports only, to avoid clashing with a concurrent agent's container
+on 8123/7475) — 50/50 smoke tests + the existing 15 regression tests green,
+collection+execution in ~2s (well under the ~2-4 min budget; most CI time is the
+existing build/CH/server steps, unchanged). `actionlint` (via docker) reports zero
+issues on ci.yml/nightly.yml/security.yml) ·
+☑ P0.8 nightly (same branch: new `.github/workflows/nightly.yml` — cron
+`0 8 * * 1-5` (weekdays 08:00 UTC) + `workflow_dispatch`; full `cargo test` +
+full `pytest tests/integration/` (all ~3,820 collectible tests, all 6 schema
+variations) against the same CH+server setup as ci.yml, with `neo4j`/`numpy`/
+`clickhouse-driver` added to the pip install so tests/integration/bolt/* and the
+vector-similarity/native-protocol tests actually collect instead of red'ing every
+run regardless of real regressions; one file (`test_graph_notebook_compatibility.py`,
+needs the niche `graph_notebook` package) is `--ignore`d rather than tolerated via
+`--continue-on-collection-errors`, so the step's exit code stays a true pass/fail
+signal. Databricks parity (`scripts/ldbc_parity_sweep.py`) added as a clearly-marked
+commented-out job stub listing the exact secrets it would need
+(DATABRICKS_HOST/TOKEN/WAREHOUSE_ID/CATALOG/SCHEMA) — not wired since those
+secrets/live warehouse aren't available to verify against. No alerting beyond
+default GitHub notifications, per the plan's explicit non-goal)
 
 Phase 1: ☐ P1.1 `children()`/`walk()` + mod.rs walkers · ☐ P1.2 five WITH fns
 characterize+unify (D4, D5) · ☐ P1.3 `transform_up` + first 3 passes ·
