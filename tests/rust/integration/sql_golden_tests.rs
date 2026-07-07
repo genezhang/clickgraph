@@ -602,10 +602,12 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
     //   #473 — cross-WITH-barrier conversion corrupts `IS NULL` (operator
     //          vanishes: `(o.total_amount OR ...)`) and `NOT(..) OR ..`
     //          (the OR becomes an AND split). Plain non-WITH forms are fine.
-    //   #474 — plain OPTIONAL MATCH *without* WITH (reversed-anchor FK-edge
-    //          shape) silently drops its optional-node WHERE entirely (a separate
-    //          code path from #460/#462). Characterized by `optional_where_no_with*`
-    //          below.
+    //   #474 — FIXED. Plain OPTIONAL MATCH *without* WITH (reversed-anchor
+    //          FK-edge shape) silently dropped its optional-node WHERE entirely
+    //          (a separate code path from #460/#462). Now recovered into the LEFT
+    //          JOIN pre_filter for node-is-edge shapes (see `optional_where_no_with*`
+    //          below). The standard separate-edge shape is out of scope and keeps
+    //          its pre-existing placement (see the #474 report).
     // Also: ClickHouse rejects cross-table comparisons in a NULL-preserving
     // LEFT JOIN ON (join_use_nulls, error 386) — the `_cross` golden above is
     // correct SQL that executes on Databricks; on ClickHouse it errors cleanly.
@@ -617,10 +619,10 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
     // stay NULL-extended — NOT the outer WHERE (drops them) and NOT dropped
     // entirely. FK-edge: the Order node IS the orders_fk edge table, so the whole
     // optional pattern is a single LEFT JOIN and the pre_filter gates it correctly.
-    // KNOWN BROKEN (#474): the WHERE is silently DROPPED — this golden currently
-    // renders NO pre_filter and NO outer WHERE, returning an unfiltered 8 rows on
-    // live db_fk_edge. Correct is 4 rows (each customer's single order with
-    // total_amount>100; with `> 130` c102 NULL-extended).
+    // FIXED (#474): was silently dropped (unfiltered 8 rows on live db_fk_edge);
+    // now renders `LEFT JOIN (SELECT * FROM db_fk_edge.orders_fk WHERE total_amount
+    // > 100) AS o`. Live: 4 rows, each customer keeps its single order with
+    // total_amount>100; with `> 130` c102 is correctly NULL-extended.
     (
         "optional_where_no_with",
         "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE o.total_amount > 100 RETURN c.customer_id, o.order_id",
@@ -633,11 +635,12 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
         "optional_where_no_with_rel",
         "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[r:PLACED_BY]->(c) WHERE r.order_date > '2024-01-01' RETURN c.customer_id, o.order_id",
     ),
-    // Mixed conjunction: optional-node predicate AND pure-anchor predicate.
-    // KNOWN BROKEN (#474): the optional-node conjunct (o.total_amount) is DROPPED
-    // and only the pure-anchor conjunct (c.customer_id) survives, in the outer
-    // WHERE — which additionally drops NULL-extended anchor rows (the pre-existing
-    // #472 disease). Correct: o.total_amount belongs in the LEFT JOIN pre_filter.
+    // Mixed conjunction: optional-node predicate AND pure-anchor predicate. The
+    // optional-node conjunct (o.total_amount) is now recovered into the LEFT JOIN
+    // pre_filter (#474); the pure-anchor conjunct (c.customer_id) stays in the
+    // outer WHERE and still drops NULL-extended anchor rows — the SAME pre-existing
+    // #472 disease (a pure-anchor OPTIONAL-WHERE conjunct belongs in the LEFT JOIN
+    // ON, always safe for a LEFT JOIN). Left as-is here; tracked by #472.
     (
         "optional_where_no_with_mixed",
         "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE o.total_amount > 100 AND c.customer_id > 101 RETURN c.customer_id, o.order_id",
