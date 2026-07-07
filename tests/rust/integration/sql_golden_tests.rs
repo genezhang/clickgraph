@@ -1044,33 +1044,39 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 // (scripts/setup/setup_denormalized_data.sh, 8 flights). If you touch denorm
 // rendering, inspect these first.
 //
-// GROUP A — node-only virtual-id NOT resolved to a physical column (bug class A
-// #427 / bug class B #429 territory, still live for a LABELED coupled-denorm
-// node). The 7 node-only cases (node_scan, whole_node, project_node_props,
-// where_denorm_prop, where_virtual_id, distinct_node_state,
-// aggregate_count_node) ALL render BYTE-IDENTICAL output:
+// GROUP A — RESOLVED (#454). The 7 node-only cases (node_scan, whole_node,
+// project_node_props, where_denorm_prop, where_virtual_id, distinct_node_state,
+// aggregate_count_node) previously ALL rendered BYTE-IDENTICAL broken output:
 //   `WITH __multi_label_union AS (SELECT 'Airport' as _label,
 //    toString(code) as _id, formatRowNoNewline('JSONEachRow',
 //    flights_denorm.code AS code) as _properties FROM db_denormalized.flights_denorm)`
-// The virtual node_id `code` (which maps to origin_code/dest_code via
-// from/to_node_properties, and has NO standalone physical column) is emitted
-// verbatim as `flights_denorm.code` — a non-existent column. Live CH:
-// `DB::Exception: Identifier 'flights_denorm.code' cannot be resolved`. Note the
-// RETURN projection, WHERE filter, DISTINCT, and count() are ALL dropped — every
-// node-only shape collapses to the same whole-node Browser format. The 7 cases
-// are kept DISTINCT on purpose: when the node materialization is fixed they must
-// DIVERGE (each projecting/filtering as written), and the golden diffs will show
-// each correction independently.
+// — the virtual node_id `code` (mapped to origin_code/dest_code via
+// from/to_node_properties, no standalone physical column) was emitted verbatim as
+// the non-existent `flights_denorm.code`, and the RETURN/WHERE/DISTINCT/count were
+// all dropped (every shape collapsed to the whole-node Browser format).
+// Root cause: the from/to UNION branches are wrapped in `GraphJoins`, but the
+// `is_denormalized_union` guard in the Union render handler did not traverse
+// `GraphJoins`, so the union was misclassified as a multi-label scan and routed to
+// the json_builder whole-node path. Fixed by adding the missing GraphJoins/Limit
+// arms (mirroring `is_node_scan_input`). A companion fix in the Projection handler
+// moves the base branch into `union.input` for aggregation-over-union so
+// `count(a)` counts BOTH from/to branches (was dropping the origin branch). The 7
+// goldens now DIVERGE, each projecting/filtering as written, and all execute on
+// live `db_denormalized` (7 distinct airports; see
+// `denorm_labeled_node_scan_resolves_virtual_id_454`).
 //
-// GROUP B — ORDER BY over a denorm hop mis-qualifies the node-id column
-// (order_skip_limit, skip_only). The SELECT is correct
+// GROUP B — RESOLVED (#455). ORDER BY over a denorm hop previously mis-qualified
+// the node-id column (order_skip_limit, skip_only): the SELECT was correct
 // (`t0.origin_code AS "a.code"` from `flights_denorm AS t0`) but the ORDER BY
-// emits the CYPHER alias, not the table alias: `ORDER BY a.origin_code`. Live CH:
-// `DB::Exception: Unknown expression identifier 'a.origin_code'`. The paging
-// mechanics (`LIMIT off, n`, and the CH huge-upper-bound for bare SKIP) are
-// correct; only the ORDER BY term qualification is wrong. (The WITH-form paging
-// `with_skip_limit` is unaffected and executes — 3 rows — so a valid denorm
-// paging lock exists.)
+// emitted the CYPHER alias — `ORDER BY a.origin_code` — which CH rejects
+// (`Unknown expression identifier 'a.origin_code'`). Root cause: the non-ctx
+// `to_render_plan` OrderBy handler converted items with a bare `try_into()` and
+// skipped the alias→edge-table resolution that SELECT/WHERE (and the server's
+// `extract_order_by`) apply; the column was resolved at planning but the alias was
+// not. Fixed by running `apply_property_mapping_to_expr` on the order-by items in
+// that handler (golden/server parity). Both now emit `ORDER BY t0.origin_code` and
+// execute on live CH with correct ordered slices. Paging mechanics (`LIMIT off, n`,
+// CH huge-upper-bound for bare SKIP) were already correct.
 //
 // GROUP C — semantically wrong result, but VALID SQL (executes):
 //   - with_match_chain: `MATCH (a:Airport) WITH a WHERE a.state='CA'
@@ -1532,5 +1538,117 @@ async fn polymorphic_unlabeled_endpoints_current_row_multiplication() {
              see KNOWN-SUSPICIOUS block); got {outer_reads} outer reads. A drop to \
              1 is the FIX — update this expectation:\n{sql}"
         );
+    }
+}
+
+/// #454 regression: labeled node-only queries on a coupled-denormalized node
+/// whose node_id is virtual (`code` → origin_code/dest_code via from/to_node_props,
+/// `property_mappings: {}`) must materialize a from/to UNION of the edge table with
+/// the virtual id/props resolved to PHYSICAL columns — NOT collapse to the
+/// multi-label whole-node Browser scan that emitted the non-existent
+/// `flights_denorm.code` and dropped the RETURN/WHERE/DISTINCT/aggregation.
+///
+/// Root cause was a render-side misclassification: the from/to union branches are
+/// wrapped in `GraphJoins`, but the `is_denormalized_union` guard in the Union
+/// handler did not traverse `GraphJoins`, so the union was routed to the
+/// json_builder multi-label path. See `plan_builder.rs`.
+#[tokio::test]
+async fn denorm_labeled_node_scan_resolves_virtual_id_454() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+
+    for (dialect, dname) in [
+        (SqlDialect::ClickHouse, "clickhouse"),
+        (SqlDialect::Databricks, "databricks"),
+    ] {
+        // Every node-only shape must (a) never emit the non-existent virtual-id
+        // column `flights_denorm.code`, (b) never route through the multi-label
+        // whole-node scan, and (c) source BOTH the origin and dest denormalized
+        // columns (from/to UNION) so no airport position is dropped.
+        for cypher in [
+            "MATCH (a:Airport) RETURN a.code",
+            "MATCH (a:Airport) RETURN a",
+            "MATCH (a:Airport) RETURN a.code, a.city, a.state",
+            "MATCH (a:Airport) RETURN DISTINCT a.state",
+            "MATCH (a:Airport) RETURN count(a)",
+            "MATCH (a:Airport) WHERE a.state = 'CA' RETURN a.code",
+            "MATCH (a:Airport) WHERE a.code = 'LAX' RETURN a.city",
+        ] {
+            let sql = render(&schema, cypher, dialect).await;
+            assert!(
+                !sql.contains("flights_denorm.code"),
+                "#454 ({dname}) [{cypher}]: emitted the non-existent virtual-id \
+                 column `flights_denorm.code`:\n{sql}"
+            );
+            assert!(
+                !sql.contains("__multi_label_union"),
+                "#454 ({dname}) [{cypher}]: labeled denorm node scan wrongly routed \
+                 through the multi-label whole-node path:\n{sql}"
+            );
+            // Both the from-side (origin_*) and to-side (dest_*) denormalized
+            // columns must be sourced — the node set is the from/to union.
+            assert!(
+                sql.contains("origin_") && sql.contains("dest_"),
+                "#454 ({dname}) [{cypher}]: expected a from/to UNION sourcing BOTH \
+                 the origin_* and dest_* denormalized columns:\n{sql}"
+            );
+            assert!(
+                sql.contains("UNION DISTINCT"),
+                "#454 ({dname}) [{cypher}]: expected a UNION DISTINCT of the \
+                 origin/dest branches:\n{sql}"
+            );
+        }
+
+        // count(a) must count over the FULL union subquery (both branches), not a
+        // single dropped branch (regression: only dest-side airports were counted).
+        let count_sql = render(&schema, "MATCH (a:Airport) RETURN count(a)", dialect).await;
+        assert_eq!(
+            count_sql.matches("flights_denorm").count(),
+            2,
+            "#454 ({dname}): count(a) must aggregate over BOTH from/to branches \
+             inside the __union subquery:\n{count_sql}"
+        );
+        assert!(
+            count_sql.contains("__union"),
+            "#454 ({dname}): count(a) over the denorm union must wrap the branches \
+             in a `__union` subquery:\n{count_sql}"
+        );
+    }
+}
+
+/// #455 regression: ORDER BY over a denormalized hop must qualify the sort term
+/// with the resolved TABLE alias (`t0.origin_code`), not the raw Cypher node
+/// alias (`a.origin_code`, which CH rejects with `Unknown expression identifier`).
+/// The column was resolved at planning but the non-ctx OrderBy render handler
+/// skipped the alias→edge-table remap that SELECT/WHERE apply.
+#[tokio::test]
+async fn denorm_order_by_uses_table_alias_not_cypher_alias_455() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+
+    for (dialect, dname) in [
+        (SqlDialect::ClickHouse, "clickhouse"),
+        (SqlDialect::Databricks, "databricks"),
+    ] {
+        for cypher in [
+            "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code ORDER BY a.code DESC SKIP 1 LIMIT 3",
+            "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) RETURN a.code ORDER BY a.code SKIP 2",
+        ] {
+            let sql = render(&schema, cypher, dialect).await;
+            // The single denorm table gets an anonymized alias (t{n}); the ORDER BY
+            // must reference that alias' physical column, never the Cypher alias `a`.
+            let order_line = sql
+                .lines()
+                .find(|l| l.trim_start().starts_with("ORDER BY"))
+                .unwrap_or_else(|| panic!("#455 ({dname}) [{cypher}]: no ORDER BY line:\n{sql}"));
+            assert!(
+                !order_line.contains("a.origin_code") && !order_line.contains("a.dest_code"),
+                "#455 ({dname}) [{cypher}]: ORDER BY still uses the raw Cypher alias \
+                 instead of the resolved table alias:\n{sql}"
+            );
+            assert!(
+                order_line.contains("origin_code"),
+                "#455 ({dname}) [{cypher}]: ORDER BY must sort by the resolved \
+                 physical column origin_code:\n{sql}"
+            );
+        }
     }
 }

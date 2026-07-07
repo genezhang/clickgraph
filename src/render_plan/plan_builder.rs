@@ -344,6 +344,24 @@ fn move_first_branch_into_union(plan: RenderPlan) -> Option<Union> {
     }
 }
 
+/// Whether any SELECT item carries an aggregate function anywhere in its
+/// expression tree (directly, or nested inside a scalar call / operator). Used
+/// to decide whether a base+union render must consolidate all branches into
+/// `union.input` before the aggregation SQL generator (which skips the base
+/// plan) runs. Mirrors the nested `select_items_have_aggregation` used in the
+/// server render path.
+fn render_expr_items_have_aggregate(items: &[SelectItem]) -> bool {
+    fn has_agg(expr: &RenderExpr) -> bool {
+        match expr {
+            RenderExpr::AggregateFnCall(_) => true,
+            RenderExpr::ScalarFnCall(f) => f.args.iter().any(has_agg),
+            RenderExpr::OperatorApplicationExp(op) => op.operands.iter().any(has_agg),
+            _ => false,
+        }
+    }
+    items.iter().any(|item| has_agg(&item.expression))
+}
+
 /// # Arguments
 /// * `has_aggregation` - If true, wraps non-ID columns with anyLast() for efficient aggregation
 /// * `plan_ctx` - Optional PlanCtx for accessing PropertyRequirements (property pruning optimization)
@@ -1439,6 +1457,15 @@ impl RenderPlanBuilder for LogicalPlan {
 
                 let mut render_plan = p.input.to_render_plan(schema)?;
 
+                // Preserve the first (base) branch's SELECT before it is overwritten
+                // by the outer projection below. When an aggregation is applied over a
+                // multi-branch UNION (e.g. `RETURN count(a)` over a from/to denormalized
+                // node union), the SQL generator renders ONLY `union.input` branches and
+                // skips the base plan — so the first branch must be moved into
+                // `union.input` using its own correctly-mapped SELECT. This mirrors the
+                // server-path handling in `to_render_plan_with_ctx` (#454).
+                let original_first_select = render_plan.select.clone();
+
                 log::debug!(
                     "Projection::to_render_plan: after input conversion, has_union={}, is_multi_label_scan={}",
                     render_plan.union.0.is_some(),
@@ -1609,6 +1636,52 @@ impl RenderPlanBuilder for LogicalPlan {
                     }
                 }
 
+                // Aggregation over a multi-branch UNION: move the base (first) branch
+                // into `union.input` so the SQL generator — which renders only
+                // `union.input` for aggregation and skips the base plan — emits ALL
+                // branches. Without this the leading branch is silently dropped
+                // (e.g. `MATCH (a:Airport) RETURN count(a)` counted only the dest-side
+                // airports). Gated on `from` being present so literal-only aggregations
+                // and already-consolidated shells are untouched. Mirrors the
+                // `should_move_first_branch` logic in `to_render_plan_with_ctx` (#454).
+                let outer_has_aggregation =
+                    render_expr_items_have_aggregate(&render_plan.select.items);
+                if render_plan.from.0.is_some()
+                    && render_plan.union.0.is_some()
+                    && (!render_plan.group_by.0.is_empty() || outer_has_aggregation)
+                {
+                    if let Some(ref mut union_data) = render_plan.union.0 {
+                        let first_branch = RenderPlan {
+                            ctes: CteItems(vec![]),
+                            select: original_first_select,
+                            from: std::mem::replace(&mut render_plan.from, FromTableItem(None)),
+                            joins: std::mem::replace(
+                                &mut render_plan.joins,
+                                JoinItems::new(vec![]),
+                            ),
+                            array_join: std::mem::replace(
+                                &mut render_plan.array_join,
+                                ArrayJoinItem(vec![]),
+                            ),
+                            filters: std::mem::replace(&mut render_plan.filters, FilterItems(None)),
+                            group_by: GroupByExpressions(vec![]),
+                            having_clause: None,
+                            order_by: OrderByItems(vec![]),
+                            skip: SkipItem(None),
+                            limit: LimitItem(None),
+                            union: UnionItems(None),
+                            fixed_path_info: None,
+                            is_multi_label_scan: false,
+                            variable_registry: None,
+                        };
+                        union_data.input.insert(0, first_branch);
+                        log::info!(
+                            "🔀 Projection + aggregation over UNION: moved base branch into union.input ({} total branches)",
+                            union_data.input.len()
+                        );
+                    }
+                }
+
                 Ok(render_plan)
             }
             LogicalPlan::Filter(f) => {
@@ -1723,11 +1796,23 @@ impl RenderPlanBuilder for LogicalPlan {
                 // For OrderBy, convert the input plan and set order_by
                 let mut render_plan = ob.input.to_render_plan(schema)?;
 
-                // Convert logical OrderByItems to render OrderByItems
+                // Convert logical OrderByItems to render OrderByItems, then apply the
+                // same property/alias resolution the SELECT and WHERE paths use.
+                // Without this, a denormalized node alias in ORDER BY survives as the
+                // raw Cypher alias (`ORDER BY a.origin_code` — invalid, `a` is not a
+                // table) even though SELECT correctly emits `t0.origin_code`; the
+                // column was resolved at planning but the alias→edge-table remap was
+                // skipped. This mirrors `extract_order_by` used by the server render
+                // path (`to_render_plan_with_ctx`), keeping golden/server parity (#455).
                 let order_by_items: Result<Vec<OrderByItem>, _> = ob
                     .items
                     .iter()
-                    .map(|item| item.clone().try_into())
+                    .map(|item| {
+                        item.clone().try_into().map(|mut order_item: OrderByItem| {
+                            apply_property_mapping_to_expr(&mut order_item.expression, &ob.input);
+                            order_item
+                        })
+                    })
                     .collect();
                 render_plan.order_by = OrderByItems(order_by_items?);
 
@@ -2575,16 +2660,28 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Denormalized unions have the same label in all branches and should NOT
                 // go through the multi-label json_builder path
                 let is_denormalized_union = union.inputs.iter().any(|input| {
+                    // Mirror `is_node_scan_input`'s wrapper traversal exactly: a
+                    // denormalized branch reaches its ViewScan through the SAME
+                    // wrappers (GraphJoins/GraphNode/Projection/Filter/Limit). A
+                    // labeled coupled-denorm node scan (e.g. `MATCH (a:Airport)`)
+                    // is planned as a from/to UNION whose branches are wrapped in
+                    // GraphJoins; omitting that arm here misclassifies the union as
+                    // a multi-label scan and routes it through the json_builder
+                    // whole-node path, dropping the RETURN/WHERE/DISTINCT (#454).
                     fn has_denormalized_view_scan(plan: &LogicalPlan) -> bool {
                         match plan {
                             LogicalPlan::ViewScan(vs) => vs.is_denormalized,
                             LogicalPlan::GraphNode(gn) => {
                                 has_denormalized_view_scan(gn.input.as_ref())
                             }
+                            LogicalPlan::GraphJoins(gj) => {
+                                has_denormalized_view_scan(gj.input.as_ref())
+                            }
                             LogicalPlan::Projection(p) => {
                                 has_denormalized_view_scan(p.input.as_ref())
                             }
                             LogicalPlan::Filter(f) => has_denormalized_view_scan(f.input.as_ref()),
+                            LogicalPlan::Limit(l) => has_denormalized_view_scan(l.input.as_ref()),
                             _ => false,
                         }
                     }
