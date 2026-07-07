@@ -27,7 +27,7 @@ use clickgraph::{
     graph_catalog::{config::GraphSchemaConfig, graph_schema::GraphSchema},
     open_cypher_parser::{parse_cypher_statement, strip_comments},
     query_planner::evaluate_read_statement,
-    render_plan::{logical_plan_to_render_plan, ToSql},
+    render_plan::{logical_plan_to_render_plan, logical_plan_to_render_plan_with_ctx, ToSql},
     server::query_context::{set_current_schema, with_query_context, QueryContext},
     sql_generator::SqlDialect,
 };
@@ -960,6 +960,36 @@ async fn render(schema: &GraphSchema, cypher: &str, dialect: SqlDialect) -> Stri
     .await
 }
 
+/// Render through the PRODUCTION path: `to_render_plan_with_ctx` with the
+/// planner's `PlanCtx`, exactly as `cypher_to_sql` (server / cg / embedded)
+/// does. The `render()` helper above uses the ctx-less wrapper, which is known
+/// to diverge for polymorphic / multi-type expands (see
+/// `logical_plan_to_render_plan`'s doc comment) — regressions that only
+/// manifest with plan_ctx present (e.g. the #458 FROM-marker promotion) need
+/// this helper.
+async fn render_ctx(schema: &GraphSchema, cypher: &str, dialect: SqlDialect) -> String {
+    let schema = schema.clone();
+    let cypher = cypher.to_string();
+    let ctx = QueryContext {
+        dialect,
+        ..QueryContext::default()
+    };
+    with_query_context(ctx, async move {
+        set_current_schema(Arc::new(schema.clone()));
+        let cleaned = strip_comments(&cypher);
+        let (_rest, statement) =
+            parse_cypher_statement(&cleaned).unwrap_or_else(|e| panic!("parse: {e:?}"));
+        let (logical_plan, plan_ctx) =
+            evaluate_read_statement(statement, &schema, None, None, None)
+                .unwrap_or_else(|e| panic!("plan: {e:?}"));
+        let render_plan =
+            logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx))
+                .unwrap_or_else(|e| panic!("render: {e:?}"));
+        render_plan.to_sql()
+    })
+    .await
+}
+
 /// Anonymize the two process-global counters whose values vary with test
 /// ordering/concurrency: `ALIAS_COUNTER` (anonymous rel aliases `t{n}`) and
 /// `CTE_COUNTER` (`cte{n}`). Each is remapped by first appearance, so goldens
@@ -1164,7 +1194,7 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 // from that live run vs. Cypher semantics. If you touch polymorphic rendering,
 // inspect these first:
 //
-//   - polymorphic/whole_edge_r  [FIXED in #458]:
+//   - polymorphic/whole_edge_r  [FIXED in #458 — LABELED single-type shape only]:
 //     `MATCH (a:User)-[r:FOLLOWS]->(b:User) RETURN r` now renders
 //     `FROM brahmand.interactions AS r WHERE r.interaction_type = 'FOLLOWS' AND
 //     r.from_type = 'User' AND r.to_type = 'User'` and returns the 10 FOLLOWS
@@ -1176,7 +1206,17 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 //     pre_filter into the WHERE clause (`from_marker_pre_filter` in
 //     plan_builder.rs) so the edge-own filters survive endpoint pruning
 //     (whole-edge-projection sibling of the #433 element-id/edge-linkage class).
-//     Locked as correct; regression `polymorphic_whole_edge_r_keeps_discriminator`.
+//     SCOPE: the promotion is gated on the marker's own table being the rendered
+//     FROM. When endpoints are UNLABELED (or the rel is multi-type / VLP),
+//     extract_from renders a `pattern_union_*`/rel/VLP CTE instead while the
+//     marker still carries the FIRST branch's discriminator — promoting there
+//     would reference columns the CTE doesn't project and collapse the union
+//     (proven live regression, fixed by the gate). For those shapes the
+//     per-branch filters inside the CTE do the discriminating and NO outer
+//     WHERE is emitted. Regressions:
+//     `polymorphic_whole_edge_r_keeps_discriminator` (labeled, both render
+//     paths) and `polymorphic_unlabeled_whole_edge_no_outer_discriminator`
+//     (unlabeled / multi-type / VLP whole-edge, both render paths).
 //
 //   - FULLY-unlabeled patterns (`(a)-[:SHARED]->(b)`, `p=()-[:SHARED]->()`) are
 //     NOT byte-goldens (their `pattern_union_*` property blobs are emitted in
@@ -1197,9 +1237,12 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 //         helper uses — which has NO production callers. The production path
 //         (`to_render_plan_with_ctx`, used by every server/cg/embedded query)
 //         collapses the outer union to a single `FROM pattern_union_*` and is
-//         CORRECT: live CH via cg returns `(a)-[:FOLLOWS]->(b)` = 10 and
-//         `(a)-[:SHARED]->(b)` = 3 (NOT 40 / 12). The earlier "live 12/40" note
-//         was measured on the ctx-less harness SQL, not production. The test
+//         CORRECT for this shape: live CH via cg returns
+//         `(a)-[:FOLLOWS]->(b) RETURN a, b` = 10 and
+//         `(a)-[:SHARED]->(b) RETURN a, b` = 3 (NOT 40 / 12). The earlier
+//         "live 12/40" note was measured on the ctx-less harness SQL, not
+//         production. (Whole-edge `RETURN r` over these unlabeled shapes is a
+//         separate axis — see the whole_edge_r note above.) The test
 //         below still asserts the ctx-less 4× (characterizing the harness path);
 //         making the ctx-less path collapse too would touch the multi-type
 //         expand/Union machinery and only change a test-only path, so it was
@@ -1415,6 +1458,78 @@ async fn polymorphic_whole_edge_r_keeps_discriminator() {
             "whole_edge_r ({dname}) dropped the polymorphic type/label \
              discriminator on the pruned-endpoint edge scan (#458):\n{sql}"
         );
+
+        // Same invariants on the PRODUCTION (plan_ctx) render path — the two
+        // paths diverge for polymorphic patterns, so lock both.
+        let sql_prod = render_ctx(&schema, cypher, dialect).await;
+        assert!(
+            sql_prod.contains("brahmand.interactions AS r")
+                && sql_prod.contains("r.interaction_type = 'FOLLOWS'")
+                && sql_prod.contains("r.from_type = 'User'")
+                && sql_prod.contains("r.to_type = 'User'"),
+            "whole_edge_r ({dname}, production ctx path) dropped the \
+             discriminator (#458):\n{sql_prod}"
+        );
+    }
+}
+
+/// #458 follow-up regression: the FROM-marker pre_filter promotion (the
+/// whole_edge_r fix above) must NOT fire when `extract_from` renders a CTE as
+/// the FROM instead of the marker's own edge table. With UNLABELED endpoints
+/// (and for multi-type `[:A|B]` and VLP `*1..2` whole-edge projections) the
+/// pattern routes through a `pattern_union_*` CTE whose union branches ALREADY
+/// carry their per-branch `interaction_type`/`from_type`/`to_type` filters —
+/// but the FROM-marker join still sits in `GraphJoins.joins` carrying only the
+/// FIRST branch's discriminator. An ungated promotion emitted
+/// `FROM pattern_union_r AS r WHERE r.interaction_type = 'SHARED' AND
+/// r.from_type = 'Post' AND r.to_type = 'Post'` — columns the CTE never
+/// projects (unknown-identifier error on live ClickHouse) and semantically a
+/// collapse of the union to one branch. The existing structural tests all use
+/// `RETURN a, b` (endpoints referenced ⇒ no SingleTableScan marker), which is
+/// how this escaped. Uses the PRODUCTION (plan_ctx) render path where the
+/// regression was proven; asserts the outer query never references the raw
+/// discriminator columns through the CTE alias.
+#[tokio::test]
+async fn polymorphic_unlabeled_whole_edge_no_outer_discriminator() {
+    let schema = load_schema(SchemaId::Polymorphic.yaml_path());
+    let cases = [
+        "MATCH (a)-[r:SHARED]->(b) RETURN r",
+        "MATCH (a)-[r:SHARED]->(b) RETURN r.weight",
+        "MATCH (a)-[r:SHARED|FOLLOWS]->(b) RETURN r",
+        "MATCH (a)-[r:SHARED*1..2]->(b) RETURN r",
+    ];
+
+    for cypher in cases {
+        for (dialect, dname) in [
+            (SqlDialect::ClickHouse, "clickhouse"),
+            (SqlDialect::Databricks, "databricks"),
+        ] {
+            for (path_name, sql) in [
+                ("production ctx", render_ctx(&schema, cypher, dialect).await),
+                ("ctx-less", render(&schema, cypher, dialect).await),
+            ] {
+                // The unlabeled/multi-type/VLP whole-edge shape routes through
+                // the pattern-union CTE…
+                assert!(
+                    sql.contains("pattern_union_"),
+                    "`{cypher}` ({dname}, {path_name}) expected the \
+                     pattern_union CTE as FROM:\n{sql}"
+                );
+                // …and the outer query must NOT reference the raw edge
+                // discriminator columns through the CTE alias — the CTE does
+                // not project them, and the per-branch filters inside the CTE
+                // already discriminate (#458 follow-up).
+                for col in ["r.interaction_type", "r.from_type", "r.to_type"] {
+                    assert!(
+                        !sql.contains(col),
+                        "`{cypher}` ({dname}, {path_name}) leaked the \
+                         FROM-marker pre_filter into the outer WHERE — `{col}` \
+                         is not a column of the pattern_union CTE (#458 \
+                         follow-up regression):\n{sql}"
+                    );
+                }
+            }
+        }
     }
 }
 

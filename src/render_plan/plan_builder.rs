@@ -137,32 +137,58 @@ fn apply_anylast_wrapping_for_group_by(
 }
 
 /// Return the `pre_filter` carried by a GraphJoins' FROM-marker join, converted
-/// to a `RenderExpr`, so the caller can promote it into the WHERE clause.
+/// to a `RenderExpr`, so the caller can promote it into the WHERE clause —
+/// but ONLY when the marker's own table is what `extract_from` actually
+/// rendered as the FROM.
 ///
 /// A FROM marker is a join with an empty `joining_on` whose alias is the anchor
 /// table; `extract_from` renders it as a bare `FROM table AS alias`, so any
 /// `pre_filter` on it would otherwise be silently discarded. The analyzer's
 /// `SingleTableScan` strategy is the only path that attaches a `pre_filter` to a
 /// FROM marker: when a whole-edge projection (e.g. `RETURN r`) prunes both
-/// endpoints, the polymorphic edge itself becomes the FROM marker while keeping
-/// its type/label discriminators (`interaction_type = 'FOLLOWS' AND
+/// labeled endpoints, the polymorphic edge itself becomes the FROM marker while
+/// keeping its type/label discriminators (`interaction_type = 'FOLLOWS' AND
 /// from_type = 'User' AND to_type = 'User'`). Without promotion these filters
 /// vanish and the query returns every edge type (#458 / #433 family — edge-own
 /// filters must survive endpoint pruning). Ordinary node FROM markers carry
 /// `pre_filter: None`, so this is a no-op for them.
+///
+/// The `rendered_from` gate is load-bearing: when the pattern's endpoints are
+/// UNLABELED (or the rel is multi-type / VLP), `extract_from` resolves the FROM
+/// to a `pattern_union_*` / rel / VLP CTE instead of the marker's raw edge
+/// table, while the marker join still sits in `gj.joins` carrying only the
+/// FIRST union branch's discriminator. Promoting that would reference raw edge
+/// columns the CTE never projects (unknown-identifier error on ClickHouse) AND
+/// semantically collapse the union to one branch. Rather than re-deriving
+/// `extract_from`'s CTE-preference logic here (multi-type / pattern_combinations
+/// / VLP), compare against what it actually returned: promote only if the
+/// rendered FROM is the marker's own table (name, and alias when set). In the
+/// CTE case the per-branch discriminators inside the CTE bodies already filter
+/// correctly and no outer WHERE is needed.
 fn from_marker_pre_filter(
     gj: &crate::query_planner::logical_plan::GraphJoins,
+    rendered_from: Option<&super::ViewTableRef>,
 ) -> Option<RenderExpr> {
     let anchor = gj.anchor_table.as_deref()?;
-    gj.joins.iter().find_map(|j| {
-        if j.joining_on.is_empty() && j.table_alias == anchor {
-            j.pre_filter
-                .clone()
-                .and_then(|pf| RenderExpr::try_from(pf).ok())
-        } else {
-            None
+    let from = rendered_from?;
+    let marker = gj
+        .joins
+        .iter()
+        .find(|j| j.joining_on.is_empty() && j.table_alias == anchor)?;
+    if from.name != marker.table_name {
+        // FROM is a CTE (pattern_union/multi-type/VLP) or another table — not
+        // the marker. Its pre_filter must NOT leak into the outer WHERE.
+        return None;
+    }
+    if let Some(ref from_alias) = from.alias {
+        if from_alias != &marker.table_alias {
+            return None; // Same table name but a different scan — not the marker.
         }
-    })
+    }
+    marker
+        .pre_filter
+        .clone()
+        .and_then(|pf| RenderExpr::try_from(pf).ok())
 }
 
 /// Find the `GraphJoins` node inside a plan that may be wrapped in the usual
@@ -917,7 +943,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 // the edge for a whole-edge projection like `RETURN r`) into WHERE.
                 // extract_from renders the marker as a bare `FROM tbl AS alias`, so
                 // otherwise the discriminator is dropped (#458 / #433).
-                if let Some(marker_filter) = from_marker_pre_filter(gj) {
+                if let Some(marker_filter) = from_marker_pre_filter(gj, from.0.as_ref()) {
                     filters.0 = Some(match filters.0.take() {
                         Some(existing) => RenderExpr::OperatorApplicationExp(OperatorApplication {
                             operator: Operator::And,
@@ -3933,7 +3959,7 @@ impl RenderPlanBuilder for LogicalPlan {
             // plan_ctx (server/cg) render path; the ctx-less `to_render_plan`
             // GraphJoins arm applies the same promotion.
             if let Some(gj) = find_graph_joins_node(self) {
-                if let Some(marker_filter) = from_marker_pre_filter(gj) {
+                if let Some(marker_filter) = from_marker_pre_filter(gj, from.0.as_ref()) {
                     filters.0 = Some(match filters.0.take() {
                         Some(existing) => RenderExpr::OperatorApplicationExp(OperatorApplication {
                             operator: Operator::And,
@@ -4336,7 +4362,7 @@ impl RenderPlanBuilder for LogicalPlan {
             // plan_ctx (server/cg) render path; the ctx-less `to_render_plan`
             // GraphJoins arm applies the same promotion.
             if let Some(gj) = find_graph_joins_node(self) {
-                if let Some(marker_filter) = from_marker_pre_filter(gj) {
+                if let Some(marker_filter) = from_marker_pre_filter(gj, from.0.as_ref()) {
                     filters.0 = Some(match filters.0.take() {
                         Some(existing) => RenderExpr::OperatorApplicationExp(OperatorApplication {
                             operator: Operator::And,
