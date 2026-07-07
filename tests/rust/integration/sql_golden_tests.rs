@@ -1891,9 +1891,10 @@ async fn denorm_with_match_chain_filters_per_branch_column_456() {
 /// table → ClickHouse `UNKNOWN_IDENTIFIER` (HTTP 500 in server/cg). The fix drops
 /// `to_node_properties` from the edge→node reverse map so to-node columns stay on
 /// the edge alias. Live: correct 9 rows (8 flights + PHX null-extended, the only
-/// airport with no outgoing flight). This is the PRODUCTION path only; the golden
-/// harness (`render()`, ctx-less) renders a degenerate inner scan for this shape
-/// (a separate #459 divergence, still locked in `denormalized/optional_match`).
+/// airport with no outgoing flight). Since #459, `render()` IS the production
+/// path; this shape has no byte golden (the from/to-union column order is
+/// HashMap-nondeterministic — see the known-suspicious notes), so this
+/// structural test is its lock.
 #[tokio::test]
 async fn denorm_optional_match_resolves_to_node_onto_edge_456() {
     let schema = load_schema(SchemaId::Denormalized.yaml_path());
