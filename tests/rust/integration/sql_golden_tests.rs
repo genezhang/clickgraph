@@ -1844,6 +1844,41 @@ async fn denorm_with_match_chain_filters_per_branch_column_456() {
             );
         }
     }
+
+    // Follow-up (review finding): the per-branch remap must also descend into
+    // expression WRAPPERS. The original remapper hand-rolled its recursion over
+    // only PropertyAccess/Operator/Aggregate/ScalarFnCall, so a CASE-wrapped
+    // predicate left the dest branch filtering `a.origin_state` INSIDE the CASE
+    // (live: 7 rows again). Now implemented on `ExprVisitor::transform_expr`
+    // (expression_utils.rs), whose default walk covers Case/List/subscripts/
+    // slices/subqueries. Live after: 4 rows.
+    let case_cypher = "MATCH (a:Airport) \
+                       WITH a WHERE (CASE WHEN a.state = 'CA' THEN 1 ELSE 0 END) = 1 \
+                       MATCH (a)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        for (path, sql) in [
+            ("ctx-less", render(&schema, case_cypher, dialect).await),
+            (
+                "production",
+                render_ctx(&schema, case_cypher, dialect).await,
+            ),
+        ] {
+            // The dest branch's CASE must test its OWN column…
+            assert!(
+                sql.contains("CASE WHEN a.dest_state = 'CA'"),
+                "#456 follow-up ({dialect:?}/{path}): dest branch must remap the \
+                 column INSIDE the CASE wrapper to dest_state:\n{sql}"
+            );
+            // …and the origin column may appear in exactly one branch's CASE.
+            assert_eq!(
+                sql.matches("CASE WHEN a.origin_state = 'CA'").count(),
+                1,
+                "#456 follow-up ({dialect:?}/{path}): the dest branch leaked \
+                 origin_state inside the CASE (wrapper not descended):\n{sql}"
+            );
+        }
+    }
 }
 
 /// #456 regression (OPTIONAL, production path): `MATCH (a:Airport) OPTIONAL MATCH

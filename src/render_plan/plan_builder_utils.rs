@@ -9464,59 +9464,52 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 union.input.len()
                             );
 
-                            /// Re-point a filter's column references to a target
+                            /// Re-points a filter's column references to a target
                             /// branch's columns: `db_col → exported alias → branch db_col`.
-                            fn remap_where_cols_for_branch(
-                                expr: &mut RenderExpr,
-                                col_to_alias: &std::collections::HashMap<String, String>,
-                                alias_to_col: &std::collections::HashMap<String, String>,
-                            ) {
-                                match expr {
-                                    RenderExpr::PropertyAccessExp(pa) => {
-                                        let cur = pa.column.raw().to_string();
-                                        if let Some(alias) = col_to_alias.get(&cur) {
-                                            if let Some(new_col) = alias_to_col.get(alias) {
-                                                if *new_col != cur {
-                                                    pa.column =
-                                                        PropertyValue::Column(new_col.clone());
-                                                }
+                            /// Implemented on `ExprVisitor` so every expression wrapper
+                            /// (CASE, lists, subscripts/slices, subqueries, …) is walked
+                            /// by the default recursive `transform_expr` — a hand-rolled
+                            /// walk here previously missed CASE and left the dest branch
+                            /// filtering the origin column inside it (#456 follow-up).
+                            struct BranchWhereColRemapper<'a> {
+                                col_to_alias: &'a std::collections::HashMap<String, String>,
+                                alias_to_col: &'a std::collections::HashMap<String, String>,
+                            }
+                            impl super::expression_utils::ExprVisitor for BranchWhereColRemapper<'_> {
+                                fn transform_property_access(
+                                    &mut self,
+                                    prop: &PropertyAccess,
+                                ) -> RenderExpr {
+                                    let cur = prop.column.raw().to_string();
+                                    if let Some(alias) = self.col_to_alias.get(&cur) {
+                                        if let Some(new_col) = self.alias_to_col.get(alias) {
+                                            if *new_col != cur {
+                                                return RenderExpr::PropertyAccessExp(
+                                                    PropertyAccess {
+                                                        table_alias: prop.table_alias.clone(),
+                                                        column: PropertyValue::Column(
+                                                            new_col.clone(),
+                                                        ),
+                                                    },
+                                                );
                                             }
                                         }
                                     }
-                                    RenderExpr::OperatorApplicationExp(op) => {
-                                        for o in &mut op.operands {
-                                            remap_where_cols_for_branch(
-                                                o,
-                                                col_to_alias,
-                                                alias_to_col,
-                                            );
-                                        }
-                                    }
-                                    RenderExpr::AggregateFnCall(agg) => {
-                                        for a in &mut agg.args {
-                                            remap_where_cols_for_branch(
-                                                a,
-                                                col_to_alias,
-                                                alias_to_col,
-                                            );
-                                        }
-                                    }
-                                    RenderExpr::ScalarFnCall(f) => {
-                                        for a in &mut f.args {
-                                            remap_where_cols_for_branch(
-                                                a,
-                                                col_to_alias,
-                                                alias_to_col,
-                                            );
-                                        }
-                                    }
-                                    _ => {}
+                                    RenderExpr::PropertyAccessExp(prop.clone())
                                 }
                             }
 
                             // Global db_column → exported property alias (col_alias),
                             // gathered across all branches (e.g. origin_state→p1_a_state
                             // AND dest_state→p1_a_state).
+                            //
+                            // HAZARD: this map is keyed on the bare db column and the
+                            // remap ignores `pa.table_alias` (last write wins). If a CTE
+                            // body ever materializes TWO aliases whose branches project
+                            // the SAME physical column under DIFFERENT exported aliases,
+                            // the predicate could be re-pointed through the wrong export.
+                            // Today the denorm from/to UNION materializes a single node
+                            // alias, so the keys are unambiguous per CTE.
                             let mut col_to_alias: std::collections::HashMap<String, String> =
                                 std::collections::HashMap::new();
                             for branch in union.input.iter() {
@@ -9543,12 +9536,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                     }
                                 }
 
-                                let mut branch_where = where_render_expr.clone();
-                                remap_where_cols_for_branch(
-                                    &mut branch_where,
-                                    &col_to_alias,
-                                    &alias_to_col,
-                                );
+                                use super::expression_utils::ExprVisitor as _;
+                                let mut remapper = BranchWhereColRemapper {
+                                    col_to_alias: &col_to_alias,
+                                    alias_to_col: &alias_to_col,
+                                };
+                                let branch_where = remapper.transform_expr(&where_render_expr);
 
                                 branch.filters = match branch.filters.0.take() {
                                     Some(existing) => FilterItems(Some(
