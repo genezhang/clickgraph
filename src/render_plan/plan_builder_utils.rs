@@ -14149,13 +14149,15 @@ fn node_is_concrete_labeled(plan: &LogicalPlan, alias: &str) -> bool {
 
 /// Returns true if `alias` is joined by a *resolvable* graph-pattern edge to a
 /// distinct node — a non-VLP `GraphRel` whose BOTH endpoints are concrete,
-/// labeled, non-denormalized nodes. When true, a WITH-CTE JOIN to `alias` MUST
-/// carry a real ON condition; a cartesian `ON 1 = 1` would silently change the
-/// query's semantics (wrong row count), so the renderer errors instead of
+/// labeled nodes (the check is label presence only; denormalized nodes with a
+/// label pass, but in practice denormalized patterns are transformed before
+/// reaching the fallback this guards). When true, a WITH-CTE JOIN to `alias`
+/// MUST carry a real ON condition; a cartesian `ON 1 = 1` would silently change
+/// the query's semantics (wrong row count), so the renderer errors instead of
 /// emitting it. Deliberately narrow: a scalar carry-forward (`WITH count(*)`)
-/// has no such edge, and the denormalized / unlabeled-endpoint browser family
-/// is intentionally excluded (its correlation gaps predate and are out of scope
-/// for this fix — see #451 scope note). Used to harden the CTE-JOIN fallback.
+/// has no such edge, and the unlabeled-endpoint browser family is intentionally
+/// excluded (its correlation gaps predate and are out of scope for this fix —
+/// see #451 scope note). Used to harden the CTE-JOIN fallback.
 fn alias_has_pattern_correlation(root: &LogicalPlan, alias: &str) -> bool {
     fn walk(node: &LogicalPlan, root: &LogicalPlan, alias: &str) -> bool {
         use crate::query_planner::logical_plan::LogicalPlan;
