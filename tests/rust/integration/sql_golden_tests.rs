@@ -1189,16 +1189,21 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 //         to_type filter, NEVER the `SELECT 1 AS "_empty" WHERE false`
 //         placeholder.
 //       * `polymorphic_unlabeled_endpoints_current_row_multiplication`
-//         [SUSPICIOUS — pattern_union row multiplication]: the OUTER query then
-//         selects from that already-complete CTE FOUR times, UNION-ALL'd, with
-//         byte-identical projections — so every path row is emitted 4×. Live:
-//         `(a)-[:FOLLOWS]->(b)` returns 40 rows (should be 10 FOLLOWS),
-//         `(a)-[:SHARED]->(b)` / `p=()-[:SHARED]->()` return 12 (should be 3
-//         SHARED) — exactly 4× the correct count. The 4 outer copies appear to
-//         be a mis-lowering of the endpoint-label cross-product (2 labels × 2
-//         labels) onto the outer projection, which the CTE has already accounted
-//         for. Asserted as current behavior; a fix should collapse the outer
-//         union to a single `SELECT ... FROM pattern_union_*`.
+//         [HARNESS ARTIFACT — NOT a production bug; investigated in #458]: the
+//         OUTER query selects from the already-complete CTE FOUR times,
+//         UNION-ALL'd with byte-identical projections, so every path row is
+//         emitted 4×. CRITICAL: this 4× appears ONLY on the ctx-less render path
+//         (`logical_plan_to_render_plan`) that this golden harness's `render()`
+//         helper uses — which has NO production callers. The production path
+//         (`to_render_plan_with_ctx`, used by every server/cg/embedded query)
+//         collapses the outer union to a single `FROM pattern_union_*` and is
+//         CORRECT: live CH via cg returns `(a)-[:FOLLOWS]->(b)` = 10 and
+//         `(a)-[:SHARED]->(b)` = 3 (NOT 40 / 12). The earlier "live 12/40" note
+//         was measured on the ctx-less harness SQL, not production. The test
+//         below still asserts the ctx-less 4× (characterizing the harness path);
+//         making the ctx-less path collapse too would touch the multi-type
+//         expand/Union machinery and only change a test-only path, so it was
+//         deliberately not attempted (see #458 diagnosis).
 //
 // Verified CORRECT (kept as normal locks, not suspicious): follows_hop (10,
 // self-referential User->User with distinct a/b aliases) / authored_hop (5,
@@ -1467,16 +1472,21 @@ async fn polymorphic_unlabeled_endpoints_are_real_scans_not_empty() {
     }
 }
 
-/// Companion characterization of the CURRENT (suspicious) behavior of the
-/// fully-unlabeled polymorphic path: the `pattern_union_*` CTE already
-/// enumerates all four (from_label, to_label) branches, yet the OUTER query
-/// selects from it FOUR times UNION-ALL'd with identical projections, so every
-/// path row is emitted 4×. Live CH (brahmand fixture): `(a)-[:FOLLOWS]->(b)`
-/// returns 40 rows (should be 10), `(a)-[:SHARED]->(b)` returns 12 (should be 3)
-/// — exactly 4×. Locked as current behavior so a fix (collapse the outer union
-/// to a single `SELECT ... FROM pattern_union_*`) shows as a diff here. If this
-/// starts failing because the count dropped to 1, that is the FIX — update the
-/// expected count and the KNOWN-SUSPICIOUS note.
+/// Characterization of the ctx-less HARNESS render path for the fully-unlabeled
+/// polymorphic pattern. The `pattern_union_*` CTE enumerates all four
+/// (from_label, to_label) branches; on the ctx-less path (`render()` here uses
+/// `logical_plan_to_render_plan`) the OUTER query then selects from it FOUR
+/// times UNION-ALL'd with identical projections, emitting every path row 4×.
+///
+/// #458 finding: this 4× is a HARNESS ARTIFACT, NOT a production bug. The
+/// production path (`to_render_plan_with_ctx`, used by all server/cg/embedded
+/// queries) collapses the outer union to a single `FROM pattern_union_*` — live
+/// CH via cg returns `(a)-[:SHARED]->(b)` = 3 and `(a)-[:FOLLOWS]->(b)` = 10
+/// (correct). The ctx-less wrapper has no production callers. Fixing the ctx-less
+/// collapse would touch the multi-type expand/Union machinery for a test-only
+/// path, so it was deliberately deferred. This test therefore locks the ctx-less
+/// 4× as the harness's current behavior; if a future change makes the ctx-less
+/// path also collapse to 1, that is fine — update this expectation and the note.
 #[tokio::test]
 async fn polymorphic_unlabeled_endpoints_current_row_multiplication() {
     let schema = load_schema(SchemaId::Polymorphic.yaml_path());
