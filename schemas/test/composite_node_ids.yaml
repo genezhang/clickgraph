@@ -1,26 +1,83 @@
-database: brahmand_test
-nodes:
-  - label: Account
-    table: accounts_composite
-    node_id: [bank_id, account_number]  # Composite node ID!
-    property_mappings:
-      balance: balance
-      account_type: account_type
-  
-  - label: User
-    table: users
-    node_id: user_id  # Single column (mixed with composite)
-    property_mappings:
-      name: full_name
-      email: email_address
-edges:
-  - type: OWNS
-    table: account_ownership
-    from_id: owner_id
-    to_id_composite: [bank_id, account_number]  # References composite key
-    from_label: User
-    to_label: Account
-    from_node: User
-    to_node: Account
+# Composite node-ID single-graph schema — extracted/adapted from
+# schemas/examples/composite_node_id_test.yaml so the byte-exact golden
+# harness (tests/rust/integration/sql_golden_tests.rs) can load it directly
+# via GraphSchemaConfig::from_yaml_file (the original file's shape — flat
+# top-level `nodes:`/`edges:`, no `graph_schema:` wrapper, `to_id_composite:`
+# instead of `to_id:` — does not deserialize through that entry point: the
+# wrapper is required and `to_id` is a mandatory field on StandardEdgeDefinition).
+# This file keeps the SAME database/tables/data as the example schema (and its
+# companion `scripts/setup/setup_composite_id_data.sh`), so goldens can be
+# live-verified against `db_composite_id` without any new data setup.
+#
+# Composite-ID pattern (`Identifier::Composite`):
+#   Account identified by (bank_id, account_number) — a TWO-column node ID.
+#   Customer identified by customer_id — single column (mixed in the same graph).
+#
+# Graph patterns:
+#   (c:Customer)-[:OWNS]->(a:Account)         — single-to-composite key join
+#   (a1:Account)-[:TRANSFERRED]->(a2:Account) — composite-to-composite key join
+#     (the interesting case: BOTH sides of the join must carry ALL id
+#     components, e.g. `(a1.bank_id, a1.account_number) = (t.from_bank_id,
+#     t.from_account_number)` — a join on only bank_id would be a correctness
+#     bug silently fanning out rows across accounts sharing a bank).
+#
+# Physical tables (db_composite_id, created by scripts/setup/setup_composite_id_data.sh):
+#   accounts(bank_id String, account_number String, holder_name String,
+#            account_type String, balance Float64, opened_date Date)
+#   customers(customer_id UInt64, name String, email String, city String)
+#   account_ownership(customer_id UInt64, bank_id String, account_number String,
+#                      role String, since Date)
+#   transfers(transfer_id UInt64, from_bank_id String, from_account_number String,
+#             to_bank_id String, to_account_number String, amount Float64,
+#             transfer_date Date)
 
-# Note: This schema tests composite node IDs with mixed single/composite patterns
+name: composite_node_ids
+
+graph_schema:
+  nodes:
+    - label: Account
+      database: db_composite_id
+      table: accounts
+      node_id: [bank_id, account_number]
+      property_mappings:
+        bank_id: bank_id
+        account_number: account_number
+        holder_name: holder_name
+        account_type: account_type
+        balance: balance
+        opened_date: opened_date
+
+    - label: Customer
+      database: db_composite_id
+      table: customers
+      node_id: customer_id
+      property_mappings:
+        customer_id: customer_id
+        name: name
+        email: email
+        city: city
+
+  edges:
+    - type: OWNS
+      database: db_composite_id
+      table: account_ownership
+      from_id: customer_id
+      to_id: [bank_id, account_number]
+      from_node: Customer
+      to_node: Account
+      property_mappings:
+        role: role
+        since: since
+
+    - type: TRANSFERRED
+      database: db_composite_id
+      table: transfers
+      from_id: [from_bank_id, from_account_number]
+      to_id: [to_bank_id, to_account_number]
+      from_node: Account
+      to_node: Account
+      edge_id: transfer_id
+      property_mappings:
+        transfer_id: transfer_id
+        amount: amount
+        transfer_date: transfer_date

@@ -41,6 +41,7 @@ enum SchemaId {
     Standard,
     FkEdge,
     Denormalized,
+    CompositeId,
 }
 
 impl SchemaId {
@@ -50,6 +51,7 @@ impl SchemaId {
             SchemaId::Standard => "standard",
             SchemaId::FkEdge => "fk_edge",
             SchemaId::Denormalized => "denormalized",
+            SchemaId::CompositeId => "composite_id",
         }
     }
 
@@ -64,6 +66,7 @@ impl SchemaId {
             // from_node_properties/to_node_properties). Has matching live data in
             // `db_denormalized` (scripts/setup/setup_denormalized_data.sh).
             SchemaId::Denormalized => "schemas/dev/flights_denormalized.yaml",
+            SchemaId::CompositeId => "schemas/test/composite_node_ids.yaml",
         }
     }
 }
@@ -582,6 +585,181 @@ const DENORM_CORPUS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Composite-node-ID variation (`schemas/test/composite_node_ids.yaml`, extracted
+/// from `schemas/examples/composite_node_id_test.yaml` so it loads through
+/// `GraphSchemaConfig::from_yaml_file`): Account is identified by a TWO-column
+/// composite key `(bank_id, account_number)`; Customer keeps a single-column key
+/// `customer_id` (mixed in the same graph, matching real multi-bank schemas).
+/// `OWNS` (Customer -> Account) exercises a single-to-composite join;
+/// `TRANSFERRED` (Account -> Account) exercises composite-to-composite — BOTH
+/// sides of that join must carry ALL id components, e.g.
+/// `(a1.bank_id, a1.account_number) = (t.from_bank_id, t.from_account_number)`;
+/// a join on only `bank_id` would silently fan out across every account at the
+/// same bank. Mirrors the standard/FK-edge corpora's feature axes.
+///
+/// Not expressible / intentionally omitted (same reasons as the other corpora):
+///   - multi-type `[:A|B]` — only one edge type between any given node pair.
+///   - UNWIND/arrayJoin shapes — same Spark structural gap the other corpora skip.
+///
+/// KNOWN-SUSPICIOUS: see the comment block above `sql_golden_snapshots` — the
+/// `group_by_whole_node` case locks a confirmed GROUP BY correctness bug specific
+/// to composite ids (grouping collapses to the FIRST id column only).
+const COMPOSITE_ID_CORPUS: &[(&str, &str)] = &[
+    // --- node scans (both node types) ---
+    ("node_scan_account", "MATCH (a:Account) RETURN a.account_number"),
+    ("node_scan_customer", "MATCH (c:Customer) RETURN c.customer_id"),
+    // --- property projection, incl. all composite-id columns ---
+    (
+        "project_account",
+        "MATCH (a:Account) RETURN a.bank_id, a.account_number, a.balance",
+    ),
+    (
+        "project_customer",
+        "MATCH (c:Customer) RETURN c.customer_id, c.name, c.email",
+    ),
+    (
+        "distinct_account_type",
+        "MATCH (a:Account) RETURN DISTINCT a.account_type",
+    ),
+    // --- WHERE on ONE id component vs. ALL id components ---
+    (
+        "where_one_id_component",
+        "MATCH (a:Account) WHERE a.bank_id = 'CHASE' RETURN a.account_number",
+    ),
+    (
+        "where_all_id_components",
+        "MATCH (a:Account) WHERE a.bank_id = 'CHASE' AND a.account_number = 'CHK-001' RETURN a.balance",
+    ),
+    (
+        "where_and",
+        "MATCH (a:Account) WHERE a.balance > 1000 AND a.account_type = 'Savings' RETURN a.account_number",
+    ),
+    (
+        "where_in_list",
+        "MATCH (c:Customer) WHERE c.city IN ['New York', 'Chicago'] RETURN c.name",
+    ),
+    // --- ordering / paging ---
+    (
+        "order_skip_limit",
+        "MATCH (a:Account) RETURN a.account_number, a.balance ORDER BY a.balance DESC SKIP 1 LIMIT 3",
+    ),
+    (
+        "skip_only",
+        "MATCH (a:Account) RETURN a.account_number ORDER BY a.account_number SKIP 2",
+    ),
+    ("aggregate_count", "MATCH (a:Account) RETURN count(a)"),
+    // --- single hop: single-to-composite (OWNS), both directions + undirected ---
+    (
+        "single_hop",
+        "MATCH (c:Customer)-[:OWNS]->(a:Account) RETURN c.name, a.account_number",
+    ),
+    (
+        "single_hop_reverse",
+        "MATCH (a:Account)<-[:OWNS]-(c:Customer) RETURN a.account_number, c.name",
+    ),
+    (
+        "undirected_hop",
+        "MATCH (c:Customer)-[:OWNS]-(a:Account) RETURN c.name, a.account_number",
+    ),
+    // --- single hop: composite-to-composite (TRANSFERRED) — the interesting case ---
+    (
+        "composite_to_composite_hop",
+        "MATCH (a1:Account)-[:TRANSFERRED]->(a2:Account) RETURN a1.account_number, a2.account_number",
+    ),
+    (
+        "composite_to_composite_undirected",
+        "MATCH (a1:Account)-[:TRANSFERRED]-(a2:Account) RETURN a1.account_number, a2.account_number",
+    ),
+    // Filter on BOTH node types across a single-to-composite hop.
+    (
+        "hop_filter_both",
+        "MATCH (c:Customer)-[:OWNS]->(a:Account) WHERE c.city = 'New York' AND a.account_type = 'Checking' RETURN c.name, a.account_number",
+    ),
+    // --- whole-edge RETURN r, both edge shapes ---
+    (
+        "whole_edge_owns",
+        "MATCH (c:Customer)-[r:OWNS]->(a:Account) RETURN r",
+    ),
+    (
+        "whole_edge_transferred",
+        "MATCH (a1:Account)-[r:TRANSFERRED]->(a2:Account) RETURN r",
+    ),
+    // --- OPTIONAL MATCH, single-to-composite and composite-to-composite ---
+    (
+        "optional_match",
+        "MATCH (c:Customer) OPTIONAL MATCH (c)-[:OWNS]->(a:Account) RETURN c.name, a.account_number",
+    ),
+    (
+        "optional_match_composite",
+        "MATCH (a1:Account) OPTIONAL MATCH (a1)-[:TRANSFERRED]->(a2:Account) RETURN a1.account_number, a2.account_number",
+    ),
+    // --- WITH + aggregation (count per customer), and its HAVING form ---
+    (
+        "with_agg_count",
+        "MATCH (c:Customer)-[:OWNS]->(a:Account) WITH c.name AS name, count(a) AS n RETURN name, n",
+    ),
+    (
+        "with_having",
+        "MATCH (c:Customer)-[:OWNS]->(a:Account) WITH c.name AS name, count(a) AS n WHERE n > 1 RETURN name, n",
+    ),
+    // GROUP BY keyed by all explicit composite-id columns (the CORRECT form —
+    // contrast with `group_by_whole_node` below).
+    (
+        "group_by_composite_columns",
+        "MATCH (a:Account)-[:TRANSFERRED]->(a2:Account) RETURN a.bank_id, a.account_number, count(a2) AS n",
+    ),
+    // KNOWN-SUSPICIOUS (see comment block below): grouping by the bare node
+    // variable `a` (not its explicit properties) collapses GROUP BY to the
+    // FIRST id column only (`a.bank_id`), NOT the full composite key.
+    (
+        "group_by_whole_node",
+        "MATCH (a:Account)-[:TRANSFERRED]->(a2:Account) RETURN a, count(a2) AS n",
+    ),
+    // --- WITH -> MATCH chain (the #451 family): composite correlation across
+    // the CTE barrier. Inspected carefully for ON 1=1 / partial-key joins —
+    // both cases correctly force-include ALL id components in the CTE body
+    // and the rebuilt JOIN condition (see KNOWN-SUSPICIOUS notes: none here).
+    (
+        "with_match_chain_composite",
+        "MATCH (a:Account) WITH a WHERE a.balance > 5000 MATCH (a)-[:TRANSFERRED]->(a2:Account) RETURN a.account_number, a2.account_number",
+    ),
+    (
+        "with_match_chain_single_to_composite",
+        "MATCH (c:Customer) WITH c WHERE c.customer_id > 2 MATCH (c)-[:OWNS]->(a:Account) RETURN c.name, a.account_number",
+    ),
+    // SKIP/LIMIT inside a WITH -> CTE-body LIMIT emission path.
+    (
+        "with_skip_limit",
+        "MATCH (a:Account) WITH a.balance AS b ORDER BY b SKIP 1 LIMIT 2 RETURN b",
+    ),
+    // Group by two keys across the hop.
+    (
+        "group_two_keys",
+        "MATCH (c:Customer)-[:OWNS]->(a:Account) RETURN c.name, a.account_type, count(a) AS n",
+    ),
+    // --- whole-entity RETURN n (both node types; Account's composite id columns
+    // are already in property_mappings, so they project like any other property —
+    // no special "concat" encoding here; that encoding is reserved for id()/join
+    // rendering, see `build_id_render_expr`) ---
+    ("whole_entity_account", "MATCH (a:Account) RETURN a"),
+    ("whole_entity_customer", "MATCH (c:Customer) RETURN c"),
+    // DISTINCT over a hop projection.
+    (
+        "distinct_hop",
+        "MATCH (c:Customer)-[:OWNS]->(a:Account) RETURN DISTINCT a.account_type",
+    ),
+    // Variable-length path over a composite-to-composite edge: exercises
+    // to_sql_equality-based composite tuple joins inside the recursive CTE, and
+    // the pipe-delimited `concat(toString(c1), '|', toString(c2), ...)` synthetic
+    // path-id encoding (both dialects). Caveat (informational, not a bug): this
+    // encoding assumes no id-component value literally contains '|' — a general
+    // property of the concat-based synthetic id, not specific to this schema.
+    (
+        "vlp_composite",
+        "MATCH (a1:Account)-[:TRANSFERRED*1..2]->(a2:Account) RETURN a2.account_number",
+    ),
+];
+
 fn load_schema(yaml_path: &str) -> GraphSchema {
     GraphSchemaConfig::from_yaml_file(yaml_path)
         .unwrap_or_else(|e| panic!("load schema {yaml_path}: {e:?}"))
@@ -753,6 +931,58 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 // Databricks goldens for all 26 cases are locked but NOT executed (no live Spark
 // here); they render without panic and mirror the CH structure.
 
+// KNOWN-SUSPICIOUS composite-id goldens. All JOIN-shaped goldens in this corpus
+// (single_hop* / undirected_hop / composite_to_composite_* / hop_filter_both /
+// whole_edge_* / optional_match* / with_match_chain_* / group_by_composite_columns
+// / vlp_composite) were inspected and EXECUTE correctly on live `db_composite_id`
+// (`scripts/setup/setup_composite_id_data.sh`): every JOIN condition carries ALL
+// id components on both sides (e.g. `(a1.bank_id, a1.account_number) = (t.from_bank_id,
+// t.from_account_number)`), matching `sql_equality`/`add_identifier_condition`'s
+// per-column-pair construction (`src/query_planner/analyzer/graph_join/helpers.rs`).
+// The `remove_redundant_edge_self_joins` FK-edge-phantom-join optimizer pass is
+// N/A here: this schema's edges are genuinely separate tables (not an FK-edge
+// pattern where the edge table IS a node table), so there is no phantom-self-join
+// candidate for that pass to ever consider — confirmed by inspecting
+// `optional_match`/`optional_match_composite` (a plain LEFT JOIN chain, no
+// self-join at all) and by the pass's own single-column-identity guard (composite
+// ids can never satisfy `Identifier::Single`, so it is conservatively skipped
+// regardless).
+//
+//   - composite_id/group_by_whole_node: CONFIRMED BUG, locked as current
+//     behavior (not fixed in this slice — Phase-0 golden-locking only, no
+//     drive-by fixes). `MATCH (a:Account)-[:TRANSFERRED]->(a2:Account) RETURN a,
+//     count(a2) AS n` renders `GROUP BY a.bank_id` — ONLY the FIRST composite-id
+//     column, silently dropping `account_number`. Any bank with >1 account (e.g.
+//     CHASE, which owns 4 accounts in the fixture data) collapses ALL of that
+//     bank's accounts into a single GROUP BY bucket: `count(a2)` sums transfers
+//     across every CHASE account as if they were one entity, and the `anyLast()`-
+//     wrapped non-aggregated columns (including `a.account_number`, the SECOND
+//     half of the node's own identity) return an ARBITRARY one of the collapsed
+//     accounts' values. Contrast with `group_by_composite_columns`, which asks
+//     for the same shape via explicit properties (`RETURN a.bank_id,
+//     a.account_number, count(a2)`) and correctly emits `GROUP BY a.bank_id,
+//     a.account_number` — the bug is specific to the bare-node-variable path.
+//     Root cause: `ViewScan.id_column` (`src/query_planner/logical_plan/view_scan.rs`)
+//     is a single `String`, populated at ViewScan-construction time from only
+//     `node_schema.node_id.columns().first()` for ANY node, composite or not
+//     (`src/query_planner/logical_plan/match_clause/view_scan.rs`, the
+//     non-denormalized branch around the "For non-denormalized nodes, node_id IS
+//     the actual column name" comment). `find_id_column_for_alias`
+//     (`src/render_plan/plan_builder.rs`) forwards that single column straight
+//     through to the GROUP BY node-alias optimization in
+//     `handle_table_alias_group_by`/`handle_wildcard_group_by`
+//     (`src/render_plan/group_by_builder.rs`), which pushes exactly one
+//     `PropertyAccessExp` instead of one per `node_id.columns()`. The same
+//     first-column-only value is ALSO used for `count(a)`-style aggregates
+//     (`aggregate_count`, `group_by_composite_columns`'s own `count(a2)`), where
+//     it is harmless (COUNT only needs one non-null column to detect row
+//     existence, not the full identity) — but the GROUP BY consumer needs the
+//     FULL key, and gets only the first column. Fixing this needs either a
+//     `Vec<String>`-capable id representation on `ViewScan`/`find_id_column_for_alias`,
+//     or a composite-aware GROUP BY expansion in `group_by_builder.rs` that calls
+//     `node_schema.node_id.columns()` instead. Filed as a follow-up (not fixed
+//     here per the Phase-0 protocol — no drive-by fixes).
+
 #[tokio::test]
 async fn sql_golden_snapshots() {
     let update = std::env::var("UPDATE_GOLDEN").as_deref() == Ok("1");
@@ -762,6 +992,7 @@ async fn sql_golden_snapshots() {
         (SchemaId::Standard, CORPUS),
         (SchemaId::FkEdge, FK_EDGE_CORPUS),
         (SchemaId::Denormalized, DENORM_CORPUS),
+        (SchemaId::CompositeId, COMPOSITE_ID_CORPUS),
     ] {
         let schema = load_schema(schema_id.yaml_path());
         let schema_dir = schema_id.dir();

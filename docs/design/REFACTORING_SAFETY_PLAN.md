@@ -639,7 +639,21 @@ node-only cases collapse to invalid `flights_denorm.code` (virtual-id unresolved
 #427/#429 class), 2 ORDER BY mis-qualify `a.origin_code`, `with_match_chain`
 returns 7≠4 (dest-branch filters wrong column), `optional_match` renders as an
 inner hop; all documented in the test's known-suspicious block) ·
-☐ P0.3 polymorphic · ☐ P0.4 composite-id · ☐ P0.5 Browser-shaped patterns ·
+☐ P0.3 polymorphic · ☑ P0.4 composite-id (`test/p04-golden-composite-id`:
+`schemas/test/composite_node_ids.yaml` rewritten to the loadable single-graph
+shape — extracted/adapted from `schemas/examples/composite_node_id_test.yaml`,
+same `db_composite_id` tables/data — Account composite `(bank_id,
+account_number)` mixed with single-column Customer; +68 goldens (34 cases ×
+2 dialects), all 34 CH goldens execute on live `db_composite_id`; standard+
+FK-edge goldens byte-identical/untouched; composite-to-composite (`TRANSFERRED`)
+and single-to-composite (`OWNS`) JOINs, the WITH→MATCH CTE-barrier correlation,
+and VLP all correctly carry ALL id components on both sides — 1 CONFIRMED BUG
+found and locked as known-suspicious, NOT fixed here (no drive-by fixes):
+`group_by_whole_node` — grouping by a bare composite-id node variable collapses
+GROUP BY to the node id's FIRST column only, silently merging distinct nodes
+that share it; see the test file's known-suspicious comment block for full
+root-cause analysis) ·
+☐ P0.5 Browser-shaped patterns ·
 ☐ P0.6 corpus sweep · ☐ P0.7 CI push+smoke · ☐ P0.8 nightly
 
 Phase 1: ☐ P1.1 `children()`/`walk()` + mod.rs walkers · ☐ P1.2 five WITH fns
