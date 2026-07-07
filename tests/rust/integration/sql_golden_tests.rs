@@ -415,6 +415,14 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
         "optional_after_with",
         "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) RETURN c.name, o.order_id",
     ),
+    // Same shape with a WHERE on the OPTIONAL pattern's optional side. The
+    // predicate must filter the optional matches INSIDE the LEFT JOIN (pre_filter
+    // subquery), keeping customers with no qualifying order NULL-extended — never
+    // in the outer WHERE (which would drop the NULL rows). #460.
+    (
+        "optional_after_with_where",
+        "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE o.amount > 100 RETURN c.name, o.order_id",
+    ),
     // --- WITH + aggregation (count per customer), and its HAVING form ---
     (
         "with_agg_count",
