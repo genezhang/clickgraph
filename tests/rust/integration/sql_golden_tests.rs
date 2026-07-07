@@ -427,6 +427,40 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
         "optional_after_with_where",
         "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE o.amount > 100 RETURN c.name, o.order_id",
     ),
+    // KNOWN BROKEN (#462 GAP 1 cross): a WHERE spanning BOTH the optional side (o)
+    // and the anchor CTE (c) is routed to the OUTER WHERE, which drops the
+    // NULL-extended no-match customers OPTIONAL MATCH must preserve. Correct
+    // target: the LEFT JOIN ON condition (`... ON o.customer_id =
+    // c.p1_c_customer_id AND o.total_amount > c.p1_c_customer_id`). Golden locks
+    // the current (wrong) outer-WHERE placement.
+    (
+        "optional_after_with_where_cross",
+        "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE o.total_amount > c.customer_id RETURN c.customer_id, o.order_id",
+    ),
+    // KNOWN BROKEN (#462 GAP 1 OR): an unsplittable OR spanning both sides is
+    // routed to the OUTER WHERE (dropping NULL-extended no-match customers).
+    // Correct target: the whole OR in the LEFT JOIN ON condition. Golden locks the
+    // current (wrong) outer-WHERE placement.
+    (
+        "optional_after_with_where_or",
+        "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE o.total_amount > 100 OR c.customer_id > 100 RETURN c.customer_id, o.order_id",
+    ),
+    // KNOWN BROKEN (#462 GAP 2 rel): a predicate on the relationship alias (r) is
+    // SILENTLY DROPPED — this golden is byte-identical to optional_after_with
+    // (no WHERE). On FK-edge r and o share the orders_fk table, so r.order_id
+    // remaps to the shared table's column and belongs in the LEFT JOIN pre_filter.
+    (
+        "optional_after_with_where_rel",
+        "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[r:PLACED_BY]->(c) WHERE r.order_id > 3 RETURN c.customer_id, o.order_id",
+    ),
+    // KNOWN BROKEN (#462 GAP 2 mixed): rel-alias conjunct AND optional-node
+    // conjunct. The o-conjunct is recovered into the pre_filter (#460) but the
+    // r-conjunct is SILENTLY DROPPED — partial filter application (fewer filters
+    // than asked). Correct target: BOTH conjuncts in the LEFT JOIN pre_filter.
+    (
+        "optional_after_with_where_rel_and_node",
+        "MATCH (c:Customer) WITH c OPTIONAL MATCH (o:Order)-[r:PLACED_BY]->(c) WHERE r.order_id > 3 AND o.total_amount > 100 RETURN c.customer_id, o.order_id",
+    ),
     // --- WITH + aggregation (count per customer), and its HAVING form ---
     (
         "with_agg_count",
