@@ -12789,34 +12789,106 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     graph_rel: None,
                 };
 
-                // Insert the CTE join at the BEGINNING of the joins list
-                // (CTE should be joined first so its columns are available)
-                // BUT: skip if a JOIN for this CTE alias already exists (from extract_joins)
-                // OR if the FROM table already uses this alias (avoid duplicate alias error)
-                let already_has_cte_join = render_plan
-                    .joins
-                    .0
-                    .iter()
-                    .any(|j| j.table_alias == cte_alias);
-                let from_already_uses_alias = render_plan
-                    .from
-                    .0
-                    .as_ref()
-                    .map(|vr| vr.alias.as_deref() == Some(&cte_alias))
-                    .unwrap_or(false);
-                if !already_has_cte_join && !from_already_uses_alias {
-                    render_plan.joins.0.insert(0, cte_join.clone());
+                // #453: Post-WITH OPTIONAL MATCH anchoring. When the fresh
+                // pattern after the WITH barrier is OPTIONAL, the *required* side
+                // arrives here as the CTE (`with_..._cte_N`) and the fresh
+                // pattern table is optional. The plain code below would leave the
+                // optional table as the FROM driver and INNER-join the CTE onto
+                // it — that both drops every anchor row with no match AND uses the
+                // wrong join type, silently violating OPTIONAL MATCH semantics.
+                // Instead, mirror the non-WITH OPTIONAL path: make the required
+                // CTE the FROM anchor and LEFT-join the optional pattern to it.
+                //
+                // Guarded tightly: only a genuinely correlated (non-`ON 1 = 1`),
+                // single-branch pattern whose FROM is a real optional table (not
+                // already the CTE, a nested WITH CTE, or a VLP CTE).
+                let post_with_optional_restructure = current_plan.is_optional_pattern()
+                    && !join_conditions.is_empty()
+                    && render_plan.union.0.is_none()
+                    && render_plan
+                        .from
+                        .0
+                        .as_ref()
+                        .map(|vr| {
+                            vr.alias.as_deref() != Some(cte_alias.as_str())
+                                && !vr.name.starts_with("with_")
+                                && !vr.name.starts_with("vlp_")
+                        })
+                        .unwrap_or(false);
+
+                if post_with_optional_restructure {
+                    // Demote the optional-side table currently in FROM to a LEFT
+                    // JOIN, and promote the required CTE to the FROM anchor.
+                    let old_from = render_plan
+                        .from
+                        .0
+                        .take()
+                        .expect("FROM guaranteed Some by post_with_optional_restructure guard");
+                    render_plan.from = FromTableItem(Some(super::ViewTableRef {
+                        source: std::sync::Arc::new(LogicalPlan::Empty),
+                        name: cte_name.clone(),
+                        alias: Some(cte_alias.clone()),
+                        use_final: false,
+                    }));
+                    // Everything already joined into the pattern is optional
+                    // relative to the anchor, so a partial match must still
+                    // NULL-extend: demote inner/cross joins to LEFT.
+                    for j in render_plan.joins.0.iter_mut() {
+                        if matches!(j.join_type, super::JoinType::Inner | super::JoinType::Join) {
+                            j.join_type = super::JoinType::Left;
+                        }
+                    }
+                    // LEFT JOIN the old FROM table back onto the CTE via the
+                    // resolved correlation keys (`join_conditions`).
+                    let optional_from_alias = old_from
+                        .alias
+                        .clone()
+                        .unwrap_or_else(|| old_from.name.clone());
+                    let optional_from_join = super::Join {
+                        table_name: old_from.name.clone(),
+                        table_alias: optional_from_alias.clone(),
+                        joining_on: join_conditions.clone(),
+                        join_type: super::JoinType::Left,
+                        pre_filter: None,
+                        from_id_column: None,
+                        to_id_column: None,
+                        graph_rel: None,
+                    };
+                    render_plan.joins.0.insert(0, optional_from_join);
                     log::info!(
-                        "🔧 build_chained_with_match_cte_plan: Added CTE JOIN: {} AS {}",
-                        cte_name,
-                        cte_alias
+                        "🔧 build_chained_with_match_cte_plan: #453 post-WITH OPTIONAL restructure — FROM={} AS {}, LEFT JOIN {} AS {}",
+                        cte_name, cte_alias, old_from.name, optional_from_alias
                     );
                 } else {
-                    log::info!(
-                        "🔧 build_chained_with_match_cte_plan: Skipping CTE JOIN {} AS {} (already present from extract_joins)",
-                        cte_name,
-                        cte_alias
-                    );
+                    // Insert the CTE join at the BEGINNING of the joins list
+                    // (CTE should be joined first so its columns are available)
+                    // BUT: skip if a JOIN for this CTE alias already exists (from extract_joins)
+                    // OR if the FROM table already uses this alias (avoid duplicate alias error)
+                    let already_has_cte_join = render_plan
+                        .joins
+                        .0
+                        .iter()
+                        .any(|j| j.table_alias == cte_alias);
+                    let from_already_uses_alias = render_plan
+                        .from
+                        .0
+                        .as_ref()
+                        .map(|vr| vr.alias.as_deref() == Some(&cte_alias))
+                        .unwrap_or(false);
+                    if !already_has_cte_join && !from_already_uses_alias {
+                        render_plan.joins.0.insert(0, cte_join.clone());
+                        log::info!(
+                            "🔧 build_chained_with_match_cte_plan: Added CTE JOIN: {} AS {}",
+                            cte_name,
+                            cte_alias
+                        );
+                    } else {
+                        log::info!(
+                            "🔧 build_chained_with_match_cte_plan: Skipping CTE JOIN {} AS {} (already present from extract_joins)",
+                            cte_name,
+                            cte_alias
+                        );
+                    }
                 }
 
                 // Also add the WITH CTE JOIN to each Union branch
