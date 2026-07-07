@@ -6,6 +6,7 @@ mod browser_expand_tests;
 mod browser_interaction_tests;
 pub(crate) mod browser_test_schemas;
 mod complex_feature_tests;
+mod corpus_sweep;
 mod cross_schema_pattern_tests;
 mod cte_column_aliasing_tests;
 #[cfg(feature = "databricks")]

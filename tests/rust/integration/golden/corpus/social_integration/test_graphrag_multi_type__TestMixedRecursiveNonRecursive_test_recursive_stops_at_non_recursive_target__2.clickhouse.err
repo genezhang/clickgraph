@@ -1,0 +1,1 @@
+plan error: AnalyzerError: Invalid query plan: Variable-length path pattern [AUTHORED::User::Post*2..] is semantically invalid: relationship 'AUTHORED::User::Post' is non-transitive (cannot recurse). The TO node never appears as a FROM node, so paths longer than 1 hop are impossible.

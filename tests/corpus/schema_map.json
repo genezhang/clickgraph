@@ -1,0 +1,90 @@
+{
+  "composite_id": {
+    "subschema": null,
+    "yaml": "schemas/examples/composite_node_id_test.yaml"
+  },
+  "data_security": {
+    "subschema": null,
+    "yaml": "examples/data_security/data_security.yaml"
+  },
+  "denormalized_flights": {
+    "subschema": "denormalized_flights",
+    "yaml": "schemas/test/unified_test_multi_schema.yaml"
+  },
+  "denormalized_flights_test": {
+    "subschema": null,
+    "yaml": "schemas/test/denormalized_flights.yaml"
+  },
+  "fk_edge": {
+    "subschema": null,
+    "yaml": "schemas/examples/orders_customers_fk.yaml"
+  },
+  "ldbc_snb": {
+    "subschema": "ldbc_snb",
+    "yaml": "schemas/test/unified_test_multi_schema.yaml"
+  },
+  "ontime_flights": {
+    "subschema": null,
+    "yaml": "schemas/examples/ontime_denormalized.yaml"
+  },
+  "polymorphic": {
+    "subschema": null,
+    "yaml": "schemas/examples/social_polymorphic.yaml"
+  },
+  "property_expressions": {
+    "subschema": null,
+    "yaml": "schemas/test/property_expressions.yaml"
+  },
+  "social_integration": {
+    "subschema": null,
+    "yaml": "schemas/test/social_integration.yaml"
+  },
+  "social_polymorphic": {
+    "subschema": null,
+    "yaml": "schemas/examples/social_polymorphic.yaml"
+  },
+  "sqlgen_composite_id": {
+    "subschema": "composite_id",
+    "yaml": "schemas/test/schema_variations.yaml"
+  },
+  "sqlgen_coupled_edges": {
+    "subschema": "coupled_edges",
+    "yaml": "schemas/test/schema_variations.yaml"
+  },
+  "sqlgen_denormalized": {
+    "subschema": "denormalized",
+    "yaml": "schemas/test/schema_variations.yaml"
+  },
+  "sqlgen_fk_edge": {
+    "subschema": "fk_edge",
+    "yaml": "schemas/test/schema_variations.yaml"
+  },
+  "sqlgen_polymorphic": {
+    "subschema": "polymorphic",
+    "yaml": "schemas/test/schema_variations.yaml"
+  },
+  "sqlgen_standard": {
+    "subschema": "standard",
+    "yaml": "schemas/test/schema_variations.yaml"
+  },
+  "standard": {
+    "subschema": null,
+    "yaml": "schemas/test/social_integration.yaml"
+  },
+  "test_fixtures": {
+    "subschema": null,
+    "yaml": "schemas/test/test_fixtures.yaml"
+  },
+  "zeek_dns": {
+    "subschema": null,
+    "yaml": "schemas/examples/zeek_dns_log.yaml"
+  },
+  "zeek_logs": {
+    "subschema": "zeek_logs",
+    "yaml": "schemas/test/unified_test_multi_schema.yaml"
+  },
+  "zeek_merged_test": {
+    "subschema": null,
+    "yaml": "schemas/examples/zeek_merged.yaml"
+  }
+}

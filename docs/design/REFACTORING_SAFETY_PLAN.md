@@ -625,6 +625,13 @@ Guardrails (anytime, first): ☑ G.1 ratchet test + baselines
 (`tests/rust/ratchet/`, 2026-07-06) · ☑ G.2 CLAUDE.md/AGENTS.md
 dispatch-rule checklist
 
+**Phase 0 is COMPLETE as of P0.6** (2026-07-07): the regression net now covers
+byte-exact goldens for 5 schema variations x dialect x curated feature axes
+(P0.1-P0.5, ~370 cases) PLUS a ~1,072-query mass-harvested translation-snapshot
+sweep (P0.6) PLUS re-enabled CI push/smoke coverage and a nightly full-suite run
+(P0.7-P0.8). Phase 1 (compiler-enforced traversal) can now proceed with a net
+dense enough to catch shared-code-path regressions across schema patterns.
+
 Phase 0: ☑ P0.1 golden schema-dimension + FK-edge (`test/p01-golden-schema-dimension-fk-edge`:
 harness gains a `SchemaId` dimension; goldens now `golden/sql_ir/{schema}/{case}__{dialect}.sql`;
 standard 88 byte-identical, +52 FK-edge goldens (26 cases × 2 dialects), all 26 CH
@@ -727,7 +734,89 @@ process-global anonymous-alias counter directly in the identifier, which
 `path_unlabeled` on Standard is therefore not byte-lockable (locked instead by
 a structural test, alongside the pre-existing Denormalized
 `path_unlabeled`/HashMap-column-order instability) ·
-☐ P0.6 corpus sweep ·
+☑ P0.6 corpus sweep (`test/p06-corpus-sweep`: a mass translate-everything net over
+~1,072 Cypher queries harvested from `tests/integration/**/test_*.py` +
+`tests/sql_generation/test_schema_sql_generation.py` by a new committed harvester
+(`scripts/dev/harvest_corpus.py`, static AST analysis — no live server needed) into
+`tests/corpus/queries.jsonl` (`{schema, name, cypher}`, sorted, deduped) +
+`tests/corpus/schema_map.json` (schema key -> YAML path, incl. named sub-schemas
+inside multi-schema files). 22 distinct schemas resolved (the 5 `SchemaId`
+variations plus test_fixtures/data_security/property_expressions/zeek/ldbc_snb/the
+`sqlgen_*`-namespaced `schema_variations.yaml` set/etc.). Schema resolution
+precedence: embedded `USE <name>` clause (comment-and-backtick-aware) > call-site
+literal > helper's own default > `execute_cypher`'s documented "social_integration"
+fallback — deliberately NO blanket default when a schema argument is present but
+statically unresolvable (a real bug caught mid-slice: an unresolvable
+`schema_name=` kwarg was silently substituting the default, mis-harvesting
+Airport/FLIGHT-labeled queries under `social_integration`). 1,660 raw call sites
+found; 611 skipped and counted by reason (243 schema_unresolved, 81
+schema_key_unknown incl. intentionally-invalid error-handling schema names, 24
+cypher_unresolved i.e. non-literal/loop-built queries, 3 generative
+`matrix/`-dir queries, 3 non-query-shaped empty/whitespace test inputs, 1
+parameterized `$view_param`, 1 unresolvable dynamic schema path); 196 exact
+(schema, cypher) dupes collapsed. New Rust sweep test
+(`tests/rust/integration/corpus_sweep.rs`, added to the existing `integration`
+test binary — runs under plain `cargo test`, no new CI wiring needed) parses ->
+plans -> renders each entry once per dialect (ClickHouse + Databricks) via the
+same production path `sql_golden_tests.rs` uses (its `render`/`normalize` helpers
+promoted to `pub(crate)` for reuse — the only non-test-only touch, and it is
+literally just visibility, no logic change); a schema loader handles both
+single- and multi-schema YAML (`SchemaConfigFile`, already `pub`). Errors are
+locked too (`.err` goldens, normalized `Display` text) and a Rust panic anywhere
+in the pipeline is caught (`catch_unwind`) and locked as `PANIC: ...` rather than
+crashing the sweep — one bad corpus entry can't blind the net to the rest.
+Golden layout: `golden/corpus/{schema}/{name}.{dialect}.{sql,err}`, one file per
+(schema, name, dialect) — 2,114 files (1,884 `.sql` + 230 `.err`), well under the
+spec's ~6,000 concatenated-layout threshold. Runtime ~6-10s (well under the
+1-minute budget). NONDETERMINISM: 15 entries (30 renders) — denormalized/
+multi-hop/VLP/union-relationship-type/label-inference shapes that flap across
+process restarts (Rust's per-process randomized `HashMap` seed) — excluded from
+the byte-lock via `tests/corpus/nondeterministic.txt` (`schema/name<TAB>reason`),
+discovered empirically over 150+ process invocations (unioning every diff).
+Root-caused (research fork, not fixed — test-only slice): `expand_cte_entity`
+(`src/render_plan/select_builder.rs:1590`) sources a bare node/relationship
+variable's properties via `schema.get_node_properties`/
+`get_relationship_properties` (`graph_schema.rs:1408-1443`, both iterate an
+unsorted `HashMap<String, PropertyValue>`) and an unsorted
+`from_properties`/`to_properties` merge for denormalized nodes — the identical
+`get_relationship_properties` call is already `.sort_by`'d at two OTHER sites in
+the same file citing issue #464; `expand_cte_entity` was missed. A narrower
+second source: the denormalized VLP CTE builder (`cte_extraction.rs:3705-3795`)
+also iterates `from_properties`/`to_properties` unsorted into the CTE's column
+order. Trigger: any `WITH`-crossing bare node/rel reference (`RETURN n`,
+`collect(r)`, `nodes(p)`, ...) for a label with 2+ properties, or a
+denormalized-schema VLP (`*`/`*1..N`) where both endpoints are virtual nodes. A
+regex over-approximation of this shape flags ~90 corpus entries as
+*structurally at risk*; only 15 were observed to actually flap in 150+ runs
+(documented in `nondeterministic.txt` as a known limitation — more may surface
+under future hash-seed randomization and should be triaged as "add to the
+exclusion list", not "regression"). Still rendered every run (so a panic
+regression is still caught) but not compared. SURPRISING FINDS
+(free bug reports on the TEST SUITE, not the engine — none are translation
+bugs): several Python tests silently query the WRONG schema because a local
+query-helper's default parameter (or a bare `execute_cypher(query)` call with no
+override) doesn't match the labels the test actually references —
+`test_vlp_with_comprehensive.py`'s `TestVLPWithComplexPatterns` class queries
+`TestUser`/`TEST_FOLLOWS` (a `test_fixtures` shape) through `query_api()`'s
+"social_integration" default, and is marked `@pytest.mark.xfail(reason="Code bug:
+VLP path functions in WITH clause not resolved")` — the actual failure this
+sweep reproduces is "Node with label TestUser not found", a wrong-schema mismatch
+misdiagnosed by the xfail reason, not the claimed VLP bug;
+`test_pattern_comprehensions.py` similarly defaults several
+`execute_cypher(cypher)` calls to `social_integration` while querying
+`PatternCompUser` (a `pattern_comp`-schema label), also xfailed for an unrelated
+"feature gap" reason. Also found: `test_schema_variations_comprehensive.py`'s
+`TestMultiTableNodes` class queries `schema_name="zeek_logs"` for a `REQUESTED`/
+`ACCESSED`/`RESOLVED_TO` relationship shape, but the live `zeek_logs` sub-schema
+(`schemas/test/unified_test_multi_schema.yaml`) only defines `DNS_REQUESTED` —
+a stale test predating a schema rename, cleanly locked as a
+`Relationship with type REQUESTED not found` planner error rather than a crash.
+Gate: `cargo fmt --all` clean, `cargo clippy --all-targets` clean (incl. the new
+test file), full `cargo test` green (incl. this sweep and the ratchet), sweep
+re-run 6+ consecutive times with zero mismatches after the exclusion list
+stabilized. CI: `cargo test --verbose` in `ci.yml` already runs every `[[test]]`
+binary including `integration` — verified, no wiring change needed. Phase 0 is
+now COMPLETE.) ·
 ☑ P0.7 CI push+smoke (`test/p07-p08-ci-wiring`: re-enabled the `push:main` trigger
 in ci.yml; registered a `smoke` pytest marker and tagged 50 existing+new tests
 covering standard/social (19, test_basic_queries.py), OPTIONAL MATCH (5), WITH→CTE

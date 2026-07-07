@@ -1,0 +1,2 @@
+SELECT 
+      count(*) AS "count"

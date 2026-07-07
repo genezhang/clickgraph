@@ -1264,7 +1264,11 @@ async fn render(schema: &GraphSchema, cypher: &str, dialect: SqlDialect) -> Stri
 /// add a query whose SQL contains a non-counter `t<n>`/`cte<n>`, tighten this
 /// (e.g. scope to the alias-defining position) so a real regression in that
 /// token can't be silently normalized away.
-fn normalize(sql: &str) -> String {
+///
+/// `pub(crate)` (not private): the P0.6 corpus sweep (`corpus_sweep.rs`, same
+/// `integration` test binary) reuses this exact anonymization for its own,
+/// much larger corpus — see docs/design/REFACTORING_SAFETY_PLAN.md §3.2.
+pub(crate) fn normalize(sql: &str) -> String {
     fn remap(input: &str, pattern: &str, prefix: &str) -> String {
         let re = regex::Regex::new(pattern).unwrap();
         let mut seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();

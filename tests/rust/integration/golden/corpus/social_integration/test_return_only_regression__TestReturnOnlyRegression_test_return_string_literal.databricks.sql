@@ -1,0 +1,2 @@
+SELECT 
+      'hello' AS `greeting`

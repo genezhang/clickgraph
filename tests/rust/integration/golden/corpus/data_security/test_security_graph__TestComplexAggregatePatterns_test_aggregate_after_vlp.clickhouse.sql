@@ -1,0 +1,33 @@
+WITH RECURSIVE vlp_u_g AS (
+    SELECT 
+        start_node.user_id as start_id,
+        end_node.group_id as end_id,
+        1 as hop_count,
+        CAST([] AS Array(String)) as path_relationships,
+        [start_node.user_id, end_node.group_id] as path_nodes,
+        start_node.name as start_name
+    FROM data_security.ds_users AS start_node
+    JOIN data_security.ds_memberships AS rel ON start_node.user_id = rel.member_id
+    JOIN data_security.ds_groups AS end_node ON rel.group_id = end_node.group_id
+    WHERE rel.member_type = 'User'
+    UNION ALL
+    SELECT
+        vp.start_id,
+        end_node.group_id as end_id,
+        vp.hop_count + 1 as hop_count,
+        CAST([] AS Array(String)) as path_relationships,
+        arrayConcat(vp.path_nodes, [end_node.group_id]) as path_nodes,
+        vp.start_name as start_name
+    FROM vlp_u_g vp
+    JOIN data_security.ds_memberships AS rel ON vp.end_id = rel.member_id
+    JOIN data_security.ds_users AS end_node ON rel.group_id = end_node.group_id
+    WHERE vp.hop_count < 3
+      AND NOT has(vp.path_nodes, end_node.group_id)
+      AND rel.member_type = 'User'
+)
+SELECT 
+      t.start_name AS "u.name", 
+      count(DISTINCT t.end_group_id) AS "groups_reached"
+FROM vlp_u_g AS t
+GROUP BY t.start_name
+ORDER BY groups_reached DESC

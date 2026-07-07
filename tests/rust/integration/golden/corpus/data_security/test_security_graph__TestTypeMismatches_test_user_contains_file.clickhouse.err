@@ -1,0 +1,1 @@
+plan error: AnalyzerError: Invalid relationship pattern: (User)-[:CONTAINS]->(File). Schema defines CONTAINS as (Folder)-[:CONTAINS]->($any). Please add the missing relationship definition to your schema YAML.

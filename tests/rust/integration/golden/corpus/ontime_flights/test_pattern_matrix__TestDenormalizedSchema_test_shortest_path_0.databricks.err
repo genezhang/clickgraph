@@ -1,0 +1,1 @@
+render error: Unsupported feature: CteManager VLP generation failed: Schema validation failed: Property 'airport' not found in from_node mappings for table 'flights'. Falling back to direct generator may be needed.
