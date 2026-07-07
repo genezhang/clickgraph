@@ -1382,9 +1382,164 @@ fn column_defines_alias(col_trimmed: &str, alias: &str) -> bool {
 // ─── Join Optimizations ──────────────────────────────────────────────────────
 
 /// Apply all join optimizations to a single plan.
+/// Remove a redundant FK-edge phantom self-join.
+///
+/// On an FK-edge schema the relationship IS a node table (the FK column on that
+/// table is the edge), so a pattern like
+/// `MATCH (c:Customer) OPTIONAL MATCH (c)<-[:PLACED_BY]-(o:Order)` reaches the
+/// optional node with a single node-to-node FK join
+/// `o.customer_id = c.customer_id` (`o` = `orders_fk`). The OPTIONAL-MATCH render
+/// path additionally materialises the edge relation as its own join:
+///
+/// ```sql
+/// LEFT JOIN orders_fk AS t0 ON t0.order_id = o.order_id
+/// ```
+///
+/// where `o` is already `orders_fk` and `t0.order_id = o.order_id` is a 1:1
+/// identity self-join on the primary key — the edge row IS the node row. The
+/// required-MATCH path collapses this in the analyzer (`JoinStrategy::FkEdgeJoin`);
+/// the OPTIONAL path bypasses that collapse because its joins are extracted at
+/// render time with the anchor as FROM, so the phantom survives to here.
+///
+/// This pass removes such a phantom: an edge join `J` (one carrying relationship
+/// id columns) whose sole `ON` condition is an identity `J.k = A.k` (the SAME
+/// column name on both sides, and `k` is `J`'s own edge key) where `A` is another
+/// relation — the FROM table or another JOIN — on the SAME physical table as `J`,
+/// and `J`'s alias is referenced nowhere else in the plan. Dropping a join that is
+/// a 1:1 identity self-join to an already-present relation, whose alias supplies
+/// no columns, preserves both the row set (including OPTIONAL-MATCH NULL rows —
+/// the genuinely-optional relation `A` and its LEFT JOIN are untouched) and every
+/// value. Non-FK-edge schemas never hit this: their edge tables are distinct from
+/// every node table, so the same-physical-table guard fails.
+fn remove_redundant_edge_self_joins(plan: &mut RenderPlan) {
+    loop {
+        let mut victim: Option<usize> = None;
+
+        for (idx, j) in plan.joins.0.iter().enumerate() {
+            // Must be an edge join (carries relationship id columns). Node joins
+            // are handled by bridge elimination; only the edge relation is phantom.
+            if j.from_id_column.is_none() && j.to_id_column.is_none() {
+                continue;
+            }
+            // A pre_filter (schema/view filter or compiled edge constraint) narrows
+            // rows — removing the join would change semantics.
+            if j.pre_filter.is_some() {
+                continue;
+            }
+            // Exactly one equality ON condition over two column references.
+            if j.joining_on.len() != 1 {
+                continue;
+            }
+            let cond = &j.joining_on[0];
+            if cond.operator != Operator::Equal || cond.operands.len() != 2 {
+                continue;
+            }
+            let (lpa, rpa) = match (&cond.operands[0], &cond.operands[1]) {
+                (RenderExpr::PropertyAccessExp(l), RenderExpr::PropertyAccessExp(r)) => (l, r),
+                _ => continue,
+            };
+
+            // Identify this join's own side vs. the twin relation it duplicates.
+            let (self_col, twin_alias, twin_col) = if lpa.table_alias.0 == j.table_alias {
+                (
+                    lpa.column.raw().to_string(),
+                    rpa.table_alias.0.clone(),
+                    rpa.column.raw().to_string(),
+                )
+            } else if rpa.table_alias.0 == j.table_alias {
+                (
+                    rpa.column.raw().to_string(),
+                    lpa.table_alias.0.clone(),
+                    lpa.column.raw().to_string(),
+                )
+            } else {
+                continue;
+            };
+
+            // Identity self-join: same column name on both sides.
+            if self_col != twin_col {
+                continue;
+            }
+            // The identity column must be this edge's own key (from_id/to_id).
+            // For an FK-edge that key is the node's primary key, so the join is
+            // exactly 1:1 — this is what makes the edge row duplicate the node row.
+            let is_edge_key = j.from_id_column.as_deref() == Some(self_col.as_str())
+                || j.to_id_column.as_deref() == Some(self_col.as_str());
+            if !is_edge_key {
+                continue;
+            }
+
+            // The twin (FROM table or another JOIN) must be the SAME physical table.
+            let twin_table = if plan.from.0.as_ref().and_then(|f| f.alias.as_deref())
+                == Some(twin_alias.as_str())
+            {
+                plan.from.0.as_ref().map(|f| f.name.clone())
+            } else {
+                plan.joins
+                    .0
+                    .iter()
+                    .find(|o| o.table_alias == twin_alias)
+                    .map(|o| o.table_name.clone())
+            };
+            let twin_table = match twin_table {
+                Some(t) => t,
+                None => continue,
+            };
+            if twin_table != j.table_name {
+                continue;
+            }
+
+            // The phantom alias must contribute no columns anywhere in the plan.
+            if is_alias_referenced_in_plan(plan, &j.table_alias) {
+                continue;
+            }
+            // ...and no OTHER join's ON / pre_filter may reference it either.
+            let referenced_in_other_join = plan.joins.0.iter().enumerate().any(|(i, other)| {
+                if i == idx {
+                    return false;
+                }
+                let in_on = other.joining_on.iter().any(|c| {
+                    c.operands
+                        .iter()
+                        .any(|op| references_alias(op, &j.table_alias))
+                });
+                let in_pf = other
+                    .pre_filter
+                    .as_ref()
+                    .is_some_and(|pf| references_alias(pf, &j.table_alias));
+                in_on || in_pf
+            });
+            if referenced_in_other_join {
+                continue;
+            }
+
+            log::debug!(
+                "Redundant FK-edge self-join elimination: removing phantom edge join '{}' \
+                 (table '{}', identity {}.{} = {}.{})",
+                j.table_alias,
+                j.table_name,
+                j.table_alias,
+                self_col,
+                twin_alias,
+                twin_col
+            );
+            victim = Some(idx);
+            break;
+        }
+
+        match victim {
+            Some(i) => {
+                plan.joins.0.remove(i);
+            }
+            None => break,
+        }
+    }
+}
+
 fn optimize_joins_in_plan(plan: &mut RenderPlan, protected_aliases: &HashSet<String>) {
     remove_unreferenced_joins(plan, protected_aliases);
     eliminate_bridge_nodes_in_plan(plan, protected_aliases);
+    remove_redundant_edge_self_joins(plan);
     // Anchor selection (select_anchor in join_generation.rs) handles inline property
     // filters ({name: $tag}). This post-hoc pass catches WHERE clause filters that
     // aren't inline — both are needed for defense-in-depth.

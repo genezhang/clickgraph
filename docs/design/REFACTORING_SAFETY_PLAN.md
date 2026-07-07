@@ -628,8 +628,9 @@ dispatch-rule checklist
 Phase 0: ☑ P0.1 golden schema-dimension + FK-edge (`test/p01-golden-schema-dimension-fk-edge`:
 harness gains a `SchemaId` dimension; goldens now `golden/sql_ir/{schema}/{case}__{dialect}.sql`;
 standard 88 byte-identical, +52 FK-edge goldens (26 cases × 2 dialects), all 26 CH
-goldens execute on live `db_fk_edge`; 2 known-suspicious locks documented in the
-test file — `with_match_chain` cartesian, `optional_match` phantom self-join) ·
+goldens execute on live `db_fk_edge`; known-suspicious locks documented in the
+test file — `with_match_chain` cartesian (`optional_match`'s phantom self-join
+was fixed in #452)) ·
 ☐ P0.2 denormalized ·
 ☐ P0.3 polymorphic · ☐ P0.4 composite-id · ☐ P0.5 Browser-shaped patterns ·
 ☐ P0.6 corpus sweep · ☐ P0.7 CI push+smoke · ☐ P0.8 nightly

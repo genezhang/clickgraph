@@ -309,9 +309,9 @@ const CORPUS: &[(&str, &str)] = &[
 ///   - UNWIND/arrayJoin shapes — same Spark structural gap the standard corpus
 ///     skips.
 ///
-/// KNOWN-SUSPICIOUS (locked as current behavior, see the test-file NOTE and the
-/// slice report): `optional_match` (redundant phantom self-join, result-correct).
-/// `with_match_chain` was confirmed wrong (cartesian) and is now FIXED (#451).
+/// KNOWN-SUSPICIOUS: none currently. `with_match_chain` was confirmed wrong
+/// (cartesian) and is FIXED (#451); `optional_match`'s redundant phantom
+/// self-join is FIXED (#452).
 const FK_EDGE_CORPUS: &[(&str, &str)] = &[
     // --- node scans (both node types) ---
     ("node_scan_order", "MATCH (o:Order) RETURN o.order_id"),
@@ -513,12 +513,12 @@ fn golden_path(schema_dir: &str, name: &str, dialect: &str) -> String {
 //     back to a cartesian join. The pruned cross-barrier correlation is now
 //     recovered and folded back into the rebuild. Kept as a normal lock.
 //
-//   - fk_edge/optional_match: result-correct (8 rows on live CH) but emits a
-//     redundant PHANTOM self-join — `LEFT JOIN orders_fk AS t0 ON t0.order_id =
-//     o.order_id` re-materializes the edge table separately from the Order
-//     node even though for an FK-edge they are the SAME row. A 1:1 self-join so
-//     it doesn't change results, but it's the FK-edge-collapse smell in the
-//     OPTIONAL MATCH path (a perf/clarity issue, not a correctness bug).
+// FIXED (#452) — fk_edge/optional_match: previously emitted a redundant PHANTOM
+// self-join `LEFT JOIN orders_fk AS t0 ON t0.order_id = o.order_id` that
+// re-materialized the edge table separately from the Order node it IS (1:1 on
+// the PK). Now collapsed by `remove_redundant_edge_self_joins` in
+// `plan_optimizer.rs`; still 8 rows on live CH, one fewer JOIN. Kept as a normal
+// (no longer suspicious) golden lock.
 //
 // Verified CORRECT (kept as normal locks, not suspicious): single_hop /
 // single_hop_reverse / undirected_hop all render the node-to-node FK join
@@ -609,6 +609,52 @@ async fn with_cte_join_key_is_correlated_not_cartesian_451() {
         assert!(
             sql.contains("p1_c_customer_id"),
             "expected CTE to project the customer_id join key for {dialect:?}, got:\n{sql}"
+        );
+    }
+}
+
+/// Regression for #452: on the FK-edge schema the PLACED_BY edge IS the
+/// `orders_fk` node table, so `MATCH (c:Customer) OPTIONAL MATCH
+/// (c)<-[:PLACED_BY]-(o:Order)` must reach the optional Order with a SINGLE
+/// node-to-node FK join — no separate self-join re-materialising the edge table
+/// (`LEFT JOIN orders_fk AS t0 ON t0.order_id = o.order_id`). The edge row IS the
+/// node row (1:1 on the PK), so that join is pure overhead; the OPTIONAL path
+/// used to miss the collapse the required path performs.
+#[tokio::test]
+async fn fk_edge_optional_match_has_no_phantom_edge_self_join() {
+    let schema = load_schema(SchemaId::FkEdge.yaml_path());
+    let cypher =
+        "MATCH (c:Customer) OPTIONAL MATCH (c)<-[:PLACED_BY]-(o:Order) RETURN c.name, o.order_id";
+
+    for (dialect, dname) in [
+        (SqlDialect::ClickHouse, "clickhouse"),
+        (SqlDialect::Databricks, "databricks"),
+    ] {
+        let sql = render(&schema, cypher, dialect).await;
+
+        // The orders_fk table must be materialised exactly ONCE (as the Order node
+        // `o`). A second occurrence is the phantom edge self-join this fixes.
+        let orders_fk_joins = sql.matches("orders_fk AS ").count();
+        assert_eq!(
+            orders_fk_joins, 1,
+            "FK-edge OPTIONAL MATCH ({dname}) must materialise orders_fk exactly once \
+             (no phantom edge self-join), got {orders_fk_joins}:\n{sql}"
+        );
+
+        // And specifically no `<edge_alias>.order_id = o.order_id` PK identity
+        // self-join of the edge table onto the Order node.
+        assert!(
+            !sql.contains("order_id = o.order_id"),
+            "FK-edge OPTIONAL MATCH ({dname}) still emits an edge PK identity \
+             self-join:\n{sql}"
+        );
+
+        // The genuinely-optional relation is still a LEFT JOIN (NULL-extension
+        // rows preserved).
+        assert!(
+            sql.contains("LEFT JOIN"),
+            "FK-edge OPTIONAL MATCH ({dname}) must keep the LEFT JOIN for the \
+             optional Order:\n{sql}"
         );
     }
 }
