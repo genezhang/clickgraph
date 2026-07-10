@@ -214,6 +214,17 @@ const CORPUS: &[(&str, &str)] = &[
         "multi_type_rel_type_fn",
         "MATCH (a:User)-[r:FOLLOWS|AUTHORED]->(b) RETURN type(r) AS t",
     ),
+    // --- #488 (standard-schema shape): non-transitive VLP with a bound path
+    // variable. AUTHORED (User->Post) cannot chain, so the transitivity pass
+    // clamps *1..2 to a single hop; the path variable must then take the
+    // fixed-path route (tuple('fixed_path', ...) + component columns).
+    // Previously the renderer still emitted tuple(t.path_nodes, ...) against
+    // a recursive VLP CTE that was never generated — unbound alias `t`,
+    // ClickHouse Code 47.
+    (
+        "vlp_nontransitive_path_var",
+        "MATCH p = (a:User)-[:AUTHORED*1..2]->(b) RETURN p",
+    ),
     // Negative list index: Cypher `[-1]` = last element. Both CH arrayElement and
     // Spark element_at already treat -1 as last, so it must render UNCHANGED (not
     // offset by +1). The old +1 shifted -1 -> 0, and CH `arr[0]` silently returned
@@ -459,7 +470,10 @@ const BROWSER_CORPUS: &[(&str, &str)] = &[
 ///
 /// Not expressible in this schema (single edge type, from_node Order != to_node
 /// Customer, so an edge cannot chain into itself), intentionally omitted:
-///   - VLP `*1..N` / multi-hop — no second hop exists out of Customer.
+///   - recursive VLP — no second hop exists out of Customer. (The
+///     `vlp_nontransitive_path_var` entry below deliberately WRITES a VLP
+///     `*1..2`, locking the #488 clamp-to-single-hop + fixed-path-route
+///     behavior, not a recursive CTE.)
 ///   - multi-type `[:A|B]` — only one edge type (PLACED_BY).
 ///   - UNWIND/arrayJoin shapes — same Spark structural gap the standard corpus
 ///     skips.
@@ -687,6 +701,19 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
     (
         "distinct_hop",
         "MATCH (o:Order)-[:PLACED_BY]->(c:Customer) RETURN DISTINCT c.name",
+    ),
+    // --- #488: non-transitive VLP with a bound path variable ---
+    // PLACED_BY cannot chain (Order->Customer; Customer never re-enters as a
+    // FROM node), so the transitivity pass clamps *1..2 to a single hop. The
+    // bound path variable must then take the FIXED-path route
+    // (tuple('fixed_path', ...) + component columns) exactly like the plain
+    // single-hop `MATCH p = (o)-[:PLACED_BY]->(c)`. Previously the renderer
+    // still emitted tuple(t.path_nodes, ...) against a recursive VLP CTE that
+    // was never generated — unbound alias `t`, ClickHouse Code 47. Live:
+    // executes on db_fk_edge (8 rows, one per order).
+    (
+        "vlp_nontransitive_path_var",
+        "MATCH p = (o:Order)-[:PLACED_BY*1..2]->(c) RETURN p",
     ),
 ];
 
