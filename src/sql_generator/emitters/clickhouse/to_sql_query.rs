@@ -3699,6 +3699,18 @@ fn render_cypher_union_arm(arm: &RenderPlan) -> String {
             wrapped.push_str(&clause);
             wrapped.push('\n');
         }
+        // Spark/Databricks forbids a bare per-arm ORDER BY / LIMIT in a set
+        // operation (mid-chain: parse error "Expected ), found UNION"; as the
+        // LAST arm it silently binds to the WHOLE union). The arm must be
+        // parenthesized. ClickHouse accepts the bare form, so only wrap for
+        // Databricks to keep CH output byte-identical — same treatment as the
+        // pattern_union branches in cte_extraction.rs.
+        if matches!(
+            crate::server::query_context::get_current_dialect(),
+            crate::sql_generator::SqlDialect::Databricks
+        ) {
+            wrapped = format!("({wrapped})\n");
+        }
         wrapped
     } else {
         core

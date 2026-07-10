@@ -1,3 +1,11 @@
+<!-- NOTE: main already carries an Unreleased > Bug Fixes section (#485/#488);
+     this section will merge into it. -->
+## [Unreleased]
+
+### 🐛 Bug Fixes
+
+- **Cypher `UNION` with aggregated arms computed the aggregate over the combined branches instead of per arm** (#487): `MATCH ()-[r]->() RETURN count(r) AS c UNION MATCH ()-[r2]->() RETURN count(r2) AS c` compiled to a single `count(*)` over a `UNION DISTINCT` of de-aggregated `SELECT 1 AS __dummy` arms and silently returned `1` instead of `23`; labeled arms were equally wrong (`{5,10}` collapsed to `1`). Root cause: one `RenderPlan.union` field served both planner-internal unions (aggregate correctly applies OVER the union) and Cypher `UNION` clauses (each arm is an independent query) with nothing distinguishing them. Fixed by an explicit `is_cypher_union` flag set only at the `UNION` clause and threaded planner → render → SQL; aggregated/grouped arms now render as complete standalone queries — per-arm GROUP BY / HAVING / ORDER BY / SKIP / LIMIT, the latter recovered from under the arm's outer `GraphJoins` wrapper where graph-join inference had hidden them. Per-arm ORDER BY / LIMIT arms are parenthesized on Databricks (the bare form is a Spark parse error mid-chain and silently binds to the whole union as the last arm). Planner-internal unions (undirected counts, unlabeled `count(n)` #467, denormalized from/to) are unchanged.
+
 ## [0.6.7-dev] - 2026-05-06
 
 ### 🚀 Features

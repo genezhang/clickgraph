@@ -320,6 +320,17 @@ const CORPUS: &[(&str, &str)] = &[
         "union_agg_grouped_per_arm",
         "MATCH (u:User)-[:AUTHORED]->() RETURN u.name AS name, count(*) AS c UNION ALL MATCH (u2:User)-[:LIKED]->() RETURN u2.name AS name, count(*) AS c",
     ),
+    // #487 review F1: per-arm ORDER BY / LIMIT on GROUPED aggregated arms.
+    // Graph-join inference hides them under the arm's outer GraphJoins
+    // (GraphJoins(Limit(OrderBy(GraphJoins(GroupBy(...)))))), so they were
+    // silently dropped — 10 rows instead of 4 (live-verified: per-arm top-2).
+    // The Databricks variant locks review F2: each modifier-carrying arm is
+    // parenthesized (a bare per-arm LIMIT is a Spark parse error mid-chain
+    // and binds to the WHOLE union as the last arm).
+    (
+        "union_agg_grouped_ordered_per_arm",
+        "MATCH (u:User)-[:AUTHORED]->() RETURN u.name AS name, count(*) AS c ORDER BY c DESC LIMIT 2 UNION ALL MATCH (u2:User)-[:LIKED]->() RETURN u2.name AS name, count(*) AS c ORDER BY c DESC LIMIT 2",
+    ),
     // #487: aggregate only in the SECOND arm — the base plan still holds the
     // first (non-aggregated) arm, exercising the base-is-arm render path
     // (live-verified: 8 user ids + one count row = 9 rows).

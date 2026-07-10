@@ -419,6 +419,40 @@ fn move_first_branch_into_union(plan: RenderPlan) -> Option<Union> {
     }
 }
 
+/// #487 (F1): recover a Cypher UNION arm's trailing ORDER BY / SKIP / LIMIT
+/// when they are hidden UNDER the arm's outermost GraphJoins.
+///
+/// Graph-join inference wraps a "complex" union branch in GraphJoins without
+/// seeing through modifier wrappers, so a grouped arm arrives as
+/// `GraphJoins(Limit(OrderBy(GraphJoins(GroupBy(Projection(...))))))`. The
+/// GraphJoins render path extracts ORDER BY / SKIP / LIMIT only from wrappers
+/// OUTSIDE the outermost GraphJoins, so the arm's own modifiers were silently
+/// dropped (extra rows at execution). After the arm has rendered, pull them
+/// from directly under the outer GraphJoins. No-op when the render already
+/// carries modifiers (nothing was hidden).
+fn recover_cypher_arm_modifiers(
+    branch: &LogicalPlan,
+    render: &mut RenderPlan,
+) -> RenderPlanBuilderResult<()> {
+    if !render.order_by.0.is_empty() || render.limit.0.is_some() || render.skip.0.is_some() {
+        return Ok(());
+    }
+    let LogicalPlan::GraphJoins(gj) = branch else {
+        return Ok(());
+    };
+    let inner = gj.input.as_ref();
+    if !matches!(
+        inner,
+        LogicalPlan::Limit(_) | LogicalPlan::Skip(_) | LogicalPlan::OrderBy(_)
+    ) {
+        return Ok(());
+    }
+    render.order_by = OrderByItems(super::plan_builder_utils::extract_order_by(inner)?);
+    render.skip = SkipItem(super::plan_builder_utils::extract_skip(inner));
+    render.limit = LimitItem(super::plan_builder_utils::extract_limit(inner));
+    Ok(())
+}
+
 /// Whether any SELECT item carries an aggregate function anywhere in its
 /// expression tree (directly, or nested inside a scalar call / operator). Used
 /// to decide whether a base+union render must consolidate all branches into
@@ -3483,8 +3517,11 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Render each branch with plan_ctx
                     let mut branch_renders = Vec::new();
                     for branch in union.inputs.iter() {
-                        let branch_render =
+                        let mut branch_render =
                             branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
+                        if union.is_cypher_union {
+                            recover_cypher_arm_modifiers(branch, &mut branch_render)?;
+                        }
                         branch_renders.push(branch_render);
                     }
 
@@ -4392,7 +4429,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     idx,
                     std::mem::discriminant(branch.as_ref())
                 );
-                let branch_render = branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
+                let mut branch_render = branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
+                if union.is_cypher_union {
+                    recover_cypher_arm_modifiers(branch, &mut branch_render)?;
+                }
                 branch_renders.push(branch_render);
             }
 
@@ -4406,9 +4446,14 @@ impl RenderPlanBuilder for LogicalPlan {
                     .enumerate()
                     .map(|(idx, branch)| {
                         log::debug!("Converting Union branch {} to RenderPlan", idx + 1);
-                        branch.to_render_plan_with_ctx(schema, plan_ctx, scope)
+                        let mut branch_render =
+                            branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
+                        if union.is_cypher_union {
+                            recover_cypher_arm_modifiers(branch, &mut branch_render)?;
+                        }
+                        Ok(branch_render)
                     })
-                    .collect::<RenderPlanBuilderResult<Vec<_>>>()?;
+                    .collect::<RenderPlanBuilderResult<Vec<RenderPlan>>>()?;
 
                 let render_union_type = super::UnionType::try_from(union.union_type.clone())
                     .unwrap_or(super::UnionType::All);

@@ -1058,6 +1058,12 @@ pub struct Union {
     /// from/to unions, bidirectional expansion) where the union represents
     /// ONE logical pattern and the outer projection (e.g. `count(r)`)
     /// aggregates OVER the combined branches.
+    ///
+    /// NOTE: `#[serde(default)]` deserializes a missing field as `false` — if
+    /// LogicalPlan ever gains a production (de)serialization flow, a plan
+    /// serialized without this field would silently demote a Cypher union to
+    /// an internal one (aggregation hoisted over the union). Revisit the
+    /// default before relying on serialized plans.
     #[serde(default)]
     pub is_cypher_union: bool,
 }
