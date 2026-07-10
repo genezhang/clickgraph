@@ -202,7 +202,75 @@ impl AnalyzerPass for VlpTransitivityCheck {
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
-        self.check_transitivity_recursive(plan, plan_ctx, graph_schema)
+        let result = self.check_transitivity_recursive(plan, plan_ctx, graph_schema)?;
+
+        // #499: comma-separated multi-pattern MATCH (`MATCH p1=..., p2=...`)
+        // plans as independent GraphRel subtrees joined by CartesianProduct.
+        // When a pattern's VLP is non-transitive it's clamped to a fixed hop
+        // above (now reachable in every branch thanks to the CartesianProduct
+        // arm) and renders fine via the ordinary fixed-path route (verified
+        // live). But when TWO OR MORE independent branches each still need a
+        // genuine recursive VLP CTE, the FROM/CTE-trigger machinery
+        // (`find_vlp_graph_rel` in from_builder.rs, `vlp_overrides_from` in
+        // join_builder.rs) only ever finds/builds ONE CTE — main's SQL for
+        // this shape references the same CTE alias twice
+        // (`tuple(t.path_nodes,...)` for both path variables) with no second
+        // CTE ever generated, ClickHouse Code 47. Supporting N independent VLP
+        // CTEs (each own name/alias, its own FROM/JOIN + its own RETURN-side
+        // gating) is a real rendering feature, not a clamp fix — out of scope
+        // here. Fail loudly instead of emitting that broken SQL.
+        let plan_ref: &Arc<LogicalPlan> = match &result {
+            Transformed::Yes(p) | Transformed::No(p) => p,
+        };
+        if count_cartesian_branches_needing_vlp_cte(plan_ref.as_ref()) > 1 {
+            return Err(AnalyzerError::InvalidPlan(
+                "Multiple independent variable-length path patterns in one MATCH \
+                 (e.g. `MATCH p1 = (a)-[:A*1..3]->(b), p2 = (c)-[:B*1..3]->(d) ...`, or \
+                 several path variables each requiring their own recursive CTE) is not \
+                 yet supported: only one variable-length recursive CTE can be generated \
+                 per query today. Split the independent variable-length patterns into \
+                 separate queries. (tracked: #499)"
+                    .to_string(),
+            ));
+        }
+
+        Ok(result)
+    }
+}
+
+/// Count how many independent branches of a CartesianProduct (comma-separated
+/// MATCH / multiple path variables) still need their own recursive VLP CTE
+/// after transitivity clamping. See #499 doc comment above for why >1 is
+/// unsupported today.
+fn count_cartesian_branches_needing_vlp_cte(plan: &LogicalPlan) -> usize {
+    match plan {
+        LogicalPlan::CartesianProduct(cp) => {
+            count_cartesian_branches_needing_vlp_cte(&cp.left)
+                + count_cartesian_branches_needing_vlp_cte(&cp.right)
+        }
+        LogicalPlan::Projection(p) => count_cartesian_branches_needing_vlp_cte(&p.input),
+        LogicalPlan::Filter(f) => count_cartesian_branches_needing_vlp_cte(&f.input),
+        LogicalPlan::GraphJoins(gj) => count_cartesian_branches_needing_vlp_cte(&gj.input),
+        LogicalPlan::GroupBy(gb) => count_cartesian_branches_needing_vlp_cte(&gb.input),
+        LogicalPlan::OrderBy(ob) => count_cartesian_branches_needing_vlp_cte(&ob.input),
+        LogicalPlan::Limit(l) => count_cartesian_branches_needing_vlp_cte(&l.input),
+        LogicalPlan::Skip(s) => count_cartesian_branches_needing_vlp_cte(&s.input),
+        other => usize::from(subtree_has_uncapped_vlp(other)),
+    }
+}
+
+/// Whether a (non-CartesianProduct) plan subtree still contains a GraphRel
+/// requiring a genuine recursive VLP CTE (i.e. survived transitivity clamping).
+fn subtree_has_uncapped_vlp(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::GraphRel(gr) => {
+            gr.variable_length.is_some()
+                || subtree_has_uncapped_vlp(&gr.left)
+                || subtree_has_uncapped_vlp(&gr.right)
+        }
+        LogicalPlan::GraphNode(gn) => subtree_has_uncapped_vlp(&gn.input),
+        LogicalPlan::Filter(f) => subtree_has_uncapped_vlp(&f.input),
+        _ => false,
     }
 }
 
@@ -261,7 +329,11 @@ impl VlpTransitivityCheck {
                             )
                         })?;
 
-                        // Check if this relationship is transitive
+                        // Check if this relationship is transitive. This check
+                        // is inherently direction-agnostic (it only looks at
+                        // schema from/to label overlap), which is correct: a
+                        // relationship is either self-loop/overlapping (safe to
+                        // chain regardless of direction) or it isn't.
                         log::info!(
                             "⚠ VLP Transitivity Check: Checking if '{}' is transitive...",
                             rel_type
@@ -279,46 +351,117 @@ impl VlpTransitivityCheck {
                         );
 
                         if !is_transitive {
-                            // Validate - error if min_hops > 1
+                            let is_undirected = rel.direction
+                                == crate::query_planner::logical_expr::Direction::Either;
+                            let is_zero_hop = vlp_spec.min_hops == Some(0);
+
+                            // #496: two shapes need MORE than a single fixed
+                            // hop to be correct, and both require the SQL
+                            // renderer to reconstruct a path across the
+                            // relationship's two DIFFERENT node tables (a
+                            // non-transitive relationship is by construction
+                            // heterogeneous — see `is_transitive_relationship`'s
+                            // self-loop check above: any from/to label overlap
+                            // already returns transitive=true, so every case
+                            // reaching here has genuinely different node types
+                            // on each end):
+                            //
+                            //   - undirected (`-[..]-`): reverse-direction
+                            //     chaining can make >1-hop paths real (e.g.
+                            //     Order-PLACED_BY->Customer<-PLACED_BY-Order),
+                            //     so simply clamping to 1 hop drops rows.
+                            //   - `*0..N`: the zero-hop row (start node
+                            //     standing in as its own path) is real and
+                            //     must not be dropped by clamping straight to
+                            //     a required 1-hop join.
+                            //
+                            // Verified empirically (2026-07, live SQL inspection
+                            // against fk_edge/standard schemas) that simply
+                            // *not* clamping and routing these through the
+                            // existing recursive-VLP-CTE machinery does NOT
+                            // work: both the zero-hop base case and the
+                            // recursive/base-case JOIN generators in
+                            // variable_length_cte.rs hard-assume the start and
+                            // end node tables are the SAME (a safe assumption
+                            // for every case they've been exercised on so far,
+                            // since genuinely transitive relationships are
+                            // always self-loop/overlapping by definition) —
+                            // e.g. `MATCH (o:Order)-[:PLACED_BY*0..2]->(c)
+                            // RETURN count(*)` produced a recursive term that
+                            // joined `orders_fk` to itself and never touched
+                            // `customers_fk`; the undirected 1..2 case produced
+                            // a base-case join predicate comparing Order's own
+                            // id column to Customer's id column. Both are
+                            // syntactically-valid-but-semantically-wrong SQL —
+                            // i.e. exactly the silent-wrong-results failure
+                            // mode ground rule (1) forbids, just relocated.
+                            // Extending that machinery to support heterogeneous
+                            // start/end tables across every schema pattern
+                            // (standard/fk_edge/denormalized/polymorphic) is a
+                            // real feature, not a clamp fix — out of scope
+                            // here. Fail LOUDLY instead: strictly better than
+                            // both the old silent clamp and the silently-wrong
+                            // SQL the naive "don't clamp" fix produces.
+                            if is_undirected || is_zero_hop {
+                                return Err(AnalyzerError::InvalidPlan(format!(
+                                    "Variable-length path pattern [{}*{}..{}] is not yet \
+                                     supported: relationship '{}' is non-transitive (its FROM \
+                                     and TO node types differ), and this pattern requires {} \
+                                     across those two different node tables. This needs the SQL \
+                                     renderer to reconstruct paths across heterogeneous node \
+                                     tables, which is not yet implemented (tracked: #496). A \
+                                     single fixed-hop pattern (e.g. `[{}]` without `*`) is \
+                                     supported.",
+                                    rel_type,
+                                    vlp_spec.min_hops.map(|m| m.to_string()).unwrap_or_default(),
+                                    vlp_spec.max_hops.map(|m| m.to_string()).unwrap_or_default(),
+                                    rel_type,
+                                    if is_undirected {
+                                        "alternating-direction chaining"
+                                    } else {
+                                        "a zero-hop (start-node-as-both-endpoints) row"
+                                    },
+                                    rel_type,
+                                )));
+                            }
+
+                            // Remaining case: DIRECTED, effective min_hops == 1
+                            // (Cypher defaults an unspecified min to 1). Here
+                            // the clamp is semantically exact — chaining past 1
+                            // hop is impossible (non-transitive) and the
+                            // zero-hop shape doesn't apply (min >= 1) — so
+                            // remove variable_length entirely and become a
+                            // simple single-hop edge, exactly like before.
+                            //
+                            // Validate first: min_hops > 1 is a hard semantic
+                            // error (a path of length 2+ is impossible for a
+                            // non-transitive relationship).
                             Self::validate_non_transitive(vlp_spec, rel_type)?;
 
-                            // Remove variable_length entirely - becomes simple single-hop
                             log::info!(
                                 "→ Removing VLP from non-transitive [{}*] - converting to simple single-hop pattern",
                                 rel_type
                             );
 
-                            // #488: keep the path-variable registration consistent
-                            // with the rewritten plan. `MATCH p = ...` registered the
-                            // path with the VLP's length bounds; if those stay in
-                            // place the renderer emits tuple(t.path_nodes, ...)
-                            // referencing a recursive VLP CTE that is never generated
-                            // for this (now single-hop) pattern — unbound alias `t`,
-                            // ClickHouse Code 47. Re-register as a fixed single-hop
-                            // path so rendering takes the fixed-path route.
+                            // #488: keep the path-variable registration
+                            // consistent with the rewritten plan. `MATCH p =
+                            // ...` registered the path with the VLP's length
+                            // bounds; if those stay in place the renderer
+                            // emits tuple(t.path_nodes, ...) referencing a
+                            // recursive VLP CTE that is never generated for
+                            // this (now single-hop) pattern — unbound alias
+                            // `t`, ClickHouse Code 47. Re-register as a fixed
+                            // single-hop path so rendering takes the
+                            // fixed-path route.
                             //
-                            // GUARD (#488 review): only re-register when the clamp
-                            // itself is semantically sound — a DIRECTED pattern with
-                            // min_hops >= 1 (Cypher's default min is 1 when
-                            // unspecified). Two shapes the clamp gets WRONG
-                            // (pre-existing on main; tracked as a separate clamp
-                            // follow-up issue — do not silently bless them here):
-                            //   - `*0..N`: zero-hop paths are real (a zero-length
-                            //     path is the start node itself), so clamping to
-                            //     exactly one hop drops rows.
-                            //   - undirected (`-[..]-`): reverse-direction chaining
-                            //     can make >1-hop paths possible, and the from/to
-                            //     label analysis above never consults direction.
-                            // For those shapes, skipping the re-registration keeps
-                            // main's LOUD failure (unbound `t`, ClickHouse Code 47)
-                            // instead of converting it into silently returning the
-                            // clamped wrong rows.
+                            // #496: this arm is only reached for DIRECTED
+                            // patterns with effective min_hops == 1 (undirected
+                            // and zero-hop shapes are handled above and never
+                            // fall through to here), so the clamp is always
+                            // sound at this point — no extra guard needed
+                            // beyond "was this path variable actually
+                            // registered for this relationship".
                             if let Some(ref pvar) = rel.path_variable {
-                                let clamp_is_sound = vlp_spec.min_hops.unwrap_or(1) >= 1
-                                    && !matches!(
-                                        rel.direction,
-                                        crate::query_planner::logical_expr::Direction::Either
-                                    );
                                 let registered_for_this_rel = plan_ctx
                                     .lookup_variable(pvar)
                                     .and_then(|v| v.as_path())
@@ -326,7 +469,7 @@ impl VlpTransitivityCheck {
                                         p.relationship.as_deref() == Some(rel.alias.as_str())
                                             && !p.is_shortest_path
                                     });
-                                if clamp_is_sound && registered_for_this_rel {
+                                if registered_for_this_rel {
                                     log::info!(
                                         "→ Re-registering path variable '{}' as fixed single-hop (VLP stripped)",
                                         pvar
@@ -433,6 +576,32 @@ impl VlpTransitivityCheck {
                         ..limit.clone()
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::Limit(new_limit))))
+                } else {
+                    Ok(Transformed::No(plan))
+                }
+            }
+
+            // #499: comma-separated multi-pattern MATCH (`MATCH p1=..., p2=...`)
+            // plans as a CartesianProduct of independent GraphRel subtrees. This
+            // walker previously had no arm for it, so a SECOND (or later)
+            // pattern's VLP was never visited by this pass at all — its
+            // non-transitive clamp (and, more generally, VLP CTE trigger
+            // detection elsewhere) silently never applied to it. Recurse into
+            // both sides so every independent pattern gets checked.
+            LogicalPlan::CartesianProduct(cp) => {
+                let left_result =
+                    self.check_transitivity_recursive(cp.left.clone(), plan_ctx, graph_schema)?;
+                let right_result =
+                    self.check_transitivity_recursive(cp.right.clone(), plan_ctx, graph_schema)?;
+                if left_result.is_yes() || right_result.is_yes() {
+                    let new_cp = crate::query_planner::logical_plan::CartesianProduct {
+                        left: left_result.get_plan().clone(),
+                        right: right_result.get_plan().clone(),
+                        ..cp.clone()
+                    };
+                    Ok(Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(
+                        new_cp,
+                    ))))
                 } else {
                     Ok(Transformed::No(plan))
                 }

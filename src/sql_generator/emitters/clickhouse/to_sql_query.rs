@@ -1767,6 +1767,23 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
     // when FROM is a VLP CTE for shortestPath queries. Only shortestPath patterns
     // (with path_variable) produce these spurious artifacts from multi-pattern MATCH.
     // Other VLP queries have legitimate JOINs to non-VLP tables.
+    //
+    // #501 FIX: the `is_shortest_path` name below is misleading — it only checks
+    // whether ANY CTE has a Cypher path variable attached (`vlp_path_variable`),
+    // which is true for ANY `MATCH p = ...` query, not just genuine
+    // `shortestPath()` queries. Before this fix, that misnomer caused the
+    // unconditional `retain` to silently DELETE legitimate JOINs for any query
+    // chaining a plain relationship onto a VLP leg under a path variable (e.g.
+    // `MATCH p = (a)-[:FOLLOWS*1..2]->(b)-[:AUTHORED]->(c) RETURN c`) — main's
+    // SQL only referenced the VLP CTE and silently dropped the `AUTHORED`
+    // join+node entirely, a silent-wrong-results bug (verified live). Since this
+    // pass can't cheaply distinguish "genuine shortestPath spurious JOIN" from
+    // "legitimate chained-leg JOIN under an ordinary path variable" by CTE
+    // metadata alone, additionally require that the JOIN's alias is NOT
+    // referenced anywhere in the plan before stripping it — genuinely spurious
+    // JOINs (the shortestPath artifacts this was written for) are, by
+    // definition, unreferenced; a real chained leg's JOIN alias is always
+    // referenced by its own SELECT/WHERE expansion.
     if let Some(from_ref) = &plan.from.0 {
         if from_ref.name.starts_with("vlp_") {
             let is_shortest_path = plan
@@ -1775,9 +1792,56 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                 .iter()
                 .any(|cte| cte.vlp_path_variable.is_some());
             if is_shortest_path {
-                plan.joins.0.retain(|join| {
-                    join.table_name.starts_with("vlp_") || join.table_name.starts_with("with_")
-                });
+                // Seed: vlp_/with_ CTE joins, and any join whose alias is
+                // referenced directly in SELECT/WHERE/GROUP BY/ORDER BY.
+                let mut aliases_to_keep: std::collections::HashSet<String> = plan
+                    .joins
+                    .0
+                    .iter()
+                    .filter(|join| {
+                        join.table_name.starts_with("vlp_")
+                            || join.table_name.starts_with("with_")
+                            || crate::render_plan::plan_optimizer::is_alias_referenced_in_plan(
+                                &plan,
+                                &join.table_alias,
+                            )
+                    })
+                    .map(|join| join.table_alias.clone())
+                    .collect();
+                // Transitive closure: a join whose alias isn't directly
+                // referenced can still be load-bearing if a KEPT join's own ON
+                // condition depends on it (e.g. `c`'s join is `ON c.post_id =
+                // t2.post_id` — `t2` isn't in SELECT/WHERE but its JOIN must
+                // stay or `t2.post_id` becomes an unbound identifier).
+                loop {
+                    let mut added = false;
+                    for join in &plan.joins.0 {
+                        if aliases_to_keep.contains(&join.table_alias) {
+                            continue;
+                        }
+                        let depended_on_by_kept = plan.joins.0.iter().any(|other| {
+                            aliases_to_keep.contains(&other.table_alias)
+                                && other.joining_on.iter().any(|cond| {
+                                    cond.operands.iter().any(|operand| {
+                                        crate::render_plan::expression_utils::references_alias(
+                                            operand,
+                                            &join.table_alias,
+                                        )
+                                    })
+                                })
+                        });
+                        if depended_on_by_kept {
+                            aliases_to_keep.insert(join.table_alias.clone());
+                            added = true;
+                        }
+                    }
+                    if !added {
+                        break;
+                    }
+                }
+                plan.joins
+                    .0
+                    .retain(|join| aliases_to_keep.contains(&join.table_alias));
                 plan.select.items.retain(|item| {
                     if let Some(ref col_alias) = item.col_alias {
                         !matches!(
@@ -2506,6 +2570,8 @@ fn extract_fixed_path_info_from_plan(
                 hop_count,
                 node_aliases: vec![],
                 rel_aliases: vec![],
+                node_id_columns: std::collections::HashMap::new(),
+                rel_types: std::collections::HashMap::new(),
             });
         }
     }
@@ -2519,6 +2585,8 @@ fn extract_fixed_path_info_from_plan(
                 hop_count,
                 node_aliases: vec![],
                 rel_aliases: vec![],
+                node_id_columns: std::collections::HashMap::new(),
+                rel_types: std::collections::HashMap::new(),
             });
         }
     }
@@ -2531,6 +2599,8 @@ fn extract_fixed_path_info_from_plan(
                 hop_count,
                 node_aliases: vec![],
                 rel_aliases: vec![],
+                node_id_columns: std::collections::HashMap::new(),
+                rel_types: std::collections::HashMap::new(),
             });
         }
     }
@@ -2587,25 +2657,43 @@ fn find_path_function_argument(expr: &RenderExpr) -> Option<String> {
 
 /// Rewrite path function calls for fixed (non-VLP) path patterns
 /// Converts:
-/// - length(p) → 1 (literal hop count)
-/// - nodes(p) → array of node IDs
-/// - relationships(p) → array of relationship IDs
+/// - length(p) → literal hop count
+/// - nodes(p) → array of node IDs (#497)
+/// - relationships(p) → array of relationship type names (#497)
+///
+/// #497/#498: delegates to `rewrite_fixed_path_functions_with_info`
+/// (render_plan/plan_builder_helpers.rs), which correctly builds the
+/// nodes()/relationships() array expressions from real node/relationship
+/// aliases + ID columns instead of leaving them as unresolved `TODO` stubs.
+/// `plan.fixed_path_info.node_aliases`/`node_id_columns` are now populated by
+/// `logical_plan_to_render_plan_with_ctx` (render_plan/mod.rs) from the
+/// LogicalPlan's actual GraphRel chain — schema-pattern-agnostic, no more
+/// guessing hop count from `joins.len() / 2` (wrong for FK-edge, #498).
 fn rewrite_fixed_path_functions(mut plan: RenderPlan) -> RenderPlan {
     if let Some(ref fixed_path_info) = plan.fixed_path_info {
-        let path_var = fixed_path_info.path_variable.clone();
-        let hop_count = fixed_path_info.hop_count;
+        let path_info = crate::render_plan::cte_extraction::FixedPathInfo {
+            path_var_name: fixed_path_info.path_variable.clone(),
+            node_aliases: fixed_path_info.node_aliases.clone(),
+            rel_aliases: fixed_path_info.rel_aliases.clone(),
+            hop_count: fixed_path_info.hop_count,
+            node_id_columns: fixed_path_info.node_id_columns.clone(),
+            rel_types: fixed_path_info.rel_types.clone(),
+        };
 
         log::info!(
-            "🔧 Fixed path rewriting: path_variable={}, hop_count={}",
-            path_var,
-            hop_count
+            "🔧 Fixed path rewriting: path_variable={}, hop_count={}, node_aliases={:?}",
+            path_info.path_var_name,
+            path_info.hop_count,
+            path_info.node_aliases
         );
         log::info!("🔧 SELECT has {} items", plan.select.items.len());
+
+        use crate::render_plan::plan_builder_helpers::rewrite_fixed_path_functions_with_info as rewrite_with_info;
 
         // Rewrite each SELECT item's expressions
         for item in plan.select.items.iter_mut() {
             let before = format!("{:?}", item.expression);
-            item.expression = rewrite_expr_for_fixed_path(&item.expression, &path_var, hop_count);
+            item.expression = rewrite_with_info(&item.expression, &path_info);
             let after = format!("{:?}", item.expression);
             if before != after {
                 log::info!("🔧   Rewritten from: {} → {}", before, after);
@@ -2618,7 +2706,7 @@ fn rewrite_fixed_path_functions(mut plan: RenderPlan) -> RenderPlan {
             plan.group_by.0.len()
         );
         for group_expr in &mut plan.group_by.0 {
-            *group_expr = rewrite_expr_for_fixed_path(group_expr, &path_var, hop_count);
+            *group_expr = rewrite_with_info(group_expr, &path_info);
         }
 
         // Also rewrite ORDER BY expressions
@@ -2627,113 +2715,11 @@ fn rewrite_fixed_path_functions(mut plan: RenderPlan) -> RenderPlan {
             plan.order_by.0.len()
         );
         for order_item in &mut plan.order_by.0 {
-            order_item.expression =
-                rewrite_expr_for_fixed_path(&order_item.expression, &path_var, hop_count);
+            order_item.expression = rewrite_with_info(&order_item.expression, &path_info);
         }
     }
 
     plan
-}
-
-/// Recursively rewrite expressions to handle path function calls on fixed paths
-/// Converts:
-/// - length(p) → literal(hop_count)
-/// - nodes(p) → [node_ids in order] (future enhancement)
-/// - relationships(p) → [rel_ids in order] (future enhancement)
-fn rewrite_expr_for_fixed_path(
-    expr: &RenderExpr,
-    path_variable: &str,
-    hop_count: u32,
-) -> RenderExpr {
-    match expr {
-        // Handle path functions: length(p)
-        RenderExpr::ScalarFnCall(func) => {
-            if func.args.len() == 1 {
-                if let RenderExpr::TableAlias(alias) = &func.args[0] {
-                    if alias.0 == *path_variable {
-                        match func.name.to_lowercase().as_str() {
-                            "length" => {
-                                log::info!(
-                                    "🔧 Fixed path function: length({}) → {}",
-                                    path_variable,
-                                    hop_count
-                                );
-                                return RenderExpr::Literal(Literal::Integer(hop_count as i64));
-                            }
-                            "nodes" => {
-                                log::debug!(
-                                    "🔧 Fixed path function: nodes({}) not yet implemented for fixed paths",
-                                    path_variable
-                                );
-                                // TODO: Return array of node IDs
-                                return expr.clone();
-                            }
-                            "relationships" => {
-                                log::debug!(
-                                    "🔧 Fixed path function: relationships({}) not yet implemented for fixed paths",
-                                    path_variable
-                                );
-                                // TODO: Return array of relationship IDs
-                                return expr.clone();
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-
-            // Not a path function - recursively rewrite arguments
-            RenderExpr::ScalarFnCall(ScalarFnCall {
-                name: func.name.clone(),
-                args: func
-                    .args
-                    .iter()
-                    .map(|a| rewrite_expr_for_fixed_path(a, path_variable, hop_count))
-                    .collect(),
-            })
-        }
-
-        // Recursively rewrite operands in operator applications
-        RenderExpr::OperatorApplicationExp(op) => {
-            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator,
-                operands: op
-                    .operands
-                    .iter()
-                    .map(|o| rewrite_expr_for_fixed_path(o, path_variable, hop_count))
-                    .collect(),
-            })
-        }
-
-        RenderExpr::AggregateFnCall(agg) => {
-            // COUNT(path_variable) → COUNT(*) since each row represents a path
-            if agg.args.len() == 1 {
-                if let RenderExpr::TableAlias(alias) = &agg.args[0] {
-                    if alias.0 == *path_variable && agg.name.to_lowercase() == "count" {
-                        log::info!(
-                            "🔧 Fixed path aggregate: count({}) → count(*)",
-                            path_variable
-                        );
-                        return RenderExpr::AggregateFnCall(AggregateFnCall {
-                            name: agg.name.clone(),
-                            args: vec![RenderExpr::Star],
-                        });
-                    }
-                }
-            }
-            RenderExpr::AggregateFnCall(AggregateFnCall {
-                name: agg.name.clone(),
-                args: agg
-                    .args
-                    .iter()
-                    .map(|a| rewrite_expr_for_fixed_path(a, path_variable, hop_count))
-                    .collect(),
-            })
-        }
-
-        // Leave other expressions unchanged
-        other => other.clone(),
-    }
 }
 
 /// Extract column references from ORDER BY expressions for UNION queries

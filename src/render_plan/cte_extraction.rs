@@ -6459,8 +6459,21 @@ pub fn plan_references_alias_properties(plan: &LogicalPlan, alias: &str) -> bool
 pub fn get_fixed_path_variable(plan: &LogicalPlan) -> Option<(String, u32)> {
     match plan {
         LogicalPlan::GraphRel(rel) => {
-            // Only handle fixed patterns (no variable_length)
-            if rel.variable_length.is_some() {
+            // Only handle fixed patterns (no variable_length ANYWHERE in the
+            // chain). #499/#501 regression guard: the original check only
+            // looked at THIS GraphRel's own `variable_length`, so a mixed
+            // pattern like `(a)-[:FOLLOWS*1..2]->(b)-[:AUTHORED]->(c)` (outer
+            // leg fixed, inner leg VLP — `path_variable` is set on every
+            // nested GraphRel of the same path) was wrongly treated as a
+            // fully-fixed path just because the OUTERMOST leg happened to be
+            // fixed. That produced wrong `FixedPathMetadata` (hop_count/
+            // node_aliases computed by `count_hops_in_graph_rel`/
+            // `collect_path_aliases_with_ids` don't understand a nested VLP
+            // CTE endpoint) which fed into the plan_optimizer.rs join-pruning
+            // guards and silently dropped the trailing leg's JOIN for ANY
+            // query with a path variable declared — even `RETURN c` (no path
+            // function at all). Reject the whole chain if *any* leg is VLP.
+            if rel.variable_length.is_some() || chain_has_any_vlp(&rel.left) {
                 return None;
             }
 
@@ -6487,6 +6500,23 @@ pub fn get_fixed_path_variable(plan: &LogicalPlan) -> Option<(String, u32)> {
         LogicalPlan::Cte(cte) => get_fixed_path_variable(&cte.input),
         LogicalPlan::Unwind(u) => get_fixed_path_variable(&u.input),
         _ => None,
+    }
+}
+
+/// Whether any GraphRel reachable from this subtree (walking both `.left` and
+/// `.right`, since a chained leg can be nested on either side depending on
+/// how the pattern was parsed) still has `variable_length.is_some()` — i.e.
+/// genuinely needs a recursive VLP CTE, as opposed to a plain fixed hop.
+fn chain_has_any_vlp(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::GraphRel(rel) => {
+            rel.variable_length.is_some()
+                || chain_has_any_vlp(&rel.left)
+                || chain_has_any_vlp(&rel.right)
+        }
+        LogicalPlan::GraphNode(node) => chain_has_any_vlp(&node.input),
+        LogicalPlan::Filter(filter) => chain_has_any_vlp(&filter.input),
+        _ => false,
     }
 }
 
@@ -6519,6 +6549,11 @@ pub struct FixedPathInfo {
     /// Maps node alias to (relationship_alias, id_column) for denormalized schemas
     /// e.g., "a" -> ("r", "Origin"), "b" -> ("r", "Dest")
     pub node_id_columns: std::collections::HashMap<String, (String, String)>,
+    /// Maps relationship alias to its Cypher relationship type name (first label),
+    /// e.g. "r" -> "PLACED_BY". Used to render `relationships(p)` as an array of
+    /// type-name literals, mirroring how the VLP recursive CTE's `path_relationships`
+    /// column is populated (see `get_relationship_type_array` in variable_length_cte.rs).
+    pub rel_types: std::collections::HashMap<String, String>,
 }
 
 /// Extract complete path information from fixed multi-hop patterns
@@ -6533,7 +6568,8 @@ pub fn get_fixed_path_info(
     };
 
     // Then extract all aliases and node ID mappings
-    let (node_aliases, rel_aliases, node_id_columns) = collect_path_aliases_with_ids(plan)?;
+    let (node_aliases, rel_aliases, node_id_columns, rel_types) =
+        collect_path_aliases_with_ids(plan)?;
 
     Ok(Some(FixedPathInfo {
         path_var_name,
@@ -6541,14 +6577,17 @@ pub fn get_fixed_path_info(
         rel_aliases,
         hop_count,
         node_id_columns,
+        rel_types,
     }))
 }
 
-/// (node_aliases, rel_aliases, node_id_columns) — node_id_columns maps alias → (table, id_column).
+/// (node_aliases, rel_aliases, node_id_columns, rel_types) — node_id_columns maps
+/// alias → (rel_alias, id_column); rel_types maps rel_alias → Cypher type name.
 type PathAliasesWithIds = (
     Vec<String>,
     Vec<String>,
     std::collections::HashMap<String, (String, String)>,
+    std::collections::HashMap<String, String>,
 );
 
 /// Collect node and relationship aliases plus ID column mappings
@@ -6558,15 +6597,54 @@ fn collect_path_aliases_with_ids(
     let mut node_aliases = Vec::new();
     let mut rel_aliases = Vec::new();
     let mut node_id_columns = std::collections::HashMap::new();
+    let mut rel_types = std::collections::HashMap::new();
 
     collect_path_aliases_with_ids_recursive(
         plan,
         &mut node_aliases,
         &mut rel_aliases,
         &mut node_id_columns,
+        &mut rel_types,
     )?;
 
-    Ok((node_aliases, rel_aliases, node_id_columns))
+    Ok((node_aliases, rel_aliases, node_id_columns, rel_types))
+}
+
+/// Find the `id_column` of the ViewScan backing a node plan (walking through
+/// simple wrapper nodes like Filter/GraphNode).
+fn find_view_scan_id_column(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::ViewScan(vs) => Some(vs.id_column.clone()),
+        LogicalPlan::Filter(f) => find_view_scan_id_column(&f.input),
+        LogicalPlan::GraphNode(n) => find_view_scan_id_column(&n.input),
+        _ => None,
+    }
+}
+
+/// For a node subtree (expected to be a `GraphNode`), return its own
+/// `own_id_column` when the node has a genuinely separate FROM/JOIN binding of
+/// its own that can be referenced directly (standard, FK-edge). Returns `None`
+/// when the node's property data is embedded/coupled onto the edge row itself
+/// (denormalized schemas — no separate alias exists to reference), in which
+/// case the caller falls back to the relationship's own alias + from_id/to_id.
+///
+/// AXIS-DISPATCH NOTE (ratchet baseline bump justification, #497/#498): a
+/// table-name comparison (node's ViewScan.source_table vs the relationship's)
+/// was tried as an alternative to the flag this reads, to avoid adding another
+/// occurrence of that token in this file. It is semantically WRONG: FK-edge
+/// also has the node's table equal to the relationship's own table (the
+/// "edge" IS the node's own table there), yet FK-edge must use the node's own
+/// alias while an embedded/coupled node must use the relationship alias — the
+/// two cases are table-name-identical but need opposite handling, so a
+/// table-name check cannot distinguish them. The per-node flag already
+/// computed by the analyzer is the correct, existing signal for this
+/// distinction; verified across standard, FK-edge, and denormalized schemas
+/// (see golden tests added for these issues).
+fn node_own_id_column_if_not_denormalized(node_plan: &LogicalPlan) -> Option<String> {
+    match node_plan {
+        LogicalPlan::GraphNode(gn) if !gn.is_denormalized => find_view_scan_id_column(&gn.input),
+        _ => None,
+    }
 }
 
 /// Recursive helper to collect aliases and ID column mappings
@@ -6575,6 +6653,7 @@ fn collect_path_aliases_with_ids_recursive(
     node_aliases: &mut Vec<String>,
     rel_aliases: &mut Vec<String>,
     node_id_columns: &mut std::collections::HashMap<String, (String, String)>,
+    rel_types: &mut std::collections::HashMap<String, String>,
 ) -> Result<(), super::errors::RenderBuildError> {
     match plan {
         LogicalPlan::GraphRel(rel) => {
@@ -6584,6 +6663,7 @@ fn collect_path_aliases_with_ids_recursive(
                 node_aliases,
                 rel_aliases,
                 node_id_columns,
+                rel_types,
             )?;
 
             // Get the from_id and to_id columns from the ViewScan
@@ -6601,23 +6681,44 @@ fn collect_path_aliases_with_ids_recursive(
                     )
                 })?;
 
-                // Map left node to this relationship's from_id (if not already mapped)
+                // #497/#498: prefer the node's OWN alias + own id column. It's
+                // always correctly bound in FROM/JOIN for standard and FK-edge
+                // schemas, whereas the relationship's own alias (e.g. an
+                // auto-generated VLP-style alias for an unnamed `[:TYPE]`
+                // pattern) is NOT always a separately bound SQL alias — for
+                // FK-edge in particular, the "relationship" is folded into the
+                // node join and has no table/alias of its own, so referencing
+                // `rel_alias.column` produces an unbound-identifier SQL error.
+                // Only fall back to the relationship alias's from_id/to_id when
+                // the node's data is embedded/coupled onto the edge row itself
+                // (denormalized — no separate alias to reference).
                 if !node_id_columns.contains_key(&rel.left_connection) {
-                    node_id_columns.insert(
-                        rel.left_connection.clone(),
-                        (rel.alias.clone(), from_id.to_string()),
-                    );
+                    let mapping = match node_own_id_column_if_not_denormalized(rel.left.as_ref()) {
+                        Some(own_id_col) => (rel.left_connection.clone(), own_id_col),
+                        None => (rel.alias.clone(), from_id.to_string()),
+                    };
+                    node_id_columns.insert(rel.left_connection.clone(), mapping);
                 }
 
-                // Map right node to this relationship's to_id
-                node_id_columns.insert(
-                    rel.right_connection.clone(),
-                    (rel.alias.clone(), to_id.to_string()),
-                );
+                // Map right node — prefer its own alias/id column unless denormalized.
+                let right_mapping = match node_own_id_column_if_not_denormalized(rel.right.as_ref())
+                {
+                    Some(own_id_col) => (rel.right_connection.clone(), own_id_col),
+                    None => (rel.alias.clone(), to_id.to_string()),
+                };
+                node_id_columns.insert(rel.right_connection.clone(), right_mapping);
             }
 
             // Add this relationship
             rel_aliases.push(rel.alias.clone());
+
+            // Record this relationship's Cypher type name (first label) for
+            // `relationships(p)` rendering — mirrors VLP's path_relationships
+            // (an array of type-name strings, see get_relationship_type_array).
+            if let Some(type_name) = rel.labels.as_ref().and_then(|l| l.first()) {
+                use crate::graph_catalog::composite_key_utils::extract_type_name;
+                rel_types.insert(rel.alias.clone(), extract_type_name(type_name).to_string());
+            }
 
             // Add the right node
             if let LogicalPlan::GraphNode(right_node) = rel.right.as_ref() {
@@ -6637,6 +6738,7 @@ fn collect_path_aliases_with_ids_recursive(
                 node_aliases,
                 rel_aliases,
                 node_id_columns,
+                rel_types,
             )?;
         }
         LogicalPlan::Filter(filter) => {
@@ -6645,6 +6747,7 @@ fn collect_path_aliases_with_ids_recursive(
                 node_aliases,
                 rel_aliases,
                 node_id_columns,
+                rel_types,
             )?;
         }
         LogicalPlan::Projection(proj) => {
@@ -6653,6 +6756,7 @@ fn collect_path_aliases_with_ids_recursive(
                 node_aliases,
                 rel_aliases,
                 node_id_columns,
+                rel_types,
             )?;
         }
         LogicalPlan::GraphJoins(joins) => {
@@ -6661,6 +6765,7 @@ fn collect_path_aliases_with_ids_recursive(
                 node_aliases,
                 rel_aliases,
                 node_id_columns,
+                rel_types,
             )?;
         }
         LogicalPlan::GroupBy(gb) => {
@@ -6669,6 +6774,7 @@ fn collect_path_aliases_with_ids_recursive(
                 node_aliases,
                 rel_aliases,
                 node_id_columns,
+                rel_types,
             )?;
         }
         LogicalPlan::OrderBy(ob) => {
@@ -6677,6 +6783,7 @@ fn collect_path_aliases_with_ids_recursive(
                 node_aliases,
                 rel_aliases,
                 node_id_columns,
+                rel_types,
             )?;
         }
         LogicalPlan::Skip(skip) => {
@@ -6685,6 +6792,7 @@ fn collect_path_aliases_with_ids_recursive(
                 node_aliases,
                 rel_aliases,
                 node_id_columns,
+                rel_types,
             )?;
         }
         LogicalPlan::Limit(limit) => {
@@ -6693,6 +6801,7 @@ fn collect_path_aliases_with_ids_recursive(
                 node_aliases,
                 rel_aliases,
                 node_id_columns,
+                rel_types,
             )?;
         }
         _ => {}

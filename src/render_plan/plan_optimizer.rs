@@ -2189,7 +2189,7 @@ fn has_non_id_ref_in_plan(plan: &RenderPlan, alias: &str, id_column: &str) -> bo
 /// Check if an alias is referenced in non-rewritable parts of the plan
 /// (SELECT, WHERE, ORDER BY, GROUP BY, HAVING, ARRAY JOIN).
 /// JOIN ON conditions and pre_filters are NOT checked because Pass 2 rewrites them.
-fn is_alias_referenced_in_plan(plan: &RenderPlan, alias: &str) -> bool {
+pub(crate) fn is_alias_referenced_in_plan(plan: &RenderPlan, alias: &str) -> bool {
     // Check SELECT items
     for item in &plan.select.items {
         if references_alias(&item.expression, alias)

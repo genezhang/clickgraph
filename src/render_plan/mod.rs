@@ -1,7 +1,7 @@
 pub mod cte_extraction;
 pub mod cte_generation;
 pub mod cte_manager;
-mod expression_utils;
+pub(crate) mod expression_utils;
 mod feature_flags;
 mod filter_builder;
 mod filter_pipeline;
@@ -110,7 +110,36 @@ pub fn logical_plan_to_render_plan_with_ctx(
     plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
 ) -> Result<RenderPlan, errors::RenderBuildError> {
     use plan_builder::RenderPlanBuilder;
-    logical_plan.to_render_plan_with_ctx(schema, plan_ctx, None)
+
+    // #497/#498: compute fixed-path metadata (path variable, hop count, node/rel
+    // aliases, ID columns, relationship type names) from the LogicalPlan BEFORE
+    // it's consumed by rendering — this is schema-pattern-agnostic (walks the
+    // GraphRel chain directly and reads each hop's ViewScan.from_id/to_id,
+    // rather than guessing hop count from a post-optimization JOIN count, which
+    // is wrong for FK-edge where 1 hop = 1 JOIN instead of 2). Populating this
+    // here means `render_plan_to_sql`'s later best-effort fallback
+    // (`extract_fixed_path_info_from_plan`, which DOES use the wrong
+    // JOINs-count heuristic) is skipped for the common case, and the
+    // join-pruning guards that already check `fixed_path_info.node_aliases`
+    // (plan_optimizer.rs) become effective instead of permanently inert.
+    let fixed_path_info = cte_extraction::get_fixed_path_info(&logical_plan)?;
+
+    let mut render_plan = logical_plan.to_render_plan_with_ctx(schema, plan_ctx, None)?;
+
+    if render_plan.fixed_path_info.is_none() {
+        if let Some(info) = fixed_path_info {
+            render_plan.fixed_path_info = Some(FixedPathMetadata {
+                path_variable: info.path_var_name,
+                hop_count: info.hop_count,
+                node_aliases: info.node_aliases,
+                rel_aliases: info.rel_aliases,
+                node_id_columns: info.node_id_columns,
+                rel_types: info.rel_types,
+            });
+        }
+    }
+
+    Ok(render_plan)
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -156,6 +185,16 @@ pub struct FixedPathMetadata {
     pub node_aliases: Vec<String>,
     /// List of relationship aliases (e.g., ["r"])
     pub rel_aliases: Vec<String>,
+    /// Maps node alias to (relationship_alias, id_column) — the relationship's
+    /// own from_id/to_id ViewScan columns, which resolve correctly regardless of
+    /// schema pattern (standard/fk_edge/denormalized). Used to render `nodes(p)`.
+    #[serde(default)]
+    pub node_id_columns: std::collections::HashMap<String, (String, String)>,
+    /// Maps relationship alias to its Cypher relationship type name. Used to
+    /// render `relationships(p)` as an array of type-name literals, mirroring
+    /// the VLP recursive CTE's `path_relationships` column.
+    #[serde(default)]
+    pub rel_types: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

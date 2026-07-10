@@ -1219,7 +1219,7 @@ use super::cte_extraction::FixedPathInfo;
 /// - length(p) → literal hop_count value
 /// - nodes(p) → [r1.from_id, r1.to_id, r2.to_id, ...] array of node IDs
 /// - relationships(p) → [r1, r2, ...] tuple of relationship aliases
-pub(super) fn rewrite_fixed_path_functions_with_info(
+pub fn rewrite_fixed_path_functions_with_info(
     expr: &RenderExpr,
     path_info: &FixedPathInfo,
 ) -> RenderExpr {
@@ -1237,6 +1237,25 @@ pub(super) fn rewrite_fixed_path_functions_with_info(
                                 ));
                             }
                             "nodes" => {
+                                // #497: if we don't actually have any node
+                                // aliases (e.g. `path_info` came from the
+                                // best-effort fallback in to_sql_query.rs,
+                                // which can detect a path function reference
+                                // — including a NESTED one like
+                                // `length(nodes(p))`, since it recurses into
+                                // function args — without being able to
+                                // populate real alias/column metadata for
+                                // arbitrary VLP-syntax fixed hop counts like
+                                // `*2`), leave the call UNCHANGED rather than
+                                // emit a valid-looking-but-wrong empty
+                                // `array()`/`tuple()`. An unresolved `nodes(p)`
+                                // failing loudly at execution (unbound `p`) is
+                                // strictly better than silently evaluating to
+                                // an empty collection (ground rule 1).
+                                if path_info.node_aliases.is_empty() {
+                                    return expr.clone();
+                                }
+
                                 // Build array of node ID references: [r1.Origin, r1.Dest, r2.Dest]
                                 let node_args: Vec<RenderExpr> = path_info
                                     .node_aliases
@@ -1256,7 +1275,11 @@ pub(super) fn rewrite_fixed_path_functions_with_info(
 
                                 // Use array() function for ClickHouse arrays
                                 if node_args.is_empty() {
-                                    // Fallback: if no ID columns found, return tuple of aliases
+                                    // Fallback: aliases are known but no ID columns
+                                    // resolved for any of them — return tuple of
+                                    // aliases (still better than silently empty;
+                                    // downstream will surface an unbound-alias
+                                    // error rather than a wrong empty result).
                                     let fallback_args: Vec<RenderExpr> = path_info
                                         .node_aliases
                                         .iter()
@@ -1274,15 +1297,33 @@ pub(super) fn rewrite_fixed_path_functions_with_info(
                                 });
                             }
                             "relationships" => {
-                                // For relationships, return tuple of relationship aliases
-                                // These will resolve to the full row data via * or specific columns
+                                // #497: same "don't fabricate an empty
+                                // collection from unresolved metadata" guard
+                                // as the `nodes` arm above.
+                                if path_info.rel_aliases.is_empty() {
+                                    return expr.clone();
+                                }
+
+                                // mirror the VLP recursive CTE's `path_relationships`
+                                // column, which is an array of relationship TYPE-NAME
+                                // string literals (see get_relationship_type_array in
+                                // variable_length_cte.rs) — not a tuple of raw table
+                                // aliases, which isn't a resolvable SQL value on its own.
+                                // Keeping fixed-path and VLP-path `relationships(p)`
+                                // return the same shape means downstream consumers
+                                // don't need to special-case which route a path took.
                                 let rel_args: Vec<RenderExpr> = path_info
                                     .rel_aliases
                                     .iter()
-                                    .map(|alias| RenderExpr::TableAlias(TableAlias(alias.clone())))
+                                    .filter_map(|alias| path_info.rel_types.get(alias))
+                                    .map(|type_name| {
+                                        RenderExpr::Literal(super::render_expr::Literal::String(
+                                            type_name.clone(),
+                                        ))
+                                    })
                                     .collect();
                                 return RenderExpr::ScalarFnCall(ScalarFnCall {
-                                    name: "tuple".to_string(),
+                                    name: "array".to_string(),
                                     args: rel_args,
                                 });
                             }
@@ -1318,6 +1359,20 @@ pub(super) fn rewrite_fixed_path_functions_with_info(
             })
         }
         RenderExpr::AggregateFnCall(agg) => {
+            // count(p) → count(*): each row already represents exactly one
+            // path, so counting the (otherwise-unbound) path variable itself
+            // is equivalent to counting rows.
+            if agg.args.len() == 1 && agg.name.to_lowercase() == "count" {
+                if let RenderExpr::TableAlias(TableAlias(alias)) = &agg.args[0] {
+                    if alias == &path_info.path_var_name {
+                        return RenderExpr::AggregateFnCall(AggregateFnCall {
+                            name: agg.name.clone(),
+                            args: vec![RenderExpr::Star],
+                        });
+                    }
+                }
+            }
+
             // Recursively rewrite arguments for aggregate functions
             let rewritten_args: Vec<RenderExpr> = agg
                 .args
@@ -1348,6 +1403,7 @@ pub(super) fn rewrite_fixed_path_functions(
         rel_aliases: vec![],
         hop_count,
         node_id_columns: std::collections::HashMap::new(),
+        rel_types: std::collections::HashMap::new(),
     };
     rewrite_fixed_path_functions_with_info(expr, &path_info)
 }
