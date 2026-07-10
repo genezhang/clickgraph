@@ -3,7 +3,7 @@ WITH RECURSIVE vlp_a_dest AS (
         concat(toString(start_node.bank_id), '|', toString(start_node.account_number)) as start_id,
         concat(toString(end_node.bank_id), '|', toString(end_node.account_number)) as end_id,
         1 as hop_count,
-        ['TRANSFERRED::Account::Account'] as path_relationships,
+        ['TRANSFERRED'] as path_relationships,
         [concat(toString(start_node.bank_id), '|', toString(start_node.account_number)), concat(toString(end_node.bank_id), '|', toString(end_node.account_number))] as path_nodes,
         end_node.bank_id as end_bank_id,
         end_node.account_number as end_account_number
@@ -16,7 +16,7 @@ WITH RECURSIVE vlp_a_dest AS (
         vp.start_id,
         concat(toString(end_node.bank_id), '|', toString(end_node.account_number)) as end_id,
         vp.hop_count + 1 as hop_count,
-        arrayConcat(vp.path_relationships, ['TRANSFERRED::Account::Account']) as path_relationships,
+        arrayConcat(vp.path_relationships, ['TRANSFERRED']) as path_relationships,
         arrayConcat(vp.path_nodes, [concat(toString(end_node.bank_id), '|', toString(end_node.account_number))]) as path_nodes,
         end_node.bank_id as end_bank_id,
         end_node.account_number as end_account_number

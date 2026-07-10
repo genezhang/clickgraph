@@ -1618,7 +1618,7 @@ impl DenormalizedCteStrategy {
             .as_ref()
             .and_then(|types| types.first())
             .map(|t| {
-                let type_name = t.split("::").next().unwrap_or(t);
+                let type_name = crate::graph_catalog::composite_key_utils::extract_type_name(t);
                 format!("'{}'", type_name)
             })
             .unwrap_or_default()

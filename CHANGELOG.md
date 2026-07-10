@@ -1,3 +1,11 @@
+## [Unreleased]
+
+### 🐛 Bug Fixes
+
+- **Single-type VLP type literals leaked the internal composite schema key** (#485): `relationships(p)`, single-type variable-length `path_relationships` values, and single-type `type(r)` literals returned the internal composite schema key (`FOLLOWS::User::User`) instead of the Cypher relationship type (`FOLLOWS`). Multi-type VLP was already correct — only the single-type routes leaked. All relationship-type literal emission (the `type(r)` literal branch in projection tagging, the standard VLP CTE emitter's `path_relationships` arrays, and the denormalized strategy's type literal) now routes through the canonical `composite_key_utils::extract_type_name`, at the output layer only — every schema lookup keeps consuming the full composite key. 120 SQL goldens transitioned (script-verified as exactly the key→type substitution).
+
+- **Non-transitive VLP with a bound path variable rendered no recursive CTE — unbound alias `t`, ClickHouse Code 47** (#488): `MATCH p = (o:Order)-[:PLACED_BY*1..2]->(c) RETURN p` on the FK-edge schema (and any non-self-chaining edge on any schema, e.g. `[:AUTHORED*1..2]` on standard) rendered `tuple(t.path_nodes, ...)` while the transitivity pass had already clamped the pattern to a plain single hop, so no VLP CTE existed. The pass now re-registers the path variable as a fixed single-hop path, and `RETURN p` takes the working fixed-path route. Guarded to directed patterns with `min_hops >= 1`: for `*0..N` (zero-hop paths are real) and undirected patterns (reverse chaining can exceed one hop) the clamp itself is semantically wrong (pre-existing, tracked separately), so those shapes intentionally keep the loud failure instead of silently returning clamped rows.
+
 ## [0.6.7-dev] - 2026-05-06
 
 ### 🚀 Features

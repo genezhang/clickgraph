@@ -207,7 +207,6 @@ impl AnalyzerPass for VlpTransitivityCheck {
 }
 
 impl VlpTransitivityCheck {
-    #[allow(clippy::only_used_in_recursion)] // plan_ctx threaded for analyzer-pass API symmetry
     fn check_transitivity_recursive(
         &self,
         plan: Arc<LogicalPlan>,
@@ -288,6 +287,60 @@ impl VlpTransitivityCheck {
                                 "→ Removing VLP from non-transitive [{}*] - converting to simple single-hop pattern",
                                 rel_type
                             );
+
+                            // #488: keep the path-variable registration consistent
+                            // with the rewritten plan. `MATCH p = ...` registered the
+                            // path with the VLP's length bounds; if those stay in
+                            // place the renderer emits tuple(t.path_nodes, ...)
+                            // referencing a recursive VLP CTE that is never generated
+                            // for this (now single-hop) pattern — unbound alias `t`,
+                            // ClickHouse Code 47. Re-register as a fixed single-hop
+                            // path so rendering takes the fixed-path route.
+                            //
+                            // GUARD (#488 review): only re-register when the clamp
+                            // itself is semantically sound — a DIRECTED pattern with
+                            // min_hops >= 1 (Cypher's default min is 1 when
+                            // unspecified). Two shapes the clamp gets WRONG
+                            // (pre-existing on main; tracked as a separate clamp
+                            // follow-up issue — do not silently bless them here):
+                            //   - `*0..N`: zero-hop paths are real (a zero-length
+                            //     path is the start node itself), so clamping to
+                            //     exactly one hop drops rows.
+                            //   - undirected (`-[..]-`): reverse-direction chaining
+                            //     can make >1-hop paths possible, and the from/to
+                            //     label analysis above never consults direction.
+                            // For those shapes, skipping the re-registration keeps
+                            // main's LOUD failure (unbound `t`, ClickHouse Code 47)
+                            // instead of converting it into silently returning the
+                            // clamped wrong rows.
+                            if let Some(ref pvar) = rel.path_variable {
+                                let clamp_is_sound = vlp_spec.min_hops.unwrap_or(1) >= 1
+                                    && !matches!(
+                                        rel.direction,
+                                        crate::query_planner::logical_expr::Direction::Either
+                                    );
+                                let registered_for_this_rel = plan_ctx
+                                    .lookup_variable(pvar)
+                                    .and_then(|v| v.as_path())
+                                    .is_some_and(|p| {
+                                        p.relationship.as_deref() == Some(rel.alias.as_str())
+                                            && !p.is_shortest_path
+                                    });
+                                if clamp_is_sound && registered_for_this_rel {
+                                    log::info!(
+                                        "→ Re-registering path variable '{}' as fixed single-hop (VLP stripped)",
+                                        pvar
+                                    );
+                                    plan_ctx.define_path(
+                                        pvar.clone(),
+                                        Some(rel.left_connection.clone()),
+                                        Some(rel.right_connection.clone()),
+                                        Some(rel.alias.clone()),
+                                        None,
+                                        false,
+                                    );
+                                }
+                            }
 
                             // Create new GraphRel WITHOUT variable_length
                             let new_rel = GraphRel {

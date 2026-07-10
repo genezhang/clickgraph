@@ -214,6 +214,32 @@ const CORPUS: &[(&str, &str)] = &[
         "multi_type_rel_type_fn",
         "MATCH (a:User)-[r:FOLLOWS|AUTHORED]->(b) RETURN type(r) AS t",
     ),
+    // --- #485: single-type VLP relationship-type literals must be the
+    // Cypher-visible type name ('FOLLOWS'), never the internal composite
+    // schema key ('FOLLOWS::User::User'). Composite keys exist to
+    // disambiguate multi-endpoint relationship types in schema lookups; they
+    // may not leak into query output. Multi-type VLP already emitted plain
+    // names (see vlp_multi_type above); these lock the single-type routes:
+    // the recursive CTE's path_relationships arrays and the type(r) literal.
+    (
+        "vlp_relationships_fn",
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b) RETURN relationships(p)",
+    ),
+    (
+        "vlp_type_fn",
+        "MATCH (a:User)-[r:FOLLOWS*1..2]->(b) RETURN type(r) AS t",
+    ),
+    // --- #488 (standard-schema shape): non-transitive VLP with a bound path
+    // variable. AUTHORED (User->Post) cannot chain, so the transitivity pass
+    // clamps *1..2 to a single hop; the path variable must then take the
+    // fixed-path route (tuple('fixed_path', ...) + component columns).
+    // Previously the renderer still emitted tuple(t.path_nodes, ...) against
+    // a recursive VLP CTE that was never generated — unbound alias `t`,
+    // ClickHouse Code 47.
+    (
+        "vlp_nontransitive_path_var",
+        "MATCH p = (a:User)-[:AUTHORED*1..2]->(b) RETURN p",
+    ),
     // Negative list index: Cypher `[-1]` = last element. Both CH arrayElement and
     // Spark element_at already treat -1 as last, so it must render UNCHANGED (not
     // offset by +1). The old +1 shifted -1 -> 0, and CH `arr[0]` silently returned
@@ -375,11 +401,12 @@ const CORPUS: &[(&str, &str)] = &[
 ///     CTE's actual projection: `tuple(t.path_nodes, t.path_relationships,
 ///     t.hop_count)`. The denormalized VLP CTE strategy also gained a
 ///     `path_relationships` column so the same contract holds there
-///     (live: `[[LAX, JFK], [FLIGHT], 1]`). NOTE (pre-existing, out of
-///     scope): single-type VLP `path_relationships` values leak the composite
-///     schema key (`FOLLOWS::User::User`, not `FOLLOWS`) — same leak as
-///     `relationships(p)` and single-type `type(r)` literals; tracked as a
-///     follow-up, ~108 corpus goldens embed it.
+///     (live: `[[LAX, JFK], [FLIGHT], 1]`). FIXED (#485): single-type VLP
+///     `path_relationships` values used to leak the composite schema key
+///     (`FOLLOWS::User::User`, not `FOLLOWS`) — same leak as
+///     `relationships(p)` and single-type `type(r)` literals. Literals now
+///     emit only the Cypher-visible type name via
+///     `composite_key_utils::extract_type_name`.
 ///
 /// Verified CORRECT (normal locks, not suspicious) — all live-verified
 /// against the local `social` fixture (8 Users, 5 Posts, 10 FOLLOWS,
@@ -459,7 +486,10 @@ const BROWSER_CORPUS: &[(&str, &str)] = &[
 ///
 /// Not expressible in this schema (single edge type, from_node Order != to_node
 /// Customer, so an edge cannot chain into itself), intentionally omitted:
-///   - VLP `*1..N` / multi-hop — no second hop exists out of Customer.
+///   - recursive VLP — no second hop exists out of Customer. (The
+///     `vlp_nontransitive_path_var` entry below deliberately WRITES a VLP
+///     `*1..2`, locking the #488 clamp-to-single-hop + fixed-path-route
+///     behavior, not a recursive CTE.)
 ///   - multi-type `[:A|B]` — only one edge type (PLACED_BY).
 ///   - UNWIND/arrayJoin shapes — same Spark structural gap the standard corpus
 ///     skips.
@@ -687,6 +717,19 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
     (
         "distinct_hop",
         "MATCH (o:Order)-[:PLACED_BY]->(c:Customer) RETURN DISTINCT c.name",
+    ),
+    // --- #488: non-transitive VLP with a bound path variable ---
+    // PLACED_BY cannot chain (Order->Customer; Customer never re-enters as a
+    // FROM node), so the transitivity pass clamps *1..2 to a single hop. The
+    // bound path variable must then take the FIXED-path route
+    // (tuple('fixed_path', ...) + component columns) exactly like the plain
+    // single-hop `MATCH p = (o)-[:PLACED_BY]->(c)`. Previously the renderer
+    // still emitted tuple(t.path_nodes, ...) against a recursive VLP CTE that
+    // was never generated — unbound alias `t`, ClickHouse Code 47. Live:
+    // executes on db_fk_edge (8 rows, one per order).
+    (
+        "vlp_nontransitive_path_var",
+        "MATCH p = (o:Order)-[:PLACED_BY*1..2]->(c) RETURN p",
     ),
 ];
 
@@ -3503,6 +3546,50 @@ async fn browser_vlp_path_return_uses_only_cte_defined_columns() {
             "expected the path tuple to consume the CTE's actual projection \
              (path_nodes, path_relationships, hop_count) for {dialect:?}:\n{sql}"
         );
+    }
+}
+
+/// CHARACTERIZATION (pending the transitivity-clamp fix): the #488 path-var
+/// re-registration is deliberately GUARDED to directed patterns with
+/// min_hops >= 1, because `VlpTransitivityCheck`'s clamp-to-single-hop is
+/// semantically wrong for two shapes (pre-existing on main, filed as its own
+/// clamp follow-up issue):
+///   - `*0..N` — zero-hop paths are real (the start node itself), so a
+///     single-hop clamp drops rows;
+///   - undirected — reverse-direction chaining can make >1-hop paths
+///     possible; the clamp never consults direction.
+/// For those shapes the guard keeps main's LOUD failure — `RETURN p` still
+/// renders `tuple(t.path_nodes, ...)` with NO recursive CTE (alias `t`
+/// unbound, ClickHouse Code 47 at exec) — rather than silently returning the
+/// clamped wrong rows. When the clamp itself is fixed, these shapes should
+/// produce real paths and this lock must be replaced with byte-goldens.
+#[tokio::test]
+async fn fk_edge_nontransitive_vlp_guarded_shapes_stay_loud_488() {
+    let schema = load_schema(SchemaId::FkEdge.yaml_path());
+    for cypher in [
+        // zero-hop lower bound
+        "MATCH p = (o:Order)-[:PLACED_BY*0..2]->(c) RETURN p",
+        // undirected
+        "MATCH p = (o:Order)-[:PLACED_BY*1..2]-(c) RETURN p",
+    ] {
+        for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+            let sql = render(&schema, cypher, dialect).await;
+            assert!(
+                sql.contains("t.path_nodes"),
+                "guarded shape must keep the loud unbound-`t` rendering (not \
+                 silently clamp) for {dialect:?}: {cypher}\n{sql}"
+            );
+            assert!(
+                !sql.contains("fixed_path"),
+                "guarded shape must NOT take the fixed-path route (that would \
+                 silently return clamped rows) for {dialect:?}: {cypher}\n{sql}"
+            );
+            assert!(
+                !sql.to_uppercase().contains("WITH RECURSIVE"),
+                "no recursive CTE is expected for these shapes until the clamp \
+                 fix lands for {dialect:?}: {cypher}\n{sql}"
+            );
+        }
     }
 }
 

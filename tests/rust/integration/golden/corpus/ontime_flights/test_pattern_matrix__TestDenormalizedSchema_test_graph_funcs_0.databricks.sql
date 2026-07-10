@@ -1,5 +1,5 @@
 SELECT 
-      'FLIGHT::Airport::Airport' AS `type(r)`, 
+      'FLIGHT' AS `type(r)`, 
       r.Origin AS `id(a)`, 
       array('Airport') AS `labels(a)`
 FROM default.flights AS r

@@ -1,5 +1,5 @@
 SELECT 
-      'FLIGHT::Airport::Airport' AS `type(r)`, 
+      'FLIGHT' AS `type(r)`, 
       count(*) AS `cnt`
 FROM default.flights AS r
-GROUP BY 'FLIGHT::Airport::Airport'
+GROUP BY 'FLIGHT'

@@ -3,7 +3,7 @@ WITH RECURSIVE vlp_u1_u2 AS (
         start_node.user_id as start_id,
         end_node.user_id as end_id,
         1 as hop_count,
-        array('FOLLOWS::User::User') as path_relationships,
+        array('FOLLOWS') as path_relationships,
         array(start_node.user_id, end_node.user_id) as path_nodes,
         start_node.full_name as start_name,
         end_node.full_name as end_name
@@ -16,7 +16,7 @@ WITH RECURSIVE vlp_u1_u2 AS (
         vp.start_id,
         end_node.user_id as end_id,
         vp.hop_count + 1 as hop_count,
-        concat(vp.path_relationships, array('FOLLOWS::User::User')) as path_relationships,
+        concat(vp.path_relationships, array('FOLLOWS')) as path_relationships,
         concat(vp.path_nodes, array(end_node.user_id)) as path_nodes,
         vp.start_name as start_name,
         end_node.full_name as end_name
