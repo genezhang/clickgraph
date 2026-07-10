@@ -5604,4 +5604,78 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
              or pipe-join scaffolding: {sql}"
         );
     }
+
+    /// #489: denormalized VLP `*0..N` must emit a genuine zero-hop base case
+    /// (the start node paired with itself, `hop_count = 0`), matching the
+    /// standard (non-denormalized) VLP CTE's behavior. Before the fix, the
+    /// `DenormalizedCteStrategy` recursive CTE's base case unconditionally
+    /// started at `hop_count = 1` regardless of `min_hops`, so `*0..N`
+    /// silently dropped every zero-hop row. Live-verified against
+    /// ground-truth ClickHouse data (5 airports -> 5 zero-hop rows, 5 direct
+    /// flights -> 5 one-hop rows, 3 real 2-hop chains -> 3 two-hop rows).
+    #[tokio::test]
+    async fn denorm_vlp_zero_hop_min_bound_emits_self_paired_base_case_489() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH p = (a:Airport)-[:FLIGHT*0..2]->(b:Airport) RETURN p",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        assert!(
+            sql.contains("0 as hop_count"),
+            "expected a genuine zero-hop (hop_count = 0) base case branch: {sql}"
+        );
+        assert!(
+            sql.contains("node_universe"),
+            "expected the zero-hop base case to scan a synthesized node \
+             universe (denormalized schemas have no separate node table): {sql}"
+        );
+        // The zero-hop base case's start_id and end_id must be the SAME
+        // column (the node paired with itself) — not two different roles.
+        assert!(
+            sql.contains("node_universe.__node_id as start_id")
+                && sql.contains("node_universe.__node_id as end_id"),
+            "zero-hop row must pair the node with itself: {sql}"
+        );
+        // Empty path_edges/path_relationships in the zero-hop branch must be
+        // explicitly typed (Array(String)) — a bare `[]` would infer
+        // Array(Nothing) and break the recursive term's arrayConcat, which
+        // always concatenates a real String element (ClickHouse Code 70).
+        assert!(
+            sql.contains("CAST([] AS Array(String))"),
+            "zero-hop branch's empty arrays must be explicitly cast to \
+             Array(String) to match the recursive term's column types: {sql}"
+        );
+    }
+
+    /// #489 (regression guard): `*1..N` (no zero-hop) on the SAME
+    /// denormalized schema must be completely unaffected by the zero-hop
+    /// fix — no node_universe scan, no hop_count=0 branch, base case stays
+    /// exactly the direct 1-hop edge-table scan it always was.
+    #[tokio::test]
+    async fn denorm_vlp_min_hops_one_unaffected_by_zero_hop_fix_489() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH p = (a:Airport)-[:FLIGHT*1..2]->(b:Airport) RETURN p",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        assert!(
+            !sql.contains("node_universe"),
+            "min_hops=1 must not go through the new zero-hop node-universe \
+             path at all: {sql}"
+        );
+        assert!(
+            !sql.contains("0 as hop_count"),
+            "min_hops=1 must not emit a zero-hop branch: {sql}"
+        );
+        assert!(
+            sql.contains("1 as hop_count"),
+            "min_hops=1 base case must still start at hop_count=1: {sql}"
+        );
+    }
 }
