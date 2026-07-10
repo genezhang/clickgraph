@@ -65,11 +65,12 @@ jobs:
       run: |
         chmod +x scripts/test/setup_social_integration_data.sh
         scripts/test/setup_social_integration_data.sh
-        chmod +x scripts/setup/setup_fk_edge_data.sh scripts/setup/setup_polymorphic_data.sh scripts/setup/setup_composite_id_data.sh scripts/setup/setup_denormalized_data.sh
+        chmod +x scripts/setup/setup_fk_edge_data.sh scripts/setup/setup_polymorphic_data.sh scripts/setup/setup_composite_id_data.sh scripts/setup/setup_denormalized_data.sh scripts/setup/setup_multi_tenant_brahmand_data.sh
         scripts/setup/setup_fk_edge_data.sh
         scripts/setup/setup_polymorphic_data.sh
         scripts/setup/setup_composite_id_data.sh
         scripts/setup/setup_denormalized_data.sh
+        scripts/setup/setup_multi_tenant_brahmand_data.sh
 
     - name: Start ClickGraph server
       run: |
