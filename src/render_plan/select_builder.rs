@@ -1316,6 +1316,29 @@ impl SelectBuilder for LogicalPlan {
                             });
                         }
 
+                        // Case 6a: Aggregate call — resolve denormalized node
+                        // references inside the arguments (#493). The planner
+                        // rewrites count(b) → count(b.<node_id>) for NULL-correct
+                        // OPTIONAL counting, but for a denormalized node `b` has no
+                        // physical table: the reference must resolve onto the owning
+                        // edge's embedded column (e.g. count(b.code) →
+                        // count(t1.dest_code)), exactly as Case 4 does for a bare
+                        // property access. Without this the alias leaks unresolved →
+                        // ClickHouse UNKNOWN_IDENTIFIER. Standard/own-table nodes are
+                        // untouched (no override alias).
+                        LogicalExpr::AggregateFnCall(_) => {
+                            let mut expr: RenderExpr = item.expression.clone().try_into()?;
+                            self.resolve_denorm_refs_in_expr(&mut expr, plan_ctx);
+                            select_items.push(SelectItem {
+                                expression: expr,
+                                col_alias: item
+                                    .col_alias
+                                    .as_ref()
+                                    .map(|ca| ca.clone().try_into())
+                                    .transpose()?,
+                            });
+                        }
+
                         // Case 6: Other regular expressions (function call, literals, etc.)
                         _ => {
                             log::debug!(
@@ -1438,6 +1461,93 @@ impl SelectBuilder for LogicalPlan {
 // ============================================================================
 
 impl LogicalPlan {
+    /// Resolve denormalized-node property references nested inside an
+    /// expression (aggregate arguments, and the DISTINCT/scalar wrappers the
+    /// planner builds around them) onto the owning edge's table alias and
+    /// embedded column — the recursive sibling of Case 4's bare
+    /// `PropertyAccessExp` handling (#493).
+    ///
+    /// Only references that resolve to an OVERRIDE table alias (i.e. the node
+    /// is embedded in an edge table / denorm-scan binding) are rewritten;
+    /// own-table nodes, CTE-sourced variables, and pattern_union relationship
+    /// aliases are left untouched, so standard schemas render byte-identically.
+    fn resolve_denorm_refs_in_expr(
+        &self,
+        expr: &mut RenderExpr,
+        plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
+    ) {
+        match expr {
+            RenderExpr::PropertyAccessExp(pa) => {
+                let alias = pa.table_alias.0.clone();
+                // CTE-sourced variables resolve forward through their CTE
+                // columns (CLAUDE.md rule 2) — never remap them here.
+                if let Some(ctx) = plan_ctx {
+                    if let Some(typed_var) = ctx.lookup_variable(&alias) {
+                        if matches!(typed_var.source(), VariableSource::Cte { .. }) {
+                            return;
+                        }
+                    }
+                }
+                // pattern_union CTEs project properties under their property
+                // names — same pass-through as Case 4.
+                if crate::render_plan::cte_extraction::is_pattern_union_rel_alias(&alias, self) {
+                    return;
+                }
+                if let Ok((props, Some(actual_alias))) =
+                    self.get_properties_with_table_alias(&alias)
+                {
+                    let col_name = pa.column.raw().to_string();
+                    // Cypher property name → embedded column (count(b.code) →
+                    // t1.dest_code); an already-mapped column keeps its name.
+                    if let Some((_, mapped)) = props.iter().find(|(p, _)| *p == col_name) {
+                        pa.column = PropertyValue::Column(mapped.clone());
+                    }
+                    log::debug!(
+                        "🔍 resolve_denorm_refs_in_expr: {}.{} → {}.{}",
+                        alias,
+                        col_name,
+                        actual_alias,
+                        pa.column.raw()
+                    );
+                    pa.table_alias = RenderTableAlias(actual_alias);
+                }
+            }
+            RenderExpr::AggregateFnCall(agg) => {
+                for arg in &mut agg.args {
+                    self.resolve_denorm_refs_in_expr(arg, plan_ctx);
+                }
+            }
+            RenderExpr::ScalarFnCall(sf) => {
+                for arg in &mut sf.args {
+                    self.resolve_denorm_refs_in_expr(arg, plan_ctx);
+                }
+            }
+            RenderExpr::OperatorApplicationExp(op) => {
+                for operand in &mut op.operands {
+                    self.resolve_denorm_refs_in_expr(operand, plan_ctx);
+                }
+            }
+            RenderExpr::Case(case) => {
+                if let Some(ref mut e) = case.expr {
+                    self.resolve_denorm_refs_in_expr(e, plan_ctx);
+                }
+                for (cond, result) in &mut case.when_then {
+                    self.resolve_denorm_refs_in_expr(cond, plan_ctx);
+                    self.resolve_denorm_refs_in_expr(result, plan_ctx);
+                }
+                if let Some(ref mut e) = case.else_expr {
+                    self.resolve_denorm_refs_in_expr(e, plan_ctx);
+                }
+            }
+            RenderExpr::List(items) => {
+                for item in items {
+                    self.resolve_denorm_refs_in_expr(item, plan_ctx);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Check if this plan contains a GraphRel with pattern_combinations for the given alias
     fn has_pattern_combinations_for_alias(&self, alias: &str) -> bool {
         match self {

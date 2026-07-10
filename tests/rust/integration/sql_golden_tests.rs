@@ -2590,6 +2590,71 @@ async fn denorm_optional_join_key_forward_resolved_and_deterministic_470() {
     }
 }
 
+/// #493 regression: `MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b)
+/// RETURN a.code, count(b)` on the denormalized flights schema emitted
+/// `count(b.code)` with `b` never bound to any table alias — ClickHouse
+/// UNKNOWN_IDENTIFIER at execution. The planner correctly rewrites
+/// `count(node)` → `count(node.<node_id>)` for NULL-correct OPTIONAL
+/// counting, but the SELECT extraction only resolved denormalized (virtual)
+/// node references at the TOP level of a projection item, not inside
+/// aggregate arguments. The reference must resolve onto the owning edge's
+/// embedded column: `count(t1.dest_code)` — NULL-sensitive, so optional-miss
+/// rows count 0.
+///
+/// Live-verified on `db_denormalized` (8 flights): OPTIONAL variant returns 7
+/// groups with `PHX -> 0` (the dest-only airport), required variant returns 6
+/// groups, both matching hand-written LEFT-JOIN/GROUP-BY ground truth with
+/// `join_use_nulls=1` (the setting production applies). Both previously
+/// failed with UNKNOWN_IDENTIFIER.
+#[tokio::test]
+async fn denorm_count_node_resolves_embedded_id_column_493() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+
+    // (cypher, the aggregate that must appear after `normalize`'s alias
+    // anonymization — the single edge scan is always the first t-alias, t0 —
+    // and a context tag)
+    let cases = [
+        (
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) RETURN a.code, count(b)",
+            "count(t0.dest_code)",
+            "optional count(b)",
+        ),
+        (
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) RETURN a.code, count(DISTINCT b)",
+            "count(DISTINCT t0.dest_code)",
+            "optional count(DISTINCT b)",
+        ),
+        (
+            "MATCH (a:Airport)-[:FLIGHT]->(b) RETURN a.code, count(b)",
+            "count(t0.dest_code)",
+            "required count(b)",
+        ),
+    ];
+
+    for (cypher, want_agg, tag) in cases {
+        let first = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+        for _ in 0..5 {
+            let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(
+                first, again,
+                "#493 [{tag}]: render is nondeterministic:\nFIRST:\n{first}\nAGAIN:\n{again}"
+            );
+        }
+        // The aggregate must reference the owning edge's embedded to-column…
+        assert!(
+            first.contains(want_agg),
+            "#493 [{tag}]: expected `{want_agg}` (owning edge's embedded id \
+             column, NULL-sensitive), got:\n{first}"
+        );
+        // …and the unbound cypher alias must not leak into the SQL.
+        assert!(
+            !first.contains("count(b.") && !first.contains("count(DISTINCT b."),
+            "#493 [{tag}]: unresolved alias `b` leaked into the aggregate \
+             (UNKNOWN_IDENTIFIER at execution):\n{first}"
+        );
+    }
+}
+
 /// #475 regression: on the coupled cross-table denorm `zeek_merged_test`
 /// schema, `MATCH (a:IP) OPTIONAL MATCH (a)-[:REQUESTED]->(d:Domain) RETURN
 /// a.ip, a.port, d.name` sourced the ANCHOR property `a.port` from the
