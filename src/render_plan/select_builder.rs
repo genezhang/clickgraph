@@ -45,6 +45,138 @@ fn json_extract_field_arg(col_name: &str) -> String {
     }
 }
 
+/// #492: Translate a denormalized node's DB column to the side of the edge a
+/// property lookup actually bound the alias to.
+///
+/// In a denormalized multi-hop chain the shared middle node is adjacent to two
+/// edges; the planner's schema rewrite may resolve its property against one
+/// edge's side (e.g. `b.code` → `Dest`, b as t1's to-node) while
+/// `get_properties_with_table_alias` binds the alias to the other edge (t2,
+/// where b is the from-node whose column is `Origin`). Rendering the first
+/// edge's column with the second edge's table alias reads the WRONG endpoint.
+/// Reverse-lookup the Cypher property whose from-/to-side DB column equals
+/// `col_name` on the node schema, then map it through `properties` (the bound
+/// side's `(cypher_name, db_column)` pairs). Mirrors the cross-side fix in the
+/// WITH-CTE path (`plan_builder_utils::resolve_denormalized_property_in_expr`).
+///
+/// `pub(crate)`: shared with the WHERE/filter path
+/// (`plan_builder_helpers::apply_property_mapping_to_expr`), which has the
+/// identical cross-side hazard.
+pub(crate) fn translate_denorm_cross_side_column(
+    plan: &LogicalPlan,
+    alias: &str,
+    col_name: &str,
+    properties: &[(String, String)],
+) -> Option<String> {
+    use crate::query_planner::logical_expr::expression_rewriter::find_label_for_alias_in_plan;
+    use crate::server::query_context::get_current_schema_with_fallback;
+
+    let schema = get_current_schema_with_fallback()?;
+    // Label may be unresolved on some plan shapes (e.g. ORDER BY-wrapped
+    // branches leave GraphNode.label = None); the catalog API then searches
+    // all node schemas and the `properties` filter below keeps it scoped to
+    // the alias's actual bound side.
+    let label = find_label_for_alias_in_plan(plan, alias);
+    for cypher_name in schema.denorm_properties_for_side_column(label.as_deref(), col_name) {
+        if let Some((_, correct_col)) = properties.iter().find(|(pn, _)| *pn == cypher_name) {
+            if correct_col != col_name {
+                log::info!(
+                    "🔧 Denormalized cross-side fix: '{}.{}' (from '{}') → '{}'",
+                    alias,
+                    col_name,
+                    cypher_name,
+                    correct_col
+                );
+            }
+            return Some(correct_col.clone());
+        }
+    }
+    None
+}
+
+/// #492/#491 interaction fix: `get_properties_with_table_alias` picks a
+/// node alias's property source PURELY STRUCTURALLY — the first GraphRel in
+/// the tree whose left/right connection matches, regardless of which edge
+/// the alias will actually be RENDERED against (`table_alias_override`, from
+/// the `denormalized_node_edges` registry). Ordinarily these agree (the
+/// registry's last-write-wins matches the structurally-outermost edge for
+/// required chains). #491 made OPTIONAL patterns keep an EARLIER binding
+/// instead of overwriting it — so for `(a)-[t1]->(b) OPTIONAL (b)-[t2]->(c)`,
+/// `b` renders against `t1` (registry, #491-correct) while the structural
+/// walk still matches `t2` (the outer/optional GraphRel) first. Using `t2`'s
+/// properties for cross-side translation while rendering against `t1`
+/// combines a value from the WRONG edge with the RIGHT alias (silently wrong:
+/// `t1.origin_code`, `a`'s own column, instead of `t1.dest_code`).
+///
+/// Re-derive the `(cypher_name, db_column)` pairs directly from the edge
+/// identified by `table_alias_override` when it is present in the tree as a
+/// `GraphRel.alias`, so cypher-name lookups and cross-side translation always
+/// operate on the SAME edge the alias renders against. Returns `None` (caller
+/// falls back to the structurally-obtained properties) for alias schemes that
+/// aren't literal `GraphRel.alias` values in this plan (e.g. `CoupledSameRow`'s
+/// `unified_alias` — #481 territory, unaffected by this fix).
+pub(crate) fn properties_for_registered_edge(
+    plan: &LogicalPlan,
+    node_alias: &str,
+    edge_alias: &str,
+) -> Option<Vec<(String, String)>> {
+    match plan {
+        LogicalPlan::GraphRel(rel) => {
+            if rel.alias == edge_alias {
+                // Route through the schema catalog (axis-dispatch rule): the
+                // edge's own denormalized property maps live on
+                // `RelationshipSchema`, not the `ViewScan` — reading the scan
+                // field directly would be a raw-flag branch outside its
+                // canonical dispatch module.
+                let is_from_node = if node_alias == rel.left_connection {
+                    true
+                } else if node_alias == rel.right_connection {
+                    false
+                } else {
+                    return None;
+                };
+                let rel_type = rel
+                    .labels
+                    .as_ref()
+                    .and_then(|labels| labels.first())
+                    .map(|l| l.split("::").next().unwrap_or(l))?;
+                let schema = crate::server::query_context::get_current_schema_with_fallback()?;
+                let rel_schema = schema.get_relationships_schema_opt(rel_type)?;
+                let props = rel_schema.denorm_side_properties(is_from_node);
+                return if props.is_empty() { None } else { Some(props) };
+            }
+            properties_for_registered_edge(&rel.left, node_alias, edge_alias)
+                .or_else(|| properties_for_registered_edge(&rel.right, node_alias, edge_alias))
+        }
+        LogicalPlan::GraphNode(n) => {
+            properties_for_registered_edge(&n.input, node_alias, edge_alias)
+        }
+        LogicalPlan::Projection(p) => {
+            properties_for_registered_edge(&p.input, node_alias, edge_alias)
+        }
+        LogicalPlan::Filter(f) => properties_for_registered_edge(&f.input, node_alias, edge_alias),
+        LogicalPlan::GraphJoins(gj) => {
+            properties_for_registered_edge(&gj.input, node_alias, edge_alias)
+        }
+        LogicalPlan::OrderBy(ob) => {
+            properties_for_registered_edge(&ob.input, node_alias, edge_alias)
+        }
+        LogicalPlan::Skip(s) => properties_for_registered_edge(&s.input, node_alias, edge_alias),
+        LogicalPlan::Limit(l) => properties_for_registered_edge(&l.input, node_alias, edge_alias),
+        LogicalPlan::GroupBy(gb) => {
+            properties_for_registered_edge(&gb.input, node_alias, edge_alias)
+        }
+        LogicalPlan::Union(u) => u
+            .inputs
+            .iter()
+            .find_map(|i| properties_for_registered_edge(i, node_alias, edge_alias)),
+        LogicalPlan::WithClause(wc) => {
+            properties_for_registered_edge(&wc.input, node_alias, edge_alias)
+        }
+        _ => None,
+    }
+}
+
 /// SelectBuilder trait for extracting SELECT items from logical plans
 pub trait SelectBuilder {
     /// Extract SELECT items from the logical plan
@@ -1057,11 +1189,59 @@ impl SelectBuilder for LogicalPlan {
                             if let Ok((properties, table_alias_override)) =
                                 self.get_properties_with_table_alias(cypher_alias)
                             {
-                                // Look up the column name for this property
+                                // #492/#491 interaction fix: `properties` may have been
+                                // matched structurally against a DIFFERENT edge than
+                                // `table_alias_override` (e.g. an OPTIONAL pattern's
+                                // registry entry was kept from an earlier required
+                                // pattern per #491, but the structural walk still finds
+                                // the optional GraphRel first). Re-derive from the
+                                // REGISTERED edge when possible so column and alias
+                                // always come from the same source.
+                                let properties = table_alias_override
+                                    .as_deref()
+                                    .and_then(|edge_alias| {
+                                        properties_for_registered_edge(
+                                            self,
+                                            cypher_alias,
+                                            edge_alias,
+                                        )
+                                    })
+                                    .unwrap_or(properties);
+
+                                // Look up the column name for this property.
+                                // Match by Cypher property name first, then by DB column
+                                // name (schema mapping may have already rewritten the
+                                // expression), then cross-side (#492): in a denormalized
+                                // multi-hop chain the schema rewrite may have bound the
+                                // shared middle node to a DIFFERENT adjacent edge's side
+                                // (e.g. b.code → t1's `Dest`) than the edge this lookup
+                                // resolved (t2, whose side for b is `Origin`). Translate
+                                // the column through the node schema so column and table
+                                // alias come from the SAME edge.
                                 let mapped_column = properties
                                     .iter()
                                     .find(|(prop_name, _)| prop_name == col_name)
-                                    .map(|(_, col)| col.clone());
+                                    .map(|(_, col)| col.clone())
+                                    .or_else(|| {
+                                        // Only for denormalized bindings (the lookup
+                                        // returned an edge alias override) — standard
+                                        // nodes (incl. expression-valued property
+                                        // mappings) keep the pass-through behavior.
+                                        if table_alias_override.is_none() {
+                                            None
+                                        } else if properties.iter().any(|(_, col)| col == col_name)
+                                        {
+                                            // Already the correct side's DB column
+                                            Some(col_name.to_string())
+                                        } else {
+                                            translate_denorm_cross_side_column(
+                                                self,
+                                                cypher_alias,
+                                                col_name,
+                                                &properties,
+                                            )
+                                        }
+                                    });
 
                                 if let Some(actual_column) = mapped_column {
                                     let table_alias_to_use = table_alias_override

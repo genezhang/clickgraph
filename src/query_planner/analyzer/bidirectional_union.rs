@@ -238,10 +238,33 @@ fn transform_bidirectional(
                     ))));
                 }
 
-                // Skip Union split for nested undirected edges (same as GraphRel case)
-                if has_nested_undirected_edge(&proj.input) {
+                // #492: A nested undirected edge (an undirected hop whose left
+                // subtree is another GraphRel, e.g. the second hop of
+                // (a)-[:R]-(b)-[:R]-(c)) used to be skipped here, silently
+                // dropping Direction::Either — the pattern rendered as a single
+                // directed join chain. The GraphRel arm's identical skip was
+                // removed long ago (the Incoming branch swap restructures the
+                // chain correctly); this Projection-arm copy was left behind and
+                // real queries (RETURN wraps the pattern in a Projection) always
+                // hit this arm first. Fall through to the Union split — EXCEPT
+                // for OPTIONAL patterns (gate below).
+                //
+                // #492 review B3 — OPTIONAL gate: the split renders each
+                // orientation as its own LEFT-JOIN chain under UNION ALL,
+                // which cannot express OPTIONAL semantics: a branch-level
+                // uniqueness guard in WHERE drops the NULL-anchor rows; making
+                // it NULL-safe instead surfaces partial-pattern rows (first
+                // hop bound, second NULL — Cypher binds a pattern whole or not
+                // at all), duplicates the NULL-anchor row once per FROM-anchor
+                // branch, and the Incoming-swapped branches anchor the FROM on
+                // the WRONG (optional) node, leaking NULL-anchor garbage.
+                // Correct support needs an anchor-LEFT-JOIN-onto-match-union
+                // structure the renderer does not have yet. Until then, keep
+                // main's pre-#492 behavior for OPTIONAL nested-undirected
+                // patterns (single directed LEFT chain — no new wrongness).
+                if has_optional_nested_undirected_edge(&proj.input) {
                     crate::debug_print!(
-                        "🔄 BidirectionalUnion: Nested undirected edge in Projection subtree, skipping Union split"
+                        "🔄 BidirectionalUnion: OPTIONAL nested undirected pattern — keeping pre-#492 behavior (no Union split)"
                     );
                     return Ok(Transformed::No(plan.clone()));
                 }
@@ -712,12 +735,53 @@ fn count_undirected_edges(plan: &Arc<LogicalPlan>) -> usize {
     }
 }
 
+/// #492 review B3: Detect an OPTIONAL nested undirected edge — an undirected
+/// (Either) GraphRel that is `is_optional` and whose left subtree is ANOTHER
+/// GraphRel that is ALSO `is_optional` (the second+ hop of the SAME OPTIONAL
+/// multi-hop chain — both hops of `OPTIONAL MATCH (a)-[:R]-(b)-[:R]-(c)` carry
+/// `is_optional: Some(true)`). These patterns are gated out of the Union split
+/// (see the Projection arm) because the per-orientation LEFT-JOIN + UNION ALL
+/// structure cannot express OPTIONAL semantics. Required (non-optional)
+/// nested undirected chains DO split.
+///
+/// #492 review round 3 (B3 scope-tightening): requiring the NESTED GraphRel to
+/// ALSO be `is_optional` is load-bearing. When an OPTIONAL clause shares its
+/// anchor alias with an earlier REQUIRED chain (e.g. `MATCH
+/// (a)-[:R1]-(b)-[:R1]-(c) OPTIONAL MATCH (a)-[:R2]-(p)`), the planner nests
+/// the unrelated required chain as the OPTIONAL edge's `left` subtree purely
+/// through shared aliasing — that required chain's GraphRels carry
+/// `is_optional: None`. Gating on "any reachable GraphRel" (the original
+/// check) could not tell "my own optional hop" from "an unrelated required
+/// GraphRel that happens to be my ancestor", and wrongly suppressed the
+/// REQUIRED chain's split too (0 branches instead of 4 — main's pre-existing
+/// bug, so not a NEW wrongness, but silently reverting value #492 already
+/// delivered for that shape).
+fn has_optional_nested_undirected_edge(plan: &Arc<LogicalPlan>) -> bool {
+    match plan.as_ref() {
+        LogicalPlan::GraphRel(gr) => {
+            (gr.direction == Direction::Either
+                && gr.is_optional == Some(true)
+                && matches!(
+                    gr.left.as_ref(),
+                    LogicalPlan::GraphRel(inner) if inner.is_optional == Some(true)
+                ))
+                || has_optional_nested_undirected_edge(&gr.left)
+                || has_optional_nested_undirected_edge(&gr.right)
+        }
+        LogicalPlan::Projection(p) => has_optional_nested_undirected_edge(&p.input),
+        LogicalPlan::Filter(f) => has_optional_nested_undirected_edge(&f.input),
+        _ => false,
+    }
+}
+
 /// Check if any undirected edge in the plan has a nested GraphRel as its left subtree.
-/// When this is the case, the UNION branch swap for the Incoming direction would
-/// destructively restructure the FROM/JOIN chain, causing broken SQL (wrong FROM table,
-/// duplicate aliases, joins referencing tables before declaration).
-/// Instead, these patterns should keep Direction::Either and let the join builder
-/// handle both directions with an OR condition.
+/// Historical helper: both the GraphRel arm and the Projection arm of
+/// `transform_bidirectional` used to skip the Union split for such patterns,
+/// silently dropping Direction::Either (#492). The Incoming branch swap
+/// restructures the chain correctly, so REQUIRED patterns no longer consult
+/// this (OPTIONAL ones are gated via `has_optional_nested_undirected_edge`);
+/// it is kept only for the characterization tests below.
+#[cfg(test)]
 fn has_nested_undirected_edge(plan: &Arc<LogicalPlan>) -> bool {
     match plan.as_ref() {
         LogicalPlan::GraphRel(gr) => {
@@ -765,6 +829,33 @@ struct RelInfo {
     /// If edge_id defined in schema, use those columns.
     /// Otherwise, default to [from_id, to_id].
     edge_id_cols: Vec<String>,
+    /// Base relationship type names (composite `TYPE::From::To` suffixes
+    /// stripped). Empty = untyped pattern (may bind any type).
+    rel_types: Vec<String>,
+    /// The edge table this pattern scans (`database.table`). Two patterns can
+    /// only ever bind the SAME physical relationship row if they scan the
+    /// same table.
+    source_table: Option<String>,
+}
+
+impl RelInfo {
+    /// Whether two relationship patterns could bind the SAME physical
+    /// relationship instance. Neo4j semantics: relationships of DIFFERENT
+    /// types are never identical, so a uniqueness guard between them is not
+    /// just unnecessary — it wrongly excludes rows whose (coincidentally
+    /// same-named) id columns collide, e.g. AUTHORED vs LIKED both keyed by
+    /// [user_id, post_id] (#492 review). Requires the same source table AND
+    /// overlapping type sets (an untyped pattern binds any type on its table).
+    fn may_bind_same_relationship(&self, other: &RelInfo) -> bool {
+        if self.source_table != other.source_table || self.source_table.is_none() {
+            return false;
+        }
+        if self.rel_types.is_empty() || other.rel_types.is_empty() {
+            // Untyped pattern: could bind any type stored on this table.
+            return true;
+        }
+        self.rel_types.iter().any(|t| other.rel_types.contains(t))
+    }
 }
 
 /// Collect all relationship info from a plan for uniqueness filtering
@@ -814,13 +905,61 @@ fn collect_relationship_info_inner(
                     // Default to [from_id, to_id] if no edge_id defined
                     .unwrap_or_else(|| vec![from_id, to_id]);
 
-                rels.push(RelInfo {
-                    alias: graph_rel.alias.clone(),
-                    edge_id_cols,
+                // Base type names for same-type pairing (strip the composite
+                // `TYPE::From::To` disambiguation suffix).
+                let rel_types: Vec<String> = graph_rel
+                    .labels
+                    .as_ref()
+                    .map(|labels| {
+                        labels
+                            .iter()
+                            .map(|l| l.split("::").next().unwrap_or(l).to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                // #492 review RN5: FK-edge relationships have NO edge alias in
+                // the rendered SQL — the relationship row IS the anchor NODE's
+                // table row. A guard over the rel alias (t1/t2) would reference
+                // never-materialized identifiers (UNKNOWN_IDENTIFIER at
+                // execution). Compare the anchor node aliases' identity
+                // columns instead: two same-type FK-edge rel instances are the
+                // same relationship iff they are the same anchor row.
+                let fk_anchor = rel_types.first().and_then(|rt| {
+                    let rel_schema = graph_schema.get_relationships_schema_opt(rt)?;
+                    let anchor_is_from = graph_schema.fk_edge_anchor_is_from(rel_schema)?;
+                    let (alias, label) = if anchor_is_from {
+                        (&graph_rel.left_connection, &rel_schema.from_node)
+                    } else {
+                        (&graph_rel.right_connection, &rel_schema.to_node)
+                    };
+                    let id_cols = graph_schema.node_schema_opt(label)?.id_physical_columns();
+                    Some((alias.clone(), id_cols))
                 });
+
+                if let Some((anchor_alias, anchor_id_cols)) = fk_anchor {
+                    rels.push(RelInfo {
+                        alias: anchor_alias,
+                        edge_id_cols: anchor_id_cols,
+                        rel_types,
+                        source_table: Some(scan.source_table.clone()),
+                    });
+                } else {
+                    rels.push(RelInfo {
+                        alias: graph_rel.alias.clone(),
+                        edge_id_cols,
+                        rel_types,
+                        source_table: Some(scan.source_table.clone()),
+                    });
+                }
             }
-            // Recurse into left (inner relationships in chain)
+            // Recurse into BOTH subtrees: a chained pattern keeps the inner
+            // GraphRel in `left` for Outgoing outer hops, but the Incoming
+            // branch swap (apply_direction_combination) moves it into `right`.
+            // Recursing only left dropped the uniqueness filter on swapped
+            // branches of an undirected multi-hop (#492).
             collect_relationship_info_inner(&graph_rel.left, graph_schema, rels);
+            collect_relationship_info_inner(&graph_rel.right, graph_schema, rels);
         }
         LogicalPlan::Projection(proj) => {
             collect_relationship_info_inner(&proj.input, graph_schema, rels);
@@ -847,6 +986,16 @@ fn generate_relationship_uniqueness_filter(rels: &[RelInfo]) -> Option<LogicalEx
         for j in (i + 1)..rels.len() {
             let r1 = &rels[i];
             let r2 = &rels[j];
+
+            // #492 review: only guard pairs that could bind the SAME physical
+            // relationship (same table + overlapping types). Relationships of
+            // different types are never identical in Neo4j, and their id
+            // columns may coincide by name (AUTHORED vs LIKED both
+            // [user_id, post_id]) — guarding across types silently excluded
+            // e.g. every author-liked-own-post match.
+            if !r1.may_bind_same_relationship(r2) {
+                continue;
+            }
 
             // Build equality comparisons for all edge_id columns
             // If edge_id columns differ between relationships, we can't compare them
@@ -950,6 +1099,15 @@ fn generate_direction_combinations(
     let total_combinations = 1 << undirected_count; // 2^n
     let mut branches = Vec::with_capacity(total_combinations);
 
+    // NOTE (#492 review): self-loop convention. A physical self-loop edge
+    // (from_id == to_id) satisfies the join condition of MULTIPLE orientation
+    // branches, so it is emitted once PER ORIENTATION by this expansion —
+    // whereas Neo4j returns an undirected self-loop traversal once. The
+    // single-hop pattern_union path handles this with an explicit reverse-
+    // branch self-loop guard (#466); the multi-hop expansion here does not
+    // (yet). Documented, not fixed — the benchmark/test datasets contain no
+    // self-loops, and deduplicating here requires a per-branch guard keyed on
+    // each undirected hop's from/to columns.
     for combination in 0..total_combinations {
         // Each bit in `combination` represents the direction of an undirected edge:
         // 0 = Outgoing, 1 = Incoming

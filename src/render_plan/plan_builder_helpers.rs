@@ -2551,6 +2551,54 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
             if let Some(rel_alias) =
                 crate::render_plan::get_denormalized_alias_mapping(&prop.table_alias.0)
             {
+                // #492: cross-side fix for the WHERE/filter path. In a
+                // denormalized multi-hop chain the shared middle node's column
+                // may have been schema-mapped via a DIFFERENT adjacent edge's
+                // side (e.g. `b.code` → t1's `Dest`) than the edge this remap
+                // binds the alias to (t2, whose side for b is `Origin`).
+                // Re-mapping the alias while keeping the column would read the
+                // WRONG endpoint. Translate the column onto the bound edge's
+                // side first (same recipe as the SELECT path).
+                if matches!(&prop.column, PropertyValue::Column(_)) {
+                    use crate::render_plan::properties_builder::PropertiesBuilder;
+                    if let Ok((properties, Some(_))) =
+                        plan.get_properties_with_table_alias(&prop.table_alias.0)
+                    {
+                        // #492/#491 interaction fix: `properties` may be
+                        // structurally matched against a DIFFERENT edge than
+                        // `rel_alias` (the registered edge this remap targets)
+                        // — e.g. an OPTIONAL pattern kept an earlier required
+                        // pattern's binding (#491) while the structural walk
+                        // still finds the optional GraphRel first. Re-derive
+                        // from the REGISTERED edge so the cross-side lookup
+                        // below operates on the edge we're actually remapping
+                        // onto, not whatever the structural walk found.
+                        let properties =
+                            crate::render_plan::select_builder::properties_for_registered_edge(
+                                plan,
+                                &prop.table_alias.0,
+                                &rel_alias,
+                            )
+                            .unwrap_or(properties);
+
+                        let col = prop.column.raw().to_string();
+                        let bound_side_known = properties
+                            .iter()
+                            .any(|(name, db_col)| *name == col || *db_col == col);
+                        if !bound_side_known {
+                            if let Some(fixed) =
+                                crate::render_plan::select_builder::translate_denorm_cross_side_column(
+                                    plan,
+                                    &prop.table_alias.0,
+                                    &col,
+                                    &properties,
+                                )
+                            {
+                                prop.column = PropertyValue::Column(fixed);
+                            }
+                        }
+                    }
+                }
                 prop.table_alias = TableAlias(rel_alias);
             }
         }

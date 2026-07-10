@@ -2411,6 +2411,31 @@ fn rewrite_plan_exprs_for_bridge(
     // Rewrite UNION branches
     if let Some(ref mut union) = plan.union.0 {
         for branch in union.input.iter_mut() {
+            // #492: a UNION branch that DEFINES the alias itself (has a
+            // FROM/JOIN with this table_alias) carries its own independent
+            // join structure — direction-union branches join the same node
+            // through a DIFFERENT orientation per branch, so the main plan's
+            // upstream FK is meaningless there. Rewriting such a branch
+            // corrupted its joins (tautologies like `t1.followed_id =
+            // t1.followed_id` and wrong-side chains that inflated results).
+            // The branch's own `optimize_joins_in_plan` pass performs its own
+            // bridge elimination with branch-correct upstreams. Only branches
+            // that reference the alias WITHOUT defining it (legacy shared-join
+            // union shapes) still need the parent's rewrite.
+            let branch_defines_alias = branch
+                .joins
+                .0
+                .iter()
+                .any(|j| j.table_alias == eliminated_alias)
+                || branch
+                    .from
+                    .0
+                    .as_ref()
+                    .and_then(|f| f.alias.as_deref())
+                    .is_some_and(|a| a == eliminated_alias);
+            if branch_defines_alias {
+                continue;
+            }
             for item in branch.select.items.iter_mut() {
                 rewrite_bridge_in_expr(
                     &mut item.expression,

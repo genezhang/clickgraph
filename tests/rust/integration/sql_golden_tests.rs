@@ -133,6 +133,34 @@ const CORPUS: &[(&str, &str)] = &[
         "cross_node_hop",
         "MATCH (u:User)-[:AUTHORED]->(p:Post) RETURN u.name, p.title",
     ),
+    // #492 review B2: mixed-TYPE 2-hop with an undirected hop. AUTHORED and
+    // LIKED share id column names ([user_id, post_id]) but are DIFFERENT
+    // relationship types — the uniqueness guard must NOT pair them (a
+    // cross-type guard silently excluded every author-liked-own-post match).
+    (
+        "mixed_type_2hop_undirected",
+        "MATCH (u:User)-[:AUTHORED]-(p:Post)<-[:LIKED]-(v:User) RETURN u.name, p.title, v.name",
+    ),
+    // #492 review RN4: undirected 2-hop with the MIDDLE node unreferenced.
+    // Locks that the Incoming-swapped branches keep valid joins — the parent
+    // plan's bridge-node elimination must not clobber branch-defined aliases
+    // (tautologies like `ON t1.followed_id = t1.followed_id` inflated results).
+    (
+        "partial_ref_undirected_2hop",
+        "MATCH (a:User)-[:FOLLOWS]-(b)-[:FOLLOWS]-(c:User) RETURN a.name, c.name",
+    ),
+    // #492 review round 3, finding 2 (B3 scope-tightening): a required
+    // undirected multi-hop must split fully (4 branches) even when an
+    // UNRELATED undirected OPTIONAL clause sharing the same anchor alias is
+    // also present. The OPTIONAL edge's `left` subtree structurally IS the
+    // required chain (shared anchor 'a'), but the required chain's own hops
+    // are not `is_optional` — the B3 gate must not fire for them.
+    (
+        "required_split_despite_unrelated_optional",
+        "MATCH (a:User)-[:FOLLOWS]-(b)-[:FOLLOWS]-(c:User) \
+         OPTIONAL MATCH (a)-[:AUTHORED]-(p:Post) \
+         RETURN a.name, c.name, p.title",
+    ),
     (
         "with_having",
         "MATCH (u:User) WITH u.country AS c, count(u) AS n WHERE n > 5 RETURN c, n",
@@ -615,6 +643,15 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
         "undirected_hop",
         "MATCH (o:Order)-[:PLACED_BY]-(c:Customer) RETURN o.order_id, c.name",
     ),
+    // #492 review RN5: undirected 2-hop through a shared Customer. FK-edge
+    // relationships have NO edge alias in the SQL (the rel row IS the Order
+    // row), so the uniqueness guard must compare the materialized node
+    // aliases (NOT a.order_id = b.order_id) — a guard over the rel aliases
+    // (t1/t2) referenced never-materialized identifiers.
+    (
+        "undirected_2hop_shared_customer",
+        "MATCH (a:Order)-[:PLACED_BY]-(c:Customer)-[:PLACED_BY]-(b:Order) RETURN a.order_id, c.customer_id, b.order_id",
+    ),
     // Filter on BOTH node types across the hop.
     (
         "hop_filter_both",
@@ -860,6 +897,38 @@ const DENORM_CORPUS: &[(&str, &str)] = &[
     (
         "undirected_hop",
         "MATCH (a:Airport)-[:FLIGHT]-(b:Airport) RETURN a.code, b.code",
+    ),
+    // Undirected 2-hop (#492): must UNION all four direction assignments
+    // (2 per undirected hop) with a relationship-uniqueness guard per branch,
+    // NOT collapse to a single directed join chain.
+    (
+        "undirected_2hop",
+        "MATCH (a:Airport)-[:FLIGHT]-(b:Airport)-[:FLIGHT]-(c:Airport) RETURN a.code, b.code, c.code",
+    ),
+    // Mixed-direction 2-hop (#492): the trailing undirected hop alone must
+    // fan out into forward + reverse branches.
+    (
+        "mixed_direction_2hop",
+        "MATCH (a:Airport)-[:FLIGHT]->(b:Airport)-[:FLIGHT]-(c:Airport) RETURN a.code, b.code, c.code",
+    ),
+    // #492 review B1: WHERE on the SHARED MIDDLE node of an undirected 2-hop.
+    // Each branch must filter on the same physical column it projects for b
+    // (the all-forward branch used to filter on c's column, t2.Dest).
+    (
+        "where_middle_node_undirected_2hop",
+        "MATCH (a:Airport)-[:FLIGHT]-(b:Airport)-[:FLIGHT]-(c:Airport) WHERE b.code = 'LAX' RETURN a.code, b.code, c.code",
+    ),
+    // #492 review B3 CHARACTERIZATION: OPTIONAL + nested-undirected multi-hop
+    // is GATED to the pre-#492 shape (single directed LEFT chain, no direction
+    // union): per-orientation LEFT-JOIN branches under UNION ALL cannot
+    // express OPTIONAL semantics (NULL-anchor rows dropped by the guard,
+    // duplicated across branches when NULL-safe, partial-pattern rows, and
+    // swapped branches anchoring FROM on the optional node). This byte-lock is
+    // a KNOWN-INCOMPLETE shape (directed-only matches), not semantic coverage;
+    // fixing it needs an anchor-LEFT-JOIN-onto-match-union renderer structure.
+    (
+        "optional_undirected_2hop",
+        "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]-(b:Airport)-[:FLIGHT]-(c:Airport) RETURN a.code, b.code, c.code",
     ),
     // hop projecting edge properties incl. the renamed `flight_num` -> flight_number.
     (
@@ -3153,6 +3222,294 @@ async fn denorm_optional_second_hop_keeps_required_binding_491() {
             || join_line.contains(&format!("{a_alias}.dest_code = {c_alias}.origin_code")),
         "#491: optional hop must join its from-column to the required hop's \
          to-column:\n{first}"
+    );
+}
+
+/// #492 regression: `MATCH (a)-[:FLIGHT]-(b)-[:FLIGHT]-(c)` on the
+/// denormalized flights schema rendered a SINGLE directed INNER JOIN chain —
+/// the undirectedness was silently dropped. Root causes fixed:
+///   1. `BidirectionalUnion`'s Projection arm still carried the
+///      nested-undirected-edge skip that the GraphRel arm removed long ago
+///      (#147); real queries (RETURN wraps the pattern in a Projection) always
+///      hit that arm, so any undirected hop whose left subtree is another
+///      GraphRel kept `Direction::Either`, which downstream renders as a
+///      plain directed join.
+///   2. `collect_relationship_info_inner` only recursed into `left`, so the
+///      Incoming-swapped branches (inner GraphRel moved to `right`) lost the
+///      relationship-uniqueness guard.
+///   3. The SELECT renderer bound the shared middle node's pre-resolved
+///      column (schema-mapped via ONE adjacent edge's side, e.g. `b.code` →
+///      t1's `Dest`) to the OTHER adjacent edge's alias, reading the wrong
+///      endpoint (`t2.Dest` = c's column) in the all-forward branch
+///      (`translate_denorm_cross_side_column` now re-maps the column onto the
+///      bound edge's side).
+///
+/// Locks the semantic shape: 4 direction assignments (2 per undirected hop) as
+/// UNION ALL branches, one per join-side combination, each carrying the
+/// relationship-uniqueness guard, with the middle node projected from the
+/// branch's SHARED endpoint column. Live-verified against ClickHouse dev data:
+/// 12 rows matching a hand-written 4-branch UNION ground truth (directed = 5).
+#[tokio::test]
+async fn denorm_undirected_multihop_direction_union_492() {
+    let schema = load_schema("schemas/examples/ontime_denormalized.yaml");
+    let repro = "MATCH (a)-[:FLIGHT]-(b)-[:FLIGHT]-(c) RETURN a.code, b.code, c.code";
+    let sql = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+
+    // Four direction assignments -> 4 UNION ALL branches.
+    assert_eq!(
+        sql.matches("UNION ALL").count(),
+        3,
+        "#492: undirected 2-hop must expand to 4 direction branches:\n{sql}"
+    );
+
+    // Each join-side combination appears exactly once, and its branch projects
+    // the middle node from the shared endpoint column of that combination.
+    let branches: Vec<&str> = sql.split("UNION ALL").collect();
+    for (cond, b_col) in [
+        ("t1.Origin = t0.Dest", "t1.Origin"), // fwd/fwd: b = t2 from-side
+        ("t1.Origin = t0.Origin", "t1.Origin"), // rev/fwd
+        ("t1.Dest = t0.Dest", "t1.Dest"),     // fwd/rev: b = t2 to-side
+        ("t1.Dest = t0.Origin", "t1.Dest"),   // rev/rev
+    ] {
+        let matching: Vec<&&str> = branches.iter().filter(|b| b.contains(cond)).collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "#492: join condition `{cond}` must appear in exactly one branch:\n{sql}"
+        );
+        assert!(
+            matching[0].contains(&format!("{b_col} AS \"b.code\"")),
+            "#492: branch `{cond}` must project b.code from its shared \
+             endpoint `{b_col}` (cross-side column/alias mismatch reads the \
+             WRONG endpoint):\n{sql}"
+        );
+        // Relationship uniqueness (Cypher: a relationship is traversed once
+        // per match) must guard EVERY branch, including the Incoming-swapped
+        // ones whose inner GraphRel lives in the right subtree.
+        assert!(
+            matching[0].contains("NOT (t1.flight_id = t0.flight_id"),
+            "#492: branch `{cond}` is missing the relationship-uniqueness \
+             guard:\n{sql}"
+        );
+    }
+
+    // Mixed direction: only the trailing undirected hop fans out (2 branches).
+    let mixed = "MATCH (a)-[:FLIGHT]->(b)-[:FLIGHT]-(c) RETURN a.code, b.code, c.code";
+    let sql = normalize(&render(&schema, mixed, SqlDialect::ClickHouse).await);
+    assert_eq!(
+        sql.matches("UNION ALL").count(),
+        1,
+        "#492: mixed-direction 2-hop must expand the undirected hop into \
+         forward + reverse branches:\n{sql}"
+    );
+    for cond in ["t1.Origin = t0.Dest", "t1.Dest = t0.Dest"] {
+        assert!(
+            sql.contains(cond),
+            "#492: mixed-direction 2-hop is missing the `{cond}` branch:\n{sql}"
+        );
+    }
+}
+
+/// #492 adversarial-review round 2: five structural locks on the newly-enabled
+/// undirected multi-hop family.
+///
+/// B1  WHERE on the shared middle node must filter the SAME physical column
+///     each branch projects for it (the all-forward branch used to filter on
+///     c's column, returning rows violating the user's WHERE).
+/// B2  The relationship-uniqueness guard must pair only same-type/same-table
+///     relationships (AUTHORED vs LIKED share [user_id, post_id] column names;
+///     a cross-type guard silently excluded author-liked-own-post matches).
+/// B3  OPTIONAL + nested-undirected multi-hop is GATED to the pre-#492 single
+///     directed LEFT chain: per-orientation LEFT-JOIN UNION ALL branches
+///     cannot express OPTIONAL semantics (NULL-anchor rows dropped by the
+///     guard / duplicated per branch when NULL-safe / partial-pattern rows /
+///     swapped branches anchoring FROM on the optional node). Follow-up needs
+///     an anchor-LEFT-JOIN-onto-match-union renderer structure.
+/// RN4 Bridge-node elimination must not clobber union branches that DEFINE
+///     the alias (tautological joins `ON x.col = x.col` inflated 64 → 147).
+/// RN5 FK-edge uniqueness guards must compare materialized NODE aliases (the
+///     rel row IS the node row; rel aliases never materialize).
+#[tokio::test]
+async fn undirected_multihop_review_fixes_492() {
+    // B1: per-branch WHERE column == per-branch b.code projection column.
+    let denorm = load_schema("schemas/examples/ontime_denormalized.yaml");
+    let sql = normalize(
+        &render(
+            &denorm,
+            "MATCH (a:Airport)-[:FLIGHT]-(b:Airport)-[:FLIGHT]-(c:Airport) \
+             WHERE b.code = 'JFK' RETURN a.code, b.code, c.code",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    for branch in sql.split("UNION ALL") {
+        let b_col = if branch.contains("t1.Origin AS \"b.code\"") {
+            "t1.Origin"
+        } else if branch.contains("t1.Dest AS \"b.code\"") {
+            "t1.Dest"
+        } else {
+            panic!("#492-B1: branch projects no b.code:\n{branch}");
+        };
+        assert!(
+            branch.contains(&format!("{b_col} = 'JFK'")),
+            "#492-B1: branch must filter b on its own column `{b_col}`:\n{branch}"
+        );
+    }
+
+    // B2: no cross-type uniqueness guard between AUTHORED and LIKED.
+    let std_schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = normalize(
+        &render(
+            &std_schema,
+            "MATCH (u:User)-[:AUTHORED]-(p:Post)<-[:LIKED]-(v:User) RETURN u.name, p.title, v.name",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        !sql.contains("NOT ("),
+        "#492-B2: cross-type (AUTHORED/LIKED) patterns must not emit a \
+         uniqueness guard — different types are never the same relationship:\n{sql}"
+    );
+
+    // B3 gate: OPTIONAL nested-undirected keeps the pre-#492 single chain.
+    let sql = normalize(
+        &render(
+            &std_schema,
+            "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]-(b:User)-[:FOLLOWS]-(c:User) \
+             RETURN a.name, b.name, c.name",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        !sql.contains("UNION ALL"),
+        "#492-B3: OPTIONAL nested-undirected must stay gated (single directed \
+         LEFT chain) until the renderer can LEFT JOIN an anchor onto a match \
+         union:\n{sql}"
+    );
+    assert!(
+        sql.contains("LEFT JOIN"),
+        "#492-B3: gated OPTIONAL pattern must still LEFT JOIN:\n{sql}"
+    );
+
+    // RN4: no tautological join conditions in any branch (middle node
+    // unreferenced; parent bridge elimination must not leak cross-branch).
+    let sql = normalize(
+        &render(
+            &std_schema,
+            "MATCH (a:User)-[:FOLLOWS]-(b)-[:FOLLOWS]-(c:User) RETURN a.name, c.name",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    let tautology = regex::Regex::new(r"ON (\w+)\.(\w+) = (\w+)\.(\w+)").unwrap();
+    for cap in tautology.captures_iter(&sql) {
+        assert!(
+            !(cap[1] == cap[3] && cap[2] == cap[4]),
+            "#492-RN4: tautological join condition `{}` (bridge elimination \
+             clobbered a branch-defined alias):\n{sql}",
+            &cap[0]
+        );
+    }
+    assert_eq!(
+        sql.matches("UNION ALL").count(),
+        3,
+        "#492-RN4: partially-referenced undirected 2-hop keeps 4 branches:\n{sql}"
+    );
+
+    // RN5: FK-edge guard compares materialized node aliases, never the
+    // (unmaterialized) rel aliases.
+    let fk = load_schema(SchemaId::FkEdge.yaml_path());
+    let sql = normalize(
+        &render(
+            &fk,
+            "MATCH (a:Order)-[:PLACED_BY]-(c:Customer)-[:PLACED_BY]-(b:Order) \
+             RETURN a.order_id, c.customer_id, b.order_id",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        sql.contains("NOT b.order_id = a.order_id") || sql.contains("NOT a.order_id = b.order_id"),
+        "#492-RN5: FK-edge uniqueness guard must compare the anchor node \
+         aliases:\n{sql}"
+    );
+    assert!(
+        !sql.contains("t0.") && !sql.contains("t1."),
+        "#492-RN5: FK-edge SQL must not reference unmaterialized rel aliases:\n{sql}"
+    );
+
+    // #492 review ROUND 3, finding 1 (MUST-FIX): interaction with #491.
+    // `get_properties_with_table_alias` picks a node's property source
+    // PURELY STRUCTURALLY (first GraphRel connection match in the tree),
+    // while `table_alias_override` comes from the `denormalized_node_edges`
+    // registry, which #491 made keep an EARLIER binding for OPTIONAL
+    // patterns. For `(a)-[t1]->(b) OPTIONAL (b)-[t2]->(c)`, `b` renders
+    // against `t1` (registry, #491-correct) but the structural walk still
+    // matches `t2` (the optional GraphRel) first — combining `t2`'s
+    // properties with `t1`'s alias silently produced `t1.origin_code` (`a`'s
+    // OWN column) instead of `t1.dest_code`. This is #491's OWN exact test
+    // query, fully DIRECTED (no undirected edges) — proof the interaction is
+    // not scoped to undirected patterns.
+    let denorm2 = load_schema(SchemaId::Denormalized.yaml_path());
+    let sql = normalize(
+        &render(
+            &denorm2,
+            "MATCH (a:Airport)-[:FLIGHT]->(b) OPTIONAL MATCH (b)-[:FLIGHT]->(c) \
+             RETURN a.code, b.code, c.code",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    let binding = |col_alias: &str| -> (String, String) {
+        let re = regex::Regex::new(&format!(
+            r#"(t\d+)\.((?:origin|dest)_code) AS "{}""#,
+            regex::escape(col_alias)
+        ))
+        .unwrap();
+        let caps = re
+            .captures(&sql)
+            .unwrap_or_else(|| panic!("no binding for {col_alias}:\n{sql}"));
+        (caps[1].to_string(), caps[2].to_string())
+    };
+    let (a_alias, _) = binding("a.code");
+    let (b_alias, b_col) = binding("b.code");
+    assert_eq!(
+        (b_alias.as_str(), b_col.as_str()),
+        (a_alias.as_str(), "dest_code"),
+        "#492/#491 interaction: b.code must resolve from the REQUIRED \
+         pattern's binding ({a_alias}.dest_code) — properties-source and \
+         alias-source must come from the SAME edge:\n{sql}"
+    );
+
+    // #492 review ROUND 3, finding 2 (SHOULD-FIX): B3 gate must not suppress
+    // an UNRELATED required chain's split just because the plan nests an
+    // unrelated OPTIONAL undirected edge reachable via shared aliasing.
+    // `MATCH (a)-[:R1]-(b)-[:R1]-(c) OPTIONAL MATCH (a)-[:R2]-(p)` — the
+    // OPTIONAL R2 edge's `left` subtree IS the required R1 chain (shared
+    // anchor 'a'), but neither R1 hop is itself optional. The required
+    // portion must still fully split (4 branches), matching the value the
+    // original #492 fix delivered before the B3 gate existed.
+    let sql = normalize(
+        &render(
+            &std_schema,
+            "MATCH (a:User)-[:FOLLOWS]-(b)-[:FOLLOWS]-(c:User) \
+             OPTIONAL MATCH (a)-[:AUTHORED]-(p:Post) \
+             RETURN a.name, c.name, p.title",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert_eq!(
+        sql.matches("UNION ALL").count(),
+        3,
+        "#492-B3-scope: required multi-hop must split fully (4 branches) \
+         despite an unrelated undirected OPTIONAL clause sharing its anchor:\n{sql}"
+    );
+    assert!(
+        sql.contains("LEFT JOIN"),
+        "#492-B3-scope: the unrelated OPTIONAL clause must still LEFT JOIN:\n{sql}"
     );
 }
 
