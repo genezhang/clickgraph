@@ -6071,4 +6071,194 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
              fix, live-verify before replacing this test:\n{sql}"
         );
     }
+
+    /// B1 (adversarial review of #507/#520, blocking): #507's node-grain fix
+    /// was incomplete for an UNDIRECTED pattern on a cross-table "coupled"
+    /// denorm schema (label spans TWO physical tables, e.g. zeek `IP` on
+    /// both `conn_log` and `dns_log` — no separate table involved here, but
+    /// the SAME node appearing under two DIFFERENT role-specific physical
+    /// columns within `conn_log` itself: `id.orig_h` vs `id.resp_h`).
+    ///
+    /// An undirected pattern's `UnionDistribution` split produces TWO
+    /// `GraphRel` branches (one per direction), and the special OPTIONAL
+    /// denorm CTE + LEFT JOIN rendering path (`plan_builder.rs`, shared by
+    /// #502/#505/#506/#507) runs ONCE PER BRANCH, independently resolving
+    /// the node-grain dedup key each time. The old (role-restricted)
+    /// resolution used `edge_side_node_properties(vs, anchor_is_left)` —
+    /// only the role matching the CURRENT branch's `anchor_is_left`. On this
+    /// schema, the id column (`id.orig_h`) only equals the "from"-role's
+    /// `ip` mapping value, never the "to"-role's (`id.resp_h`) — so the
+    /// SECOND branch (`anchor_is_left=false`) silently failed to resolve the
+    /// id property, skipping the #507 node-grain wrap for that branch's CTE
+    /// only. Two DIFFERENT CTE bodies (`__denorm_scan_a` wrapped,
+    /// `__denorm_scan_a_2` NOT wrapped) then got unioned together with
+    /// inconsistent grain — a SILENT wrong-result bug (a node's connections
+    /// fragmenting across multiple output rows instead of collapsing into
+    /// one), not a loud failure.
+    ///
+    /// Fixed by making the id-property lookup role-AGNOSTIC (search every
+    /// Union branch's BOTH from- and to-role property maps for a value
+    /// match against the schema's canonical `id_column`, accepting a match
+    /// found via either role) — the anchor scan CTE always exposes the
+    /// union of every role's Cypher property NAMES identically, so a match
+    /// found via any role is valid regardless of which role the current
+    /// branch happens to need.
+    ///
+    /// Live-verified on the zeek fixture: raw ground truth
+    /// (`SELECT count() FROM zeek.conn_log WHERE id.orig_h = '192.168.1.10'
+    /// OR id.resp_h = '192.168.1.10'`) = 4. Pre-fix, this query returned 3
+    /// separate rows for 192.168.1.10 (c = 4, 1, 1 — confirmed via
+    /// git-stash A/B); post-fix, exactly ONE row with c = 4.
+    #[tokio::test]
+    async fn undirected_coupled_schema_anchor_cte_single_grain_b1() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (a:IP) OPTIONAL MATCH (a)-[r:ACCESSED]-(b:IP) \
+                 RETURN a.ip, a.port, count(r) AS c",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+
+        // Exactly ONE denorm-scan CTE for the anchor — no "_2" duplicate
+        // (which would indicate the two UnionDistribution branches produced
+        // inconsistent CTE bodies again).
+        assert!(
+            sql.contains("__denorm_scan_a") && !sql.contains("__denorm_scan_a_2"),
+            "B1: exactly one __denorm_scan_a CTE must be shared by both \
+             direction branches — a `__denorm_scan_a_2` duplicate indicates \
+             the branches disagreed on node-grain wrapping again:\n{sql}"
+        );
+        // Both branches must reference the SAME (wrapped, node-grain) CTE.
+        assert_eq!(
+            sql.matches("LEFT JOIN zeek.conn_log AS r ON a.ip =")
+                .count(),
+            2,
+            "B1: expected both direction branches to LEFT JOIN against the \
+             anchor CTE:\n{sql}"
+        );
+        // The CTE itself must carry the node-grain wrap (GROUP BY the id
+        // property, `min()` for the non-identity `port` column) — this is
+        // what actually collapses the grain; its absence is the bug.
+        assert!(
+            sql.contains("GROUP BY \"ip\"") && sql.contains("min(\"port\")"),
+            "B1: the shared anchor CTE must carry the #507 node-grain wrap:\n{sql}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(
+                &render(
+                    &schema,
+                    "MATCH (a:IP) OPTIONAL MATCH (a)-[r:ACCESSED]-(b:IP) \
+                     RETURN a.ip, a.port, count(r) AS c",
+                    SqlDialect::ClickHouse,
+                )
+                .await,
+            );
+            assert_eq!(sql, again, "B1: nondeterministic render");
+        }
+    }
+
+    /// R2 (adversarial review of #503): #503's ORDER BY-to-outer-alias
+    /// forward resolution only matched by exact `(table_alias, column)`
+    /// identity (`same_property_ref`) or literal expression-text equality —
+    /// both fail for a NON-id denormalized property (e.g. `a.state`), where
+    /// the ORDER BY item keeps the anchor's original Cypher alias (`a`) with
+    /// the mapped column (`origin_state`), while the matching SELECT item
+    /// was independently rebound to the branch's physical alias (`r`/`t1`)
+    /// by the UNION-branch resolver — same mapped COLUMN, different alias.
+    /// Pre-fix this emitted a raw, unquoted `ORDER BY a.origin_state` —
+    /// UNKNOWN_IDENTIFIER (no table `a` at the outer UNION scope).
+    ///
+    /// Fixed with an additional, narrowly-scoped fallback: match by column
+    /// name alone when EXACTLY ONE non-order SELECT item carries that
+    /// column (ambiguous cases — more than one candidate — deliberately do
+    /// NOT guess, falling through to the pre-existing raw-expression
+    /// behavior, no worse than before).
+    ///
+    /// Live-verified on db_denormalized: `ORDER BY a.state` returns airports
+    /// in ascending state order (AZ, CA, CA, CO, GA, IL, NY), matching
+    /// hand-derived ground truth from the 8-flight fixture.
+    ///
+    /// NOTE: a related but DISTINCT case remains broken and is NOT fixed by
+    /// this change — `ORDER BY a.port` on the zeek COUPLED cross-table
+    /// schema (`schemas/dev/zeek_merged_test.yaml`), where the ORDER BY
+    /// item resolves to the RAW physical column (`a."id.orig_p"`) rather
+    /// than the anchor CTE's exposed name (`a.port`) — a different
+    /// mechanism (needs the #510-style CTE forward-resolution applied to
+    /// ORDER BY specifically, not yet done) where the column names
+    /// themselves differ, not just the alias, so this column-name fallback
+    /// cannot bridge it.
+    #[tokio::test]
+    async fn union_aggregate_order_by_non_id_denorm_property_r2() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (a:Airport)-[r:FLIGHT]-(b:Airport) \
+                 RETURN a.code, a.state, count(r) AS c ORDER BY a.state",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert!(
+            sql.contains("ORDER BY `a.state` ASC"),
+            "R2: ORDER BY on a non-id denormalized property must reference \
+             the backtick-quoted outer alias, not a raw unmapped physical \
+             column under the anchor's original Cypher alias:\n{sql}"
+        );
+        assert!(
+            !sql.contains("ORDER BY a.origin_state") && !sql.contains("ORDER BY a.dest_state"),
+            "R2: ORDER BY must not emit the raw per-branch-mapped column \
+             under the anchor's stale Cypher alias:\n{sql}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(
+                &render(
+                    &schema,
+                    "MATCH (a:Airport)-[r:FLIGHT]-(b:Airport) \
+                     RETURN a.code, a.state, count(r) AS c ORDER BY a.state",
+                    SqlDialect::ClickHouse,
+                )
+                .await,
+            );
+            assert_eq!(sql, again, "R2: nondeterministic render");
+        }
+    }
+
+    /// R3 (adversarial review of #509): #509's bare-node-in-aggregate fix is
+    /// keyed on expression SHAPE (a bare node-variable reference anywhere
+    /// inside an aggregate-containing expression), not the aggregate's
+    /// NAME — so it deliberately fires uniformly for
+    /// `min(b)`/`max(b)`/`sum(b)`/`avg(b)`/`collect(b)` over a bare node,
+    /// all resolving to the aggregate applied to the node's id column.
+    /// Cypher doesn't define ordering/sum/average over a node, so there is
+    /// no "correct" answer being contradicted — this locks the deliberate,
+    /// review-confirmed choice (a deterministic, non-crashing render is
+    /// preferred over the pre-#509 unbound-alias crash) so a future change
+    /// narrowing this to `collect()`-only is a conscious decision with a
+    /// failing test to update, not an accidental scope change.
+    #[tokio::test]
+    async fn aggregate_over_bare_node_variable_uniform_across_names_r3() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        for agg in ["collect", "min", "max", "sum", "avg"] {
+            let cypher = format!(
+                "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) \
+                 RETURN a.name, {agg}(b)"
+            );
+            let sql = normalize(&render(&schema, &cypher, SqlDialect::ClickHouse).await);
+            assert!(
+                sql.contains(".followed_id)"),
+                "R3: {agg}(b) over a bare node must resolve to the joined \
+                 table's real id column, not the raw unbound alias `b` \
+                 (deliberate, uniform-by-shape treatment across all \
+                 aggregate names):\n{sql}"
+            );
+        }
+    }
 }

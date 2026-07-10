@@ -1297,41 +1297,31 @@ impl RenderPlanBuilder for LogicalPlan {
                     // only the branch matching the wanted side has that field populated
                     // (the OTHER branch's ViewScan carries `None` for it — a different
                     // node role, #506). Search all branches rather than assuming order.
-                    // We also capture that branch's own `id_column` (the physical column
-                    // the schema declares as this node's identity) alongside the
-                    // properties — needed below (#507) to determine the CTE's true
-                    // node-grain dedup key.
-                    let (anchor_node_properties, anchor_id_column): (
-                        Option<
-                            std::collections::HashMap<
-                                String,
-                                crate::graph_catalog::expression_parser::PropertyValue,
-                            >,
+                    // (The node-grain dedup key below (#507/#520) is resolved separately,
+                    // via a role-agnostic shared helper — see its own comment.)
+                    let anchor_node_properties: Option<
+                        std::collections::HashMap<
+                            String,
+                            crate::graph_catalog::expression_parser::PropertyValue,
                         >,
-                        Option<String>,
-                    ) = if let LogicalPlan::Union(union) = anchor_plan {
-                        union
-                            .inputs
-                            .iter()
-                            .find_map(|input| {
-                                if let LogicalPlan::GraphNode(gn) = input.as_ref() {
-                                    if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
-                                        crate::graph_catalog::pattern_schema::edge_side_node_properties(
-                                            vs,
-                                            anchor_is_left,
-                                        )
-                                        .cloned()
-                                        .map(|props| (props, vs.id_column.clone()))
-                                    } else {
-                                        None
-                                    }
+                    > = if let LogicalPlan::Union(union) = anchor_plan {
+                        union.inputs.iter().find_map(|input| {
+                            if let LogicalPlan::GraphNode(gn) = input.as_ref() {
+                                if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                                    crate::graph_catalog::pattern_schema::edge_side_node_properties(
+                                        vs,
+                                        anchor_is_left,
+                                    )
+                                    .cloned()
                                 } else {
                                     None
                                 }
-                            })
-                            .map_or((None, None), |(props, id_col)| (Some(props), Some(id_col)))
+                            } else {
+                                None
+                            }
+                        })
                     } else {
-                        (None, None)
+                        None
                     };
 
                     // #507: on a coupled/cross-table denorm schema, a node's `label`
@@ -1349,21 +1339,26 @@ impl RenderPlanBuilder for LogicalPlan {
                     // schema-pattern flag — so this stays schema-shape agnostic; when the
                     // id property can't be forward-resolved (rare), skip the wrap and
                     // keep prior behavior (no regression, matches pre-#507 rendering).
-                    let node_id_prop_name: Option<String> = anchor_node_properties
-                        .as_ref()
-                        .zip(anchor_id_column.as_ref())
-                        .and_then(|(props, id_col)| {
-                            let mut candidates: Vec<&String> = props
-                                .iter()
-                                .filter(|(_, v)| v.raw() == id_col.as_str())
-                                .map(|(k, _)| k)
-                                .collect();
-                            candidates.sort();
-                            candidates
-                                .into_iter()
-                                .find(|name| cte_exposed_columns.contains(name.as_str()))
-                                .cloned()
-                        });
+                    //
+                    // #520/B1: resolved via the shared `denorm_scan_cte_anchor_id_property`
+                    // helper (plan_builder_helpers.rs) — NOT the `anchor_node_properties`/
+                    // `anchor_id_column` pair above (those stay role-specific to
+                    // `anchor_is_left`, correctly, for the JOIN-key derivation below).
+                    // The id-property lookup must search BOTH roles regardless of
+                    // `anchor_is_left`: an UNDIRECTED pattern renders this SAME code path
+                    // once per UnionDistribution branch (once per direction), and the
+                    // schema's canonical `id_column` only matches ONE role's physical
+                    // column value on a coupled cross-table schema (e.g. zeek `IP`'s
+                    // `id.orig_h` never equals the `to`-role's `id.resp_h`). The
+                    // role-restricted lookup silently returned `None` for whichever
+                    // branch needed the "other" role, skipping the node-grain wrap for
+                    // that branch's CTE only — a SILENT wrong-result bug (per-node counts
+                    // fragmenting across un-collapsed grain rows), not a loud failure.
+                    let node_id_prop_name: Option<String> =
+                        super::plan_builder_helpers::denorm_scan_cte_anchor_id_property(
+                            self,
+                            &node_alias,
+                        );
 
                     // Build the CTE SQL from the Union render plan
                     let cte_name = format!("__denorm_scan_{}", node_alias);

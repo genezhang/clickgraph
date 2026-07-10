@@ -4615,6 +4615,40 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                                 && pa.column.raw() == pb.column.raw()
                     )
                 }
+                // R2 (adversarial review of #503): a non-id denormalized
+                // property (e.g. `a.state`) is independently property-mapped
+                // BEFORE the per-branch alias rebind that the SELECT list's
+                // own copy of the SAME property already went through — the
+                // ORDER BY item keeps the anchor's ORIGINAL Cypher alias
+                // (`a`) with the mapped column (`origin_state`), while the
+                // matching SELECT item was rebound to the branch's physical
+                // alias (`r`/`t1`) by the UNION-branch resolver. Column NAME
+                // still matches even though `same_property_ref`'s stricter
+                // alias+column check does not. Fall back to matching by
+                // column name alone — but ONLY when exactly one non-order
+                // SELECT item carries that column, so an accidental
+                // same-named column under a genuinely different alias can
+                // never be silently mismatched.
+                fn unambiguous_column_match<'a>(
+                    items: &[&'a SelectItem],
+                    target: &RenderExpr,
+                ) -> Option<&'a SelectItem> {
+                    let RenderExpr::PropertyAccessExp(target_pa) = target else {
+                        return None;
+                    };
+                    let mut matches = items.iter().copied().filter(|sel| {
+                        matches!(
+                            &sel.expression,
+                            RenderExpr::PropertyAccessExp(pa) if pa.column.raw() == target_pa.column.raw()
+                        )
+                    });
+                    let first = matches.next()?;
+                    if matches.next().is_some() {
+                        None // ambiguous — more than one candidate, don't guess
+                    } else {
+                        Some(first)
+                    }
+                }
                 let order_clauses: Vec<String> = plan
                     .order_by
                     .0
@@ -4627,16 +4661,21 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                         let rendered = item.expression.to_sql();
                         let matched_alias = non_order_items
                             .iter()
+                            .copied()
                             .find(|sel| sel.col_alias.as_ref().is_some_and(|a| a.0 == rendered))
                             .or_else(|| {
-                                non_order_items.iter().find(|sel| {
+                                non_order_items.iter().copied().find(|sel| {
                                     same_property_ref(&sel.expression, &item.expression)
                                 })
                             })
                             .or_else(|| {
                                 non_order_items
                                     .iter()
+                                    .copied()
                                     .find(|sel| sel.expression.to_sql() == rendered)
+                            })
+                            .or_else(|| {
+                                unambiguous_column_match(&non_order_items, &item.expression)
                             })
                             .and_then(|sel| sel.col_alias.as_ref());
                         if let Some(alias) = matched_alias {

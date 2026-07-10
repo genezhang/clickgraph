@@ -1810,6 +1810,28 @@ impl LogicalPlan {
                 // count(*) respectively) and this issue doesn't define
                 // semantics for e.g. `collect(r)` or `collect(p)`; leaving
                 // those untouched is no regression (pre-existing behavior).
+                //
+                // DELIBERATE, review-confirmed scope note: this match arm is
+                // keyed on expression SHAPE (a bare node-variable reference
+                // anywhere inside an aggregate-containing expression), not
+                // on the aggregate's NAME — so it also fires for
+                // min(b)/max(b)/sum(b)/avg(b) over a bare node, not just
+                // collect(b). Cypher does not define ordering, sum, or
+                // average over a node, so `min(b)`/`sum(b)` etc. now render
+                // as `min`/`sum` of the node's id column — a value with no
+                // Cypher-defined "correct" answer to contradict (unlike, say,
+                // a wrong COUNT), so this is a defensible, deterministic,
+                // non-crashing interpretation rather than a silently-wrong
+                // one. Scoping this narrower to `collect` alone was
+                // considered and rejected: it would require threading the
+                // aggregate NAME down into this match arm (currently only
+                // sees the bare-alias ARGUMENT, not its enclosing call),
+                // and would leave min(b)/max(b)/sum(b)/avg(b) back at their
+                // PRE-#509 unbound-alias crash — strictly worse. If a future
+                // issue wants different semantics for a specific aggregate
+                // name here (e.g. rejecting sum(b)/avg(b) with a clean
+                // planner error instead of a numeric id-column result),
+                // that's a deliberate, separate decision — not a bug fix.
                 let alias = t.0.clone();
                 // CTE-sourced / pattern_union node variables resolve forward
                 // through their own columns — never remap them here (same
