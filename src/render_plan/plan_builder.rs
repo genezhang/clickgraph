@@ -3375,11 +3375,30 @@ impl RenderPlanBuilder for LogicalPlan {
                     render.joins.0.len(),
                     render.ctes.0.len()
                 );
-                // Re-extract outer SELECT/GROUP BY/ORDER BY from the full plan
+                // Re-extract outer SELECT/GROUP BY/ORDER BY/WHERE from the full plan.
                 render.select = SelectItems {
                     items: <LogicalPlan as SelectBuilder>::extract_select_items(self, plan_ctx)?,
                     distinct: FilterBuilder::extract_distinct(self),
                 };
+                // WHERE was never re-extracted here at all (render.filters stayed
+                // whatever `inner.to_render_plan` produced) — silently dropping any
+                // WHERE clause on this pattern (not an error — silently wrong
+                // results, ground rule 1 violation; caught live on the
+                // incoming-direction shape, #506's own new code path).
+                //
+                // A second layer applies specifically to incoming direction:
+                // `collect_graphrel_predicates` drops a predicate that references
+                // ONLY the non-anchor ("optional") alias whenever `anchor_connection`
+                // is set, expecting some downstream JOIN `pre_filter` to absorb it —
+                // this rendering path has no such mechanism. Outgoing-direction
+                // queries never hit that drop (their `anchor_connection` is `None` by
+                // construction, CLAUDE.md rule 4), so extract on a clone with
+                // `anchor_connection` cleared to get the same "keep all predicates"
+                // behavior outgoing already gets — see
+                // `clear_anchor_connection_for_filters` for the full explanation.
+                let filters_plan =
+                    super::plan_builder_helpers::clear_anchor_connection_for_filters(self);
+                render.filters = FilterItems(FilterBuilder::extract_filters(&filters_plan)?);
                 render.group_by =
                     GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(self)?);
                 render.order_by = OrderByItems(super::plan_builder_utils::extract_order_by(self)?);

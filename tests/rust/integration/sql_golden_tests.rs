@@ -3048,6 +3048,69 @@ async fn denorm_chained_optional_preserves_anchor_scan_505() {
     );
 }
 
+/// #506 follow-up (adversarial review, post-merge): incoming-direction denorm
+/// OPTIONAL MATCH silently dropped a WHERE clause on the matched (non-anchor)
+/// node entirely — no error, no WHERE in the generated SQL at all, returning
+/// every anchor row unfiltered instead of the correctly-filtered subset.
+/// Outgoing direction already rendered the WHERE correctly; the two
+/// directions must be consistent.
+///
+/// Root cause (two layers):
+/// 1. The CTE + LEFT JOIN special-case rendering path (`to_render_plan_with_ctx`)
+///    re-extracts SELECT/GROUP BY/ORDER BY/SKIP/LIMIT from the outer plan
+///    after delegating to `inner.to_render_plan`, but never re-extracted
+///    `render.filters` — so any WHERE was silently lost regardless of
+///    direction, UNLESS some other code path happened to keep it.
+/// 2. `collect_graphrel_predicates` deliberately drops a predicate that
+///    references ONLY the non-anchor ("optional") alias whenever
+///    `anchor_connection` is set, expecting a downstream JOIN `pre_filter` to
+///    absorb it — a mechanism this rendering path doesn't have. Outgoing
+///    direction never hit this because its `anchor_connection` is always
+///    `None` (CLAUDE.md rule 4), which happens to route through the
+///    "no anchor determined — keep all predicates" fallback instead.
+#[tokio::test]
+async fn denorm_optional_where_preserved_both_directions_506_followup() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+
+    // (cypher, the WHERE condition that must survive, a context tag)
+    let cases = [
+        (
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[r:FLIGHT]->(b:Airport) WHERE b.state = 'CA' RETURN a.code, b.code",
+            "r.dest_state = 'CA'",
+            "outgoing, single hop",
+        ),
+        (
+            "MATCH (a:Airport) OPTIONAL MATCH (a)<-[r:FLIGHT]-(b:Airport) WHERE b.state = 'CA' RETURN a.code, b.code",
+            "r.origin_state = 'CA'",
+            "incoming, single hop",
+        ),
+        (
+            "MATCH (a:Airport) OPTIONAL MATCH (a)<-[:FLIGHT]-(b:Airport) OPTIONAL MATCH (b)<-[:FLIGHT]-(c:Airport) WHERE c.state = 'CA' RETURN a.code, b.code, c.code",
+            "t1.origin_state = 'CA'",
+            "incoming, chained double-OPTIONAL (#505 shape)",
+        ),
+    ];
+
+    for (cypher, want_where, tag) in cases {
+        let first = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+        for _ in 0..5 {
+            let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(
+                first, again,
+                "#506-followup [{tag}]: render is nondeterministic:\nFIRST:\n{first}\nAGAIN:\n{again}"
+            );
+        }
+        assert!(
+            first.contains("WHERE"),
+            "#506-followup [{tag}]: WHERE clause dropped entirely:\n{first}"
+        );
+        assert!(
+            first.contains(want_where),
+            "#506-followup [{tag}]: expected WHERE condition `{want_where}`, got:\n{first}"
+        );
+    }
+}
+
 /// #475 regression: on the coupled cross-table denorm `zeek_merged_test`
 /// schema, `MATCH (a:IP) OPTIONAL MATCH (a)-[:REQUESTED]->(d:Domain) RETURN
 /// a.ip, a.port, d.name` sourced the ANCHOR property `a.port` from the

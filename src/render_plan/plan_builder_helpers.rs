@@ -429,6 +429,91 @@ pub(super) fn find_inner_optional_denorm_graphrel(plan: &LogicalPlan) -> Option<
     }
 }
 
+/// Clone `plan`, clearing `anchor_connection` on every `GraphRel` node
+/// encountered.
+///
+/// Used ONLY when re-extracting the outer WHERE clause for the special
+/// denormalized CTE + LEFT JOIN rendering path (see the
+/// `optional_denorm_union_anchor_is_left` fix site in `plan_builder.rs`).
+/// `collect_graphrel_predicates` deliberately drops a predicate that
+/// references ONLY the non-anchor ("optional") alias when `anchor_connection`
+/// is set, on the assumption that some downstream mechanism (a JOIN
+/// `pre_filter`) picks it up instead. The denorm CTE + LEFT JOIN path has no
+/// such downstream mechanism, so that predicate would simply vanish — a
+/// regression exposed once #506 started setting `anchor_connection` for
+/// incoming-direction OPTIONAL MATCH (outgoing-direction queries never hit
+/// this drop because their `anchor_connection` is `None` by construction,
+/// CLAUDE.md rule 4, which routes `collect_graphrel_predicates` through its
+/// "no anchor determined — keep all predicates" fallback instead).
+///
+/// Clearing `anchor_connection` here reproduces that same "keep all"
+/// fallback for filter-extraction purposes only. This clone is discarded
+/// immediately after use — FROM/JOIN construction (which legitimately needs
+/// `anchor_connection` for the anchor-aware reversal) is built from the
+/// original, unmodified plan and is completely unaffected.
+pub(super) fn clear_anchor_connection_for_filters(plan: &LogicalPlan) -> LogicalPlan {
+    match plan {
+        LogicalPlan::GraphRel(gr) => {
+            let mut gr = gr.clone();
+            gr.anchor_connection = None;
+            gr.left = std::sync::Arc::new(clear_anchor_connection_for_filters(&gr.left));
+            gr.center = std::sync::Arc::new(clear_anchor_connection_for_filters(&gr.center));
+            gr.right = std::sync::Arc::new(clear_anchor_connection_for_filters(&gr.right));
+            LogicalPlan::GraphRel(gr)
+        }
+        LogicalPlan::GraphJoins(gj) => {
+            let mut gj = gj.clone();
+            gj.input = std::sync::Arc::new(clear_anchor_connection_for_filters(&gj.input));
+            LogicalPlan::GraphJoins(gj)
+        }
+        LogicalPlan::Projection(p) => {
+            let mut p = p.clone();
+            p.input = std::sync::Arc::new(clear_anchor_connection_for_filters(&p.input));
+            LogicalPlan::Projection(p)
+        }
+        LogicalPlan::Filter(f) => {
+            let mut f = f.clone();
+            f.input = std::sync::Arc::new(clear_anchor_connection_for_filters(&f.input));
+            LogicalPlan::Filter(f)
+        }
+        LogicalPlan::GroupBy(gb) => {
+            let mut gb = gb.clone();
+            gb.input = std::sync::Arc::new(clear_anchor_connection_for_filters(&gb.input));
+            LogicalPlan::GroupBy(gb)
+        }
+        LogicalPlan::OrderBy(o) => {
+            let mut o = o.clone();
+            o.input = std::sync::Arc::new(clear_anchor_connection_for_filters(&o.input));
+            LogicalPlan::OrderBy(o)
+        }
+        LogicalPlan::Limit(l) => {
+            let mut l = l.clone();
+            l.input = std::sync::Arc::new(clear_anchor_connection_for_filters(&l.input));
+            LogicalPlan::Limit(l)
+        }
+        LogicalPlan::Skip(s) => {
+            let mut s = s.clone();
+            s.input = std::sync::Arc::new(clear_anchor_connection_for_filters(&s.input));
+            LogicalPlan::Skip(s)
+        }
+        LogicalPlan::GraphNode(gn) => {
+            let mut gn = gn.clone();
+            gn.input = std::sync::Arc::new(clear_anchor_connection_for_filters(&gn.input));
+            LogicalPlan::GraphNode(gn)
+        }
+        LogicalPlan::Union(u) => {
+            let mut u = u.clone();
+            u.inputs = u
+                .inputs
+                .iter()
+                .map(|i| std::sync::Arc::new(clear_anchor_connection_for_filters(i)))
+                .collect();
+            LogicalPlan::Union(u)
+        }
+        other => other.clone(),
+    }
+}
+
 /// Helper function to extract the actual table name from a LogicalPlan node
 /// Recursively traverses the plan tree to find the Scan or ViewScan node
 ///
