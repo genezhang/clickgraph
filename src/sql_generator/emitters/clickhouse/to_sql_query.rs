@@ -6533,198 +6533,120 @@ impl RenderExpr {
     /// e.g., `LEFT JOIN (SELECT * FROM table WHERE is_active = true) AS b`
     /// The filter should be `is_active = true`, not `b.is_active = true`.
     pub fn to_sql_without_table_alias(&self) -> String {
-        match self {
-            RenderExpr::PropertyAccessExp(PropertyAccess { column, .. }) => {
-                // Just render the column without the table alias prefix
-                column.to_sql_column_only()
-            }
-            RenderExpr::OperatorApplicationExp(op) => {
-                fn op_str(o: Operator) -> &'static str {
-                    match o {
-                        Operator::Addition => "+",
-                        Operator::Subtraction => "-",
-                        Operator::Multiplication => "*",
-                        Operator::Division => "/",
-                        Operator::ModuloDivision => "%",
-                        Operator::Exponentiation => "^",
-                        Operator::Equal => "=",
-                        Operator::NotEqual => "<>",
-                        Operator::LessThan => "<",
-                        Operator::GreaterThan => ">",
-                        Operator::LessThanEqual => "<=",
-                        Operator::GreaterThanEqual => ">=",
-                        Operator::RegexMatch => "REGEX", // Special handling below
-                        Operator::And => "AND",
-                        Operator::Or => "OR",
-                        Operator::In => "IN",
-                        Operator::NotIn => "NOT IN",
-                        Operator::StartsWith => "STARTS WITH", // Special handling below
-                        Operator::EndsWith => "ENDS WITH",     // Special handling below
-                        Operator::Contains => "CONTAINS",      // Special handling below
-                        Operator::Not => "NOT",
-                        Operator::Distinct => "DISTINCT",
-                        Operator::IsNull => "IS NULL",
-                        Operator::IsNotNull => "IS NOT NULL",
-                    }
-                }
+        // #477: the table alias must be stripped everywhere a `PropertyAccessExp`
+        // can appear, not just at the top level or directly under an operator —
+        // e.g. `toFloat(o.total_amount)` inside a LEFT JOIN pre_filter subquery
+        // (`SELECT * FROM orders_fk WHERE ...` — no `o` alias in scope there).
+        // `strip_table_alias_everywhere` performs a full AST rewrite (recursing
+        // into function args, list items, CASE branches, array
+        // subscript/slicing, and nested Raw text) turning every
+        // `PropertyAccessExp` into a bare-column `Raw` node, then delegates to
+        // the ordinary `to_sql()` so all of ScalarFnCall's dialect/native-
+        // function special-casing still applies correctly — only the leaf
+        // property accesses are affected.
+        strip_table_alias_everywhere(self).to_sql()
+    }
+}
 
-                // Recursively render operands without table alias
-                let rendered: Vec<String> = op
+/// Recursively rewrite `expr` so every `PropertyAccessExp` becomes a bare
+/// column reference (no table alias) and every embedded `alias.column`
+/// pattern inside a `Raw` string is stripped too. Used to render predicates
+/// destined for a LEFT JOIN pre_filter subquery, where the source table has
+/// no alias in scope yet (see #477).
+fn strip_table_alias_everywhere(expr: &RenderExpr) -> RenderExpr {
+    match expr {
+        RenderExpr::PropertyAccessExp(PropertyAccess { column, .. }) => {
+            RenderExpr::Raw(column.to_sql_column_only())
+        }
+        RenderExpr::Raw(raw_sql) => RenderExpr::Raw(strip_raw_alias_prefixes(raw_sql)),
+        RenderExpr::OperatorApplicationExp(op) => {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator,
+                operands: op
                     .operands
                     .iter()
-                    .map(|e| e.to_sql_without_table_alias())
-                    .collect();
-
-                // Special handling for RegexMatch - ClickHouse uses match() function
-                if op.operator == Operator::RegexMatch && rendered.len() == 2 {
-                    return super::common::regex_match_predicate(&rendered[0], &rendered[1]);
-                }
-
-                // IN/NOT IN with CTE entity column → subquery for set membership.
-                if rendered.len() == 2 {
-                    if let Some(sql) =
-                        try_rewrite_in_cte_subquery(&op.operator, &rendered[0], &op.operands[1])
-                    {
-                        return sql;
-                    }
-                }
-
-                // Special handling for IN/NOT IN with array columns
-                if op.operator == Operator::In
-                    && rendered.len() == 2
-                    && matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_))
-                {
-                    let contains = crate::sql_generator::function_mapper::current_function_mapper()
-                        .array_contains();
-                    return format!("{}({}, {})", contains, &rendered[1], &rendered[0]);
-                }
-                if op.operator == Operator::NotIn
-                    && rendered.len() == 2
-                    && matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_))
-                {
-                    let contains = crate::sql_generator::function_mapper::current_function_mapper()
-                        .array_contains();
-                    return format!("NOT {}({}, {})", contains, &rendered[1], &rendered[0]);
-                }
-
-                // IN/NOT IN with List containing non-constant elements → expand to OR/AND
-                if (op.operator == Operator::In || op.operator == Operator::NotIn)
-                    && rendered.len() == 2
-                {
-                    if let RenderExpr::List(list_items) = &op.operands[1] {
-                        let has_non_constant = list_items.iter().any(|item| {
-                            !matches!(item, RenderExpr::Literal(_) | RenderExpr::Parameter(_))
-                        });
-                        if has_non_constant {
-                            let lhs = &rendered[0];
-                            let item_sqls: Vec<String> =
-                                list_items.iter().map(|item| item.to_sql()).collect();
-                            if op.operator == Operator::In {
-                                let clauses: Vec<String> = item_sqls
-                                    .iter()
-                                    .map(|rhs| format!("{} = {}", lhs, rhs))
-                                    .collect();
-                                return format!("({})", clauses.join(" OR "));
-                            } else {
-                                let clauses: Vec<String> = item_sqls
-                                    .iter()
-                                    .map(|rhs| format!("{} <> {}", lhs, rhs))
-                                    .collect();
-                                return format!("({})", clauses.join(" AND "));
-                            }
-                        } else if let Some(s) = render_constant_in_list(op, &rendered) {
-                            return s;
-                        }
-                    }
-                }
-
-                // Special handling for string predicates - ClickHouse uses functions
-                if op.operator == Operator::StartsWith && rendered.len() == 2 {
-                    return format!("startsWith({}, {})", &rendered[0], &rendered[1]);
-                }
-                if op.operator == Operator::EndsWith && rendered.len() == 2 {
-                    return format!("endsWith({}, {})", &rendered[0], &rendered[1]);
-                }
-                if op.operator == Operator::Contains && rendered.len() == 2 {
-                    return super::common::contains_predicate(&rendered[0], &rendered[1]);
-                }
-
-                // Addition special cases (list concat, interval arithmetic) —
-                // shared with the other operator paths. (No string-concat case
-                // here, matching this path's original behavior.)
-                if let Some(s) = render_list_addition(op) {
-                    return s;
-                }
-                if let Some(s) = render_interval_arithmetic(op, &rendered) {
-                    return s;
-                }
-
-                let sql_op = op_str(op.operator);
-
-                match rendered.len() {
-                    0 => "".into(),
-                    1 => match op.operator {
-                        Operator::IsNull | Operator::IsNotNull => {
-                            format!("{} {}", &rendered[0], sql_op)
-                        }
-                        _ => {
-                            format!("{} {}", sql_op, &rendered[0])
-                        }
-                    },
-                    2 => match op.operator {
-                        Operator::And | Operator::Or => {
-                            format!("({} {} {})", &rendered[0], sql_op, &rendered[1])
-                        }
-                        _ => {
-                            if render_expr::needs_right_parens(op.operator, &op.operands[1]) {
-                                format!("{} {} ({})", &rendered[0], sql_op, &rendered[1])
-                            } else {
-                                format!("{} {} {}", &rendered[0], sql_op, &rendered[1])
-                            }
-                        }
-                    },
-                    _ => match op.operator {
-                        Operator::And | Operator::Or => {
-                            format!("({})", rendered.join(&format!(" {} ", sql_op)))
-                        }
-                        _ => rendered.join(&format!(" {} ", sql_op)),
-                    },
-                }
-            }
-            // For Raw expressions, strip table alias prefixes (e.g., "alias.column" -> "column")
-            // This is needed for LEFT JOIN subqueries where the filter is inside SELECT * FROM table
-            RenderExpr::Raw(raw_sql) => {
-                // Simple approach: look for "word.word" patterns and keep only the part after the dot
-                // This handles cases like "alias.column = 'value'" -> "column = 'value'"
-                let result = raw_sql.clone();
-                // Find and replace all "identifier.identifier" patterns
-                let parts: Vec<&str> = result.split_whitespace().collect();
-                let mut new_parts = Vec::new();
-                for part in parts {
-                    if part.contains('.') && !part.starts_with('\'') && !part.starts_with('"') {
-                        // Split on dot and take the last part (the column name)
-                        // But preserve the structure (e.g., "alias.column" becomes "column")
-                        let dot_parts: Vec<&str> = part.split('.').collect();
-                        if dot_parts.len() == 2
-                            && !dot_parts[0].is_empty()
-                            && !dot_parts[1].is_empty()
-                        {
-                            // Check if first part looks like an identifier (not a number)
-                            let first_char = dot_parts[0].chars().next().unwrap_or('0');
-                            if first_char.is_alphabetic() || first_char == '_' {
-                                new_parts.push(dot_parts[1].to_string());
-                                continue;
-                            }
-                        }
-                    }
-                    new_parts.push(part.to_string());
-                }
-                new_parts.join(" ")
-            }
-            // For other expression types, delegate to regular to_sql
-            _ => self.to_sql(),
+                    .map(strip_table_alias_everywhere)
+                    .collect(),
+            })
         }
+        RenderExpr::ScalarFnCall(f) => RenderExpr::ScalarFnCall(ScalarFnCall {
+            name: f.name.clone(),
+            args: f.args.iter().map(strip_table_alias_everywhere).collect(),
+        }),
+        RenderExpr::AggregateFnCall(f) => RenderExpr::AggregateFnCall(AggregateFnCall {
+            name: f.name.clone(),
+            args: f.args.iter().map(strip_table_alias_everywhere).collect(),
+        }),
+        RenderExpr::List(items) => {
+            RenderExpr::List(items.iter().map(strip_table_alias_everywhere).collect())
+        }
+        RenderExpr::Case(case) => RenderExpr::Case(RenderCase {
+            expr: case
+                .expr
+                .as_ref()
+                .map(|e| Box::new(strip_table_alias_everywhere(e))),
+            when_then: case
+                .when_then
+                .iter()
+                .map(|(w, t)| {
+                    (
+                        strip_table_alias_everywhere(w),
+                        strip_table_alias_everywhere(t),
+                    )
+                })
+                .collect(),
+            else_expr: case
+                .else_expr
+                .as_ref()
+                .map(|e| Box::new(strip_table_alias_everywhere(e))),
+        }),
+        RenderExpr::ArraySubscript { array, index } => RenderExpr::ArraySubscript {
+            array: Box::new(strip_table_alias_everywhere(array)),
+            index: Box::new(strip_table_alias_everywhere(index)),
+        },
+        RenderExpr::ArraySlicing { array, from, to } => RenderExpr::ArraySlicing {
+            array: Box::new(strip_table_alias_everywhere(array)),
+            from: from
+                .as_ref()
+                .map(|e| Box::new(strip_table_alias_everywhere(e))),
+            to: to
+                .as_ref()
+                .map(|e| Box::new(strip_table_alias_everywhere(e))),
+        },
+        RenderExpr::MapLiteral(entries) => RenderExpr::MapLiteral(
+            entries
+                .iter()
+                .map(|(k, v)| (k.clone(), strip_table_alias_everywhere(v)))
+                .collect(),
+        ),
+        // Other variants (Literal, Column, Parameter, subqueries, pattern
+        // counts, CTE entity refs, ...) either carry no table-alias-qualified
+        // property access or are out of scope for a pre_filter predicate;
+        // leave them unchanged, matching prior behavior.
+        _ => expr.clone(),
     }
+}
+
+/// Strip `alias.` prefixes from `identifier.identifier` tokens in a raw SQL
+/// string (e.g. `"alias.column = 'value'"` -> `"column = 'value'"`). Shared by
+/// `strip_table_alias_everywhere` for both top-level and nested `Raw` nodes.
+fn strip_raw_alias_prefixes(raw_sql: &str) -> String {
+    let parts: Vec<&str> = raw_sql.split_whitespace().collect();
+    let mut new_parts = Vec::new();
+    for part in parts {
+        if part.contains('.') && !part.starts_with('\'') && !part.starts_with('"') {
+            let dot_parts: Vec<&str> = part.split('.').collect();
+            if dot_parts.len() == 2 && !dot_parts[0].is_empty() && !dot_parts[1].is_empty() {
+                let first_char = dot_parts[0].chars().next().unwrap_or('0');
+                if first_char.is_alphabetic() || first_char == '_' {
+                    new_parts.push(dot_parts[1].to_string());
+                    continue;
+                }
+            }
+        }
+        new_parts.push(part.to_string());
+    }
+    new_parts.join(" ")
 }
 
 impl ToSql for OperatorApplication {

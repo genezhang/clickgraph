@@ -756,6 +756,24 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
         "optional_where_no_with",
         "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE o.total_amount > 100 RETURN c.customer_id, o.order_id",
     ),
+    // FIXED (#477): the pre_filter renderer stripped the node alias from bare
+    // columns (`o.total_amount` -> `total_amount`) but NOT when the same
+    // column appeared inside a function argument (`toFloat(o.total_amount)`
+    // kept the `o.` prefix), producing `LEFT JOIN (SELECT * FROM orders_fk
+    // WHERE toFloat64(o.total_amount) > 100) AS o` — invalid SQL, ClickHouse
+    // error 47 UNKNOWN_IDENTIFIER (`o` is not in scope inside the subquery).
+    // Root cause: `RenderExpr::to_sql_without_table_alias` special-cased
+    // `PropertyAccessExp` and `OperatorApplicationExp` but fell through to the
+    // ordinary alias-preserving `to_sql()` for `ScalarFnCall` args (and other
+    // composite variants). Fixed by a full AST rewrite
+    // (`strip_table_alias_everywhere`) that recurses into function args, list
+    // items, CASE branches, and array subscript/slicing before delegating to
+    // `to_sql()`. Live (db_fk_edge): now renders `toFloat64(total_amount)`
+    // (no dangling alias) and executes, returning 4 rows.
+    (
+        "optional_where_no_with_fn_arg",
+        "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE toFloat(o.total_amount) > 100 RETURN c.customer_id, o.order_id",
+    ),
     // Same shape, WHERE on the relationship alias r (order_date). Already correct
     // before #474 (rel-alias pre_filter recovery): r and o share orders_fk, so the
     // predicate sits in the LEFT JOIN pre_filter. Locked to prove #474 did not
@@ -2499,6 +2517,39 @@ async fn social_479_plain_optional_where_drops_null_extended_rows_known_broken()
         "#479 KNOWN BROKEN characterization stale — predicate no longer in a \
          bare outer WHERE; if this is a genuine fix (verify live: must return \
          8 rows, not 2 or 12), replace this test with a regression test:\n{sql}"
+    );
+}
+
+/// Regression: #477 — `to_sql_without_table_alias` (used to render a LEFT
+/// JOIN pre_filter subquery, `LEFT JOIN (SELECT * FROM t WHERE <pred>) AS
+/// alias`) stripped the node alias from bare columns but NOT from columns
+/// nested inside a function argument: `toFloat(o.total_amount)` kept the `o.`
+/// prefix, producing SQL that references an alias not in scope inside the
+/// subquery (ClickHouse error 47 UNKNOWN_IDENTIFIER). Verified live
+/// (db_fk_edge): the pre-fix SQL shape
+/// (`LEFT JOIN (SELECT * FROM orders_fk WHERE toFloat64(o.total_amount) > 100)
+/// AS o`) fails with Code 47; the fixed shape
+/// (`toFloat64(total_amount) > 100`, no alias) executes and returns 4 rows
+/// (customers 100/101/102/103, each keeping its one order with
+/// total_amount > 100).
+#[tokio::test]
+async fn fk_edge_477_pre_filter_strips_alias_inside_function_args() {
+    let schema = load_schema(SchemaId::FkEdge.yaml_path());
+    let cypher = "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) \
+                  WHERE toFloat(o.total_amount) > 100 RETURN c.customer_id, o.order_id";
+    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+
+    // The pre_filter subquery must NOT reference the `o.` alias anywhere —
+    // the subquery selects directly from orders_fk with no alias in scope.
+    assert!(
+        !sql.contains("o.total_amount"),
+        "#477 regressed: pre_filter subquery still references the dangling \
+         `o.` alias inside a function argument:\n{sql}"
+    );
+    assert!(
+        sql.contains("toFloat64(total_amount) > 100"),
+        "#477 regressed: expected the bare (alias-free) function-wrapped \
+         predicate inside the LEFT JOIN pre_filter subquery:\n{sql}"
     );
 }
 
