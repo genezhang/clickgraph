@@ -2682,6 +2682,93 @@ async fn coupled_multihop_middle_node_binds_shared_endpoint_481() {
     );
 }
 
+/// #491 regression: `MATCH (a:Airport)-[:FLIGHT]->(b) OPTIONAL MATCH
+/// (b)-[:FLIGHT]->(c)` on the denormalized flights schema bound the REQUIRED
+/// node `b` to the OPTIONAL hop's LEFT-JOINed table alias (the
+/// `denormalized_node_edges` registry is last-write-wins, and the optional
+/// pattern registers after the required one). `b.code` then rendered as
+/// `<opt_hop>.origin_code`, which is NULL on exactly the rows the optional hop
+/// misses — even though `b` matched in the required MATCH (live: the DEN→PHX
+/// row returned b=NULL instead of b=PHX).
+///
+/// The fix makes an OPTIONAL pattern's registration keep an existing binding:
+/// `b.code` must resolve from the REQUIRED hop's row (`dest_code` on the scan
+/// that also carries `a.code` as `origin_code`), and the optional hop joins on
+/// that same required-side column.
+///
+/// Live-verified on `db_denormalized` (8 flights): 12 rows, with the
+/// optional-miss row `DEN | PHX | NULL` (was `DEN | NULL | NULL`); required
+/// 2-hop and single-hop variants byte-unchanged and matching hand-written SQL.
+#[tokio::test]
+async fn denorm_optional_second_hop_keeps_required_binding_491() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+    let repro = "MATCH (a:Airport)-[:FLIGHT]->(b) OPTIONAL MATCH (b)-[:FLIGHT]->(c) \
+                 RETURN a.code, b.code, c.code";
+
+    // Determinism: repeated in-process renders must be byte-identical.
+    let first = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+    for _ in 0..10 {
+        let again = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#491: OPTIONAL second-hop render is nondeterministic:\n\
+             FIRST:\n{first}\nAGAIN:\n{again}"
+        );
+    }
+
+    // Identify the required-hop and optional-hop scans structurally: a.code
+    // is the required hop's from-column; c.code is the optional hop's
+    // to-column; the optional hop is LEFT JOINed.
+    let binding = |col_alias: &str| -> (String, String) {
+        let re = regex::Regex::new(&format!(
+            r#"(t\d+)\.((?:origin|dest)_code) AS "{}""#,
+            regex::escape(col_alias)
+        ))
+        .unwrap();
+        let caps = re
+            .captures(&first)
+            .unwrap_or_else(|| panic!("#491: no binding for {col_alias}:\n{first}"));
+        (caps[1].to_string(), caps[2].to_string())
+    };
+    let (a_alias, a_col) = binding("a.code");
+    let (b_alias, b_col) = binding("b.code");
+    let (c_alias, c_col) = binding("c.code");
+
+    assert_eq!(
+        a_col, "origin_code",
+        "#491: a.code must be the required hop's from-column:\n{first}"
+    );
+    assert_eq!(
+        c_col, "dest_code",
+        "#491: c.code must be the optional hop's to-column:\n{first}"
+    );
+    assert_ne!(
+        a_alias, c_alias,
+        "#491: required and optional hops must be distinct scans:\n{first}"
+    );
+
+    // THE FIX: b must bind to the REQUIRED hop's row (its to-column), never to
+    // the optional hop's from-column (NULL-extended on optional miss).
+    assert_eq!(
+        (b_alias.as_str(), b_col.as_str()),
+        (a_alias.as_str(), "dest_code"),
+        "#491: b.code must resolve from the REQUIRED pattern's binding \
+         ({a_alias}.dest_code), not the OPTIONAL hop's:\n{first}"
+    );
+
+    // The optional hop must be a LEFT JOIN keyed on the required-side column.
+    let join_line = first
+        .lines()
+        .find(|l| l.contains("LEFT JOIN"))
+        .unwrap_or_else(|| panic!("#491: no LEFT JOIN line:\n{first}"));
+    assert!(
+        join_line.contains(&format!("{c_alias}.origin_code = {a_alias}.dest_code"))
+            || join_line.contains(&format!("{a_alias}.dest_code = {c_alias}.origin_code")),
+        "#491: optional hop must join its from-column to the required hop's \
+         to-column:\n{first}"
+    );
+}
+
 /// #480 regression: two rendering sites emitted whole-entity/denorm-VLP
 /// columns in raw `HashMap` iteration order, flapping across processes (15
 /// corpus entries were excluded for this class in
