@@ -1707,10 +1707,20 @@ impl FilterTagging {
                     let single_table =
                         Self::get_table_alias_if_single_table_condition(&op_app.operands[0], false);
 
-                    if single_table.is_none() {
-                        // Cross-table condition under NOT (e.g., NOT (p.id = friend.id))
-                        // Keep it intact - don't recurse into operands
-                        // Just extract property projections for column selection
+                    // #473: a single-table NOT nested inside an OR (`in_or`) must NOT be
+                    // extracted as its own standalone filter — doing so silently splits the
+                    // OR into two independently-placed conjuncts (effectively an AND),
+                    // changing the query's boolean semantics (e.g.
+                    // `NOT(o.amount > 5) OR c.id > 101` was rendered as if it were
+                    // `NOT(o.amount > 5) AND c.id > 101`, dropping matches the OR should
+                    // have kept). Only extract when NOT is single-table AND not nested in
+                    // an OR — mirrors the general single-table extraction guard below
+                    // (`!new_in_or && ... && is_single_table_condition`).
+                    if single_table.is_none() || in_or {
+                        // Cross-table condition under NOT (e.g., NOT (p.id = friend.id)),
+                        // or a single-table NOT that lives inside an OR: keep it intact -
+                        // don't recurse into operands. Just extract property projections
+                        // for column selection.
                         let mut temp_props = Vec::new();
                         Self::collect_property_accesses(&op_app.operands[0], &mut temp_props);
                         extracted_projections.extend(temp_props);
@@ -1718,7 +1728,7 @@ impl FilterTagging {
                         // Return the entire NOT expression as-is for global WHERE clause
                         return Some(LogicalExpr::OperatorApplicationExp(op_app));
                     } else {
-                        // Single-table NOT (e.g., NOT p.active)
+                        // Single-table NOT (e.g., NOT p.active), NOT inside an OR
                         // Extract it as a complete filter to the table
                         // Collect projections from the operand
                         let mut temp_props = Vec::new();
@@ -1843,8 +1853,19 @@ impl FilterTagging {
                     extracted_projections.append(&mut temp_prop_acc);
                 }
 
-                // If after processing there is only one operand left and it is not unary then collapse the operator application.
-                if op_app.operands.len() == 1 && op_app.operator != Operator::Not {
+                // If after processing there is only one operand left, collapse the operator
+                // application — but ONLY for the variadic boolean combinators (And/Or) whose
+                // operand count can genuinely shrink from extraction (e.g. `a AND b` becomes
+                // just `b` once `a` is extracted as its own filter). #473: this must NOT fire
+                // for operators that are inherently single-operand (Not, IsNull, IsNotNull,
+                // Distinct) — those always have exactly one operand from the start, and
+                // "collapsing" them silently drops the operator itself (e.g.
+                // `o.amount IS NULL` was rendered as bare `o.amount`, evaluating a Float
+                // column as a boolean). The old `operator != Operator::Not` check excluded
+                // only Not, missing IsNull/IsNotNull/Distinct.
+                if op_app.operands.len() == 1
+                    && matches!(op_app.operator, Operator::And | Operator::Or)
+                {
                     log::warn!(
                         "process_expr: Collapsing operator {:?} with single operand: {:?}",
                         op_app.operator,
