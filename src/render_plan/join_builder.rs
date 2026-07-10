@@ -1892,6 +1892,35 @@ impl JoinBuilder for LogicalPlan {
                     log::debug!("🔍 DEBUG: Nested pattern - shared='{}', inner_left='{}', inner_right='{}', shared_is_left={}, shared_is_right={}",
                              shared_node_alias, inner_left_alias, inner_right_alias, shared_is_inner_left, shared_is_inner_right);
 
+                    // #478/#461-shape-1: "two 1-hop patterns sharing one anchor"
+                    // (e.g. two OPTIONAL MATCHes each independently anchored on
+                    // `c`, or a required+optional pair sharing `c`) is encoded
+                    // using this SAME nested-GraphRel shape as a genuine
+                    // sequential chain — there is no tree-shape difference
+                    // between "(post)<-[HAS_CREATOR]-(f)-[KNOWS]-(p)" (a real
+                    // 2-hop pattern fanning through midpoint `f`) and two
+                    // independent `(o)-[PLACED_BY]->(c)` / `(o2)-[PLACED_BY]->(c)`
+                    // patterns fanning into shared anchor `c`. What DOES differ,
+                    // on an FK-edge ("node IS the edge") schema: the inner
+                    // relationship's own table is IDENTICAL to its non-shared
+                    // node's table (e.g. `orders_fk` for both `o` and its
+                    // `PLACED_BY` edge). When that holds, `inner_rel.left`
+                    // already fully represents both the node AND its edge to
+                    // the shared anchor in one row — the analyzer's
+                    // `GraphJoins.joins` already carries the single correct
+                    // JOIN for it (see the `GraphJoins` arm above). Materializing
+                    // a SEPARATE join keyed by the auto-generated relationship
+                    // alias (`t1`) here fabricates a phantom duplicate scan of
+                    // the same table with a spurious/incorrect ON condition —
+                    // exactly the #478 "extra INNER/LEFT JOIN of a phantom
+                    // t<N>-aliased edge join" bug. On non-FK-edge (separate
+                    // edge table) schemas this never fires — the tables differ,
+                    // so the relationship legitimately needs its own JOIN
+                    // (dedup against `GraphJoins.joins`'s already-correct entry
+                    // for the SAME alias happens later, in the `GraphJoins` arm).
+                    let inner_rel_table_for_redundancy_check =
+                        extract_parameterized_table_ref(&inner_rel.center);
+
                     if shared_is_inner_right {
                         // Shared node is inner's right_connection (e.g., f)
                         // Non-shared node is inner's left_connection (e.g., p)
@@ -1901,115 +1930,144 @@ impl JoinBuilder for LogicalPlan {
 
                         let non_shared_alias = inner_left_alias;
 
-                        let inner_rel_cols = extract_relationship_columns(&inner_rel.center)
-                            .unwrap_or(RelationshipColumns {
-                                from_id: Identifier::Single("from_node_id".to_string()),
-                                to_id: Identifier::Single("to_node_id".to_string()),
+                        let non_shared_is_rel_table = inner_rel_table_for_redundancy_check
+                            .as_deref()
+                            .is_some_and(|rt| {
+                                extract_table_name(&inner_rel.left).as_deref() == Some(rt)
                             });
 
-                        // Get shared node's ID column
-                        let shared_id_col = extract_end_node_id_column(&inner_rel.right)
-                            .unwrap_or_else(|| "id".to_string());
-
-                        // JOIN 1: Relationship table connecting to shared node
-                        // t1.to_id = f.id (since f = right_connection → to_id per GraphRel convention)
-                        let rel_table = extract_parameterized_table_ref(&inner_rel.center)
-                            .unwrap_or_else(|| inner_rel.alias.clone());
-
-                        // Resolve shared node's full Identifier from schema
-                        let shared_label_right = extract_node_label_from_viewscan(&inner_rel.right);
-                        let shared_node_identifier: Identifier = shared_label_right
-                            .as_ref()
-                            .and_then(|lbl| schema.node_schema_opt(lbl))
-                            .map(|ns| ns.node_id.id.clone())
-                            .unwrap_or_else(|| Identifier::Single(shared_id_col));
-                        let rel_join_conditions = build_identifier_join_conditions(
-                            &inner_rel.alias,
-                            &inner_rel_cols.to_id,
-                            shared_node_alias,
-                            &shared_node_identifier,
-                        );
-
-                        joins.push(Join {
-                            table_name: rel_table,
-                            table_alias: inner_rel.alias.clone(),
-                            joining_on: rel_join_conditions,
-                            join_type: JoinType::Inner,
-                            pre_filter: None,
-                            from_id_column: Some(inner_rel_cols.from_id.to_string()),
-                            to_id_column: Some(inner_rel_cols.to_id.to_string()),
-                            graph_rel: None,
-                        });
-
-                        // JOIN 2: Non-shared node connecting to relationship
-                        // p.id = t1.from_id (since p = left_connection → from_id)
-                        if let LogicalPlan::GraphRel(deeper_rel) = inner_rel.left.as_ref() {
-                            // DEEP NESTING FIX: inner_rel.left is another GraphRel
+                        if non_shared_is_rel_table {
                             log::debug!(
+                                "🔍 #478: skipping phantom edge join for '{}' — its table matches \
+                                 non-shared node '{}' (FK-edge node-is-edge collapse); \
+                                 GraphJoins.joins already has the correct JOIN",
+                                inner_rel.alias,
+                                non_shared_alias
+                            );
+                            // 3+-way sibling nesting: recurse so deeper siblings
+                            // still get their own (correct) JOINs.
+                            if let LogicalPlan::GraphRel(_) = inner_rel.left.as_ref() {
+                                let mut deeper_joins = <LogicalPlan as JoinBuilder>::extract_joins(
+                                    &inner_rel.left,
+                                    schema,
+                                )?;
+                                joins.append(&mut deeper_joins);
+                            }
+                            // Terminal non-shared node: nothing to add here —
+                            // `GraphJoins.joins` already has its JOIN.
+                        } else {
+                            let inner_rel_cols = extract_relationship_columns(&inner_rel.center)
+                                .unwrap_or(RelationshipColumns {
+                                    from_id: Identifier::Single("from_node_id".to_string()),
+                                    to_id: Identifier::Single("to_node_id".to_string()),
+                                });
+
+                            // Get shared node's ID column
+                            let shared_id_col = extract_end_node_id_column(&inner_rel.right)
+                                .unwrap_or_else(|| "id".to_string());
+
+                            // JOIN 1: Relationship table connecting to shared node
+                            // t1.to_id = f.id (since f = right_connection → to_id per GraphRel convention)
+                            let rel_table = extract_parameterized_table_ref(&inner_rel.center)
+                                .unwrap_or_else(|| inner_rel.alias.clone());
+
+                            // Resolve shared node's full Identifier from schema
+                            let shared_label_right =
+                                extract_node_label_from_viewscan(&inner_rel.right);
+                            let shared_node_identifier: Identifier = shared_label_right
+                                .as_ref()
+                                .and_then(|lbl| schema.node_schema_opt(lbl))
+                                .map(|ns| ns.node_id.id.clone())
+                                .unwrap_or_else(|| Identifier::Single(shared_id_col));
+                            let rel_join_conditions = build_identifier_join_conditions(
+                                &inner_rel.alias,
+                                &inner_rel_cols.to_id,
+                                shared_node_alias,
+                                &shared_node_identifier,
+                            );
+
+                            joins.push(Join {
+                                table_name: rel_table,
+                                table_alias: inner_rel.alias.clone(),
+                                joining_on: rel_join_conditions,
+                                join_type: JoinType::Inner,
+                                pre_filter: None,
+                                from_id_column: Some(inner_rel_cols.from_id.to_string()),
+                                to_id_column: Some(inner_rel_cols.to_id.to_string()),
+                                graph_rel: None,
+                            });
+
+                            // JOIN 2: Non-shared node connecting to relationship
+                            // p.id = t1.from_id (since p = left_connection → from_id)
+                            if let LogicalPlan::GraphRel(deeper_rel) = inner_rel.left.as_ref() {
+                                // DEEP NESTING FIX: inner_rel.left is another GraphRel
+                                log::debug!(
                                 "🔍 DEBUG: Deep nesting detected (right shared) - inner_rel.left is GraphRel (alias={})",
                                 deeper_rel.alias
                             );
 
-                            // Check if non_shared_alias matches an immediate connection of the deeper GraphRel
-                            let non_shared_at_immediate = non_shared_alias
-                                == &deeper_rel.right_connection
-                                || non_shared_alias == &deeper_rel.left_connection;
+                                // Check if non_shared_alias matches an immediate connection of the deeper GraphRel
+                                let non_shared_at_immediate = non_shared_alias
+                                    == &deeper_rel.right_connection
+                                    || non_shared_alias == &deeper_rel.left_connection;
 
-                            if non_shared_at_immediate {
-                                // Non-shared node is directly accessible from the deeper GraphRel
-                                // Extract from the matching side (right if right_connection matches, else left)
-                                let (imm_plan, use_end) =
-                                    if non_shared_alias == &deeper_rel.right_connection {
-                                        (&deeper_rel.right, true)
+                                if non_shared_at_immediate {
+                                    // Non-shared node is directly accessible from the deeper GraphRel
+                                    // Extract from the matching side (right if right_connection matches, else left)
+                                    let (imm_plan, use_end) =
+                                        if non_shared_alias == &deeper_rel.right_connection {
+                                            (&deeper_rel.right, true)
+                                        } else {
+                                            (&deeper_rel.left, false)
+                                        };
+                                    let immediate_table = if use_end {
+                                        extract_end_node_table_name(imm_plan)
                                     } else {
-                                        (&deeper_rel.left, false)
+                                        extract_table_name(imm_plan)
                                     };
-                                let immediate_table = if use_end {
-                                    extract_end_node_table_name(imm_plan)
-                                } else {
-                                    extract_table_name(imm_plan)
-                                };
-                                if let Some(immediate_table) = immediate_table {
-                                    let immediate_id_col = if use_end {
-                                        extract_end_node_id_column(imm_plan)
-                                    } else {
-                                        extract_id_column(imm_plan)
+                                    if let Some(immediate_table) = immediate_table {
+                                        let immediate_id_col = if use_end {
+                                            extract_end_node_id_column(imm_plan)
+                                        } else {
+                                            extract_id_column(imm_plan)
+                                        }
+                                        .unwrap_or_else(|| "id".to_string());
+
+                                        let immediate_label =
+                                            extract_node_label_from_viewscan(imm_plan);
+                                        let immediate_node_id: Identifier = immediate_label
+                                            .as_ref()
+                                            .and_then(|lbl| schema.node_schema_opt(lbl))
+                                            .map(|ns| ns.node_id.id.clone())
+                                            .unwrap_or_else(|| {
+                                                Identifier::Single(immediate_id_col)
+                                            });
+                                        let immediate_conditions = build_identifier_join_conditions(
+                                            non_shared_alias,
+                                            &immediate_node_id,
+                                            &inner_rel.alias,
+                                            &inner_rel_cols.from_id,
+                                        );
+
+                                        joins.push(Join {
+                                            table_name: immediate_table,
+                                            table_alias: non_shared_alias.clone(),
+                                            joining_on: immediate_conditions,
+                                            join_type: JoinType::Inner,
+                                            pre_filter: None,
+                                            from_id_column: None,
+                                            to_id_column: None,
+                                            graph_rel: None,
+                                        });
                                     }
-                                    .unwrap_or_else(|| "id".to_string());
-
-                                    let immediate_label =
-                                        extract_node_label_from_viewscan(imm_plan);
-                                    let immediate_node_id: Identifier = immediate_label
-                                        .as_ref()
-                                        .and_then(|lbl| schema.node_schema_opt(lbl))
-                                        .map(|ns| ns.node_id.id.clone())
-                                        .unwrap_or_else(|| Identifier::Single(immediate_id_col));
-                                    let immediate_conditions = build_identifier_join_conditions(
-                                        non_shared_alias,
-                                        &immediate_node_id,
-                                        &inner_rel.alias,
-                                        &inner_rel_cols.from_id,
-                                    );
-
-                                    joins.push(Join {
-                                        table_name: immediate_table,
-                                        table_alias: non_shared_alias.clone(),
-                                        joining_on: immediate_conditions,
-                                        join_type: JoinType::Inner,
-                                        pre_filter: None,
-                                        from_id_column: None,
-                                        to_id_column: None,
-                                        graph_rel: None,
-                                    });
-                                }
-                            } else {
-                                // Non-shared node is buried deep in the chain.
-                                // Look up the correct table from the inner relationship's schema.
-                                log::debug!(
+                                } else {
+                                    // Non-shared node is buried deep in the chain.
+                                    // Look up the correct table from the inner relationship's schema.
+                                    log::debug!(
                                     "🔍 DEBUG: Non-shared '{}' buried deep (not at immediate level of {})",
                                     non_shared_alias, deeper_rel.alias
                                 );
-                                let non_shared_table_opt: Option<(String, String)> = inner_rel.labels.as_ref()
+                                    let non_shared_table_opt: Option<(String, String)> = inner_rel.labels.as_ref()
                                     .and_then(|labels| labels.first())
                                     .and_then(|rel_type| {
                                         crate::server::query_context::get_current_schema_with_fallback()
@@ -2024,77 +2082,85 @@ impl JoinBuilder for LogicalPlan {
                                             })
                                     });
 
-                                if let Some((non_shared_table, from_label)) = non_shared_table_opt {
-                                    let non_shared_node_id: Identifier = schema
-                                        .node_schema_opt(&from_label)
-                                        .map(|ns| ns.node_id.id.clone())
-                                        .unwrap_or_else(|| Identifier::Single("id".to_string()));
-                                    let non_shared_conditions = build_identifier_join_conditions(
-                                        non_shared_alias,
-                                        &non_shared_node_id,
-                                        &inner_rel.alias,
-                                        &inner_rel_cols.from_id,
-                                    );
+                                    if let Some((non_shared_table, from_label)) =
+                                        non_shared_table_opt
+                                    {
+                                        let non_shared_node_id: Identifier = schema
+                                            .node_schema_opt(&from_label)
+                                            .map(|ns| ns.node_id.id.clone())
+                                            .unwrap_or_else(|| {
+                                                Identifier::Single("id".to_string())
+                                            });
+                                        let non_shared_conditions =
+                                            build_identifier_join_conditions(
+                                                non_shared_alias,
+                                                &non_shared_node_id,
+                                                &inner_rel.alias,
+                                                &inner_rel_cols.from_id,
+                                            );
 
-                                    joins.push(Join {
-                                        table_name: non_shared_table,
-                                        table_alias: non_shared_alias.clone(),
-                                        joining_on: non_shared_conditions,
-                                        join_type: JoinType::Inner,
-                                        pre_filter: None,
-                                        from_id_column: None,
-                                        to_id_column: None,
-                                        graph_rel: None,
-                                    });
+                                        joins.push(Join {
+                                            table_name: non_shared_table,
+                                            table_alias: non_shared_alias.clone(),
+                                            joining_on: non_shared_conditions,
+                                            join_type: JoinType::Inner,
+                                            pre_filter: None,
+                                            from_id_column: None,
+                                            to_id_column: None,
+                                            graph_rel: None,
+                                        });
+                                    }
                                 }
+
+                                // Recursively extract JOINs for the deeper GraphRel chain
+                                let mut deeper_joins = <LogicalPlan as JoinBuilder>::extract_joins(
+                                    &inner_rel.left,
+                                    schema,
+                                )?;
+                                log::debug!(
+                                    "  ↳ Got {} deeper joins from recursive extraction",
+                                    deeper_joins.len()
+                                );
+                                joins.append(&mut deeper_joins);
+                            } else if let Some(non_shared_table) =
+                                extract_table_name(&inner_rel.left)
+                            {
+                                // Simple case: inner_rel.left is a terminal node
+                                let non_shared_id_col = extract_id_column(&inner_rel.left)
+                                    .unwrap_or_else(|| "id".to_string());
+
+                                let non_shared_label =
+                                    extract_node_label_from_viewscan(&inner_rel.left);
+                                let non_shared_node_id: Identifier = non_shared_label
+                                    .as_ref()
+                                    .and_then(|lbl| schema.node_schema_opt(lbl))
+                                    .map(|ns| ns.node_id.id.clone())
+                                    .unwrap_or_else(|| Identifier::Single(non_shared_id_col));
+                                let non_shared_conditions = build_identifier_join_conditions(
+                                    non_shared_alias,
+                                    &non_shared_node_id,
+                                    &inner_rel.alias,
+                                    &inner_rel_cols.from_id,
+                                );
+
+                                joins.push(Join {
+                                    table_name: non_shared_table,
+                                    table_alias: non_shared_alias.clone(),
+                                    joining_on: non_shared_conditions,
+                                    join_type: JoinType::Inner,
+                                    pre_filter: None,
+                                    from_id_column: None,
+                                    to_id_column: None,
+                                    graph_rel: None,
+                                });
                             }
 
-                            // Recursively extract JOINs for the deeper GraphRel chain
-                            let mut deeper_joins = <LogicalPlan as JoinBuilder>::extract_joins(
-                                &inner_rel.left,
-                                schema,
-                            )?;
                             log::debug!(
-                                "  ↳ Got {} deeper joins from recursive extraction",
-                                deeper_joins.len()
+                                "  ✅ Built nested pattern JOINs: {} → {}",
+                                inner_rel.alias,
+                                non_shared_alias
                             );
-                            joins.append(&mut deeper_joins);
-                        } else if let Some(non_shared_table) = extract_table_name(&inner_rel.left) {
-                            // Simple case: inner_rel.left is a terminal node
-                            let non_shared_id_col = extract_id_column(&inner_rel.left)
-                                .unwrap_or_else(|| "id".to_string());
-
-                            let non_shared_label =
-                                extract_node_label_from_viewscan(&inner_rel.left);
-                            let non_shared_node_id: Identifier = non_shared_label
-                                .as_ref()
-                                .and_then(|lbl| schema.node_schema_opt(lbl))
-                                .map(|ns| ns.node_id.id.clone())
-                                .unwrap_or_else(|| Identifier::Single(non_shared_id_col));
-                            let non_shared_conditions = build_identifier_join_conditions(
-                                non_shared_alias,
-                                &non_shared_node_id,
-                                &inner_rel.alias,
-                                &inner_rel_cols.from_id,
-                            );
-
-                            joins.push(Join {
-                                table_name: non_shared_table,
-                                table_alias: non_shared_alias.clone(),
-                                joining_on: non_shared_conditions,
-                                join_type: JoinType::Inner,
-                                pre_filter: None,
-                                from_id_column: None,
-                                to_id_column: None,
-                                graph_rel: None,
-                            });
-                        }
-
-                        log::debug!(
-                            "  ✅ Built nested pattern JOINs: {} → {}",
-                            inner_rel.alias,
-                            non_shared_alias
-                        );
+                        } // end non_shared_is_rel_table else (materialize JOIN1/JOIN2)
                     } else if shared_is_inner_left {
                         // Shared node is inner's left_connection
                         // This case should work with normal extract_joins since left is anchor
@@ -2102,113 +2168,142 @@ impl JoinBuilder for LogicalPlan {
 
                         let non_shared_alias = inner_right_alias;
 
-                        let inner_rel_cols = extract_relationship_columns(&inner_rel.center)
-                            .unwrap_or(RelationshipColumns {
-                                from_id: Identifier::Single("from_node_id".to_string()),
-                                to_id: Identifier::Single("to_node_id".to_string()),
+                        // #478 (mirror of the `shared_is_inner_right` check above):
+                        // the shared node here sits on inner's LEFT, so the
+                        // non-shared node is inner's RIGHT (an end-node
+                        // connection — use `extract_end_node_table_name`).
+                        let non_shared_is_rel_table = inner_rel_table_for_redundancy_check
+                            .as_deref()
+                            .is_some_and(|rt| {
+                                extract_end_node_table_name(&inner_rel.right).as_deref() == Some(rt)
                             });
 
-                        // Get shared node's ID column
-                        let shared_id_col =
-                            extract_id_column(&inner_rel.left).unwrap_or_else(|| "id".to_string());
-
-                        // JOIN 1: Relationship connecting to shared node (left)
-                        // t1.from_id = f.id (since f = left_connection → from_id)
-                        let rel_table = extract_parameterized_table_ref(&inner_rel.center)
-                            .unwrap_or_else(|| inner_rel.alias.clone());
-
-                        // Resolve shared node's full Identifier from schema
-                        let shared_label_left = extract_node_label_from_viewscan(&inner_rel.left);
-                        let shared_node_identifier: Identifier = shared_label_left
-                            .as_ref()
-                            .and_then(|lbl| schema.node_schema_opt(lbl))
-                            .map(|ns| ns.node_id.id.clone())
-                            .unwrap_or_else(|| Identifier::Single(shared_id_col));
-                        let rel_join_conditions = build_identifier_join_conditions(
-                            &inner_rel.alias,
-                            &inner_rel_cols.from_id,
-                            shared_node_alias,
-                            &shared_node_identifier,
-                        );
-
-                        joins.push(Join {
-                            table_name: rel_table,
-                            table_alias: inner_rel.alias.clone(),
-                            joining_on: rel_join_conditions,
-                            join_type: JoinType::Inner,
-                            pre_filter: None,
-                            from_id_column: Some(inner_rel_cols.from_id.to_string()),
-                            to_id_column: Some(inner_rel_cols.to_id.to_string()),
-                            graph_rel: None,
-                        });
-
-                        // JOIN 2: Non-shared node (right) connecting to relationship
-                        // p.id = t1.to_id (since p = right_connection → to_id)
-                        if let LogicalPlan::GraphRel(deeper_rel) = inner_rel.right.as_ref() {
-                            // DEEP NESTING FIX: inner_rel.right is another GraphRel
+                        if non_shared_is_rel_table {
                             log::debug!(
+                                "🔍 #478: skipping phantom edge join for '{}' — its table matches \
+                                 non-shared node '{}' (FK-edge node-is-edge collapse); \
+                                 GraphJoins.joins already has the correct JOIN",
+                                inner_rel.alias,
+                                non_shared_alias
+                            );
+                            if let LogicalPlan::GraphRel(_) = inner_rel.right.as_ref() {
+                                let mut deeper_joins = <LogicalPlan as JoinBuilder>::extract_joins(
+                                    &inner_rel.right,
+                                    schema,
+                                )?;
+                                joins.append(&mut deeper_joins);
+                            }
+                        } else {
+                            let inner_rel_cols = extract_relationship_columns(&inner_rel.center)
+                                .unwrap_or(RelationshipColumns {
+                                    from_id: Identifier::Single("from_node_id".to_string()),
+                                    to_id: Identifier::Single("to_node_id".to_string()),
+                                });
+
+                            // Get shared node's ID column
+                            let shared_id_col = extract_id_column(&inner_rel.left)
+                                .unwrap_or_else(|| "id".to_string());
+
+                            // JOIN 1: Relationship connecting to shared node (left)
+                            // t1.from_id = f.id (since f = left_connection → from_id)
+                            let rel_table = extract_parameterized_table_ref(&inner_rel.center)
+                                .unwrap_or_else(|| inner_rel.alias.clone());
+
+                            // Resolve shared node's full Identifier from schema
+                            let shared_label_left =
+                                extract_node_label_from_viewscan(&inner_rel.left);
+                            let shared_node_identifier: Identifier = shared_label_left
+                                .as_ref()
+                                .and_then(|lbl| schema.node_schema_opt(lbl))
+                                .map(|ns| ns.node_id.id.clone())
+                                .unwrap_or_else(|| Identifier::Single(shared_id_col));
+                            let rel_join_conditions = build_identifier_join_conditions(
+                                &inner_rel.alias,
+                                &inner_rel_cols.from_id,
+                                shared_node_alias,
+                                &shared_node_identifier,
+                            );
+
+                            joins.push(Join {
+                                table_name: rel_table,
+                                table_alias: inner_rel.alias.clone(),
+                                joining_on: rel_join_conditions,
+                                join_type: JoinType::Inner,
+                                pre_filter: None,
+                                from_id_column: Some(inner_rel_cols.from_id.to_string()),
+                                to_id_column: Some(inner_rel_cols.to_id.to_string()),
+                                graph_rel: None,
+                            });
+
+                            // JOIN 2: Non-shared node (right) connecting to relationship
+                            // p.id = t1.to_id (since p = right_connection → to_id)
+                            if let LogicalPlan::GraphRel(deeper_rel) = inner_rel.right.as_ref() {
+                                // DEEP NESTING FIX: inner_rel.right is another GraphRel
+                                log::debug!(
                                 "🔍 DEBUG: Deep nesting detected (left shared) - inner_rel.right is GraphRel (alias={})",
                                 deeper_rel.alias
                             );
 
-                            // Check if non_shared_alias matches an immediate connection of deeper GraphRel
-                            let non_shared_at_immediate = non_shared_alias
-                                == &deeper_rel.left_connection
-                                || non_shared_alias == &deeper_rel.right_connection;
+                                // Check if non_shared_alias matches an immediate connection of deeper GraphRel
+                                let non_shared_at_immediate = non_shared_alias
+                                    == &deeper_rel.left_connection
+                                    || non_shared_alias == &deeper_rel.right_connection;
 
-                            if non_shared_at_immediate {
-                                // Non-shared node is directly accessible from the deeper GraphRel
-                                let (imm_plan, use_end) =
-                                    if non_shared_alias == &deeper_rel.left_connection {
-                                        (&deeper_rel.left, false)
+                                if non_shared_at_immediate {
+                                    // Non-shared node is directly accessible from the deeper GraphRel
+                                    let (imm_plan, use_end) =
+                                        if non_shared_alias == &deeper_rel.left_connection {
+                                            (&deeper_rel.left, false)
+                                        } else {
+                                            (&deeper_rel.right, true)
+                                        };
+                                    let immediate_table = if use_end {
+                                        extract_end_node_table_name(imm_plan)
                                     } else {
-                                        (&deeper_rel.right, true)
+                                        extract_table_name(imm_plan)
                                     };
-                                let immediate_table = if use_end {
-                                    extract_end_node_table_name(imm_plan)
-                                } else {
-                                    extract_table_name(imm_plan)
-                                };
-                                if let Some(immediate_table) = immediate_table {
-                                    let immediate_id_col = if use_end {
-                                        extract_end_node_id_column(imm_plan)
-                                    } else {
-                                        extract_id_column(imm_plan)
+                                    if let Some(immediate_table) = immediate_table {
+                                        let immediate_id_col = if use_end {
+                                            extract_end_node_id_column(imm_plan)
+                                        } else {
+                                            extract_id_column(imm_plan)
+                                        }
+                                        .unwrap_or_else(|| "id".to_string());
+
+                                        let immediate_label =
+                                            extract_node_label_from_viewscan(imm_plan);
+                                        let immediate_node_id: Identifier = immediate_label
+                                            .as_ref()
+                                            .and_then(|lbl| schema.node_schema_opt(lbl))
+                                            .map(|ns| ns.node_id.id.clone())
+                                            .unwrap_or_else(|| {
+                                                Identifier::Single(immediate_id_col)
+                                            });
+                                        let immediate_conditions = build_identifier_join_conditions(
+                                            non_shared_alias,
+                                            &immediate_node_id,
+                                            &inner_rel.alias,
+                                            &inner_rel_cols.to_id,
+                                        );
+
+                                        joins.push(Join {
+                                            table_name: immediate_table,
+                                            table_alias: non_shared_alias.clone(),
+                                            joining_on: immediate_conditions,
+                                            join_type: JoinType::Inner,
+                                            pre_filter: None,
+                                            from_id_column: None,
+                                            to_id_column: None,
+                                            graph_rel: None,
+                                        });
                                     }
-                                    .unwrap_or_else(|| "id".to_string());
-
-                                    let immediate_label =
-                                        extract_node_label_from_viewscan(imm_plan);
-                                    let immediate_node_id: Identifier = immediate_label
-                                        .as_ref()
-                                        .and_then(|lbl| schema.node_schema_opt(lbl))
-                                        .map(|ns| ns.node_id.id.clone())
-                                        .unwrap_or_else(|| Identifier::Single(immediate_id_col));
-                                    let immediate_conditions = build_identifier_join_conditions(
-                                        non_shared_alias,
-                                        &immediate_node_id,
-                                        &inner_rel.alias,
-                                        &inner_rel_cols.to_id,
-                                    );
-
-                                    joins.push(Join {
-                                        table_name: immediate_table,
-                                        table_alias: non_shared_alias.clone(),
-                                        joining_on: immediate_conditions,
-                                        join_type: JoinType::Inner,
-                                        pre_filter: None,
-                                        from_id_column: None,
-                                        to_id_column: None,
-                                        graph_rel: None,
-                                    });
-                                }
-                            } else {
-                                // Non-shared node is buried deep in the chain
-                                log::debug!(
+                                } else {
+                                    // Non-shared node is buried deep in the chain
+                                    log::debug!(
                                     "🔍 DEBUG: Non-shared '{}' buried deep (not at immediate level of {})",
                                     non_shared_alias, deeper_rel.alias
                                 );
-                                let non_shared_table_opt: Option<(String, String)> = inner_rel.labels.as_ref()
+                                    let non_shared_table_opt: Option<(String, String)> = inner_rel.labels.as_ref()
                                     .and_then(|labels| labels.first())
                                     .and_then(|rel_type| {
                                         crate::server::query_context::get_current_schema_with_fallback()
@@ -2223,79 +2318,85 @@ impl JoinBuilder for LogicalPlan {
                                             })
                                     });
 
-                                if let Some((non_shared_table, to_label)) = non_shared_table_opt {
-                                    let non_shared_node_id: Identifier = schema
-                                        .node_schema_opt(&to_label)
-                                        .map(|ns| ns.node_id.id.clone())
-                                        .unwrap_or_else(|| Identifier::Single("id".to_string()));
-                                    let non_shared_conditions = build_identifier_join_conditions(
-                                        non_shared_alias,
-                                        &non_shared_node_id,
-                                        &inner_rel.alias,
-                                        &inner_rel_cols.to_id,
-                                    );
+                                    if let Some((non_shared_table, to_label)) = non_shared_table_opt
+                                    {
+                                        let non_shared_node_id: Identifier = schema
+                                            .node_schema_opt(&to_label)
+                                            .map(|ns| ns.node_id.id.clone())
+                                            .unwrap_or_else(|| {
+                                                Identifier::Single("id".to_string())
+                                            });
+                                        let non_shared_conditions =
+                                            build_identifier_join_conditions(
+                                                non_shared_alias,
+                                                &non_shared_node_id,
+                                                &inner_rel.alias,
+                                                &inner_rel_cols.to_id,
+                                            );
 
-                                    joins.push(Join {
-                                        table_name: non_shared_table,
-                                        table_alias: non_shared_alias.clone(),
-                                        joining_on: non_shared_conditions,
-                                        join_type: JoinType::Inner,
-                                        pre_filter: None,
-                                        from_id_column: None,
-                                        to_id_column: None,
-                                        graph_rel: None,
-                                    });
+                                        joins.push(Join {
+                                            table_name: non_shared_table,
+                                            table_alias: non_shared_alias.clone(),
+                                            joining_on: non_shared_conditions,
+                                            join_type: JoinType::Inner,
+                                            pre_filter: None,
+                                            from_id_column: None,
+                                            to_id_column: None,
+                                            graph_rel: None,
+                                        });
+                                    }
                                 }
+
+                                // Recursively extract JOINs for the deeper GraphRel chain
+                                let mut deeper_joins = <LogicalPlan as JoinBuilder>::extract_joins(
+                                    &inner_rel.right,
+                                    schema,
+                                )?;
+                                log::debug!(
+                                    "  ↳ Got {} deeper joins from recursive extraction",
+                                    deeper_joins.len()
+                                );
+                                joins.append(&mut deeper_joins);
+                            } else if let Some(non_shared_table) =
+                                extract_end_node_table_name(&inner_rel.right)
+                            {
+                                // Simple case: inner_rel.right is a terminal node
+                                let non_shared_id_col =
+                                    extract_end_node_id_column(&inner_rel.right)
+                                        .unwrap_or_else(|| "id".to_string());
+
+                                let non_shared_label =
+                                    extract_node_label_from_viewscan(&inner_rel.right);
+                                let non_shared_node_id: Identifier = non_shared_label
+                                    .as_ref()
+                                    .and_then(|lbl| schema.node_schema_opt(lbl))
+                                    .map(|ns| ns.node_id.id.clone())
+                                    .unwrap_or_else(|| Identifier::Single(non_shared_id_col));
+                                let non_shared_conditions = build_identifier_join_conditions(
+                                    non_shared_alias,
+                                    &non_shared_node_id,
+                                    &inner_rel.alias,
+                                    &inner_rel_cols.to_id,
+                                );
+
+                                joins.push(Join {
+                                    table_name: non_shared_table,
+                                    table_alias: non_shared_alias.clone(),
+                                    joining_on: non_shared_conditions,
+                                    join_type: JoinType::Inner,
+                                    pre_filter: None,
+                                    from_id_column: None,
+                                    to_id_column: None,
+                                    graph_rel: None,
+                                });
                             }
 
-                            // Recursively extract JOINs for the deeper GraphRel chain
-                            let mut deeper_joins = <LogicalPlan as JoinBuilder>::extract_joins(
-                                &inner_rel.right,
-                                schema,
-                            )?;
                             log::debug!(
-                                "  ↳ Got {} deeper joins from recursive extraction",
-                                deeper_joins.len()
+                                "  ✅ Built nested pattern JOINs (left shared): {} → {}",
+                                inner_rel.alias,
+                                non_shared_alias
                             );
-                            joins.append(&mut deeper_joins);
-                        } else if let Some(non_shared_table) =
-                            extract_end_node_table_name(&inner_rel.right)
-                        {
-                            // Simple case: inner_rel.right is a terminal node
-                            let non_shared_id_col = extract_end_node_id_column(&inner_rel.right)
-                                .unwrap_or_else(|| "id".to_string());
-
-                            let non_shared_label =
-                                extract_node_label_from_viewscan(&inner_rel.right);
-                            let non_shared_node_id: Identifier = non_shared_label
-                                .as_ref()
-                                .and_then(|lbl| schema.node_schema_opt(lbl))
-                                .map(|ns| ns.node_id.id.clone())
-                                .unwrap_or_else(|| Identifier::Single(non_shared_id_col));
-                            let non_shared_conditions = build_identifier_join_conditions(
-                                non_shared_alias,
-                                &non_shared_node_id,
-                                &inner_rel.alias,
-                                &inner_rel_cols.to_id,
-                            );
-
-                            joins.push(Join {
-                                table_name: non_shared_table,
-                                table_alias: non_shared_alias.clone(),
-                                joining_on: non_shared_conditions,
-                                join_type: JoinType::Inner,
-                                pre_filter: None,
-                                from_id_column: None,
-                                to_id_column: None,
-                                graph_rel: None,
-                            });
-                        }
-
-                        log::debug!(
-                            "  ✅ Built nested pattern JOINs (left shared): {} → {}",
-                            inner_rel.alias,
-                            non_shared_alias
-                        );
+                        } // end non_shared_is_rel_table else (materialize JOIN1/JOIN2)
                     } else {
                         // Shared node doesn't match either inner connection - fallback to old behavior
                         log::debug!("⚠️ DEBUG: Shared node '{}' doesn't match inner connections - using fallback", shared_node_alias);
@@ -2887,6 +2988,36 @@ impl JoinBuilder for LogicalPlan {
                     .unwrap_or(false);
 
                 if anchor_is_right && right_is_nested {
+                    // #478/#461-shape-1: this is the exact "two 1-hop patterns
+                    // sharing one anchor" star shape (see the long comment on the
+                    // `shared_is_inner_right`/`shared_is_inner_left` branches
+                    // above), reached here via the reversed-anchor path instead
+                    // (the outer GraphRel's own alias, e.g. `t2` for an unnamed
+                    // second `PLACED_BY`, with `graph_rel.left` — e.g. `o2` — as
+                    // the non-shared/optional node). On an FK-edge ("node IS the
+                    // edge") schema, `graph_rel.left`'s own table is IDENTICAL to
+                    // the relationship's table (`rel_table == start_table`): the
+                    // non-shared node's row already carries its own FK to the
+                    // anchor, so the analyzer's `GraphJoins.joins` already has the
+                    // single correct JOIN for it. Materializing JOIN1 (relationship
+                    // alias → anchor) and JOIN2 (non-shared node → relationship)
+                    // here would fabricate a phantom duplicate scan of the same
+                    // table under the auto-generated relationship alias (`t2`) —
+                    // the #478 "extra LEFT JOIN of a phantom t<N>-aliased edge
+                    // join" bug. Non-FK-edge schemas never hit this (their edge
+                    // and node tables differ), so the reversed-anchor logic below
+                    // still fires normally for genuine chains.
+                    if rel_table == start_table {
+                        log::debug!(
+                            "🔍 #478: skipping phantom reversed-anchor edge join for '{}' — its \
+                             table matches non-shared node '{}' (FK-edge node-is-edge collapse); \
+                             GraphJoins.joins already has the correct JOIN",
+                            graph_rel.alias,
+                            graph_rel.left_connection
+                        );
+                        return Ok(joins);
+                    }
+
                     log::info!(
                         "🎯 ANCHOR-AWARE JOINS: anchor='{}' is right_connection, reversing join direction for '{}'",
                         graph_rel.right_connection, graph_rel.alias

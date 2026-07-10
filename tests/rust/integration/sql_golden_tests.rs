@@ -2333,71 +2333,89 @@ async fn fk_edge_473_walker_fix_covers_plain_cross_alias_or() {
     }
 }
 
-/// KNOWN BROKEN — deferred, shares a root cause with #461 (see below).
+/// FIXED (#478). Two OPTIONAL MATCH clauses sharing the same anchor (`c`) on
+/// an FK-edge schema (`(o:Order)-[:PLACED_BY]->(c)` twice) used to emit a
+/// spurious extra INNER JOIN plus a spurious extra LEFT JOIN of `orders_fk`
+/// (aliases `t1`/`t2`, the auto-generated aliases for the two unnamed
+/// `PLACED_BY` relationship variables), on top of the correct `o`/`o2` node
+/// joins. The INNER JOIN dropped order-less customers — a straight OPTIONAL
+/// MATCH semantics violation; even flipped to LEFT, `t1`/`t2` would duplicate
+/// `o`/`o2`'s own join condition and fan out rows (an #479-style "naive fix
+/// is provably worse" trap) — so a superficial join-type flip was never a
+/// safe fix here.
 ///
-/// Two OPTIONAL MATCH clauses sharing the same anchor (`c`) on an FK-edge
-/// schema (`(o:Order)-[:PLACED_BY]->(c)` twice) emit a spurious extra INNER
-/// JOIN plus a spurious extra LEFT JOIN of `orders_fk` (aliases `t1`/`t2`,
-/// the auto-generated aliases for the two unnamed `PLACED_BY` relationship
-/// variables), on top of the correct `o`/`o2` node joins. The INNER JOIN drops
-/// order-less customers — a straight OPTIONAL MATCH semantics violation; even
-/// if it were flipped to LEFT, `t1`/`t2` duplicate `o`/`o2`'s own join
-/// condition, which would fan out rows (an #479-style "naive fix is provably
-/// worse" trap), so a superficial join-type flip is NOT a safe fix here.
-///
-/// Root cause (traced live, 2026-07): the query planner represents "two 1-hop
+/// Root cause (traced live, 2026-07): the planner represents "two 1-hop
 /// patterns sharing one anchor" as a nested/chained `GraphRel` — outer
 /// `GraphRel{left: o2, right: GraphRel{left: o, right: c}}` — reusing the same
-/// encoding as a genuine 2-hop chain `(o2)-[t2]->(o)-[t1]->(c)`. The tell:
-/// both the outer AND inner `GraphRel.right_connection` are `"c"` (a real
-/// chain would have `outer.right_connection == inner.left_connection`, i.e.
-/// `o2 -> o -> c` with `o` as the shared midpoint). `join_builder.rs`'s
-/// `extract_joins` (`right_is_nested` handling) walks this as if it were a
-/// real chain and materialises a join for the inner relationship alias that
-/// should never have been rendered as a chain hop at all — each pattern is
-/// independently anchored on `c`, not sequentially connected. The correct fix
-/// is a planner- or render-time change to detect this "star at a shared
-/// anchor" shape (by the `right_connection == right_connection` signature
-/// above, not a raw pattern-flag) and route it through the same join-building
-/// path used for a single OPTIONAL MATCH (which correctly emits ONLY `o`,
-/// with no phantom edge alias) — NOT the multi-hop chain path. This is planner
-/// / join-extraction structural work, not a small predicate-placement fix, so
-/// it is deferred (see #461 test below — same signature, different symptom).
+/// encoding as a genuine 2-hop chain `(o2)-[t2]->(o)-[t1]->(c)`. There turns
+/// out to be NO tree-shape difference between this "star at a shared anchor"
+/// and a genuine chain (a real 2-hop pattern fanning through a midpoint is
+/// structurally identical to two edges fanning into a shared endpoint) — so
+/// `outer.right_connection == inner.right_connection` alone cannot
+/// distinguish them, contrary to the original diagnosis. What DOES reliably
+/// distinguish this shape on an FK-edge ("node IS the edge") schema: the
+/// inner/outer relationship's own table is IDENTICAL to its non-shared node's
+/// table (e.g. `orders_fk` for both `o`/`o2` and their `PLACED_BY` edges).
+/// When that holds, the non-shared node already fully represents both itself
+/// AND its edge to the shared anchor in one row, and the analyzer's
+/// `GraphJoins.joins` already carries the single correct JOIN for it —
+/// `join_builder.rs`'s `extract_joins` materializing a SEPARATE join keyed by
+/// the auto-generated relationship alias (`t1`/`t2`) was always redundant and
+/// wrong. Fixed in three symmetric spots in `extract_joins`'s nested-GraphRel
+/// handling (the `shared_is_inner_right`/`shared_is_inner_left` branches, and
+/// the reversed-anchor `anchor_is_right && right_is_nested` branch) by
+/// checking `rel_table == <non-shared node's own table>` and skipping the
+/// phantom join when it holds (recursing only for 3+-way sibling nesting).
+/// Non-FK-edge (separate edge table) schemas never hit this — the tables
+/// differ, so genuine chains still materialize their edge joins normally.
 ///
-/// Live (db_fk_edge): current SQL is captured verbatim below as a
-/// characterization lock (documents the bug, does not endorse it).
+/// Live (db_fk_edge, 4 customers / their orders): ground truth (hand-derived
+/// LEFT JOIN ... LEFT JOIN ... AND total_amount>100) is 8 rows. Old SQL
+/// (INNER JOIN t1 + LEFT JOIN t2 on top of the correct o/o2 joins) executed
+/// but returned far more than 8 rows (duplicate fan-out from the phantom
+/// joins) — verified live during this fix. New SQL returns exactly 8 rows,
+/// matching ground truth.
 #[tokio::test]
-async fn fk_edge_478_two_optional_matches_spurious_inner_join_known_broken() {
+async fn fk_edge_478_two_optional_matches_no_phantom_edge_joins() {
     let schema = load_schema(SchemaId::FkEdge.yaml_path());
     let cypher = "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) \
                   OPTIONAL MATCH (o2:Order)-[:PLACED_BY]->(c) WHERE o2.total_amount > 100 \
                   RETURN c.customer_id, o.order_id, o2.order_id";
     let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
 
-    // Characterization lock: the spurious extra joins (auto-generated
-    // `t<N>`-aliased phantom edge joins — the exact number varies with the
-    // global alias counter's position across the test binary, so match the
-    // `t` prefix rather than a specific number) are still present, ON TOP OF
-    // the correct `o`/`o2` node joins. If this assertion starts failing
-    // because the extra joins are GONE, that is progress — update/remove this
-    // test as part of a real #478/#461 structural fix, verifying against live
-    // row counts first.
+    // No phantom `t<N>`-aliased relationship join anywhere (INNER or LEFT).
     assert!(
-        sql.contains("INNER JOIN db_fk_edge.orders_fk AS t"),
-        "#478 KNOWN BROKEN characterization stale — spurious INNER JOIN of a \
-         phantom `t<N>`-aliased orders_fk edge join no longer present; if this \
-         is a genuine fix, replace this test with a regression test (verify \
-         live row count first):\n{sql}"
+        !sql.contains("JOIN db_fk_edge.orders_fk AS t"),
+        "#478 regressed: a phantom `t<N>`-aliased orders_fk edge join is back:\n{sql}"
+    );
+    // Exactly the two genuine node joins (o, o2), both LEFT (OPTIONAL), on
+    // top of the anchor FROM.
+    assert!(
+        sql.contains("LEFT JOIN db_fk_edge.orders_fk AS o ON o.customer_id = c.customer_id"),
+        "#478: expected the plain `o` LEFT JOIN:\n{sql}"
     );
     assert!(
-        sql.contains("LEFT JOIN db_fk_edge.orders_fk AS t"),
-        "#478 KNOWN BROKEN characterization stale — spurious LEFT JOIN of a \
-         phantom `t<N>`-aliased orders_fk edge join no longer present:\n{sql}"
+        sql.contains("o2.customer_id = c.customer_id") && sql.contains("total_amount > 100"),
+        "#478: expected the `o2` LEFT JOIN pre_filter subquery gated on total_amount:\n{sql}"
     );
 }
 
-/// KNOWN BROKEN — deferred, same root cause as #478 (see doc comment above):
-/// "two 1-hop patterns sharing one anchor" mis-encoded as a chained `GraphRel`.
+/// KNOWN BROKEN — deferred. Originally suspected to share #478's root cause
+/// (both are "two 1-hop patterns sharing one anchor" mis-encoded as a chained
+/// `GraphRel`), but verified NOT the case: the #478 fix (three symmetric
+/// FK-edge-collapse guards in `extract_joins`'s nested-GraphRel handling —
+/// see the doc comment above `fk_edge_478_two_optional_matches_no_phantom_edge_joins`)
+/// leaves this exact test byte-identical (still failing this same
+/// characterization, confirmed by re-running it after the #478 fix landed).
+/// This shape's `GraphJoins.joins` (the analyzer-precomputed join list) is
+/// itself already fully correct — it has distinct, correct entries for both
+/// `o` (Inner) and `o2` — so the bug is NOT in `extract_joins`/`join_builder.rs`
+/// at all; it must be in a different post-WITH-specific code path
+/// (`build_chained_with_match_cte_plan`'s segment handling, per the original
+/// #461 filing) that fails to consume `GraphJoins.joins` correctly for a
+/// segment mixing a required and an optional pattern on the same anchor.
+/// Genuinely separate, deeper planner-level work — deferred per the original
+/// filing's own assessment.
 ///
 /// Shape 1 — mixed required + optional in one post-WITH segment: a REQUIRED
 /// match (`o`) sharing a post-WITH segment with an OPTIONAL match (`o2`), both
