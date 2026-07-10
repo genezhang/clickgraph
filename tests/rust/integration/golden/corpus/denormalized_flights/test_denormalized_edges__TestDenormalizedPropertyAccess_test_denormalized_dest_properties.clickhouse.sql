@@ -1,5 +1,5 @@
 SELECT 
-      f.dest_city AS "dest.city", 
-      f.dest_state AS "dest.state"
-FROM db_denormalized.flights_denorm AS f
+      f.DestCityName AS "dest.city", 
+      f.DestState AS "dest.state"
+FROM test_integration.flights AS f
 WHERE f.flight_number = 'AA100'

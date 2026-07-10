@@ -1,5 +1,5 @@
 SELECT 
-      f.origin_city AS "origin.city", 
-      f.dest_city AS "dest.city", 
-      f.carrier AS "f.carrier"
-FROM db_denormalized.flights_denorm AS f
+      f.OriginCityName AS "origin.city", 
+      f.DestCityName AS "dest.city", 
+      f.airline AS "f.carrier"
+FROM test_integration.flights AS f

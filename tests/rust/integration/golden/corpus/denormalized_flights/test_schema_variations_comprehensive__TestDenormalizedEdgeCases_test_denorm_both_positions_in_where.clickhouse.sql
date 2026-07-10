@@ -1,4 +1,4 @@
 SELECT 
       count(*) AS "flights"
-FROM db_denormalized.flights_denorm AS f
-WHERE (f.origin_city = 'Seattle' AND f.dest_state = 'CA')
+FROM test_integration.flights AS f
+WHERE (f.OriginCityName = 'Seattle' AND f.DestState = 'CA')

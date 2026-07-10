@@ -735,44 +735,63 @@ process-global anonymous-alias counter directly in the identifier, which
 a structural test, alongside the pre-existing Denormalized
 `path_unlabeled`/HashMap-column-order instability) ·
 ☑ P0.6 corpus sweep (`test/p06-corpus-sweep`: a mass translate-everything net over
-~1,072 Cypher queries harvested from `tests/integration/**/test_*.py` +
+1,082 Cypher queries harvested from `tests/integration/**/test_*.py` +
 `tests/sql_generation/test_schema_sql_generation.py` by a new committed harvester
 (`scripts/dev/harvest_corpus.py`, static AST analysis — no live server needed) into
 `tests/corpus/queries.jsonl` (`{schema, name, cypher}`, sorted, deduped) +
 `tests/corpus/schema_map.json` (schema key -> YAML path, incl. named sub-schemas
-inside multi-schema files). 22 distinct schemas resolved (the 5 `SchemaId`
+inside multi-schema files). 24 distinct schemas resolved (the 5 `SchemaId`
 variations plus test_fixtures/data_security/property_expressions/zeek/ldbc_snb/the
 `sqlgen_*`-namespaced `schema_variations.yaml` set/etc.). Schema resolution
 precedence: embedded `USE <name>` clause (comment-and-backtick-aware) > call-site
-literal > helper's own default > `execute_cypher`'s documented "social_integration"
-fallback — deliberately NO blanket default when a schema argument is present but
-statically unresolvable (a real bug caught mid-slice: an unresolvable
-`schema_name=` kwarg was silently substituting the default, mis-harvesting
-Airport/FLIGHT-labeled queries under `social_integration`). 1,660 raw call sites
-found; 611 skipped and counted by reason (243 schema_unresolved, 81
-schema_key_unknown incl. intentionally-invalid error-handling schema names, 24
-cypher_unresolved i.e. non-literal/loop-built queries, 3 generative
-`matrix/`-dir queries, 3 non-query-shaped empty/whitespace test inputs, 1
-parameterized `$view_param`, 1 unresolvable dynamic schema path); 196 exact
-(schema, cypher) dupes collapsed. New Rust sweep test
+literal > file-local dynamic `/schemas/load` registration (INCLUDING POSTs inside
+pytest-fixture function bodies — the harvester walks FunctionDef/AsyncFunctionDef
+bodies and resolves `open(Path(__file__).parent / …)` schema-YAML paths, and the
+`/schemas/load` URL match is f-string-aware since the URL is almost always
+`f"{BASE_URL}/schemas/load"` where BASE_URL is `os.getenv(...)`) > helper's own
+default > `execute_cypher`'s documented "social_integration" fallback —
+deliberately NO blanket default when a schema argument is present but statically
+unresolvable (a real bug caught mid-slice: an unresolvable `schema_name=` kwarg
+was silently substituting the default, mis-harvesting Airport/FLIGHT-labeled
+queries under `social_integration`). COLLISION HANDLING (#463 GLOBAL_SCHEMAS
+last-writer-wins): one runtime schema-name string can back two DIFFERENT YAMLs —
+e.g. `zeek_merged_test` is dynamically registered by test_zeek_merged.py's
+fixture against `tests/integration/fixtures/schemas/zeek_merged_test.yaml`
+(REQUESTED/RESOLVED_TO/ACCESSED) while test_schema_variations.py's
+TestCoupledEdgesSchema borrows the same name for DNS_REQUESTED/CONNECTED_TO
+queries that only make sense against `schemas/examples/zeek_merged.yaml`. A
+pre-pass records every file's dynamic registration; a borrowing query is then
+assigned to whichever candidate YAML actually DEFINES the relationship-types /
+labels it references (symbol coverage), and a query resolved to the
+non-canonical YAML gets a suffixed corpus key (`zeek_merged_test__TestCoupled…`)
+with a `note` in schema_map.json — so BOTH YAMLs byte-lock correct SQL under
+distinct keys instead of one side spuriously `.err`-locking against the other's
+schema. 1,660 raw call sites found; skipped-and-counted by reason (243
+schema_unresolved, 71 schema_key_unknown incl. intentionally-invalid
+error-handling schema names, 24 cypher_unresolved i.e. non-literal/loop-built
+queries, 3 generative `matrix/`-dir queries, 3 non-query-shaped empty/whitespace
+test inputs, 1 parameterized `$view_param`, 1 unresolvable dynamic schema path);
+196 exact (schema, cypher) dupes collapsed. New Rust sweep test
 (`tests/rust/integration/corpus_sweep.rs`, added to the existing `integration`
 test binary — runs under plain `cargo test`, no new CI wiring needed) parses ->
 plans -> renders each entry once per dialect (ClickHouse + Databricks) via the
-same production path `sql_golden_tests.rs` uses (its `render`/`normalize` helpers
-promoted to `pub(crate)` for reuse — the only non-test-only touch, and it is
-literally just visibility, no logic change); a schema loader handles both
-single- and multi-schema YAML (`SchemaConfigFile`, already `pub`). Errors are
+same production path `sql_golden_tests.rs` uses (its `normalize()` helper
+promoted to `pub(crate)` for reuse — a test-file-only change in
+`tests/rust/integration/sql_golden_tests.rs`; the `src/` tree is untouched by
+this slice); a schema loader handles both single- and multi-schema YAML
+(`SchemaConfigFile`, already `pub`). Errors are
 locked too (`.err` goldens, normalized `Display` text) and a Rust panic anywhere
 in the pipeline is caught (`catch_unwind`) and locked as `PANIC: ...` rather than
 crashing the sweep — one bad corpus entry can't blind the net to the rest.
 Golden layout: `golden/corpus/{schema}/{name}.{dialect}.{sql,err}`, one file per
-(schema, name, dialect) — 2,114 files (1,884 `.sql` + 230 `.err`), well under the
+(schema, name, dialect) — 2,126 files (1,948 `.sql` + 178 `.err`), well under the
 spec's ~6,000 concatenated-layout threshold. Runtime ~6-10s (well under the
-1-minute budget). NONDETERMINISM: 15 entries (30 renders) — denormalized/
-multi-hop/VLP/union-relationship-type/label-inference shapes that flap across
-process restarts (Rust's per-process randomized `HashMap` seed) — excluded from
-the byte-lock via `tests/corpus/nondeterministic.txt` (`schema/name<TAB>reason`),
-discovered empirically over 150+ process invocations (unioning every diff).
+1-minute budget). NONDETERMINISM: 19 entries (38 renders) — denormalized/
+multi-hop/VLP/union-relationship-type/label-inference/coupled-edge shapes that
+flap across process restarts (Rust's per-process randomized `HashMap` seed) —
+excluded from the byte-lock via `tests/corpus/nondeterministic.txt`
+(`schema/name<TAB>reason`), discovered empirically over 150+ process invocations
+(unioning every diff).
 Root-caused (research fork, not fixed — test-only slice): `expand_cte_entity`
 (`src/render_plan/select_builder.rs:1590`) sources a bare node/relationship
 variable's properties via `schema.get_node_properties`/
@@ -787,11 +806,14 @@ order. Trigger: any `WITH`-crossing bare node/rel reference (`RETURN n`,
 `collect(r)`, `nodes(p)`, ...) for a label with 2+ properties, or a
 denormalized-schema VLP (`*`/`*1..N`) where both endpoints are virtual nodes. A
 regex over-approximation of this shape flags ~90 corpus entries as
-*structurally at risk*; only 15 were observed to actually flap in 150+ runs
-(documented in `nondeterministic.txt` as a known limitation — more may surface
-under future hash-seed randomization and should be triaged as "add to the
-exclusion list", not "regression"). Still rendered every run (so a panic
-regression is still caught) but not compared. SURPRISING FINDS
+*structurally at risk*; 19 were observed to actually flap in 150+ runs
+(the last 4 — coupled-edge multi-hop `zeek_merged_test` queries — surfaced by
+the review-rework once that schema mapped to the correct fixture YAML and its
+queries began translating to SQL instead of `.err`-locking; documented in
+`nondeterministic.txt` as a known limitation — more may surface under future
+hash-seed randomization and should be triaged as "add to the exclusion list",
+not "regression"). Still rendered every run (so a panic regression is still
+caught) but not compared. SURPRISING FINDS
 (free bug reports on the TEST SUITE, not the engine — none are translation
 bugs): several Python tests silently query the WRONG schema because a local
 query-helper's default parameter (or a bare `execute_cypher(query)` call with no
@@ -811,9 +833,21 @@ misdiagnosed by the xfail reason, not the claimed VLP bug;
 (`schemas/test/unified_test_multi_schema.yaml`) only defines `DNS_REQUESTED` —
 a stale test predating a schema rename, cleanly locked as a
 `Relationship with type REQUESTED not found` planner error rather than a crash.
+REVIEW-REWORK (blocking finding, fixed on the same branch): the first harvester
+cut did NOT walk into pytest-fixture function bodies, so schema `/schemas/load`
+POSTs inside fixtures were invisible — `zeek_merged_test` fell back to the stale
+`schemas/examples/zeek_merged.yaml`, spuriously `.err`-locking 26/32 of its
+ClickHouse renders, and `test_zeek_conn_log.py` (`zeek_conn_test`, same in-fixture
+pattern) was dropped entirely. Fix: the detector now walks function/method
+bodies, is f-string-URL-aware, and resolves `Path(__file__).parent / …` schema
+paths; `zeek_merged_test` → fixture YAML (all 27 non-collision renders now SQL),
+`zeek_conn_test` recovered (+10 queries, all SQL), and the coupled-edge collision
+split (above) locks the DNS_REQUESTED/CONNECTED_TO variant separately. Net: +10
+queries (1,072 -> 1,082), 52 `.err`-renders flipped to `.sql`, `denormalized_flights`
+incidentally corrected to the standalone fixture YAML it actually loads.
 Gate: `cargo fmt --all` clean, `cargo clippy --all-targets` clean (incl. the new
 test file), full `cargo test` green (incl. this sweep and the ratchet), sweep
-re-run 6+ consecutive times with zero mismatches after the exclusion list
+re-run 5+ consecutive times with zero mismatches after the exclusion list
 stabilized. CI: `cargo test --verbose` in `ci.yml` already runs every `[[test]]`
 binary including `integration` — verified, no wiring change needed. Phase 0 is
 now COMPLETE.) ·

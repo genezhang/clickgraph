@@ -216,6 +216,76 @@ def strip_leading_comments(s: str) -> str:
     return s[i:]
 
 
+# --- collision disambiguation by schema symbol coverage --------------------
+# When one runtime schema-name string is backed by two DIFFERENT YAMLs across
+# the suite (#463), a borrowing query is assigned to whichever candidate YAML
+# actually DEFINES the relationship types / node labels it references — so a
+# query using REQUESTED goes to the fixture YAML and one using DNS_REQUESTED to
+# the examples YAML, regardless of which YAML the name defaults to.
+_QUERY_REL_RE = re.compile(r"\[[^\]]*?:\s*([A-Za-z_][\w|`]*)")
+_QUERY_LABEL_RE = re.compile(r"\(\s*\w*\s*:\s*([A-Za-z_]\w*)")
+_SCHEMA_SYMBOLS_CACHE: Dict[Tuple[str, Optional[str]], Tuple[frozenset, frozenset]] = {}
+
+
+def _query_symbols(cypher: str) -> Tuple[set, set]:
+    """(node labels, relationship types) referenced in a Cypher string."""
+    rels: set = set()
+    for m in _QUERY_REL_RE.finditer(cypher):
+        for t in m.group(1).replace("`", "").split("|"):
+            if t:
+                rels.add(t)
+    labels = {m for m in _QUERY_LABEL_RE.findall(cypher)}
+    return labels, rels
+
+
+def _schema_symbols(entry: dict) -> Tuple[frozenset, frozenset]:
+    """(node labels, relationship types) DEFINED by a schema_map entry's YAML
+    (selecting the named sub-schema for a multi-schema file). Cached."""
+    import yaml as pyyaml
+
+    key = (entry["yaml"], entry.get("subschema"))
+    cached = _SCHEMA_SYMBOLS_CACHE.get(key)
+    if cached is not None:
+        return cached
+    labels: set = set()
+    rels: set = set()
+    try:
+        doc = pyyaml.safe_load((REPO_ROOT / entry["yaml"]).read_text())
+        graphs = []
+        if entry.get("subschema"):
+            for s in doc.get("schemas", []):
+                if s.get("name") == entry["subschema"]:
+                    graphs.append(s.get("graph_schema", {}))
+        else:
+            graphs.append(doc.get("graph_schema", doc))
+        for g in graphs:
+            for n in g.get("nodes", []) or []:
+                if isinstance(n, dict) and n.get("label"):
+                    labels.add(n["label"])
+            for e in (g.get("edges", []) or []) + (g.get("relationships", []) or []):
+                if isinstance(e, dict) and e.get("type"):
+                    rels.add(e["type"])
+    except Exception:
+        pass
+    result = (frozenset(labels), frozenset(rels))
+    _SCHEMA_SYMBOLS_CACHE[key] = result
+    return result
+
+
+def _best_covering_entry(cypher: str, candidates: List[dict]) -> dict:
+    """Pick the candidate schema entry whose defined labels/rel-types best cover
+    the query's referenced symbols. Ties keep the FIRST candidate (callers pass
+    the canonical/dynamically-registered entry first)."""
+    q_labels, q_rels = _query_symbols(cypher)
+    best, best_score = candidates[0], -1
+    for cand in candidates:
+        s_labels, s_rels = _schema_symbols(cand)
+        score = len(q_labels & s_labels) + len(q_rels & s_rels)
+        if score > best_score:
+            best, best_score = cand, score
+    return best
+
+
 class Counters:
     def __init__(self):
         self.skips: Dict[str, int] = {}
@@ -245,6 +315,14 @@ SCHEMA_MAP: Dict[str, dict] = {k: {"yaml": v, "subschema": None} for k, v in _BA
 # `schema_map.json`, so the Rust sweep loads the SAME definition each query
 # was actually resolved against.
 RESOLVED_SCHEMA_DEFS: Dict[str, dict] = {}
+# schema_name -> the YAML/subschema a `test_*.py` file DYNAMICALLY registers for
+# it via a `/schemas/load` POST (including POSTs inside pytest-fixture function
+# bodies). Populated in a pre-pass over ALL files before any query is resolved,
+# so the collision-splitting logic in `_maybe_harvest_call` knows the canonical
+# ("locally-registered") definition of a name regardless of file iteration
+# order. First-seen (sorted-file order) wins; the value is the same dict shape as
+# SCHEMA_MAP entries. See the `zeek_merged_test` collision handling below.
+LOCAL_REGISTRATIONS: Dict[str, dict] = {}
 
 
 def _slug(s: str) -> str:
@@ -390,6 +468,23 @@ def _dict_key(node: ast.AST) -> Optional[str]:
     return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
 
 
+def _url_literal_contains(node: Optional[ast.AST], env: Dict[str, str], needle: str) -> bool:
+    """True if the URL `node` literally contains `needle` — resolving a plain
+    string/`+`-concat via `resolve_str`, else checking the literal (Constant)
+    segments of an f-string. Request URLs are almost always
+    `f"{BASE_URL}/schemas/load"` where `BASE_URL = os.getenv(...)` is NOT a
+    resolvable constant, so a plain `resolve_str` returns None and the path
+    literal (`/schemas/load`) must be recovered from the JoinedStr's constant
+    parts."""
+    s = resolve_str(node, env)
+    if s is not None:
+        return needle in s
+    if isinstance(node, ast.JoinedStr):
+        lit = "".join(v.value for v in node.values if isinstance(v, ast.Constant) and isinstance(v.value, str))
+        return needle in lit
+    return False
+
+
 def resolve_payload_dict(leaf_stmts: List[ast.stmt], json_kwarg: ast.AST) -> Optional[Dict[str, ast.AST]]:
     """Resolve a `json=` kwarg to a {key: value_node} map, tracing simple
     `var = {...}` + `var[k] = v` + `var.update({...})` sequences within
@@ -468,6 +563,11 @@ class FileHarvester:
         self.source = path.read_text()
         self.tree = ast.parse(self.source, filename=self.rel)
         self.module_env: Dict[str, str] = {}
+        # Module-level `NAME = Path(__file__).parent / "a" / "b"` assignments,
+        # resolved to a path string RELATIVE TO THIS FILE'S DIRECTORY (so
+        # `open(NAME)` inside a fixture can be resolved even though it's not a
+        # plain string literal). See `_resolve_path_components`.
+        self.module_path_exprs: Dict[str, str] = {}
         self.helpers: Dict[str, HelperSpec] = {}
         self.local_schema_map: Dict[str, dict] = {}
         self.entries: List[Harvested] = []
@@ -501,7 +601,25 @@ class FileHarvester:
                         table[kk] = kwargs
                     if table:
                         dict_tables[target] = table
+                else:
+                    # `SCHEMA_PATH = Path(__file__).parent / "a" / "b"` — a
+                    # file-relative path used by a fixture's `open(SCHEMA_PATH)`.
+                    pc = self._resolve_path_components(node.value)
+                    if pc is not None:
+                        self.module_path_exprs[target] = pc
             self._maybe_register_dynamic_schema(node)
+        # Dynamic-schema POSTs that live INSIDE function/method bodies (pytest
+        # fixtures like `def setup_zeek_merged(...): ... requests.post(
+        # "/schemas/load", json={...})`). `flatten_stmts` deliberately does NOT
+        # descend into nested scopes for the module ENV, so those POSTs are
+        # invisible to the top-level loop above — scan each function/method body
+        # explicitly here (module-level `open()`/env constants are already
+        # recorded, so `_find_open_path_for`/`resolve_str` can see them). Scope
+        # is the function itself, so `_find_open_path_for` correlates the schema
+        # YAML `open()` with the POST within the same fixture.
+        for node in ast.walk(self.tree):
+            if isinstance(node, (ast.FunctionDef, getattr(ast, "AsyncFunctionDef", ast.FunctionDef))):
+                self._maybe_register_dynamic_schema(node)
         # Module-level `@pytest.fixture def NAME(): return TABLE["key"]`.
         fixture_returns: Dict[str, str] = {}
         for node in self.tree.body:
@@ -589,8 +707,7 @@ class FileHarvester:
                     if json_kw is None:
                         continue
                     url_arg = n.args[0] if n.args else None
-                    url_str = resolve_str(url_arg, self.module_env) or ""
-                    if "/schemas/load" in url_str:
+                    if _url_literal_contains(url_arg, self.module_env, "/schemas/load"):
                         continue
                     d = resolve_payload_dict(leaf, json_kw)
                     if d is None:
@@ -648,8 +765,7 @@ class FileHarvester:
             if json_kw is None or not isinstance(json_kw, ast.Dict):
                 continue
             url_arg = n.args[0] if n.args else None
-            url_str = resolve_str(url_arg, self.module_env) or ""
-            if "/schemas/load" not in url_str:
+            if not _url_literal_contains(url_arg, self.module_env, "/schemas/load"):
                 continue
             name = resolve_str(_dict_key_node(json_kw, "schema_name"), self.module_env)
             content_node = _dict_key_node(json_kw, "config_content")
@@ -666,20 +782,75 @@ class FileHarvester:
             if resolved is None:
                 COUNTERS.skip("dynamic_schema_file_missing", f"{self.rel}: {path_lit}")
                 continue
-            rel_to_root = resolved.relative_to(REPO_ROOT).as_posix()
+            try:
+                rel_to_root = resolved.relative_to(REPO_ROOT).as_posix()
+            except ValueError:
+                COUNTERS.skip("dynamic_schema_outside_repo", f"{self.rel}: {resolved}")
+                continue
             self.local_schema_map.setdefault(name, {"yaml": rel_to_root, "subschema": None})
 
     def _find_open_path_for(self, scope_node: ast.AST) -> Optional[str]:
+        """Find the schema-YAML path passed to an `open(...)` within `scope_node`
+        (a fixture/setup function or a top-level statement). Prefers a `.yaml`/
+        `.yml` path — some fixtures also `open()` a `.sql` data-setup file BEFORE
+        the schema YAML (e.g. test_denormalized_edges.py), so returning the first
+        `open()` unconditionally would grab the wrong file. Resolves both plain
+        string-literal paths and `Path(__file__).parent / "a" / "b"`-style path
+        expressions (via `_resolve_path_components`)."""
+        yaml_paths: List[str] = []
+        other_paths: List[str] = []
         for n in ast.walk(scope_node):
             if isinstance(n, ast.Call) and _callee_name(n) == "open" and n.args:
                 p = resolve_str(n.args[0], self.module_env)
-                if p:
-                    return p
+                if p is None:
+                    p = self._resolve_path_components(n.args[0])
+                if not p:
+                    continue
+                (yaml_paths if p.endswith((".yaml", ".yml")) else other_paths).append(p)
+        if yaml_paths:
+            return yaml_paths[0]
+        if other_paths:
+            return other_paths[0]
+        return None
+
+    def _resolve_path_components(self, node: ast.AST) -> Optional[str]:
+        """Resolve a `Path(__file__).parent / "a" / "b"` expression (or a bare
+        `Name` bound to one, via `self.module_path_exprs`) to a path string
+        RELATIVE TO THIS FILE'S DIRECTORY, else None. `""` means the file's own
+        directory. Only the `Path(__file__).parent`-anchored, string-component
+        form is handled — enough for the fixture `SCHEMA_PATH` idiom without a
+        general path engine."""
+        if isinstance(node, ast.Name):
+            return self.module_path_exprs.get(node.id)
+        if isinstance(node, ast.Attribute) and node.attr == "parent":
+            inner = node.value
+            # Unwrap a `.resolve()` call: Path(__file__).resolve().parent
+            if isinstance(inner, ast.Call) and _callee_name(inner) == "resolve":
+                inner = inner.func.value if isinstance(inner.func, ast.Attribute) else inner
+            if isinstance(inner, ast.Call) and _callee_name(inner) == "Path" and inner.args:
+                a = inner.args[0]
+                if isinstance(a, ast.Name) and a.id == "__file__":
+                    return ""  # the test file's own directory
+            return None
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            base = self._resolve_path_components(node.left)
+            if base is None:
+                return None
+            comp = resolve_str(node.right, self.module_env)
+            if comp is None:
+                return None
+            return f"{base}/{comp}" if base else comp
         return None
 
     # -- pass 2: walk test functions -----------------------------------
     def harvest(self):
+        """Convenience single-pass entry (scan + harvest). `main()` instead
+        drives the two phases separately across ALL files so
+        `LOCAL_REGISTRATIONS` is fully populated before any query resolves."""
         self.scan_module_level()
+        self.harvest_tests()
+
+    def harvest_tests(self):
         for node in ast.walk(self.tree):
             if isinstance(node, ast.ClassDef):
                 for sub in node.body:
@@ -841,8 +1012,7 @@ class FileHarvester:
             if json_kw is None:
                 return
             url_arg = call.args[0] if call.args else None
-            url_str = resolve_str(url_arg, env) or ""
-            if "/schemas/load" in url_str:
+            if _url_literal_contains(url_arg, env, "/schemas/load"):
                 return
             d = resolve_payload_dict(leaf_stmts, json_kw)
             if d is None:
@@ -895,27 +1065,62 @@ class FileHarvester:
             COUNTERS.skip("schema_unresolved", f"{self.rel}:{fn.name}")
             return
 
-        # A file-local dynamic registration (self.local_schema_map) always
-        # wins over the global map for THIS file's own queries — it reflects
-        # what that file actually POSTs to /schemas/load at test time, which
-        # is more authoritative than a same-named auto-discovered entry from
-        # a shared multi-schema YAML (see the `denormalized_flights` case:
-        # test_denormalized_edges.py dynamically re-registers that exact
-        # name against a DIFFERENT, more specific YAML than the one
-        # auto-discovered from unified_test_multi_schema.yaml).
-        resolved_entry = self.local_schema_map.get(schema) or SCHEMA_MAP.get(schema)
-        if resolved_entry is None:
+        # Resolve the schema NAME to a YAML/subschema entry. A file's own
+        # dynamic registration (self.local_schema_map) is authoritative for its
+        # own queries; otherwise the global SCHEMA_MAP.
+        local_here = self.local_schema_map.get(schema)
+        base_entry = SCHEMA_MAP.get(schema)
+        canonical = LOCAL_REGISTRATIONS.get(schema)  # the dynamically-registered def, if any
+
+        corpus_key = schema
+        collision_note = None
+
+        if local_here is not None:
+            # This file dynamically registers the name -> authoritative, no split.
+            this_entry = local_here
+        elif canonical is not None and base_entry is not None and canonical != base_entry:
+            # COLLISION (#463 GLOBAL_SCHEMAS last-writer-wins): the same name is
+            # dynamically registered by some fixture (`canonical`) AND present in
+            # the global map with a DIFFERENT YAML (`base_entry`) — e.g.
+            # `zeek_merged_test` -> fixtures/schemas/zeek_merged_test.yaml
+            # (REQUESTED/RESOLVED_TO/ACCESSED, from test_zeek_merged.py) vs
+            # schemas/examples/zeek_merged.yaml (DNS_REQUESTED/CONNECTED_TO, the
+            # conftest/global entry). Neither "owner" is right for every borrower,
+            # so assign THIS query to whichever candidate YAML actually defines
+            # the relationship types / labels it references (coverage). A query
+            # resolved to the non-canonical YAML gets a suffixed corpus key so
+            # both YAMLs lock correct SQL under distinct keys.
+            chosen = _best_covering_entry(cypher, [canonical, base_entry])
+            this_entry = chosen
+            if chosen != canonical:
+                corpus_key = f"{schema}__{_slug(class_name or self.path.stem)}"
+                collision_note = (
+                    f"schema name '{schema}' collides (issue #463 GLOBAL_SCHEMAS last-writer-wins): "
+                    f"this variant's queries reference symbols defined by {chosen['yaml']}"
+                    f"{'::' + chosen['subschema'] if chosen.get('subschema') else ''}, whereas the "
+                    f"dynamically-registered owner uses {canonical['yaml']}; split into a distinct "
+                    f"corpus key so both lock correct SQL"
+                )
+        elif base_entry is not None:
+            this_entry = base_entry
+        elif canonical is not None:
+            this_entry = canonical
+        else:
             COUNTERS.skip("schema_key_unknown", f"{self.rel}:{fn.name}: schema={schema}")
             return
-        existing = RESOLVED_SCHEMA_DEFS.get(schema)
-        if existing is not None and existing != resolved_entry:
+
+        existing = RESOLVED_SCHEMA_DEFS.get(corpus_key)
+        if existing is not None and {k: existing[k] for k in ("yaml", "subschema")} != this_entry:
             COUNTERS.skip(
                 "schema_key_ambiguous",
-                f"{self.rel}:{fn.name}: schema={schema} resolved to {resolved_entry} here vs "
+                f"{self.rel}:{fn.name}: key={corpus_key} resolved to {this_entry} here vs "
                 f"{existing} elsewhere (kept the first-seen definition)",
             )
         else:
-            RESOLVED_SCHEMA_DEFS.setdefault(schema, resolved_entry)
+            entry_out = dict(this_entry)
+            if collision_note:
+                entry_out["note"] = collision_note
+            RESOLVED_SCHEMA_DEFS.setdefault(corpus_key, entry_out)
 
         cypher = cypher.strip()
         if not QUERY_LOOKING.search(cypher):
@@ -933,7 +1138,7 @@ class FileHarvester:
         param_suffix = "__" + "_".join(_slug(str(v)) for v in binding.values()) if binding else ""
         cls_prefix = f"{class_name}_" if class_name else ""
         name = _slug(f"{self.path.stem}__{cls_prefix}{fn.name}{param_suffix}{suffix}")
-        self.entries.append(Harvested(schema=schema, name=name, cypher=cypher))
+        self.entries.append(Harvested(schema=corpus_key, name=name, cypher=cypher))
 
 
 def _dict_key_node(d: ast.Dict, key: str) -> Optional[ast.AST]:
@@ -959,13 +1164,27 @@ def iter_test_files() -> List[Path]:
 
 def main():
     all_entries: List[Harvested] = []
+
+    # PASS 1: parse + module-level scan for every file, collecting each file's
+    # dynamic schema registrations into the global LOCAL_REGISTRATIONS (sorted-
+    # file order, first-seen wins) so the collision-splitting resolution in
+    # PASS 2 is independent of which file is harvested first.
+    harvesters: List[FileHarvester] = []
     for path in iter_test_files():
         try:
             fh = FileHarvester(path)
-            fh.harvest()
-            all_entries.extend(fh.entries)
         except SyntaxError as e:
             COUNTERS.skip("file_syntax_error", f"{path}: {e}")
+            continue
+        fh.scan_module_level()
+        for name, entry in sorted(fh.local_schema_map.items()):
+            LOCAL_REGISTRATIONS.setdefault(name, entry)
+        harvesters.append(fh)
+
+    # PASS 2: harvest test queries.
+    for fh in harvesters:
+        fh.harvest_tests()
+        all_entries.extend(fh.entries)
 
     # Dedupe identical (schema, cypher) pairs — keep first occurrence in
     # file-sorted, in-file AST order (both already deterministic).

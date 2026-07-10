@@ -1,27 +1,27 @@
 WITH RECURSIVE vlp_origin_dest AS (
     SELECT
-        f.origin_code as start_id,
-        f.dest_code as end_id,
+        f.Origin as start_id,
+        f.Dest as end_id,
         1 as hop_count,
-        array(f.origin_code) as path_edges,
-        array(f.origin_code, f.dest_code) as path_nodes,
-        f.dest_city as end_dest_city
-    FROM db_denormalized.flights_denorm AS f
-    WHERE f.origin_city = 'Los Angeles' AND hop_count <= 2
+        array(f.Origin) as path_edges,
+        array(f.Origin, f.Dest) as path_nodes,
+        f.DestCityName as end_DestCityName
+    FROM test_integration.flights AS f
+    WHERE f.OriginCityName = 'Los Angeles' AND hop_count <= 2
     UNION ALL
     SELECT
-        next.origin_code as start_id,
-        next.dest_code as end_id,
+        next.Origin as start_id,
+        next.Dest as end_id,
         vp.hop_count + 1,
-        concat(vp.path_edges, array(next.origin_code)),
-        concat(vp.path_nodes, array(next.dest_code)),
-        next.dest_city as end_dest_city
+        concat(vp.path_edges, array(next.Origin)),
+        concat(vp.path_nodes, array(next.Dest)),
+        next.DestCityName as end_DestCityName
     FROM vlp_origin_dest vp
-    JOIN db_denormalized.flights_denorm next ON next.origin_code = vp.end_id
-    WHERE vp.hop_count < 2 AND NOT array_contains(vp.path_nodes, next.dest_code)
+    JOIN test_integration.flights next ON next.Origin = vp.end_id
+    WHERE vp.hop_count < 2 AND NOT array_contains(vp.path_nodes, next.Dest)
 )
 SELECT 
-      t.end_dest_city AS `dest.city`, 
+      t.end_DestCityName AS `dest.city`, 
       count(*) AS `path_count`
 FROM vlp_origin_dest AS t
-GROUP BY t.end_dest_city
+GROUP BY t.end_DestCityName

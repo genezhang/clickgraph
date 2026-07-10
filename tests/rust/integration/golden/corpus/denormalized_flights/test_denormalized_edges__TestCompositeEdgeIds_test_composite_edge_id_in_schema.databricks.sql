@@ -1,3 +1,3 @@
 SELECT 
       count(*) AS `total`
-FROM db_denormalized.flights_denorm AS f
+FROM test_integration.flights AS f

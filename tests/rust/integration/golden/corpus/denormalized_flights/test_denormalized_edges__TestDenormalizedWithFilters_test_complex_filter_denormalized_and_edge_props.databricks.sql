@@ -1,6 +1,6 @@
 SELECT 
-      f.origin_city AS `origin.city`, 
-      f.dest_city AS `dest.city`, 
+      f.OriginCityName AS `origin.city`, 
+      f.DestCityName AS `dest.city`, 
       f.flight_number AS `f.flight_num`
-FROM db_denormalized.flights_denorm AS f
-WHERE ((f.origin_state = 'CA' AND f.dest_state = 'CA') AND f.carrier = 'American Airlines')
+FROM test_integration.flights AS f
+WHERE ((f.OriginState = 'CA' AND f.DestState = 'CA') AND f.airline = 'American Airlines')

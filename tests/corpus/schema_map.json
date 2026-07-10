@@ -8,8 +8,8 @@
     "yaml": "examples/data_security/data_security.yaml"
   },
   "denormalized_flights": {
-    "subschema": "denormalized_flights",
-    "yaml": "schemas/test/unified_test_multi_schema.yaml"
+    "subschema": null,
+    "yaml": "schemas/test/denormalized_flights.yaml"
   },
   "denormalized_flights_test": {
     "subschema": null,
@@ -75,6 +75,10 @@
     "subschema": null,
     "yaml": "schemas/test/test_fixtures.yaml"
   },
+  "zeek_conn_test": {
+    "subschema": null,
+    "yaml": "tests/integration/fixtures/schemas/zeek_conn_test.yaml"
+  },
   "zeek_dns": {
     "subschema": null,
     "yaml": "schemas/examples/zeek_dns_log.yaml"
@@ -84,6 +88,11 @@
     "yaml": "schemas/test/unified_test_multi_schema.yaml"
   },
   "zeek_merged_test": {
+    "subschema": null,
+    "yaml": "tests/integration/fixtures/schemas/zeek_merged_test.yaml"
+  },
+  "zeek_merged_test__TestCoupledEdgesSchema": {
+    "note": "schema name 'zeek_merged_test' collides (issue #463 GLOBAL_SCHEMAS last-writer-wins): this variant's queries reference symbols defined by schemas/examples/zeek_merged.yaml, whereas the dynamically-registered owner uses tests/integration/fixtures/schemas/zeek_merged_test.yaml; split into a distinct corpus key so both lock correct SQL",
     "subschema": null,
     "yaml": "schemas/examples/zeek_merged.yaml"
   }

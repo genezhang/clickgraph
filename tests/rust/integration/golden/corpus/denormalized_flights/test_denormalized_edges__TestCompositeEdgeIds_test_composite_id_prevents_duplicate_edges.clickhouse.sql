@@ -1,27 +1,27 @@
 WITH RECURSIVE vlp_origin_dest_inner AS (
     SELECT
-        f.origin_code as start_id,
-        f.dest_code as end_id,
+        f.Origin as start_id,
+        f.Dest as end_id,
         1 as hop_count,
-        [f.origin_code] as path_edges,
-        [f.origin_code, f.dest_code] as path_nodes,
-        f.dest_code as end_dest_code
-    FROM db_denormalized.flights_denorm AS f
-    WHERE f.origin_code = 'LAX' AND hop_count <= 2
+        [f.Origin] as path_edges,
+        [f.Origin, f.Dest] as path_nodes,
+        f.Dest as end_Dest
+    FROM test_integration.flights AS f
+    WHERE f.Origin = 'LAX' AND hop_count <= 2
     UNION ALL
     SELECT
-        next.origin_code as start_id,
-        next.dest_code as end_id,
+        next.Origin as start_id,
+        next.Dest as end_id,
         vp.hop_count + 1,
-        arrayConcat(vp.path_edges, [next.origin_code]),
-        arrayConcat(vp.path_nodes, [next.dest_code]),
-        next.dest_code as end_dest_code
+        arrayConcat(vp.path_edges, [next.Origin]),
+        arrayConcat(vp.path_nodes, [next.Dest]),
+        next.Dest as end_Dest
     FROM vlp_origin_dest_inner vp
-    JOIN db_denormalized.flights_denorm next ON next.origin_code = vp.end_id
-    WHERE vp.hop_count < 2 AND NOT has(vp.path_nodes, next.dest_code)
+    JOIN test_integration.flights next ON next.Origin = vp.end_id
+    WHERE vp.hop_count < 2 AND NOT has(vp.path_nodes, next.Dest)
 ),
 vlp_origin_dest AS (
-    SELECT * FROM vlp_origin_dest_inner WHERE end_dest_code = 'ATL' AND hop_count >= 2
+    SELECT * FROM vlp_origin_dest_inner WHERE end_Dest = 'ATL' AND hop_count >= 2
 )
 SELECT 
       t.hop_count AS "hops"

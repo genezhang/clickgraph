@@ -1,7 +1,7 @@
 SELECT 
-      f.origin_city AS "origin.city", 
-      f.dest_city AS "dest.city", 
-      f.origin_state AS "state"
-FROM db_denormalized.flights_denorm AS f
-WHERE f.origin_state = f.dest_state
-ORDER BY f.origin_city ASC
+      f.OriginCityName AS "origin.city", 
+      f.DestCityName AS "dest.city", 
+      f.OriginState AS "state"
+FROM test_integration.flights AS f
+WHERE f.OriginState = f.DestState
+ORDER BY f.OriginCityName ASC

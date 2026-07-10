@@ -67,3 +67,10 @@ social_integration/test_schema_variations_comprehensive__TestSchemaInteractions_
 test_fixtures/test_count_relationships__TestCountRelationships_test_count_star_with_anonymous_relationship	flaps across runs (count(*) over an anonymous relationship, HashMap column order)
 social_integration/test_browser_expand_performance__TestBrowserExpandQuerySequence_test_expand_directed_pattern_performance	flaps across runs (unlabeled expand, HashMap column order — the browser-unlabeled-pattern class)
 social_integration/test_schema_variations_comprehensive__TestLabelInference_test_inference_undirected_all_missing	flaps across runs (fully-unlabeled undirected pattern with type inference, HashMap column order)
+# Surfaced by the P0.6 rework (test_zeek_merged.py's schema is now correctly
+# mapped to the fixture YAML, so these coupled-edge multi-hop queries translate
+# to SQL instead of .err-locking, exposing the same HashMap-column-order flap):
+zeek_merged_test/test_zeek_merged__TestMultiHopConnections_test_two_hop_connections	flaps across runs (2-hop coupled-edge chain over shared zeek table, node/edge property column order)
+zeek_merged_test/test_zeek_merged__TestMultiHopConnections_test_two_hop_with_filter	flaps across runs (2-hop coupled-edge chain over shared zeek table, node/edge property column order)
+zeek_merged_test/test_zeek_merged__TestMultiHopConnections_test_two_hop_sql_uses_join	flaps across runs (2-hop coupled-edge chain over shared zeek table, node/edge property column order)
+zeek_merged_test/test_zeek_merged__TestSQLGeneration_test_multi_hop_conn_sql	flaps across runs (multi-hop coupled-edge chain over shared zeek table, node/edge property column order)

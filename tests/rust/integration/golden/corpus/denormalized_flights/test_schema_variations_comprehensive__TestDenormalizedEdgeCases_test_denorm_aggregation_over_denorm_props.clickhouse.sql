@@ -1,6 +1,6 @@
 SELECT 
-      f.origin_city AS "o.city", 
-      f.dest_state AS "d.state", 
+      f.OriginCityName AS "o.city", 
+      f.DestState AS "d.state", 
       count(*) AS "flight_count"
-FROM db_denormalized.flights_denorm AS f
-GROUP BY f.origin_city, f.dest_state
+FROM test_integration.flights AS f
+GROUP BY f.OriginCityName, f.DestState

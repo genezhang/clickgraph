@@ -1,12 +1,12 @@
 SELECT 
-      f.origin_code AS `origin.code`, 
-      f.origin_city AS `origin.city`, 
-      f.origin_state AS `origin.state`, 
-      f.dest_code AS `dest.code`, 
-      f.dest_city AS `dest.city`, 
-      f.dest_state AS `dest.state`, 
+      f.Origin AS `origin.code`, 
+      f.OriginCityName AS `origin.city`, 
+      f.OriginState AS `origin.state`, 
+      f.Dest AS `dest.code`, 
+      f.DestCityName AS `dest.city`, 
+      f.DestState AS `dest.state`, 
       f.flight_number AS `f.flight_num`, 
-      f.carrier AS `f.carrier`, 
-      f.distance AS `f.distance`
-FROM db_denormalized.flights_denorm AS f
+      f.airline AS `f.carrier`, 
+      f.distance_miles AS `f.distance`
+FROM test_integration.flights AS f
 WHERE f.flight_number = 'AA100'

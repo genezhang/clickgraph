@@ -1,21 +1,21 @@
 WITH __denorm_scan_a AS (
 SELECT 
-      a.origin_city AS "city", 
-      a.origin_code AS "code", 
-      a.origin_state AS "state"
-FROM db_denormalized.flights_denorm AS a
+      a.OriginCityName AS "city", 
+      a.Origin AS "code", 
+      a.OriginState AS "state"
+FROM test_integration.flights AS a
 UNION DISTINCT 
 SELECT 
-      a.dest_city AS "city", 
-      a.dest_code AS "code", 
-      a.dest_state AS "state"
-FROM db_denormalized.flights_denorm AS a
+      a.DestCityName AS "city", 
+      a.Dest AS "code", 
+      a.DestState AS "state"
+FROM test_integration.flights AS a
 
 )
 SELECT 
       a.code AS "a.code", 
-      f.dest_city AS "b.city", 
+      f.DestCityName AS "b.city", 
       count(*) AS "flights"
 FROM __denorm_scan_a AS a
-LEFT JOIN db_denormalized.flights_denorm AS f ON a.code = f.origin_code
-GROUP BY a.code, f.dest_city
+LEFT JOIN test_integration.flights AS f ON a.code = f.Origin
+GROUP BY a.code, f.DestCityName

@@ -1,4 +1,4 @@
 SELECT 
-      f.origin_city AS `origin.city`, 
-      f.dest_state AS `dest.state`
-FROM db_denormalized.flights_denorm AS f
+      f.OriginCityName AS `origin.city`, 
+      f.DestState AS `dest.state`
+FROM test_integration.flights AS f
