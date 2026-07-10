@@ -409,6 +409,15 @@ pub(super) fn optional_denorm_union_anchor_is_left(
 pub(super) fn find_inner_optional_denorm_graphrel(plan: &LogicalPlan) -> Option<&LogicalPlan> {
     match plan {
         LogicalPlan::GraphRel(gr) if is_optional_denorm_union_graphrel(gr) => Some(plan),
+        // Not itself the special pattern — the anchor Union may be buried deeper
+        // in a chain of nested optional hops (#505: `MATCH (a) OPTIONAL MATCH
+        // (a)-[:R]->(b) OPTIONAL MATCH (b)-[:R]->(c)` nests as
+        // `GraphRel(t2){ left: GraphRel(t1){ left: Union(a), ... }, ... }`, with
+        // `a` having no required binding anywhere). Search both children for a
+        // qualifying inner GraphRel — the caller is responsible for stitching
+        // the outer hop(s)' already-correct JOINs back in (see #505 fix site).
+        LogicalPlan::GraphRel(gr) => find_inner_optional_denorm_graphrel(&gr.left)
+            .or_else(|| find_inner_optional_denorm_graphrel(&gr.right)),
         LogicalPlan::GraphJoins(gj) => find_inner_optional_denorm_graphrel(&gj.input),
         LogicalPlan::Projection(p) => find_inner_optional_denorm_graphrel(&p.input),
         LogicalPlan::GroupBy(gb) => find_inner_optional_denorm_graphrel(&gb.input),

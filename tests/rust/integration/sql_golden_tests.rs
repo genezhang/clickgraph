@@ -926,6 +926,14 @@ const DENORM_CORPUS: &[(&str, &str)] = &[
     // swapped branches anchoring FROM on the optional node). This byte-lock is
     // a KNOWN-INCOMPLETE shape (directed-only matches), not semantic coverage;
     // fixing it needs an anchor-LEFT-JOIN-onto-match-union renderer structure.
+    //
+    // #505 transitioned this golden: the anchor `a` (bare `MATCH (a:Airport)`,
+    // no required binding) now correctly gets its own `__denorm_scan_a` CTE +
+    // LEFT JOIN instead of silently using the first hop's edge table as FROM
+    // (which dropped anchor rows with no match, e.g. an airport with no
+    // flights at all). The directed-only-match limitation described above is
+    // UNCHANGED and still tracked separately — this fix only restores anchor
+    // preservation for the (already directed-only) shape this golden locks.
     (
         "optional_undirected_2hop",
         "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]-(b:Airport)-[:FLIGHT]-(c:Airport) RETURN a.code, b.code, c.code",
@@ -2985,6 +2993,59 @@ async fn denorm_incoming_optional_match_preserves_anchor_scan_and_join_506() {
              FROM/JOIN (invalid SQL):\n{first}"
         );
     }
+}
+
+/// #505 regression: a chained double-OPTIONAL on a denormalized schema
+/// (`MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) OPTIONAL MATCH
+/// (b)-[:FLIGHT]->(c) ...`) must still preserve the anchor's
+/// `__denorm_scan_a` CTE — the SAME requirement as the single-hop case
+/// (#506's regression test), just with a second OPTIONAL hop chained after
+/// it. Dropping the CTE means anchor rows with no outgoing edge at all (e.g.
+/// an airport with zero flights) silently vanish.
+///
+/// Root cause: `find_inner_optional_denorm_graphrel` located the anchor's
+/// Union only by walking wrapper nodes (GraphJoins/Projection/Filter/etc.),
+/// never into a nested `GraphRel.left`/`.right` — so a SECOND optional hop
+/// (which wraps the first hop's GraphRel as its own `.left`) hid the anchor
+/// Union from the detector entirely, and rendering fell through to the
+/// generic GraphJoins path, which (for this schema pattern) treats the first
+/// hop's edge table as a bare FROM marker instead of building the anchor CTE
+/// + a real JOIN key.
+#[tokio::test]
+async fn denorm_chained_optional_preserves_anchor_scan_505() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+    let cypher = "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) OPTIONAL MATCH (b)-[:FLIGHT]->(c) RETURN a.code, b.code, c.code";
+
+    let first = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+    for _ in 0..5 {
+        let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#505: render is nondeterministic:\nFIRST:\n{first}\nAGAIN:\n{again}"
+        );
+    }
+    assert!(
+        first.contains("__denorm_scan_a"),
+        "#505: anchor scan CTE __denorm_scan_a missing on a chained double- \
+         OPTIONAL — anchor rows with no outgoing edge at all would be \
+         silently dropped:\n{first}"
+    );
+    // Both hops' LEFT JOINs must be present, in dependency order: the first
+    // hop keyed off the anchor CTE, the second keyed off the first hop's
+    // table (never an impossible/always-true fallback condition).
+    assert!(
+        first.contains("a.code = t0.origin_code"),
+        "#505: first hop's JOIN must key off the anchor CTE alias, got:\n{first}"
+    );
+    assert!(
+        first.contains("t1.origin_code = t0.dest_code"),
+        "#505: second hop's JOIN (already correctly computed by the generic \
+         pipeline) must be preserved after the anchor CTE stitch, got:\n{first}"
+    );
+    assert!(
+        !first.contains("ON 1 = 1") && !first.contains("ON 1 = 0"),
+        "#505: fell back to an impossible/always-true join condition:\n{first}"
+    );
 }
 
 /// #475 regression: on the coupled cross-table denorm `zeek_merged_test`

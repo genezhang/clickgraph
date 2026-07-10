@@ -3386,6 +3386,37 @@ impl RenderPlanBuilder for LogicalPlan {
                 render.skip = SkipItem(super::plan_builder_utils::extract_skip(self));
                 render.limit = LimitItem(super::plan_builder_utils::extract_limit(self));
 
+                // #505: `inner` may be buried under one or more OUTER optional hops
+                // (chained OPTIONAL MATCH, e.g. `MATCH (a) OPTIONAL MATCH
+                // (a)-[:R]->(b) OPTIONAL MATCH (b)-[:R]->(c)` — `inner` is the
+                // FIRST hop's GraphRel, wrapped by the second hop's GraphRel).
+                // `render.joins` so far only has the inner hop's own (correctly
+                // resolved) JOIN. The outer hop(s)' JOINs are NOT built by the
+                // inner-only render above, but they ARE already computed
+                // correctly by the generic JOIN-generation pipeline (they don't
+                // touch the anchor Union at all) — pull them from a full,
+                // generic extraction over `self` and append them, skipping the
+                // inner hop's own (generically-broken, anchor-blind) entry.
+                if let LogicalPlan::GraphRel(inner_gr) = inner {
+                    let inner_alias = inner_gr.alias.clone();
+                    let context = super::cte_generation::CteGenerationContext::new();
+                    if let Ok(all_joins) = <LogicalPlan as JoinBuilder>::extract_joins_with_context(
+                        self, schema, &context,
+                    ) {
+                        let outer_joins: Vec<_> = all_joins
+                            .into_iter()
+                            .filter(|j| j.table_alias != inner_alias)
+                            .collect();
+                        if !outer_joins.is_empty() {
+                            log::info!(
+                                "🎯 #505: stitching {} outer chained-OPTIONAL join(s) after the anchor CTE's own JOIN",
+                                outer_joins.len()
+                            );
+                            render.joins.0.extend(outer_joins);
+                        }
+                    }
+                }
+
                 // Rewrite column references: the SELECT/GROUP BY were extracted from
                 // the full plan which resolves denormalized node properties through the
                 // edge table (e.g., r.origin_code). But after CTE + LEFT JOIN restructuring,
