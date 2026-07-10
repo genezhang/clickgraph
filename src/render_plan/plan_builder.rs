@@ -3347,6 +3347,41 @@ impl RenderPlanBuilder for LogicalPlan {
                                     );
                                 }
                             }
+
+                            // ALSO map the ANCHOR's own from-side property columns
+                            // (#475). On a coupled cross-table denorm schema the anchor
+                            // node's label can carry MORE properties (from its own node
+                            // table, e.g. IP@conn_log's `port: id.orig_p`) than the
+                            // EDGE's declared from-node property set (IP@dns_log has
+                            // only `ip`). The planner resolves those extra anchor
+                            // properties to the anchor node-table's db columns, and the
+                            // generic SELECT extraction then parks them on the
+                            // LEFT-JOINed edge alias — NULL on exactly the rows the
+                            // OPTIONAL MATCH exists to preserve. Forward-resolve them
+                            // (CLAUDE.md rule 2) to the `__denorm_scan_{node}` CTE,
+                            // whose exposed columns are precisely the first Union
+                            // branch's `property_mapping` keys (the from-side scan —
+                            // same source as the #470 join-key fix). Sorted for the
+                            // same-db-column determinism as above; inserted after the
+                            // edge map so the anchor's own mapping wins for its own
+                            // columns.
+                            if let LogicalPlan::Union(u) = gr.left.as_ref() {
+                                if let Some(LogicalPlan::GraphNode(gn)) =
+                                    u.inputs.first().map(|i| i.as_ref())
+                                {
+                                    if let LogicalPlan::ViewScan(anchor_vs) = gn.input.as_ref() {
+                                        let mut anchor_props: Vec<_> =
+                                            anchor_vs.property_mapping.iter().collect();
+                                        anchor_props.sort_by(|a, b| a.0.cmp(b.0));
+                                        for (prop, val) in anchor_props {
+                                            col_map.insert(
+                                                val.raw().to_string(),
+                                                (node_alias.clone(), prop.clone()),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                             // The to-node (`gr.right_connection`, e.g. `b`) is NOT
                             // materialized as its own table here — its columns live on the
                             // LEFT-JOINed edge row (`edge_alias`, e.g. `t1`) as the edge's

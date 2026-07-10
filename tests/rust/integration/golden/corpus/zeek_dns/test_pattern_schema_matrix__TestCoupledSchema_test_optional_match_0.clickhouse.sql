@@ -9,8 +9,8 @@ FROM zeek.dns_log AS a
 
 )
 SELECT 
-      r."id.orig_h" AS "a.ip_address", 
+      a.ip_address AS "a.ip_address", 
       count(*) AS "rel_count"
 FROM __denorm_scan_a AS a
 LEFT JOIN zeek.dns_log AS r ON 1 = 0
-GROUP BY r."id.orig_h"
+GROUP BY a.ip_address

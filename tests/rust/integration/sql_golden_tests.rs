@@ -2590,6 +2590,81 @@ async fn denorm_optional_join_key_forward_resolved_and_deterministic_470() {
     }
 }
 
+/// #475 regression: on the coupled cross-table denorm `zeek_merged_test`
+/// schema, `MATCH (a:IP) OPTIONAL MATCH (a)-[:REQUESTED]->(d:Domain) RETURN
+/// a.ip, a.port, d.name` sourced the ANCHOR property `a.port` from the
+/// LEFT-JOINed dns_log edge alias (`t1."id.orig_p"`) instead of the anchor's
+/// own `__denorm_scan_a` CTE column — NULL on exactly the OPTIONAL-miss rows
+/// (live: `93.184.216.34` showed port NULL despite the anchor scan showing
+/// 80). The IP label's port property comes from its conn_log node table, so
+/// the EDGE's declared from-node property set (dns_log IP: only `ip`) did not
+/// cover it and the post-extraction rewrite left it parked on the edge alias.
+///
+/// The fix extends the delegation-path rewrite map with the anchor Union
+/// branch's own property mapping (db column → CTE-exposed property name — the
+/// SELECT-list sibling of #470's JOIN-key forward resolution). Locks: every
+/// anchor property (`a.ip`, `a.port`) resolves through the CTE alias `a`;
+/// the edge-owned `d.name` stays on the edge alias (`query` column); ORDER BY
+/// on the anchor property resolves the same way; determinism.
+///
+/// Live-verified on the zeek fixture (5 conn + 5 dns rows): OPTIONAL-miss
+/// rows keep their anchor port (e.g. `93.184.216.34 | 80 | NULL`), matching
+/// hand-written LEFT-JOIN ground truth; matched rows unchanged.
+#[tokio::test]
+async fn denorm_optional_anchor_property_from_scan_cte_475() {
+    let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+    let repro = "MATCH (a:IP) OPTIONAL MATCH (a)-[:REQUESTED]->(d:Domain) \
+                 RETURN a.ip, a.port, d.name";
+
+    let first = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+    for _ in 0..10 {
+        let again = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#475: OPTIONAL denorm anchor-property render is nondeterministic:\n\
+             FIRST:\n{first}\nAGAIN:\n{again}"
+        );
+    }
+
+    // Both anchor properties must be sourced from the anchor CTE alias…
+    assert!(
+        first.contains(r#"a.ip AS "a.ip""#),
+        "#475: a.ip must resolve through the __denorm_scan CTE:\n{first}"
+    );
+    assert!(
+        first.contains(r#"a.port AS "a.port""#),
+        "#475: a.port must resolve through the __denorm_scan CTE, not the \
+         LEFT-JOINed edge table:\n{first}"
+    );
+    // …and never from the NULL-extended edge alias.
+    assert!(
+        !first.contains(r#""id.orig_p" AS "a.port""#),
+        "#475: a.port must NOT be sourced from the edge table's id.orig_p \
+         (NULL on OPTIONAL-miss rows):\n{first}"
+    );
+    // The edge-owned property stays on the edge alias (NULL-extension is the
+    // CORRECT semantics for d.name).
+    assert!(
+        first.contains(r#".query AS "d.name""#),
+        "#475: d.name must stay sourced from the edge row's query column:\n{first}"
+    );
+
+    // ORDER BY on the anchor property must forward-resolve identically.
+    let ordered = normalize(
+        &render(
+            &schema,
+            "MATCH (a:IP) OPTIONAL MATCH (a)-[:REQUESTED]->(d:Domain) \
+             RETURN a.ip, a.port, d.name ORDER BY a.port",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        ordered.contains("ORDER BY a.port"),
+        "#475: ORDER BY on the anchor property must reference the CTE column:\n{ordered}"
+    );
+}
+
 /// #481 regression: on the coupled-denormalized `zeek_merged_test` schema, a
 /// 2-hop `ACCESSED` chain `(a:IP)->(b:IP)->(c:IP)` resolved the MIDDLE node's
 /// property binding by iterating `PlanCtx::pattern_contexts` (a `HashMap`) and
