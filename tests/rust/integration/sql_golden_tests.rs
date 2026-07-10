@@ -349,17 +349,16 @@ const CORPUS: &[(&str, &str)] = &[
 /// fixed here; each is a candidate follow-up issue):
 ///
 ///   - `browser_style_count` (`MATCH (n) RETURN count(n)`, heterogeneous
-///     unlabeled scan) renders `count(<id column of ONE arbitrary label>)`
-///     (here `n.post_id`, Post's id) over a UNION of per-label branches where
-///     every OTHER branch emits NULL for that column — so COUNT silently
-///     excludes every row not belonging to that one label. Confirmed live:
-///     `count(n)` returns 5, not 13 (8 Users + 5 Posts). Reproduced
-///     cross-schema on FK-edge (`fk_browser_style_count`: returns 4, not 12 —
-///     4 Customers + 8 Orders). Real, previously-undocumented correctness
-///     bug (ground rule #1: "return exactly what's asked, no more, no
-///     less"). NOT a bug on Denormalized (`dn_browser_style_count`): its one
-///     virtual id column is populated on every UNION branch, so the count is
-///     correct there — see that golden's note.
+///     unlabeled scan) — FIXED (#467). Previously rendered `count(<id column
+///     of ONE arbitrary label>)` (Post's `n.post_id`) over per-label branches
+///     where every OTHER branch NULL-pads that column, silently undercounting
+///     (5 not 13; FK-edge 4 not 12). Now renders
+///     `count(coalesce(n.post_id, n.user_id))` — a discriminator non-NULL on
+///     each row's own branch — counting every row (live: Standard 13, FK 12).
+///     `count(DISTINCT n)` renders `count(DISTINCT tuple(...))` so cross-label
+///     id collisions are not merged (live 13). Denormalized
+///     (`dn_browser_style_count`) is one label, unchanged — still
+///     `count(a.code)`, already correct (7).
 ///   - `browser_type_probe` (`MATCH ()-[r]->() RETURN DISTINCT type(r)`)
 ///     renders `FROM pattern_union_r AS r` but the outer SELECT references
 ///     `t.path_relationships[1]` — alias `t` is never bound anywhere in the
@@ -607,11 +606,49 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
     //   #473 — cross-WITH-barrier conversion corrupts `IS NULL` (operator
     //          vanishes: `(o.total_amount OR ...)`) and `NOT(..) OR ..`
     //          (the OR becomes an AND split). Plain non-WITH forms are fine.
-    //   #474 — plain OPTIONAL MATCH *without* WITH (reversed-anchor FK-edge
-    //          shape) silently drops its WHERE entirely (separate code path).
+    //   #474 — FIXED. Plain OPTIONAL MATCH *without* WITH (reversed-anchor
+    //          FK-edge shape) silently dropped its optional-node WHERE entirely
+    //          (a separate code path from #460/#462). Now recovered into the LEFT
+    //          JOIN pre_filter for node-is-edge shapes (see `optional_where_no_with*`
+    //          below). The standard separate-edge shape is out of scope and keeps
+    //          its pre-existing placement (see the #474 report).
     // Also: ClickHouse rejects cross-table comparisons in a NULL-preserving
     // LEFT JOIN ON (join_use_nulls, error 386) — the `_cross` golden above is
     // correct SQL that executes on Databricks; on ClickHouse it errors cleanly.
+    // --- #474: plain OPTIONAL MATCH (NO WITH barrier), reversed anchor ---
+    // The anchor Customer arrives from the first MATCH and is the right connection
+    // of the optional pattern `(o:Order)-[:PLACED_BY]->(c)`; the Order node is the
+    // OPTIONAL (left) connection. A WHERE on the optional Order node must filter
+    // the LEFT JOIN subquery (pre_filter) so customers with no qualifying order
+    // stay NULL-extended — NOT the outer WHERE (drops them) and NOT dropped
+    // entirely. FK-edge: the Order node IS the orders_fk edge table, so the whole
+    // optional pattern is a single LEFT JOIN and the pre_filter gates it correctly.
+    // FIXED (#474): was silently dropped (unfiltered 8 rows on live db_fk_edge);
+    // now renders `LEFT JOIN (SELECT * FROM db_fk_edge.orders_fk WHERE total_amount
+    // > 100) AS o`. Live: 4 rows, each customer keeps its single order with
+    // total_amount>100; with `> 130` c102 is correctly NULL-extended.
+    (
+        "optional_where_no_with",
+        "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE o.total_amount > 100 RETURN c.customer_id, o.order_id",
+    ),
+    // Same shape, WHERE on the relationship alias r (order_date). Already correct
+    // before #474 (rel-alias pre_filter recovery): r and o share orders_fk, so the
+    // predicate sits in the LEFT JOIN pre_filter. Locked to prove #474 did not
+    // disturb it.
+    (
+        "optional_where_no_with_rel",
+        "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[r:PLACED_BY]->(c) WHERE r.order_date > '2024-01-01' RETURN c.customer_id, o.order_id",
+    ),
+    // Mixed conjunction: optional-node predicate AND pure-anchor predicate. The
+    // optional-node conjunct (o.total_amount) is now recovered into the LEFT JOIN
+    // pre_filter (#474); the pure-anchor conjunct (c.customer_id) stays in the
+    // outer WHERE and still drops NULL-extended anchor rows — the SAME pre-existing
+    // #472 disease (a pure-anchor OPTIONAL-WHERE conjunct belongs in the LEFT JOIN
+    // ON, always safe for a LEFT JOIN). Left as-is here; tracked by #472.
+    (
+        "optional_where_no_with_mixed",
+        "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE o.total_amount > 100 AND c.customer_id > 101 RETURN c.customer_id, o.order_id",
+    ),
     // --- WITH + aggregation (count per customer), and its HAVING form ---
     (
         "with_agg_count",
@@ -1163,9 +1200,9 @@ const POLYMORPHIC_CORPUS: &[(&str, &str)] = &[
 ///     (same edge/join, start and end swapped). Confirmed live: returns 16,
 ///     not 8 (8 forward × 2 orientations). The DIRECTED form `(n)-[r]->(o)`
 ///     stays on the plain single-table join path (control unchanged at 8).
-///   - `fk_browser_style_count`: `count(n)` renders `count(n.customer_id)`
-///     (Customer's id) — every Order-branch row emits NULL for that column.
-///     Confirmed live: returns 4, not 12 (4 Customers + 8 Orders).
+///   - `fk_browser_style_count`: FIXED (#467). Previously `count(n.customer_id)`
+///     (Customer's id) undercounted (4 not 12) since Order-branch rows NULL-pad
+///     that column. Now `count(coalesce(n.customer_id, n.order_id))` — live 12.
 ///
 /// Verified CORRECT: `fk_unlabeled_node_scan` (heterogeneous UNION ALL,
 /// deterministic); `fk_path_unlabeled` (fixed_path over the FK-edge join, no
@@ -1188,11 +1225,11 @@ const FK_EDGE_BROWSER_CORPUS: &[(&str, &str)] = &[
 /// Browser-shaped patterns (P0.5), Denormalized variation: the
 /// schema-sensitive subset re-run on `schemas/dev/flights_denormalized.yaml`
 /// (single self-referential Airport/FLIGHT coupled-denorm table). A
-/// deliberate CONTRAST set: the heterogeneous count is correct here (unlike
-/// Standard/FK-edge), and the fully-unlabeled undirected expand was ALREADY
-/// correct before #466 — documented so the #466 reverse-branch fix (and any
-/// future count fix) does not accidentally regress this schema. The
-/// `dn_unlabeled_expand` golden is UNCHANGED by #466.
+/// deliberate CONTRAST set: the fully-unlabeled undirected expand and the
+/// heterogeneous count were BOTH already correct here before the #466 /
+/// #467 fixes — documented so those fixes (and future ones) don't
+/// accidentally regress this single-label schema. The `dn_unlabeled_expand`
+/// golden is UNCHANGED by #466.
 ///
 ///   - `dn_unlabeled_expand` correctly emits BOTH direction branches (the
 ///     `bidirectional_union` UNION ALL over the single `flights_denorm` table
@@ -1202,10 +1239,10 @@ const FK_EDGE_BROWSER_CORPUS: &[(&str, &str)] = &[
 ///     #466 fixed for Standard/FK-edge, and is deliberately left on that path
 ///     (only non-self-referential single-type undirected patterns are routed
 ///     to `pattern_union` by the #466 fix) so its SQL is unchanged.
-///   - `dn_browser_style_count`: `count(a)` renders `count(a.code)`, and
-///     `code` (the virtual node_id, mapped via from/to_node_properties) is
-///     populated on EVERY UNION branch (origin_code / dest_code), so unlike
-///     Standard/FK-edge this does NOT undercount.
+///   - `dn_browser_style_count`: `count(a)` renders `count(a.code)` (one
+///     label, so the #467 fix leaves it single-column), and `code` (the
+///     virtual node_id, mapped via from/to_node_properties) is populated on
+///     EVERY UNION branch (origin_code / dest_code), so it does NOT undercount.
 ///
 /// `dn_path_unlabeled` is NOT a byte-golden: the fixed_path edge-property
 /// column order (`t3.distance`/`t3.flight_num`/`t3.carrier`/...) is emitted
@@ -2464,6 +2501,71 @@ async fn denorm_order_by_uses_table_alias_not_cypher_alias_455() {
     }
 }
 
+/// #470 regression: on a COUPLED-denormalized schema (`zeek_merged_test.yaml`)
+/// where a node's `node_id` Cypher name (`id.orig_h`) differs from a property
+/// that maps to the SAME db column (`ip: id.orig_h`), the OPTIONAL-MATCH denorm
+/// LEFT JOIN key was resolved by iterating a `HashMap` of anchor properties and
+/// picking the first whose column matched the edge `from_id`. Both `ip` and the
+/// raw self-mapping `id.orig_h` matched, so the pick was NONDETERMINISTIC across
+/// fresh processes (~50/50): half the renders keyed on `a.ip` (VALID — the
+/// `__denorm_scan_a` CTE exposes `ip`) and half on `a."id.orig_h"` (INVALID —
+/// the CTE does NOT expose that column; ClickHouse errors UNKNOWN_IDENTIFIER).
+///
+/// The fix resolves the join key FORWARD through the CTE's actually-exposed
+/// columns (CLAUDE.md rule 2), deterministically. This test locks BOTH the
+/// determinism (repeated renders are byte-identical — `HashMap` seeds differ per
+/// map, so a nondeterministic site flips within a single process) AND the
+/// correctness (the CTE-side join key is the exposed property `a.ip`, never the
+/// unexposed raw node_id `a."id.orig_h"`).
+#[tokio::test]
+async fn denorm_optional_join_key_forward_resolved_and_deterministic_470() {
+    let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+    let repro = "MATCH (a:IP) OPTIONAL MATCH (a)-[:REQUESTED]->(d) RETURN a.ip, a.port, d.name";
+
+    // Determinism: many fresh renders in-process must all be byte-identical.
+    let first = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+    for _ in 0..30 {
+        let again = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#470: OPTIONAL denorm join-key render is nondeterministic:\n\
+             FIRST:\n{first}\nAGAIN:\n{again}"
+        );
+    }
+
+    // Correctness: the LEFT JOIN's CTE-side key must be the CTE-exposed property
+    // `a.ip`, NOT the raw node_id `a."id.orig_h"` (which the CTE does not expose).
+    let join_line = first
+        .lines()
+        .find(|l| l.contains("LEFT JOIN"))
+        .unwrap_or_else(|| panic!("#470: no LEFT JOIN line:\n{first}"));
+    assert!(
+        join_line.contains("ON a.ip ="),
+        "#470: OPTIONAL denorm join must key on the CTE-exposed column a.ip:\n{first}"
+    );
+    assert!(
+        !join_line.contains(r#"a."id.orig_h""#),
+        "#470: OPTIONAL denorm join must NOT key on the unexposed raw node_id \
+         a.\"id.orig_h\" (invalid — CTE exposes only ip/port):\n{first}"
+    );
+
+    // Sibling coupled shapes from the same table must also render deterministically.
+    for cypher in [
+        "MATCH (d:Domain) OPTIONAL MATCH (d)-[:RESOLVED_TO]->(r) RETURN d.name, r.ip",
+        "MATCH (a:IP) OPTIONAL MATCH (a)-[:ACCESSED]->(b) RETURN a.ip, b.ip",
+    ] {
+        let base = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+        for _ in 0..10 {
+            let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(
+                base, again,
+                "#470: coupled shape render is nondeterministic [{cypher}]:\n\
+                 BASE:\n{base}\nAGAIN:\n{again}"
+            );
+        }
+    }
+}
+
 /// #466 regression: a FULLY-unlabeled UNDIRECTED expand
 /// `MATCH (n)-[r]-(o) RETURN n, r, o` must render DIFFERENT SQL from the
 /// DIRECTED form `MATCH (n)-[r]->(o) RETURN n, r, o` on both Standard
@@ -2750,55 +2852,80 @@ async fn pattern_union_unresolvable_where_conjuncts_error_cleanly() {
     }
 }
 
-/// P0.5 characterization: `MATCH (n) RETURN count(n)` over a heterogeneous
-/// (multi-label) unlabeled node scan renders `count(<id column of ONE
-/// arbitrary label>)` over a UNION of per-label branches — every OTHER
-/// branch emits NULL for that specific column, so COUNT silently excludes
-/// every row not belonging to that one label. Confirmed live:
-///   - Standard (`social` fixture, 8 Users + 5 Posts): `count(n)` picks
-///     Post's `post_id` and returns 5, not 13.
-///   - FK-edge (`db_fk_edge` fixture, 4 Customers + 8 Orders): `count(n)`
-///     picks Customer's `customer_id` and returns 4, not 12.
-/// This is a real, previously-undocumented correctness bug (ground rule #1:
-/// "return exactly what's asked, no more, no less") — NOT fixed here
-/// (test-only slice); locked as current behavior via the `count(` argument
-/// column so a future fix is a reviewable diff.
+/// #467 FIX (was P0.5 characterization): `MATCH (n) RETURN count(n)` over a
+/// heterogeneous (multi-label) unlabeled node scan used to render
+/// `count(<id column of ONE arbitrary label>)` over a UNION of per-label
+/// branches — every OTHER branch emits NULL for that specific column, so
+/// COUNT silently excluded every row not belonging to that one label
+/// (Standard returned 5 not 13; FK-edge returned 4 not 12).
 ///
-/// Contrast: Denormalized is NOT affected (`dn_browser_style_count` golden) —
-/// its single virtual id column (`code`) is populated on EVERY UNION branch
-/// (both `origin_code` and `dest_code` alias to it), so the count already
-/// includes every row; asserted here too as the negative control.
+/// The fix (`projection_tagging.rs`) compiles whole-node count over a
+/// multi-label union to a discriminator over EVERY candidate label's id
+/// column:
+///   - `count(n)`          -> `count(coalesce(id_a, id_b, ...))` — non-NULL
+///     exactly when the node exists on that row (its own branch's id), and
+///     still NULL under OPTIONAL NULL-extension so NULL-skipping is preserved.
+///   - `count(DISTINCT n)` -> `count(DISTINCT tuple(id_a, id_b, ...))` — a
+///     tuple keeps each label's identity separate so ids that collide across
+///     labels (e.g. User 3 vs Post 3) are NOT merged.
+/// Live after fix: Standard 13, FK-edge 12, count(DISTINCT n) 13.
+///
+/// Contrast: Denormalized is unchanged (`dn_browser_style_count` golden) — its
+/// single virtual id column (`code`) is one label, populated on EVERY UNION
+/// branch (both `origin_code` and `dest_code` alias to it), so it still
+/// reduces to `count(a.code)` and already counted every row (7).
 #[tokio::test]
-async fn browser_whole_node_count_undercounts_heterogeneous_scan() {
-    for (schema_id, expected_col) in [
-        (SchemaId::Standard, "n.post_id"),
-        (SchemaId::FkEdge, "n.customer_id"),
+async fn browser_whole_node_count_covers_heterogeneous_scan() {
+    for (schema_id, id_cols) in [
+        (SchemaId::Standard, ["n.post_id", "n.user_id"]),
+        (SchemaId::FkEdge, ["n.customer_id", "n.order_id"]),
     ] {
         let schema = load_schema(schema_id.yaml_path());
+
+        // count(n): coalesce over every label's id column — non-NULL on the
+        // row's own branch, so every row is counted.
         let sql = render(&schema, "MATCH (n) RETURN count(n)", SqlDialect::ClickHouse).await;
-        // The COUNT argument is a SINGLE label's id column, not a
-        // label-independent discriminator (e.g. a literal `1` or a
-        // COALESCE across every label's id) that would count every row.
         assert!(
-            sql.contains(&format!("count(`{expected_col}`)")),
-            "{:?}: expected the KNOWN-BROKEN count(n) to collapse to a \
-             single label's id column `{expected_col}` — if this now counts \
-             every row correctly, update this test (and add a byte golden \
-             for the fix):\n{sql}",
+            sql.contains(&format!(
+                "count(coalesce(`{}`, `{}`))",
+                id_cols[0], id_cols[1]
+            )),
+            "{:?}: expected count(n) to coalesce every label's id column so \
+             all rows are counted:\n{sql}",
             schema_id.dir()
         );
-        // And that column must indeed be NULL in at least one other UNION
-        // branch (the actual mechanism of the undercount).
+        // Each label's id column is projected as an anchor and NULL-padded on
+        // the OTHER branch — coalesce recovers the branch's own id.
+        for col in id_cols {
+            assert!(
+                sql.contains(&format!("NULL AS \"{col}\"")),
+                "{:?}: expected `{col}` to be NULL-padded in the other UNION \
+                 branch (coalesce recovers the present id):\n{sql}",
+                schema_id.dir()
+            );
+        }
+
+        // count(DISTINCT n): tuple over every label's id column so cross-label
+        // id collisions are not merged.
+        let sql_distinct = render(
+            &schema,
+            "MATCH (n) RETURN count(DISTINCT n)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
         assert!(
-            sql.contains(&format!("NULL AS \"{expected_col}\"")),
-            "{:?}: expected `{expected_col}` to be NULL-padded in another \
-             UNION branch (the undercount mechanism):\n{sql}",
+            sql_distinct.contains(&format!(
+                "count(DISTINCT tuple(`{}`, `{}`))",
+                id_cols[0], id_cols[1]
+            )),
+            "{:?}: expected count(DISTINCT n) to tuple every label's id column \
+             so colliding ids across labels are not merged:\n{sql_distinct}",
             schema_id.dir()
         );
     }
 
-    // Negative control: Denormalized's single virtual id is non-null on
-    // every branch, so no NULL-padding occurs for it.
+    // Contrast: Denormalized's single virtual id is one label, non-null on
+    // every branch, so it still reduces to the single-column form.
     let schema = load_schema(SchemaId::Denormalized.yaml_path());
     let sql = render(&schema, "MATCH (a) RETURN count(a)", SqlDialect::ClickHouse).await;
     assert!(
@@ -2809,7 +2936,7 @@ async fn browser_whole_node_count_undercounts_heterogeneous_scan() {
     assert!(
         !sql.contains("NULL AS \"a.code\""),
         "denormalized count(a)'s id column must be non-null on every UNION \
-         branch (this is the negative control for the undercount bug):\n{sql}"
+         branch:\n{sql}"
     );
 }
 
