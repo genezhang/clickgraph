@@ -166,11 +166,38 @@ pub fn generate_pattern_joins(
             if already_available.contains(t.rel_alias) {
                 vec![] // Edge already available, nothing to add
             } else {
-                vec![JoinBuilder::from_marker(t.rel_table, t.rel_alias)
+                let mut builder = JoinBuilder::new(t.rel_table, t.rel_alias)
                     .pre_filter(pre_filter)
                     .from_id(first_col(&rel_schema.from_id))
-                    .to_id(first_col(&rel_schema.to_id))
-                    .build()]
+                    .to_id(first_col(&rel_schema.to_id));
+
+                // #521: a fixed hop adjacent to a variable-length hop (e.g.
+                // `(a)-[:FLIGHT*1..2]->(b)-[:FLIGHT]->(c)`) binds its left
+                // (or right) node via the VLP CTE rather than via a plain
+                // FROM/JOIN of its own. On a fully denormalized/virtual-node
+                // schema there's no separate node table to correlate against
+                // — `left_alias`/`right_alias` ARE columns embedded in this
+                // very edge table — so without an explicit join condition
+                // here this degenerates into an unconditional FROM marker
+                // with a dangling alias (`t.left_alias`/`right_alias`
+                // referenced downstream but never bound). Correlate directly
+                // to the VLP CTE's start_id/end_id column, mirroring how
+                // `apply_vlp_rewrites` fixes up the analogous Traditional-
+                // strategy join condition (which already has a condition to
+                // rewrite; SingleTableScan's bare FROM-marker has none).
+                if plan_ctx.is_vlp_endpoint(t.left_alias) {
+                    let from_col = first_col(&rel_schema.from_id);
+                    let (vlp_alias, vlp_col) =
+                        plan_ctx.get_vlp_join_reference(t.left_alias, &from_col);
+                    builder = builder.add_condition(t.rel_alias, from_col, vlp_alias, vlp_col);
+                } else if plan_ctx.is_vlp_endpoint(t.right_alias) {
+                    let to_col = first_col(&rel_schema.to_id);
+                    let (vlp_alias, vlp_col) =
+                        plan_ctx.get_vlp_join_reference(t.right_alias, &to_col);
+                    builder = builder.add_condition(t.rel_alias, to_col, vlp_alias, vlp_col);
+                }
+
+                vec![builder.build()]
             }
         }
 

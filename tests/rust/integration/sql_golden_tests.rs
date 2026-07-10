@@ -5482,6 +5482,64 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
         );
     }
 
+    /// #521: a fixed hop adjacent to a VLP hop on a fully DENORMALIZED
+    /// (virtual-node/`SingleTableScan`) schema must still get a real,
+    /// VLP-correlated JOIN for the trailing leg. Before the fix, the
+    /// `SingleTableScan` strategy's join generator only checked whether the
+    /// edge's own alias was already available — never whether the LEFT node
+    /// (here `b`, a VLP endpoint) was already bound via the VLP CTE — so the
+    /// trailing `b->c` edge degenerated into an unconditional FROM marker
+    /// with no correlation to the VLP CTE, and got dropped entirely by
+    /// downstream anchor-selection logic (`join_builder.rs`'s "Denormalized
+    /// VLP is FROM: dropping anchor" branch mistakenly treating the dangling
+    /// marker as the redundant original VLP anchor). The generated SQL
+    /// referenced `t2.*` columns with no JOIN or FROM binding `t2` at all —
+    /// a loud ClickHouse Code 47 UNKNOWN_IDENTIFIER. This is distinct from
+    /// #501 above, which covers the same shape on the Traditional (non-
+    /// denormalized) strategy — #521 is Denormalized-strategy-specific.
+    #[tokio::test]
+    async fn vlp_fixed_trailing_leg_denormalized_correlates_to_vlp_cte_521() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport)-[:FLIGHT]->(c:Airport) \
+             RETURN a.code, b.code, c.code",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        assert!(
+            sql.to_uppercase().contains("WITH RECURSIVE"),
+            "expected a genuine VLP recursive CTE for a:Airport-[*1..2]->b:Airport: {sql}"
+        );
+        assert!(
+            sql.contains("INNER JOIN") || sql.contains("JOIN"),
+            "the trailing b->c FLIGHT hop must emit a real JOIN, not just \
+             `FROM vlp_a_b AS t` with a dangling t2 reference: {sql}"
+        );
+        // The trailing leg's JOIN must correlate to the VLP CTE's end_id
+        // column (VLP_CTE_FROM_ALIAS == "t") — proving it's a real
+        // correlated join and not an unconditional FROM marker.
+        assert!(
+            sql.contains("t.end_id"),
+            "the trailing leg's JOIN condition must correlate against the \
+             VLP CTE's end_id column: {sql}"
+        );
+        // No dangling alias: whichever alias the trailing leg's edge table
+        // uses in the SELECT (e.g. `t2.code`) must also appear as a JOIN
+        // table_alias, not just be referenced from an unbound alias.
+        let select_and_from_only = sql.split("SELECT").last().expect("SELECT clause present");
+        for alias in ["t2"] {
+            if select_and_from_only.contains(&format!("{alias}.")) {
+                assert!(
+                    sql.contains(&format!("AS {alias} ")) || sql.contains(&format!("AS {alias}\n")),
+                    "alias '{alias}' is referenced in SELECT but never bound \
+                     by a JOIN/FROM: {sql}"
+                );
+            }
+        }
+    }
+
     /// #497 (review follow-up, BLOCKING finding): `nodes(p)` on a fixed path
     /// through a COMPOSITE-key node (`Account`, keyed on `(bank_id,
     /// account_number)` in `schemas/test/composite_node_ids.yaml`) must carry

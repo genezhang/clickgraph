@@ -699,8 +699,18 @@ pub fn transform_row(
                 // We use the metadata (labels, types) from query planning
 
                 if *is_vlp {
-                    // VLP multi-type paths: the SQL returns a tuple column with all path data
-                    let mut path = transform_vlp_path(&row, &meta.field_name, schema)?;
+                    // VLP paths: the SQL returns a tuple column with path data.
+                    // Tuple shape depends on whether the CTE is standard
+                    // (single-type, 3 fields) or multi-type (9 fields) — see
+                    // #486 and `transform_vlp_path`'s doc comment.
+                    let mut path = transform_vlp_path(
+                        &row,
+                        &meta.field_name,
+                        schema,
+                        start_labels,
+                        end_labels,
+                        rel_types,
+                    )?;
 
                     // Assign session-scoped integer IDs
                     for node in &mut path.nodes {
@@ -1978,22 +1988,27 @@ fn transform_path_from_json(
     Ok(Path::single_hop(from_node, relationship, to_node))
 }
 
-/// Transform a VLP multi-type path from its tuple representation.
+/// Transform a VLP path from its tuple representation.
 ///
-/// The VLP CTE returns a tuple column with these fields (in order):
-/// [0] start_properties (JSON string)
-/// [1] end_properties (JSON string)
-/// [2] rel_properties (array of JSON strings, one per hop)
-/// [3] path_relationships (array of rel type strings, e.g., ["FOLLOWS"])
-/// [4] start_id (string)
-/// [5] end_id (string)
-/// [6] hop_count (integer)
-/// [7] start_type (string, e.g., "User")
-/// [8] end_type (string, e.g., "Post")
+/// Dispatches on the tuple's field count because the shape depends on
+/// which VLP CTE strategy produced it (#486):
+///   - Standard (single-type) VLP CTE: 3 fields —
+///     `tuple(path_nodes, path_relationships, hop_count)` (see
+///     `select_builder.rs::expand_path_variable`, #469). No per-node/
+///     per-relationship property data is carried in this shape.
+///   - Multi-type VLP CTE: 9 fields (see `transform_vlp_path_multi_type`).
+///
+/// `transform_vlp_path` previously hardcoded the 9-field expectation for
+/// every VLP path, so `RETURN p` on a standard single-type VLP (the common
+/// case) failed with a graceful "expected 9 tuple fields, got 3" error
+/// instead of returning a Path.
 fn transform_vlp_path(
     row: &HashMap<String, Value>,
     path_field: &str,
-    _schema: &GraphSchema,
+    schema: &GraphSchema,
+    start_labels: &[String],
+    end_labels: &[String],
+    rel_types: &[String],
 ) -> Result<Path, String> {
     // The tuple is returned as a JSON array
     let tuple_val = row.get(path_field).ok_or_else(|| {
@@ -2014,14 +2029,146 @@ fn transform_vlp_path(
         }
     };
 
-    if fields.len() < 9 {
+    match fields.len() {
+        3 => transform_vlp_path_standard(fields, path_field, start_labels, end_labels, rel_types),
+        n if n >= 9 => transform_vlp_path_multi_type(fields, path_field, schema),
+        n => Err(format!(
+            "VLP path '{}': expected 3 (standard VLP) or 9 (multi-type VLP) tuple fields, got {}",
+            path_field, n
+        )),
+    }
+}
+
+/// Transform a standard (single-type) VLP path from its 3-field tuple:
+/// `tuple(path_nodes, path_relationships, hop_count)` (#469, #486).
+///
+/// This tuple shape carries only node id values and relationship type
+/// strings — no property data — so the resulting Path's nodes/relationship
+/// are built with correct ids/labels/types but EMPTY properties. Labels come
+/// from static query metadata (`start_labels`/`end_labels`/`rel_types`),
+/// which is safe because a standard (non-multi-type) VLP is homogeneous by
+/// construction: transitivity requires FROM/TO node-type overlap across the
+/// whole chain (see `vlp_transitivity_check.rs`).
+///
+/// Only the overall start/end nodes are materialized (`path_nodes[0]` and
+/// `path_nodes[last]`) — intermediate nodes for `hop_count > 1` are not yet
+/// serialized to Bolt Path objects, mirroring the pre-existing multi-hop
+/// truncation behavior in `transform_vlp_path_multi_type` below.
+fn transform_vlp_path_standard(
+    fields: &[Value],
+    path_field: &str,
+    start_labels: &[String],
+    end_labels: &[String],
+    rel_types: &[String],
+) -> Result<Path, String> {
+    let path_nodes = match &fields[0] {
+        Value::Array(arr) => arr,
+        other => {
+            return Err(format!(
+                "VLP path '{}': expected path_nodes array, got {:?}",
+                path_field, other
+            ));
+        }
+    };
+    let path_rel_types = match &fields[1] {
+        Value::Array(arr) => arr,
+        other => {
+            return Err(format!(
+                "VLP path '{}': expected path_relationships array, got {:?}",
+                path_field, other
+            ));
+        }
+    };
+    let hop_count = fields[2]
+        .as_i64()
+        .or_else(|| fields[2].as_str().and_then(|s| s.parse().ok()))
+        .unwrap_or(1);
+
+    if path_nodes.len() < 2 {
         return Err(format!(
-            "VLP path '{}': expected 9 tuple fields, got {}",
+            "VLP path '{}': path_nodes has {} element(s), expected at least 2 (start + end)",
             path_field,
-            fields.len()
+            path_nodes.len()
         ));
     }
 
+    if hop_count > 1 {
+        log::warn!(
+            "VLP path '{}' with hop_count={} truncated to single hop (start->end) for Bolt serialization",
+            path_field,
+            hop_count
+        );
+    }
+
+    let start_id_str = value_to_id_string(&path_nodes[0]);
+    let end_id_str = value_to_id_string(path_nodes.last().unwrap());
+
+    let start_label = start_labels
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "Unknown".to_string());
+    let end_label = end_labels
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "Unknown".to_string());
+    let rel_type = path_rel_types
+        .first()
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| rel_types.first().cloned())
+        .unwrap_or_else(|| "UNKNOWN".to_string());
+
+    let start_element_id = generate_node_element_id(&start_label, &[&start_id_str]);
+    let start_id = generate_id_from_element_id(&start_element_id);
+    let start_node = Node::new(
+        start_id,
+        vec![start_label],
+        HashMap::new(),
+        start_element_id.clone(),
+    );
+
+    let end_element_id = generate_node_element_id(&end_label, &[&end_id_str]);
+    let end_id = generate_id_from_element_id(&end_element_id);
+    let end_node = Node::new(
+        end_id,
+        vec![end_label],
+        HashMap::new(),
+        end_element_id.clone(),
+    );
+
+    let rel_element_id = generate_relationship_element_id(&rel_type, &start_id_str, &end_id_str);
+    let rel_id = generate_id_from_element_id(&rel_element_id);
+    let relationship = Relationship::new(
+        rel_id,
+        start_node.id,
+        end_node.id,
+        rel_type,
+        HashMap::new(),
+        rel_element_id,
+        start_node.element_id.clone(),
+        end_node.element_id.clone(),
+    );
+
+    Ok(Path::single_hop(start_node, relationship, end_node))
+}
+
+/// Transform a VLP multi-type path from its tuple representation.
+///
+/// The VLP CTE returns a tuple column with these fields (in order):
+/// [0] start_properties (JSON string)
+/// [1] end_properties (JSON string)
+/// [2] rel_properties (array of JSON strings, one per hop)
+/// [3] path_relationships (array of rel type strings, e.g., ["FOLLOWS"])
+/// [4] start_id (string)
+/// [5] end_id (string)
+/// [6] hop_count (integer)
+/// [7] start_type (string, e.g., "User")
+/// [8] end_type (string, e.g., "Post")
+fn transform_vlp_path_multi_type(
+    fields: &[Value],
+    _path_field: &str,
+    _schema: &GraphSchema,
+) -> Result<Path, String> {
     // Extract fields from the tuple
     let start_props_json = fields[0].as_str().unwrap_or("{}");
     let end_props_json = fields[1].as_str().unwrap_or("{}");
@@ -3255,5 +3402,107 @@ graph_schema:
             .expect("unlabeled node should infer its label from the 'id' id column");
         assert_eq!(inferred.element_id, "Person:7-");
         assert_eq!(inferred.labels, vec!["Person".to_string()]);
+    }
+
+    /// #486: `transform_vlp_path` must decode the standard (single-type) VLP
+    /// CTE's 3-field tuple (`path_nodes, path_relationships, hop_count`,
+    /// #469) rather than always assuming the 9-field multi-type shape. Before
+    /// the fix, `RETURN p` on a single-type VLP over Bolt failed with
+    /// "expected 9 tuple fields, got 3" for every row.
+    #[test]
+    fn test_transform_vlp_path_standard_three_field_tuple() {
+        let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+
+        let mut row: HashMap<String, Value> = HashMap::new();
+        row.insert("p".to_string(), serde_json::json!([[1, 2], ["FLIGHT"], 1]));
+
+        let path = transform_vlp_path(
+            &row,
+            "p",
+            &schema,
+            &["Airport".to_string()],
+            &["Airport".to_string()],
+            &["FLIGHT".to_string()],
+        )
+        .expect("3-field standard VLP tuple should decode to a Path");
+
+        assert_eq!(path.nodes.len(), 2);
+        assert_eq!(path.relationships.len(), 1);
+        assert_eq!(path.nodes[0].labels, vec!["Airport".to_string()]);
+        assert_eq!(path.nodes[1].labels, vec!["Airport".to_string()]);
+        assert_eq!(path.relationships[0].rel_type, "FLIGHT");
+    }
+
+    /// #486: multi-hop standard VLP (`hop_count > 1`) is truncated to a
+    /// single start->end hop for Bolt serialization (mirrors the pre-existing
+    /// multi-type VLP behavior) rather than erroring.
+    #[test]
+    fn test_transform_vlp_path_standard_multi_hop_truncates_to_start_end() {
+        let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+
+        let mut row: HashMap<String, Value> = HashMap::new();
+        row.insert(
+            "p".to_string(),
+            serde_json::json!([[10, 20, 30], ["FLIGHT", "FLIGHT"], 2]),
+        );
+
+        let path = transform_vlp_path(
+            &row,
+            "p",
+            &schema,
+            &["Airport".to_string()],
+            &["Airport".to_string()],
+            &["FLIGHT".to_string()],
+        )
+        .expect("multi-hop 3-field standard VLP tuple should decode to a truncated Path");
+
+        assert_eq!(path.nodes.len(), 2);
+        assert_eq!(path.relationships.len(), 1);
+    }
+
+    /// #486: the 9-field multi-type VLP tuple shape must still decode
+    /// correctly through the same entry point (regression guard for the
+    /// dispatcher added to fix the 3-field case).
+    #[test]
+    fn test_transform_vlp_path_multi_type_nine_field_tuple() {
+        let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+
+        let mut row: HashMap<String, Value> = HashMap::new();
+        row.insert(
+            "p".to_string(),
+            serde_json::json!([
+                "{\"name\":\"Alice\"}",
+                "{\"title\":\"Post 1\"}",
+                ["{}"],
+                ["AUTHORED"],
+                "1",
+                "2",
+                1,
+                "User",
+                "Post"
+            ]),
+        );
+
+        let path = transform_vlp_path(&row, "p", &schema, &[], &[], &[])
+            .expect("9-field multi-type VLP tuple should decode to a Path");
+
+        assert_eq!(path.nodes.len(), 2);
+        assert_eq!(path.relationships.len(), 1);
+        assert_eq!(path.relationships[0].rel_type, "AUTHORED");
+    }
+
+    /// #486: an unrecognized tuple shape (neither 3 nor >=9 fields) must fail
+    /// loudly with a clear message rather than silently misinterpreting
+    /// fields.
+    #[test]
+    fn test_transform_vlp_path_unrecognized_tuple_shape_errors() {
+        let schema = GraphSchema::build(1, "test".to_string(), HashMap::new(), HashMap::new());
+
+        let mut row: HashMap<String, Value> = HashMap::new();
+        row.insert("p".to_string(), serde_json::json!([1, 2, 3, 4, 5]));
+
+        let err = transform_vlp_path(&row, "p", &schema, &[], &[], &[])
+            .expect_err("5-field tuple is neither standard (3) nor multi-type (9+) shape");
+        assert!(err.contains("expected 3"), "unexpected error text: {err}");
     }
 }
