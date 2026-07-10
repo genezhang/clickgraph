@@ -429,6 +429,200 @@ pub(super) fn find_inner_optional_denorm_graphrel(plan: &LogicalPlan) -> Option<
     }
 }
 
+/// #510: when `alias` is the anchor of an OPTIONAL denorm CTE + LEFT JOIN
+/// pattern (the `__denorm_scan_{alias}` CTE built in `plan_builder.rs`,
+/// shared machinery with #502/#505/#506/#507), return the Cypher property
+/// name that CTE exposes for the node's identity column — the SAME
+/// forward-resolution #475 already does for the SELECT list, needed here for
+/// the WITH-clause's GROUP BY key construction
+/// (`expand_table_alias_to_group_by_id_only` in `plan_builder_utils.rs`).
+///
+/// That function's generic ID lookups (CTE-schema registry, then
+/// `find_id_column_for_alias` reading the raw `ViewScan.id_column`) don't
+/// know about this special CTE at all — it isn't registered in the general
+/// `cte_schemas`/`cte_references` maps the WITH-CTE compiler tracks — so
+/// they fall through to the RAW physical column name (e.g. `"id.orig_h"`),
+/// producing `GROUP BY a."id.orig_h"` against a CTE that only exposes the
+/// Cypher property name (`"ip"`) — invalid SQL. This function is checked
+/// FIRST, before those generic fallbacks, whenever the alias might be this
+/// special anchor.
+///
+/// Returns `None` (caller falls through to the generic lookups, unaffected)
+/// when `alias` isn't this anchor pattern, or when the anchor's identity
+/// property can't be forward-resolved (mirrors #507's same-shaped
+/// resolution, which also returns `None` conservatively in that case).
+pub(super) fn denorm_scan_cte_anchor_id_property(
+    plan: &LogicalPlan,
+    alias: &str,
+) -> Option<String> {
+    let (id_candidates, _all_names, id_col) = denorm_scan_cte_anchor_names_and_id_col(plan, alias)?;
+
+    // A node's role-specific property map can hold BOTH a genuine Cypher
+    // alias for the id column (e.g. `ip -> id.orig_h`) AND a raw
+    // self-mapping entry (`id.orig_h -> id.orig_h`, present when the schema
+    // also declares the physical column name as its own Cypher property).
+    // The CTE only ever exposes the FORMER as a real column — the
+    // self-mapped entry's "property name" IS the raw db column text, so
+    // preferring it would reproduce exactly the bug this function fixes.
+    // Exclude self-mapping candidates first; only fall back to one if that
+    // leaves nothing (still better than the raw `ViewScan.id_column` the
+    // caller would otherwise use).
+    let mut candidates: Vec<&String> = id_candidates.iter().filter(|k| *k != &id_col).collect();
+    if candidates.is_empty() {
+        candidates = id_candidates.iter().collect();
+    }
+    candidates.sort();
+    candidates.into_iter().next().cloned()
+}
+
+/// #510 (SELECT-list sibling): the same anchor-detection this module already
+/// does for the GROUP BY key (`denorm_scan_cte_anchor_id_property`), but
+/// returning EVERY Cypher property the `__denorm_scan_{alias}` CTE exposes
+/// — `(cypher_name, cte_column_name)` pairs, where the CTE column name is
+/// identical to the Cypher name (the anchor scan CTE projects each
+/// role-specific property entry under its own Cypher property name, never a
+/// raw db column). Self-mapping entries (property name literally equal to
+/// the raw db column text — see `denorm_scan_cte_anchor_id_property`'s doc)
+/// are excluded so callers never emit a reference to a column the CTE
+/// doesn't actually have.
+///
+/// Used by `expand_table_alias_to_select_items` (`plan_builder_utils.rs`) to
+/// build the WITH-clause's auto-expanded SELECT items for a pass-through
+/// anchor alias (`WITH a, count(r) AS c`): that function's generic lookup
+/// (`LogicalPlan::get_properties_with_table_alias`) resolves alias binding
+/// STRUCTURALLY against the ORIGINAL (pre-render) LogicalPlan tree, where
+/// the anchor node is still nested inside the OPTIONAL edge's GraphRel — so
+/// it (correctly, for the ordinary embedded-denorm case #493/#475 target)
+/// returns the EDGE alias as the "actual" table alias. For THIS special
+/// CTE + LEFT JOIN pattern that's wrong: post-render, the anchor's own
+/// properties come from the `__denorm_scan_{alias}` CTE, not the
+/// LEFT-JOINed (and NULL-extended on an OPTIONAL-miss row) edge alias.
+pub(super) fn denorm_scan_cte_anchor_properties(
+    plan: &LogicalPlan,
+    alias: &str,
+) -> Option<Vec<(String, String)>> {
+    let (_id_candidates, all_names, id_col) = denorm_scan_cte_anchor_names_and_id_col(plan, alias)?;
+    let exposed: Vec<(String, String)> = all_names
+        .iter()
+        .filter(|k| k.as_str() != id_col.as_str())
+        .map(|k| (k.clone(), k.clone()))
+        .collect();
+    if exposed.is_empty() {
+        None
+    } else {
+        Some(exposed)
+    }
+}
+
+/// Shared lookup behind `denorm_scan_cte_anchor_id_property` and
+/// `denorm_scan_cte_anchor_properties`: find the anchor Union node for
+/// `alias` (if `alias` is the anchor of an OPTIONAL denorm CTE + LEFT JOIN
+/// pattern) and return (id property name candidates, every Cypher property
+/// name the CTE exposes, the matched branch's physical `id_column`).
+///
+/// #520/B1: an EARLIER version of this function used
+/// `edge_side_node_properties(vs, anchor_is_left)` — the property map for
+/// ONLY the role matching the CURRENT rendering context's `anchor_is_left`.
+/// That silently failed whenever the schema's canonical `id_column` happens
+/// to equal only the OTHER role's physical column (i.e. whenever the
+/// role-specific property maps' `ip -> id.orig_h` / `ip -> id.resp_h` mappings
+/// use DIFFERENT physical columns for the same conceptual identity — the
+/// norm for a coupled cross-table schema like zeek's `IP`). Confirmed via a
+/// live repro: an UNDIRECTED pattern's second UnionDistribution branch (the
+/// `anchor_is_left=false` invocation) hit exactly this — its role's `ip`
+/// mapping is `id.resp_h`, which never matches `id_column="id.orig_h"`, so
+/// `node_id_prop_name` silently resolved to `None` and the #507 node-grain
+/// wrap was skipped for that branch's CTE — a SILENT wrong-result bug
+/// (per-node counts fragmenting across grain rows), not a loud failure.
+///
+/// Fix: search EVERY Union branch's BOTH from- and to-node-properties maps
+/// (not just the one role `anchor_is_left` currently cares about) for a
+/// value matching `id_column`. The anchor scan CTE always exposes the union
+/// of every role's Cypher property NAMES identically (one scan branch per
+/// role, all aliased to the same shared property names) — only the
+/// candidate-column VALUE differs per role — so it is always safe to accept
+/// a match found via any role, regardless of which role the current
+/// rendering context happens to need.
+fn denorm_scan_cte_anchor_names_and_id_col(
+    plan: &LogicalPlan,
+    alias: &str,
+) -> Option<(
+    std::collections::HashSet<String>,
+    std::collections::HashSet<String>,
+    String,
+)> {
+    let inner = find_inner_optional_denorm_graphrel(plan)?;
+    let LogicalPlan::GraphRel(gr) = inner else {
+        return None;
+    };
+    let anchor_is_left = optional_denorm_union_anchor_is_left(gr)?;
+    let anchor_plan: &LogicalPlan = if anchor_is_left {
+        gr.left.as_ref()
+    } else {
+        gr.right.as_ref()
+    };
+    let LogicalPlan::Union(union) = anchor_plan else {
+        return None;
+    };
+
+    // Confirm this Union's own node alias is the one we're looking for —
+    // `find_inner_optional_denorm_graphrel` searches the WHOLE plan tree
+    // (including nested/chained OPTIONAL hops, #505), so it may return a
+    // DIFFERENT hop's anchor than the alias we were asked about.
+    let node_alias = union.inputs.first().and_then(|input| {
+        if let LogicalPlan::GraphNode(gn) = input.as_ref() {
+            Some(gn.alias.clone())
+        } else {
+            None
+        }
+    })?;
+    if node_alias != alias {
+        return None;
+    }
+
+    let mut id_col: Option<String> = None;
+    let mut all_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut id_candidates: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for input in &union.inputs {
+        let LogicalPlan::GraphNode(gn) = input.as_ref() else {
+            continue;
+        };
+        let LogicalPlan::ViewScan(vs) = gn.input.as_ref() else {
+            continue;
+        };
+        if id_col.is_none() {
+            id_col = Some(vs.id_column.clone());
+        }
+        let this_id_col = id_col.as_deref().unwrap_or_default();
+        // Route through the schema-catalog dispatch API for BOTH roles
+        // (CLAUDE.md rule 7) rather than reading the role-specific property
+        // fields on `vs` directly — same API `edge_side_node_properties`
+        // already used elsewhere in this module, just called for both sides
+        // instead of only the caller's current `anchor_is_left`.
+        for props in [
+            crate::graph_catalog::pattern_schema::edge_side_node_properties(vs, true),
+            crate::graph_catalog::pattern_schema::edge_side_node_properties(vs, false),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            for (name, value) in props {
+                all_names.insert(name.clone());
+                if value.raw() == this_id_col {
+                    id_candidates.insert(name.clone());
+                }
+            }
+        }
+    }
+
+    let id_col = id_col?;
+    if all_names.is_empty() {
+        return None;
+    }
+    Some((id_candidates, all_names, id_col))
+}
+
 /// Clone `plan`, clearing `anchor_connection` on every `GraphRel` node
 /// encountered.
 ///
@@ -4261,6 +4455,30 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
             if let Some(ref pred) = gr.where_predicate {
                 let is_optional = gr.is_optional.unwrap_or(false);
 
+                // #519: a WHERE-clause predicate is already property-mapped by
+                // the time it's folded into `gr.where_predicate` (an earlier
+                // analyzer/optimizer stage rewrites it in place), but an
+                // inline node property-map pattern (`(a:Airport {code:
+                // 'JFK'})`) is NOT — `convert_properties`
+                // (match_clause/helpers.rs) builds its equality expression
+                // directly from the raw Cypher property key with no mapping
+                // at all, and it lands in `gr.where_predicate` via the same
+                // `filter_into_graph_rel` optimizer path as a WHERE clause.
+                // Applying the SAME property-mapping rewrite the sibling
+                // `LogicalPlan::Filter` branch below already does (15 lines
+                // down) makes this uniform regardless of origin — a no-op
+                // for an already-mapped WHERE-clause predicate (its physical
+                // column name won't match any further Cypher property), and
+                // the actual fix for the inline-map case (e.g. `code` ->
+                // `origin_code` for a denormalized Airport in the origin
+                // role, the exact same role-aware resolution a WHERE clause
+                // on the same alias already gets).
+                use crate::query_planner::logical_expr::expression_rewriter::{
+                    rewrite_expression_with_property_mapping, ExpressionRewriteContext,
+                };
+                let rewrite_ctx = ExpressionRewriteContext::new(plan);
+                let pred = rewrite_expression_with_property_mapping(pred, &rewrite_ctx);
+
                 if is_optional {
                     // For OPTIONAL MATCH patterns, determine anchor vs optional aliases
                     let anchor_alias = gr.anchor_connection.as_ref();
@@ -4273,7 +4491,7 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
                     };
 
                     if let (Some(_anchor), Some(optional)) = (anchor_alias, optional_alias) {
-                        let all_preds = split_and_predicates_logical(pred);
+                        let all_preds = split_and_predicates_logical(&pred);
                         for p in all_preds {
                             let refs_only_rel = references_only_alias_logical(&p, &gr.alias);
                             let refs_only_optional = references_only_alias_logical(&p, optional);
@@ -4288,13 +4506,13 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
                         }
                     } else {
                         // No anchor determined - keep all predicates (conservative)
-                        if let Ok(render_expr) = RenderExpr::try_from(pred.clone()) {
+                        if let Ok(render_expr) = RenderExpr::try_from(pred) {
                             predicates.push(render_expr);
                         }
                     }
                 } else {
                     // Non-optional: include all predicates
-                    if let Ok(render_expr) = RenderExpr::try_from(pred.clone()) {
+                    if let Ok(render_expr) = RenderExpr::try_from(pred) {
                         predicates.push(render_expr);
                     }
                 }
@@ -5623,4 +5841,80 @@ fn build_format_row_json(
     let format_expr = crate::sql_generator::function_mapper::current_function_mapper()
         .json_row_object(&aliased_cols.join(", "));
     RenderExpr::Raw(format_expr)
+}
+
+/// #507: collapse a denorm-scan CTE's UNION body from TABLE grain (one row
+/// per unique combination of every projected column) to NODE grain (one row
+/// per distinct `id_column` value).
+///
+/// On a coupled cross-table denormalized schema, a node label can carry MORE
+/// columns than just its identity — e.g. zeek's `IP@conn_log` also exposes a
+/// `port` property. The anchor's standalone-scan Union (built by the
+/// OPTIONAL-denorm CTE+LEFT JOIN path, #502/#505/#506) projects every
+/// from/to-role property and combines roles with `UNION DISTINCT`, which
+/// dedups on the FULL row — so one IP with several distinct port values
+/// across its rows survives as several CTE rows instead of one. Any
+/// downstream per-node aggregate that LEFT JOINs against this CTE (e.g.
+/// `count(r)`) is then inflated by however many extra grain rows that node
+/// has (observed: count 9 instead of 3 for one IP with 3 distinct ports).
+///
+/// Wraps `inner_sql` (a plain `SELECT ... UNION ... SELECT ...` producing one
+/// row per (id, other columns...) combination) in an outer
+/// `SELECT id, min(other) ... FROM (inner_sql) GROUP BY id`. `min()` (not
+/// `any()`/`anyLast()`) is used for the non-identity columns so the render is
+/// deterministic across repeated runs — the schema itself conflates several
+/// physical rows under one node id, so Cypher's single-value `a.<property>`
+/// needs SOME deterministic representative, and this preserves that
+/// contract without changing which NODE ids the query returns.
+///
+/// R4 (adversarial review, documented trade-off — no code change): this
+/// `min()`-collapse ALSO affects a plain, non-aggregate SELECT of the
+/// anchor's own multi-valued column — e.g. `RETURN a.port` when a node
+/// genuinely has several observed port values across its rows. The
+/// returned `a.port` pins to ONE canonical (`min()`-picked) value
+/// regardless of which specific row/edge the rest of that output row
+/// actually correlates with — it is arbitrary-but-consistent, NOT the
+/// value from the row you might expect it to be paired with. This is a
+/// deliberate trade-off, not a bug: on a coupled cross-table schema, the
+/// node's "own" property genuinely has no single correct value at node
+/// grain (that's the whole reason table-grain fan-out existed pre-#507).
+/// Confirmed via live testing this is NOT a regression — pre-#507 (main)
+/// is arguably worse here: table grain produces MULTIPLE output rows per
+/// node with a cross-join-style fan-out, pairing every one of that node's
+/// port values against every one of its OWN unrelated edge matches
+/// (equally arbitrary port/edge pairings, just spread across more rows
+/// instead of collapsed into one). Callers that need the port value
+/// correlated with a SPECIFIC edge should select it from the edge/relation
+/// alias directly (e.g. `r.port`), not the anchor's own multi-valued
+/// column.
+pub(super) fn wrap_denorm_scan_cte_at_node_grain(
+    inner_sql: &str,
+    id_column: &str,
+    exposed_columns: &std::collections::HashSet<String>,
+) -> String {
+    let mut others: Vec<&String> = exposed_columns
+        .iter()
+        .filter(|c| c.as_str() != id_column)
+        .collect();
+    // Nothing beyond the id column is exposed — `UNION DISTINCT` over just the
+    // id is already node grain (the bug this wrap fixes only exists when
+    // OTHER, non-identity columns can vary per id and get pulled into the
+    // dedup key). Skip the wrap so single-property anchors render exactly as
+    // before (no gratuitous SQL/golden churn for a no-op case).
+    if others.is_empty() {
+        return inner_sql.to_string();
+    }
+    others.sort();
+
+    let mut select_list = format!("      \"{id}\" AS \"{id}\"", id = id_column);
+    for col in &others {
+        select_list.push_str(&format!(",\n      min(\"{col}\") AS \"{col}\""));
+    }
+
+    format!(
+        "SELECT \n{select}\nFROM (\n{inner}\n)\nGROUP BY \"{id}\"\n",
+        select = select_list,
+        inner = inner_sql,
+        id = id_column,
+    )
 }

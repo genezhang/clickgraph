@@ -1642,6 +1642,70 @@ impl SelectBuilder for LogicalPlan {
     }
 }
 
+/// #509: build the id-column `PropertyAccess` (or multi-label `coalesce(...)`
+/// over each candidate label's id column) for a bare node-variable reference
+/// found inside an aggregate — the same identity expression
+/// `projection_tagging.rs` already builds for `count(node)`, reimplemented
+/// here for the render-side aggregate-arg pass (`resolve_denorm_refs_in_expr`)
+/// since that analyzer-level rewrite only covers the "count" aggregate name.
+///
+/// Looks up the alias's label(s) via `PlanCtx`'s `TableCtx` registry — NOT
+/// the newer `TypedVariable`/`lookup_variable` registry, whose
+/// `labels_or_types()` only reflects the literal Cypher AST (empty for an
+/// UNLABELED endpoint like `(a)-[:FLIGHT]->(b)`). `TableCtx` is populated by
+/// `GraphTraversalPlanning`'s edge-direction label inference — the same
+/// source `count(node)`'s existing rewrite already reads via
+/// `table_ctx.get_labels()` — so an unlabeled denorm endpoint resolves
+/// identically for `collect(b)` as it already does for `count(b)`. Each
+/// label's declared `node_id` column comes from the task-local schema
+/// (CLAUDE.md rule 3) — never a raw denormalization-pattern flag, so this
+/// stays schema-shape agnostic. Returns `None` (caller leaves the reference
+/// untouched) when the alias isn't a resolvable node variable or its schema
+/// lookup fails.
+fn node_alias_id_expr(
+    alias: &str,
+    plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
+) -> Option<RenderExpr> {
+    let table_ctx = plan_ctx?.get_table_ctx(alias).ok()?;
+    if table_ctx.is_relation() || table_ctx.is_path_variable() {
+        return None;
+    }
+    let labels = table_ctx.get_labels()?.clone();
+    if labels.is_empty() {
+        return None;
+    }
+    let schema = crate::server::query_context::get_current_schema_with_fallback()?;
+
+    let mut id_columns: Vec<String> = Vec::new();
+    for label in &labels {
+        let node_schema = schema.node_schema(label).ok()?;
+        let id_col = node_schema.node_id.columns().first()?.to_string();
+        if !id_columns.contains(&id_col) {
+            id_columns.push(id_col);
+        }
+    }
+    if id_columns.is_empty() {
+        return None;
+    }
+
+    let id_access = |col: &str| {
+        RenderExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: RenderTableAlias(alias.to_string()),
+            column: PropertyValue::Column(col.to_string()),
+        })
+    };
+    Some(if id_columns.len() == 1 {
+        id_access(&id_columns[0])
+    } else {
+        // Multi-label unlabeled node (#467-style): coalesce each candidate
+        // label's id column, non-NULL exactly on that row's own branch.
+        RenderExpr::ScalarFnCall(ScalarFnCall {
+            name: "coalesce".to_string(),
+            args: id_columns.iter().map(|c| id_access(c)).collect(),
+        })
+    })
+}
+
 // ============================================================================
 // Helper Methods for TypedVariable-Based Resolution
 // ============================================================================
@@ -1720,6 +1784,79 @@ impl LogicalPlan {
                         actual_alias,
                         pa.column.raw()
                     );
+                }
+            }
+            RenderExpr::TableAlias(t) => {
+                // #509: a bare node-variable reference inside an
+                // aggregate-containing expression (e.g. `collect(b)`,
+                // `collect(DISTINCT b)`) — count(node) already gets rewritten
+                // to count(node.<id column>) by the analyzer
+                // (projection_tagging.rs) BEFORE this render pass runs, so
+                // it never reaches here as a bare TableAlias; every OTHER
+                // aggregate (collect, and any future bare-node form) never
+                // got that treatment and reaches here unresolved, rendering
+                // as the raw unbound Cypher alias — ClickHouse
+                // UNKNOWN_IDENTIFIER. This mirrors the WITH-clause's
+                // existing collect(node) convention
+                // (`property_expansion::expand_collect_to_group_array`: only
+                // the id column is collected — "collect(node) gathers node
+                // identities", not a full-node tuple) so the render stays
+                // consistent whether the bare-node aggregate is written in
+                // RETURN or WITH.
+                //
+                // Scoped to NODE variables only (not relationships/paths/
+                // scalars) — count(r)/count(p) already have their own
+                // established, different treatments (edge_id column,
+                // count(*) respectively) and this issue doesn't define
+                // semantics for e.g. `collect(r)` or `collect(p)`; leaving
+                // those untouched is no regression (pre-existing behavior).
+                //
+                // DELIBERATE, review-confirmed scope note: this match arm is
+                // keyed on expression SHAPE (a bare node-variable reference
+                // anywhere inside an aggregate-containing expression), not
+                // on the aggregate's NAME — so it also fires for
+                // min(b)/max(b)/sum(b)/avg(b) over a bare node, not just
+                // collect(b). Cypher does not define ordering, sum, or
+                // average over a node, so `min(b)`/`sum(b)` etc. now render
+                // as `min`/`sum` of the node's id column — a value with no
+                // Cypher-defined "correct" answer to contradict (unlike, say,
+                // a wrong COUNT), so this is a defensible, deterministic,
+                // non-crashing interpretation rather than a silently-wrong
+                // one. Scoping this narrower to `collect` alone was
+                // considered and rejected: it would require threading the
+                // aggregate NAME down into this match arm (currently only
+                // sees the bare-alias ARGUMENT, not its enclosing call),
+                // and would leave min(b)/max(b)/sum(b)/avg(b) back at their
+                // PRE-#509 unbound-alias crash — strictly worse. If a future
+                // issue wants different semantics for a specific aggregate
+                // name here (e.g. rejecting sum(b)/avg(b) with a clean
+                // planner error instead of a numeric id-column result),
+                // that's a deliberate, separate decision — not a bug fix.
+                let alias = t.0.clone();
+                // CTE-sourced / pattern_union node variables resolve forward
+                // through their own columns — never remap them here (same
+                // gate as the PropertyAccessExp case above). Node-ness itself
+                // is decided by `node_alias_id_expr` below via `TableCtx`
+                // (NOT this `TypedVariable` lookup — an unlabeled denorm
+                // endpoint like `(a)-[:FLIGHT]->(b)` is often absent from the
+                // `TypedVariable` registry entirely but IS present in
+                // `TableCtx` with its edge-inferred label), so this lookup is
+                // used ONLY for the CTE-source check when it happens to
+                // succeed.
+                if let Some(ctx) = plan_ctx {
+                    if let Some(typed_var) = ctx.lookup_variable(&alias) {
+                        if matches!(typed_var.source(), VariableSource::Cte { .. }) {
+                            return;
+                        }
+                    }
+                }
+                if crate::render_plan::cte_extraction::is_pattern_union_rel_alias(&alias, self) {
+                    return;
+                }
+                if let Some(id_expr) = node_alias_id_expr(&alias, plan_ctx) {
+                    let mut resolved = id_expr;
+                    self.resolve_denorm_refs_in_expr(&mut resolved, plan_ctx);
+                    *expr = resolved;
                 }
             }
             RenderExpr::AggregateFnCall(agg) => {

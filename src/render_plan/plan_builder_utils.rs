@@ -3089,6 +3089,33 @@ pub fn extract_group_by(plan: &LogicalPlan) -> RenderPlanBuilderResult<Vec<Rende
                         }
                         seen_group_by_aliases.insert(table_alias_to_use.clone());
 
+                        // #510: when `alias` is the anchor of an OPTIONAL denorm
+                        // CTE + LEFT JOIN pattern (`__denorm_scan_{alias}`,
+                        // #502/#505/#506/#507's shared machinery), it resolves
+                        // through that CTE's Cypher-property-named columns —
+                        // NEVER the raw physical `ViewScan.id_column`
+                        // `find_id_column_for_alias` below would otherwise
+                        // return. That CTE isn't a `find_id_column_for_alias`-
+                        // visible ViewScan, so without this check the raw db
+                        // column (e.g. `"id.orig_h"`) leaked into `GROUP BY`
+                        // against a CTE that only exposes `"ip"` — invalid SQL,
+                        // plus the SELECT-list sibling issue (this same lookup
+                        // pattern) resolved the anchor property from the
+                        // NULL-extended edge alias instead of the CTE.
+                        if let Some(id_prop) =
+                            denorm_scan_cte_anchor_id_property(&group_by.input, &alias.0)
+                        {
+                            log::debug!(
+                                "🔧 GROUP BY: Using denorm-scan CTE id property '{}' for alias '{}' (#510)",
+                                id_prop, alias.0
+                            );
+                            result.push(RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(table_alias_to_use.clone()),
+                                column: PropertyValue::Column(id_prop),
+                            }));
+                            continue;
+                        }
+
                         // Composite-id nodes: emit EVERY identity column as a GROUP BY
                         // key (issue #457) — same expansion as the twin sites in
                         // group_by_builder.rs (`handle_table_alias_group_by`); this is
@@ -5823,6 +5850,36 @@ pub(crate) fn expand_table_alias_to_select_items(
         }
     }
 
+    // STEP 2-AND-A-HALF (#510): when `alias` is the anchor of an OPTIONAL
+    // denorm CTE + LEFT JOIN pattern (`__denorm_scan_{alias}`), its
+    // properties come from that CTE — under their OWN Cypher property
+    // names, never a raw db column or the LEFT-JOINed edge alias. STEP 3's
+    // `get_properties_with_table_alias` resolves alias binding STRUCTURALLY
+    // against the pre-render LogicalPlan tree, where this node is still
+    // nested inside the OPTIONAL edge's GraphRel — correct for the ordinary
+    // embedded-denorm case (#493/#475's target), but for this pattern it
+    // returns the EDGE alias, which is NULL-extended on an OPTIONAL-miss
+    // row. Checked first so it preempts STEP 3 for this pattern only.
+    if let Some(exposed_props) = denorm_scan_cte_anchor_properties(plan, alias) {
+        let items: Vec<SelectItem> = exposed_props
+            .into_iter()
+            .map(|(cypher_name, cte_col)| SelectItem {
+                expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(alias.to_string()),
+                    column: PropertyValue::Column(cte_col),
+                }),
+                col_alias: Some(ColumnAlias(cte_column_name(alias, &cypher_name))),
+            })
+            .collect();
+        if !items.is_empty() {
+            log::info!(
+                "🔧 expand_table_alias_to_select_items: Using denorm-scan CTE properties for anchor alias '{}' (#510)",
+                alias
+            );
+            return items;
+        }
+    }
+
     // STEP 3: Not a CTE reference - it's a fresh variable from current MATCH
     match plan.get_properties_with_table_alias(alias) {
         Ok((properties, actual_table_alias)) => {
@@ -6069,6 +6126,28 @@ pub(crate) fn expand_table_alias_to_group_by_id_only(
                 cte_name
             );
         }
+    }
+
+    // SECOND-AND-A-HALF (#510): when `alias` is the anchor of an OPTIONAL
+    // denorm CTE + LEFT JOIN pattern (`__denorm_scan_{alias}`,
+    // #502/#505/#506/#507's shared machinery), the alias resolves through
+    // that CTE's Cypher-property-named columns — NEVER the raw physical
+    // `ViewScan.id_column` `find_id_column_for_alias` (THIRD, below) would
+    // otherwise return. That CTE isn't registered in the general
+    // `cte_schemas`/`cte_references` maps the FIRST check above reads, so
+    // without this check the raw db column (e.g. `"id.orig_h"`) leaks into
+    // GROUP BY against a CTE that only exposes `"ip"` — invalid SQL. Checked
+    // before THIRD specifically to preempt it for this pattern; returns
+    // `None` (falls through unaffected) for every other alias shape.
+    if let Some(id_prop) = denorm_scan_cte_anchor_id_property(plan, alias) {
+        log::debug!(
+            "🔧 expand_table_alias_to_group_by_id_only: Using denorm-scan CTE id property '{}' for alias '{}' (#510)",
+            id_prop, alias
+        );
+        return vec![RenderExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: TableAlias(alias.to_string()),
+            column: PropertyValue::Column(id_prop),
+        })];
     }
 
     // SECOND (composite guard, issue #457): a composite-id node must contribute

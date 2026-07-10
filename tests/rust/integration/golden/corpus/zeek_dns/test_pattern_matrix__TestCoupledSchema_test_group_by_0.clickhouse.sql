@@ -8,5 +8,5 @@ SELECT
 FROM zeek.dns_log AS n
 ) AS __union
 GROUP BY `n.ip_address`
-ORDER BY cnt DESC
+ORDER BY `cnt` DESC
 LIMIT 10

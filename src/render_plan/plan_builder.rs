@@ -1287,27 +1287,6 @@ impl RenderPlanBuilder for LogicalPlan {
                         anchor_connection_fallback.clone()
                     };
 
-                    // Build the CTE SQL from the Union render plan
-                    let cte_name = format!("__denorm_scan_{}", node_alias);
-                    let cte_sql =
-                        crate::clickhouse_query_generator::to_sql_query::render_plan_to_sql(
-                            anchor_render,
-                            10,
-                        );
-                    let cte = super::Cte::new(
-                        cte_name.clone(),
-                        super::CteContent::RawSql(cte_sql),
-                        false,
-                    );
-
-                    // 2. Use the CTE as FROM
-                    let from = FromTableItem(Some(ViewTableRef {
-                        source: std::sync::Arc::new(LogicalPlan::Empty),
-                        name: cte_name.clone(),
-                        alias: Some(node_alias.clone()),
-                        use_final: false,
-                    }));
-
                     // Extract the anchor node's own-side properties from whichever Union
                     // branch actually carries them (its from/to node-properties, per
                     // `edge_side_node_properties` — a schema-catalog API, CLAUDE.md rule
@@ -1318,6 +1297,8 @@ impl RenderPlanBuilder for LogicalPlan {
                     // only the branch matching the wanted side has that field populated
                     // (the OTHER branch's ViewScan carries `None` for it — a different
                     // node role, #506). Search all branches rather than assuming order.
+                    // (The node-grain dedup key below (#507/#520) is resolved separately,
+                    // via a role-agnostic shared helper — see its own comment.)
                     let anchor_node_properties: Option<
                         std::collections::HashMap<
                             String,
@@ -1342,6 +1323,72 @@ impl RenderPlanBuilder for LogicalPlan {
                     } else {
                         None
                     };
+
+                    // #507: on a coupled/cross-table denorm schema, a node's `label`
+                    // carries MORE columns than just its identity (e.g. zeek IP@conn_log
+                    // also carries `port`). The Union above projects every from/to
+                    // property, so `UNION DISTINCT` dedups on the FULL (id, other...)
+                    // tuple — TABLE grain, not NODE grain. A single id with multiple
+                    // distinct `port` values across rows then survives as multiple CTE
+                    // rows, fanning out any downstream per-node aggregate that LEFT JOINs
+                    // against this CTE (count(r) inflated by the number of extra grain
+                    // rows). Collapse to true node grain: wrap the CTE body in an outer
+                    // `GROUP BY <id property>`, picking a single deterministic
+                    // representative value (`min()`) for every other exposed column.
+                    // Only the anchor's OWN id property is used as the key — never a
+                    // schema-pattern flag — so this stays schema-shape agnostic; when the
+                    // id property can't be forward-resolved (rare), skip the wrap and
+                    // keep prior behavior (no regression, matches pre-#507 rendering).
+                    //
+                    // #520/B1: resolved via the shared `denorm_scan_cte_anchor_id_property`
+                    // helper (plan_builder_helpers.rs) — NOT the `anchor_node_properties`/
+                    // `anchor_id_column` pair above (those stay role-specific to
+                    // `anchor_is_left`, correctly, for the JOIN-key derivation below).
+                    // The id-property lookup must search BOTH roles regardless of
+                    // `anchor_is_left`: an UNDIRECTED pattern renders this SAME code path
+                    // once per UnionDistribution branch (once per direction), and the
+                    // schema's canonical `id_column` only matches ONE role's physical
+                    // column value on a coupled cross-table schema (e.g. zeek `IP`'s
+                    // `id.orig_h` never equals the `to`-role's `id.resp_h`). The
+                    // role-restricted lookup silently returned `None` for whichever
+                    // branch needed the "other" role, skipping the node-grain wrap for
+                    // that branch's CTE only — a SILENT wrong-result bug (per-node counts
+                    // fragmenting across un-collapsed grain rows), not a loud failure.
+                    let node_id_prop_name: Option<String> =
+                        super::plan_builder_helpers::denorm_scan_cte_anchor_id_property(
+                            self,
+                            &node_alias,
+                        );
+
+                    // Build the CTE SQL from the Union render plan
+                    let cte_name = format!("__denorm_scan_{}", node_alias);
+                    let inner_cte_sql =
+                        crate::clickhouse_query_generator::to_sql_query::render_plan_to_sql(
+                            anchor_render,
+                            10,
+                        );
+                    let cte_sql = if let Some(ref id_prop) = node_id_prop_name {
+                        super::plan_builder_helpers::wrap_denorm_scan_cte_at_node_grain(
+                            &inner_cte_sql,
+                            id_prop,
+                            &cte_exposed_columns,
+                        )
+                    } else {
+                        inner_cte_sql
+                    };
+                    let cte = super::Cte::new(
+                        cte_name.clone(),
+                        super::CteContent::RawSql(cte_sql),
+                        false,
+                    );
+
+                    // 2. Use the CTE as FROM
+                    let from = FromTableItem(Some(ViewTableRef {
+                        source: std::sync::Arc::new(LogicalPlan::Empty),
+                        name: cte_name.clone(),
+                        alias: Some(node_alias.clone()),
+                        use_final: false,
+                    }));
 
                     // 3. Extract edge info for LEFT JOIN
                     let (edge_table, edge_alias, anchor_edge_id_col, node_id_col_opt) =

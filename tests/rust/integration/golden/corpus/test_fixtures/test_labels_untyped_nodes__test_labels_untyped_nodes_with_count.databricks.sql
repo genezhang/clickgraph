@@ -20,4 +20,4 @@ SELECT
 FROM test_integration.users AS n
 ) AS __union
 GROUP BY `label`
-ORDER BY label ASC
+ORDER BY `label` ASC

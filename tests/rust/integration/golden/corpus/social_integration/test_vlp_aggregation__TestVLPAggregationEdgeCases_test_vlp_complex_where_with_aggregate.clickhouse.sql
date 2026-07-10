@@ -70,5 +70,5 @@ INNER JOIN test_integration.posts_test AS p ON p.post_id = t0.post_id
 WHERE (t.end_id = 1 AND t.start_is_active = true)
 ) AS __union
 GROUP BY `u2.user_id`
-ORDER BY postCount DESC
+ORDER BY `postCount` DESC
 LIMIT 5

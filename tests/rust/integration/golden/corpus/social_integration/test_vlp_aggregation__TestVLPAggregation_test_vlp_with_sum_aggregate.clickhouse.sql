@@ -69,5 +69,5 @@ FROM vlp_u2_u1 AS t
 INNER JOIN test_integration.posts_test AS t0 ON t0.author_id = t.start_id
 ) AS __union
 GROUP BY `userId`, `userName`
-ORDER BY postCount DESC
+ORDER BY `postCount` DESC
 LIMIT 5
