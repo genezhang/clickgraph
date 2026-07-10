@@ -3549,6 +3549,50 @@ async fn browser_vlp_path_return_uses_only_cte_defined_columns() {
     }
 }
 
+/// CHARACTERIZATION (pending the transitivity-clamp fix): the #488 path-var
+/// re-registration is deliberately GUARDED to directed patterns with
+/// min_hops >= 1, because `VlpTransitivityCheck`'s clamp-to-single-hop is
+/// semantically wrong for two shapes (pre-existing on main, filed as its own
+/// clamp follow-up issue):
+///   - `*0..N` — zero-hop paths are real (the start node itself), so a
+///     single-hop clamp drops rows;
+///   - undirected — reverse-direction chaining can make >1-hop paths
+///     possible; the clamp never consults direction.
+/// For those shapes the guard keeps main's LOUD failure — `RETURN p` still
+/// renders `tuple(t.path_nodes, ...)` with NO recursive CTE (alias `t`
+/// unbound, ClickHouse Code 47 at exec) — rather than silently returning the
+/// clamped wrong rows. When the clamp itself is fixed, these shapes should
+/// produce real paths and this lock must be replaced with byte-goldens.
+#[tokio::test]
+async fn fk_edge_nontransitive_vlp_guarded_shapes_stay_loud_488() {
+    let schema = load_schema(SchemaId::FkEdge.yaml_path());
+    for cypher in [
+        // zero-hop lower bound
+        "MATCH p = (o:Order)-[:PLACED_BY*0..2]->(c) RETURN p",
+        // undirected
+        "MATCH p = (o:Order)-[:PLACED_BY*1..2]-(c) RETURN p",
+    ] {
+        for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+            let sql = render(&schema, cypher, dialect).await;
+            assert!(
+                sql.contains("t.path_nodes"),
+                "guarded shape must keep the loud unbound-`t` rendering (not \
+                 silently clamp) for {dialect:?}: {cypher}\n{sql}"
+            );
+            assert!(
+                !sql.contains("fixed_path"),
+                "guarded shape must NOT take the fixed-path route (that would \
+                 silently return clamped rows) for {dialect:?}: {cypher}\n{sql}"
+            );
+            assert!(
+                !sql.to_uppercase().contains("WITH RECURSIVE"),
+                "no recursive CTE is expected for these shapes until the clamp \
+                 fix lands for {dialect:?}: {cypher}\n{sql}"
+            );
+        }
+    }
+}
+
 /// P0.5 structural lock for the Denormalized `path_unlabeled` case
 /// (`MATCH p=()-[]->() RETURN p LIMIT 10`). Originally this was NOT a
 /// byte-golden: the fixed_path edge-property column order (`t3.distance`/
