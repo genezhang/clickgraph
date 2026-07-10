@@ -226,18 +226,23 @@ pub fn generate_pattern_joins(
             }
         }
 
-        // Optimization: multi-hop denormalized, edge chains directly
-        JoinStrategy::EdgeToEdge {
-            prev_edge_alias,
-            prev_edge_col,
-            curr_edge_col,
-        } => {
-            vec![JoinBuilder::new(t.rel_table, t.rel_alias)
-                .add_condition(t.rel_alias, curr_edge_col, prev_edge_alias, prev_edge_col)
+        // Optimization: multi-hop / shared-node denormalized, edge chains
+        // directly to previous edge table(s) — one condition per shared node
+        // (issue #482: cross-table shared-node correlation).
+        JoinStrategy::EdgeToEdge { links } => {
+            let mut b = JoinBuilder::new(t.rel_table, t.rel_alias)
                 .pre_filter(pre_filter)
                 .from_id(first_col(&rel_schema.from_id))
-                .to_id(first_col(&rel_schema.to_id))
-                .build()]
+                .to_id(first_col(&rel_schema.to_id));
+            for link in links {
+                b = b.add_condition(
+                    t.rel_alias,
+                    &link.curr_edge_col,
+                    &link.prev_edge_alias,
+                    &link.prev_edge_col,
+                );
+            }
+            vec![b.build()]
         }
 
         // Optimization: same physical row, 0 JOINs

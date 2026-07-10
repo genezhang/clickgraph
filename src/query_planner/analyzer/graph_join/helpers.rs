@@ -284,6 +284,60 @@ pub fn remap_alias_in_expr(
     }
 }
 
+/// Rewrite property accesses whose table alias is a denormalized (virtual)
+/// node alias to the edge alias that embeds it.
+///
+/// Cross-pattern predicates like `srcip1.ip = srcip2.ip` reference node
+/// aliases that never materialize as FROM/JOIN aliases on denormalized
+/// schemas — the node's columns physically live in the edge table, so the
+/// edge alias is the only valid SQL binding. Without this remap the rendered
+/// WHERE references unbound identifiers and the query fails at execution
+/// (issue #482). Aliases without a denormalized registration (standard
+/// schemas, CTE-exposed aliases) pass through unchanged.
+pub fn remap_denormalized_aliases_in_expr(
+    expr: LogicalExpr,
+    plan_ctx: &crate::query_planner::plan_ctx::PlanCtx,
+) -> LogicalExpr {
+    match expr {
+        LogicalExpr::PropertyAccessExp(mut prop_acc) => {
+            if let Some((edge_alias, _, _, _)) =
+                plan_ctx.get_denormalized_alias_info(&prop_acc.table_alias.0)
+            {
+                if edge_alias != prop_acc.table_alias.0 {
+                    crate::debug_print!(
+                        "📦 remap_denormalized_aliases_in_expr: '{}' -> '{}'",
+                        prop_acc.table_alias.0,
+                        edge_alias
+                    );
+                    prop_acc.table_alias = TableAlias(edge_alias);
+                }
+            }
+            LogicalExpr::PropertyAccessExp(prop_acc)
+        }
+        LogicalExpr::OperatorApplicationExp(op_app) => {
+            let operands: Vec<LogicalExpr> = op_app
+                .operands
+                .into_iter()
+                .map(|operand| remap_denormalized_aliases_in_expr(operand, plan_ctx))
+                .collect();
+            LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op_app.operator,
+                operands,
+            })
+        }
+        LogicalExpr::ScalarFnCall(mut fn_call) => {
+            fn_call.args = fn_call
+                .args
+                .into_iter()
+                .map(|arg| remap_denormalized_aliases_in_expr(arg, plan_ctx))
+                .collect();
+            LogicalExpr::ScalarFnCall(fn_call)
+        }
+        // Other expression types pass through unchanged
+        other => other,
+    }
+}
+
 // =============================================================================
 // Join Utilities
 // =============================================================================

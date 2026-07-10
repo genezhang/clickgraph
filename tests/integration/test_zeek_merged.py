@@ -433,7 +433,6 @@ class TestCrossTableCorrelation(TestZeekMergedHelpers):
     # Variation 4: WITH...MATCH correlation
     # -------------------------------------------------------------------------
     
-    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_with_match_correlation(self, setup_zeek_merged):
         """
         WITH...MATCH pattern for cross-table correlation.
@@ -461,7 +460,6 @@ class TestCrossTableCorrelation(TestZeekMergedHelpers):
     # Variation 5: Predicate-based correlation
     # -------------------------------------------------------------------------
     
-    @pytest.mark.xfail(reason="Zeek merged schema: cross-table correlation or coupled edge gap")
     def test_predicate_correlation(self, setup_zeek_merged):
         """
         Predicate-based correlation using WHERE clause.

@@ -2742,6 +2742,153 @@ async fn whole_entity_and_denorm_vlp_column_order_deterministic_480() {
     }
 }
 
+/// #482 regression: sequential/comma MATCH sharing a node variable over
+/// coupled cross-table denormalized edges (`zeek_merged_test.yaml`: IP is a
+/// VIRTUAL node — its id column lives in each edge table, `id.orig_h` in
+/// dns_log AND conn_log) used to DROP the shared-node correlation and render
+/// `JOIN ... ON 1 = 1` — a silent cartesian product. The join strategy now
+/// emits an edge-to-edge link per shared connection node, equating the two
+/// tables' respective embedded id columns.
+///
+/// Live-verified (zeek fixture, 5 conn + 5 dns rows): sequential/comma
+/// shapes return 9 rows (3 domains x 3 dests for 192.168.1.10) where the
+/// cartesian returned 15; hand-written ground-truth SQL agrees byte-for-byte.
+#[tokio::test]
+async fn denorm_shared_node_correlation_not_cartesian_482() {
+    let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+
+    // (cypher, expected shared-node correlation between the two edge tables)
+    // Table aliases are process-global counters, so assert on the column
+    // pairing only (normalize() remaps t{n} by first appearance).
+    let shapes = [
+        // Sequential MATCH, shared node is FROM of both edges.
+        "MATCH (srcip:IP)-[:REQUESTED]->(d:Domain) MATCH (srcip)-[:ACCESSED]->(dest:IP) \
+         WHERE srcip.ip = '192.168.1.10' RETURN DISTINCT srcip.ip, d.name, dest.ip",
+        // Comma pattern, same shape.
+        "MATCH (srcip:IP)-[:REQUESTED]->(d:Domain), (srcip)-[:ACCESSED]->(dest:IP) \
+         WHERE srcip.ip = '192.168.1.10' RETURN DISTINCT srcip.ip, d.name, dest.ip",
+        // Full DNS path (coupled REQUESTED+RESOLVED_TO) + cross-table ACCESSED.
+        "MATCH (srcip:IP)-[:REQUESTED]->(d:Domain)-[:RESOLVED_TO]->(rip:ResolvedIP), \
+         (srcip)-[:ACCESSED]->(dest:IP) RETURN srcip.ip, d.name, rip.ip, dest.ip",
+    ];
+    for cypher in shapes {
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+        assert!(
+            !sql.contains("ON 1 = 1"),
+            "#482 [{cypher}]: shared-node correlation dropped — cartesian ON 1 = 1:\n{sql}"
+        );
+        assert!(
+            sql.contains(r#""id.orig_h" = "#) && sql.contains(r#"."id.orig_h""#),
+            "#482 [{cypher}]: JOIN must equate the shared node's embedded id columns:\n{sql}"
+        );
+        // The virtual node aliases must never leak into SQL as table
+        // qualifiers (they are not bound in FROM/JOIN — only edge-table
+        // aliases are). A leak renders as `srcip."id.orig_h"` (alias followed
+        // by a quoted column); the legit output alias `AS "srcip.ip"` keeps
+        // the dot INSIDE the quotes.
+        for unbound in ["srcip.\"", "dest.\"", "rip.\"", "rip.answers"] {
+            assert!(
+                !sql.contains(unbound),
+                "#482 [{cypher}]: unbound cypher alias '{unbound}' leaked into SQL:\n{sql}"
+            );
+        }
+    }
+
+    // Shared node as the TO side of the second pattern (right-connection
+    // sharing was a second gap: the prev-edge lookup was left-only).
+    let to_shared = "MATCH (a:IP)-[:ACCESSED]->(b:IP) MATCH (c:IP)-[:ACCESSED]->(b) \
+                     RETURN a.ip, b.ip, c.ip";
+    let sql = normalize(&render(&schema, to_shared, SqlDialect::ClickHouse).await);
+    assert!(
+        !sql.contains("ON 1 = 1"),
+        "#482 [{to_shared}]: cartesian ON 1 = 1:\n{sql}"
+    );
+    assert!(
+        sql.contains(r#""id.resp_h" = "#),
+        "#482 [{to_shared}]: shared TO-node must correlate on id.resp_h:\n{sql}"
+    );
+
+    // BOTH connections shared: needs BOTH conditions (a single one would be
+    // a silent under-constraint).
+    let both_shared = "MATCH (a:IP)-[:ACCESSED]->(b:IP) MATCH (a)-[:ACCESSED]->(b) \
+                       RETURN a.ip, b.ip";
+    let sql = normalize(&render(&schema, both_shared, SqlDialect::ClickHouse).await);
+    assert!(
+        sql.contains(r#""id.orig_h""#) && sql.contains(r#""id.resp_h""#) && sql.contains(" AND "),
+        "#482 [{both_shared}]: both shared nodes must be correlated:\n{sql}"
+    );
+}
+
+/// #482 regression (failure 2): cross-pattern WHERE correlation between two
+/// virtual (denormalized) node aliases — `WHERE srcip1.ip = srcip2.ip` over
+/// disconnected patterns — used to emit `WHERE srcip1."id.orig_h" =
+/// srcip2."id.orig_h"` while FROM/JOIN alias the tables `t0`/`t1`: the cypher
+/// aliases were never bound in SQL (ClickHouse UNKNOWN_IDENTIFIER).
+/// `CartesianJoinExtraction` now remaps denormalized node aliases to the edge
+/// aliases that embed them. The INNER JOIN stays `ON 1 = 1` with the equality
+/// in WHERE — semantically an inner equi-join (live-verified: 11 rows,
+/// matching hand-written ground truth).
+#[tokio::test]
+async fn denorm_predicate_correlation_aliases_bound_482() {
+    let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+
+    let cypher =
+        "MATCH (srcip1:IP)-[:REQUESTED]->(d:Domain), (srcip2:IP)-[:ACCESSED]->(destip:IP) \
+                  WHERE srcip1.ip = srcip2.ip \
+                  RETURN DISTINCT srcip1.ip as source, d.name as domain, destip.ip as accessed";
+    let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+    for unbound in ["srcip1.\"", "srcip2.\"", "destip.\""] {
+        assert!(
+            !sql.contains(unbound),
+            "#482 [{cypher}]: unbound cypher alias '{unbound}' leaked into SQL:\n{sql}"
+        );
+    }
+    assert!(
+        sql.contains(r#""id.orig_h" = "#),
+        "#482 [{cypher}]: correlation predicate must survive, bound to edge aliases:\n{sql}"
+    );
+
+    // WITH...MATCH variant: `WHERE src2.ip = source_ip` correlates a fresh
+    // denormalized node against a CTE-exported scalar. The fresh alias must
+    // be remapped to its edge table alias; the CTE alias must NOT be touched.
+    let with_match = "MATCH (src:IP)-[dns:REQUESTED]->(d:Domain) \
+                      WITH src.ip as source_ip, d.name as domain \
+                      MATCH (src2:IP)-[conn:ACCESSED]->(dest:IP) WHERE src2.ip = source_ip \
+                      RETURN DISTINCT source_ip, domain, dest.ip as dest_ip";
+    let sql = normalize(&render(&schema, with_match, SqlDialect::ClickHouse).await);
+    assert!(
+        !sql.contains("src2.\""),
+        "#482 [{with_match}]: unbound cypher alias 'src2' leaked into SQL:\n{sql}"
+    );
+    assert!(
+        sql.contains(r#"conn."id.orig_h" = "#),
+        "#482 [{with_match}]: correlation must bind to the conn_log edge alias:\n{sql}"
+    );
+}
+
+/// #482 control: the same sequential-MATCH shared-node shape on the STANDARD
+/// schema (real node tables) must keep its historic join plan — the shared
+/// node's table appears ONCE and both edge tables join to it; no cartesian,
+/// no edge-to-edge rewrite.
+#[tokio::test]
+async fn standard_shared_node_sequential_match_unchanged_482() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (a:User)-[:FOLLOWS]->(b:User) MATCH (a)-[:AUTHORED]->(p:Post) \
+                  RETURN a.name, b.name, p.id";
+    let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+    assert!(
+        !sql.contains("ON 1 = 1"),
+        "#482 standard control: cartesian ON 1 = 1:\n{sql}"
+    );
+    // Anchor on users table `a`; BOTH edge tables key on a.user_id
+    // (rel aliases are process-global counters, so match the a-side only).
+    assert_eq!(
+        sql.matches(" = a.user_id").count(),
+        2,
+        "#482 standard control: both edges must join on the shared node's id:\n{sql}"
+    );
+}
+
 /// #466 regression: a FULLY-unlabeled UNDIRECTED expand
 /// `MATCH (n)-[r]-(o) RETURN n, r, o` must render DIFFERENT SQL from the
 /// DIRECTED form `MATCH (n)-[r]->(o) RETURN n, r, o` on both Standard

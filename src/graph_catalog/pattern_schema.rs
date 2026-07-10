@@ -388,6 +388,19 @@ impl EdgeAccessStrategy {
 }
 // ============================================================================
 
+/// One shared-node join condition between the current edge table and a
+/// previous edge table that embeds the same node alias:
+/// `curr.curr_edge_col = prev.prev_edge_col`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EdgeToEdgeLink {
+    /// Alias of the previous edge table (e.g., "f1")
+    pub prev_edge_alias: String,
+    /// Column on the previous edge holding the shared node's id (e.g., "Dest")
+    pub prev_edge_col: String,
+    /// Column on the current edge holding the shared node's id (e.g., "Origin")
+    pub curr_edge_col: String,
+}
+
 /// How to generate SQL JOINs for a graph pattern.
 ///
 /// This is the key decision point - different strategies produce very different SQL.
@@ -430,19 +443,20 @@ pub enum JoinStrategy {
         join_col: String,
     },
 
-    /// Multi-hop denormalized: edge-to-edge JOIN for consecutive hops.
+    /// Denormalized edge correlated with previous edge(s) via shared node(s):
+    /// edge-to-edge JOIN. Covers consecutive multi-hop hops on the same table
+    /// (`(a)-[f1]->(b)-[f2]->(c)` over flights) AND cross-table shared-node
+    /// correlation (`MATCH (src)-[:REQUESTED]->(d) MATCH (src)-[:ACCESSED]->(x)`
+    /// over dns_log/conn_log — issue #482). One link per shared connection.
     ///
     /// ```sql
     /// SELECT ... FROM flights f1
     /// JOIN flights f2 ON f2.Origin = f1.Dest
     /// ```
     EdgeToEdge {
-        /// Alias of the previous edge (e.g., "f1")
-        prev_edge_alias: String,
-        /// Column on previous edge (e.g., "Dest" from f1)
-        prev_edge_col: String,
-        /// Column on current edge (e.g., "Origin" of f2)
-        curr_edge_col: String,
+        /// Join condition(s) tying this edge to previous edge(s) — one per
+        /// shared node. Never empty.
+        links: Vec<EdgeToEdgeLink>,
     },
 
     /// Coupled edges: same physical row, alias unification.
@@ -594,7 +608,10 @@ impl PatternSchemaContext {
     /// * `graph_schema` - Full graph schema for coupled edge detection
     /// * `rel_alias` - The alias assigned to this relationship in the query
     /// * `rel_types` - The relationship type(s) being matched
-    /// * `prev_edge_info` - Previous edge info for multi-hop coupling detection
+    /// * `prev_left_edge` - Previous edge embedding the LEFT (from-side) connection
+    ///   node, for multi-hop coupling / shared-node correlation detection
+    /// * `prev_right_edge` - Previous edge embedding the RIGHT (to-side) connection
+    ///   node (shared-node correlation, issue #482)
     #[allow(clippy::too_many_arguments)] // pattern analysis needs both node aliases+schemas, the rel schema+alias+types, the graph schema, and prev-hop coupling info; each is a distinct schema input
     pub fn analyze(
         left_node_alias: &str,
@@ -605,7 +622,8 @@ impl PatternSchemaContext {
         graph_schema: &GraphSchema,
         rel_alias: &str,
         rel_types: Vec<String>,
-        prev_edge_info: Option<(&str, &str, bool)>, // (prev_rel_alias, prev_rel_type, is_from_node)
+        prev_left_edge: Option<(&str, &str, bool)>, // (prev_rel_alias, prev_rel_type, node_was_from_side)
+        prev_right_edge: Option<(&str, &str, bool)>, // ditto, for the right connection node
     ) -> Result<Self, String> {
         // 1. Detect polymorphic $any patterns
         let left_is_polymorphic = rel_schema.from_node == "$any";
@@ -638,7 +656,8 @@ impl PatternSchemaContext {
             graph_schema,
             rel_alias,
             &rel_types,
-            prev_edge_info,
+            prev_left_edge,
+            prev_right_edge,
         );
 
         // 6. FIX: For CoupledSameRow, update node strategies to use unified_alias
@@ -977,12 +996,12 @@ impl PatternSchemaContext {
         graph_schema: &GraphSchema,
         _rel_alias: &str,
         rel_types: &[String],
-        prev_edge_info: Option<(&str, &str, bool)>,
+        prev_left_edge: Option<(&str, &str, bool)>,
+        prev_right_edge: Option<(&str, &str, bool)>,
     ) -> (JoinStrategy, Option<CoupledEdgeContext>) {
-        // Check for coupled edges (same table, previous hop)
-        if let Some((prev_alias, prev_type, is_from_node)) = prev_edge_info {
+        // Check for coupled edges (same table, previous hop sharing the left node)
+        if let Some((prev_alias, prev_type, _is_from_node)) = prev_left_edge {
             if let Ok(prev_rel_schema) = graph_schema.get_rel_schema(prev_type) {
-                // Check if same table
                 if prev_rel_schema.full_table_name() == rel_schema.full_table_name() {
                     // Check if coupled via graph_schema
                     // Use first rel_type from the pattern, or default to "unknown"
@@ -999,24 +1018,56 @@ impl PatternSchemaContext {
                             },
                             Some(coupled_ctx),
                         );
-                    } else {
-                        // Multi-hop denormalized but NOT coupled - edge-to-edge JOIN
-                        let prev_col = if is_from_node {
-                            prev_rel_schema.from_id.to_string()
-                        } else {
-                            prev_rel_schema.to_id.to_string()
-                        };
-                        return (
-                            JoinStrategy::EdgeToEdge {
-                                prev_edge_alias: prev_alias.to_string(),
-                                prev_edge_col: prev_col,
-                                curr_edge_col: rel_schema.from_id.to_string(),
-                            },
-                            None,
-                        );
                     }
                 }
             }
+        }
+
+        // Shared-node correlation with previous denormalized edge(s): a
+        // connection node that already appeared embedded in an earlier edge
+        // table must correlate this edge's rows with that table's rows via an
+        // edge-to-edge JOIN condition — otherwise the two patterns silently
+        // degenerate to a cartesian product (issue #482). Covers both the
+        // same-table multi-hop chain (`(a)-[f1]->(b)-[f2]->(c)` over flights)
+        // and the cross-table shared-node family
+        // (`MATCH (src)-[:REQUESTED]->(d) MATCH (src)-[:ACCESSED]->(x)` over
+        // dns_log/conn_log). One link per shared connection node.
+        //
+        // Scope: the current edge must embed BOTH endpoints (fully
+        // denormalized) for the cross-table case, because EdgeToEdge emits
+        // only the edge-table join and would skip a needed node-table JOIN
+        // otherwise. The legacy same-table left-shared hop keeps its historic
+        // unconditional acceptance.
+        let fully_denormalized = matches!(edge_pattern, EdgeTablePattern::FullyDenormalized);
+        let mut links: Vec<EdgeToEdgeLink> = Vec::new();
+        for (prev_edge, curr_edge_col, is_left_side) in [
+            (prev_left_edge, &rel_schema.from_id, true),
+            (prev_right_edge, &rel_schema.to_id, false),
+        ] {
+            let Some((prev_alias, prev_type, node_was_from_side)) = prev_edge else {
+                continue;
+            };
+            let Ok(prev_rel_schema) = graph_schema.get_rel_schema(prev_type) else {
+                continue;
+            };
+            let same_table = prev_rel_schema.full_table_name() == rel_schema.full_table_name();
+            let allowed = fully_denormalized || (same_table && is_left_side);
+            if !allowed {
+                continue;
+            }
+            let prev_col = if node_was_from_side {
+                prev_rel_schema.from_id.to_string()
+            } else {
+                prev_rel_schema.to_id.to_string()
+            };
+            links.push(EdgeToEdgeLink {
+                prev_edge_alias: prev_alias.to_string(),
+                prev_edge_col: prev_col,
+                curr_edge_col: curr_edge_col.to_string(),
+            });
+        }
+        if !links.is_empty() {
+            return (JoinStrategy::EdgeToEdge { links }, None);
         }
 
         // Check for FK-edge pattern first (edge table IS a node table with FK column)

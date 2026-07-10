@@ -147,7 +147,6 @@ class TestZeekConnLog:
         # 2 connections TO 192.168.4.76 in test data
         assert len(self.get_data(result)) == 2
     
-    @pytest.mark.skip(reason="Cross-table WITH...MATCH correlation not yet fully supported")
     def test_bidirectional_traffic(self, setup_zeek_schema):
         """Find IPs that both sent to and received from a specific IP."""
         cypher = """
