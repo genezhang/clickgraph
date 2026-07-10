@@ -10,5 +10,5 @@ INNER JOIN test_integration.post_likes_test r1 ON p_1.post_id = r1.post_id
 INNER JOIN test_integration.users_test u2 ON r1.user_id = u2.user_id
 )
 SELECT 
-      count(DISTINCT struct(t.end_id, t.end_id)) AS `total`
+      count(DISTINCT struct(t.end_type, t.end_id)) AS `total`
 FROM vlp_multi_type_p_u AS t

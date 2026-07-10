@@ -1657,6 +1657,129 @@ impl LogicalPlan {
         }
     }
 
+    /// #490: is `rel_alias` bound to a deferred-UNION (`pattern_combinations`)
+    /// GraphRel ANYWHERE in this plan — i.e. does the CTE that materializes it
+    /// use the relationship alias itself as its FROM alias (`pattern_union_r
+    /// AS r`, #468) rather than the generic VLP CTE alias (`AS t`)?
+    ///
+    /// Single canonical walk shared by every call site that needs this
+    /// decision, so it cannot independently drift the way
+    /// `rel_uses_pattern_union()` (`analyzer/projection_tagging.rs`) and
+    /// `has_pattern_combinations_for_alias()` (`render_plan/select_builder.rs`)
+    /// did (#490): the former had no `WithClause` arm and skipped
+    /// `GraphRel.center`; the latter checked `center` but lacked
+    /// `CartesianProduct`/`Union`. A `WITH r` barrier between the pattern and
+    /// `type(r)` in RETURN made the *former's* gaps observable — `type(r)`
+    /// fell back to the VLP `t` alias, which doesn't exist in that query,
+    /// emitting an unbound `t.path_relationships` (Code 47).
+    pub fn rel_alias_uses_pattern_union(&self, rel_alias: &str) -> bool {
+        match self {
+            LogicalPlan::GraphRel(rel) => {
+                if rel.alias == rel_alias {
+                    return rel.pattern_combinations.is_some();
+                }
+                rel.left.rel_alias_uses_pattern_union(rel_alias)
+                    || rel.center.rel_alias_uses_pattern_union(rel_alias)
+                    || rel.right.rel_alias_uses_pattern_union(rel_alias)
+            }
+            LogicalPlan::GraphNode(node) => node.input.rel_alias_uses_pattern_union(rel_alias),
+            LogicalPlan::Filter(f) => f.input.rel_alias_uses_pattern_union(rel_alias),
+            LogicalPlan::Projection(p) => p.input.rel_alias_uses_pattern_union(rel_alias),
+            LogicalPlan::GraphJoins(gj) => gj.input.rel_alias_uses_pattern_union(rel_alias),
+            LogicalPlan::GroupBy(gb) => gb.input.rel_alias_uses_pattern_union(rel_alias),
+            LogicalPlan::OrderBy(ob) => ob.input.rel_alias_uses_pattern_union(rel_alias),
+            LogicalPlan::Skip(s) => s.input.rel_alias_uses_pattern_union(rel_alias),
+            LogicalPlan::Limit(l) => l.input.rel_alias_uses_pattern_union(rel_alias),
+            LogicalPlan::Cte(cte) => cte.input.rel_alias_uses_pattern_union(rel_alias),
+            LogicalPlan::WithClause(wc) => wc.input.rel_alias_uses_pattern_union(rel_alias),
+            LogicalPlan::CartesianProduct(cp) => {
+                cp.left.rel_alias_uses_pattern_union(rel_alias)
+                    || cp.right.rel_alias_uses_pattern_union(rel_alias)
+            }
+            LogicalPlan::Union(u) => u
+                .inputs
+                .iter()
+                .any(|i| i.rel_alias_uses_pattern_union(rel_alias)),
+            _ => false,
+        }
+    }
+
+    /// #483: is `alias` a connection (`left_connection`/`right_connection`) of
+    /// an UNDIRECTED (`Direction::Either`) `GraphRel` in this plan? Returns
+    /// `Some(true)` for the left/start connection, `Some(false)` for the
+    /// right/end connection.
+    ///
+    /// Used to distinguish a `count(DISTINCT alias)` target that is a
+    /// multi-label GraphRel *endpoint* (routed at render time through a
+    /// `multi_type_vlp_joins`/`bidirectional_union` CTE — an UNDIRECTED,
+    /// single-hop, non-`pattern_combinations` multi-type join, e.g.
+    /// `unlabeled_rel_typed`/`anchored_unlabeled_expand`) from a DIRECTED
+    /// multi-hop chain through a multi-label endpoint, which instead renders
+    /// as a raw per-label branch UNION (physically separate id columns per
+    /// branch — #467's target, e.g. a 2-hop `(f)-[:CONTAINS]->()-[:INSTANCE_OF]
+    /// ->(child)` chain landing on a multi-label `child`). Both shapes put
+    /// `alias` in `left_connection`/`right_connection`, so the direction check
+    /// is required — an earlier version of this method omitted it and
+    /// silently mis-rendered every multi-label chained-hop endpoint as if it
+    /// were a `multi_type_vlp_joins` CTE column (`child.end_id` referencing a
+    /// column that only exists on the `bidirectional_union` route), caught by
+    /// the golden corpus (`test_count_with_alias`, `test_having_multiple_conditions`).
+    /// Only the raw-UNION case has genuinely separate physical id columns per
+    /// label; a `multi_type_vlp_joins` CTE exposes exactly one `start_id`/
+    /// `end_id` (+ `start_type`/`end_type` discriminator) regardless of label
+    /// count, so the #467 per-label-id-column tuple construction doesn't apply
+    /// there.
+    ///
+    /// Callers MUST check `rel_alias_uses_pattern_union` first: when that
+    /// returns `true` the alias instead routes through the `pattern_union_*`
+    /// CTE (both endpoints unlabeled, deferred UNION), a third, separate
+    /// strategy with its own resolution.
+    pub fn graph_rel_connection_role(&self, alias: &str) -> Option<bool> {
+        match self {
+            LogicalPlan::GraphRel(rel) => {
+                // Undirected (`--`) patterns start with `direction ==
+                // Direction::Either`, but `BidirectionalUnion` (an earlier
+                // analyzer pass) rewrites that single GraphRel into a Union of
+                // directed (Outgoing/Incoming) branches, stamping each with
+                // `was_undirected: Some(true)` — by the time this method runs
+                // (ProjectionTagging, after BidirectionalUnion), `direction`
+                // alone is no longer `Either`. Check both so this works
+                // whether or not BidirectionalUnion has already run.
+                if rel.direction == Direction::Either || rel.was_undirected == Some(true) {
+                    if rel.left_connection == alias {
+                        return Some(true);
+                    }
+                    if rel.right_connection == alias {
+                        return Some(false);
+                    }
+                }
+                rel.left
+                    .graph_rel_connection_role(alias)
+                    .or_else(|| rel.center.graph_rel_connection_role(alias))
+                    .or_else(|| rel.right.graph_rel_connection_role(alias))
+            }
+            LogicalPlan::GraphNode(node) => node.input.graph_rel_connection_role(alias),
+            LogicalPlan::Filter(f) => f.input.graph_rel_connection_role(alias),
+            LogicalPlan::Projection(p) => p.input.graph_rel_connection_role(alias),
+            LogicalPlan::GraphJoins(gj) => gj.input.graph_rel_connection_role(alias),
+            LogicalPlan::GroupBy(gb) => gb.input.graph_rel_connection_role(alias),
+            LogicalPlan::OrderBy(ob) => ob.input.graph_rel_connection_role(alias),
+            LogicalPlan::Skip(s) => s.input.graph_rel_connection_role(alias),
+            LogicalPlan::Limit(l) => l.input.graph_rel_connection_role(alias),
+            LogicalPlan::Cte(cte) => cte.input.graph_rel_connection_role(alias),
+            LogicalPlan::WithClause(wc) => wc.input.graph_rel_connection_role(alias),
+            LogicalPlan::CartesianProduct(cp) => cp
+                .left
+                .graph_rel_connection_role(alias)
+                .or_else(|| cp.right.graph_rel_connection_role(alias)),
+            LogicalPlan::Union(u) => u
+                .inputs
+                .iter()
+                .find_map(|i| i.graph_rel_connection_role(alias)),
+            _ => None,
+        }
+    }
+
     pub fn get_empty_match_plan() -> Self {
         LogicalPlan::Projection(Projection {
             input: Arc::new(LogicalPlan::Filter(Filter {

@@ -24,7 +24,7 @@
 //! on the ID. This significantly improves query performance.
 
 use crate::graph_catalog::expression_parser::PropertyValue;
-use crate::query_planner::logical_expr::Direction;
+use crate::query_planner::logical_expr::{Direction, LogicalExpr};
 use crate::query_planner::logical_plan::{GroupBy, LogicalPlan};
 use std::collections::HashSet;
 
@@ -136,6 +136,19 @@ fn process_group_by_expressions(group_by: &GroupBy) -> GroupByBuilderResult<Vec<
             }
         }
 
+        // Case 1b (#484): id()/elementId() scalar call - route through the same
+        // pattern_union-aware / schema-driven ID resolution the SELECT path uses
+        // (`select_builder.rs` Case 5), instead of falling through to Case 3's
+        // generic conversion, which hits the function-registry `toInt64(0)`
+        // placeholder mapping. That placeholder is fine in SELECT position
+        // (Bolt/result-transformer compute the real id from element_id
+        // metadata there) but is fatal in GROUP BY: every row hashes to the
+        // same constant key and all groups silently collapse into one.
+        if let Some(resolved) = resolve_id_function_for_group_order(&group_by.input, expr) {
+            result.push(resolved);
+            continue;
+        }
+
         // Case 2: PropertyAccessExp with wildcard "*" - expand to ID column only
         if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(prop_access) =
             expr
@@ -190,6 +203,92 @@ fn process_group_by_expressions(group_by: &GroupBy) -> GroupByBuilderResult<Vec<
 /// ALL of them must call this helper so composite ids behave identically on
 /// both sides of a WITH barrier; the eventual Phase-2 dedup should collapse
 /// the `plan_builder_utils.rs` copies onto this module.
+/// Resolve `id(alias)` / `elementId(alias)` scalar-function calls in GROUP BY /
+/// ORDER BY position to the underlying ID column expression (#484).
+///
+/// Without this, GROUP BY/ORDER BY over `id()`/`elementId()` fall through to the
+/// generic function-registry placeholder mapping (`id` -> `toInt64(0)`, see
+/// `sql_generator/emitters/clickhouse/function_registry.rs`), which is a
+/// harmless placeholder in SELECT position (the Bolt layer / result
+/// transformer compute the real id from element_id metadata there) but is a
+/// SILENT WRONG RESULTS bug in GROUP BY (every row hashes to the same
+/// constant key, so all groups collapse into one) and a no-op in ORDER BY.
+///
+/// Mirrors the pattern_union-aware resolution `select_builder.rs` Case 5
+/// already applies to SELECT items:
+/// 1. Pattern-union endpoint (#466/#468 deferred-UNION `pattern_combinations`):
+///    use the CTE's label-agnostic `start_id`/`end_id` columns via
+///    `pattern_union_endpoint_role` — a single label's id column is NULL on
+///    every other label's branch, which would silently drop/miscount rows.
+/// 2. Plain path: resolve the id column the same way the established
+///    `handle_table_alias_group_by` GROUP BY optimization does —
+///    `find_id_column_for_alias` (walks the plan to the ViewScan's
+///    schema-derived `id_column`) plus `get_properties_with_table_alias` for
+///    denormalized edge-embedded node resolution.
+///
+/// Returns `None` when `expr` isn't an `id()`/`elementId()` call over a bare
+/// alias (or `alias.*`), or when resolution fails — callers should fall back
+/// to their existing generic conversion path unchanged.
+pub(super) fn resolve_id_function_for_group_order(
+    input: &LogicalPlan,
+    expr: &LogicalExpr,
+) -> Option<RenderExpr> {
+    let LogicalExpr::ScalarFnCall(fn_call) = expr else {
+        return None;
+    };
+    if !(fn_call.name.eq_ignore_ascii_case("id") || fn_call.name.eq_ignore_ascii_case("elementid"))
+        || fn_call.args.len() != 1
+    {
+        return None;
+    }
+    let is_element_id = fn_call.name.eq_ignore_ascii_case("elementid");
+    let alias = match &fn_call.args[0] {
+        LogicalExpr::TableAlias(a) => a.0.clone(),
+        LogicalExpr::PropertyAccessExp(p) if p.column.raw() == "*" => p.table_alias.0.clone(),
+        _ => return None,
+    };
+
+    // Pattern-union endpoint: use the CTE's label-agnostic start_id/end_id,
+    // exactly as select_builder.rs Case 5 does for SELECT items.
+    if let Some((rel_alias, is_left)) = input.pattern_union_endpoint_role(&alias) {
+        let (id_col, type_col) = if is_left {
+            ("start_id", "start_type")
+        } else {
+            ("end_id", "end_type")
+        };
+        return Some(if is_element_id {
+            RenderExpr::Raw(format!(
+                "concat({rel_alias}.{type_col}, ':', {rel_alias}.{id_col}, '-')"
+            ))
+        } else {
+            RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(rel_alias),
+                column: PropertyValue::Column(id_col.to_string()),
+            })
+        });
+    }
+
+    if is_element_id {
+        // Non-endpoint elementId(): no established GROUP BY/ORDER BY
+        // resolution pre-existed here either (fell into the same placeholder
+        // as id()). Keep scope narrow to the pattern_union fix and leave
+        // plain elementId() untouched, matching select_builder's Case 5
+        // scoping (see its "Non-endpoint elementId()" comment).
+        return None;
+    }
+
+    // Plain path: same resolution as `handle_table_alias_group_by`.
+    let id_col = input.find_id_column_for_alias(&alias).ok()?;
+    let table_alias_to_use = match input.get_properties_with_table_alias(&alias) {
+        Ok((props, Some(actual_alias))) if !props.is_empty() => actual_alias,
+        _ => alias.clone(),
+    };
+    Some(RenderExpr::PropertyAccessExp(PropertyAccess {
+        table_alias: TableAlias(table_alias_to_use),
+        column: PropertyValue::Column(id_col),
+    }))
+}
+
 pub(super) fn composite_id_group_by_columns(
     input: &LogicalPlan,
     alias: &str,

@@ -4636,11 +4636,40 @@ fn is_valid_combination_with_direction(
     true
 }
 
-/// Check if a plan contains aggregation (GroupBy or aggregate functions in Projection).
+/// Check if a plan contains aggregation (GroupBy or aggregate functions in Projection
+/// or WithClause items).
+///
+/// #476: this used to lack a `WithClause` arm, so `MATCH (n) WITH count(n) AS c ...`
+/// fell to the `_ => false` catch-all. Its caller (`generate_union_for_untyped_nodes`)
+/// uses this to decide whether to inject the multi-label UNION *below* the aggregation
+/// (one combined scan, `count(coalesce(...))` on top — correct) or clone the WHOLE
+/// plan per label and union the aggregation results (one row per label, each counting
+/// only ITS OWN table — wrong shape, and for a WITH-CTE this also produced dangling
+/// `with_c_cte_1` references to a CTE that only the first branch's leg materialized).
+/// A bare `RETURN count(n)` (`LogicalPlan::Projection`) already took the correct path;
+/// `WITH count(n) AS c` (`LogicalPlan::WithClause`) did not, because this sibling
+/// check hadn't been extended to the newer WithClause variant — the same "hand-rolled
+/// walker missing an arm" class as #490/#495. See also `extract_scan_part` and
+/// `rewrap_aggregation` below, which need the matching `WithClause` arm to split a
+/// WithClause into "scan part" (to clone per label) and "aggregation wrapper" (to
+/// re-apply once, around the union).
 fn plan_has_aggregation(plan: &LogicalPlan) -> bool {
     match plan {
         LogicalPlan::GroupBy(_) => true,
-        LogicalPlan::Projection(proj) => proj.items.iter().any(|item| {
+        // #476: a plain `RETURN c` Projection (own items are a pass-through
+        // TableAlias, no direct AggregateFnCall) can still wrap a WithClause
+        // that owns the real aggregate (`WITH count(n) AS c RETURN c`). Must
+        // recurse into `.input` when the immediate items have no aggregate,
+        // or this outer pass-through hides the nested aggregation.
+        LogicalPlan::Projection(proj) => {
+            proj.items.iter().any(|item| {
+                matches!(
+                    &item.expression,
+                    crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)
+                )
+            }) || plan_has_aggregation(&proj.input)
+        }
+        LogicalPlan::WithClause(wc) => wc.items.iter().any(|item| {
             matches!(
                 &item.expression,
                 crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)
@@ -4725,7 +4754,29 @@ fn extract_scan_part(plan: &LogicalPlan) -> LogicalPlan {
                     (*proj.input).clone()
                 }
             } else {
-                (*proj.input).clone()
+                // #476: no aggregate on THIS Projection's own items, but a
+                // pass-through `RETURN c` can still wrap a WithClause that
+                // owns the real aggregate — recurse instead of stopping here,
+                // matching the `plan_has_aggregation` recursion above.
+                extract_scan_part(&proj.input)
+            }
+        }
+        // #476: mirror the Projection arm above for WithClause (`WITH count(n) AS c`).
+        LogicalPlan::WithClause(wc) => {
+            let has_agg = wc.items.iter().any(|item| {
+                matches!(
+                    &item.expression,
+                    crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)
+                )
+            });
+            if has_agg {
+                if let LogicalPlan::GroupBy(gb) = wc.input.as_ref() {
+                    (*gb.input).clone()
+                } else {
+                    (*wc.input).clone()
+                }
+            } else {
+                (*wc.input).clone()
             }
         }
         LogicalPlan::Limit(l) => extract_scan_part(&l.input),
@@ -4798,16 +4849,56 @@ fn rewrap_aggregation(original: &LogicalPlan, new_input: Arc<LogicalPlan>) -> Ar
                     },
                 ))
             } else {
-                // Non-aggregate projection — shouldn't happen but just wrap
+                // #476: this Projection has no aggregate of its own (a
+                // pass-through `RETURN c`), but may wrap a WithClause that
+                // owns the real aggregate — recurse so the WithClause's own
+                // rewrap logic (below) re-applies `count(n) AS c` around the
+                // union exactly once, instead of dropping that layer and
+                // wiring `new_input` (the raw per-label union) directly under
+                // this Projection.
+                let inner = rewrap_aggregation(&proj.input, new_input);
                 Arc::new(LogicalPlan::Projection(
                     crate::query_planner::logical_plan::Projection {
-                        input: new_input,
+                        input: inner,
                         items: proj.items.clone(),
                         distinct: proj.distinct,
                         pattern_comprehensions: proj.pattern_comprehensions.clone(),
                     },
                 ))
             }
+        }
+        // #476: mirror the Projection arm above for WithClause (`WITH count(n) AS c`),
+        // preserving every WithClause field verbatim except `input`, which becomes the
+        // (already-unioned) new_input so the aggregate applies once, over every label's
+        // combined rows — not once per label.
+        LogicalPlan::WithClause(wc) => {
+            let has_agg = wc.items.iter().any(|item| {
+                matches!(
+                    &item.expression,
+                    crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_)
+                )
+            });
+            let inner = if has_agg {
+                // Rewrap inner first (might be GroupBy)
+                rewrap_aggregation(&wc.input, new_input)
+            } else {
+                new_input
+            };
+            Arc::new(LogicalPlan::WithClause(
+                crate::query_planner::logical_plan::WithClause {
+                    input: inner,
+                    items: wc.items.clone(),
+                    distinct: wc.distinct,
+                    order_by: wc.order_by.clone(),
+                    skip: wc.skip,
+                    limit: wc.limit,
+                    where_clause: wc.where_clause.clone(),
+                    exported_aliases: wc.exported_aliases.clone(),
+                    cte_name: wc.cte_name.clone(),
+                    cte_references: wc.cte_references.clone(),
+                    pattern_comprehensions: wc.pattern_comprehensions.clone(),
+                },
+            ))
         }
         _ => new_input,
     }

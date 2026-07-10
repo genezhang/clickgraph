@@ -3262,22 +3262,47 @@ pub fn extract_having(plan: &LogicalPlan) -> RenderPlanBuilderResult<Option<Rend
 }
 
 pub fn extract_order_by(plan: &LogicalPlan) -> RenderPlanBuilderResult<Vec<OrderByItem>> {
-    let order_by = match plan {
-        LogicalPlan::Limit(limit) => extract_order_by(&limit.input)?,
-        LogicalPlan::Skip(skip) => extract_order_by(&skip.input)?,
-        LogicalPlan::OrderBy(order_by) => order_by
-            .items
-            .iter()
-            .cloned()
-            .map(|item| {
-                let mut order_item: OrderByItem = item.try_into()?;
-                // Apply property mapping to the order by expression
-                apply_property_mapping_to_expr(&mut order_item.expression, &order_by.input);
-                Ok(order_item)
-            })
-            .collect::<Result<Vec<OrderByItem>, RenderBuildError>>()?,
-        _ => vec![],
-    };
+    let order_by =
+        match plan {
+            LogicalPlan::Limit(limit) => extract_order_by(&limit.input)?,
+            LogicalPlan::Skip(skip) => extract_order_by(&skip.input)?,
+            LogicalPlan::OrderBy(order_by) => order_by
+                .items
+                .iter()
+                .cloned()
+                .map(|item| {
+                    // #484: id()/elementId() in ORDER BY position must route through
+                    // the same pattern_union-aware / schema-driven ID resolution as
+                    // GROUP BY and SELECT (see `resolve_id_function_for_group_order`
+                    // doc comment in group_by_builder.rs) — otherwise it falls
+                    // through to the generic function-registry `toInt64(0)`
+                    // placeholder, making `ORDER BY id(o)` a silent no-op.
+                    if let Some(resolved) =
+                        super::group_by_builder::resolve_id_function_for_group_order(
+                            &order_by.input,
+                            &item.expression,
+                        )
+                    {
+                        return Ok(OrderByItem {
+                            expression: resolved,
+                            order: match item.order {
+                                crate::query_planner::logical_plan::OrderByOrder::Asc => {
+                                    crate::render_plan::OrderByOrder::Asc
+                                }
+                                crate::query_planner::logical_plan::OrderByOrder::Desc => {
+                                    crate::render_plan::OrderByOrder::Desc
+                                }
+                            },
+                        });
+                    }
+                    let mut order_item: OrderByItem = item.try_into()?;
+                    // Apply property mapping to the order by expression
+                    apply_property_mapping_to_expr(&mut order_item.expression, &order_by.input);
+                    Ok(order_item)
+                })
+                .collect::<Result<Vec<OrderByItem>, RenderBuildError>>()?,
+            _ => vec![],
+        };
     Ok(order_by)
 }
 

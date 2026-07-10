@@ -5268,6 +5268,252 @@ async fn union_every_arm_limit_applies_independently() {
     );
 }
 
+/// Regression tests for the #484/#490/#495/#476/#483 hand-rolled-walker-drift
+/// family (silent wrong results / unbound aliases from expression walkers
+/// missing match arms).
+mod walker_drift_family_484_490_495_476_483 {
+    use super::*;
+
+    /// #484: `id()`/`elementId()` in GROUP BY/ORDER BY position used to fall
+    /// through to the generic function-registry placeholder (`id` ->
+    /// `toInt64(0)`), which is harmless in SELECT (Bolt/result-transformer
+    /// compute the real id from element_id there) but SILENT WRONG RESULTS in
+    /// GROUP BY (every row hashes to the same constant key, collapsing all
+    /// groups into one) and a no-op in ORDER BY. Both `group_by_builder.rs`
+    /// (`resolve_id_function_for_group_order`) and `extract_order_by` in
+    /// `plan_builder_utils.rs` now route `id()` through the same
+    /// pattern_union-aware resolution the SELECT path already used. Live-
+    /// verified (2026-07-10, local `social` fixture): standard schema
+    /// GROUP BY id(o) over `MATCH (n)-[r]->(o)` groups correctly (1->10,
+    /// 3->5, 2->4, 4->2, 5->1, matching hand-computed ground truth); FK-edge
+    /// schema (`schemas/test/fk_edge.yaml`) GROUP BY id(o) returns
+    /// 100->3, 101->2, 102->2, 103->1, matching `SELECT customer_id,
+    /// count(*) FROM orders_fk GROUP BY customer_id`.
+    #[tokio::test]
+    async fn group_by_order_by_id_function_pattern_union_484() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let cypher = "MATCH (n)-[r]->(o) RETURN id(o) AS i, count(*)";
+        let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            !sql.contains("GROUP BY toInt64(0)"),
+            "id(o) in GROUP BY must not fall back to the toInt64(0) \
+             placeholder (every group collapses into one row): {sql}"
+        );
+        assert!(
+            sql.contains("GROUP BY r.end_id"),
+            "pattern_union endpoint id(o) must GROUP BY the CTE's \
+             label-agnostic end_id column: {sql}"
+        );
+
+        let order_cypher = "MATCH (n)-[r]->(o) RETURN id(o) AS i ORDER BY id(o)";
+        let order_sql = render(&schema, order_cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            !order_sql.contains("ORDER BY toInt64(0)"),
+            "id(o) in ORDER BY must not fall back to the toInt64(0) \
+             placeholder (a no-op sort): {order_sql}"
+        );
+        assert!(
+            order_sql.contains("ORDER BY r.end_id"),
+            "pattern_union endpoint id(o) must ORDER BY the CTE's \
+             label-agnostic end_id column: {order_sql}"
+        );
+    }
+
+    /// #484: the plain (non-pattern_union) single-label path must also
+    /// resolve id() to the real id column in GROUP BY, not the placeholder.
+    #[tokio::test]
+    async fn group_by_id_function_plain_single_label_484() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let cypher = "MATCH (u:User) RETURN id(u) AS i, count(*)";
+        let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            sql.contains("GROUP BY u.user_id"),
+            "plain single-label id(u) must GROUP BY the real id column, not \
+             a placeholder: {sql}"
+        );
+    }
+
+    /// #490: `type(r)` behind a `WITH r` barrier used to hard-code the VLP
+    /// alias `t` in the outer SELECT even when the relationship actually
+    /// routes through a `pattern_union_r AS r` CTE (both endpoints
+    /// unlabeled) — unbound `t.path_relationships`, ClickHouse Code 47. The
+    /// route-detection walkers (`rel_uses_pattern_union` in
+    /// `projection_tagging.rs` and `has_pattern_combinations_for_alias` in
+    /// `select_builder.rs`) had drifted from each other (missing
+    /// `WithClause`/`CartesianProduct`/`Union` arms and `GraphRel.center`
+    /// recursion between them) and are now unified onto a single canonical
+    /// walk, `LogicalPlan::rel_alias_uses_pattern_union`. Live-verified: the
+    /// WITH-barrier query below returns AUTHORED/FOLLOWS/LIKED on the
+    /// `social` fixture, matching the pre-existing non-WITH
+    /// `browser_type_probe_pattern_union_outer_alias_matches_from` lock.
+    #[tokio::test]
+    async fn type_r_after_with_barrier_pattern_union_490() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let cypher = "MATCH ()-[r]->() WITH r RETURN DISTINCT type(r)";
+        let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            sql.contains("pattern_union_r AS ("),
+            "expected the pattern_union CTE: {sql}"
+        );
+        assert!(
+            sql.contains("r.path_relationships"),
+            "expected type(r) after WITH r to resolve from \
+             r.path_relationships (the pattern_union CTE alias), not the \
+             unbound VLP alias t: {sql}"
+        );
+        assert!(
+            !sql.contains("t.path_relationships"),
+            "outer SELECT must not reference the unbound VLP alias \
+             t.path_relationships (#490 regression): {sql}"
+        );
+    }
+
+    /// #495: `remap_denormalized_aliases_in_expr` (`graph_join/helpers.rs`)
+    /// is the hand-rolled walk that rewrites virtual denormalized node
+    /// aliases in a `CartesianProduct.join_condition` onto the edge alias
+    /// that actually embeds them. It was missing `List`/`Case`/legacy
+    /// `Operator`/`AggregateFnCall` arms, so a CASE-based cross-pattern
+    /// correlation (and `IN`-list conjuncts, though that specific shape
+    /// turns out to be blocked earlier in the pipeline — see the #495
+    /// finding in the fix writeup) left the unbound cypher alias
+    /// (`srcip2.ip`) in the rendered WHERE clause instead of the bound edge
+    /// alias. This locks the CASE arm: both `srcip1`/`srcip2` must resolve
+    /// to their owning edge table aliases (`t1`/`t2`), not leak through
+    /// unbound.
+    #[tokio::test]
+    async fn remap_denormalized_case_expr_alias_bound_495() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+        let cypher = "MATCH (srcip1:IP)-[:REQUESTED]->(d:Domain), \
+                       (srcip2:IP)-[:ACCESSED]->(destip:IP) \
+                       WHERE CASE WHEN srcip1.ip = srcip2.ip THEN true ELSE false END \
+                       RETURN DISTINCT srcip1.ip";
+        let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+        // Quoted-alias form (`srcip1."`) distinguishes an unbound cypher
+        // alias reference from the legitimate output column alias
+        // (`AS "srcip1.ip"`), which legally contains "srcip1." as a
+        // substring — same pattern as the #482 golden tests this mirrors.
+        for unbound in ["srcip1.\"", "srcip2.\""] {
+            assert!(
+                !sql.contains(unbound),
+                "#495 [{cypher}]: unbound cypher alias '{unbound}' leaked \
+                 into the CASE predicate:\n{sql}"
+            );
+        }
+        // The CASE predicate must bind BOTH sides to the SAME edge alias
+        // used by the (already-working) plain-equality case — extract that
+        // alias from the WHERE clause rather than hard-coding an
+        // auto-generated counter value (t1/t2 vs t5/t6 depending on test
+        // ordering within the process).
+        assert!(
+            sql.contains("CASE WHEN ")
+                && sql.contains(".ip = ")
+                && !sql.contains("srcip1.ip = srcip2.ip"),
+            "#495: CASE predicate must bind to edge aliases, not the raw \
+             cypher aliases:\n{sql}"
+        );
+    }
+
+    /// #483: `count(DISTINCT n)` on an unlabeled endpoint of an UNDIRECTED
+    /// GraphRel (routed at render time through a `multi_type_vlp_joins`/
+    /// `bidirectional_union` CTE, e.g. `MATCH (a:User)-[r]-(o)`) used to
+    /// build its cross-label DISTINCT discriminator tuple from the #467
+    /// per-label-raw-column logic (designed for a bare `MATCH (n)`
+    /// ViewScan UNION, which has genuinely separate `post_id`/`user_id`
+    /// physical columns). That logic doesn't apply to a
+    /// `multi_type_vlp_joins` CTE, which exposes exactly one `end_id` (+
+    /// `end_type` discriminator) regardless of label count — downstream VLP
+    /// alias rewriting collapsed BOTH `o.post_id` and `o.user_id` onto the
+    /// SAME `t.end_id` CTE column, emitting `count(DISTINCT
+    /// tuple(t.end_id, t.end_id))`: a duplicate tuple member that is NOT
+    /// harmless — it silently merges ids that collide across labels
+    /// (Post #3 and User #3 count as one). Live-verified (2026-07-10, local
+    /// `social` fixture): pre-fix returned 7, post-fix returns 12, matching
+    /// `SELECT count(*) FROM (SELECT DISTINCT end_type, end_id FROM
+    /// (per-relationship-type UNION))`.
+    #[tokio::test]
+    async fn count_distinct_bidirectional_endpoint_no_duplicate_tuple_member_483() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let cypher = "MATCH (a:User)-[r]-(o) RETURN count(DISTINCT o)";
+        let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            sql.contains("vlp_multi_type_a_o AS t"),
+            "expected this shape to route through the multi_type_vlp_joins \
+             CTE aliased t: {sql}"
+        );
+        assert!(
+            !sql.contains("tuple(t.end_id, t.end_id)"),
+            "#483: duplicate tuple member silently merges cross-label id \
+             collisions: {sql}"
+        );
+        assert!(
+            sql.contains("tuple(t.end_type, t.end_id)"),
+            "expected the (type, id) discriminator pair: {sql}"
+        );
+    }
+
+    /// #483 control: a GraphRel connection through a DIRECTED multi-hop
+    /// chain (not `multi_type_vlp_joins`-routed) must keep the #467 raw
+    /// per-label-column `coalesce`/tuple behavior — the `graph_rel_connection_role`
+    /// detector added for #483 is gated on `was_undirected`/`Direction::Either`
+    /// specifically so it does NOT misfire here (an earlier version of the
+    /// fix regressed exactly this shape onto a nonexistent `child.end_id`
+    /// column; caught by the `test_count_with_alias`/
+    /// `test_having_multiple_conditions` golden corpus cases).
+    #[tokio::test]
+    async fn count_coalesce_directed_multi_hop_unaffected_by_483_fix() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        // Directed 2-hop chain through an unlabeled multi-label endpoint —
+        // not undirected, so must NOT route through the #483 tuple path.
+        let cypher = "MATCH (a:User)-[:AUTHORED]->(p:Post)<-[:LIKED]-(o) RETURN count(DISTINCT o)";
+        let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            !sql.contains("end_type") && !sql.contains("t.end_id"),
+            "a directed multi-hop chain must not be treated as a \
+             multi_type_vlp_joins endpoint: {sql}"
+        );
+    }
+
+    /// #476 (partial fix — see the fix writeup for the remaining gap):
+    /// `MATCH (n) WITH count(n) AS c RETURN c` used to render a WITH-CTE
+    /// whose FROM was a single label's table (missing the multi-label
+    /// UNION scan entirely) alongside a dangling, never-defined
+    /// `with_c_cte_1` reference. Three sibling functions in
+    /// `type_inference.rs` (`plan_has_aggregation`, `extract_scan_part`,
+    /// `rewrap_aggregation`) lacked `WithClause` arms — the exact
+    /// "hand-rolled walker missing an arm" class as #490/#495 — causing
+    /// `generate_union_for_untyped_nodes` to take the wrong (whole-plan
+    /// branch-explosion) path for a WITH-wrapped aggregate instead of
+    /// injecting the union below the aggregation the way a bare
+    /// `RETURN count(n)` already did. This locks the now-correct CTE
+    /// *shape* (single CTE, real union, no dangling reference); live
+    /// execution still errors on a separate, downstream per-branch
+    /// NULL-padding gap in the CTE-body SQL emitter's shared
+    /// `build_union_inner_select` (documented, not fixed, in the #476
+    /// section of the fix writeup) — do not extend this test to assert
+    /// live execution succeeds until that follow-up lands.
+    #[tokio::test]
+    async fn with_count_aggregate_multi_label_union_shape_476() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let cypher = "MATCH (n) WITH count(n) AS c RETURN c";
+        let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            sql.contains("UNION ALL"),
+            "#476: the WITH-CTE body must build the multi-label union scan, \
+             not collapse to a single label's table:\n{sql}"
+        );
+        assert!(
+            !sql.contains("with_c_cte_1"),
+            "#476: must not reference a second CTE that was never actually \
+             defined:\n{sql}"
+        );
+        assert!(
+            sql.contains("count(coalesce("),
+            "#476: the aggregate must stay the #467 coalesce-over-union \
+             form:\n{sql}"
+        );
+    }
+}
+
 /// Regression tests for the #496/#497/#498/#499/#501 VLP/fixed-path family.
 mod vlp_fixed_path_family_496_497_498_499_501 {
     use super::*;

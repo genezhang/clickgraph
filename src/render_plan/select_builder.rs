@@ -1759,27 +1759,14 @@ impl LogicalPlan {
     }
 
     /// Check if this plan contains a GraphRel with pattern_combinations for the given alias
+    /// #490: delegates to the single canonical walk (`LogicalPlan::rel_alias_uses_pattern_union`,
+    /// `query_planner/logical_plan/mod.rs`) shared with `projection_tagging.rs`'s
+    /// `rel_uses_pattern_union` — this method used to hand-roll its own
+    /// traversal, which had drifted from its sibling (missing `CartesianProduct`/
+    /// `Union`/`WithClause` arms). See the doc comment on the canonical method
+    /// for the full history.
     fn has_pattern_combinations_for_alias(&self, alias: &str) -> bool {
-        match self {
-            LogicalPlan::GraphRel(gr) => {
-                if gr.alias == alias && gr.pattern_combinations.is_some() {
-                    return true;
-                }
-                // Check recursively
-                gr.left.has_pattern_combinations_for_alias(alias)
-                    || gr.center.has_pattern_combinations_for_alias(alias)
-                    || gr.right.has_pattern_combinations_for_alias(alias)
-            }
-            LogicalPlan::GraphNode(gn) => gn.input.has_pattern_combinations_for_alias(alias),
-            LogicalPlan::Projection(p) => p.input.has_pattern_combinations_for_alias(alias),
-            LogicalPlan::Filter(f) => f.input.has_pattern_combinations_for_alias(alias),
-            LogicalPlan::GroupBy(g) => g.input.has_pattern_combinations_for_alias(alias),
-            LogicalPlan::OrderBy(o) => o.input.has_pattern_combinations_for_alias(alias),
-            LogicalPlan::Limit(l) => l.input.has_pattern_combinations_for_alias(alias),
-            LogicalPlan::Skip(s) => s.input.has_pattern_combinations_for_alias(alias),
-            LogicalPlan::GraphJoins(gj) => gj.input.has_pattern_combinations_for_alias(alias),
-            _ => false,
-        }
+        self.rel_alias_uses_pattern_union(alias)
     }
 
     /// Expand a base table entity (Node/Relationship from MATCH)
