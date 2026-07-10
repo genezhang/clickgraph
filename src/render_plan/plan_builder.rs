@@ -3365,7 +3365,35 @@ impl RenderPlanBuilder for LogicalPlan {
                             // same-db-column determinism as above; inserted after the
                             // edge map so the anchor's own mapping wins for its own
                             // columns.
-                            if let LogicalPlan::Union(u) = gr.left.as_ref() {
+                            //
+                            // GUARD: never hijack an EDGE-OWNED reference. The anchor
+                            // node table and the edge table are DIFFERENT physical
+                            // tables here, and the rewrite below is keyed by raw
+                            // column NAME on the edge alias — so an anchor property
+                            // whose db column happens to share a name with an edge
+                            // column (an edge property column, a to-node embedded
+                            // column, or the to_id) would rewrite a legitimate edge
+                            // reference (e.g. `r.timestamp` → t1.ts) onto the anchor
+                            // CTE: wrong value on matched rows AND non-NULL where
+                            // OPTIONAL semantics require NULL. Skip those columns —
+                            // an edge-owned reference must always stay on the
+                            // LEFT-JOINed edge alias. The edge-owned set comes from
+                            // the pattern's `PatternSchemaContext` (axis-dispatch
+                            // rule); if no pattern context is registered for this
+                            // relationship, skip the anchor extension entirely
+                            // (conservative: pre-#475 behavior, which can NULL an
+                            // anchor property but never hijacks an edge reference).
+                            // (Residual known limitation: an anchor property shadowed
+                            // by an edge-owned column still resolves to the edge
+                            // column, the pre-#475 behavior for that column;
+                            // disambiguating would require tracking provenance at
+                            // extraction time.)
+                            let edge_owned_columns = plan_ctx
+                                .and_then(|ctx| ctx.get_pattern_context(&gr.alias))
+                                .map(|pc| pc.edge_owned_columns());
+                            if let (LogicalPlan::Union(u), Some(edge_owned_columns)) =
+                                (gr.left.as_ref(), edge_owned_columns)
+                            {
                                 if let Some(LogicalPlan::GraphNode(gn)) =
                                     u.inputs.first().map(|i| i.as_ref())
                                 {
@@ -3374,10 +3402,17 @@ impl RenderPlanBuilder for LogicalPlan {
                                             anchor_vs.property_mapping.iter().collect();
                                         anchor_props.sort_by(|a, b| a.0.cmp(b.0));
                                         for (prop, val) in anchor_props {
-                                            col_map.insert(
-                                                val.raw().to_string(),
-                                                (node_alias.clone(), prop.clone()),
-                                            );
+                                            let db_col = val.raw().to_string();
+                                            if edge_owned_columns.contains(&db_col) {
+                                                log::debug!(
+                                                    "OPTIONAL denorm rewrite: skipping anchor property '{}' — its db column '{}' is edge-owned (#475 guard)",
+                                                    prop,
+                                                    db_col
+                                                );
+                                                continue;
+                                            }
+                                            col_map
+                                                .insert(db_col, (node_alias.clone(), prop.clone()));
                                         }
                                     }
                                 }

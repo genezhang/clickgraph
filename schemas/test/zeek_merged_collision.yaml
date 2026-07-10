@@ -1,0 +1,120 @@
+# Copy of schemas/dev/zeek_merged_test.yaml PLUS a deliberate cross-table
+# db-column-NAME collision, for the #475-review regression test:
+#
+#   - IP@conn_log gains a node property  `seen: ts`   (conn_log's ts column)
+#   - REQUESTED@dns_log already maps     `timestamp: ts` (dns_log's ts column)
+#
+# The two `ts` columns live on DIFFERENT physical tables. The OPTIONAL-denorm
+# rewrite (plan_builder.rs delegation path) is keyed by raw column name on the
+# edge alias, so without the edge-owned guard the anchor entry {ts -> a.seen}
+# would hijack the legitimate edge reference `r.timestamp` (t1.ts) onto the
+# anchor CTE — wrong value on matched rows and non-NULL where OPTIONAL
+# semantics require NULL. Locked by
+# `denorm_optional_edge_column_not_hijacked_by_anchor_475` in
+# tests/rust/integration/sql_golden_tests.rs.
+
+name: zeek_merged_collision
+version: "1.0"
+
+graph_schema:
+  nodes:
+    # IP node from dns_log (source of DNS requests)
+    - label: IP
+      database: zeek
+      table: dns_log
+      node_id: "id.orig_h"
+      property_mappings: {}
+      from_node_properties:
+        ip: "id.orig_h"
+      to_node_properties:
+        ip: "id.resp_h"
+
+    # IP node from conn_log (source/dest of connections).
+    # `seen: ts` is the deliberate collision with REQUESTED's `timestamp: ts`.
+    - label: IP
+      database: zeek
+      table: conn_log
+      node_id: "id.orig_h"
+      property_mappings: {}
+      from_node_properties:
+        ip: "id.orig_h"
+        port: "id.orig_p"
+        seen: ts
+      to_node_properties:
+        ip: "id.resp_h"
+        port: "id.resp_p"
+        seen: ts
+
+    # Domain node (from dns_log query column)
+    - label: Domain
+      database: zeek
+      table: dns_log
+      node_id: query
+      property_mappings: {}
+      from_node_properties:
+        name: query
+      to_node_properties:
+        name: query
+
+    # ResolvedIP node (from dns_log answers array)
+    - label: ResolvedIP
+      database: zeek
+      table: dns_log
+      node_id: answers
+      property_mappings: {}
+      to_node_properties:
+        ip: answers
+
+  edges:
+    # Edge 1: REQUESTED - Source IP requested a domain lookup
+    - type: REQUESTED
+      database: zeek
+      table: dns_log
+      from_id: "id.orig_h"
+      to_id: query
+      from_node: IP
+      to_node: Domain
+      edge_id: uid
+
+      property_mappings:
+        uid: uid
+        timestamp: ts
+        dns_server: "id.resp_h"
+        qtype: qtype_name
+        rcode: rcode_name
+        answers: answers
+
+    # Edge 2: RESOLVED_TO - Domain resolved to IP address(es)
+    - type: RESOLVED_TO
+      database: zeek
+      table: dns_log
+      from_id: query
+      to_id: answers
+      from_node: Domain
+      to_node: ResolvedIP
+      edge_id: [uid, answers]
+
+      property_mappings:
+        uid: uid
+        timestamp: ts
+        ttls: TTLs
+
+    # ACCESSED: Source IP accessed destination IP
+    - type: ACCESSED
+      database: zeek
+      table: conn_log
+      from_id: "id.orig_h"
+      to_id: "id.resp_h"
+      from_node: IP
+      to_node: IP
+      edge_id: uid
+
+      property_mappings:
+        uid: uid
+        timestamp: ts
+        protocol: proto
+        service: service
+        duration: duration
+        orig_bytes: orig_bytes
+        resp_bytes: resp_bytes
+        conn_state: conn_state

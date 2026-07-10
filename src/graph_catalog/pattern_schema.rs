@@ -1259,6 +1259,46 @@ impl PatternSchemaContext {
         self.rel_alias.clone()
     }
 
+    /// Columns of the edge row that are EDGE-OWNED for reference-rewriting
+    /// purposes: the edge's own property columns, the `to_id` column, and the
+    /// embedded TO-node property columns (which live on the edge row and must
+    /// keep OPTIONAL NULL-extension semantics).
+    ///
+    /// Used by the OPTIONAL-denorm anchor rewrite guard (#475 review): on a
+    /// coupled cross-table schema the anchor node table and the edge table
+    /// are different physical tables, so a db-column NAME collision (e.g.
+    /// anchor `seen: ts` on conn_log vs edge `timestamp: ts` on dns_log)
+    /// must not re-attribute an edge-owned reference to the anchor's scan
+    /// CTE. The from-side columns are deliberately NOT included: on the edge
+    /// row they carry the anchor's join key, and rewriting them to the
+    /// anchor CTE is the established (pre-#475) behavior.
+    pub fn edge_owned_columns(&self) -> std::collections::HashSet<String> {
+        let mut cols: std::collections::HashSet<String> = std::collections::HashSet::new();
+        match &self.edge {
+            EdgeAccessStrategy::SeparateTable {
+                to_id, properties, ..
+            }
+            | EdgeAccessStrategy::Polymorphic {
+                to_id, properties, ..
+            } => {
+                cols.insert(to_id.clone());
+                cols.extend(properties.values().cloned());
+            }
+            EdgeAccessStrategy::FkEdge { fk_column, .. } => {
+                cols.insert(fk_column.clone());
+            }
+        }
+        if let NodeAccessStrategy::EmbeddedInEdge {
+            properties,
+            is_from_node: false,
+            ..
+        } = &self.right_node
+        {
+            cols.extend(properties.values().cloned());
+        }
+        cols
+    }
+
     /// Get the node position for a given alias
     ///
     /// # Arguments

@@ -2730,6 +2730,66 @@ async fn denorm_optional_anchor_property_from_scan_cte_475() {
     );
 }
 
+/// #475 review guard: the anchor-map extension of the OPTIONAL-denorm rewrite
+/// is keyed by raw db-column NAME on the edge alias, but the anchor node table
+/// and the edge table are DIFFERENT physical tables on a coupled cross-table
+/// schema — so a name collision could hijack a legitimate EDGE-OWNED reference
+/// onto the anchor CTE. `schemas/test/zeek_merged_collision.yaml` builds
+/// exactly that shape: IP@conn_log carries `seen: ts` while REQUESTED@dns_log
+/// carries `timestamp: ts` (two different `ts` columns). Without the guard,
+/// `r.timestamp` (edge property, correctly `r.ts`) was rewritten to `a.seen` —
+/// wrong value on matched rows AND non-NULL on OPTIONAL-miss rows where Cypher
+/// requires NULL.
+///
+/// Locks: the edge property stays on the edge alias; the non-colliding anchor
+/// properties (`a.ip`, `a.port`) still forward-resolve through the CTE (#475
+/// fix retained); determinism.
+///
+/// Live-verified on the zeek fixture: 16 rows byte-identical to hand-written
+/// ground truth — matched rows carry dns_log's ts (1700000001…), OPTIONAL-miss
+/// rows have `r.timestamp` NULL.
+///
+/// Residual known limitation (documented at the guard): the SHADOWED anchor
+/// property itself (`a.seen`) still resolves to the edge column (pre-#475
+/// behavior for that column) — disambiguating needs extraction-time
+/// provenance.
+#[tokio::test]
+async fn denorm_optional_edge_column_not_hijacked_by_anchor_475() {
+    let schema = load_schema("schemas/test/zeek_merged_collision.yaml");
+    let repro = "MATCH (a:IP) OPTIONAL MATCH (a)-[r:REQUESTED]->(d:Domain) \
+                 RETURN a.ip, a.port, r.timestamp, d.name";
+
+    let first = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+    for _ in 0..10 {
+        let again = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#475 guard: collision-shape render is nondeterministic:\n\
+             FIRST:\n{first}\nAGAIN:\n{again}"
+        );
+    }
+
+    // The EDGE-OWNED property must stay on the LEFT-JOINed edge alias (r) so
+    // it is NULL-extended on OPTIONAL-miss rows…
+    assert!(
+        first.contains(r#"r.ts AS "r.timestamp""#),
+        "#475 guard: r.timestamp must stay sourced from the edge row's ts \
+         column:\n{first}"
+    );
+    // …and must NEVER be hijacked onto the anchor CTE.
+    assert!(
+        !first.contains(r#"a.seen AS "r.timestamp""#),
+        "#475 guard: edge-owned r.timestamp was hijacked onto the anchor CTE \
+         (wrong value on matched rows, non-NULL on OPTIONAL-miss rows):\n{first}"
+    );
+    // The #475 fix itself is retained: non-colliding anchor properties still
+    // forward-resolve through the __denorm_scan CTE.
+    assert!(
+        first.contains(r#"a.ip AS "a.ip""#) && first.contains(r#"a.port AS "a.port""#),
+        "#475 guard: anchor properties must still resolve through the CTE:\n{first}"
+    );
+}
+
 /// #481 regression: on the coupled-denormalized `zeek_merged_test` schema, a
 /// 2-hop `ACCESSED` chain `(a:IP)->(b:IP)->(c:IP)` resolved the MIDDLE node's
 /// property binding by iterating `PlanCtx::pattern_contexts` (a `HashMap`) and
