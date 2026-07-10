@@ -4203,30 +4203,35 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
     if plan.union.0.is_some() {
         sql.push_str(&plan.ctes.to_sql());
 
-        // #487: A Cypher-level UNION whose arms carry their own aggregation or
-        // GROUP BY must render each arm as a complete standalone query. The
-        // hoisting machinery below (outer aggregate SELECT over a `__union`
-        // subquery of de-aggregated branches) is only valid for planner-internal
-        // unions, where the union spans ONE logical pattern. Applying it to a
-        // Cypher UNION computes the aggregate over the combined rows instead of
-        // per arm — silently wrong results.
+        // #487/#512/#513: EVERY arm of a Cypher-level UNION is an independent
+        // query — its own aggregation, GROUP BY, HAVING, ORDER BY, SKIP and
+        // LIMIT bind WITHIN the arm and must never be hoisted over (or leak
+        // into) the union as a whole. The hoisting machinery below (outer
+        // aggregate SELECT over a `__union` subquery of de-aggregated
+        // branches, ORDER BY-column-injection into every branch, etc.) is
+        // only valid for planner-internal unions, where the union spans ONE
+        // logical pattern over several tables.
+        //
+        // #487 originally gated this on the union containing an aggregate
+        // somewhere (`render_cypher_union_arm` was new, so gating narrowly
+        // avoided touching the well-exercised non-aggregated path). But
+        // `render_cypher_union_arm` already handles the non-aggregated case
+        // correctly too (see its own doc comment): per-arm ORDER BY / SKIP /
+        // LIMIT are wrapped in a `SELECT * FROM (...)` subselect (bound to
+        // that arm only — #512) and, for Databricks, that subselect is itself
+        // parenthesized before the set-operator keyword (a bare per-arm
+        // ORDER BY/LIMIT is a Spark parse error mid-chain, and silently binds
+        // to the WHOLE union as the last arm — #513). The OLD path below
+        // (`render_union_branch_sql`) does neither: it hoists a bare
+        // `ORDER BY`/`LIMIT` after the branch's own subquery with no
+        // Databricks parenthesization, and (for the non-wrapped simple-branch
+        // shape) has no per-arm modifier handling at all. Routing every
+        // Cypher union arm — aggregated or not — through
+        // `render_cypher_union_arm` unifies both fixes: there is no second,
+        // parallel per-arm-modifier implementation for the non-aggregated
+        // case to keep in sync.
         {
-            let cypher_union_per_arm =
-                plan.union.0.as_ref().is_some_and(|u| {
-                    u.is_cypher_union
-                        && (plan
-                            .select
-                            .items
-                            .iter()
-                            .any(|item| render_expr_contains_aggregate(&item.expression))
-                            || !plan.group_by.0.is_empty()
-                            || u.input.iter().any(|arm| {
-                                !arm.group_by.0.is_empty()
-                                    || arm.select.items.iter().any(|item| {
-                                        render_expr_contains_aggregate(&item.expression)
-                                    })
-                            }))
-                });
+            let cypher_union_per_arm = plan.union.0.as_ref().is_some_and(|u| u.is_cypher_union);
             if cypher_union_per_arm {
                 let union = plan.union.0.as_ref().expect("checked above");
                 let union_type_str = match union.union_type {
