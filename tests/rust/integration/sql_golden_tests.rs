@@ -2817,6 +2817,38 @@ async fn denorm_shared_node_correlation_not_cartesian_482() {
         sql.contains(r#""id.orig_h""#) && sql.contains(r#""id.resp_h""#) && sql.contains(" AND "),
         "#482 [{both_shared}]: both shared nodes must be correlated:\n{sql}"
     );
+
+    // Cycle: hop 2 shares BOTH endpoints with hop 1 in crossed roles
+    // (b = hop1.to = hop2.from, a = hop1.from = hop2.to). One condition
+    // alone is a silent under-constraint (#482 review F4; live-verified:
+    // 4 rows vs the single-condition superset).
+    let cycle = "MATCH (a:IP)-[:ACCESSED]->(b:IP)-[:ACCESSED]->(a) RETURN a.ip, b.ip";
+    let sql = normalize(&render(&schema, cycle, SqlDialect::ClickHouse).await);
+    assert!(
+        !sql.contains("ON 1 = 1"),
+        "#482 [{cycle}]: cartesian ON 1 = 1:\n{sql}"
+    );
+    assert!(
+        sql.contains(r#""id.orig_h""#) && sql.contains(r#""id.resp_h""#) && sql.contains(" AND "),
+        "#482 [{cycle}]: cycle needs BOTH crossed-role join conditions:\n{sql}"
+    );
+
+    // Triangle: the third edge shares its FROM with edge 1's FROM and its
+    // TO with edge 2's TO — both links must be emitted (#482 review F4;
+    // live-verified on an injected chain: 1 row vs main's 22).
+    let triangle = "MATCH (a:IP)-[:ACCESSED]->(b:IP), (b)-[:ACCESSED]->(c:IP), \
+                    (a)-[:ACCESSED]->(c) RETURN a.ip, b.ip, c.ip";
+    let sql = normalize(&render(&schema, triangle, SqlDialect::ClickHouse).await);
+    assert!(
+        !sql.contains("ON 1 = 1"),
+        "#482 [{triangle}]: cartesian ON 1 = 1:\n{sql}"
+    );
+    assert_eq!(
+        sql.matches(r#""id.orig_h" = "#).count() + sql.matches(r#""id.resp_h" = "#).count(),
+        3,
+        "#482 [{triangle}]: expected 3 embedded-id join equalities \
+         (edge 2's b-link; edge 3's a-link AND c-link):\n{sql}"
+    );
 }
 
 /// #482 regression (failure 2): cross-pattern WHERE correlation between two
