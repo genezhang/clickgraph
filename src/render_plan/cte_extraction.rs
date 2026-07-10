@@ -1127,6 +1127,49 @@ pub(crate) fn conjunct_has_unresolvable_entity_ref(
     }
 }
 
+/// #466 round 4 (review nit): human-readable description of the offending
+/// part of an unresolvable conjunct for UnsupportedFeature messages —
+/// instead of dumping the internal AST Debug format.
+pub(crate) fn describe_unresolvable_conjunct(
+    expr: &crate::query_planner::logical_expr::LogicalExpr,
+    node_aliases: &[&str],
+) -> String {
+    use crate::query_planner::logical_expr::LogicalExpr as LE;
+    fn first_offender(expr: &LE, aliases: &[&str]) -> Option<String> {
+        match expr {
+            LE::TableAlias(t) if aliases.contains(&t.0.as_str()) => {
+                Some(format!("a whole-entity reference to '{}'", t.0))
+            }
+            LE::ExistsSubquery(_) => Some("an EXISTS subquery".to_string()),
+            LE::InSubquery(_) => Some("an IN subquery".to_string()),
+            LE::PatternCount(_) => Some("a pattern-count expression".to_string()),
+            LE::PathPattern(_) => Some("a path-pattern expression".to_string()),
+            LE::OperatorApplicationExp(op) | LE::Operator(op) => {
+                op.operands.iter().find_map(|o| first_offender(o, aliases))
+            }
+            LE::ScalarFnCall(f) => f.args.iter().find_map(|a| first_offender(a, aliases)),
+            LE::AggregateFnCall(f) => f.args.iter().find_map(|a| first_offender(a, aliases)),
+            LE::List(items) => items.iter().find_map(|i| first_offender(i, aliases)),
+            LE::Case(c) => c
+                .expr
+                .as_deref()
+                .and_then(|e| first_offender(e, aliases))
+                .or_else(|| {
+                    c.when_then.iter().find_map(|(w, t)| {
+                        first_offender(w, aliases).or_else(|| first_offender(t, aliases))
+                    })
+                })
+                .or_else(|| {
+                    c.else_expr
+                        .as_deref()
+                        .and_then(|e| first_offender(e, aliases))
+                }),
+            _ => None,
+        }
+    }
+    first_offender(expr, node_aliases).unwrap_or_else(|| "an unsupported expression".to_string())
+}
+
 /// #466: What one endpoint alias of an undirected/multi-type `pattern_union`
 /// branch is bound to, for per-branch WHERE resolution. Bindings differ per
 /// combination and — for undirected patterns — per traversal orientation
@@ -4362,8 +4405,10 @@ pub fn extract_ctes_with_context(
                             }) {
                                 return Err(RenderBuildError::UnsupportedFeature(format!(
                                     "WHERE predicate on a multi-type/undirected pattern \
-                                     contains a whole-entity or subquery reference that \
-                                     cannot be resolved per UNION branch: {bad:?}"
+                                     contains {} which cannot be resolved per UNION \
+                                     branch; rewrite the filter using node properties, \
+                                     id(), or labels()",
+                                    describe_unresolvable_conjunct(bad, &pattern_node_aliases)
                                 )));
                             }
                             parts

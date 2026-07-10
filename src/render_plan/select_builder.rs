@@ -1132,6 +1132,38 @@ impl SelectBuilder for LogicalPlan {
                                     alias.0
                                 );
 
+                                // #466 round 4: a pattern_union endpoint binds a
+                                // DIFFERENT label per branch — a single label's id
+                                // column is NULL on the other branches (and the raw
+                                // node alias does not even exist in the outer query,
+                                // whose FROM is the CTE). Use the CTE's
+                                // label-agnostic start_id/end_id instead
+                                // (left_connection binds start, right binds end;
+                                // real ids, not the toInt64(0) placeholder the
+                                // generic function mapping would emit).
+                                if let Some((rel_alias, is_left)) =
+                                    self.pattern_union_endpoint_role(&alias.0)
+                                {
+                                    let id_col = if is_left { "start_id" } else { "end_id" };
+                                    log::debug!(
+                                        "🔍 SelectBuilder: id({}) -> {}.{} (pattern_union endpoint)",
+                                        alias.0,
+                                        rel_alias,
+                                        id_col
+                                    );
+                                    select_items.push(SelectItem {
+                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: RenderTableAlias(rel_alias),
+                                            column: PropertyValue::Column(id_col.to_string()),
+                                        }),
+                                        col_alias: item
+                                            .col_alias
+                                            .as_ref()
+                                            .map(|ca| ColumnAlias(ca.0.clone())),
+                                    });
+                                    continue;
+                                }
+
                                 // Get schema from plan_ctx to find the ID column
                                 if let Some(ctx) = plan_ctx {
                                     if let Some(typed_var) = ctx.lookup_variable(&alias.0) {

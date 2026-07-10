@@ -598,9 +598,13 @@ fn rewrite_predicate_for_pattern_cte(
             &[left_alias, right_alias],
         ) {
             return Err(RenderBuildError::UnsupportedFeature(format!(
-                "WHERE predicate on a multi-type/undirected pattern contains a \
-                 whole-entity or subquery reference that cannot be resolved \
-                 against the pattern UNION: {part:?}"
+                "WHERE predicate on a multi-type/undirected pattern contains {} \
+                 which cannot be resolved against the pattern UNION; rewrite the \
+                 filter using node properties, id(), or labels()",
+                crate::render_plan::cte_extraction::describe_unresolvable_conjunct(
+                    part,
+                    &[left_alias, right_alias]
+                )
             )));
         }
         if let Some(sql) =

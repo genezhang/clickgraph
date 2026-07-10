@@ -1578,6 +1578,55 @@ impl fmt::Display for LogicalPlan {
 }
 
 impl LogicalPlan {
+    /// #466: is `alias` an ENDPOINT of a deferred-UNION (`pattern_combinations`)
+    /// GraphRel in this plan — i.e. a node whose label/table binding varies per
+    /// `pattern_union` branch? Returns `(rel_alias, is_left)` so callers can
+    /// reference the CTE's label-agnostic `start_id`/`end_id` columns
+    /// (left_connection binds start, right_connection binds end — the reverse
+    /// orientation branches keep that mapping by swapping the projected
+    /// columns, not the alias roles).
+    ///
+    /// Single-label resolution (e.g. `id(alias)` → one label's id column) is
+    /// WRONG for such an alias: the picked column is NULL on every other
+    /// label's branch, silently dropping rows.
+    pub fn pattern_union_endpoint_role(&self, alias: &str) -> Option<(String, bool)> {
+        match self {
+            LogicalPlan::GraphRel(rel) => {
+                if rel.pattern_combinations.is_some() {
+                    if rel.left_connection == alias {
+                        return Some((rel.alias.clone(), true));
+                    }
+                    if rel.right_connection == alias {
+                        return Some((rel.alias.clone(), false));
+                    }
+                }
+                rel.left
+                    .pattern_union_endpoint_role(alias)
+                    .or_else(|| rel.center.pattern_union_endpoint_role(alias))
+                    .or_else(|| rel.right.pattern_union_endpoint_role(alias))
+            }
+            LogicalPlan::GraphNode(node) => node.input.pattern_union_endpoint_role(alias),
+            LogicalPlan::Filter(f) => f.input.pattern_union_endpoint_role(alias),
+            LogicalPlan::Projection(p) => p.input.pattern_union_endpoint_role(alias),
+            LogicalPlan::GraphJoins(gj) => gj.input.pattern_union_endpoint_role(alias),
+            LogicalPlan::GroupBy(gb) => gb.input.pattern_union_endpoint_role(alias),
+            LogicalPlan::OrderBy(ob) => ob.input.pattern_union_endpoint_role(alias),
+            LogicalPlan::Skip(s) => s.input.pattern_union_endpoint_role(alias),
+            LogicalPlan::Limit(l) => l.input.pattern_union_endpoint_role(alias),
+            LogicalPlan::Cte(cte) => cte.input.pattern_union_endpoint_role(alias),
+            LogicalPlan::WithClause(wc) => wc.input.pattern_union_endpoint_role(alias),
+            LogicalPlan::CartesianProduct(cp) => cp
+                .left
+                .pattern_union_endpoint_role(alias)
+                .or_else(|| cp.right.pattern_union_endpoint_role(alias)),
+            LogicalPlan::Union(u) => u
+                .inputs
+                .iter()
+                .find_map(|i| i.pattern_union_endpoint_role(alias)),
+            _ => None,
+        }
+    }
+
     pub fn get_empty_match_plan() -> Self {
         LogicalPlan::Projection(Projection {
             input: Arc::new(LogicalPlan::Filter(Filter {

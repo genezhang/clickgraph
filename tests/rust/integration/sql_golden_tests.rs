@@ -2852,6 +2852,95 @@ async fn pattern_union_unresolvable_where_conjuncts_error_cleanly() {
     }
 }
 
+/// #466 round 4 (adversarial-review blocking finding): `id(alias)` on a
+/// `pattern_union` endpoint must resolve LABEL-AGNOSTICALLY to the CTE's
+/// start_id/end_id — never to ONE label's id column.
+///
+/// Previously FilterTagging pre-resolved `id(o)` to a single label's id
+/// property (`o.post_id`), which the per-branch WHERE resolver then NULLed
+/// on every other label's branches: STD directed `WHERE id(o)='1'` returned
+/// 6 instead of 10 (regression vs main, which mapped id() to the
+/// label-agnostic `r.end_id` in the outer WHERE). FilterTagging now keeps
+/// id() unresolved for pattern_union endpoints
+/// (`LogicalPlan::pattern_union_endpoint_role`), restoring the outer
+/// start_id/end_id rewrite. Live: STD directed `id(o)='1'` → 10; STD
+/// undirected `id(n)='1'` → 16 (User#1 AND Post#1 rows — ClickGraph string
+/// ids are label-ambiguous, matching main's outer-rewrite semantics); FK
+/// undirected `id(o)='5'` → 1 (the reverse-orientation row; main returned 0
+/// because it had no reverse rows at all).
+///
+/// Sibling (same root): `RETURN id(o)` on a pattern_union endpoint used to
+/// fall through to the generic function mapping's `toInt64(0)` placeholder
+/// (FK: silent 0,0,0,0) or an invalid single-label column (STD: loud DB
+/// error). SelectBuilder now maps it to the CTE's start_id/end_id — real
+/// ids on both schemas.
+#[tokio::test]
+async fn pattern_union_id_function_is_label_agnostic() {
+    let std_schema = load_schema(SchemaId::Standard.yaml_path());
+    let fk = load_schema(SchemaId::FkEdge.yaml_path());
+
+    // WHERE id(o): outer label-agnostic end_id comparison, no per-branch
+    // single-label id column.
+    let sql = render(
+        &std_schema,
+        "MATCH (n)-[r]->(o) WHERE id(o) = '1' RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("r.end_id = '1'"),
+        "id(o) must map to the label-agnostic CTE end_id in the outer WHERE:\n{sql}"
+    );
+    assert!(
+        !sql.contains("post_id = '1'") && !sql.contains("user_id = '1'"),
+        "id(o) must NOT degrade to a single label's id column (NULL on every \
+         other label's branch):\n{sql}"
+    );
+
+    // Anchor side: id(n) → start_id.
+    let sql = render(
+        &std_schema,
+        "MATCH (n)-[r]-(o) WHERE id(n) = '1' RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("r.start_id = '1'"),
+        "id(n) must map to the label-agnostic CTE start_id:\n{sql}"
+    );
+
+    // RETURN id(o): real per-row id from the CTE, not the toInt64(0)
+    // placeholder and not a nonexistent single-label column.
+    let sql = render(
+        &fk,
+        "MATCH (n)-[r]-(o) RETURN id(o) AS i LIMIT 4",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("r.end_id AS \"i\""),
+        "RETURN id(o) must project the CTE's end_id:\n{sql}"
+    );
+    assert!(
+        !sql.contains("toInt64(0)"),
+        "RETURN id(o) must not emit the placeholder zero literal:\n{sql}"
+    );
+
+    // Labeled-anchor control: no pattern_union involved — id() resolution
+    // unchanged (single-label id column on the plain join path).
+    let sql = render(
+        &std_schema,
+        "MATCH (a:User)-[r:FOLLOWS]->(o) WHERE id(a) = '1' RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        !sql.contains("pattern_union") && sql.contains("user_id"),
+        "labeled-anchor id(a) must keep the single-label resolution on the \
+         plain join path:\n{sql}"
+    );
+}
+
 /// #467 FIX (was P0.5 characterization): `MATCH (n) RETURN count(n)` over a
 /// heterogeneous (multi-label) unlabeled node scan used to render
 /// `count(<id column of ONE arbitrary label>)` over a UNION of per-label

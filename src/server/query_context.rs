@@ -85,6 +85,14 @@ pub struct QueryContext {
     /// plain tables and whose built-but-unreferenced CTE is dead-eliminated).
     /// FROM/JOIN extraction runs before filter extraction in every render
     /// arm, so registrations are visible to the filter builder.
+    ///
+    /// NOTE (reviewer, round 4): entries are never cleared between subplans
+    /// of one query, so a CTE registered while rendering one subplan stays
+    /// visible while rendering later subplans of the same task. Since CTE
+    /// names are `pattern_union_{rel_alias}` and a rel alias maps to the
+    /// same pattern within a query, no incorrect skip has been reproduced;
+    /// if per-subplan isolation is ever needed, scope this set per render
+    /// pass instead.
     pub pattern_union_scope_ctes: HashSet<String>,
 
     /// VLP CTE outer-query aliases: cte_name → vlp_alias (e.g., "vlp_u1_u2" → "vt0")

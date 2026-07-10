@@ -1222,6 +1222,29 @@ impl FilterTagging {
                     if let LogicalExpr::TableAlias(ref alias) = fn_call.args[0] {
                         let alias_str = &alias.0;
 
+                        // #466 round 4: an endpoint of a deferred-UNION
+                        // (pattern_combinations) pattern binds to a DIFFERENT
+                        // label per `pattern_union` branch. Resolving id() to
+                        // ONE label's id column here (via the alias's single
+                        // registered label) is silently wrong — that column is
+                        // NULL on every other label's branch, dropping rows
+                        // (e.g. `WHERE id(o)='1'` on the social schema became
+                        // `o.post_id = '1'` and lost the FOLLOWS/User rows).
+                        // Keep id() unresolved: the pattern_union outer
+                        // rewrite maps it to the CTE's label-agnostic
+                        // start_id/end_id columns instead.
+                        if plan
+                            .map(|p| p.pattern_union_endpoint_role(alias_str).is_some())
+                            .unwrap_or(false)
+                        {
+                            log::debug!(
+                                "FilterTagging: id({alias_str}) targets a pattern_union \
+                                 endpoint — keeping id() unresolved for the CTE-level \
+                                 start_id/end_id rewrite"
+                            );
+                            return Ok(LogicalExpr::ScalarFnCall(fn_call));
+                        }
+
                         // Get the table context to determine if it's a node or relationship
                         if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias_str) {
                             if let Some(label) = table_ctx.get_label_opt() {
