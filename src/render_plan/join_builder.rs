@@ -105,6 +105,130 @@ fn find_graph_rel(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_p
     }
 }
 
+/// #474: Attach the OPTIONAL-side node predicate to its LEFT JOIN's `pre_filter`.
+///
+/// For a plain `OPTIONAL MATCH` (no WITH barrier), a WHERE predicate that
+/// references only the optional NODE must filter that node's LEFT JOIN subquery
+/// so non-matching anchor rows remain NULL-extended. In the node-is-edge shapes
+/// (FK-edge / denormalized — the node table IS the traversed edge) the whole
+/// optional pattern is a single LEFT JOIN, but the join-building branches drop
+/// the predicate: the reversed-anchor case (optional node = left_connection)
+/// never emits it, and the forward case emits it on an input-join the merge then
+/// discards as an alias duplicate — so it is either lost or (via the mechanism
+/// that keeps optional-only predicates out of the outer WHERE) dropped entirely.
+/// This walks the optional GraphRels and re-attaches the optional-node predicate
+/// onto that node's LEFT JOIN — but only when the safety gate (below) confirms
+/// that single join gates the entire optional pattern.
+///
+/// The anchor defaults to `left_connection` when unset, matching the join-side
+/// default in the GraphRel path (`anchor_on_right == false`). The relationship
+/// predicate is handled correctly upstream and is deliberately left untouched.
+/// Idempotent: a predicate already present in the join's pre_filter is skipped.
+fn apply_optional_node_pre_filters(input: &LogicalPlan, joins: &mut [Join]) {
+    fn collect_optional_graph_rels<'a>(
+        plan: &'a LogicalPlan,
+        out: &mut Vec<&'a crate::query_planner::logical_plan::GraphRel>,
+    ) {
+        match plan {
+            LogicalPlan::GraphRel(gr) => {
+                if gr.is_optional.unwrap_or(false) {
+                    out.push(gr);
+                }
+                collect_optional_graph_rels(&gr.left, out);
+                collect_optional_graph_rels(&gr.center, out);
+                collect_optional_graph_rels(&gr.right, out);
+            }
+            LogicalPlan::GraphNode(gn) => collect_optional_graph_rels(&gn.input, out),
+            LogicalPlan::Projection(p) => collect_optional_graph_rels(&p.input, out),
+            LogicalPlan::Filter(f) => collect_optional_graph_rels(&f.input, out),
+            LogicalPlan::GroupBy(g) => collect_optional_graph_rels(&g.input, out),
+            LogicalPlan::OrderBy(o) => collect_optional_graph_rels(&o.input, out),
+            LogicalPlan::Limit(l) => collect_optional_graph_rels(&l.input, out),
+            LogicalPlan::Skip(s) => collect_optional_graph_rels(&s.input, out),
+            LogicalPlan::CartesianProduct(cp) => {
+                collect_optional_graph_rels(&cp.left, out);
+                collect_optional_graph_rels(&cp.right, out);
+            }
+            _ => {}
+        }
+    }
+
+    // True if `pre_filter` already contains `pred` as a top-level AND conjunct
+    // (or equals it), so we never double-apply.
+    fn pre_filter_contains(pre_filter: &RenderExpr, pred: &RenderExpr) -> bool {
+        if pre_filter == pred {
+            return true;
+        }
+        if let RenderExpr::OperatorApplicationExp(op) = pre_filter {
+            if matches!(op.operator, Operator::And) {
+                return op.operands.iter().any(|o| pre_filter_contains(o, pred));
+            }
+        }
+        false
+    }
+
+    let mut opt_rels = Vec::new();
+    collect_optional_graph_rels(input, &mut opt_rels);
+
+    for gr in opt_rels {
+        if gr.where_predicate.is_none() {
+            continue;
+        }
+        // Anchor defaults to the left connection when unset (matches join-side default).
+        let anchor = gr
+            .anchor_connection
+            .as_deref()
+            .unwrap_or(gr.left_connection.as_str());
+        let optional_node = if anchor == gr.right_connection.as_str() {
+            &gr.left_connection
+        } else {
+            &gr.right_connection
+        };
+
+        let (node_pred, _remaining) =
+            extract_predicates_for_alias_logical(&gr.where_predicate, optional_node);
+        let Some(pred) = node_pred else {
+            continue;
+        };
+
+        let Some(join) = joins
+            .iter_mut()
+            .find(|j| &j.table_alias == optional_node && j.join_type == super::JoinType::Left)
+        else {
+            continue;
+        };
+
+        // SAFETY GATE — only when the optional node's LEFT JOIN gates the ENTIRE
+        // optional pattern by itself. That holds when the node connects directly
+        // to the anchor (its ON does NOT reference the relationship alias), i.e.
+        // the node-is-edge / FK-edge / denormalized shapes where the node table
+        // IS the traversed edge: a single LEFT JOIN, so a pre_filter subquery on
+        // it correctly drops non-matching rows while keeping anchors NULL-extended.
+        //
+        // For the traditional separate-edge shape the node joins THROUGH an
+        // unfiltered edge LEFT JOIN (ON references the rel alias); filtering only
+        // the node subquery would leave the edge row alive and manufacture a
+        // spurious NULL-extended duplicate. Those shapes are left to their
+        // existing placement (see #474 report) rather than made wrong a new way.
+        let connects_via_rel = join
+            .joining_on
+            .iter()
+            .any(|cond| condition_references_alias(cond, &gr.alias));
+        if connects_via_rel {
+            continue;
+        }
+
+        join.pre_filter = match join.pre_filter.take() {
+            Some(existing) if pre_filter_contains(&existing, &pred) => Some(existing),
+            Some(existing) => Some(RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: Operator::And,
+                operands: vec![existing, pred],
+            })),
+            None => Some(pred),
+        };
+    }
+}
+
 /// Collect all GraphRels with pattern_combinations from a CartesianProduct chain,
 /// in left-to-right order. Used to generate chained JOINs for multi-hop anonymous patterns.
 fn collect_pattern_union_chain(
@@ -1395,6 +1519,24 @@ impl JoinBuilder for LogicalPlan {
                         }
                     }
                 }
+
+                // #474: Recover an OPTIONAL MATCH predicate that references only the
+                // optional NODE. It must filter the LEFT JOIN subquery (pre_filter) so
+                // non-matching anchor rows stay NULL-extended — NOT the outer WHERE
+                // (which would silently drop them) and NOT be dropped entirely.
+                //
+                // The join-building branches above lose the optional-node predicate in
+                // two plain-OPTIONAL shapes:
+                //   - reversed anchor (optional node = left_connection): the extract_joins
+                //     GraphRel path only attaches left_node_pre_filter inside its
+                //     `right_is_nested` branch, so a plain reversed anchor drops it;
+                //   - forward anchor: extract_joins DOES attach right_node_pre_filter, but
+                //     the merge above skips that input_join as an alias duplicate of the
+                //     analyzer-supplied join (which carries no user pre_filter).
+                // The relationship-alias predicate is already handled correctly upstream,
+                // so this pass touches only the optional node's join. It is idempotent:
+                // it skips a predicate already present in the join's pre_filter.
+                apply_optional_node_pre_filters(&graph_joins.input, &mut joins);
 
                 joins
             }

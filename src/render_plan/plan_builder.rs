@@ -1136,6 +1136,17 @@ impl RenderPlanBuilder for LogicalPlan {
 
                     // 1. Render the Union as a CTE
                     let left_render = gr.left.to_render_plan(schema)?;
+                    // Capture the columns the denorm-scan CTE actually exposes (its
+                    // SELECT-item aliases, i.e. the Cypher *property* names). The LEFT
+                    // JOIN key on the CTE side MUST reference one of these — this is the
+                    // forward-resolution rule (CLAUDE.md rule 2). We snapshot them here
+                    // before `left_render` is consumed to build the CTE SQL below.
+                    let cte_exposed_columns: std::collections::HashSet<String> = left_render
+                        .select
+                        .items
+                        .iter()
+                        .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
+                        .collect();
                     // Find the node alias from the first Union branch
                     let node_alias = if let LogicalPlan::Union(union) = gr.left.as_ref() {
                         if let Some(LogicalPlan::GraphNode(gn)) =
@@ -1208,15 +1219,52 @@ impl RenderPlanBuilder for LogicalPlan {
                             // When the anchor node type doesn't match the edge's declared from_node
                             // (e.g., IP anchor for RESOLVED_TO which expects Domain), no mapping
                             // will be found and we'll generate an impossible join condition.
-                            let node_id = anchor_from_node_properties.as_ref().and_then(|props| {
-                                props.iter().find_map(|(prop_name, prop_val)| {
-                                    if prop_val.raw() == from_id {
-                                        Some(prop_name.clone())
-                                    } else {
-                                        None
-                                    }
+                            //
+                            // Multiple properties can map to the SAME db column: e.g. when the
+                            // node_id's Cypher name (`id.orig_h`) differs from a property that also
+                            // maps to that column (`ip: id.orig_h`), the anchor property map holds
+                            // BOTH `{ip -> id.orig_h}` and the raw self-mapping `{id.orig_h ->
+                            // id.orig_h}`. Only one of these is exposed as a column by the CTE
+                            // (`ip`); the other (`id.orig_h`) is deduplicated away. Iterating the
+                            // HashMap and picking the first match is nondeterministic and can select
+                            // the unexposed name, producing invalid SQL (issue #470).
+                            //
+                            // Resolve FORWARD through the CTE's exposed columns: among the
+                            // properties that map to from_id, deterministically pick the one the
+                            // denorm-scan CTE actually exposes.
+                            let mut mapped_props: Vec<String> = anchor_from_node_properties
+                                .as_ref()
+                                .map(|props| {
+                                    props
+                                        .iter()
+                                        .filter(|(_, prop_val)| prop_val.raw() == from_id)
+                                        .map(|(prop_name, _)| prop_name.clone())
+                                        .collect()
                                 })
-                            });
+                                .unwrap_or_default();
+                            // Deterministic tie-break for any residual ambiguity.
+                            mapped_props.sort();
+                            let node_id = if mapped_props.is_empty() {
+                                // No anchor property maps to the edge's from_id (type mismatch,
+                                // e.g. IP anchor for RESOLVED_TO which expects Domain). Fall through
+                                // to the impossible-join branch → always-NULL OPTIONAL MATCH.
+                                None
+                            } else if let Some(exposed) = mapped_props
+                                .iter()
+                                .find(|name| cte_exposed_columns.contains(name.as_str()))
+                            {
+                                Some(exposed.clone())
+                            } else {
+                                // Properties map to from_id but NONE is exposed by the CTE — the
+                                // join key cannot be resolved forward. Surface a clean planning
+                                // error rather than emitting invalid SQL.
+                                return Err(RenderBuildError::InvalidRenderPlan(format!(
+                                    "OPTIONAL denormalized join: edge from_id '{}' maps to anchor \
+                                     properties {:?}, but denorm-scan CTE '{}' exposes only {:?} — \
+                                     no forward-resolvable join key",
+                                    from_id, mapped_props, cte_name, cte_exposed_columns
+                                )));
+                            };
                             (
                                 edge_vs.source_table.clone(),
                                 gr.alias.clone(),

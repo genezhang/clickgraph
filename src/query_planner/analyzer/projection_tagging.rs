@@ -1319,58 +1319,87 @@ impl ProjectionTagging {
                                 // Using node_id instead of * ensures correct NULL handling with LEFT JOIN
                                 // (OPTIONAL MATCH): count(*) always counts the row even when the node is NULL,
                                 // while count(n.node_id) correctly returns 0 for unmatched optional patterns.
-                                let table_label = table_ctx.get_label_str().map_err(|e| {
-                                    AnalyzerError::PlanCtx {
-                                        pass: Pass::ProjectionTagging,
-                                        source: e,
-                                    }
-                                })?;
-
-                                // Resolve the node's ID column from schema
-                                let id_column = if graph_schema.is_denormalized_node(&table_label) {
-                                    let node_schema = graph_schema
-                                        .node_schema(&table_label)
-                                        .map_err(|e| AnalyzerError::GraphSchema {
+                                //
+                                // MULTI-LABEL (#467): An unlabeled `MATCH (n)` binds `n` to a UNION over
+                                // every node label. Each label's own id column is non-NULL only on its own
+                                // branch and NULL-padded on the others, so counting a single label's id
+                                // column silently drops every other label's rows (e.g. count(n.post_id)
+                                // over Post|User counted only Posts). We instead build a discriminator over
+                                // ALL candidate labels' id columns:
+                                //   - count(n)          -> count(coalesce(id_a, id_b, ...))
+                                //         non-NULL iff the node exists on that row (its own branch's id),
+                                //         and still NULL under OPTIONAL NULL-extension, so NULL-skipping holds.
+                                //   - count(DISTINCT n) -> count(DISTINCT tuple(id_a, id_b, ...))
+                                //         a tuple keeps each label's identity separate so id values that
+                                //         collide across labels (e.g. User 3 vs Post 3) are NOT merged.
+                                // A single-label node (labeled node, or a denormalized from/to union that
+                                // resolves to one label) collapses to exactly one id column and keeps the
+                                // original single-column behavior.
+                                let labels: Vec<String> = match table_ctx.get_labels() {
+                                    Some(ls) if !ls.is_empty() => ls.clone(),
+                                    _ => vec![table_ctx.get_label_str().map_err(|e| {
+                                        AnalyzerError::PlanCtx {
                                             pass: Pass::ProjectionTagging,
                                             source: e,
-                                        })?;
-                                    node_schema
-                                        .node_id
-                                        .columns()
-                                        .first()
-                                        .ok_or_else(|| AnalyzerError::SchemaNotFound(
-                                            format!("Node schema for label '{}' has no ID columns defined", table_label)
-                                        ))?
-                                        .to_string()
-                                } else {
-                                    let table_schema = graph_schema
-                                        .node_schema(&table_label)
-                                        .map_err(|e| AnalyzerError::GraphSchema {
-                                            pass: Pass::ProjectionTagging,
-                                            source: e,
-                                        })?;
-                                    table_schema
-                                        .node_id
-                                        .columns()
-                                        .first()
-                                        .ok_or_else(|| AnalyzerError::SchemaNotFound(
-                                            format!("Node schema for table '{}' has no ID columns defined", table_schema.table_name)
-                                        ))?
-                                        .to_string()
+                                        }
+                                    })?],
                                 };
 
-                                let property_expr = LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(t_alias.to_string()),
-                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(id_column),
-                                });
+                                // First id column for every candidate label, de-duplicated by column name
+                                // while preserving order.
+                                let mut id_columns: Vec<String> = Vec::new();
+                                for label in &labels {
+                                    let node_schema =
+                                        graph_schema.node_schema(label).map_err(|e| {
+                                            AnalyzerError::GraphSchema {
+                                                pass: Pass::ProjectionTagging,
+                                                source: e,
+                                            }
+                                        })?;
+                                    let id_col = node_schema
+                                        .node_id
+                                        .columns()
+                                        .first()
+                                        .ok_or_else(|| AnalyzerError::SchemaNotFound(
+                                            format!("Node schema for label '{}' has no ID columns defined", label)
+                                        ))?
+                                        .to_string();
+                                    if !id_columns.contains(&id_col) {
+                                        id_columns.push(id_col);
+                                    }
+                                }
+
+                                let id_access = |col: &str| {
+                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                        table_alias: TableAlias(t_alias.to_string()),
+                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                            col.to_string(),
+                                        ),
+                                    })
+                                };
+
+                                // The value(s) that identify the node, NULL-correct under OPTIONAL.
+                                let identity_expr = if id_columns.len() == 1 {
+                                    id_access(&id_columns[0])
+                                } else if is_distinct {
+                                    LogicalExpr::ScalarFnCall(ScalarFnCall {
+                                        name: "tuple".to_string(),
+                                        args: id_columns.iter().map(|c| id_access(c)).collect(),
+                                    })
+                                } else {
+                                    LogicalExpr::ScalarFnCall(ScalarFnCall {
+                                        name: "coalesce".to_string(),
+                                        args: id_columns.iter().map(|c| id_access(c)).collect(),
+                                    })
+                                };
 
                                 let arg = if is_distinct {
                                     LogicalExpr::OperatorApplicationExp(OperatorApplication {
                                         operator: Operator::Distinct,
-                                        operands: vec![property_expr],
+                                        operands: vec![identity_expr],
                                     })
                                 } else {
-                                    property_expr
+                                    identity_expr
                                 };
 
                                 item.expression = LogicalExpr::AggregateFnCall(AggregateFnCall {
