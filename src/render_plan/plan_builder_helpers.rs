@@ -429,6 +429,157 @@ pub(super) fn find_inner_optional_denorm_graphrel(plan: &LogicalPlan) -> Option<
     }
 }
 
+/// #510: when `alias` is the anchor of an OPTIONAL denorm CTE + LEFT JOIN
+/// pattern (the `__denorm_scan_{alias}` CTE built in `plan_builder.rs`,
+/// shared machinery with #502/#505/#506/#507), return the Cypher property
+/// name that CTE exposes for the node's identity column — the SAME
+/// forward-resolution #475 already does for the SELECT list, needed here for
+/// the WITH-clause's GROUP BY key construction
+/// (`expand_table_alias_to_group_by_id_only` in `plan_builder_utils.rs`).
+///
+/// That function's generic ID lookups (CTE-schema registry, then
+/// `find_id_column_for_alias` reading the raw `ViewScan.id_column`) don't
+/// know about this special CTE at all — it isn't registered in the general
+/// `cte_schemas`/`cte_references` maps the WITH-CTE compiler tracks — so
+/// they fall through to the RAW physical column name (e.g. `"id.orig_h"`),
+/// producing `GROUP BY a."id.orig_h"` against a CTE that only exposes the
+/// Cypher property name (`"ip"`) — invalid SQL. This function is checked
+/// FIRST, before those generic fallbacks, whenever the alias might be this
+/// special anchor.
+///
+/// Returns `None` (caller falls through to the generic lookups, unaffected)
+/// when `alias` isn't this anchor pattern, or when the anchor's identity
+/// property can't be forward-resolved (mirrors #507's same-shaped
+/// resolution, which also returns `None` conservatively in that case).
+pub(super) fn denorm_scan_cte_anchor_id_property(
+    plan: &LogicalPlan,
+    alias: &str,
+) -> Option<String> {
+    let (props, id_col) = denorm_scan_cte_anchor_props_and_id_col(plan, alias)?;
+
+    // A node's role-specific property map can hold BOTH a genuine Cypher
+    // alias for the id column (e.g. `ip -> id.orig_h`) AND a raw
+    // self-mapping entry (`id.orig_h -> id.orig_h`, present when the schema
+    // also declares the physical column name as its own Cypher property).
+    // The CTE only ever exposes the FORMER as a real column — the
+    // self-mapped entry's "property name" IS the raw db column text, so
+    // preferring it would reproduce exactly the bug this function fixes.
+    // Exclude self-mapping candidates first; only fall back to one if that
+    // leaves nothing (still better than the raw `ViewScan.id_column` the
+    // caller would otherwise use).
+    let mut candidates: Vec<&String> = props
+        .iter()
+        .filter(|(k, v)| v.raw() == id_col.as_str() && k.as_str() != id_col.as_str())
+        .map(|(k, _)| k)
+        .collect();
+    if candidates.is_empty() {
+        candidates = props
+            .iter()
+            .filter(|(_, v)| v.raw() == id_col.as_str())
+            .map(|(k, _)| k)
+            .collect();
+    }
+    candidates.sort();
+    candidates.into_iter().next().cloned()
+}
+
+/// #510 (SELECT-list sibling): the same anchor-detection this module already
+/// does for the GROUP BY key (`denorm_scan_cte_anchor_id_property`), but
+/// returning EVERY Cypher property the `__denorm_scan_{alias}` CTE exposes
+/// — `(cypher_name, cte_column_name)` pairs, where the CTE column name is
+/// identical to the Cypher name (the anchor scan CTE projects each
+/// role-specific property entry under its own Cypher property name, never a
+/// raw db column). Self-mapping entries (property name literally equal to
+/// the raw db column text — see `denorm_scan_cte_anchor_id_property`'s doc)
+/// are excluded so callers never emit a reference to a column the CTE
+/// doesn't actually have.
+///
+/// Used by `expand_table_alias_to_select_items` (`plan_builder_utils.rs`) to
+/// build the WITH-clause's auto-expanded SELECT items for a pass-through
+/// anchor alias (`WITH a, count(r) AS c`): that function's generic lookup
+/// (`LogicalPlan::get_properties_with_table_alias`) resolves alias binding
+/// STRUCTURALLY against the ORIGINAL (pre-render) LogicalPlan tree, where
+/// the anchor node is still nested inside the OPTIONAL edge's GraphRel — so
+/// it (correctly, for the ordinary embedded-denorm case #493/#475 target)
+/// returns the EDGE alias as the "actual" table alias. For THIS special
+/// CTE + LEFT JOIN pattern that's wrong: post-render, the anchor's own
+/// properties come from the `__denorm_scan_{alias}` CTE, not the
+/// LEFT-JOINed (and NULL-extended on an OPTIONAL-miss row) edge alias.
+pub(super) fn denorm_scan_cte_anchor_properties(
+    plan: &LogicalPlan,
+    alias: &str,
+) -> Option<Vec<(String, String)>> {
+    let (props, id_col) = denorm_scan_cte_anchor_props_and_id_col(plan, alias)?;
+    let exposed: Vec<(String, String)> = props
+        .iter()
+        .filter(|(k, _)| k.as_str() != id_col.as_str())
+        .map(|(k, _)| (k.clone(), k.clone()))
+        .collect();
+    if exposed.is_empty() {
+        None
+    } else {
+        Some(exposed)
+    }
+}
+
+/// Shared lookup behind `denorm_scan_cte_anchor_id_property` and
+/// `denorm_scan_cte_anchor_properties`: find the anchor Union node for
+/// `alias` (if `alias` is the anchor of an OPTIONAL denorm CTE + LEFT JOIN
+/// pattern) and return its own-role property map alongside the matched
+/// branch's physical `id_column`.
+fn denorm_scan_cte_anchor_props_and_id_col(
+    plan: &LogicalPlan,
+    alias: &str,
+) -> Option<(
+    std::collections::HashMap<String, crate::graph_catalog::expression_parser::PropertyValue>,
+    String,
+)> {
+    let inner = find_inner_optional_denorm_graphrel(plan)?;
+    let LogicalPlan::GraphRel(gr) = inner else {
+        return None;
+    };
+    let anchor_is_left = optional_denorm_union_anchor_is_left(gr)?;
+    let anchor_plan: &LogicalPlan = if anchor_is_left {
+        gr.left.as_ref()
+    } else {
+        gr.right.as_ref()
+    };
+    let LogicalPlan::Union(union) = anchor_plan else {
+        return None;
+    };
+
+    // Confirm this Union's own node alias is the one we're looking for —
+    // `find_inner_optional_denorm_graphrel` searches the WHOLE plan tree
+    // (including nested/chained OPTIONAL hops, #505), so it may return a
+    // DIFFERENT hop's anchor than the alias we were asked about.
+    let node_alias = union.inputs.first().and_then(|input| {
+        if let LogicalPlan::GraphNode(gn) = input.as_ref() {
+            Some(gn.alias.clone())
+        } else {
+            None
+        }
+    })?;
+    if node_alias != alias {
+        return None;
+    }
+
+    // Same derivation as #507: find the branch whose ViewScan carries the
+    // anchor's own from/to-role properties, and that branch's own
+    // `id_column` — then the Cypher property name(s) that map to it are
+    // exactly what the CTE exposes as columns (the CTE projects each
+    // role-specific property entry under its Cypher property name).
+    union.inputs.iter().find_map(|input| {
+        let LogicalPlan::GraphNode(gn) = input.as_ref() else {
+            return None;
+        };
+        let LogicalPlan::ViewScan(vs) = gn.input.as_ref() else {
+            return None;
+        };
+        crate::graph_catalog::pattern_schema::edge_side_node_properties(vs, anchor_is_left)
+            .map(|p| (p.clone(), vs.id_column.clone()))
+    })
+}
+
 /// Clone `plan`, clearing `anchor_connection` on every `GraphRel` node
 /// encountered.
 ///

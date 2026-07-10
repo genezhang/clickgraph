@@ -5845,4 +5845,70 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
              instead of the optimized pass-through:\n{sql}"
         );
     }
+
+    /// #510: a WITH-clause aggregate over a denorm/coupled anchor
+    /// (`WITH a, count(r) AS c`) must GROUP BY the anchor CTE's
+    /// Cypher-property-named column, never the raw physical db column — and
+    /// the accompanying SELECT-list item for the anchor must be sourced from
+    /// the same CTE, never the LEFT-JOINed (NULL-extended on an
+    /// OPTIONAL-miss row) edge alias. Two separate GROUP BY construction
+    /// sites exist in this codebase (see the triplication note on
+    /// `composite_id_group_by_columns` in `group_by_builder.rs`) — this
+    /// covers `expand_table_alias_to_group_by_id_only`, the one that
+    /// actually fires for this WITH shape.
+    ///
+    /// Live-verified on the zeek fixture: `MATCH (a:IP) OPTIONAL MATCH
+    /// (a)-[r:REQUESTED]->(d:Domain) WITH a, count(r) AS c RETURN a.ip, c`
+    /// returns the same 5-row NULL-sensitive counts as #507's fix
+    /// (192.168.1.10 -> 3, 192.168.1.20 -> 1, the other three IPs -> 0),
+    /// matching hand-written ground truth exactly. Also live-verified on
+    /// db_denormalized: outgoing FLIGHT counts per airport (PHX -> 0) match
+    /// ground truth, and a `WHERE c > 0` after the WITH correctly drops PHX.
+    #[tokio::test]
+    async fn with_aggregate_over_denorm_anchor_group_by_and_select_510() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (a:IP) OPTIONAL MATCH (a)-[r:REQUESTED]->(d:Domain) \
+                 WITH a, count(r) AS c RETURN a.ip, c",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert!(
+            sql.contains("GROUP BY a.ip"),
+            "#510: WITH-aggregate GROUP BY must reference the anchor CTE's \
+             `ip` column, not the raw physical `id.orig_h`:\n{sql}"
+        );
+        assert!(
+            !sql.contains("GROUP BY a.\"id.orig_h\""),
+            "#510: GROUP BY must not reference the raw physical db column \
+             (invalid SQL — the anchor CTE only exposes `ip`):\n{sql}"
+        );
+        assert!(
+            sql.contains("a.ip AS \"p1_a_ip\""),
+            "#510: the WITH-exported anchor property must be SELECTed from \
+             the anchor CTE alias `a`, not the NULL-extended edge alias:\n{sql}"
+        );
+        assert!(
+            !sql.contains("r.\"id.orig_h\" AS \"p1_a_ip\""),
+            "#510: the anchor property must not be sourced from the \
+             LEFT-JOINed edge alias (NULL-extended on an OPTIONAL-miss row):\n{sql}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(
+                &render(
+                    &schema,
+                    "MATCH (a:IP) OPTIONAL MATCH (a)-[r:REQUESTED]->(d:Domain) \
+                     WITH a, count(r) AS c RETURN a.ip, c",
+                    SqlDialect::ClickHouse,
+                )
+                .await,
+            );
+            assert_eq!(sql, again, "#510: nondeterministic render");
+        }
+    }
 }
