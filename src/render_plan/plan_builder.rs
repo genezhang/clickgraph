@@ -3458,7 +3458,9 @@ impl RenderPlanBuilder for LogicalPlan {
                     );
                     // Re-extract outer SELECT/GROUP BY/ORDER BY/WHERE from the full plan.
                     render.select = SelectItems {
-                        items: <LogicalPlan as SelectBuilder>::extract_select_items(self, plan_ctx)?,
+                        items: <LogicalPlan as SelectBuilder>::extract_select_items(
+                            self, plan_ctx,
+                        )?,
                         distinct: FilterBuilder::extract_distinct(self),
                     };
                     // WHERE was never re-extracted here at all (render.filters stayed
@@ -3480,12 +3482,14 @@ impl RenderPlanBuilder for LogicalPlan {
                     let filters_plan =
                         super::plan_builder_helpers::clear_anchor_connection_for_filters(self);
                     render.filters = FilterItems(FilterBuilder::extract_filters(&filters_plan)?);
-                    render.group_by =
-                        GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(self)?);
-                    render.order_by = OrderByItems(super::plan_builder_utils::extract_order_by(self)?);
+                    render.group_by = GroupByExpressions(
+                        <LogicalPlan as GroupByBuilder>::extract_group_by(self)?,
+                    );
+                    render.order_by =
+                        OrderByItems(super::plan_builder_utils::extract_order_by(self)?);
                     render.skip = SkipItem(super::plan_builder_utils::extract_skip(self));
                     render.limit = LimitItem(super::plan_builder_utils::extract_limit(self));
-    
+
                     // #505: `inner` may be buried under one or more OUTER optional hops
                     // (chained OPTIONAL MATCH, e.g. `MATCH (a) OPTIONAL MATCH
                     // (a)-[:R]->(b) OPTIONAL MATCH (b)-[:R]->(c)` — `inner` is the
@@ -3500,9 +3504,11 @@ impl RenderPlanBuilder for LogicalPlan {
                     if let LogicalPlan::GraphRel(inner_gr) = inner {
                         let inner_alias = inner_gr.alias.clone();
                         let context = super::cte_generation::CteGenerationContext::new();
-                        if let Ok(all_joins) = <LogicalPlan as JoinBuilder>::extract_joins_with_context(
-                            self, schema, &context,
-                        ) {
+                        if let Ok(all_joins) =
+                            <LogicalPlan as JoinBuilder>::extract_joins_with_context(
+                                self, schema, &context,
+                            )
+                        {
                             let outer_joins: Vec<_> = all_joins
                                 .into_iter()
                                 .filter(|j| j.table_alias != inner_alias)
@@ -3516,7 +3522,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             }
                         }
                     }
-    
+
                     // Rewrite column references: the SELECT/GROUP BY were extracted from
                     // the full plan which resolves denormalized node properties through the
                     // edge table (e.g., r.origin_code). But after CTE + LEFT JOIN restructuring,
@@ -3538,7 +3544,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         } else {
                             gr.right.as_ref()
                         };
-    
+
                         if let LogicalPlan::ViewScan(edge_vs) = gr.center.as_ref() {
                             let edge_alias = &gr.alias;
                             let node_alias = if let LogicalPlan::Union(u) = anchor_side_plan {
@@ -3552,7 +3558,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             } else {
                                 None
                             };
-    
+
                             if let Some(ref node_alias) = node_alias {
                                 // Build reverse mapping: db_column → (target_alias, cypher_property)
                                 // for the anchor's own side only (`edge_side_node_properties`,
@@ -3560,9 +3566,11 @@ impl RenderPlanBuilder for LogicalPlan {
                                 // opposite side from the anchor-is-left/outgoing case). The
                                 // non-anchor node's columns must stay on the LEFT-JOINed edge
                                 // alias (see comment below), so only the anchor side is mapped.
-                                let mut col_map: std::collections::HashMap<String, (String, String)> =
-                                    std::collections::HashMap::new();
-    
+                                let mut col_map: std::collections::HashMap<
+                                    String,
+                                    (String, String),
+                                > = std::collections::HashMap::new();
+
                                 let anchor_side_props =
                                     crate::graph_catalog::pattern_schema::edge_side_node_properties(
                                         edge_vs,
@@ -3581,7 +3589,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                         );
                                     }
                                 }
-    
+
                                 // ALSO map the ANCHOR's own from-side property columns
                                 // (#475). On a coupled cross-table denorm schema the anchor
                                 // node's label can carry MORE properties (from its own node
@@ -3647,7 +3655,8 @@ impl RenderPlanBuilder for LogicalPlan {
                                         }
                                     });
                                     if let Some(gn) = anchor_gn {
-                                        if let LogicalPlan::ViewScan(anchor_vs) = gn.input.as_ref() {
+                                        if let LogicalPlan::ViewScan(anchor_vs) = gn.input.as_ref()
+                                        {
                                             let mut anchor_props: Vec<_> =
                                                 anchor_vs.property_mapping.iter().collect();
                                             anchor_props.sort_by(|a, b| a.0.cmp(b.0));
@@ -3661,8 +3670,10 @@ impl RenderPlanBuilder for LogicalPlan {
                                                     );
                                                     continue;
                                                 }
-                                                col_map
-                                                    .insert(db_col, (node_alias.clone(), prop.clone()));
+                                                col_map.insert(
+                                                    db_col,
+                                                    (node_alias.clone(), prop.clone()),
+                                                );
                                             }
                                         }
                                     }
@@ -3678,7 +3689,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 // yields correct OPTIONAL NULL-extension (t1 is NULL on no-match).
                                 // Only the anchor side is remapped to the CTE above — do NOT add
                                 // the non-anchor side's properties here.
-    
+
                                 // Recursive rewrite: edge_alias.db_col → node_alias.cypher_prop
                                 fn rewrite_denorm_refs(
                                     expr: &mut RenderExpr,
@@ -3739,7 +3750,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                         _ => {}
                                     }
                                 }
-    
+
                                 for item in &mut render.select.items {
                                     rewrite_denorm_refs(&mut item.expression, edge_alias, &col_map);
                                 }
@@ -3755,7 +3766,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             }
                         }
                     }
-    
+
                     return Ok(render);
                 }
             }
