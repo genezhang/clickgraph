@@ -10,5 +10,5 @@ SELECT
 FROM default.flights AS n
 ) AS __union
 GROUP BY `n.state`
-ORDER BY cnt DESC
+ORDER BY `cnt` DESC
 LIMIT 10

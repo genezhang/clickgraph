@@ -34,4 +34,4 @@ SELECT
 FROM vlp_multi_type_u_x_2 AS t
 ) AS __union
 GROUP BY t.end_end_type
-ORDER BY node_type ASC
+ORDER BY `node_type` ASC

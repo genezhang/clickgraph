@@ -5546,4 +5546,119 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
              or pipe-join scaffolding: {sql}"
         );
     }
+
+    /// #503: ORDER BY on an anchor property that participates in a
+    /// UNION+aggregate render (undirected relationship, or a denorm/coupled
+    /// OPTIONAL MATCH) must reference the OUTER query's aliased output
+    /// column, not the raw un-mapped expression. The has_aggregation branch
+    /// of the UNION renderer (`to_sql_query.rs`) used to emit
+    /// `plan.order_by.to_sql()` verbatim — e.g. bare `a.code` — which
+    /// ClickHouse parses as a qualified `table.column` reference. No table
+    /// alias `a` exists at that outer scope (only `__union` does), so this
+    /// was a loud UNKNOWN_IDENTIFIER. The non-aggregation UNION path already
+    /// handled this correctly by referencing a synthetic `__order_col_N`
+    /// column; the aggregation path diverged and never got the same
+    /// treatment — that divergence is the root cause the issue describes
+    /// ("plain ORDER BY without an aggregate already works").
+    ///
+    /// Live-verified on `db_denormalized` (8 flights, 7 airports): degree
+    /// counts (ATL 2, DEN 2, JFK 2, LAX 5, ORD 3, PHX 1, SFO 1) match
+    /// hand-written ground truth
+    /// (`SELECT code, count() FROM (SELECT origin_code ... UNION ALL SELECT
+    /// dest_code ...) GROUP BY code`), in ascending `a.code` order, for both
+    /// the plain undirected MATCH and the OPTIONAL undirected MATCH shapes.
+    #[tokio::test]
+    async fn union_aggregate_order_by_anchor_property_503() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+
+        let plain = normalize(
+            &render(
+                &schema,
+                "MATCH (a:Airport)-[r:FLIGHT]-(b:Airport) RETURN a.code, count(r) ORDER BY a.code",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert!(
+            plain.contains("ORDER BY `a.code` ASC") || plain.contains("ORDER BY `a.code`asc"),
+            "#503: ORDER BY must reference the backtick-quoted outer alias, \
+             not a bare `a.code` table-qualified reference (undefined at \
+             this scope):\n{plain}"
+        );
+        assert!(
+            !plain.contains("ORDER BY a.code") && !plain.contains("ORDER BY __order_col"),
+            "#503: ORDER BY must not emit the raw unquoted expression or a \
+             dangling synthetic column reference:\n{plain}"
+        );
+        // GROUP BY must also stay bound to a column the inner UNION branches
+        // actually project (`__order_col_N` is deliberately excluded from
+        // aggregation UNION branches — see `build_union_inner_select`) — a
+        // sibling bug in the same rendering block (#503 family).
+        assert!(
+            !plain.contains("GROUP BY `__order_col"),
+            "#503: GROUP BY must not reference an excluded __order_col_N \
+             synthetic column:\n{plain}"
+        );
+
+        let optional = normalize(
+            &render(
+                &schema,
+                "MATCH (a:Airport) OPTIONAL MATCH (a)-[r:FLIGHT]-(b:Airport) \
+                 RETURN a.code, count(r) ORDER BY a.code",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert!(
+            optional.contains("ORDER BY `a.code`"),
+            "#503 (OPTIONAL variant): ORDER BY must reference the \
+             backtick-quoted outer alias:\n{optional}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(
+                &render(
+                    &schema,
+                    "MATCH (a:Airport)-[r:FLIGHT]-(b:Airport) RETURN a.code, count(r) ORDER BY a.code",
+                    SqlDialect::ClickHouse,
+                )
+                .await,
+            );
+            assert_eq!(plain, again, "#503: nondeterministic render");
+        }
+    }
+
+    /// #503 (aggregate alias / multi-key ORDER BY): a mix of an aggregate
+    /// alias and a plain property in ORDER BY — `ORDER BY cnt DESC, a.code
+    /// ASC` — must backtick-quote BOTH references. Locks the general fix
+    /// (not denorm-specific): the pre-existing standard-schema
+    /// `relationship_degree`-style pattern (`ORDER BY connections DESC,
+    /// a.name ASC`) had the SAME bug — a bare `a.name` in ORDER BY at the
+    /// UNION-aggregate outer scope — and a dangling `GROUP BY
+    /// __order_col_N` reference; both are fixed by the same change.
+    #[tokio::test]
+    async fn union_aggregate_order_by_multi_key_alias_and_property_503() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (a:User)-[:FOLLOWS]-(b:User) \
+                 RETURN a.name, count(DISTINCT b) AS connections \
+                 ORDER BY connections DESC, a.name ASC",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert!(
+            sql.contains("ORDER BY `connections` DESC, `a.name` ASC"),
+            "#503: both ORDER BY keys (aggregate alias and anchor property) \
+             must be backtick-quoted outer-alias references:\n{sql}"
+        );
+        assert!(
+            !sql.contains("GROUP BY `__order_col"),
+            "#503: GROUP BY must not reference an excluded __order_col_N \
+             synthetic column:\n{sql}"
+        );
+    }
 }

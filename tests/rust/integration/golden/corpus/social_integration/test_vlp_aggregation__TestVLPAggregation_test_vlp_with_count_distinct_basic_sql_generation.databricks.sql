@@ -63,5 +63,5 @@ INNER JOIN test_integration.posts_test AS t0 ON t0.author_id = t.start_id
 INNER JOIN test_integration.posts_test AS p ON p.post_id = t0.post_id
 ) AS __union
 GROUP BY `userId`
-ORDER BY postCount DESC, userId ASC
+ORDER BY `postCount` DESC, `userId` ASC
 LIMIT 10

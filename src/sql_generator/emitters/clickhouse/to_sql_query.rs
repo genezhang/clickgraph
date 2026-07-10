@@ -3344,9 +3344,26 @@ fn build_aliased_group_by(group_by: &GroupByExpressions, select: &SelectItems) -
     if group_by.0.is_empty() {
         return String::new();
     }
+    // Exclude `__order_col_N` synthetic items from the candidate mapping.
+    // `build_union_inner_select` deliberately drops ALL `__order_col_*` items
+    // from the has_aggregation UNION branches ("ORDER BY is handled by outer
+    // query"), so they never exist as real columns of the `__union` derived
+    // table. When a GROUP BY key's expression happens to be textually
+    // identical to an ORDER BY item's expression (e.g. `GROUP BY a.code` +
+    // `ORDER BY a.code`), a HashMap keyed by expression text would otherwise
+    // nondeterministically prefer whichever SELECT item was inserted last —
+    // including the excluded `__order_col_N` alias — producing a dangling
+    // `GROUP BY \`__order_col_N\`` reference (ClickHouse UNKNOWN_IDENTIFIER,
+    // part of the #503 family).
     let expr_to_alias: std::collections::HashMap<String, String> = select
         .items
         .iter()
+        .filter(|item| {
+            !item
+                .col_alias
+                .as_ref()
+                .is_some_and(|a| a.0.starts_with("__order_col"))
+        })
         .filter_map(|item| {
             item.col_alias
                 .as_ref()
@@ -4545,10 +4562,95 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
             sql.push_str(&build_aliased_group_by(&plan.group_by, &plan.select));
 
             // Add ORDER BY after GROUP BY if present
-            // For aggregation: use original ORDER BY expressions since the outer SELECT
-            // provides the aliased columns. For non-aggregation UNION: reference __union columns.
+            // For aggregation: reference the OUTER SELECT's aliased output
+            // columns rather than the raw ORDER BY expression. Two ways an
+            // ORDER BY item can match an existing outer SELECT column:
+            //   1. By ALIAS text — Cypher's default column alias is literally
+            //      the source expression text (`a.code`, `count(r)`), so a
+            //      bare aggregate/variable reference in ORDER BY usually
+            //      equals an existing alias verbatim even when the SELECT
+            //      item's underlying expression was independently rewritten
+            //      (e.g. #502's count(r) -> count(<edge_id column>), which
+            //      does NOT also touch the ORDER BY expression).
+            //   2. By EXPRESSION text — a property access like `a.ip` may get
+            //      its column name mapped (`a.ip` -> `a."id.orig_h"`) via the
+            //      render-plan's property-mapping pass while its SELECT-list
+            //      twin keeps the SAME mapped expression under the Cypher
+            //      alias `"a.ip"`; matching by rendered expression (mirroring
+            //      `build_aliased_group_by`'s approach) finds it.
+            // Either match MUST be backtick-quoted: emitting the bare
+            // unquoted expression (the old behavior) is parsed by ClickHouse
+            // as a qualified `table.column` reference, but no such table
+            // exists at this outer scope (only `__union` does) —
+            // UNKNOWN_IDENTIFIER (#503). When neither matches (ordering by a
+            // column not otherwise projected), fall back to the synthetic
+            // `__order_col_N` column — but only when it actually survives
+            // into the inner UNION SELECT; `build_union_inner_select` drops
+            // ALL `__order_col_*` items for the has_aggregation path, so
+            // referencing one here would just trade one UNKNOWN_IDENTIFIER
+            // for another. No fallback exists for that case today (rare: an
+            // ORDER BY key that is neither returned nor an aggregate) — keep
+            // the raw expression, matching pre-#503 behavior (no regression).
             if has_aggregation && !plan.order_by.0.is_empty() {
-                sql.push_str(&plan.order_by.to_sql());
+                let non_order_items: Vec<&SelectItem> = plan
+                    .select
+                    .items
+                    .iter()
+                    .filter(|sel| {
+                        !sel.col_alias
+                            .as_ref()
+                            .is_some_and(|a| a.0.starts_with("__order_col"))
+                    })
+                    .collect();
+                // Property-access matches use table_alias + column identity
+                // rather than rendered SQL text: the same logical property
+                // reference can be independently quoted differently by the
+                // two sites that render it (e.g. `a.\`id.orig_h\`` vs
+                // `a."id.orig_h"`), which a pure string comparison misses.
+                fn same_property_ref(a: &RenderExpr, b: &RenderExpr) -> bool {
+                    matches!(
+                        (a, b),
+                        (RenderExpr::PropertyAccessExp(pa), RenderExpr::PropertyAccessExp(pb))
+                            if pa.table_alias.0 == pb.table_alias.0
+                                && pa.column.raw() == pb.column.raw()
+                    )
+                }
+                let order_clauses: Vec<String> = plan
+                    .order_by
+                    .0
+                    .iter()
+                    .map(|item| {
+                        let order_str = match item.order {
+                            OrderByOrder::Asc => "ASC",
+                            OrderByOrder::Desc => "DESC",
+                        };
+                        let rendered = item.expression.to_sql();
+                        let matched_alias = non_order_items
+                            .iter()
+                            .find(|sel| sel.col_alias.as_ref().is_some_and(|a| a.0 == rendered))
+                            .or_else(|| {
+                                non_order_items.iter().find(|sel| {
+                                    same_property_ref(&sel.expression, &item.expression)
+                                })
+                            })
+                            .or_else(|| {
+                                non_order_items
+                                    .iter()
+                                    .find(|sel| sel.expression.to_sql() == rendered)
+                            })
+                            .and_then(|sel| sel.col_alias.as_ref());
+                        if let Some(alias) = matched_alias {
+                            format!("`{}` {}", alias.0, order_str)
+                        } else {
+                            // No surviving column to reference — unchanged
+                            // prior (pre-#503) behavior for this corner case.
+                            format!("{} {}", rendered, order_str)
+                        }
+                    })
+                    .collect();
+                sql.push_str("ORDER BY ");
+                sql.push_str(&order_clauses.join(", "));
+                sql.push('\n');
             } else if !plan.order_by.0.is_empty() && !order_by_columns.is_empty() {
                 sql.push_str("ORDER BY ");
                 let order_clauses: Vec<String> = plan
