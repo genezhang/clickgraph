@@ -1316,9 +1316,11 @@ impl SelectBuilder for LogicalPlan {
                             });
                         }
 
-                        // Case 6a: Aggregate call — resolve denormalized node
-                        // references inside the arguments (#493). The planner
-                        // rewrites count(b) → count(b.<node_id>) for NULL-correct
+                        // Case 6a: Expression containing aggregate call(s) — a bare
+                        // aggregate OR one nested in an operator/scalar-fn/CASE
+                        // wrapper (e.g. `count(b) + 0`). Resolve denormalized node
+                        // references inside it (#493). The planner rewrites
+                        // count(b) → count(b.<node_id>) for NULL-correct
                         // OPTIONAL counting, but for a denormalized node `b` has no
                         // physical table: the reference must resolve onto the owning
                         // edge's embedded column (e.g. count(b.code) →
@@ -1326,7 +1328,11 @@ impl SelectBuilder for LogicalPlan {
                         // property access. Without this the alias leaks unresolved →
                         // ClickHouse UNKNOWN_IDENTIFIER. Standard/own-table nodes are
                         // untouched (no override alias).
-                        LogicalExpr::AggregateFnCall(_) => {
+                        expr_with_agg
+                            if crate::query_planner::logical_expr::visitors::HasAggregateCheck::check(
+                                expr_with_agg,
+                            ) =>
+                        {
                             let mut expr: RenderExpr = item.expression.clone().try_into()?;
                             self.resolve_denorm_refs_in_expr(&mut expr, plan_ctx);
                             select_items.push(SelectItem {

@@ -2629,6 +2629,18 @@ async fn denorm_count_node_resolves_embedded_id_column_493() {
             "count(t0.dest_code)",
             "required count(b)",
         ),
+        // Aggregates NESTED in wrapper expressions (review coverage gap): the
+        // resolver must reach them through operator / scalar-fn wrappers too.
+        (
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) RETURN a.code, count(b) + 0 AS c",
+            "count(t0.dest_code) + 0",
+            "optional count(b) + 0",
+        ),
+        (
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) RETURN a.code, toFloat(count(b)) AS c",
+            "toFloat64(count(t0.dest_code))",
+            "optional toFloat(count(b))",
+        ),
     ];
 
     for (cypher, want_agg, tag) in cases {
