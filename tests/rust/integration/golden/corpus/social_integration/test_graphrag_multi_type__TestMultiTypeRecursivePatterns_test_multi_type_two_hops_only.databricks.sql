@@ -29,4 +29,4 @@ INNER JOIN test_integration.vlp_multi_type_u_x AS t0 ON t0.from_node_id = t.star
 WHERE t.start_id = 1
 ) AS __union
 GROUP BY `node_type`
-ORDER BY node_type ASC
+ORDER BY `node_type` ASC

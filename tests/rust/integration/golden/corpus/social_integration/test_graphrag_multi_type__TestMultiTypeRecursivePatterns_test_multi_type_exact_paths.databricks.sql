@@ -23,4 +23,4 @@ FROM vlp_multi_type_u_x_2 AS t
 WHERE t.start_id = 1
 ) AS __union
 GROUP BY `node_type`
-ORDER BY node_type ASC
+ORDER BY `node_type` ASC
