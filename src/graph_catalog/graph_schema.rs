@@ -364,6 +364,28 @@ impl RelationshipSchema {
     pub fn full_table_name(&self) -> String {
         format!("{}.{}", self.database, self.table_name)
     }
+
+    /// #492 review round 3: sorted `(cypher_name, db_column)` pairs for the
+    /// from- or to-node side of a denormalized relationship. Canonical
+    /// schema-catalog accessor for this edge's own denormalized property maps
+    /// (axis-dispatch: callers must route through this rather than reading
+    /// `from_node_properties`/`to_node_properties` off a `ViewScan` directly).
+    pub fn denorm_side_properties(&self, is_from_node: bool) -> Vec<(String, String)> {
+        let props = if is_from_node {
+            &self.from_node_properties
+        } else {
+            &self.to_node_properties
+        };
+        props
+            .as_ref()
+            .map(|p| {
+                let mut v: Vec<(String, String)> =
+                    p.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                v.sort();
+                v
+            })
+            .unwrap_or_default()
+    }
 }
 
 impl NodeSchema {

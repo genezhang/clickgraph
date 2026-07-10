@@ -736,17 +736,35 @@ fn count_undirected_edges(plan: &Arc<LogicalPlan>) -> usize {
 }
 
 /// #492 review B3: Detect an OPTIONAL nested undirected edge — an undirected
-/// (Either) GraphRel that is `is_optional` and whose left subtree is another
-/// GraphRel (the second+ hop of an OPTIONAL multi-hop chain). These patterns
-/// are gated out of the Union split (see the Projection arm) because the
-/// per-orientation LEFT-JOIN + UNION ALL structure cannot express OPTIONAL
-/// semantics. Required (non-optional) nested undirected chains DO split.
+/// (Either) GraphRel that is `is_optional` and whose left subtree is ANOTHER
+/// GraphRel that is ALSO `is_optional` (the second+ hop of the SAME OPTIONAL
+/// multi-hop chain — both hops of `OPTIONAL MATCH (a)-[:R]-(b)-[:R]-(c)` carry
+/// `is_optional: Some(true)`). These patterns are gated out of the Union split
+/// (see the Projection arm) because the per-orientation LEFT-JOIN + UNION ALL
+/// structure cannot express OPTIONAL semantics. Required (non-optional)
+/// nested undirected chains DO split.
+///
+/// #492 review round 3 (B3 scope-tightening): requiring the NESTED GraphRel to
+/// ALSO be `is_optional` is load-bearing. When an OPTIONAL clause shares its
+/// anchor alias with an earlier REQUIRED chain (e.g. `MATCH
+/// (a)-[:R1]-(b)-[:R1]-(c) OPTIONAL MATCH (a)-[:R2]-(p)`), the planner nests
+/// the unrelated required chain as the OPTIONAL edge's `left` subtree purely
+/// through shared aliasing — that required chain's GraphRels carry
+/// `is_optional: None`. Gating on "any reachable GraphRel" (the original
+/// check) could not tell "my own optional hop" from "an unrelated required
+/// GraphRel that happens to be my ancestor", and wrongly suppressed the
+/// REQUIRED chain's split too (0 branches instead of 4 — main's pre-existing
+/// bug, so not a NEW wrongness, but silently reverting value #492 already
+/// delivered for that shape).
 fn has_optional_nested_undirected_edge(plan: &Arc<LogicalPlan>) -> bool {
     match plan.as_ref() {
         LogicalPlan::GraphRel(gr) => {
             (gr.direction == Direction::Either
                 && gr.is_optional == Some(true)
-                && matches!(gr.left.as_ref(), LogicalPlan::GraphRel(_)))
+                && matches!(
+                    gr.left.as_ref(),
+                    LogicalPlan::GraphRel(inner) if inner.is_optional == Some(true)
+                ))
                 || has_optional_nested_undirected_edge(&gr.left)
                 || has_optional_nested_undirected_edge(&gr.right)
         }

@@ -2564,6 +2564,23 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
                     if let Ok((properties, Some(_))) =
                         plan.get_properties_with_table_alias(&prop.table_alias.0)
                     {
+                        // #492/#491 interaction fix: `properties` may be
+                        // structurally matched against a DIFFERENT edge than
+                        // `rel_alias` (the registered edge this remap targets)
+                        // — e.g. an OPTIONAL pattern kept an earlier required
+                        // pattern's binding (#491) while the structural walk
+                        // still finds the optional GraphRel first. Re-derive
+                        // from the REGISTERED edge so the cross-side lookup
+                        // below operates on the edge we're actually remapping
+                        // onto, not whatever the structural walk found.
+                        let properties =
+                            crate::render_plan::select_builder::properties_for_registered_edge(
+                                plan,
+                                &prop.table_alias.0,
+                                &rel_alias,
+                            )
+                            .unwrap_or(properties);
+
                         let col = prop.column.raw().to_string();
                         let bound_side_known = properties
                             .iter()

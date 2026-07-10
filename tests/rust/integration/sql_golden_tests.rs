@@ -149,6 +149,18 @@ const CORPUS: &[(&str, &str)] = &[
         "partial_ref_undirected_2hop",
         "MATCH (a:User)-[:FOLLOWS]-(b)-[:FOLLOWS]-(c:User) RETURN a.name, c.name",
     ),
+    // #492 review round 3, finding 2 (B3 scope-tightening): a required
+    // undirected multi-hop must split fully (4 branches) even when an
+    // UNRELATED undirected OPTIONAL clause sharing the same anchor alias is
+    // also present. The OPTIONAL edge's `left` subtree structurally IS the
+    // required chain (shared anchor 'a'), but the required chain's own hops
+    // are not `is_optional` — the B3 gate must not fire for them.
+    (
+        "required_split_despite_unrelated_optional",
+        "MATCH (a:User)-[:FOLLOWS]-(b)-[:FOLLOWS]-(c:User) \
+         OPTIONAL MATCH (a)-[:AUTHORED]-(p:Post) \
+         RETURN a.name, c.name, p.title",
+    ),
     (
         "with_having",
         "MATCH (u:User) WITH u.country AS c, count(u) AS n WHERE n > 5 RETURN c, n",
@@ -3426,6 +3438,78 @@ async fn undirected_multihop_review_fixes_492() {
     assert!(
         !sql.contains("t0.") && !sql.contains("t1."),
         "#492-RN5: FK-edge SQL must not reference unmaterialized rel aliases:\n{sql}"
+    );
+
+    // #492 review ROUND 3, finding 1 (MUST-FIX): interaction with #491.
+    // `get_properties_with_table_alias` picks a node's property source
+    // PURELY STRUCTURALLY (first GraphRel connection match in the tree),
+    // while `table_alias_override` comes from the `denormalized_node_edges`
+    // registry, which #491 made keep an EARLIER binding for OPTIONAL
+    // patterns. For `(a)-[t1]->(b) OPTIONAL (b)-[t2]->(c)`, `b` renders
+    // against `t1` (registry, #491-correct) but the structural walk still
+    // matches `t2` (the optional GraphRel) first — combining `t2`'s
+    // properties with `t1`'s alias silently produced `t1.origin_code` (`a`'s
+    // OWN column) instead of `t1.dest_code`. This is #491's OWN exact test
+    // query, fully DIRECTED (no undirected edges) — proof the interaction is
+    // not scoped to undirected patterns.
+    let denorm2 = load_schema(SchemaId::Denormalized.yaml_path());
+    let sql = normalize(
+        &render(
+            &denorm2,
+            "MATCH (a:Airport)-[:FLIGHT]->(b) OPTIONAL MATCH (b)-[:FLIGHT]->(c) \
+             RETURN a.code, b.code, c.code",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    let binding = |col_alias: &str| -> (String, String) {
+        let re = regex::Regex::new(&format!(
+            r#"(t\d+)\.((?:origin|dest)_code) AS "{}""#,
+            regex::escape(col_alias)
+        ))
+        .unwrap();
+        let caps = re
+            .captures(&sql)
+            .unwrap_or_else(|| panic!("no binding for {col_alias}:\n{sql}"));
+        (caps[1].to_string(), caps[2].to_string())
+    };
+    let (a_alias, _) = binding("a.code");
+    let (b_alias, b_col) = binding("b.code");
+    assert_eq!(
+        (b_alias.as_str(), b_col.as_str()),
+        (a_alias.as_str(), "dest_code"),
+        "#492/#491 interaction: b.code must resolve from the REQUIRED \
+         pattern's binding ({a_alias}.dest_code) — properties-source and \
+         alias-source must come from the SAME edge:\n{sql}"
+    );
+
+    // #492 review ROUND 3, finding 2 (SHOULD-FIX): B3 gate must not suppress
+    // an UNRELATED required chain's split just because the plan nests an
+    // unrelated OPTIONAL undirected edge reachable via shared aliasing.
+    // `MATCH (a)-[:R1]-(b)-[:R1]-(c) OPTIONAL MATCH (a)-[:R2]-(p)` — the
+    // OPTIONAL R2 edge's `left` subtree IS the required R1 chain (shared
+    // anchor 'a'), but neither R1 hop is itself optional. The required
+    // portion must still fully split (4 branches), matching the value the
+    // original #492 fix delivered before the B3 gate existed.
+    let sql = normalize(
+        &render(
+            &std_schema,
+            "MATCH (a:User)-[:FOLLOWS]-(b)-[:FOLLOWS]-(c:User) \
+             OPTIONAL MATCH (a)-[:AUTHORED]-(p:Post) \
+             RETURN a.name, c.name, p.title",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert_eq!(
+        sql.matches("UNION ALL").count(),
+        3,
+        "#492-B3-scope: required multi-hop must split fully (4 branches) \
+         despite an unrelated undirected OPTIONAL clause sharing its anchor:\n{sql}"
+    );
+    assert!(
+        sql.contains("LEFT JOIN"),
+        "#492-B3-scope: the unrelated OPTIONAL clause must still LEFT JOIN:\n{sql}"
     );
 }
 
