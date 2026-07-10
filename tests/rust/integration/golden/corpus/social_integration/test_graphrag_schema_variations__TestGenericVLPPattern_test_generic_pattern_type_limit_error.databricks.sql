@@ -17,7 +17,7 @@ INNER JOIN test_integration.posts_test p2 ON r1.post_id = p2.post_id
 WHERE (u_1.user_id = 1)
 )
 SELECT 
-      array('Post', 'User') AS `labels(x)`, 
+      array(string(t.end_type)) AS `labels(x)`, 
       t.end_properties AS `x.properties`, 
       t.end_id AS `x.id`, 
       t.end_type AS `x.__label__`

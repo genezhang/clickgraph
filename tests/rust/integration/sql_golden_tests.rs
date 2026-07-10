@@ -5678,4 +5678,56 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
             "min_hops=1 base case must still start at hop_count=1: {sql}"
         );
     }
+
+    /// #494: `labels(x)` on a multi-type VLP end node must resolve the
+    /// PER-ROW actual label from the CTE's `end_type` discriminator column,
+    /// not a static array literal of every statically-possible label.
+    /// Before the fix, the gate meant to detect "genuine multi-type VLP"
+    /// (`table_ctx.is_cte_reference()`) was never actually set true by the
+    /// multi-type VLP auto-inference pass, so `labels(x)` always fell
+    /// through to the static-union branch. Live-verified: AUTHORED-reached
+    /// rows show `[Post]`, FOLLOWS-reached rows show `[User]` — never the
+    /// static `[Post, User]` union on every row.
+    #[tokio::test]
+    async fn multi_type_vlp_labels_resolves_per_row_end_type_494() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x) RETURN labels(x)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        assert!(
+            sql.contains("t.end_type"),
+            "labels(x) must reference the VLP CTE's per-row end_type \
+             column: {sql}"
+        );
+        assert!(
+            !sql.contains("'User', 'Post'") && !sql.contains("'Post', 'User'"),
+            "labels(x) must not be a static array literal of every \
+             statically-possible label: {sql}"
+        );
+    }
+
+    /// #494 (regression guard): a genuinely polymorphic node backed by a
+    /// SINGLE table (no VLP CTE at all — `labels.len() > 1` purely from
+    /// schema-level type ambiguity) must keep its existing static-label
+    /// rendering. This is NOT a multi-type VLP CTE reference, so the #494
+    /// fix's `node_is_multi_type_rel_endpoint` guard must not touch it.
+    #[tokio::test]
+    async fn labels_on_non_vlp_polymorphic_node_unaffected_by_494_fix() {
+        let schema = load_schema("schemas/test/test_fixtures.yaml");
+        let sql = render(
+            &schema,
+            "MATCH (n) RETURN label(n), count(*)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !sql.contains("t.end_type") && !sql.contains(" AS t\n") && !sql.contains(" AS t "),
+            "a non-VLP polymorphic single-table node must not be rewritten \
+             to reference a nonexistent VLP CTE alias 't': {sql}"
+        );
+    }
 }
