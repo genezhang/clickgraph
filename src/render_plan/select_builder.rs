@@ -1503,10 +1503,35 @@ impl LogicalPlan {
                     self.get_properties_with_table_alias(&alias)
                 {
                     let col_name = pa.column.raw().to_string();
-                    // Cypher property name → embedded column (count(b.code) →
-                    // t1.dest_code); an already-mapped column keeps its name.
+                    // GATE (review of #493/#475): rebind the table alias ONLY
+                    // when the reference actually RESOLVES in this binding's
+                    // property set — either by Cypher property name
+                    // (count(b.code) → t1.dest_code) or by already-mapped
+                    // column value (count(b.dest_code) → t1.dest_code, column
+                    // kept). An unconditional rebind re-attributed anchor
+                    // references that do NOT live on the binding (e.g. `a.uid`
+                    // resolved through the anchor's own conn_log table while
+                    // `a` is bound to the dns_log edge scan) onto the
+                    // LEFT-JOINed edge alias: valid-but-wrong SQL when the
+                    // edge happens to have a same-named column (count(r.uid):
+                    // NULL-extended → 0 instead of 1 on OPTIONAL-miss rows),
+                    // invalid SQL when it doesn't (r.port). Unresolvable refs
+                    // pass through untouched for the anchor-CTE machinery to
+                    // handle.
                     if let Some((_, mapped)) = props.iter().find(|(p, _)| *p == col_name) {
                         pa.column = PropertyValue::Column(mapped.clone());
+                        pa.table_alias = RenderTableAlias(actual_alias.clone());
+                    } else if props.iter().any(|(_, c)| *c == col_name) {
+                        // Already-mapped column value — keep the column name.
+                        pa.table_alias = RenderTableAlias(actual_alias.clone());
+                    } else {
+                        log::debug!(
+                            "🔍 resolve_denorm_refs_in_expr: {}.{} does not resolve on binding '{}' — leaving untouched",
+                            alias,
+                            col_name,
+                            actual_alias
+                        );
+                        return;
                     }
                     log::debug!(
                         "🔍 resolve_denorm_refs_in_expr: {}.{} → {}.{}",
@@ -1515,7 +1540,6 @@ impl LogicalPlan {
                         actual_alias,
                         pa.column.raw()
                     );
-                    pa.table_alias = RenderTableAlias(actual_alias);
                 }
             }
             RenderExpr::AggregateFnCall(agg) => {

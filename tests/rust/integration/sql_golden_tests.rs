@@ -2802,6 +2802,72 @@ async fn denorm_optional_edge_column_not_hijacked_by_anchor_475() {
     );
 }
 
+/// #475 review round 2: the aggregate-arg resolver
+/// (`resolve_denorm_refs_in_expr`, select_builder.rs) rebound the table alias
+/// UNCONDITIONALLY whenever the alias resolved to an override binding — even
+/// when the referenced property did NOT resolve in that binding's property
+/// set. On `zeek_merged_collision.yaml` (IP@conn_log carries `uid: uid`,
+/// REQUESTED@dns_log carries the edge property `uid: uid` — same Cypher name
+/// AND same physical column, different tables), `MATCH (a:IP) OPTIONAL MATCH
+/// (a)-[r:REQUESTED]->(d:Domain) RETURN a.ip, count(a.uid)` turned the ANCHOR
+/// reference `a.uid` into `count(r.uid)`: VALID SQL, silently wrong — the
+/// edge's uid is NULL-extended on OPTIONAL-miss rows, so those IPs count 0
+/// instead of 1. (The `seen: ts` fixture cannot catch this class: `seen` is
+/// not a physical dns_log column, so the bad ref would be loud, not silent.)
+///
+/// The gate: the resolver rebinds the alias ONLY when the reference resolves
+/// on the binding — by Cypher property name (mapping the column) or by
+/// already-mapped column value (keeping the column). Unresolvable references
+/// pass through untouched for the anchor-CTE machinery.
+///
+/// Live-verified on the zeek fixture: OPTIONAL-miss IPs (1.2.3.4, 10.0.0.99,
+/// 142.250.80.46, 93.184.216.34, 93.184.216.35) return count(a.uid) = 1,
+/// matching hand-written ground truth.
+#[tokio::test]
+async fn denorm_optional_anchor_ref_in_aggregate_not_rebound_475() {
+    let schema = load_schema("schemas/test/zeek_merged_collision.yaml");
+    let repro = "MATCH (a:IP) OPTIONAL MATCH (a)-[r:REQUESTED]->(d:Domain) \
+                 RETURN a.ip, count(a.uid)";
+
+    let first = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+    for _ in 0..10 {
+        let again = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#475 r2: anchor-ref-in-aggregate render is nondeterministic:\n\
+             FIRST:\n{first}\nAGAIN:\n{again}"
+        );
+    }
+
+    // The anchor reference must stay sourced from the anchor scan CTE (the
+    // CTE exposes `uid`), never be rebound to the LEFT-JOINed edge alias.
+    assert!(
+        first.contains("count(a.uid)"),
+        "#475 r2: count(a.uid) must stay anchor-sourced:\n{first}"
+    );
+    assert!(
+        !first.contains("count(r.uid)"),
+        "#475 r2: anchor reference a.uid was rebound to the NULL-extended \
+         edge alias (silently counts 0 on OPTIONAL-miss rows):\n{first}"
+    );
+
+    // Cross-check: a genuinely EDGE-OWNED aggregate reference keeps the edge
+    // binding (NULL-extension is correct there).
+    let edge_agg = normalize(
+        &render(
+            &schema,
+            "MATCH (a:IP) OPTIONAL MATCH (a)-[r:REQUESTED]->(d:Domain) \
+             RETURN a.ip, count(r.timestamp)",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        edge_agg.contains("count(r.ts)"),
+        "#475 r2: edge-owned count(r.timestamp) must stay on the edge alias:\n{edge_agg}"
+    );
+}
+
 /// #481 regression: on the coupled-denormalized `zeek_merged_test` schema, a
 /// 2-hop `ACCESSED` chain `(a:IP)->(b:IP)->(c:IP)` resolved the MIDDLE node's
 /// property binding by iterating `PlanCtx::pattern_contexts` (a `HashMap`) and

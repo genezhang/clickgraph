@@ -1,17 +1,26 @@
-# Copy of schemas/dev/zeek_merged_test.yaml PLUS a deliberate cross-table
-# db-column-NAME collision, for the #475-review regression test:
+# Copy of schemas/dev/zeek_merged_test.yaml PLUS two deliberate cross-table
+# db-column-NAME collisions, for the #475-review regression tests:
 #
 #   - IP@conn_log gains a node property  `seen: ts`   (conn_log's ts column)
-#   - REQUESTED@dns_log already maps     `timestamp: ts` (dns_log's ts column)
+#     colliding with REQUESTED@dns_log's `timestamp: ts` (dns_log's ts column)
+#   - IP@conn_log gains a node property  `uid: uid`   (conn_log's uid column)
+#     colliding with REQUESTED@dns_log's edge property `uid: uid` — here BOTH
+#     the Cypher property name AND the physical column name collide
 #
-# The two `ts` columns live on DIFFERENT physical tables. The OPTIONAL-denorm
-# rewrite (plan_builder.rs delegation path) is keyed by raw column name on the
-# edge alias, so without the edge-owned guard the anchor entry {ts -> a.seen}
-# would hijack the legitimate edge reference `r.timestamp` (t1.ts) onto the
-# anchor CTE — wrong value on matched rows and non-NULL where OPTIONAL
-# semantics require NULL. Locked by
-# `denorm_optional_edge_column_not_hijacked_by_anchor_475` in
-# tests/rust/integration/sql_golden_tests.rs.
+# The colliding columns live on DIFFERENT physical tables. Two failure modes
+# are locked by tests in tests/rust/integration/sql_golden_tests.rs:
+#
+#   1. `denorm_optional_edge_column_not_hijacked_by_anchor_475`: the
+#      OPTIONAL-denorm rewrite (plan_builder.rs delegation path) is keyed by
+#      raw column name on the edge alias, so without the edge-owned guard the
+#      anchor entry {ts -> a.seen} would hijack the legitimate edge reference
+#      `r.timestamp` (t1.ts) onto the anchor CTE — wrong value on matched rows
+#      and non-NULL where OPTIONAL semantics require NULL.
+#   2. `denorm_optional_anchor_ref_in_aggregate_not_rebound_475`: the
+#      aggregate-arg resolver (select_builder.rs) must not rebind an anchor
+#      reference that does NOT resolve on the edge binding — `count(a.uid)`
+#      must stay anchor-sourced, never become `count(r.uid)` (valid SQL,
+#      silently 0 instead of 1 on OPTIONAL-miss rows).
 
 name: zeek_merged_collision
 version: "1.0"
@@ -30,7 +39,9 @@ graph_schema:
         ip: "id.resp_h"
 
     # IP node from conn_log (source/dest of connections).
-    # `seen: ts` is the deliberate collision with REQUESTED's `timestamp: ts`.
+    # `seen: ts` is the deliberate collision with REQUESTED's `timestamp: ts`;
+    # `uid: uid` collides with REQUESTED's edge property `uid: uid` (same
+    # Cypher name AND same physical column name, different tables).
     - label: IP
       database: zeek
       table: conn_log
@@ -40,10 +51,12 @@ graph_schema:
         ip: "id.orig_h"
         port: "id.orig_p"
         seen: ts
+        uid: uid
       to_node_properties:
         ip: "id.resp_h"
         port: "id.resp_p"
         seen: ts
+        uid: uid
 
     # Domain node (from dns_log query column)
     - label: Domain
