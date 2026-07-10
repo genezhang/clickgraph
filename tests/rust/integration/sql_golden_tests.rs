@@ -345,8 +345,8 @@ const CORPUS: &[(&str, &str)] = &[
 ///     route through `vlp_multi_type` / `bidirectional_union` and were already
 ///     correct.
 ///
-/// KNOWN BROKEN (locked as characterization — this is a TEST-ONLY slice, not
-/// fixed here; each is a candidate follow-up issue):
+/// Formerly KNOWN BROKEN (locked as characterization in the P0.5 test-only
+/// slice; each has since been fixed and the goldens transitioned):
 ///
 ///   - `browser_style_count` (`MATCH (n) RETURN count(n)`, heterogeneous
 ///     unlabeled scan) — FIXED (#467). Previously rendered `count(<id column
@@ -359,20 +359,27 @@ const CORPUS: &[(&str, &str)] = &[
 ///     id collisions are not merged (live 13). Denormalized
 ///     (`dn_browser_style_count`) is one label, unchanged — still
 ///     `count(a.code)`, already correct (7).
-///   - `browser_type_probe` (`MATCH ()-[r]->() RETURN DISTINCT type(r)`)
-///     renders `FROM pattern_union_r AS r` but the outer SELECT references
-///     `t.path_relationships[1]` — alias `t` is never bound anywhere in the
-///     query (the CTE is aliased `r`). Confirmed live: ClickHouse rejects
-///     with `Code: 47 ... Unknown expression or function identifier
-///     't.path_relationships' ... Maybe you meant: ['r.path_relationships']`.
-///     Translates cleanly (no Rust error/panic) but is invalid SQL.
-///   - `path_vlp` (`MATCH p=(a:User)-[:FOLLOWS*1..2]->(b) RETURN p`) renders
-///     a path tuple referencing `t.path_edges`, a column the recursive VLP
-///     CTE never defines (it only projects `start_id`/`end_id`/`hop_count`/
-///     `path_relationships`/`path_nodes`). Confirmed live: ClickHouse rejects
-///     with `Code: 47 ... Identifier 't.path_edges' cannot be resolved ...
-///     Maybe you meant: ['t.path_nodes']`. Same class as `browser_type_probe`
-///     — clean translation, invalid SQL.
+///   - `browser_type_probe` (`MATCH ()-[r]->() RETURN DISTINCT type(r)`) —
+///     FIXED (#468). Previously the outer SELECT referenced
+///     `t.path_relationships[1]` while the pattern_union CTE was aliased `r`
+///     (`FROM pattern_union_r AS r`) — alias `t` unbound, ClickHouse Code 47.
+///     The `type(r)` rewrite in projection_tagging now dispatches on the
+///     route: pattern_union CTEs (both endpoints unlabeled) are referenced
+///     through the relationship alias itself; multi-type VLP-joins CTEs keep
+///     `t`. Live: returns AUTHORED/FOLLOWS/LIKED on the `social` fixture.
+///   - `path_vlp` (`MATCH p=(a:User)-[:FOLLOWS*1..2]->(b) RETURN p`) — FIXED
+///     (#469). Previously the path tuple referenced `t.path_edges`, a column
+///     the recursive VLP CTE never defines (it projects `start_id`/`end_id`/
+///     `hop_count`/`path_relationships`/`path_nodes`; per-edge arrays were
+///     dropped for memory) — ClickHouse Code 47. The tuple now consumes the
+///     CTE's actual projection: `tuple(t.path_nodes, t.path_relationships,
+///     t.hop_count)`. The denormalized VLP CTE strategy also gained a
+///     `path_relationships` column so the same contract holds there
+///     (live: `[[LAX, JFK], [FLIGHT], 1]`). NOTE (pre-existing, out of
+///     scope): single-type VLP `path_relationships` values leak the composite
+///     schema key (`FOLLOWS::User::User`, not `FOLLOWS`) — same leak as
+///     `relationships(p)` and single-type `type(r)` literals; tracked as a
+///     follow-up, ~108 corpus goldens embed it.
 ///
 /// Verified CORRECT (normal locks, not suspicious) — all live-verified
 /// against the local `social` fixture (8 Users, 5 Posts, 10 FOLLOWS,
@@ -1257,6 +1264,15 @@ const DENORM_BROWSER_CORPUS: &[(&str, &str)] = &[
         "MATCH (a)-[r]-(b) RETURN a, r, b LIMIT 25",
     ),
     ("dn_browser_style_count", "MATCH (a) RETURN count(a)"),
+    // VLP path return on the denormalized pattern (#469): the denormalized
+    // VLP CTE strategy must project `path_relationships` (populated because a
+    // path variable is bound) so the path tuple
+    // tuple(t.path_nodes, t.path_relationships, t.hop_count) resolves.
+    // Live-verified on db_denormalized: `[[LAX, JFK], [FLIGHT], 1]`.
+    (
+        "dn_path_vlp",
+        "MATCH p=(a:Airport)-[:FLIGHT*1..2]->(b:Airport) RETURN p LIMIT 5",
+    ),
 ];
 
 fn load_schema(yaml_path: &str) -> GraphSchema {
@@ -3078,18 +3094,18 @@ async fn browser_whole_node_count_covers_heterogeneous_scan() {
     );
 }
 
-/// P0.5 characterization: `MATCH ()-[r]->() RETURN DISTINCT type(r) LIMIT 25`
-/// renders `FROM pattern_union_r AS r` but the outer SELECT references
-/// `t.path_relationships[1]` — alias `t` is never bound anywhere in the
-/// query (the CTE is aliased `r`). Confirmed live: ClickHouse rejects with
+/// Regression lock for #468: `MATCH ()-[r]->() RETURN DISTINCT type(r) LIMIT 25`
+/// renders `FROM pattern_union_r AS r`, and the outer SELECT must reference
+/// the CTE through the SAME alias — `r.path_relationships` — not the VLP
+/// alias `t` (which is only bound for multi-type VLP-joins CTEs,
+/// `FROM vlp_multi_type_a_b AS t`). Before the fix, the `type(r)` rewrite in
+/// projection_tagging hardcoded `t`, producing invalid SQL (ClickHouse
 /// `Code: 47 ... Unknown expression or function identifier
-/// 't.path_relationships' ... Maybe you meant: ['r.path_relationships']`.
-/// Translates cleanly (no Rust error/panic) but is invalid SQL — an
-/// outer-alias bug in the pattern_union DISTINCT-type-probe renderer. NOT
-/// fixed here (test-only slice); locked so a future fix is a reviewable
-/// diff (and should be paired with a live-execution check).
+/// 't.path_relationships' ... Maybe you meant: ['r.path_relationships']`).
+/// Live-verified fixed: returns AUTHORED/FOLLOWS/LIKED on the `social`
+/// fixture. Byte-locked by the `browser_type_probe` golden.
 #[tokio::test]
-async fn browser_type_probe_pattern_union_outer_alias_mismatch() {
+async fn browser_type_probe_pattern_union_outer_alias_matches_from() {
     let schema = load_schema(SchemaId::Standard.yaml_path());
     let cypher = "MATCH ()-[r]->() RETURN DISTINCT type(r) LIMIT 25";
 
@@ -3106,52 +3122,51 @@ async fn browser_type_probe_pattern_union_outer_alias_mismatch() {
             "expected the outer query to read the CTE as alias `r` for \
              {dialect:?}:\n{sql}"
         );
-        // …but the outer SELECT references the STALE/UNBOUND alias `t` — the
-        // KNOWN-BROKEN bug this test characterizes. If this now says `r.` the
-        // bug is fixed: update this test and add a byte golden.
+        // …and the outer SELECT must reference it through that alias (#468).
         assert!(
-            sql.contains("t.path_relationships"),
-            "expected the KNOWN-BROKEN unbound `t.path_relationships` \
-             reference for {dialect:?} — if this now reads `r.path_relationships` \
-             the outer-alias bug is fixed; update this test:\n{sql}"
+            sql.contains("r.path_relationships"),
+            "expected type(r) to resolve from `r.path_relationships` (the \
+             pattern_union CTE alias) for {dialect:?}:\n{sql}"
+        );
+        assert!(
+            !sql.contains("t.path_relationships"),
+            "outer SELECT must not reference the unbound VLP alias \
+             `t.path_relationships` (#468 regression) for {dialect:?}:\n{sql}"
         );
     }
 }
 
-/// P0.5 characterization: `MATCH p=(a:User)-[:FOLLOWS*1..2]->(b) RETURN p`
-/// renders a path tuple referencing `t.path_edges`, a column the recursive
-/// VLP CTE never defines (it only projects `start_id`/`end_id`/`hop_count`/
-/// `path_relationships`/`path_nodes` — no `path_edges`). Confirmed live:
-/// ClickHouse rejects with `Code: 47 ... Identifier 't.path_edges' cannot be
-/// resolved ... Maybe you meant: ['t.path_nodes']`. Same class as
-/// `browser_type_probe_pattern_union_outer_alias_mismatch` — clean
-/// translation, invalid SQL. NOT fixed here (test-only slice).
+/// Regression lock for #469: `MATCH p=(a:User)-[:FOLLOWS*1..2]->(b) RETURN p`
+/// must materialize the path tuple from columns the recursive VLP CTE
+/// actually projects — `tuple(t.path_nodes, t.path_relationships,
+/// t.hop_count)`. The CTE deliberately does NOT project `path_edges`
+/// (node-uniqueness cycle detection via `path_nodes`; per-edge arrays were
+/// dropped as a memory optimization), so any `path_edges` reference is
+/// unbound (ClickHouse `Code: 47 ... Identifier 't.path_edges' cannot be
+/// resolved ... Maybe you meant: ['t.path_nodes']` — the pre-fix behavior).
+/// Live-verified fixed on the `social` fixture, including `*0..` (zero-hop
+/// rows render `[[id], [], 0]`) and undirected `*1..2`. Byte-locked by the
+/// `path_vlp` golden.
 #[tokio::test]
-async fn browser_vlp_path_return_references_undefined_path_edges_column() {
+async fn browser_vlp_path_return_uses_only_cte_defined_columns() {
     let schema = load_schema(SchemaId::Standard.yaml_path());
     let cypher = "MATCH p=(a:User)-[:FOLLOWS*1..2]->(b) RETURN p";
 
     for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
         let sql = render(&schema, cypher, dialect).await;
 
-        // The recursive CTE body must NOT define a `path_edges` column...
-        let cte_body_end = sql.find(") \n").or_else(|| sql.find("SELECT \n      "));
-        let cte_body = match cte_body_end {
-            Some(idx) => &sql[..idx],
-            None => &sql,
-        };
+        // The path tuple must be assembled from CTE-defined columns only.
         assert!(
-            !cte_body.contains("path_edges"),
-            "expected the recursive VLP CTE body to NOT project `path_edges` \
-             for {dialect:?} (that's the bug this test characterizes) — if it \
-             now does, the bug is fixed; update this test and add a byte \
-             golden:\n{sql}"
+            !sql.contains("path_edges"),
+            "RETURN p must not reference `path_edges` — the recursive VLP CTE \
+             never defines it (#469 regression) for {dialect:?}:\n{sql}"
         );
-        // ...but the final SELECT references it anyway (the KNOWN-BROKEN bug).
         assert!(
-            sql.contains("path_edges"),
-            "expected the KNOWN-BROKEN reference to the undefined \
-             `path_edges` column in the final SELECT for {dialect:?}:\n{sql}"
+            sql.contains("t.path_nodes")
+                && sql.contains("t.path_relationships")
+                && sql.contains("t.hop_count"),
+            "expected the path tuple to consume the CTE's actual projection \
+             (path_nodes, path_relationships, hop_count) for {dialect:?}:\n{sql}"
         );
     }
 }

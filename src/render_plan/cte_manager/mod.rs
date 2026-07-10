@@ -1605,6 +1605,27 @@ impl DenormalizedCteStrategy {
         }
     }
 
+    /// Quoted relationship-type literal for the path_relationships array
+    /// (e.g. `'FLIGHT'`), or `""` when no path variable is bound (no growth
+    /// needed — mirrors the standard emitter's needs_path_data gating) or the
+    /// type is unknown. Relationship types may arrive as composite schema keys
+    /// (`TYPE::FromLabel::ToLabel`); only the Cypher-visible type name is
+    /// emitted.
+    fn relationship_type_literal(&self, context: &CteGenerationContext) -> String {
+        if context.path_variable.is_none() {
+            return String::new();
+        }
+        context
+            .relationship_types
+            .as_ref()
+            .and_then(|types| types.first())
+            .map(|t| {
+                let type_name = t.split("::").next().unwrap_or(t);
+                format!("'{}'", type_name)
+            })
+            .unwrap_or_default()
+    }
+
     /// Generate the base case SQL (1-hop traversal) for denormalized schema
     fn generate_base_case_sql(
         &self,
@@ -1633,6 +1654,17 @@ impl DenormalizedCteStrategy {
                     self.pattern_ctx.rel_alias,
                     self.to_col
                 ))
+            ),
+            // path_relationships: part of the cross-strategy VLP CTE contract —
+            // the standard emitter (variable_length_cte.rs) always projects it,
+            // and the path materializer consumes it for `RETURN p`:
+            // tuple(path_nodes, path_relationships, hop_count) (#469).
+            // Populated only when a path variable is bound (mirrors the
+            // standard emitter's needs_path_data gating); `[]` otherwise so
+            // the column always exists.
+            format!(
+                "{} as path_relationships",
+                arr(&self.relationship_type_literal(context))
             ),
         ];
 
@@ -1672,6 +1704,20 @@ impl DenormalizedCteStrategy {
             "vp.hop_count + 1".to_string(),
             arr_append("vp.path_edges", &format!("next.{}", self.from_col)), // Extend edge path array
             arr_append("vp.path_nodes", &format!("next.{}", self.to_col)), // Extend node path array
+            // Extend the relationship-type path array (see base case for why
+            // this column is part of the VLP CTE contract). Grows only when a
+            // path variable is bound; stays `[]` otherwise.
+            {
+                let rel_type = self.relationship_type_literal(context);
+                if rel_type.is_empty() {
+                    format!("{} as path_relationships", arr(""))
+                } else {
+                    format!(
+                        "{} as path_relationships",
+                        arr_append("vp.path_relationships", &rel_type)
+                    )
+                }
+            },
         ];
 
         // Add properties from the next table occurrence

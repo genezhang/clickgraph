@@ -22,5 +22,5 @@ WITH RECURSIVE vlp_a_b AS (
       AND NOT has(vp.path_nodes, end_node.user_id)
 )
 SELECT 
-      tuple(t.path_nodes, t.path_edges, t.path_relationships, t.hop_count) AS "p"
+      tuple(t.path_nodes, t.path_relationships, t.hop_count) AS "p"
 FROM vlp_a_b AS t

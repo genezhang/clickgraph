@@ -5,10 +5,9 @@ WITH RECURSIVE vlp_a_b AS (
         1 as hop_count,
         array(t0.origin_code) as path_edges,
         array(t0.origin_code, t0.dest_code) as path_nodes,
-        array() as path_relationships,
-        t0.dest_city as end_dest_city
+        array('FLIGHT') as path_relationships
     FROM db_denormalized.flights_denorm AS t0
-    WHERE t0.origin_city = 'Seattle' AND hop_count <= 2
+    WHERE hop_count <= 2
     UNION ALL
     SELECT
         next.origin_code as start_id,
@@ -16,12 +15,12 @@ WITH RECURSIVE vlp_a_b AS (
         vp.hop_count + 1,
         concat(vp.path_edges, array(next.origin_code)),
         concat(vp.path_nodes, array(next.dest_code)),
-        array() as path_relationships,
-        next.dest_city as end_dest_city
+        concat(vp.path_relationships, array('FLIGHT')) as path_relationships
     FROM vlp_a_b vp
     JOIN db_denormalized.flights_denorm next ON next.origin_code = vp.end_id
     WHERE vp.hop_count < 2 AND NOT array_contains(vp.path_nodes, next.dest_code)
 )
 SELECT 
-      t.end_dest_city AS `b.city`
+      struct(t.path_nodes, t.path_relationships, t.hop_count) AS `p`
 FROM vlp_a_b AS t
+LIMIT 5

@@ -5,6 +5,7 @@ WITH RECURSIVE vlp_a_b AS (
         1 as hop_count,
         [t0.origin_code] as path_edges,
         [t0.origin_code, t0.dest_code] as path_nodes,
+        [] as path_relationships,
         t0.origin_code as start_origin_code,
         t0.dest_code as end_dest_code
     FROM db_denormalized.flights_denorm AS t0
@@ -16,6 +17,7 @@ WITH RECURSIVE vlp_a_b AS (
         vp.hop_count + 1,
         arrayConcat(vp.path_edges, [next.origin_code]),
         arrayConcat(vp.path_nodes, [next.dest_code]),
+        [] as path_relationships,
         vp.start_origin_code as start_origin_code,
         next.dest_code as end_dest_code
     FROM vlp_a_b vp

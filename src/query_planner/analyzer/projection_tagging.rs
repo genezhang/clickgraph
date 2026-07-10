@@ -79,6 +79,41 @@ fn extract_label_from_plan(plan: &LogicalPlan, alias: &str) -> Option<String> {
     }
 }
 
+/// Check whether the relationship `rel_alias` routes through the
+/// PatternResolver-2.0 `pattern_union_{alias}` CTE (both endpoints unlabeled →
+/// `GraphRel.pattern_combinations` is set at plan-build time). The render layer
+/// aliases that CTE with the RELATIONSHIP alias itself
+/// (`FROM pattern_union_r AS r`), while multi-type VLP-joins CTEs are aliased
+/// `t` (`FROM vlp_multi_type_a_b AS t`). Mirrors the render-side dispatch in
+/// `select_builder::has_pattern_combinations_for_alias` — the two MUST agree,
+/// or `type(r)` rewrites reference an unbound alias (#468).
+fn rel_uses_pattern_union(plan: &LogicalPlan, rel_alias: &str) -> bool {
+    match plan {
+        LogicalPlan::GraphRel(gr) if gr.alias == rel_alias => gr.pattern_combinations.is_some(),
+        LogicalPlan::GraphRel(gr) => {
+            rel_uses_pattern_union(&gr.left, rel_alias)
+                || rel_uses_pattern_union(&gr.right, rel_alias)
+        }
+        LogicalPlan::GraphNode(node) => rel_uses_pattern_union(&node.input, rel_alias),
+        LogicalPlan::Projection(proj) => rel_uses_pattern_union(&proj.input, rel_alias),
+        LogicalPlan::Filter(filter) => rel_uses_pattern_union(&filter.input, rel_alias),
+        LogicalPlan::GraphJoins(joins) => rel_uses_pattern_union(&joins.input, rel_alias),
+        LogicalPlan::GroupBy(gb) => rel_uses_pattern_union(&gb.input, rel_alias),
+        LogicalPlan::OrderBy(order_by) => rel_uses_pattern_union(&order_by.input, rel_alias),
+        LogicalPlan::Limit(limit) => rel_uses_pattern_union(&limit.input, rel_alias),
+        LogicalPlan::Skip(skip) => rel_uses_pattern_union(&skip.input, rel_alias),
+        LogicalPlan::CartesianProduct(cp) => {
+            rel_uses_pattern_union(&cp.left, rel_alias)
+                || rel_uses_pattern_union(&cp.right, rel_alias)
+        }
+        LogicalPlan::Union(u) => u
+            .inputs
+            .iter()
+            .any(|branch| rel_uses_pattern_union(branch, rel_alias)),
+        _ => false,
+    }
+}
+
 pub struct ProjectionTagging;
 
 impl AnalyzerPass for ProjectionTagging {
@@ -165,7 +200,7 @@ impl AnalyzerPass for ProjectionTagging {
                 }
 
                 for item in &mut proj_items_to_mutate {
-                    Self::tag_projection(item, plan_ctx, graph_schema)?;
+                    Self::tag_projection(item, plan_ctx, graph_schema, Some(&projection.input))?;
                 }
 
                 // Restore original labels
@@ -344,7 +379,12 @@ impl AnalyzerPass for ProjectionTagging {
                         &item.expression,
                         crate::query_planner::logical_expr::LogicalExpr::TableAlias(_)
                     ) {
-                        Self::tag_projection(item, plan_ctx, graph_schema)?;
+                        Self::tag_projection(
+                            item,
+                            plan_ctx,
+                            graph_schema,
+                            Some(&with_clause.input),
+                        )?;
                     }
                 }
 
@@ -453,10 +493,14 @@ impl ProjectionTagging {
         }
     }
 
+    /// `input_plan` is the plan subtree the projection reads from (when
+    /// available); used to dispatch rewrites that depend on WHICH renderer a
+    /// pattern routes through (e.g. `type(r)` on a pattern_union vs VLP CTE).
     fn tag_projection(
         item: &mut ProjectionItem,
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
+        input_plan: Option<&LogicalPlan>,
     ) -> AnalyzerResult<()> {
         match item.expression.clone() {
             LogicalExpr::TableAlias(table_alias) => {
@@ -830,7 +874,12 @@ impl ProjectionTagging {
                         expression: operand.clone(),
                         col_alias: None,
                     };
-                    Self::tag_projection(&mut operand_return_item, plan_ctx, graph_schema)?;
+                    Self::tag_projection(
+                        &mut operand_return_item,
+                        plan_ctx,
+                        graph_schema,
+                        input_plan,
+                    )?;
                     transformed_operands.push(operand_return_item.expression);
                 }
 
@@ -873,14 +922,14 @@ impl ProjectionTagging {
                     expression: (*array).clone(),
                     col_alias: None,
                 };
-                Self::tag_projection(&mut array_item, plan_ctx, graph_schema)?;
+                Self::tag_projection(&mut array_item, plan_ctx, graph_schema, input_plan)?;
 
                 // Process index expression (might reference variables)
                 let mut index_item = ProjectionItem {
                     expression: (*index).clone(),
                     col_alias: None,
                 };
-                Self::tag_projection(&mut index_item, plan_ctx, graph_schema)?;
+                Self::tag_projection(&mut index_item, plan_ctx, graph_schema, input_plan)?;
 
                 // Reconstruct ArraySubscript with processed expressions
                 item.expression = LogicalExpr::ArraySubscript {
@@ -920,13 +969,25 @@ impl ProjectionTagging {
                                     }
                                     if let Some(labels) = table_ctx.get_labels() {
                                         if labels.len() > 1 {
-                                            // Multi-type: VLP CTE produces path_relationships array.
-                                            // IMPORTANT: VLP CTE uses alias 't', not the relationship alias 'r'.
-                                            // The CTE FROM clause is: FROM vlp_multi_type_xxx AS t
-                                            // So we must use table_alias='t' to reference CTE columns.
+                                            // Multi-type: the generating CTE produces a
+                                            // path_relationships array. WHICH alias binds that CTE
+                                            // depends on the route (must mirror select_builder's
+                                            // has_pattern_combinations_for_alias dispatch):
+                                            //   - pattern_union (both endpoints unlabeled,
+                                            //     GraphRel.pattern_combinations set): the CTE is
+                                            //     aliased with the RELATIONSHIP alias itself —
+                                            //     FROM pattern_union_r AS r (#468)
+                                            //   - multi-type VLP joins: FROM vlp_multi_type_a_b AS t
+                                            let cte_alias = if input_plan
+                                                .is_some_and(|p| rel_uses_pattern_union(p, alias))
+                                            {
+                                                alias.clone()
+                                            } else {
+                                                "t".to_string() // VLP CTE uses 't' alias
+                                            };
                                             item.expression = LogicalExpr::ArraySubscript {
                                                 array: Box::new(LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                                    table_alias: TableAlias("t".to_string()), // VLP CTE uses 't' alias
+                                                    table_alias: TableAlias(cte_alias),
                                                     column: crate::graph_catalog::expression_parser::PropertyValue::Column("path_relationships".to_string()),
                                                 })),
                                                 // ArraySubscript uses the 0-based Cypher convention (the
@@ -1128,7 +1189,7 @@ impl ProjectionTagging {
                         expression: arg.clone(),
                         col_alias: None,
                     };
-                    Self::tag_projection(&mut arg_return_item, plan_ctx, graph_schema)?;
+                    Self::tag_projection(&mut arg_return_item, plan_ctx, graph_schema, input_plan)?;
                     transformed_args.push(arg_return_item.expression);
                 }
 
@@ -1419,7 +1480,7 @@ impl ProjectionTagging {
                         expression: (**expr).clone(),
                         col_alias: None,
                     };
-                    Self::tag_projection(&mut expr_item, plan_ctx, graph_schema)?;
+                    Self::tag_projection(&mut expr_item, plan_ctx, graph_schema, input_plan)?;
                     Some(Box::new(expr_item.expression))
                 } else {
                     None
@@ -1432,13 +1493,13 @@ impl ProjectionTagging {
                         expression: when_cond.clone(),
                         col_alias: None,
                     };
-                    Self::tag_projection(&mut when_item, plan_ctx, graph_schema)?;
+                    Self::tag_projection(&mut when_item, plan_ctx, graph_schema, input_plan)?;
 
                     let mut then_item = ProjectionItem {
                         expression: then_val.clone(),
                         col_alias: None,
                     };
-                    Self::tag_projection(&mut then_item, plan_ctx, graph_schema)?;
+                    Self::tag_projection(&mut then_item, plan_ctx, graph_schema, input_plan)?;
 
                     transformed_when_then.push((when_item.expression, then_item.expression));
                 }
@@ -1449,7 +1510,7 @@ impl ProjectionTagging {
                         expression: (**else_expr).clone(),
                         col_alias: None,
                     };
-                    Self::tag_projection(&mut else_item, plan_ctx, graph_schema)?;
+                    Self::tag_projection(&mut else_item, plan_ctx, graph_schema, input_plan)?;
                     Some(Box::new(else_item.expression))
                 } else {
                     None
@@ -1472,7 +1533,7 @@ impl ProjectionTagging {
                     expression: (*lambda_expr.body).clone(),
                     col_alias: None,
                 };
-                Self::tag_projection(&mut body_item, plan_ctx, graph_schema)?;
+                Self::tag_projection(&mut body_item, plan_ctx, graph_schema, input_plan)?;
 
                 item.expression = LogicalExpr::Lambda(LambdaExpr {
                     params: lambda_expr.params.clone(),
