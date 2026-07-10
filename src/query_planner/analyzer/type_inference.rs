@@ -455,7 +455,14 @@ impl TypeInference {
                         }
                     }
 
-                    let inferred_labels: Vec<String> = to_node_labels.into_iter().collect();
+                    // Sorted: `to_node_labels` is a HashSet, and this list flows into
+                    // rendered SQL (e.g. the `labels(x)` array literal for multi-type
+                    // VLP end nodes), so unsorted order flaps across processes (#480).
+                    let inferred_labels: Vec<String> = {
+                        let mut v: Vec<String> = to_node_labels.into_iter().collect();
+                        v.sort();
+                        v
+                    };
                     if !inferred_labels.is_empty() {
                         log::info!(
                             "🎯 TypeInference: Multi-type VLP auto-inference for '{}' → labels: {:?}",

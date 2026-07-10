@@ -1251,13 +1251,16 @@ const FK_EDGE_BROWSER_CORPUS: &[(&str, &str)] = &[
 ///     virtual node_id, mapped via from/to_node_properties) is populated on
 ///     EVERY UNION branch (origin_code / dest_code), so it does NOT undercount.
 ///
-/// `dn_path_unlabeled` is NOT a byte-golden: the fixed_path edge-property
-/// column order (`t3.distance`/`t3.flight_num`/`t3.carrier`/...) is emitted
-/// in nondeterministic HashMap order (verified: 3 independent process runs
-/// produced 3 different orderings) — the same latent defect documented for
-/// `denorm_path_return` in the P0.2/#459 known-suspicious block above. Locked
-/// instead by the structural test `denorm_path_unlabeled_column_set_is_stable`
-/// below.
+/// `dn_path_unlabeled` was originally NOT a byte-golden: the fixed_path
+/// edge-property column order (`t3.distance`/`t3.flight_num`/`t3.carrier`/...)
+/// was emitted in nondeterministic HashMap order — the same latent defect
+/// documented for `denorm_path_return` in the P0.2/#459 known-suspicious block
+/// above. RESTORED as a BYTE-GOLDEN by #480 (`get_node_properties`/
+/// `get_relationship_properties` now sort by cypher property name, and
+/// `expand_cte_entity` sorts its merged denormalized list); verified
+/// byte-identical across 10 fresh-process renders. The structural test
+/// `denorm_path_unlabeled_column_set_is_stable` below is retained as a
+/// documented invariant lock (origin_code/dest_code role-correct resolution).
 const DENORM_BROWSER_CORPUS: &[(&str, &str)] = &[
     (
         "dn_unlabeled_expand",
@@ -1273,6 +1276,7 @@ const DENORM_BROWSER_CORPUS: &[(&str, &str)] = &[
         "dn_path_vlp",
         "MATCH p=(a:Airport)-[:FLIGHT*1..2]->(b:Airport) RETURN p LIMIT 5",
     ),
+    ("dn_path_unlabeled", "MATCH p=()-[]->() RETURN p LIMIT 10"),
 ];
 
 fn load_schema(yaml_path: &str) -> GraphSchema {
@@ -2586,6 +2590,158 @@ async fn denorm_optional_join_key_forward_resolved_and_deterministic_470() {
     }
 }
 
+/// #481 regression: on the coupled-denormalized `zeek_merged_test` schema, a
+/// 2-hop `ACCESSED` chain `(a:IP)->(b:IP)->(c:IP)` resolved the MIDDLE node's
+/// property binding by iterating `PlanCtx::pattern_contexts` (a `HashMap`) and
+/// taking the FIRST pattern containing `b` — so `b.ip` flapped across fresh
+/// processes between the shared endpoint's column (correct) and the OTHER
+/// endpoint's column of the same hop (WRONG — identical to `c.ip`, returning
+/// wrong data). The fix makes `PlanCtx::get_node_strategy` prefer the node's
+/// OWNING edge as recorded by `register_denormalized_aliases` — the same
+/// registry the render phase uses for the alias binding — so role and alias
+/// always agree, with a sorted fallback for nodes outside the registry.
+///
+/// Locks BOTH determinism (repeated renders byte-identical — HashMap seeds
+/// differ per map instance, so the old bug flips within one process) AND
+/// role-correctness REGARDLESS of which hop `b` binds to: given the emitted
+/// join `hop2.from_col = hop1.to_col`, `b` must bind to one of those two
+/// (equivalent) shared-endpoint columns and NEVER to `a`'s or `c`'s column.
+#[tokio::test]
+async fn coupled_multihop_middle_node_binds_shared_endpoint_481() {
+    let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+    let repro = "MATCH (a:IP)-[:ACCESSED]->(b:IP)-[:ACCESSED]->(c:IP) RETURN a.ip, b.ip, c.ip";
+
+    // Determinism: many in-process renders must be byte-identical.
+    let first = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+    for _ in 0..30 {
+        let again = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#481: coupled 2-hop middle-node render is nondeterministic:\n\
+             FIRST:\n{first}\nAGAIN:\n{again}"
+        );
+    }
+
+    // Role-correctness, independent of column order and alias numbering.
+    let binding = |col_alias: &str| -> (String, String) {
+        let re = regex::Regex::new(&format!(
+            r#"(t\d+)\."(id\.(?:orig|resp)_h)" AS "{}""#,
+            regex::escape(col_alias)
+        ))
+        .unwrap();
+        let caps = re
+            .captures(&first)
+            .unwrap_or_else(|| panic!("#481: no binding for {col_alias}:\n{first}"));
+        (caps[1].to_string(), caps[2].to_string())
+    };
+    let (a_alias, a_col) = binding("a.ip");
+    let (b_alias, b_col) = binding("b.ip");
+    let (c_alias, c_col) = binding("c.ip");
+
+    // a is hop1's from-endpoint, c is hop2's to-endpoint, on distinct scans.
+    assert_eq!(
+        a_col, "id.orig_h",
+        "#481: a.ip must be a from-column:\n{first}"
+    );
+    assert_eq!(
+        c_col, "id.resp_h",
+        "#481: c.ip must be a to-column:\n{first}"
+    );
+    assert_ne!(
+        a_alias, c_alias,
+        "#481: a and c must bind to different hop scans:\n{first}"
+    );
+
+    // The join must equate the two representations of the shared node b:
+    // hop2.from = hop1.to (either operand order).
+    let fwd = format!(r#"{c_alias}."id.orig_h" = {a_alias}."id.resp_h""#);
+    let rev = format!(r#"{a_alias}."id.resp_h" = {c_alias}."id.orig_h""#);
+    assert!(
+        first.contains(&fwd) || first.contains(&rev),
+        "#481: join must equate hop2.from with hop1.to:\n{first}"
+    );
+
+    // b must bind to ONE of the shared endpoint's two equivalent columns...
+    let b_binding = (b_alias.as_str(), b_col.as_str());
+    assert!(
+        b_binding == (c_alias.as_str(), "id.orig_h")
+            || b_binding == (a_alias.as_str(), "id.resp_h"),
+        "#481: b.ip must bind to the shared endpoint (hop2 from-column or \
+         hop1 to-column), got {b_alias}.\"{b_col}\":\n{first}"
+    );
+    // ...and NEVER to a's or c's own binding (the wrong-data variant).
+    assert_ne!(
+        (b_alias.as_str(), b_col.as_str()),
+        (a_alias.as_str(), a_col.as_str()),
+        "#481: b.ip must not alias a.ip's column:\n{first}"
+    );
+    assert_ne!(
+        (b_alias.as_str(), b_col.as_str()),
+        (c_alias.as_str(), c_col.as_str()),
+        "#481: b.ip must not alias c.ip's column (wrong-data variant):\n{first}"
+    );
+}
+
+/// #480 regression: two rendering sites emitted whole-entity/denorm-VLP
+/// columns in raw `HashMap` iteration order, flapping across processes (15
+/// corpus entries were excluded for this class in
+/// `tests/corpus/nondeterministic.txt`; all now un-excluded):
+///   1. `expand_cte_entity` (select_builder.rs) — a bare node/rel variable
+///      resolved through a WITH CTE sourced `schema.get_node_properties`/
+///      `get_relationship_properties` (unsorted `property_mappings`
+///      iteration) plus an unsorted denorm `from_/to_properties` merge.
+///   2. The denormalized VLP CTE builder (cte_extraction.rs) iterated
+///      `from_/to_properties` straight into the CTE's fixed column order.
+/// Fixed by sorting on the cypher property key at the source getters and both
+/// sites (the #458/#464 recipe). Each shape below renders many times
+/// IN-PROCESS (HashMap seeds are per-map instance, so an unsorted site flips
+/// within one process) and must be byte-identical; the first shape's SELECT
+/// column aliases must also come out in sorted property order.
+#[tokio::test]
+async fn whole_entity_and_denorm_vlp_column_order_deterministic_480() {
+    // Shape 1: WITH-barrier whole-entity expansion (expand_cte_entity).
+    let std_schema = load_schema(SchemaId::Standard.yaml_path());
+    let with_entity = "MATCH (u:User) WITH u RETURN u";
+    let first = normalize(&render(&std_schema, with_entity, SqlDialect::ClickHouse).await);
+    for _ in 0..30 {
+        let again = normalize(&render(&std_schema, with_entity, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#480: WITH whole-entity render is nondeterministic:\n\
+             FIRST:\n{first}\nAGAIN:\n{again}"
+        );
+    }
+    // The expanded `u.<prop>` aliases must be in sorted property order.
+    let alias_re = regex::Regex::new(r#" AS "u\.([A-Za-z0-9_]+)""#).unwrap();
+    let props: Vec<String> = alias_re
+        .captures_iter(&first)
+        .map(|c| c[1].to_string())
+        .collect();
+    assert!(
+        props.len() > 1,
+        "#480: expected a multi-property expansion of u:\n{first}"
+    );
+    let mut sorted = props.clone();
+    sorted.sort();
+    assert_eq!(
+        props, sorted,
+        "#480: expand_cte_entity must emit properties in sorted order:\n{first}"
+    );
+
+    // Shape 2: denormalized VLP CTE (both endpoints embedded in the edge table).
+    let denorm_schema = load_schema(SchemaId::Denormalized.yaml_path());
+    let vlp = "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport) RETURN a, b";
+    let base = normalize(&render(&denorm_schema, vlp, SqlDialect::ClickHouse).await);
+    for _ in 0..20 {
+        let again = normalize(&render(&denorm_schema, vlp, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            base, again,
+            "#480: denormalized VLP CTE render is nondeterministic:\n\
+             BASE:\n{base}\nAGAIN:\n{again}"
+        );
+    }
+}
+
 /// #466 regression: a FULLY-unlabeled UNDIRECTED expand
 /// `MATCH (n)-[r]-(o) RETURN n, r, o` must render DIFFERENT SQL from the
 /// DIRECTED form `MATCH (n)-[r]->(o) RETURN n, r, o` on both Standard
@@ -3172,15 +3328,18 @@ async fn browser_vlp_path_return_uses_only_cte_defined_columns() {
 }
 
 /// P0.5 structural lock for the Denormalized `path_unlabeled` case
-/// (`MATCH p=()-[]->() RETURN p LIMIT 10`), which is NOT a byte-golden: the
-/// fixed_path edge-property column order (`t3.distance`/`t3.flight_num`/
-/// `t3.carrier`/`t3.departure_time`/`t3.arrival_time`) is emitted in
-/// nondeterministic HashMap order — verified by 3 independent process
-/// invocations producing 3 different orderings. This is the same latent
+/// (`MATCH p=()-[]->() RETURN p LIMIT 10`). Originally this was NOT a
+/// byte-golden: the fixed_path edge-property column order (`t3.distance`/
+/// `t3.flight_num`/`t3.carrier`/`t3.departure_time`/`t3.arrival_time`) was
+/// emitted in nondeterministic HashMap order — verified by 3 independent
+/// process invocations producing 3 different orderings; the same latent
 /// defect documented for `denorm_path_return` in the P0.2/#459
-/// known-suspicious block above. Locks the stable invariants instead: the
-/// fixed_path marker, the virtual-id node endpoints, and the presence (not
-/// order) of every edge property column.
+/// known-suspicious block above. FIXED by #480 (sorted property getters +
+/// `expand_cte_entity` sort): the shape is now byte-locked as
+/// `dn_path_unlabeled` in `DENORM_BROWSER_CORPUS`. This test is retained as
+/// a readable invariant lock: the fixed_path marker, the ROLE-CORRECT
+/// virtual-id node endpoints (from → origin_code, to → dest_code), and the
+/// presence of every edge property column.
 #[tokio::test]
 async fn denorm_path_unlabeled_column_set_is_stable() {
     let schema = load_schema(SchemaId::Denormalized.yaml_path());

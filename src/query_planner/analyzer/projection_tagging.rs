@@ -419,7 +419,7 @@ impl ProjectionTagging {
     }
 
     fn get_explicit_aliases(&self, plan_ctx: &mut PlanCtx) -> Vec<String> {
-        plan_ctx
+        let mut aliases: Vec<String> = plan_ctx
             .get_alias_table_ctx_map()
             .iter()
             .filter_map(|(alias, table_ctx)| {
@@ -429,7 +429,12 @@ impl ProjectionTagging {
                     None
                 }
             })
-            .collect()
+            .collect();
+        // Sorted: the map is a HashMap, so without this the `RETURN *`
+        // expansion order flaps across processes (#480 class). Alphabetical
+        // also matches Neo4j's documented `RETURN *` column order.
+        aliases.sort();
+        aliases
     }
 
     /// Transform UNWIND expression to resolve property mappings for denormalized nodes
