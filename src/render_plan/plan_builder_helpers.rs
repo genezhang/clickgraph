@@ -4412,6 +4412,30 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
             if let Some(ref pred) = gr.where_predicate {
                 let is_optional = gr.is_optional.unwrap_or(false);
 
+                // #519: a WHERE-clause predicate is already property-mapped by
+                // the time it's folded into `gr.where_predicate` (an earlier
+                // analyzer/optimizer stage rewrites it in place), but an
+                // inline node property-map pattern (`(a:Airport {code:
+                // 'JFK'})`) is NOT — `convert_properties`
+                // (match_clause/helpers.rs) builds its equality expression
+                // directly from the raw Cypher property key with no mapping
+                // at all, and it lands in `gr.where_predicate` via the same
+                // `filter_into_graph_rel` optimizer path as a WHERE clause.
+                // Applying the SAME property-mapping rewrite the sibling
+                // `LogicalPlan::Filter` branch below already does (15 lines
+                // down) makes this uniform regardless of origin — a no-op
+                // for an already-mapped WHERE-clause predicate (its physical
+                // column name won't match any further Cypher property), and
+                // the actual fix for the inline-map case (e.g. `code` ->
+                // `origin_code` for a denormalized Airport in the origin
+                // role, the exact same role-aware resolution a WHERE clause
+                // on the same alias already gets).
+                use crate::query_planner::logical_expr::expression_rewriter::{
+                    rewrite_expression_with_property_mapping, ExpressionRewriteContext,
+                };
+                let rewrite_ctx = ExpressionRewriteContext::new(plan);
+                let pred = rewrite_expression_with_property_mapping(pred, &rewrite_ctx);
+
                 if is_optional {
                     // For OPTIONAL MATCH patterns, determine anchor vs optional aliases
                     let anchor_alias = gr.anchor_connection.as_ref();
@@ -4424,7 +4448,7 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
                     };
 
                     if let (Some(_anchor), Some(optional)) = (anchor_alias, optional_alias) {
-                        let all_preds = split_and_predicates_logical(pred);
+                        let all_preds = split_and_predicates_logical(&pred);
                         for p in all_preds {
                             let refs_only_rel = references_only_alias_logical(&p, &gr.alias);
                             let refs_only_optional = references_only_alias_logical(&p, optional);
@@ -4439,13 +4463,13 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
                         }
                     } else {
                         // No anchor determined - keep all predicates (conservative)
-                        if let Ok(render_expr) = RenderExpr::try_from(pred.clone()) {
+                        if let Ok(render_expr) = RenderExpr::try_from(pred) {
                             predicates.push(render_expr);
                         }
                     }
                 } else {
                     // Non-optional: include all predicates
-                    if let Ok(render_expr) = RenderExpr::try_from(pred.clone()) {
+                    if let Ok(render_expr) = RenderExpr::try_from(pred) {
                         predicates.push(render_expr);
                     }
                 }

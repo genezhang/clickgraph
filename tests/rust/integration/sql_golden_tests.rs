@@ -5911,4 +5911,93 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
             assert_eq!(sql, again, "#510: nondeterministic render");
         }
     }
+
+    /// #519: an inline property-map pattern on a denormalized node (`(a:Airport
+    /// {code: 'JFK'})`) inside a multi-hop pattern must render the SAME
+    /// schema-mapped physical column a functionally-equivalent WHERE clause
+    /// already does — never the raw, unmapped Cypher property name.
+    /// `convert_properties` (match_clause/helpers.rs) builds its equality
+    /// expression directly from the raw property key with no schema mapping
+    /// at all; the fix applies the same property-mapping rewrite the
+    /// sibling `LogicalPlan::Filter` branch of `collect_graphrel_predicates`
+    /// already does, uniformly to `GraphRel.where_predicate` regardless of
+    /// whether it originated from an inline map or a WHERE clause.
+    ///
+    /// Live-verified on db_denormalized: `MATCH (a:Airport {code: 'JFK'})
+    /// -[:FLIGHT]->(b:Airport)-[:FLIGHT]->(c:Airport) RETURN a.code, b.code,
+    /// c.code` returns 3 rows (JFK->LAX->{JFK,ATL,ORD}), byte-identical to
+    /// the equivalent `WHERE a.code = 'JFK'` query's live result. Also
+    /// verified for a dest-role inline map (`(b:Airport {code: 'LAX'})`,
+    /// correctly resolving to `dest_code`) and on the zeek coupled schema.
+    #[tokio::test]
+    async fn inline_property_map_on_denorm_node_resolves_mapped_column_519() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+
+        let origin_role = normalize(
+            &render(
+                &schema,
+                "MATCH (a:Airport {code: 'JFK'})-[:FLIGHT]->(b:Airport)-[:FLIGHT]->(c:Airport) \
+                 RETURN a.code, b.code, c.code",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert!(
+            origin_role.contains("origin_code = 'JFK'"),
+            "#519: inline map on an origin-role denorm node must resolve to \
+             `origin_code`, not the raw Cypher property `code`:\n{origin_role}"
+        );
+        assert!(
+            !origin_role.contains("WHERE t1.code"),
+            "#519: must not reference the raw unmapped `code` column \
+             (UNKNOWN_IDENTIFIER — flights_denorm has no `code` column):\n{origin_role}"
+        );
+
+        // Cross-check against the functionally-equivalent WHERE-clause form —
+        // both must resolve identically.
+        let where_form = normalize(
+            &render(
+                &schema,
+                "MATCH (a:Airport)-[:FLIGHT]->(b:Airport)-[:FLIGHT]->(c:Airport) \
+                 WHERE a.code = 'JFK' RETURN a.code, b.code, c.code",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert_eq!(
+            origin_role, where_form,
+            "#519: an inline property-map pattern must render byte-identically \
+             to its functionally-equivalent WHERE-clause form"
+        );
+
+        // Dest-role inline map: must resolve to `dest_code`, not `code`.
+        let dest_role = normalize(
+            &render(
+                &schema,
+                "MATCH (a:Airport)-[:FLIGHT]->(b:Airport {code: 'LAX'}) \
+                 RETURN a.code, b.code",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert!(
+            dest_role.contains("dest_code = 'LAX'"),
+            "#519: inline map on a dest-role denorm node must resolve to \
+             `dest_code`, not the raw Cypher property `code`:\n{dest_role}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(
+                &render(
+                    &schema,
+                    "MATCH (a:Airport {code: 'JFK'})-[:FLIGHT]->(b:Airport)-[:FLIGHT]->(c:Airport) \
+                     RETURN a.code, b.code, c.code",
+                    SqlDialect::ClickHouse,
+                )
+                .await,
+            );
+            assert_eq!(origin_role, again, "#519: nondeterministic render");
+        }
+    }
 }
