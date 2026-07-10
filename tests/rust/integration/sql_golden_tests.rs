@@ -5743,4 +5743,106 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
              wrap (UNION DISTINCT over one column is already node grain):\n{sql}"
         );
     }
+
+    /// #509: a non-count aggregate over a BARE node variable (`collect(b)`)
+    /// must produce a resolvable `PropertyAccess` argument, matching the
+    /// treatment `count(node)` already gets. Before this fix, only "count"
+    /// triggered the analyzer's node-identity rewrite; every other aggregate
+    /// left the bare, unbound Cypher alias in place — invalid SQL
+    /// (ClickHouse UNKNOWN_IDENTIFIER). Covers BOTH a denormalized anchor
+    /// (the render-side #493 resolver needs a PropertyAccess to rewrite onto
+    /// the embedded edge column) and a standard schema (the reference must
+    /// resolve to the joined table's real id column either way) — this bug
+    /// was NOT denorm-specific.
+    ///
+    /// Live-verified on db_denormalized (8 flights, 7 airports):
+    /// `collect(b)` per origin airport matches `groupArray(dest_code)`
+    /// ground truth exactly (e.g. LAX -> [JFK, ATL, ORD], PHX -> [] for the
+    /// airport with zero outgoing flights via OPTIONAL MATCH).
+    #[tokio::test]
+    async fn aggregate_over_bare_node_variable_resolves_id_column_509() {
+        let denorm_schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let denorm_sql = normalize(
+            &render(
+                &denorm_schema,
+                "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) \
+                 RETURN a.code, collect(b)",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert!(
+            denorm_sql.contains(".dest_code) AS \"collect(b)\"")
+                || denorm_sql.contains(".dest_code) as \"collect(b)\""),
+            "#509: collect(b) over a denormalized bare node must resolve to \
+             the embedded edge column, not the raw unbound alias `b`:\n{denorm_sql}"
+        );
+        assert!(
+            !denorm_sql.contains("groupArray(b)") && !denorm_sql.contains("(b)\n"),
+            "#509: collect(b) must not leave the bare unbound Cypher alias \
+             in the rendered SQL:\n{denorm_sql}"
+        );
+
+        let standard_schema = load_schema(SchemaId::Standard.yaml_path());
+        let standard_sql = normalize(
+            &render(
+                &standard_schema,
+                "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) \
+                 RETURN a.name, collect(b)",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert!(
+            standard_sql.contains(".followed_id) AS \"collect(b)\""),
+            "#509: collect(b) over a standard-schema bare node must resolve \
+             to the joined table's real id column:\n{standard_sql}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(
+                &render(
+                    &denorm_schema,
+                    "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) \
+                     RETURN a.code, collect(b)",
+                    SqlDialect::ClickHouse,
+                )
+                .await,
+            );
+            assert_eq!(denorm_sql, again, "#509: nondeterministic render");
+        }
+    }
+
+    /// #509 (WITH-clause guard): `collect(u)` immediately followed by
+    /// `UNWIND` of the SAME variable is a no-op pattern the
+    /// `CollectUnwindElimination` optimizer recognizes and eliminates
+    /// entirely (WITH u passes through, no groupArray/UNWIND round-trip).
+    /// That optimizer pattern-matches on `collect(u)`'s argument STILL being
+    /// a bare `TableAlias` — the #509 fix lives in the RETURN-only
+    /// `select_builder.rs::extract_select_items` path (which a `WithClause`
+    /// node never reaches: it recurses into `wc.input`, never `wc.items`),
+    /// so it must NOT rewrite the WITH clause's own `collect(u)` before the
+    /// optimizer sees it. Locks that the no-op elimination still fires
+    /// (pre-#509 behavior, unaffected).
+    #[tokio::test]
+    async fn aggregate_over_bare_node_variable_with_clause_unaffected_509() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (u:User) WITH u, collect(u) as users \
+                 UNWIND users as user RETURN user.name LIMIT 3",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert!(
+            !sql.to_lowercase().contains("grouparray")
+                && !sql.to_lowercase().contains("array join"),
+            "#509: WITH collect(u)+UNWIND(same var) no-op elimination must \
+             still fire — got a real groupArray/ARRAY JOIN round-trip \
+             instead of the optimized pass-through:\n{sql}"
+        );
+    }
 }
