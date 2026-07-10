@@ -371,6 +371,55 @@ impl NodeSchema {
     pub fn full_table_name(&self) -> String {
         format!("{}.{}", self.database, self.table_name)
     }
+
+    /// #492: Cypher property names whose denormalized from- OR to-side DB
+    /// column equals `db_col`, in deterministic (sorted) order.
+    ///
+    /// Used to translate a property reference that was schema-mapped against
+    /// ONE adjacent edge's side of a denormalized chain (e.g. `b.code` →
+    /// `Dest`, b as the first hop's to-node) back to its Cypher name so the
+    /// renderer can re-map it onto the side of the edge the alias is actually
+    /// bound to (`Origin`, b as the second hop's from-node).
+    pub fn denorm_properties_for_side_column(&self, db_col: &str) -> Vec<String> {
+        let mut names: Vec<String> = [self.from_properties.as_ref(), self.to_properties.as_ref()]
+            .into_iter()
+            .flatten()
+            .flat_map(|props| {
+                props
+                    .iter()
+                    .filter(|(_, col)| col.as_str() == db_col)
+                    .map(|(name, _)| name.clone())
+            })
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+}
+
+impl GraphSchema {
+    /// #492: Reverse-lookup the Cypher property names whose denormalized
+    /// from-/to-side column equals `db_col` (see
+    /// [`NodeSchema::denorm_properties_for_side_column`]). Scoped to `label`
+    /// when known; otherwise searches every node schema (deterministic:
+    /// `nodes` is a `BTreeMap` and per-schema results are sorted).
+    pub fn denorm_properties_for_side_column(
+        &self,
+        label: Option<&str>,
+        db_col: &str,
+    ) -> Vec<String> {
+        let mut names: Vec<String> = match label.and_then(|l| self.nodes.get(l)) {
+            Some(node_schema) => node_schema.denorm_properties_for_side_column(db_col),
+            None => self
+                .nodes
+                .values()
+                .flat_map(|ns| ns.denorm_properties_for_side_column(db_col))
+                .collect(),
+        };
+        names.sort();
+        names.dedup();
+        names
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

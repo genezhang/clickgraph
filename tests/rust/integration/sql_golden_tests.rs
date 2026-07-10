@@ -861,6 +861,19 @@ const DENORM_CORPUS: &[(&str, &str)] = &[
         "undirected_hop",
         "MATCH (a:Airport)-[:FLIGHT]-(b:Airport) RETURN a.code, b.code",
     ),
+    // Undirected 2-hop (#492): must UNION all four direction assignments
+    // (2 per undirected hop) with a relationship-uniqueness guard per branch,
+    // NOT collapse to a single directed join chain.
+    (
+        "undirected_2hop",
+        "MATCH (a:Airport)-[:FLIGHT]-(b:Airport)-[:FLIGHT]-(c:Airport) RETURN a.code, b.code, c.code",
+    ),
+    // Mixed-direction 2-hop (#492): the trailing undirected hop alone must
+    // fan out into forward + reverse branches.
+    (
+        "mixed_direction_2hop",
+        "MATCH (a:Airport)-[:FLIGHT]->(b:Airport)-[:FLIGHT]-(c:Airport) RETURN a.code, b.code, c.code",
+    ),
     // hop projecting edge properties incl. the renamed `flight_num` -> flight_number.
     (
         "hop_edge_props",
@@ -3154,6 +3167,91 @@ async fn denorm_optional_second_hop_keeps_required_binding_491() {
         "#491: optional hop must join its from-column to the required hop's \
          to-column:\n{first}"
     );
+}
+
+/// #492 regression: `MATCH (a)-[:FLIGHT]-(b)-[:FLIGHT]-(c)` on the
+/// denormalized flights schema rendered a SINGLE directed INNER JOIN chain —
+/// the undirectedness was silently dropped. Root causes fixed:
+///   1. `BidirectionalUnion`'s Projection arm still carried the
+///      nested-undirected-edge skip that the GraphRel arm removed long ago
+///      (#147); real queries (RETURN wraps the pattern in a Projection) always
+///      hit that arm, so any undirected hop whose left subtree is another
+///      GraphRel kept `Direction::Either`, which downstream renders as a
+///      plain directed join.
+///   2. `collect_relationship_info_inner` only recursed into `left`, so the
+///      Incoming-swapped branches (inner GraphRel moved to `right`) lost the
+///      relationship-uniqueness guard.
+///   3. The SELECT renderer bound the shared middle node's pre-resolved
+///      column (schema-mapped via ONE adjacent edge's side, e.g. `b.code` →
+///      t1's `Dest`) to the OTHER adjacent edge's alias, reading the wrong
+///      endpoint (`t2.Dest` = c's column) in the all-forward branch
+///      (`translate_denorm_cross_side_column` now re-maps the column onto the
+///      bound edge's side).
+///
+/// Locks the semantic shape: 4 direction assignments (2 per undirected hop) as
+/// UNION ALL branches, one per join-side combination, each carrying the
+/// relationship-uniqueness guard, with the middle node projected from the
+/// branch's SHARED endpoint column. Live-verified against ClickHouse dev data:
+/// 12 rows matching a hand-written 4-branch UNION ground truth (directed = 5).
+#[tokio::test]
+async fn denorm_undirected_multihop_direction_union_492() {
+    let schema = load_schema("schemas/examples/ontime_denormalized.yaml");
+    let repro = "MATCH (a)-[:FLIGHT]-(b)-[:FLIGHT]-(c) RETURN a.code, b.code, c.code";
+    let sql = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+
+    // Four direction assignments -> 4 UNION ALL branches.
+    assert_eq!(
+        sql.matches("UNION ALL").count(),
+        3,
+        "#492: undirected 2-hop must expand to 4 direction branches:\n{sql}"
+    );
+
+    // Each join-side combination appears exactly once, and its branch projects
+    // the middle node from the shared endpoint column of that combination.
+    let branches: Vec<&str> = sql.split("UNION ALL").collect();
+    for (cond, b_col) in [
+        ("t1.Origin = t0.Dest", "t1.Origin"), // fwd/fwd: b = t2 from-side
+        ("t1.Origin = t0.Origin", "t1.Origin"), // rev/fwd
+        ("t1.Dest = t0.Dest", "t1.Dest"),     // fwd/rev: b = t2 to-side
+        ("t1.Dest = t0.Origin", "t1.Dest"),   // rev/rev
+    ] {
+        let matching: Vec<&&str> = branches.iter().filter(|b| b.contains(cond)).collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "#492: join condition `{cond}` must appear in exactly one branch:\n{sql}"
+        );
+        assert!(
+            matching[0].contains(&format!("{b_col} AS \"b.code\"")),
+            "#492: branch `{cond}` must project b.code from its shared \
+             endpoint `{b_col}` (cross-side column/alias mismatch reads the \
+             WRONG endpoint):\n{sql}"
+        );
+        // Relationship uniqueness (Cypher: a relationship is traversed once
+        // per match) must guard EVERY branch, including the Incoming-swapped
+        // ones whose inner GraphRel lives in the right subtree.
+        assert!(
+            matching[0].contains("NOT (t1.flight_id = t0.flight_id"),
+            "#492: branch `{cond}` is missing the relationship-uniqueness \
+             guard:\n{sql}"
+        );
+    }
+
+    // Mixed direction: only the trailing undirected hop fans out (2 branches).
+    let mixed = "MATCH (a)-[:FLIGHT]->(b)-[:FLIGHT]-(c) RETURN a.code, b.code, c.code";
+    let sql = normalize(&render(&schema, mixed, SqlDialect::ClickHouse).await);
+    assert_eq!(
+        sql.matches("UNION ALL").count(),
+        1,
+        "#492: mixed-direction 2-hop must expand the undirected hop into \
+         forward + reverse branches:\n{sql}"
+    );
+    for cond in ["t1.Origin = t0.Dest", "t1.Dest = t0.Dest"] {
+        assert!(
+            sql.contains(cond),
+            "#492: mixed-direction 2-hop is missing the `{cond}` branch:\n{sql}"
+        );
+    }
 }
 
 /// #480 regression: two rendering sites emitted whole-entity/denorm-VLP

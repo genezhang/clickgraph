@@ -238,13 +238,15 @@ fn transform_bidirectional(
                     ))));
                 }
 
-                // Skip Union split for nested undirected edges (same as GraphRel case)
-                if has_nested_undirected_edge(&proj.input) {
-                    crate::debug_print!(
-                        "🔄 BidirectionalUnion: Nested undirected edge in Projection subtree, skipping Union split"
-                    );
-                    return Ok(Transformed::No(plan.clone()));
-                }
+                // #492: A nested undirected edge (an undirected hop whose left
+                // subtree is another GraphRel, e.g. the second hop of
+                // (a)-[:R]-(b)-[:R]-(c)) used to be skipped here, silently
+                // dropping Direction::Either — the pattern rendered as a single
+                // directed join chain. The GraphRel arm's identical skip was
+                // removed long ago (the Incoming branch swap restructures the
+                // chain correctly); this Projection-arm copy was left behind and
+                // real queries (RETURN wraps the pattern in a Projection) always
+                // hit this arm first. Fall through to the Union split.
 
                 crate::debug_print!(
                     "🔄 BidirectionalUnion: Found {} undirected edge(s) in Projection input, generating {} UNION branches",
@@ -713,11 +715,12 @@ fn count_undirected_edges(plan: &Arc<LogicalPlan>) -> usize {
 }
 
 /// Check if any undirected edge in the plan has a nested GraphRel as its left subtree.
-/// When this is the case, the UNION branch swap for the Incoming direction would
-/// destructively restructure the FROM/JOIN chain, causing broken SQL (wrong FROM table,
-/// duplicate aliases, joins referencing tables before declaration).
-/// Instead, these patterns should keep Direction::Either and let the join builder
-/// handle both directions with an OR condition.
+/// Historical helper: both the GraphRel arm and the Projection arm of
+/// `transform_bidirectional` used to skip the Union split for such patterns,
+/// silently dropping Direction::Either (#492). The Incoming branch swap
+/// restructures the chain correctly, so no production code consults this
+/// anymore; it is kept only for the characterization tests below.
+#[cfg(test)]
 fn has_nested_undirected_edge(plan: &Arc<LogicalPlan>) -> bool {
     match plan.as_ref() {
         LogicalPlan::GraphRel(gr) => {
@@ -819,8 +822,13 @@ fn collect_relationship_info_inner(
                     edge_id_cols,
                 });
             }
-            // Recurse into left (inner relationships in chain)
+            // Recurse into BOTH subtrees: a chained pattern keeps the inner
+            // GraphRel in `left` for Outgoing outer hops, but the Incoming
+            // branch swap (apply_direction_combination) moves it into `right`.
+            // Recursing only left dropped the uniqueness filter on swapped
+            // branches of an undirected multi-hop (#492).
             collect_relationship_info_inner(&graph_rel.left, graph_schema, rels);
+            collect_relationship_info_inner(&graph_rel.right, graph_schema, rels);
         }
         LogicalPlan::Projection(proj) => {
             collect_relationship_info_inner(&proj.input, graph_schema, rels);

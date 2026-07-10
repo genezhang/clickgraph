@@ -45,6 +45,51 @@ fn json_extract_field_arg(col_name: &str) -> String {
     }
 }
 
+/// #492: Translate a denormalized node's DB column to the side of the edge a
+/// property lookup actually bound the alias to.
+///
+/// In a denormalized multi-hop chain the shared middle node is adjacent to two
+/// edges; the planner's schema rewrite may resolve its property against one
+/// edge's side (e.g. `b.code` → `Dest`, b as t1's to-node) while
+/// `get_properties_with_table_alias` binds the alias to the other edge (t2,
+/// where b is the from-node whose column is `Origin`). Rendering the first
+/// edge's column with the second edge's table alias reads the WRONG endpoint.
+/// Reverse-lookup the Cypher property whose from-/to-side DB column equals
+/// `col_name` on the node schema, then map it through `properties` (the bound
+/// side's `(cypher_name, db_column)` pairs). Mirrors the cross-side fix in the
+/// WITH-CTE path (`plan_builder_utils::resolve_denormalized_property_in_expr`).
+fn translate_denorm_cross_side_column(
+    plan: &LogicalPlan,
+    alias: &str,
+    col_name: &str,
+    properties: &[(String, String)],
+) -> Option<String> {
+    use crate::query_planner::logical_expr::expression_rewriter::find_label_for_alias_in_plan;
+    use crate::server::query_context::get_current_schema_with_fallback;
+
+    let schema = get_current_schema_with_fallback()?;
+    // Label may be unresolved on some plan shapes (e.g. ORDER BY-wrapped
+    // branches leave GraphNode.label = None); the catalog API then searches
+    // all node schemas and the `properties` filter below keeps it scoped to
+    // the alias's actual bound side.
+    let label = find_label_for_alias_in_plan(plan, alias);
+    for cypher_name in schema.denorm_properties_for_side_column(label.as_deref(), col_name) {
+        if let Some((_, correct_col)) = properties.iter().find(|(pn, _)| *pn == cypher_name) {
+            if correct_col != col_name {
+                log::info!(
+                    "🔧 Denormalized cross-side fix in SELECT: '{}.{}' (from '{}') → '{}'",
+                    alias,
+                    col_name,
+                    cypher_name,
+                    correct_col
+                );
+            }
+            return Some(correct_col.clone());
+        }
+    }
+    None
+}
+
 /// SelectBuilder trait for extracting SELECT items from logical plans
 pub trait SelectBuilder {
     /// Extract SELECT items from the logical plan
@@ -1057,11 +1102,40 @@ impl SelectBuilder for LogicalPlan {
                             if let Ok((properties, table_alias_override)) =
                                 self.get_properties_with_table_alias(cypher_alias)
                             {
-                                // Look up the column name for this property
+                                // Look up the column name for this property.
+                                // Match by Cypher property name first, then by DB column
+                                // name (schema mapping may have already rewritten the
+                                // expression), then cross-side (#492): in a denormalized
+                                // multi-hop chain the schema rewrite may have bound the
+                                // shared middle node to a DIFFERENT adjacent edge's side
+                                // (e.g. b.code → t1's `Dest`) than the edge this lookup
+                                // resolved (t2, whose side for b is `Origin`). Translate
+                                // the column through the node schema so column and table
+                                // alias come from the SAME edge.
                                 let mapped_column = properties
                                     .iter()
                                     .find(|(prop_name, _)| prop_name == col_name)
-                                    .map(|(_, col)| col.clone());
+                                    .map(|(_, col)| col.clone())
+                                    .or_else(|| {
+                                        // Only for denormalized bindings (the lookup
+                                        // returned an edge alias override) — standard
+                                        // nodes (incl. expression-valued property
+                                        // mappings) keep the pass-through behavior.
+                                        if table_alias_override.is_none() {
+                                            None
+                                        } else if properties.iter().any(|(_, col)| col == col_name)
+                                        {
+                                            // Already the correct side's DB column
+                                            Some(col_name.to_string())
+                                        } else {
+                                            translate_denorm_cross_side_column(
+                                                self,
+                                                cypher_alias,
+                                                col_name,
+                                                &properties,
+                                            )
+                                        }
+                                    });
 
                                 if let Some(actual_column) = mapped_column {
                                     let table_alias_to_use = table_alias_override
