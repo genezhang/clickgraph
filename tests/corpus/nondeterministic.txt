@@ -75,7 +75,7 @@ social_integration/test_schema_variations_comprehensive__TestLabelInference_test
 # and the other endpoint's column (t1."id.resp_h", i.e. c's column), so one
 # HashMap-seed variant returns wrong results. Same HashMap-iteration root
 # cause as #470/#480, pre-existing on main; previously masked by the
-# wrong-schema .err lock. Tracked as an engine correctness issue.
+# wrong-schema .err lock. Tracked as #481.
 zeek_merged_test/test_zeek_merged__TestMultiHopConnections_test_two_hop_connections	flaps across runs (2-hop coupled-edge chain: middle-node endpoint binding is HashMap-order dependent; wrong-column variant exists)
 zeek_merged_test/test_zeek_merged__TestMultiHopConnections_test_two_hop_with_filter	flaps across runs (2-hop coupled-edge chain: middle-node endpoint binding is HashMap-order dependent; wrong-column variant exists)
 zeek_merged_test/test_zeek_merged__TestMultiHopConnections_test_two_hop_sql_uses_join	flaps across runs (2-hop coupled-edge chain: middle-node endpoint binding is HashMap-order dependent; wrong-column variant exists)
