@@ -831,6 +831,12 @@ impl JoinBuilder for LogicalPlan {
                             let mut joins = Vec::new();
                             for curr in &chain[1..] {
                                 let cte_name = format!("pattern_union_{}", curr.alias);
+                                // #466: this CTE is genuinely joined — the
+                                // filter builder may skip its per-branch
+                                // node-property conjuncts.
+                                crate::server::query_context::register_pattern_union_in_scope(
+                                    &cte_name,
+                                );
                                 // Determine join condition by finding shared node alias
                                 let joining_on = if let Some((ref_alias, ref_col)) =
                                     node_to_cte.get(curr.left_connection.as_str())

@@ -197,7 +197,7 @@ impl FilterBuilder for LogicalPlan {
                         let left = &graph_rel.left_connection;
                         let right = &graph_rel.right_connection;
                         let rewritten =
-                            rewrite_predicate_for_pattern_cte(predicate, cte_alias, left, right);
+                            rewrite_predicate_for_pattern_cte(predicate, cte_alias, left, right)?;
                         if !rewritten.is_empty() {
                             log::info!(
                                 "🔀 PatternResolver 2.0: Rewritten {} WHERE predicate(s) for CTE columns",
@@ -535,12 +535,78 @@ fn rewrite_predicate_for_pattern_cte(
     cte_alias: &str,
     left_alias: &str,
     right_alias: &str,
-) -> Vec<String> {
+) -> Result<Vec<String>, RenderBuildError> {
     let mut parts = Vec::new();
     split_and_predicates(predicate, &mut parts);
     let mut rewritten = Vec::new();
 
     for part in &parts {
+        // #466 (round 3): conjuncts referencing NODE PROPERTIES are resolved
+        // per-branch INSIDE the pattern_union CTE (each branch knows which
+        // label/table the alias binds to — see
+        // cte_extraction::substitute_pattern_branch_refs). Skip them here
+        // ONLY if the plan's FROM/JOIN genuinely references that CTE
+        // (registered by from_builder/join_builder, which run before filter
+        // extraction in every render arm). Plan shapes that never reference
+        // the CTE (e.g. some multi-MATCH cartesians whose FROM/JOINs stay on
+        // plain tables — their built-but-unreferenced CTE is dead-eliminated
+        // later) must NOT have the conjunct skipped: an unconditional skip
+        // silently dropped it (applied nowhere). Non-absorbed conjuncts stay
+        // in the outer WHERE as-is: correct when the alias is in scope as a
+        // plain table; a loud database error (unknown identifier) when the
+        // plan shape dropped the alias — never silently wrong. They must
+        // also not go through the id-column rewrite below, which degraded
+        // `o.name = 'Alice'` to `r.end_id = 'Alice'` (always false).
+        if crate::render_plan::cte_extraction::conjunct_references_node_property(
+            part,
+            &[left_alias, right_alias],
+        ) {
+            let pattern_cte_name = format!("pattern_union_{cte_alias}");
+            if crate::server::query_context::is_pattern_union_in_scope(&pattern_cte_name) {
+                log::debug!(
+                    "🔀 PatternResolver 2.0: node-property conjunct applied per-branch \
+                     inside {pattern_cte_name}, skipping outer rewrite: {:?}",
+                    part
+                );
+            } else {
+                log::warn!(
+                    "⚠️ PatternResolver 2.0: node-property conjunct NOT absorbed by a \
+                     pattern_union CTE (plan shape without the CTE reference) — \
+                     keeping it in the outer WHERE: {:?}",
+                    part
+                );
+                let render_expr = RenderExpr::try_from((*part).clone()).map_err(|e| {
+                    RenderBuildError::UnsupportedFeature(format!(
+                        "WHERE predicate on a multi-type/undirected pattern could not \
+                         be rendered for the outer WHERE: {e:?}"
+                    ))
+                })?;
+                rewritten.push(
+                    crate::render_plan::cte_extraction::render_expr_to_sql_string(
+                        &render_expr,
+                        &[],
+                    ),
+                );
+            }
+            continue;
+        }
+        // #466 round 3 (ride-along): whole-entity / subquery conjuncts cannot
+        // be resolved against the CTE projection either — clean error, never
+        // a silent drop.
+        if crate::render_plan::cte_extraction::conjunct_has_unresolvable_entity_ref(
+            part,
+            &[left_alias, right_alias],
+        ) {
+            return Err(RenderBuildError::UnsupportedFeature(format!(
+                "WHERE predicate on a multi-type/undirected pattern contains {} \
+                 which cannot be resolved against the pattern UNION; rewrite the \
+                 filter using node properties, id(), or labels()",
+                crate::render_plan::cte_extraction::describe_unresolvable_conjunct(
+                    part,
+                    &[left_alias, right_alias]
+                )
+            )));
+        }
         if let Some(sql) =
             rewrite_single_predicate_for_cte(part, cte_alias, left_alias, right_alias)
         {
@@ -552,11 +618,11 @@ fn rewrite_predicate_for_pattern_cte(
             );
         }
     }
-    rewritten
+    Ok(rewritten)
 }
 
 /// Split an AND-combined predicate into individual parts.
-fn split_and_predicates<'a>(expr: &'a LogicalExpr, out: &mut Vec<&'a LogicalExpr>) {
+pub(crate) fn split_and_predicates<'a>(expr: &'a LogicalExpr, out: &mut Vec<&'a LogicalExpr>) {
     if let LogicalExpr::OperatorApplicationExp(op_app) = expr {
         if op_app.operator == crate::query_planner::logical_expr::Operator::And {
             for operand in &op_app.operands {
@@ -596,12 +662,30 @@ fn rewrite_single_predicate_for_cte(
                             return None;
                         };
 
-                        match fn_call.name.as_str() {
+                        match fn_call.name.to_lowercase().as_str() {
                             "id" => {
                                 let cte_col = format!("{}.{}_id", cte_alias, position);
                                 let rhs_sql = render_rhs_to_sql(rhs, true);
                                 let op_str = render_operator(&op_app.operator);
                                 return Some(format!("{} {} {}", cte_col, op_str, rhs_sql));
+                            }
+                            // #466 round 4.5: elementId in THIS codebase is the
+                            // composite string `Label:id-` (see
+                            // graph_catalog::element_id::generate_node_element_id
+                            // — trailing `-` is a Browser-compat sentinel). The
+                            // CTE exposes exactly its ingredients per row, so
+                            // rebuild it label-agnostically. Previously
+                            // elementId fell through every handler and the
+                            // conjunct was silently dropped.
+                            "elementid" => {
+                                let cte_expr = format!(
+                                    "concat({cte}.{pos}_type, ':', {cte}.{pos}_id, '-')",
+                                    cte = cte_alias,
+                                    pos = position
+                                );
+                                let rhs_sql = render_rhs_to_sql(rhs, true);
+                                let op_str = render_operator(&op_app.operator);
+                                return Some(format!("{} {} {}", cte_expr, op_str, rhs_sql));
                             }
                             "labels" => {
                                 let cte_col = format!("{}.{}_type", cte_alias, position);
@@ -634,19 +718,12 @@ fn rewrite_single_predicate_for_cte(
                         let op_str = render_operator(&op_app.operator);
                         return Some(format!("{} {} {}", cte_col, op_str, rhs_sql));
                     }
-                    let position = if alias == left_alias {
-                        "start"
-                    } else if alias == right_alias {
-                        "end"
-                    } else {
-                        return None;
-                    };
-                    // For CTE outer WHERE, node properties map to start_id/end_id
-                    // (the optimizer only resolves id() to property access, not arbitrary properties)
-                    let cte_col = format!("{}.{}_id", cte_alias, position);
-                    let rhs_sql = render_rhs_to_sql(rhs, true);
-                    let op_str = render_operator(&op_app.operator);
-                    return Some(format!("{} {} {}", cte_col, op_str, rhs_sql));
+                    // #466: node-alias property access is handled per-branch
+                    // INSIDE the pattern_union CTE (the caller skips such
+                    // conjuncts before reaching here). The old fallback mapped
+                    // ANY node property to start_id/end_id, silently degrading
+                    // e.g. `o.name = 'Alice'` to `r.end_id = 'Alice'`.
+                    return None;
                 }
 
                 // Case 3: "Label" IN labels(alias) — reversed operand order

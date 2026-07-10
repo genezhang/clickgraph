@@ -75,6 +75,26 @@ pub struct QueryContext {
     /// For aliases that are multi-type VLP endpoints requiring JSON extraction
     pub multi_type_vlp_aliases: HashMap<String, String>,
 
+    /// #466: `pattern_union_*` CTE names actually referenced by the current
+    /// render plan's FROM/JOIN (registered by from_builder/join_builder the
+    /// moment they emit the CTE reference). The outer-WHERE rewriter
+    /// (`filter_builder`) may only SKIP a node-property conjunct when the
+    /// CTE that absorbs it per-branch is registered here — an unconditional
+    /// skip silently dropped predicates on plan shapes where the CTE never
+    /// renders (e.g. some multi-MATCH cartesians whose FROM/JOINs stay on
+    /// plain tables and whose built-but-unreferenced CTE is dead-eliminated).
+    /// FROM/JOIN extraction runs before filter extraction in every render
+    /// arm, so registrations are visible to the filter builder.
+    ///
+    /// NOTE (reviewer, round 4): entries are never cleared between subplans
+    /// of one query, so a CTE registered while rendering one subplan stays
+    /// visible while rendering later subplans of the same task. Since CTE
+    /// names are `pattern_union_{rel_alias}` and a rel alias maps to the
+    /// same pattern within a query, no incorrect skip has been reproduced;
+    /// if per-subplan isolation is ever needed, scope this set per render
+    /// pass instead.
+    pub pattern_union_scope_ctes: HashSet<String>,
+
     /// VLP CTE outer-query aliases: cte_name → vlp_alias (e.g., "vlp_u1_u2" → "vt0")
     /// Used by FROM/JOIN builders to assign unique aliases per VLP CTE.
     /// NOTE: Currently not populated — see TODO(multi-vlp) in cte_extraction.rs.
@@ -440,6 +460,29 @@ pub fn register_relationship_cte_name(alias: &str, cte_name: &str) {
             .multi_type_vlp_aliases
             .insert(alias.to_string(), cte_name.to_string());
     });
+}
+
+/// #466: record that the current render plan's FROM/JOIN references a
+/// `pattern_union_*` CTE. Called by from_builder/join_builder at the exact
+/// points where they emit the CTE reference (before filter extraction runs).
+pub fn register_pattern_union_in_scope(cte_name: &str) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut()
+            .pattern_union_scope_ctes
+            .insert(cte_name.to_string());
+    });
+}
+
+/// #466: is this `pattern_union_*` CTE referenced by the current plan's
+/// FROM/JOIN? The outer-WHERE builder may only skip a node-property conjunct
+/// when this returns true — the CTE genuinely applies the conjunct
+/// per-branch; otherwise the conjunct must stay in the outer WHERE (never
+/// skip-without-apply). Returns false outside a task-local scope — the
+/// conservative direction (keep the filter).
+pub fn is_pattern_union_in_scope(cte_name: &str) -> bool {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().pattern_union_scope_ctes.contains(cte_name))
+        .unwrap_or(false)
 }
 
 /// Get a relationship CTE name by alias

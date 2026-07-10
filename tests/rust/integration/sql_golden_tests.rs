@@ -327,22 +327,27 @@ const CORPUS: &[(&str, &str)] = &[
 /// schema-sensitive subset (node scan / expand / path / count) on the other
 /// two patterns.
 ///
+/// FIXED (#466):
+///
+///   - `unlabeled_expand` (`MATCH (n)-[r]-(o) RETURN n, r, o`, fully
+///     unlabeled + multi-edge-type UNDIRECTED) now renders DIFFERENT SQL from
+///     `unlabeled_expand_directed` (the DIRECTED form): the `pattern_union`
+///     branch generator emits a REVERSE-direction branch (same edge/join,
+///     start and end swapped) for each combination. Confirmed live (local
+///     `social` fixture): the undirected form returns 46 rows (23 forward
+///     edges — 10 FOLLOWS + 5 AUTHORED + 8 LIKED — each also traversable
+///     backward, 0 self-loops), while the directed control is unchanged at 23.
+///     Self-loops (from-id == to-id) are excluded from the reverse branch
+///     (WHERE guard on the FOLLOWS self-join) so they appear ONCE, per Neo4j.
+///     This closed the "GROUP 3b" gap in the browser-unlabeled-pattern-bugs
+///     catalog. Contrast: `anchored_unlabeled_expand` (one side labeled, 33
+///     rows) and `unlabeled_rel_typed` (single relationship type, 20 rows)
+///     route through `vlp_multi_type` / `bidirectional_union` and were already
+///     correct.
+///
 /// KNOWN BROKEN (locked as characterization — this is a TEST-ONLY slice, not
 /// fixed here; each is a candidate follow-up issue):
 ///
-///   - `unlabeled_expand` (`MATCH (n)-[r]-(o) RETURN n, r, o`, fully
-///     unlabeled + multi-edge-type UNDIRECTED) renders BYTE-IDENTICAL SQL to
-///     `unlabeled_expand_directed` (the DIRECTED form) — the `pattern_union`
-///     branch generator never emits the reverse-direction branches for this
-///     shape. Confirmed live (local `social` fixture): BOTH variants return
-///     23 rows (10 FOLLOWS + 5 AUTHORED + 8 LIKED — the forward direction
-///     only); true undirected Cypher semantics require the reverse-direction
-///     rows too. This is the pre-existing "GROUP 3b" gap in the
-///     browser-unlabeled-pattern-bugs catalog. Contrast: `anchored_
-///     unlabeled_expand` (one side labeled) and `unlabeled_rel_typed`
-///     (single relationship type) BOTH correctly emit reverse-direction
-///     branches (33 rows / 20 rows respectively, live-verified) — the gap is
-///     specific to the fully-unlabeled MULTI-edge-type `pattern_union` path.
 ///   - `browser_style_count` (`MATCH (n) RETURN count(n)`, heterogeneous
 ///     unlabeled scan) — FIXED (#467). Previously rendered `count(<id column
 ///     of ONE arbitrary label>)` (Post's `n.post_id`) over per-label branches
@@ -1186,12 +1191,15 @@ const POLYMORPHIC_CORPUS: &[(&str, &str)] = &[
 /// edge type — the edge table IS a node table). Confirms the standard-schema
 /// findings above are NOT standard-schema-specific:
 ///
-///   - `fk_unlabeled_expand`: the undirected fully-unlabeled expand
-///     `(n)-[r]-(o)` renders only the Order->Customer direction (single-table
-///     join, no `pattern_union` needed since there is only one edge type) —
-///     the reverse Customer->Order binding is missing, same root cause as
-///     `unlabeled_expand` above (confirmed: Cypher requires both bindings
-///     when neither endpoint is labeled).
+///   - `fk_unlabeled_expand`: FIXED (#466). The undirected fully-unlabeled
+///     expand `(n)-[r]-(o)` now routes through a `pattern_union` CTE (a
+///     single NON-self-referential edge type stored as `pattern_combinations`
+///     specifically because the pattern is undirected — see
+///     `logical_plan::match_clause::traversal`) and emits BOTH the
+///     Order->Customer forward branch AND the Customer->Order reverse branch
+///     (same edge/join, start and end swapped). Confirmed live: returns 16,
+///     not 8 (8 forward × 2 orientations). The DIRECTED form `(n)-[r]->(o)`
+///     stays on the plain single-table join path (control unchanged at 8).
 ///   - `fk_browser_style_count`: FIXED (#467). Previously `count(n.customer_id)`
 ///     (Customer's id) undercounted (4 not 12) since Order-branch rows NULL-pad
 ///     that column. Now `count(coalesce(n.customer_id, n.order_id))` — live 12.
@@ -1217,16 +1225,20 @@ const FK_EDGE_BROWSER_CORPUS: &[(&str, &str)] = &[
 /// Browser-shaped patterns (P0.5), Denormalized variation: the
 /// schema-sensitive subset re-run on `schemas/dev/flights_denormalized.yaml`
 /// (single self-referential Airport/FLIGHT coupled-denorm table). A
-/// deliberate CONTRAST set: unlike the pre-#467 Standard/FK-edge undercount,
-/// the fully-unlabeled undirected expand and the heterogeneous count are BOTH
-/// correct here — documented so the #467 count fix (and future fixes) don't
-/// accidentally regress this single-label schema.
+/// deliberate CONTRAST set: the fully-unlabeled undirected expand and the
+/// heterogeneous count were BOTH already correct here before the #466 /
+/// #467 fixes — documented so those fixes (and future ones) don't
+/// accidentally regress this single-label schema. The `dn_unlabeled_expand`
+/// golden is UNCHANGED by #466.
 ///
 ///   - `dn_unlabeled_expand` correctly emits BOTH direction branches (the
-///     `pattern_union`-style UNION ALL over the single `flights_denorm`
-///     table with from/to swapped) — there is only ONE edge type here, so
-///     this hits the simpler bidirectional_union path, not the multi-type
-///     `pattern_union` renderer that has the reverse-branch gap.
+///     `bidirectional_union` UNION ALL over the single `flights_denorm` table
+///     with from/to swapped). FLIGHT is SELF-referential (Airport->Airport),
+///     so the reverse branch is schema-valid on the plain bidirectional_union
+///     path — it never hit the non-self-referential reverse-branch gap that
+///     #466 fixed for Standard/FK-edge, and is deliberately left on that path
+///     (only non-self-referential single-type undirected patterns are routed
+///     to `pattern_union` by the #466 fix) so its SQL is unchanged.
 ///   - `dn_browser_style_count`: `count(a)` renders `count(a.code)` (one
 ///     label, so the #467 fix leaves it single-column), and `code` (the
 ///     virtual node_id, mapped via from/to_node_properties) is populated on
@@ -1286,6 +1298,35 @@ async fn render(schema: &GraphSchema, cypher: &str, dialect: SqlDialect) -> Stri
             logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx))
                 .unwrap_or_else(|e| panic!("render: {e:?}"));
         render_plan.to_sql()
+    })
+    .await
+}
+
+/// Like [`render`] but surfaces planner/render errors as `Err(message)`
+/// instead of panicking — for asserting clean-error behavior (#466).
+async fn try_render(
+    schema: &GraphSchema,
+    cypher: &str,
+    dialect: SqlDialect,
+) -> Result<String, String> {
+    let schema = schema.clone();
+    let cypher = cypher.to_string();
+    let ctx = QueryContext {
+        dialect,
+        ..QueryContext::default()
+    };
+    with_query_context(ctx, async move {
+        set_current_schema(Arc::new(schema.clone()));
+        let cleaned = strip_comments(&cypher);
+        let (_rest, statement) =
+            parse_cypher_statement(&cleaned).map_err(|e| format!("parse: {e:?}"))?;
+        let (logical_plan, plan_ctx) =
+            evaluate_read_statement(statement, &schema, None, None, None)
+                .map_err(|e| format!("plan: {e:?}"))?;
+        let render_plan =
+            logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx))
+                .map_err(|e| format!("render: {e:?}"))?;
+        Ok(render_plan.to_sql())
     })
     .await
 }
@@ -2529,27 +2570,35 @@ async fn denorm_optional_join_key_forward_resolved_and_deterministic_470() {
     }
 }
 
-/// P0.5 characterization: a FULLY-unlabeled, multi-edge-type UNDIRECTED
-/// expand `MATCH (n)-[r]-(o) RETURN n, r, o` renders BYTE-IDENTICAL SQL to
-/// the DIRECTED form `MATCH (n)-[r]->(o) RETURN n, r, o` on both Standard and
-/// FK-edge — the `pattern_union` branch generator never emits the
-/// reverse-direction branches for this shape. Confirmed live (this slice's
-/// `social`/`db_fk_edge` fixtures): both variants return the SAME row count
-/// (23 on Standard: 10 FOLLOWS + 5 AUTHORED + 8 LIKED; 8 on FK-edge, only the
-/// Order->Customer direction) — true undirected Cypher semantics require the
-/// reverse-direction rows too. This is the pre-existing "GROUP 3b" gap in the
-/// `browser-unlabeled-pattern-bugs` memory catalog (surfaced 2026-06-30, still
-/// open). NOT fixed here (test-only slice) — locked as current behavior so a
-/// future fix shows up as a reviewable diff on this test AND on the
-/// `unlabeled_expand`/`fk_unlabeled_expand` goldens.
+/// #466 regression: a FULLY-unlabeled UNDIRECTED expand
+/// `MATCH (n)-[r]-(o) RETURN n, r, o` must render DIFFERENT SQL from the
+/// DIRECTED form `MATCH (n)-[r]->(o) RETURN n, r, o` on both Standard
+/// (multi-edge-type) and FK-edge (single-edge-type) — the `pattern_union`
+/// CTE renderer now emits a REVERSE-direction branch (same edge/join, start
+/// and end swapped) for each combination when the pattern is undirected.
+/// Confirmed live (this slice's `social`/`db_fk_edge` fixtures): the
+/// undirected form now returns 46 rows on Standard (23 forward edges — 10
+/// FOLLOWS + 5 AUTHORED + 8 LIKED — each also traversable backward, 0
+/// self-loops) and 16 on FK-edge (8 forward × 2), while the directed control
+/// is unchanged at 23 / 8. Self-loops (from-id == to-id) are excluded from
+/// the reverse branch so they appear ONCE, matching Neo4j. Previously both
+/// variants were byte-identical (the "GROUP 3b" gap in the
+/// `browser-unlabeled-pattern-bugs` catalog, surfaced 2026-06-30); fixed here.
 ///
-/// Contrast (NOT affected by this gap, asserted here too): anchoring ONE side
+/// FK-edge (single-edge-type) now also routes through `pattern_union`: a
+/// fully-unlabeled UNDIRECTED expand over a single NON-self-referential edge
+/// is stored as `pattern_combinations` (see
+/// `logical_plan::match_clause::traversal`) so the same reverse-branch
+/// renderer applies. The DIRECTED FK form stays on the plain node-to-node
+/// join path (control unchanged).
+///
+/// Contrast (asserted here too): anchoring ONE side
 /// (`anchored_unlabeled_expand`) or fixing the relationship type
-/// (`unlabeled_rel_typed`) both correctly produce DIFFERENT SQL for the
-/// undirected vs. directed forms (they route through `vlp_multi_type_a_o` /
-/// `bidirectional_union` instead of the buggy `pattern_union` path).
+/// (`unlabeled_rel_typed`) also produce DIFFERENT SQL for the undirected vs.
+/// directed forms (they route through `vlp_multi_type_a_o` /
+/// `bidirectional_union`).
 #[tokio::test]
-async fn browser_unlabeled_undirected_expand_drops_reverse_branches() {
+async fn browser_unlabeled_undirected_expand_emits_reverse_branches() {
     for (schema_id, undirected, directed) in [
         (
             SchemaId::Standard,
@@ -2566,14 +2615,23 @@ async fn browser_unlabeled_undirected_expand_drops_reverse_branches() {
         for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
             let u_sql = render(&schema, undirected, dialect).await;
             let d_sql = render(&schema, directed, dialect).await;
-            assert_eq!(
+            assert_ne!(
                 u_sql,
                 d_sql,
-                "{:?}/{dialect:?}: expected the KNOWN-BROKEN byte-identical \
-                 undirected==directed SQL (missing reverse-direction \
-                 pattern_union branches); the shapes now DIFFER — if this is \
-                 an intentional fix, update this test's expectation and the \
-                 corresponding golden(s):\nundirected:\n{u_sql}\ndirected:\n{d_sql}",
+                "{:?}/{dialect:?}: undirected expand must render DIFFERENT SQL \
+                 from the directed form (reverse-direction pattern_union \
+                 branches, #466); the shapes are byte-identical — the \
+                 reverse-branch fix regressed:\nundirected:\n{u_sql}\ndirected:\n{d_sql}",
+                schema_id.dir()
+            );
+            // The undirected form carries the reverse orientation: its FIRST
+            // branch's start_type reappears as some branch's end_type (and vice
+            // versa), which never happens in the forward-only directed SQL for
+            // these fixtures' heterogeneous edges.
+            assert!(
+                u_sql.matches(" AS start_type").count() > d_sql.matches(" AS start_type").count(),
+                "{:?}/{dialect:?}: undirected expand must have MORE branches than \
+                 directed (forward + reverse):\nundirected:\n{u_sql}",
                 schema_id.dir()
             );
         }
@@ -2599,6 +2657,336 @@ async fn browser_unlabeled_undirected_expand_drops_reverse_branches() {
         "anchored (labeled-endpoint) unlabeled expand must NOT collapse \
          undirected to the directed-only SQL (the bug is specific to the \
          fully-unlabeled multi-type pattern_union path):\n{anchored_undirected}"
+    );
+}
+
+/// #466 follow-up regression (adversarial-review finding): a node-property
+/// WHERE on a fully-unlabeled pattern that renders through a `pattern_union`
+/// CTE must be resolved PER-BRANCH inside the CTE — the CTE projection does
+/// not expose node property columns, and which physical table/label an alias
+/// binds to differs per combination and (for undirected) per traversal
+/// orientation. The old outer-WHERE fallback silently degraded ANY node
+/// property to a start_id/end_id comparison (`o.name = 'Alice'` became
+/// `r.end_id = 'Alice'` — comparing a customer ID to a name, always false).
+///
+/// Live-verified (db_fk_edge fixture, Alice = customer 100 with 3 orders):
+///   - undirected `WHERE o.name='Alice'` → 3 (was 0 after the first #466
+///     commit; 3 on main via the plain-join path)
+///   - undirected `WHERE n.name='Alice'` → 3 (reverse orientation binds
+///     n=Customer)
+///   - undirected `WHERE o.amount > 100` → 4 (renamed property `amount` →
+///     `total_amount`, resolved on the Order-bound orientation only)
+///   - undirected `WHERE o.name IS NULL` → 8 / `IS NOT NULL` → 8 (a property
+///     missing on a branch's bound label is NULL per Cypher, so IS NULL is
+///     TRUE for the Order-bound orientation)
+/// Standard (multi-type) directed control `WHERE o.name IS NOT NULL` → 10
+/// (10 FOLLOWS; was 23 = filter silently dropped — pre-existing looseness
+/// fixed by the same per-branch mechanism); undirected → 33 (5 AUTHORED-rev
+/// + 10 FOLLOWS-fwd + 10 FOLLOWS-rev + 8 LIKED-rev).
+#[tokio::test]
+async fn pattern_union_where_resolves_node_properties_per_branch() {
+    // FK-edge: single edge type, undirected → pattern_union with 2 branches.
+    let fk = load_schema(SchemaId::FkEdge.yaml_path());
+    let sql = render(
+        &fk,
+        "MATCH (n)-[r]-(o) WHERE o.name = 'Alice' RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("db_fk_edge.customers_fk.name = 'Alice'"),
+        "forward branch (o=Customer) must filter on the customers table's \
+         physical name column:\n{sql}"
+    );
+    assert!(
+        sql.contains("NULL = 'Alice'"),
+        "reverse branch (o=Order, no `name` property) must resolve the \
+         reference to NULL (Cypher: missing property = NULL → comparison \
+         false, branch contributes nothing):\n{sql}"
+    );
+    assert!(
+        !sql.contains("end_id = 'Alice'") && !sql.contains("start_id = 'Alice'"),
+        "the node-property predicate must NOT degrade to an id-column \
+         comparison in the outer WHERE (the original silent-wrong \
+         behavior):\n{sql}"
+    );
+
+    // Renamed property on the other side: `o.amount` → physical total_amount,
+    // resolved only on the orientation that binds o to Order.
+    let sql = render(
+        &fk,
+        "MATCH (n)-[r]-(o) WHERE o.amount > 100 RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("db_fk_edge.orders_fk.total_amount > 100"),
+        "reverse branch (o=Order) must resolve renamed property amount → \
+         total_amount:\n{sql}"
+    );
+    assert!(
+        sql.contains("NULL > 100"),
+        "forward branch (o=Customer, no `amount`) must resolve to NULL:\n{sql}"
+    );
+
+    // Directed FK control stays on the plain node-to-node join path with a
+    // normal WHERE on the aliased customers table (main behavior, unchanged).
+    let sql = render(
+        &fk,
+        "MATCH (n)-[r]->(o) WHERE o.name = 'Alice' RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("o.name = 'Alice'") && !sql.contains("pattern_union"),
+        "directed FK form must stay on the plain join path with the filter \
+         resolved against the o alias:\n{sql}"
+    );
+
+    // Standard multi-type: the same per-branch mechanism applies the renamed
+    // property (`name` → full_name) on User-bound branches and NULL elsewhere.
+    let std_schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &std_schema,
+        "MATCH (n)-[r]->(o) WHERE o.name IS NOT NULL RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("full_name IS NOT NULL"),
+        "User-bound branches must filter on the physical full_name column:\n{sql}"
+    );
+    assert!(
+        sql.contains("NULL IS NOT NULL"),
+        "Post-bound branches must resolve o.name to NULL (filters the branch \
+         out for IS NOT NULL):\n{sql}"
+    );
+
+    // #466 round 3, blocking finding 1: a renamed property on the ANCHOR
+    // (left) alias arrives PRE-RESOLVED to its physical column name
+    // (`n.amount` arrives as `n.total_amount`, `n.name` as `n.full_name`)
+    // because upstream passes resolve the anchor against its registered
+    // table ctx. The per-branch resolver must accept the physical name too —
+    // without the fallback the conjunct silently became NULL in EVERY branch
+    // (FK `WHERE n.amount > 100` returned 0 instead of 4; live-verified 4
+    // after the fix). The conjunct must also NOT leak into the outer WHERE
+    // (`n.total_amount` is not a CTE column — double emission was invalid
+    // SQL).
+    let sql = render(
+        &fk,
+        "MATCH (n)-[r]-(o) WHERE n.amount > 100 RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("db_fk_edge.orders_fk.total_amount > 100"),
+        "forward branch (n=Order) must resolve the pre-resolved physical \
+         column total_amount:\n{sql}"
+    );
+    assert!(
+        sql.contains("NULL > 100"),
+        "reverse branch (n=Customer, no `amount`) must resolve to NULL:\n{sql}"
+    );
+    assert!(
+        !sql.contains("AS r\nWHERE") && !sql.contains("r\nWHERE n.total_amount"),
+        "the anchor-alias conjunct must not ALSO appear in the outer WHERE \
+         (double emission references a non-CTE column):\n{sql}"
+    );
+    // Standard variant of the same finding: `n.name` arrives as `full_name`.
+    let sql = render(
+        &std_schema,
+        "MATCH (n)-[r]-(o) WHERE n.name IS NOT NULL RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("full_name IS NOT NULL"),
+        "User-bound branches must resolve the pre-resolved full_name:\n{sql}"
+    );
+
+    // #466 round 3, blocking finding 2: the outer-WHERE skip must be coupled
+    // to the pattern_union CTE actually being referenced by FROM/JOIN. In
+    // this multi-MATCH cartesian shape the GraphRel carries
+    // pattern_combinations but the plan renders plain joins (the built CTE
+    // is dead-eliminated) — the o-conjunct must STAY in the outer WHERE
+    // (previously skipped-but-applied-nowhere: returned 8 instead of 3;
+    // live-verified 3 after the fix).
+    let sql = render(
+        &fk,
+        "MATCH (c:Customer) MATCH (n)-[r]-(o) WHERE c.name = 'Alice' AND \
+         o.name = 'Alice' RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        !sql.contains("pattern_union"),
+        "this multi-MATCH shape renders plain joins (pre-existing cartesian \
+         path), not the pattern_union CTE:\n{sql}"
+    );
+    assert!(
+        sql.contains("o.name = 'Alice'"),
+        "the o-conjunct must stay in the outer WHERE when no pattern_union \
+         CTE absorbs it (never skip-without-apply):\n{sql}"
+    );
+}
+
+/// #466 round 3 (ride-along): whole-entity conjuncts (`WHERE o = n`) and
+/// subquery conjuncts (`EXISTS { ... }`) on a pattern that renders through
+/// `pattern_union` cannot be resolved per branch and previously fell through
+/// every classifier — SILENTLY unfiltered (returned all 16 rows). They must
+/// be a clean UnsupportedFeature error instead.
+#[tokio::test]
+async fn pattern_union_unresolvable_where_conjuncts_error_cleanly() {
+    let fk = load_schema(SchemaId::FkEdge.yaml_path());
+    for cypher in [
+        "MATCH (n)-[r]-(o) WHERE o = n RETURN count(*) AS c",
+        "MATCH (n)-[r]-(o) WHERE EXISTS { MATCH (o)-[:PLACED_BY]->() } RETURN count(*) AS c",
+    ] {
+        let result = try_render(&fk, cypher, SqlDialect::ClickHouse).await;
+        match result {
+            Err(msg) => assert!(
+                msg.contains("UnsupportedFeature") || msg.contains("Unsupported feature"),
+                "[{cypher}] must fail with a clean UnsupportedFeature error, got: {msg}"
+            ),
+            Ok(sql) => panic!(
+                "[{cypher}] must error cleanly instead of silently dropping the \
+                 unresolvable conjunct; rendered:\n{sql}"
+            ),
+        }
+    }
+}
+
+/// #466 round 4 (adversarial-review blocking finding): `id(alias)` on a
+/// `pattern_union` endpoint must resolve LABEL-AGNOSTICALLY to the CTE's
+/// start_id/end_id — never to ONE label's id column.
+///
+/// Previously FilterTagging pre-resolved `id(o)` to a single label's id
+/// property (`o.post_id`), which the per-branch WHERE resolver then NULLed
+/// on every other label's branches: STD directed `WHERE id(o)='1'` returned
+/// 6 instead of 10 (regression vs main, which mapped id() to the
+/// label-agnostic `r.end_id` in the outer WHERE). FilterTagging now keeps
+/// id() unresolved for pattern_union endpoints
+/// (`LogicalPlan::pattern_union_endpoint_role`), restoring the outer
+/// start_id/end_id rewrite. Live: STD directed `id(o)='1'` → 10; STD
+/// undirected `id(n)='1'` → 16 (User#1 AND Post#1 rows — ClickGraph string
+/// ids are label-ambiguous, matching main's outer-rewrite semantics); FK
+/// undirected `id(o)='5'` → 1 (the reverse-orientation row; main returned 0
+/// because it had no reverse rows at all).
+///
+/// Sibling (same root): `RETURN id(o)` on a pattern_union endpoint used to
+/// fall through to the generic function mapping's `toInt64(0)` placeholder
+/// (FK: silent 0,0,0,0) or an invalid single-label column (STD: loud DB
+/// error). SelectBuilder now maps it to the CTE's start_id/end_id — real
+/// ids on both schemas.
+///
+/// Round 4.5 extends the same treatment to `elementId()`, which previously
+/// fell through EVERY handler on pattern_union shapes (silently unfiltered
+/// WHERE / invalid SQL in RETURN). elementId in this codebase is the
+/// composite `Label:id-` string (`generate_node_element_id`; trailing `-`
+/// is a Browser-compat sentinel), so the rewrites rebuild that format from
+/// the CTE's type + id columns: `concat(r.end_type, ':', r.end_id, '-')`.
+/// A bare-id literal like '5' therefore correctly matches NOTHING —
+/// `elementId(o) = 'Order:5-'` is the valid form.
+///
+/// KNOWN LIMITATIONS (review round-4 catalog; NOT fixed here):
+///   - GROUP BY / ORDER BY over `id(o)` still render the generic function
+///     mapping's `toInt64(0)` placeholder (pre-existing on main, both
+///     schemas) — only SELECT/WHERE positions get the label-agnostic
+///     start_id/end_id treatment.
+///   - `LogicalPlan::pattern_union_endpoint_role` does not walk
+///     Unwind/PageRank wrappers. Currently unreachable: a multi-clause
+///     UNWIND+MATCH over a fully-unlabeled pattern prunes to the
+///     `WHERE false` placeholder before reaching the walker.
+#[tokio::test]
+async fn pattern_union_id_function_is_label_agnostic() {
+    let std_schema = load_schema(SchemaId::Standard.yaml_path());
+    let fk = load_schema(SchemaId::FkEdge.yaml_path());
+
+    // WHERE id(o): outer label-agnostic end_id comparison, no per-branch
+    // single-label id column.
+    let sql = render(
+        &std_schema,
+        "MATCH (n)-[r]->(o) WHERE id(o) = '1' RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("r.end_id = '1'"),
+        "id(o) must map to the label-agnostic CTE end_id in the outer WHERE:\n{sql}"
+    );
+    assert!(
+        !sql.contains("post_id = '1'") && !sql.contains("user_id = '1'"),
+        "id(o) must NOT degrade to a single label's id column (NULL on every \
+         other label's branch):\n{sql}"
+    );
+
+    // Anchor side: id(n) → start_id.
+    let sql = render(
+        &std_schema,
+        "MATCH (n)-[r]-(o) WHERE id(n) = '1' RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("r.start_id = '1'"),
+        "id(n) must map to the label-agnostic CTE start_id:\n{sql}"
+    );
+
+    // RETURN id(o): real per-row id from the CTE, not the toInt64(0)
+    // placeholder and not a nonexistent single-label column.
+    let sql = render(
+        &fk,
+        "MATCH (n)-[r]-(o) RETURN id(o) AS i LIMIT 4",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("r.end_id AS \"i\""),
+        "RETURN id(o) must project the CTE's end_id:\n{sql}"
+    );
+    assert!(
+        !sql.contains("toInt64(0)"),
+        "RETURN id(o) must not emit the placeholder zero literal:\n{sql}"
+    );
+
+    // Labeled-anchor control: no pattern_union involved — id() resolution
+    // unchanged (single-label id column on the plain join path).
+    let sql = render(
+        &std_schema,
+        "MATCH (a:User)-[r:FOLLOWS]->(o) WHERE id(a) = '1' RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        !sql.contains("pattern_union") && sql.contains("user_id"),
+        "labeled-anchor id(a) must keep the single-label resolution on the \
+         plain join path:\n{sql}"
+    );
+
+    // #466 round 4.5: elementId() gets the same label-agnostic treatment,
+    // rebuilt in the codebase's composite `Label:id-` format from the CTE's
+    // type + id columns (previously fell through every handler: silently
+    // unfiltered WHERE on FK, invalid SQL in RETURN).
+    let sql = render(
+        &fk,
+        "MATCH (n)-[r]-(o) WHERE elementId(o) = 'Order:5-' RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("concat(r.end_type, ':', r.end_id, '-') = 'Order:5-'"),
+        "elementId(o) must rebuild the composite Label:id- format \
+         label-agnostically in the outer WHERE:\n{sql}"
+    );
+    let sql = render(
+        &fk,
+        "MATCH (n)-[r]-(o) RETURN elementId(o) AS e LIMIT 3",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("concat(r.end_type, ':', r.end_id, '-') AS \"e\""),
+        "RETURN elementId(o) must project the composite Label:id- string:\n{sql}"
     );
 }
 
