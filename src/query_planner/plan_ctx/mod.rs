@@ -1153,10 +1153,31 @@ impl PlanCtx {
             }
         }
 
-        // Otherwise, search all patterns for this node
+        // No edge context given. Prefer the node's OWNING edge as recorded by
+        // register_denormalized_aliases (the last pattern in plan order that
+        // embeds this node). The render phase binds the node's table alias
+        // through that same registry (join_generation::register_if_embedded →
+        // query_context::register_denormalized_alias), so resolving the role
+        // through any OTHER pattern can return the opposite endpoint of the
+        // one the emitted joins actually bind the alias to — e.g. the middle
+        // node of a coupled-edge 2-hop chain flapping between its from- and
+        // to-columns (#481).
+        if let Some((owning_edge, _, _, _)) = self.denormalized_node_edges.get(node_alias) {
+            if let Some(ctx) = self.get_pattern_context(owning_edge) {
+                if let Some(strategy) = ctx.get_node_strategy(node_alias) {
+                    return Some(strategy);
+                }
+            }
+        }
+
+        // Otherwise, search all patterns for this node in deterministic
+        // (sorted rel-alias) order — HashMap iteration order is per-process
+        // random, which made this lookup flap across runs (#481).
         // (Returns first match - caller should provide edge_alias for disambiguation)
-        for ctx in self.pattern_contexts.values() {
-            if let Some(strategy) = ctx.get_node_strategy(node_alias) {
+        let mut rel_aliases: Vec<&String> = self.pattern_contexts.keys().collect();
+        rel_aliases.sort();
+        for rel_alias in rel_aliases {
+            if let Some(strategy) = self.pattern_contexts[rel_alias].get_node_strategy(node_alias) {
                 return Some(strategy);
             }
         }
