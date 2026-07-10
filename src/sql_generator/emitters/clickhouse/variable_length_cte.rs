@@ -677,13 +677,19 @@ impl<'a> VariableLengthCteGenerator<'a> {
     }
 
     /// Generate relationship type expression for a given hop
+    ///
+    /// Relationship types may arrive as composite schema keys
+    /// (`TYPE::FromLabel::ToLabel`); only the Cypher-visible type name is
+    /// emitted into path_relationships (#485). Composite keys stay internal —
+    /// they exist to disambiguate schema lookups, never for query output.
     fn generate_relationship_type_for_hop(&self, _hop_count: u32) -> String {
+        use crate::graph_catalog::composite_key_utils::extract_type_name;
         // For now, return the first relationship type if available, otherwise a placeholder
         if let Some(ref types) = self.relationship_types {
             if let Some(first_type) = types.first() {
                 format!(
                     "{} as path_relationships",
-                    arr(&format!("'{}'", first_type))
+                    arr(&format!("'{}'", extract_type_name(first_type)))
                 )
             } else {
                 format!("{} as path_relationships", arr(""))
@@ -694,11 +700,15 @@ impl<'a> VariableLengthCteGenerator<'a> {
     }
 
     /// Get relationship type array for appending in recursive case
+    ///
+    /// Emits the Cypher-visible type name, never the composite schema key
+    /// (see `generate_relationship_type_for_hop`, #485).
     fn get_relationship_type_array(&self) -> String {
+        use crate::graph_catalog::composite_key_utils::extract_type_name;
         let mapper = crate::sql_generator::function_mapper::current_function_mapper();
         if let Some(ref types) = self.relationship_types {
             if let Some(first_type) = types.first() {
-                mapper.array_literal(&format!("'{}'", first_type))
+                mapper.array_literal(&format!("'{}'", extract_type_name(first_type)))
             } else {
                 mapper.array_literal("")
             }

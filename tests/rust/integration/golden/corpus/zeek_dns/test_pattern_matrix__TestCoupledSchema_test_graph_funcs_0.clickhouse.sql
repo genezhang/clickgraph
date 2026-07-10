@@ -1,5 +1,5 @@
 SELECT 
-      'REQUESTED::IP::Domain' AS "type(r)", 
+      'REQUESTED' AS "type(r)", 
       r."id.orig_h" AS "id(a)", 
       ['IP'] AS "labels(a)"
 FROM zeek.dns_log AS r

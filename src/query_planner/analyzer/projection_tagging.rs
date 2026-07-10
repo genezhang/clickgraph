@@ -1019,9 +1019,16 @@ impl ProjectionTagging {
                                                         column: crate::graph_catalog::expression_parser::PropertyValue::Column(type_col.clone()),
                                                     });
                                                 } else {
-                                                    // Non-polymorphic: return literal type name
+                                                    // Non-polymorphic: return literal type name.
+                                                    // The label may be a composite schema key
+                                                    // (TYPE::FromLabel::ToLabel) — used above for
+                                                    // the get_rel_schema lookup — but only the
+                                                    // Cypher-visible type name may reach query
+                                                    // output (#485).
                                                     item.expression = LogicalExpr::Literal(
-                                                        crate::query_planner::logical_expr::Literal::String(first_label.clone())
+                                                        crate::query_planner::logical_expr::Literal::String(
+                                                            crate::graph_catalog::composite_key_utils::extract_type_name(first_label).to_string()
+                                                        )
                                                     );
                                                 }
                                                 return Ok(());

@@ -194,8 +194,9 @@ class TestGraphRAGPatterns:
             "RETURN type(r) AS rel_type, neighbor.user_id LIMIT 3"
         )
         assert "results" in result
-        # Verify type(r) returns the relationship type
-        assert result["results"][0]["rel_type"] == "FOLLOWS::User::User"
+        # Verify type(r) returns the Cypher relationship type, not the
+        # internal composite schema key (FOLLOWS::User::User) — #485.
+        assert result["results"][0]["rel_type"] == "FOLLOWS"
 
     def test_return_edge_properties(self):
         """Test: RETURN edge properties"""

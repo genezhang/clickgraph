@@ -214,6 +214,21 @@ const CORPUS: &[(&str, &str)] = &[
         "multi_type_rel_type_fn",
         "MATCH (a:User)-[r:FOLLOWS|AUTHORED]->(b) RETURN type(r) AS t",
     ),
+    // --- #485: single-type VLP relationship-type literals must be the
+    // Cypher-visible type name ('FOLLOWS'), never the internal composite
+    // schema key ('FOLLOWS::User::User'). Composite keys exist to
+    // disambiguate multi-endpoint relationship types in schema lookups; they
+    // may not leak into query output. Multi-type VLP already emitted plain
+    // names (see vlp_multi_type above); these lock the single-type routes:
+    // the recursive CTE's path_relationships arrays and the type(r) literal.
+    (
+        "vlp_relationships_fn",
+        "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b) RETURN relationships(p)",
+    ),
+    (
+        "vlp_type_fn",
+        "MATCH (a:User)-[r:FOLLOWS*1..2]->(b) RETURN type(r) AS t",
+    ),
     // --- #488 (standard-schema shape): non-transitive VLP with a bound path
     // variable. AUTHORED (User->Post) cannot chain, so the transitivity pass
     // clamps *1..2 to a single hop; the path variable must then take the
@@ -386,11 +401,12 @@ const CORPUS: &[(&str, &str)] = &[
 ///     CTE's actual projection: `tuple(t.path_nodes, t.path_relationships,
 ///     t.hop_count)`. The denormalized VLP CTE strategy also gained a
 ///     `path_relationships` column so the same contract holds there
-///     (live: `[[LAX, JFK], [FLIGHT], 1]`). NOTE (pre-existing, out of
-///     scope): single-type VLP `path_relationships` values leak the composite
-///     schema key (`FOLLOWS::User::User`, not `FOLLOWS`) — same leak as
-///     `relationships(p)` and single-type `type(r)` literals; tracked as a
-///     follow-up, ~108 corpus goldens embed it.
+///     (live: `[[LAX, JFK], [FLIGHT], 1]`). FIXED (#485): single-type VLP
+///     `path_relationships` values used to leak the composite schema key
+///     (`FOLLOWS::User::User`, not `FOLLOWS`) — same leak as
+///     `relationships(p)` and single-type `type(r)` literals. Literals now
+///     emit only the Cypher-visible type name via
+///     `composite_key_utils::extract_type_name`.
 ///
 /// Verified CORRECT (normal locks, not suspicious) — all live-verified
 /// against the local `social` fixture (8 Users, 5 Posts, 10 FOLLOWS,

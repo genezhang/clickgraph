@@ -3,7 +3,7 @@ WITH RECURSIVE vlp_a_b_inner AS (
         start_node.user_id as start_id,
         end_node.user_id as end_id,
         1 as hop_count,
-        array('TEST_FOLLOWS::TestUser::TestUser') as path_relationships,
+        array('TEST_FOLLOWS') as path_relationships,
         array(start_node.user_id, end_node.user_id) as path_nodes,
         end_node.name as end_name
     FROM test_integration.users AS start_node
@@ -15,7 +15,7 @@ WITH RECURSIVE vlp_a_b_inner AS (
         vp.start_id,
         end_node.user_id as end_id,
         vp.hop_count + 1 as hop_count,
-        concat(vp.path_relationships, array('TEST_FOLLOWS::TestUser::TestUser')) as path_relationships,
+        concat(vp.path_relationships, array('TEST_FOLLOWS')) as path_relationships,
         concat(vp.path_nodes, array(end_node.user_id)) as path_nodes,
         end_node.name as end_name
     FROM vlp_a_b_inner vp

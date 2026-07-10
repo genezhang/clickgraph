@@ -1,5 +1,5 @@
 SELECT 
-      'FOLLOWS::User::User' AS "type(r)", 
+      'FOLLOWS' AS "type(r)", 
       a.user_id AS "id(a)", 
       ['User'] AS "labels(a)"
 FROM test_integration.users_test AS a
