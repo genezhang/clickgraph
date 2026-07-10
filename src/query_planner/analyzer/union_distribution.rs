@@ -184,18 +184,42 @@ fn distribute_union_impl(plan: &LogicalPlan, depth: usize) -> LogicalPlan {
                 }
             }
 
-            // If right became Union after distribution, distribute GraphRel over it
+            // If right became Union after distribution, distribute GraphRel over it.
+            // EXCEPTION: same as the left-Union case above (#506) — an INCOMING
+            // OPTIONAL MATCH (`(a)<-[:R]-(b)`) reverses which side is structurally
+            // "left"/"right" (CLAUDE.md rule 4: anchor-aware FROM/JOIN reversal), so
+            // the anchor's denormalized standalone-scan Union can land on the RIGHT
+            // instead of the left. Distributing unconditionally here pushed the
+            // OPTIONAL MATCH edge into each Union branch, losing LEFT JOIN semantics
+            // entirely (no anchor CTE, no JOIN — the union of the edge's origin/dest
+            // property variants was emitted as the top-level query, referencing an
+            // alias never introduced in FROM: invalid SQL, #506).
             if let LogicalPlan::Union(union) = &new_right {
-                log::debug!(
-                    "🔀 UnionDistribution: distributing GraphRel '{}' over right Union ({} branches)",
-                    gr.alias,
-                    union.inputs.len()
-                );
-                let left = Arc::new(new_left);
-                let center = Arc::new(new_center);
-                return distribute_over_union(union, |branch| {
-                    LogicalPlan::GraphRel(graph_rel_with(gr, left.clone(), center.clone(), branch))
-                });
+                let skip = gr.is_optional.unwrap_or(false) && is_all_denormalized_nodes(union);
+
+                if skip {
+                    log::info!(
+                        "🔀 UnionDistribution: SKIPPING GraphRel '{}' distribution over denormalized OPTIONAL Union (right side) — preserving LEFT JOIN semantics (#506)",
+                        gr.alias
+                    );
+                    // Keep the Union as-is; wrap in GraphRel without distributing
+                } else {
+                    log::debug!(
+                        "🔀 UnionDistribution: distributing GraphRel '{}' over right Union ({} branches)",
+                        gr.alias,
+                        union.inputs.len()
+                    );
+                    let left = Arc::new(new_left);
+                    let center = Arc::new(new_center);
+                    return distribute_over_union(union, |branch| {
+                        LogicalPlan::GraphRel(graph_rel_with(
+                            gr,
+                            left.clone(),
+                            center.clone(),
+                            branch,
+                        ))
+                    });
+                }
             }
 
             LogicalPlan::GraphRel(graph_rel_with(

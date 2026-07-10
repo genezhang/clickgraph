@@ -369,14 +369,38 @@ pub(super) fn is_denormalized_union(plan: &LogicalPlan) -> bool {
     }
 }
 
-/// Check if a GraphRel is an OPTIONAL denormalized pattern with a Union left side.
-/// This pattern requires special CTE + LEFT JOIN rendering.
+/// Check if a GraphRel is an OPTIONAL denormalized pattern with a Union on
+/// either side (standalone anchor node scan). This pattern requires special
+/// CTE + LEFT JOIN rendering.
 pub(super) fn is_optional_denorm_union_graphrel(
     gr: &crate::query_planner::logical_plan::GraphRel,
 ) -> bool {
-    gr.is_optional.unwrap_or(false)
-        && gr.variable_length.is_none()
-        && is_denormalized_union(&gr.left)
+    optional_denorm_union_anchor_is_left(gr).is_some()
+}
+
+/// Determine which side of a GraphRel carries the denormalized
+/// standalone-scan anchor Union, for the special OPTIONAL CTE + LEFT JOIN
+/// rendering path.
+///
+/// Returns `Some(true)` when the anchor Union is on the left (the common
+/// outgoing-direction shape, e.g. `MATCH (a) OPTIONAL MATCH (a)-[:R]->(b)`),
+/// `Some(false)` when it's on the right — reached for shapes where
+/// CLAUDE.md rule 4's anchor-aware FROM/JOIN reversal puts the pre-existing
+/// anchor on the right connection (e.g. incoming-direction OPTIONAL MATCH,
+/// `MATCH (a) OPTIONAL MATCH (a)<-[:R]-(b)`, #506) — or `None` if this
+/// GraphRel isn't this special pattern at all.
+pub(super) fn optional_denorm_union_anchor_is_left(
+    gr: &crate::query_planner::logical_plan::GraphRel,
+) -> Option<bool> {
+    if gr.is_optional.unwrap_or(false) && gr.variable_length.is_none() {
+        if is_denormalized_union(&gr.left) {
+            return Some(true);
+        }
+        if is_denormalized_union(&gr.right) {
+            return Some(false);
+        }
+    }
+    None
 }
 
 /// Traverse through wrapper nodes (GraphJoins, Projection, GroupBy, etc.) to find

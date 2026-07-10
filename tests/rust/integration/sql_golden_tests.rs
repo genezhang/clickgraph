@@ -2917,6 +2917,76 @@ async fn denorm_count_relationship_resolves_edge_id_column_502() {
     }
 }
 
+/// #506 regression: an INCOMING-direction OPTIONAL MATCH on a denormalized
+/// schema (`MATCH (a:Airport) OPTIONAL MATCH (a)<-[:FLIGHT]-(b) ...`) must
+/// render the same shape as the OUTGOING direction — an anchor
+/// `__denorm_scan_a` CTE + a correctly-keyed LEFT JOIN — not collapse to a
+/// standalone Union with an alias (`a`) never introduced in FROM.
+///
+/// Root cause: `is_optional_denorm_union_graphrel` (the gate for the special
+/// CTE + LEFT JOIN rendering) only checked `gr.left` for the anchor's
+/// standalone-scan Union. CLAUDE.md rule 4's anchor-aware FROM/JOIN reversal
+/// puts the anchor on `gr.right` for incoming-direction OPTIONAL MATCH, so
+/// the gate silently never fired, and `UnionDistribution`'s matching
+/// right-Union case had no exception to preserve LEFT JOIN semantics either
+/// (it unconditionally distributed the OPTIONAL edge into each Union branch).
+#[tokio::test]
+async fn denorm_incoming_optional_match_preserves_anchor_scan_and_join_506() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+
+    let cases = [
+        (
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) RETURN a.code, b.code",
+            "a.code = t0.origin_code",
+            "outgoing",
+        ),
+        (
+            "MATCH (a:Airport) OPTIONAL MATCH (a)<-[:FLIGHT]-(b) RETURN a.code, b.code",
+            "a.code = t0.dest_code",
+            "incoming",
+        ),
+    ];
+
+    for (cypher, want_join, tag) in cases {
+        let first = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+        for _ in 0..5 {
+            let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(
+                first, again,
+                "#506 [{tag}]: render is nondeterministic:\nFIRST:\n{first}\nAGAIN:\n{again}"
+            );
+        }
+        // The anchor's standalone-scan CTE must always be present — its
+        // absence is exactly how #505/#506's silent row loss and invalid SQL
+        // happened.
+        assert!(
+            first.contains("__denorm_scan_a"),
+            "#506 [{tag}]: anchor scan CTE __denorm_scan_a missing — anchor \
+             rows with no match would be silently dropped:\n{first}"
+        );
+        // The LEFT JOIN key must reference the correct edge column for this
+        // direction (origin for outgoing, dest for incoming) — never a
+        // fixed/wrong side, and never an impossible `1 = 0`/`1 = 1` fallback.
+        assert!(
+            first.contains(want_join),
+            "#506 [{tag}]: expected join condition `{want_join}`, got:\n{first}"
+        );
+        assert!(
+            !first.contains("ON 1 = 1") && !first.contains("ON 1 = 0"),
+            "#506 [{tag}]: fell back to an impossible/always-true join \
+             condition instead of resolving the anchor's join key:\n{first}"
+        );
+        // Every table alias referenced in SELECT must be introduced by FROM
+        // or a JOIN — the original #506 symptom was `a.*` referenced with no
+        // `AS a` anywhere in the query.
+        assert!(
+            first.contains("__denorm_scan_a AS a") || first.contains("AS a\n"),
+            "#506 [{tag}]: alias 'a' used in SELECT but never introduced in \
+             FROM/JOIN (invalid SQL):\n{first}"
+        );
+    }
+}
+
 /// #475 regression: on the coupled cross-table denorm `zeek_merged_test`
 /// schema, `MATCH (a:IP) OPTIONAL MATCH (a)-[:REQUESTED]->(d:Domain) RETURN
 /// a.ip, a.port, d.name` sourced the ANCHOR property `a.port` from the
