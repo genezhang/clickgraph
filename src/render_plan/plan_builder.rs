@@ -3335,6 +3335,11 @@ impl RenderPlanBuilder for LogicalPlan {
                                 std::collections::HashMap::new();
 
                             if let Some(ref from_props) = edge_vs.from_node_properties {
+                                // Sorted so that when two cypher properties map to the
+                                // same db column, the winner is deterministic (HashMap
+                                // iteration order is per-process random, #480 class).
+                                let mut from_props: Vec<_> = from_props.iter().collect();
+                                from_props.sort_by(|a, b| a.0.cmp(b.0));
                                 for (prop, val) in from_props {
                                     col_map.insert(
                                         val.raw().to_string(),

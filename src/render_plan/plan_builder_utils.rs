@@ -5356,12 +5356,26 @@ fn detect_vlp_endpoint_from_plan(plan: &LogicalPlan, alias: &str) -> Option<VlpE
 fn find_cypher_id_property_for_alias(plan: &LogicalPlan, alias: &str) -> Option<String> {
     match plan {
         LogicalPlan::GraphNode(node) if node.alias == alias => {
+            // Reverse lookups iterate a HashMap; sort by cypher property name so
+            // that when several properties map to the id column the returned one
+            // is deterministic across processes (#480 class).
+            let sorted_id_match = |props: &std::collections::HashMap<
+                String,
+                crate::graph_catalog::expression_parser::PropertyValue,
+            >,
+                                   id_column: &str|
+             -> Option<String> {
+                let mut entries: Vec<_> = props.iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(b.0));
+                entries
+                    .into_iter()
+                    .find(|(_, ch_col)| ch_col.raw() == id_column)
+                    .map(|(cypher_prop, _)| cypher_prop.clone())
+            };
             if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
                 if let Some(ref from_props) = scan.from_node_properties {
-                    for (cypher_prop, ch_col) in from_props {
-                        if ch_col.raw() == scan.id_column {
-                            return Some(cypher_prop.clone());
-                        }
+                    if let Some(found) = sorted_id_match(from_props, &scan.id_column) {
+                        return Some(found);
                     }
                 }
             } else if let LogicalPlan::Union(union_plan) = node.input.as_ref() {
@@ -5369,10 +5383,8 @@ fn find_cypher_id_property_for_alias(plan: &LogicalPlan, alias: &str) -> Option<
                 if let Some(first) = union_plan.inputs.first() {
                     if let LogicalPlan::ViewScan(scan) = first.as_ref() {
                         if let Some(ref from_props) = scan.from_node_properties {
-                            for (cypher_prop, ch_col) in from_props {
-                                if ch_col.raw() == scan.id_column {
-                                    return Some(cypher_prop.clone());
-                                }
+                            if let Some(found) = sorted_id_match(from_props, &scan.id_column) {
+                                return Some(found);
                             }
                         }
                     }
@@ -7278,13 +7290,16 @@ fn try_flatten_head_collect_map_literal(
             let from_scope = scope.and_then(|s| {
                 s.cte_variables().get(&ta.0).and_then(|cte_info| {
                     if cte_info.property_mapping.len() > 1 {
-                        Some(
-                            cte_info
-                                .property_mapping
-                                .keys()
-                                .map(|prop| (prop.clone(), prop.clone()))
-                                .collect(),
-                        )
+                        // Sorted: this list drives generated SELECT-item order and
+                        // `property_mapping` is a HashMap whose iteration order is
+                        // per-process random (#480 class).
+                        let mut props: Vec<(String, String)> = cte_info
+                            .property_mapping
+                            .keys()
+                            .map(|prop| (prop.clone(), prop.clone()))
+                            .collect();
+                        props.sort_by(|a, b| a.0.cmp(&b.0));
+                        Some(props)
                     } else {
                         None
                     }
@@ -8712,8 +8727,11 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                         let node_label = find_label_for_alias_in_plan(plan, &prop.table_alias.0);
                                                         if let (Some(label), Some(schema)) = (node_label, get_current_schema_with_fallback()) {
                                                             if let Some(node_schema) = schema.all_node_schemas().get(&label) {
-                                                                // Check from_properties
+                                                                // Check from_properties (sorted: HashMap iteration
+                                                                // order is per-process random — #480 class)
                                                                 if let Some(from_props) = &node_schema.from_properties {
+                                                                    let mut from_props: Vec<_> = from_props.iter().collect();
+                                                                    from_props.sort_by(|a, b| a.0.cmp(b.0));
                                                                     for (cypher_name, db_col) in from_props {
                                                                         if *db_col == current_col {
                                                                             if let Some((_, correct_col)) = properties
@@ -8730,8 +8748,10 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                                         }
                                                                     }
                                                                 }
-                                                                // Check to_properties
+                                                                // Check to_properties (sorted — see above)
                                                                 if let Some(to_props) = &node_schema.to_properties {
+                                                                    let mut to_props: Vec<_> = to_props.iter().collect();
+                                                                    to_props.sort_by(|a, b| a.0.cmp(b.0));
                                                                     for (cypher_name, db_col) in to_props {
                                                                         if *db_col == current_col {
                                                                             if let Some((_, correct_col)) = properties
@@ -13341,7 +13361,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
     // moved all branches into union.input (for aggregation/GROUP BY).
     if render_plan.from.0.is_none() && !cte_references.is_empty() {
         if let Some(ref mut union_data) = render_plan.union.0 {
-            for cte_name in cte_references.values() {
+            // Sorted: the emitted JOIN order in each Union branch follows this
+            // iteration and `cte_references` is a HashMap whose iteration order
+            // is per-process random (#480 class).
+            let mut sorted_cte_names: Vec<&String> = cte_references.values().collect();
+            sorted_cte_names.sort();
+            for cte_name in sorted_cte_names {
                 let cte_alias = if let Some(stripped) = cte_name.strip_prefix("with_") {
                     if let Some(cte_pos) = stripped.rfind("_cte") {
                         stripped[..cte_pos].to_string()

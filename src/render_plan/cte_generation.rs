@@ -768,7 +768,9 @@ pub fn map_property_to_column_with_relationship_context(
     // Fall back to traditional node property mapping
 
     let column = node_schema.property_mappings.get(property).ok_or_else(|| {
-        let available: Vec<String> = node_schema.property_mappings.keys().cloned().collect();
+        // Sorted so the error text is stable across processes (HashMap keys).
+        let mut available: Vec<String> = node_schema.property_mappings.keys().cloned().collect();
+        available.sort();
         let msg = format!(
             "Property '{}' not found for node label '{}'. Available properties: {}",
             property,
@@ -886,7 +888,9 @@ pub fn map_relationship_property_to_column(
 
     // Look up the property in property_mappings
     let column = rel_schema.property_mappings.get(property).ok_or_else(|| {
-        let available: Vec<String> = rel_schema.property_mappings.keys().cloned().collect();
+        // Sorted so the error text is stable across processes (HashMap keys).
+        let mut available: Vec<String> = rel_schema.property_mappings.keys().cloned().collect();
+        available.sort();
         format!(
             "Property '{}' not found in relationship type '{}'. Available properties: {}",
             property,

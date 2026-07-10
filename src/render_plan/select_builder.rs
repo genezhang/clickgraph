@@ -1797,6 +1797,13 @@ impl LogicalPlan {
             }
         }
 
+        // Sort by cypher property name for a deterministic column order — the
+        // schema getters iterate HashMaps and the denormalized merge above
+        // iterates `from_properties`/`to_properties` (also HashMaps), so the
+        // combined list otherwise flaps across processes (#480, same recipe
+        // as the #464 fixes below).
+        properties.sort_by(|a, b| a.0.cmp(&b.0));
+
         if properties.is_empty() {
             log::warn!(
                 "⚠️ No properties found in schema for CTE entity '{}'",

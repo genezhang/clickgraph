@@ -4139,7 +4139,14 @@ pub fn extract_ctes_with_context(
                             schema_table == rel_table_name
                         }) {
                             // Add from_node properties (filtered by requirements)
+                            // Sorted by cypher property name: these HashMap
+                            // entries become the CTE's fixed column order, so
+                            // an unsorted iteration flaps across processes
+                            // (#480, same recipe as #458/#464).
                             if let Some(ref from_props) = node_schema.from_properties {
+                                let mut from_props: Vec<(&String, &String)> =
+                                    from_props.iter().collect();
+                                from_props.sort_by(|a, b| a.0.cmp(b.0));
                                 for (logical_prop, physical_col) in from_props {
                                     if !start_include_all {
                                         if let Some(req_set) = start_required {
@@ -4163,7 +4170,11 @@ pub fn extract_ctes_with_context(
                             }
 
                             // Add to_node properties (filtered by requirements)
+                            // Sorted for determinism — see from_properties above (#480).
                             if let Some(ref to_props) = node_schema.to_properties {
+                                let mut to_props: Vec<(&String, &String)> =
+                                    to_props.iter().collect();
+                                to_props.sort_by(|a, b| a.0.cmp(b.0));
                                 for (logical_prop, physical_col) in to_props {
                                     if !end_include_all {
                                         if let Some(req_set) = end_required {

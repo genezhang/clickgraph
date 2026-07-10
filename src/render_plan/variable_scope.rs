@@ -166,7 +166,14 @@ impl<'a> VariableScope<'a> {
         // all come from with_person_messageCount_likeCount_cte_1). Each has its own per-alias property
         // mapping, so we must search ALL entries with matching CTE name.
         let mut found_cte = false;
-        for cte_info in self.cte_variables.values() {
+        // Sorted by Cypher alias: several aliases can map to the same CTE name
+        // with distinct per-alias property mappings, and `cte_variables` is a
+        // HashMap — an unsorted scan makes the winning entry (and thus the
+        // resolved CTE column) flap across processes (#480 class).
+        let mut sorted_infos: Vec<(&String, &CteVariableInfo)> =
+            self.cte_variables.iter().collect();
+        sorted_infos.sort_by(|a, b| a.0.cmp(b.0));
+        for (_, cte_info) in sorted_infos {
             if cte_info.cte_name != alias {
                 continue;
             }
@@ -369,8 +376,13 @@ impl<'a> VariableScope<'a> {
         if let Some(info) = self.cte_variables.get(alias) {
             return Some(info);
         }
+        // Sorted by Cypher alias for a deterministic pick — see resolve()'s
+        // by-cte_name scan (#480 class).
+        let mut sorted_infos: Vec<(&String, &CteVariableInfo)> =
+            self.cte_variables.iter().collect();
+        sorted_infos.sort_by(|a, b| a.0.cmp(b.0));
         let mut best: Option<&CteVariableInfo> = None;
-        for info in self.cte_variables.values() {
+        for (_, info) in sorted_infos {
             if info.cte_name == alias {
                 if info.map_keys.is_some() {
                     return Some(info);
@@ -1134,7 +1146,12 @@ fn fix_orphan_table_aliases_impl(
         let mut missing_ctes: Vec<(String, String)> = Vec::new(); // (cte_name, from_alias)
         let mut seen_cte_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
-        for cte_info in scope.cte_variables().values() {
+        // Sorted by Cypher alias: `missing_ctes` drives the order of the CROSS
+        // JOINs added below, and `cte_variables` is a HashMap (#480 class).
+        let mut sorted_infos: Vec<(&String, &CteVariableInfo)> =
+            scope.cte_variables().iter().collect();
+        sorted_infos.sort_by(|a, b| a.0.cmp(b.0));
+        for (_, cte_info) in sorted_infos {
             if cte_name_to_from_alias.contains_key(&cte_info.cte_name) {
                 continue;
             }
@@ -1307,7 +1324,12 @@ pub fn rewrite_cte_property_columns(plan: &mut RenderPlan, scope: &VariableScope
         String,
         &std::collections::HashMap<String, String>,
     > = std::collections::HashMap::new();
-    for cte_info in scope.cte_variables().values() {
+    // Sorted by Cypher alias: `or_insert` is first-wins, so with several aliases
+    // mapping to the same CTE name the chosen property mapping would otherwise
+    // follow random HashMap iteration order (#480 class).
+    let mut sorted_infos: Vec<(&String, &CteVariableInfo)> = scope.cte_variables().iter().collect();
+    sorted_infos.sort_by(|a, b| a.0.cmp(b.0));
+    for (_, cte_info) in sorted_infos {
         if !cte_info.property_mapping.is_empty() {
             cte_name_to_prop_map
                 .entry(cte_info.cte_name.clone())

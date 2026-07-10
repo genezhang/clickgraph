@@ -1405,16 +1405,23 @@ impl GraphSchema {
     }
 
     /// Get properties for a node label as (property_name, column_or_expr) pairs
+    ///
+    /// Sorted by cypher property name: `property_mappings` is a HashMap, and
+    /// several callers materialize this list directly into SELECT/CTE column
+    /// order, so an unsorted iteration makes the rendered SQL flap across
+    /// processes (#464/#480).
     pub fn get_node_properties(&self, labels: &[String]) -> Vec<(String, String)> {
         if let Some(label) = labels.first() {
             if let Some(node_schema) = self.node_schema_opt(label) {
-                node_schema
+                let mut props: Vec<(String, String)> = node_schema
                     .property_mappings
                     .iter()
                     .map(|(prop_name, prop_value)| {
                         (prop_name.clone(), prop_value.raw().to_string())
                     })
-                    .collect()
+                    .collect();
+                props.sort_by(|a, b| a.0.cmp(&b.0));
+                props
             } else {
                 vec![]
             }
@@ -1424,16 +1431,21 @@ impl GraphSchema {
     }
 
     /// Get properties for a relationship type as (property_name, column_or_expr) pairs
+    ///
+    /// Sorted by cypher property name for deterministic rendering — see
+    /// `get_node_properties` (#464/#480).
     pub fn get_relationship_properties(&self, rel_types: &[String]) -> Vec<(String, String)> {
         if let Some(rel_type) = rel_types.first() {
             if let Some(rel_schema) = self.get_relationships_schema_opt(rel_type) {
-                rel_schema
+                let mut props: Vec<(String, String)> = rel_schema
                     .property_mappings
                     .iter()
                     .map(|(prop_name, prop_value)| {
                         (prop_name.clone(), prop_value.raw().to_string())
                     })
-                    .collect()
+                    .collect();
+                props.sort_by(|a, b| a.0.cmp(&b.0));
+                props
             } else {
                 vec![]
             }
