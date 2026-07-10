@@ -9,5 +9,5 @@ FROM db_denormalized.flights_denorm AS a
 ) AS __union
 UNION ALL 
 SELECT 
-      count(*) AS `c`
+      count(f.flight_id) AS `c`
 FROM db_denormalized.flights_denorm AS f

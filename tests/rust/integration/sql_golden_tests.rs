@@ -2845,6 +2845,78 @@ async fn denorm_count_node_resolves_embedded_id_column_493() {
     }
 }
 
+/// #502 regression: `count(r)` on an OPTIONAL MATCH relationship must render
+/// as a NULL-sensitive count over one of the edge's own (edge_id) columns,
+/// not `count(*)`. `count(*)` counts the anchor row itself, which a LEFT
+/// JOIN always preserves (NULL-extended) even when the relationship never
+/// matched — so a zero-edge anchor silently reported `count(r) == 1`. This
+/// is the relationship-count sibling of #493's node-count fix (`count(b)` ->
+/// `count(t0.dest_code)`).
+#[tokio::test]
+async fn denorm_count_relationship_resolves_edge_id_column_502() {
+    let denorm_schema = load_schema(SchemaId::Denormalized.yaml_path());
+    let coupled_schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+    let standard_schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // (schema, cypher, the aggregate that must appear after `normalize`'s
+    // alias anonymization, a context tag)
+    let cases = [
+        (
+            &denorm_schema,
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[r:FLIGHT]->(b) RETURN a.code, count(r)",
+            "count(r.flight_id)",
+            "denorm optional count(r)",
+        ),
+        (
+            &denorm_schema,
+            "MATCH (a:Airport)-[r:FLIGHT]->(b) RETURN a.code, count(r)",
+            "count(r.flight_id)",
+            "denorm required count(r)",
+        ),
+        (
+            &denorm_schema,
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[r:FLIGHT]->(b) RETURN a.code, count(DISTINCT r)",
+            "count(DISTINCT tuple(r.flight_id, r.flight_number))",
+            "denorm optional count(DISTINCT r)",
+        ),
+        (
+            &coupled_schema,
+            "MATCH (a:IP) OPTIONAL MATCH (a)-[r:REQUESTED]->(d) RETURN a.ip, count(r)",
+            "count(r.uid)",
+            "coupled optional count(r)",
+        ),
+        (
+            &standard_schema,
+            "MATCH (a:User) OPTIONAL MATCH (a)-[r:FOLLOWS]->(b) RETURN a.name, count(r)",
+            "count(r.follower_id)",
+            "standard optional count(r)",
+        ),
+    ];
+
+    for (schema, cypher, want_agg, tag) in cases {
+        let first = normalize(&render(schema, cypher, SqlDialect::ClickHouse).await);
+        for _ in 0..5 {
+            let again = normalize(&render(schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(
+                first, again,
+                "#502 [{tag}]: render is nondeterministic:\nFIRST:\n{first}\nAGAIN:\n{again}"
+            );
+        }
+        // The aggregate must be NULL-sensitive (an edge_id column), never
+        // count(*), which is always 1 on a LEFT JOIN miss.
+        assert!(
+            first.contains(want_agg),
+            "#502 [{tag}]: expected `{want_agg}` (NULL-sensitive edge_id \
+             column), got:\n{first}"
+        );
+        assert!(
+            !first.contains("count(*)"),
+            "#502 [{tag}]: count(r) rendered as NULL-insensitive count(*) — \
+             zero-edge anchors would report count == 1:\n{first}"
+        );
+    }
+}
+
 /// #475 regression: on the coupled cross-table denorm `zeek_merged_test`
 /// schema, `MATCH (a:IP) OPTIONAL MATCH (a)-[:REQUESTED]->(d:Domain) RETURN
 /// a.ip, a.port, d.name` sourced the ANCHOR property `a.port` from the

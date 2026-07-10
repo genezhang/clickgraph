@@ -14,7 +14,7 @@ FROM default.flights AS a
 )
 SELECT 
       a.state AS `a.state`, 
-      count(*) AS `rel_count`
+      count(r.flight_id) AS `rel_count`
 FROM __denorm_scan_a AS a
 LEFT JOIN default.flights AS r ON a.code = r.Origin
 GROUP BY a.state

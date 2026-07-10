@@ -10,5 +10,5 @@ INNER JOIN test_integration.friendships r1 ON u_1.user_id = r1.user_id_1
 INNER JOIN test_integration.users n2 ON r1.user_id_2 = n2.user_id
 )
 SELECT 
-      count(*) AS "total"
+      count(r.follower_id) AS "total"
 FROM vlp_multi_type_u_other AS t

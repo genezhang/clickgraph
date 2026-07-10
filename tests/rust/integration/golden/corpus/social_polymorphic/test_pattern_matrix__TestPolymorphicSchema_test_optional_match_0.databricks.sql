@@ -1,4 +1,4 @@
-SELECT `a.email` AS `a.email`, count(*) AS `rel_count` FROM (
+SELECT `a.email` AS `a.email`, count(`r.from_id`) AS `rel_count` FROM (
 SELECT 
       string(b.content) AS `content`,
       string(b.created_at) AS `created`,
@@ -7,7 +7,8 @@ SELECT
       string(b.post_id) AS `post_id`,
       string(b.content) AS `title`,
       string(a.user_id) AS `user_id`,
-      a.email_address AS `a.email`
+      a.email_address AS `a.email`,
+      r.from_id AS `r.from_id`
 FROM brahmand.users_bench AS a
 LEFT JOIN (SELECT * FROM brahmand.interactions WHERE (interaction_type = 'FOLLOWS' AND from_type = 'User' AND to_type = 'Post')) AS r ON r.from_id = a.user_id
 LEFT JOIN brahmand.posts_bench AS b ON b.post_id = r.to_id
@@ -20,7 +21,8 @@ SELECT
       NULL AS `post_id`,
       NULL AS `title`,
       string(b.user_id) AS `user_id`,
-      a.email_address AS `a.email`
+      a.email_address AS `a.email`,
+      r.from_id AS `r.from_id`
 FROM brahmand.users_bench AS a
 LEFT JOIN (SELECT * FROM brahmand.interactions WHERE (interaction_type = 'FOLLOWS' AND from_type = 'User' AND to_type = 'User')) AS r ON r.from_id = a.user_id
 LEFT JOIN brahmand.users_bench AS b ON b.user_id = r.to_id
