@@ -1,0 +1,1 @@
+parse error: Parsing Failure: OpenCypherParsingError { errors: [("a.name", "Unexpected tokens after query"), ("a.name", "Unparsed input")] }

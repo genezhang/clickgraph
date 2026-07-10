@@ -1,0 +1,1 @@
+parse error: Parsing Failure: OpenCypherParsingError { errors: [("GROUP BY x.city\n            ORDER BY user_count DESC", "Unexpected tokens after query"), ("GROUP BY x.city\n            ORDER BY user_count DESC", "Unparsed input")] }

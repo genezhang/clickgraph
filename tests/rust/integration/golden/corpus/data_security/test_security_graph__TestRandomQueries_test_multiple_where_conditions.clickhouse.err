@@ -1,0 +1,1 @@
+parse error: Parsing Failure: OpenCypherParsingError { errors: [(" LIKE '%@%'\n            RETURN u.name, u.email\n            ORDER BY u.name", "Unexpected tokens after query"), ("LIKE '%@%'\n            RETURN u.name, u.email\n            ORDER BY u.name", "Unparsed input")] }

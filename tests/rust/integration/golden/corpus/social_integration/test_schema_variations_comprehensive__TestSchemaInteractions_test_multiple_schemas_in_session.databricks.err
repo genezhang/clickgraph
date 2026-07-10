@@ -1,1 +1,1 @@
-plan error: LogicalPlanError: Query planning error: Parser returned empty query AST. This indicates unsupported syntax or parser failure. Common causes: 1) Multi-line SQL-style comments (use /* */ instead of --), 2) Unsupported Cypher features, 3) Query syntax errors not caught by parser. Enable DEBUG logging to see more details.
+parse error: Parsing Failure: OpenCypherParsingError { errors: [("MATCH (u:User) RETURN count(u)", "Unexpected tokens after query"), ("MATCH (u:User) RETURN count(u)", "Unparsed input")] }
