@@ -69,6 +69,5 @@ SELECT
       t0.post_id AS `p.post_id`
 FROM vlp_u2_u1 AS t
 INNER JOIN test_integration.posts_test AS t0 ON t0.author_id = t.start_id
-INNER JOIN test_integration.posts_test AS p ON t0.post_id = t0.post_id
 ) AS __union
 LIMIT 10

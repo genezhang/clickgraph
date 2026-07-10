@@ -44,7 +44,6 @@ SELECT DISTINCT
       t.start_name AS `__order_col_0`
 FROM vlp_u_g AS t
 INNER JOIN data_security.ds_permissions AS t0 ON t0.subject_id = t.end_id AND (t0.subject_type = 'Group' AND t0.object_type = 'File')
-INNER JOIN data_security.ds_fs_objects AS target ON t0.object_id = t0.object_id
 WHERE t.start_exposure = 'external'
 UNION ALL 
 SELECT DISTINCT 
@@ -53,7 +52,6 @@ SELECT DISTINCT
       t.start_name AS `__order_col_0`
 FROM vlp_u_g AS t
 INNER JOIN data_security.ds_permissions AS t0 ON t0.subject_id = t.end_id AND (t0.subject_type = 'Group' AND t0.object_type = 'File')
-INNER JOIN data_security.ds_fs_objects AS target ON t0.object_id = t0.object_id
 WHERE t.start_exposure = 'external'
 ) AS __union
 ORDER BY __union.`__order_col_0` ASC

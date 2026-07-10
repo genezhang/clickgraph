@@ -58,7 +58,11 @@ fn json_extract_field_arg(col_name: &str) -> String {
 /// `col_name` on the node schema, then map it through `properties` (the bound
 /// side's `(cypher_name, db_column)` pairs). Mirrors the cross-side fix in the
 /// WITH-CTE path (`plan_builder_utils::resolve_denormalized_property_in_expr`).
-fn translate_denorm_cross_side_column(
+///
+/// `pub(crate)`: shared with the WHERE/filter path
+/// (`plan_builder_helpers::apply_property_mapping_to_expr`), which has the
+/// identical cross-side hazard.
+pub(crate) fn translate_denorm_cross_side_column(
     plan: &LogicalPlan,
     alias: &str,
     col_name: &str,
@@ -77,7 +81,7 @@ fn translate_denorm_cross_side_column(
         if let Some((_, correct_col)) = properties.iter().find(|(pn, _)| *pn == cypher_name) {
             if correct_col != col_name {
                 log::info!(
-                    "🔧 Denormalized cross-side fix in SELECT: '{}.{}' (from '{}') → '{}'",
+                    "🔧 Denormalized cross-side fix: '{}.{}' (from '{}') → '{}'",
                     alias,
                     col_name,
                     cypher_name,

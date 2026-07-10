@@ -133,6 +133,22 @@ const CORPUS: &[(&str, &str)] = &[
         "cross_node_hop",
         "MATCH (u:User)-[:AUTHORED]->(p:Post) RETURN u.name, p.title",
     ),
+    // #492 review B2: mixed-TYPE 2-hop with an undirected hop. AUTHORED and
+    // LIKED share id column names ([user_id, post_id]) but are DIFFERENT
+    // relationship types — the uniqueness guard must NOT pair them (a
+    // cross-type guard silently excluded every author-liked-own-post match).
+    (
+        "mixed_type_2hop_undirected",
+        "MATCH (u:User)-[:AUTHORED]-(p:Post)<-[:LIKED]-(v:User) RETURN u.name, p.title, v.name",
+    ),
+    // #492 review RN4: undirected 2-hop with the MIDDLE node unreferenced.
+    // Locks that the Incoming-swapped branches keep valid joins — the parent
+    // plan's bridge-node elimination must not clobber branch-defined aliases
+    // (tautologies like `ON t1.followed_id = t1.followed_id` inflated results).
+    (
+        "partial_ref_undirected_2hop",
+        "MATCH (a:User)-[:FOLLOWS]-(b)-[:FOLLOWS]-(c:User) RETURN a.name, c.name",
+    ),
     (
         "with_having",
         "MATCH (u:User) WITH u.country AS c, count(u) AS n WHERE n > 5 RETURN c, n",
@@ -615,6 +631,15 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
         "undirected_hop",
         "MATCH (o:Order)-[:PLACED_BY]-(c:Customer) RETURN o.order_id, c.name",
     ),
+    // #492 review RN5: undirected 2-hop through a shared Customer. FK-edge
+    // relationships have NO edge alias in the SQL (the rel row IS the Order
+    // row), so the uniqueness guard must compare the materialized node
+    // aliases (NOT a.order_id = b.order_id) — a guard over the rel aliases
+    // (t1/t2) referenced never-materialized identifiers.
+    (
+        "undirected_2hop_shared_customer",
+        "MATCH (a:Order)-[:PLACED_BY]-(c:Customer)-[:PLACED_BY]-(b:Order) RETURN a.order_id, c.customer_id, b.order_id",
+    ),
     // Filter on BOTH node types across the hop.
     (
         "hop_filter_both",
@@ -873,6 +898,25 @@ const DENORM_CORPUS: &[(&str, &str)] = &[
     (
         "mixed_direction_2hop",
         "MATCH (a:Airport)-[:FLIGHT]->(b:Airport)-[:FLIGHT]-(c:Airport) RETURN a.code, b.code, c.code",
+    ),
+    // #492 review B1: WHERE on the SHARED MIDDLE node of an undirected 2-hop.
+    // Each branch must filter on the same physical column it projects for b
+    // (the all-forward branch used to filter on c's column, t2.Dest).
+    (
+        "where_middle_node_undirected_2hop",
+        "MATCH (a:Airport)-[:FLIGHT]-(b:Airport)-[:FLIGHT]-(c:Airport) WHERE b.code = 'LAX' RETURN a.code, b.code, c.code",
+    ),
+    // #492 review B3 CHARACTERIZATION: OPTIONAL + nested-undirected multi-hop
+    // is GATED to the pre-#492 shape (single directed LEFT chain, no direction
+    // union): per-orientation LEFT-JOIN branches under UNION ALL cannot
+    // express OPTIONAL semantics (NULL-anchor rows dropped by the guard,
+    // duplicated across branches when NULL-safe, partial-pattern rows, and
+    // swapped branches anchoring FROM on the optional node). This byte-lock is
+    // a KNOWN-INCOMPLETE shape (directed-only matches), not semantic coverage;
+    // fixing it needs an anchor-LEFT-JOIN-onto-match-union renderer structure.
+    (
+        "optional_undirected_2hop",
+        "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]-(b:Airport)-[:FLIGHT]-(c:Airport) RETURN a.code, b.code, c.code",
     ),
     // hop projecting edge properties incl. the renamed `flight_num` -> flight_number.
     (
@@ -3252,6 +3296,137 @@ async fn denorm_undirected_multihop_direction_union_492() {
             "#492: mixed-direction 2-hop is missing the `{cond}` branch:\n{sql}"
         );
     }
+}
+
+/// #492 adversarial-review round 2: five structural locks on the newly-enabled
+/// undirected multi-hop family.
+///
+/// B1  WHERE on the shared middle node must filter the SAME physical column
+///     each branch projects for it (the all-forward branch used to filter on
+///     c's column, returning rows violating the user's WHERE).
+/// B2  The relationship-uniqueness guard must pair only same-type/same-table
+///     relationships (AUTHORED vs LIKED share [user_id, post_id] column names;
+///     a cross-type guard silently excluded author-liked-own-post matches).
+/// B3  OPTIONAL + nested-undirected multi-hop is GATED to the pre-#492 single
+///     directed LEFT chain: per-orientation LEFT-JOIN UNION ALL branches
+///     cannot express OPTIONAL semantics (NULL-anchor rows dropped by the
+///     guard / duplicated per branch when NULL-safe / partial-pattern rows /
+///     swapped branches anchoring FROM on the optional node). Follow-up needs
+///     an anchor-LEFT-JOIN-onto-match-union renderer structure.
+/// RN4 Bridge-node elimination must not clobber union branches that DEFINE
+///     the alias (tautological joins `ON x.col = x.col` inflated 64 → 147).
+/// RN5 FK-edge uniqueness guards must compare materialized NODE aliases (the
+///     rel row IS the node row; rel aliases never materialize).
+#[tokio::test]
+async fn undirected_multihop_review_fixes_492() {
+    // B1: per-branch WHERE column == per-branch b.code projection column.
+    let denorm = load_schema("schemas/examples/ontime_denormalized.yaml");
+    let sql = normalize(
+        &render(
+            &denorm,
+            "MATCH (a:Airport)-[:FLIGHT]-(b:Airport)-[:FLIGHT]-(c:Airport) \
+             WHERE b.code = 'JFK' RETURN a.code, b.code, c.code",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    for branch in sql.split("UNION ALL") {
+        let b_col = if branch.contains("t1.Origin AS \"b.code\"") {
+            "t1.Origin"
+        } else if branch.contains("t1.Dest AS \"b.code\"") {
+            "t1.Dest"
+        } else {
+            panic!("#492-B1: branch projects no b.code:\n{branch}");
+        };
+        assert!(
+            branch.contains(&format!("{b_col} = 'JFK'")),
+            "#492-B1: branch must filter b on its own column `{b_col}`:\n{branch}"
+        );
+    }
+
+    // B2: no cross-type uniqueness guard between AUTHORED and LIKED.
+    let std_schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = normalize(
+        &render(
+            &std_schema,
+            "MATCH (u:User)-[:AUTHORED]-(p:Post)<-[:LIKED]-(v:User) RETURN u.name, p.title, v.name",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        !sql.contains("NOT ("),
+        "#492-B2: cross-type (AUTHORED/LIKED) patterns must not emit a \
+         uniqueness guard — different types are never the same relationship:\n{sql}"
+    );
+
+    // B3 gate: OPTIONAL nested-undirected keeps the pre-#492 single chain.
+    let sql = normalize(
+        &render(
+            &std_schema,
+            "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]-(b:User)-[:FOLLOWS]-(c:User) \
+             RETURN a.name, b.name, c.name",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        !sql.contains("UNION ALL"),
+        "#492-B3: OPTIONAL nested-undirected must stay gated (single directed \
+         LEFT chain) until the renderer can LEFT JOIN an anchor onto a match \
+         union:\n{sql}"
+    );
+    assert!(
+        sql.contains("LEFT JOIN"),
+        "#492-B3: gated OPTIONAL pattern must still LEFT JOIN:\n{sql}"
+    );
+
+    // RN4: no tautological join conditions in any branch (middle node
+    // unreferenced; parent bridge elimination must not leak cross-branch).
+    let sql = normalize(
+        &render(
+            &std_schema,
+            "MATCH (a:User)-[:FOLLOWS]-(b)-[:FOLLOWS]-(c:User) RETURN a.name, c.name",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    let tautology = regex::Regex::new(r"ON (\w+)\.(\w+) = (\w+)\.(\w+)").unwrap();
+    for cap in tautology.captures_iter(&sql) {
+        assert!(
+            !(cap[1] == cap[3] && cap[2] == cap[4]),
+            "#492-RN4: tautological join condition `{}` (bridge elimination \
+             clobbered a branch-defined alias):\n{sql}",
+            &cap[0]
+        );
+    }
+    assert_eq!(
+        sql.matches("UNION ALL").count(),
+        3,
+        "#492-RN4: partially-referenced undirected 2-hop keeps 4 branches:\n{sql}"
+    );
+
+    // RN5: FK-edge guard compares materialized node aliases, never the
+    // (unmaterialized) rel aliases.
+    let fk = load_schema(SchemaId::FkEdge.yaml_path());
+    let sql = normalize(
+        &render(
+            &fk,
+            "MATCH (a:Order)-[:PLACED_BY]-(c:Customer)-[:PLACED_BY]-(b:Order) \
+             RETURN a.order_id, c.customer_id, b.order_id",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        sql.contains("NOT b.order_id = a.order_id") || sql.contains("NOT a.order_id = b.order_id"),
+        "#492-RN5: FK-edge uniqueness guard must compare the anchor node \
+         aliases:\n{sql}"
+    );
+    assert!(
+        !sql.contains("t0.") && !sql.contains("t1."),
+        "#492-RN5: FK-edge SQL must not reference unmaterialized rel aliases:\n{sql}"
+    );
 }
 
 /// #480 regression: two rendering sites emitted whole-entity/denorm-VLP

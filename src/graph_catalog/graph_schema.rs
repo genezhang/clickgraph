@@ -372,6 +372,23 @@ impl NodeSchema {
         format!("{}.{}", self.database, self.table_name)
     }
 
+    /// #492 review RN5: The node's identity columns as PHYSICAL table columns
+    /// (node_id property names resolved through property_mappings; identity
+    /// fallback when unmapped). Used to compare two node-table rows for
+    /// identity, e.g. FK-edge relationship-uniqueness guards.
+    pub fn id_physical_columns(&self) -> Vec<String> {
+        self.node_id
+            .columns()
+            .iter()
+            .map(|prop| {
+                self.property_mappings
+                    .get(*prop)
+                    .map(|pv| pv.raw().to_string())
+                    .unwrap_or_else(|| prop.to_string())
+            })
+            .collect()
+    }
+
     /// #492: Cypher property names whose denormalized from- OR to-side DB
     /// column equals `db_col`, in deterministic (sorted) order.
     ///
@@ -398,6 +415,34 @@ impl NodeSchema {
 }
 
 impl GraphSchema {
+    /// #492 review RN5: For an FK-edge relationship (the edge row IS a node
+    /// table row carrying the FK — no separate edge table), return which
+    /// endpoint's node table physically owns the relationship row:
+    /// `Some(true)` = the from-side node table, `Some(false)` = the to-side.
+    /// `None` for relationships with their own table. Mirrors the join-side
+    /// resolution in `pattern_schema`'s `FkEdgeJoin` strategy.
+    pub fn fk_edge_anchor_is_from(&self, rel: &RelationshipSchema) -> Option<bool> {
+        if !rel.is_fk_edge {
+            return None;
+        }
+        let edge_table = rel.full_table_name();
+        let from_table = self
+            .node_schema_opt(&rel.from_node)
+            .map(|n| n.full_table_name());
+        let to_table = self
+            .node_schema_opt(&rel.to_node)
+            .map(|n| n.full_table_name());
+        if from_table.as_deref() == Some(edge_table.as_str()) {
+            Some(true)
+        } else if to_table.as_deref() == Some(edge_table.as_str()) {
+            Some(false)
+        } else {
+            // Shouldn't happen if is_fk_edge is set correctly — mirror the
+            // FkEdgeJoin fallback (edge treated as the from-side node table).
+            Some(true)
+        }
+    }
+
     /// #492: Reverse-lookup the Cypher property names whose denormalized
     /// from-/to-side column equals `db_col` (see
     /// [`NodeSchema::denorm_properties_for_side_column`]). Scoped to `label`
