@@ -210,7 +210,7 @@ dialect	databricks	src/graph_catalog/schema_types.rs	8
 dialect	databricks	src/main.rs	8
 dialect	databricks	src/query_planner/analyzer/projection_tagging.rs	1
 dialect	databricks	src/query_planner/logical_expr/ast_conversion.rs	1
-dialect	databricks	src/render_plan/cte_extraction.rs	6
+dialect	databricks	src/render_plan/cte_extraction.rs	4
 dialect	databricks	src/render_plan/cte_manager/mod.rs	5
 dialect	databricks	src/render_plan/plan_builder_utils.rs	21
 dialect	databricks	src/render_plan/select_builder.rs	6

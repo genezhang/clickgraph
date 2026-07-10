@@ -5443,6 +5443,40 @@ async fn relationship_uniqueness_guard_skips_unrelated_types_and_optional_518() 
     );
 }
 
+/// #511: a hardcoded `LIMIT 1000` "safety cap" on every `pattern_union` CTE
+/// branch (unlabeled/multi-type relationship scans, e.g.
+/// `MATCH ()-[r]->() RETURN ...`) silently truncated results — with no
+/// error, no warning, and no way for the caller to detect it — once a
+/// branch's underlying table exceeded 1000 matching rows, even when the
+/// user's query had no LIMIT of its own. No design rationale for the value
+/// was ever documented (git blame traces it to the original feature commit
+/// with no comment). Removed entirely: any limiting the user wants is
+/// expressed via an explicit Cypher `LIMIT`, applied normally at the outer
+/// query level like any other pattern. Live-verified: `MATCH ()-[r]->()
+/// RETURN count(*)` now returns the true total (23, matching a raw-SQL
+/// cross-check), not an artificially capped value.
+#[tokio::test]
+async fn pattern_union_no_hardcoded_limit_cap_511() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH ()-[r]->() RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+
+    assert!(
+        sql.contains("pattern_union_r"),
+        "expected this unlabeled relationship scan to route through a \
+         pattern_union CTE: {sql}"
+    );
+    assert!(
+        !sql.to_uppercase().contains("LIMIT 1000"),
+        "pattern_union branches must not carry a hardcoded LIMIT 1000 \
+         safety cap that silently truncates results: {sql}"
+    );
+}
+
 /// Regression tests for the #496/#497/#498/#499/#501 VLP/fixed-path family.
 mod vlp_fixed_path_family_496_497_498_499_501 {
     use super::*;

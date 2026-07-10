@@ -5006,8 +5006,7 @@ pub fn extract_ctes_with_context(
                                 {rel_properties_lit} as rel_properties, \
                                 {s_props} as start_properties, \
                                 {e_props} as end_properties{direct_rel_cols} \
-                            FROM {rel_table}{node_joins}{branch_where} \
-                            LIMIT 1000",
+                            FROM {rel_table}{node_joins}{branch_where}",
                                 ))
                             };
 
@@ -5027,12 +5026,28 @@ pub fn extract_ctes_with_context(
                     .collect();
 
                 let union_branches: Vec<String> = union_branches?.into_iter().flatten().collect();
-                // Each branch carries a `LIMIT 1000` safety cap. Spark/Databricks
-                // forbids a bare per-branch LIMIT in a set operation
-                // (`SELECT … LIMIT n UNION ALL …` → parse error "Expected ), found
-                // UNION"); the branch must be parenthesized. ClickHouse accepts
-                // the bare form, so only wrap for Databricks to keep CH output
-                // byte-identical.
+                // #511: branches previously carried a hardcoded `LIMIT 1000`
+                // "safety cap" with no genuine architectural justification
+                // (no design doc, no comment explaining the value, git blame
+                // traces it to the original pattern-resolver feature commit
+                // with no rationale) — for an unlabeled/multi-type pattern
+                // scan (`MATCH ()-[r]->() RETURN ...`) with no user-specified
+                // LIMIT, this silently truncated `count(*)`/aggregate results
+                // and arbitrarily dropped rows once a branch's underlying
+                // table exceeded 1000 matching edges, with no error or
+                // indication to the caller — a ground-rule-1 (never silently
+                // wrong) violation. Removed: any actual limiting the user
+                // wants is expressed via an explicit Cypher `LIMIT`, applied
+                // normally at the outer query level, same as any other
+                // pattern in this engine.
+                //
+                // Parenthesizing each branch below predates and is
+                // independent of that removed cap — the other dialect is
+                // stricter about bare per-branch modifiers in a set
+                // operation in general, so branches stay parenthesized there
+                // for robustness even though no branch carries a LIMIT of
+                // its own anymore. ClickHouse accepts the bare form and
+                // keeps its prior byte-identical output.
                 let union_sql = if matches!(
                     crate::server::query_context::get_current_dialect(),
                     crate::sql_generator::SqlDialect::Databricks
