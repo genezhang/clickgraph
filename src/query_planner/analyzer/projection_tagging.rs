@@ -432,7 +432,7 @@ impl ProjectionTagging {
             .collect();
         // Sorted: the map is a HashMap, so without this the `RETURN *`
         // expansion order flaps across processes (#480 class). Alphabetical
-        // also matches Neo4j's documented `RETURN *` column order.
+        // also matches Neo4j's observed `RETURN *` column order (behavior, not documented contract).
         aliases.sort();
         aliases
     }
