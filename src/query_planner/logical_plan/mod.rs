@@ -207,6 +207,17 @@ pub fn evaluate_cypher_statement(
                 );
             }
 
+            // Issue #514: Neo4j rejects a UNION chain that mixes UNION and UNION ALL
+            // ("Invalid combination of UNION and UNION ALL"). Previously this silently
+            // coerced the whole chain to the *first* clause's type. Validate up front,
+            // before building any logical plans, that every arm agrees.
+            if let Some(first_union) = union_clauses.first() {
+                let expected = &first_union.union_type;
+                if union_clauses.iter().any(|uc| &uc.union_type != expected) {
+                    return Err(LogicalPlanError::MixedUnionTypes);
+                }
+            }
+
             // Build logical plans for all queries
             let mut all_plans: Vec<Arc<LogicalPlan>> = Vec::new();
             #[allow(unused_assignments)]

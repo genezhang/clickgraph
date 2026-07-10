@@ -845,7 +845,10 @@ impl<'db> Connection<'db> {
         };
         let schema = Arc::clone(&self.schema);
         let executor = Arc::clone(&self.executor);
-        let cypher = cypher.to_string();
+        // Strip comments before parsing: #516 made parse_cypher_statement
+        // all-consuming, and (unlike `query_async`'s own dispatch parse) this
+        // handler previously received the ORIGINAL un-stripped `cypher`.
+        let cypher = open_cypher_parser::strip_comments(cypher);
         with_query_context(QueryContext::new(None), async move {
             set_current_schema(Arc::clone(&schema));
             let (_, stmt) = open_cypher_parser::parse_cypher_statement(&cypher)
@@ -965,7 +968,10 @@ impl<'db> Connection<'db> {
         use clickgraph::procedures::vector_search;
         let schema = Arc::clone(&self.schema);
         let executor = Arc::clone(&self.executor);
-        let cypher = cypher.to_string();
+        // Strip comments before parsing: #516 made parse_cypher_statement
+        // all-consuming, and (unlike `query_async`'s own dispatch parse) this
+        // handler previously received the ORIGINAL un-stripped `cypher`.
+        let cypher = open_cypher_parser::strip_comments(cypher);
         let (_, stmt) = open_cypher_parser::parse_cypher_statement(&cypher)
             .map_err(|e| EmbeddedError::Query(format!("Parse error: {}", e)))?;
         let expressions: Vec<_> = match &stmt {
@@ -1029,7 +1035,10 @@ impl<'db> Connection<'db> {
         use clickgraph::procedures::fulltext_search;
         let schema = Arc::clone(&self.schema);
         let executor = Arc::clone(&self.executor);
-        let cypher = cypher.to_string();
+        // Strip comments before parsing: #516 made parse_cypher_statement
+        // all-consuming, and (unlike `query_async`'s own dispatch parse) this
+        // handler previously received the ORIGINAL un-stripped `cypher`.
+        let cypher = open_cypher_parser::strip_comments(cypher);
         let (_, stmt) = open_cypher_parser::parse_cypher_statement(&cypher)
             .map_err(|e| EmbeddedError::Query(format!("Parse error: {}", e)))?;
         let expressions: Vec<_> = match &stmt {

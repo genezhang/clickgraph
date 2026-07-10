@@ -37,8 +37,51 @@ mod use_clause;
 mod where_clause;
 mod with_clause;
 
-/// Parse a complete Cypher statement, potentially with UNION clauses or standalone procedure call
+/// Parse a complete Cypher statement, potentially with UNION clauses or standalone procedure call.
+///
+/// This is the all-consuming top-level entry point: on success, `input` (the
+/// first tuple element) is guaranteed to contain nothing but trailing
+/// whitespace and/or trailing semicolons. Any other trailing content (e.g. a
+/// typo'd keyword after a syntactically complete query) is a hard parse
+/// error rather than being silently discarded. See issue #516.
 pub fn parse_cypher_statement(
+    input: &'_ str,
+) -> IResult<&'_ str, CypherStatement<'_>, OpenCypherParsingError<'_>> {
+    let (remaining, statement) = parse_cypher_statement_body(input)?;
+    ensure_fully_consumed(remaining)?;
+    Ok((remaining, statement))
+}
+
+/// Returns an error if `remaining` contains anything other than trailing
+/// whitespace and/or a trailing semicolon (with optional surrounding
+/// whitespace). Note: `parse_cypher_statement_body` already optionally
+/// consumes one trailing semicolon itself before returning here, so in
+/// practice this tolerates a SECOND semicolon too (e.g. `RETURN n;;` or
+/// `RETURN n; ;` parse successfully, not just `RETURN n;`) — harmless
+/// (strictly more permissive, never masks a genuine trailing-garbage error),
+/// just slightly more lenient than "exactly one" might suggest. Callers are
+/// expected to have already stripped comments from the original input
+/// before parsing.
+fn ensure_fully_consumed(remaining: &'_ str) -> Result<(), nom::Err<OpenCypherParsingError<'_>>> {
+    let (rest, _) = opt(ws(tag(";"))).parse(remaining)?;
+    if rest.trim().is_empty() {
+        Ok(())
+    } else {
+        Err(nom::Err::Failure(OpenCypherParsingError {
+            errors: vec![
+                (remaining, "Unexpected tokens after query"),
+                (rest.trim(), "Unparsed input"),
+            ],
+        }))
+    }
+}
+
+/// Parses a complete Cypher statement without enforcing that all input is
+/// consumed. Internal helper for `parse_cypher_statement` — do not call
+/// directly outside this module; callers must go through
+/// `parse_cypher_statement` so the all-consuming check in issue #516's fix
+/// is not bypassed.
+fn parse_cypher_statement_body(
     input: &'_ str,
 ) -> IResult<&'_ str, CypherStatement<'_>, OpenCypherParsingError<'_>> {
     let (input, _) = multispace0.parse(input)?;
@@ -1720,6 +1763,106 @@ mod tests {
                 panic!("Expected Query, got CopyTo");
             }
         }
+    }
+
+    // --- Issue #516: parse_cypher_statement must be all-consuming ------------------
+    //
+    // The top-level entry point must reject trailing garbage after an otherwise
+    // syntactically valid query, rather than silently discarding it (which used to
+    // make e.g. `MATCH (n) RETURN n THIS IS GARBAGE` parse successfully as
+    // `MATCH (n) RETURN n`). It must still tolerate trailing whitespace and a
+    // single trailing semicolon, since real callers commonly produce those.
+
+    #[test]
+    fn test_parse_cypher_statement_rejects_trailing_garbage() {
+        let query = "MATCH (n) RETURN n THIS IS GARBAGE";
+        let result = parse_cypher_statement(query);
+        assert!(
+            result.is_err(),
+            "Expected trailing garbage after a valid query to be rejected, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_parse_cypher_statement_rejects_trailing_garbage_after_union_arm() {
+        // A typo'd tail after a complete UNION arm must not silently drop the
+        // rest of the chain (the concrete failure mode #516 was filed for).
+        let query = "MATCH (a) RETURN a UNION MATCH (b) RETURN b GARBAGE";
+        let result = parse_cypher_statement(query);
+        assert!(
+            result.is_err(),
+            "Expected trailing garbage after a UNION arm to be rejected, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_parse_cypher_statement_rejects_trailing_garbage_with_semicolon() {
+        // Garbage before a trailing semicolon must still be rejected — the
+        // semicolon tolerance must not mask a genuine syntax error.
+        let query = "MATCH (n) RETURN n GARBAGE;";
+        let result = parse_cypher_statement(query);
+        assert!(
+            result.is_err(),
+            "Expected trailing garbage before a semicolon to be rejected, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_parse_cypher_statement_tolerates_trailing_whitespace() {
+        let query = "MATCH (n) RETURN n.name   \n\n  ";
+        let result = parse_cypher_statement(query);
+        assert!(
+            result.is_ok(),
+            "Trailing whitespace-only input must still parse: {:?}",
+            result.err()
+        );
+        let (remaining, _) = result.unwrap();
+        assert!(remaining.trim().is_empty());
+    }
+
+    #[test]
+    fn test_parse_cypher_statement_tolerates_trailing_semicolon_and_whitespace() {
+        let query = "MATCH (n) RETURN n.name ;   ";
+        let result = parse_cypher_statement(query);
+        assert!(
+            result.is_ok(),
+            "Trailing semicolon plus whitespace must still parse: {:?}",
+            result.err()
+        );
+        let (remaining, _) = result.unwrap();
+        assert!(remaining.trim().is_empty());
+    }
+
+    #[test]
+    fn test_parse_cypher_statement_tolerates_trailing_comment() {
+        // Real callers (server handlers, embedded, cg tool) strip comments via
+        // `strip_comments()` before calling `parse_cypher_statement`, so a
+        // trailing comment reduces to trailing whitespace by the time it
+        // reaches this function.
+        let raw = "MATCH (n) RETURN n.name // trailing comment";
+        let cleaned = strip_comments(raw);
+        let result = parse_cypher_statement(&cleaned);
+        assert!(
+            result.is_ok(),
+            "Trailing comment (pre-stripped) must still parse: {:?}",
+            result.err()
+        );
+        let (remaining, _) = result.unwrap();
+        assert!(remaining.trim().is_empty());
+    }
+
+    #[test]
+    fn test_parse_query_with_nom_leftover_still_available_for_legacy_callers() {
+        // parse_query_with_nom itself (used internally, and by parse_query's
+        // own EOF check) is intentionally NOT all-consuming on its own — the
+        // all-consuming guarantee is added at the parse_cypher_statement /
+        // parse_query boundary. Sanity-check that invariant still holds so a
+        // future refactor doesn't quietly change it.
+        let (remaining, _ast) = parse_query_with_nom("MATCH (n) RETURN n GARBAGE").unwrap();
+        assert_eq!(remaining, "GARBAGE");
     }
 
     #[test]

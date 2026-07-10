@@ -16,5 +16,6 @@ mod metrics_endpoint_tests;
 mod parameter_function_test;
 mod path_variable_tests;
 mod skip_offset_tests;
+mod sql_generation_handler_comment_tests;
 mod sql_golden_tests;
 mod with_where_having_tests;

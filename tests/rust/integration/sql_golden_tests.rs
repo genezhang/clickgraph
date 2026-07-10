@@ -4787,3 +4787,215 @@ async fn standard_path_unlabeled_pattern_union_name_is_unstable() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// #514: mixed UNION / UNION ALL chains must error, not silently coerce to the
+// first arm's type.
+// ---------------------------------------------------------------------------
+
+/// A chain mixing UNION and UNION ALL previously silently applied the FIRST
+/// clause's type to the whole chain (`... UNION ... UNION ALL ...` ran as if
+/// every arm were UNION). Neo4j rejects this outright ("Invalid combination
+/// of UNION and UNION ALL"); we must too, for every ordering of the mix.
+#[tokio::test]
+async fn mixed_union_and_union_all_errors_cleanly() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    for cypher in [
+        // UNION ... UNION ALL
+        "MATCH (u:User) RETURN u.user_id AS id LIMIT 5 \
+         UNION MATCH (u2:User) RETURN u2.user_id AS id LIMIT 5 \
+         UNION ALL MATCH (u3:User) RETURN u3.user_id AS id LIMIT 5",
+        // UNION ALL ... UNION
+        "MATCH (u:User) RETURN u.user_id AS id LIMIT 5 \
+         UNION ALL MATCH (u2:User) RETURN u2.user_id AS id LIMIT 5 \
+         UNION MATCH (u3:User) RETURN u3.user_id AS id LIMIT 5",
+    ] {
+        let result = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+        match result {
+            Err(msg) => assert!(
+                msg.contains("MixedUnionTypes") || msg.contains("Invalid combination"),
+                "[{cypher}] must fail with a MixedUnionTypes error, got: {msg}"
+            ),
+            Ok(sql) => panic!(
+                "[{cypher}] a UNION chain mixing UNION and UNION ALL must error \
+                 cleanly instead of silently coercing to the first arm's type; \
+                 rendered:\n{sql}"
+            ),
+        }
+    }
+}
+
+/// A uniform chain (all UNION, or all UNION ALL — including chains of 3+
+/// arms) must still render successfully; only a genuine mix is rejected.
+#[tokio::test]
+async fn uniform_union_chains_still_render() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    for cypher in [
+        "MATCH (u:User) RETURN u.user_id AS id LIMIT 5 \
+         UNION MATCH (u2:User) RETURN u2.user_id AS id LIMIT 5 \
+         UNION MATCH (u3:User) RETURN u3.user_id AS id LIMIT 5",
+        "MATCH (u:User) RETURN u.user_id AS id LIMIT 5 \
+         UNION ALL MATCH (u2:User) RETURN u2.user_id AS id LIMIT 5 \
+         UNION ALL MATCH (u3:User) RETURN u3.user_id AS id LIMIT 5",
+    ] {
+        let result = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            result.is_ok(),
+            "[{cypher}] a uniform UNION chain must still render: {:?}",
+            result.err()
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #515: UNION arms are combined positionally with no column-name check.
+// Neo4j requires identical column names (as a set) across every arm.
+// ---------------------------------------------------------------------------
+
+/// Arms with the same column set but declared in a different order must
+/// error rather than silently misaligning values under the wrong column
+/// (live-verified pre-fix: a post title landed under column `a`, despite the
+/// second arm aliasing it `AS b`).
+#[tokio::test]
+async fn union_reordered_column_names_errors_cleanly() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (u:User) RETURN u.user_id AS a, u.name AS b \
+                  UNION MATCH (p:Post) RETURN p.title AS b, p.post_id AS a";
+    let result = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+    match result {
+        Err(msg) => assert!(
+            msg.contains("UnionColumnMismatch") || msg.contains("same column names"),
+            "must fail with a UnionColumnMismatch error, got: {msg}"
+        ),
+        Ok(sql) => panic!(
+            "reordered column names across UNION arms must error cleanly \
+             instead of silently misaligning by position; rendered:\n{sql}"
+        ),
+    }
+}
+
+/// Arms with genuinely different column names must error rather than
+/// silently NULL-padding to the union of both column sets.
+#[tokio::test]
+async fn union_mismatched_column_names_errors_cleanly() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (u:User) RETURN u.user_id AS id \
+                  UNION MATCH (p:Post) RETURN p.title AS title";
+    let result = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+    match result {
+        Err(msg) => assert!(
+            msg.contains("UnionColumnMismatch") || msg.contains("same column names"),
+            "must fail with a UnionColumnMismatch error, got: {msg}"
+        ),
+        Ok(sql) => panic!(
+            "mismatched column names across UNION arms must error cleanly \
+             instead of silently NULL-padding; rendered:\n{sql}"
+        ),
+    }
+}
+
+/// Arms with identical column names in the SAME order must still render
+/// successfully — the common, correct case.
+#[tokio::test]
+async fn union_matching_column_names_still_renders() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (u:User) RETURN u.name AS x UNION MATCH (p:Post) RETURN p.title AS x";
+    let result = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+    assert!(
+        result.is_ok(),
+        "matching column names in the same order must still render: {:?}",
+        result.err()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #512 / #513: non-aggregated Cypher UNION per-arm ORDER BY / SKIP / LIMIT.
+//
+// #487 fixed per-arm modifier binding + Databricks parenthesization for
+// AGGREGATED union arms only (routing them through render_cypher_union_arm),
+// deliberately leaving the non-aggregated path on the OLD render_union_
+// branch_sql, which hoists the FIRST arm's ORDER BY/SKIP/LIMIT onto the whole
+// union (#512) and emits a bare, unparenthesized per-arm ORDER BY/LIMIT
+// before `UNION ALL` on Databricks — a Spark parse error mid-chain, and (as
+// the last arm) a silent whole-union LIMIT (#513). Both are fixed by routing
+// EVERY Cypher union arm through render_cypher_union_arm, unifying the two
+// fixes instead of patching render_union_branch_sql a second time (see
+// src/sql_generator/emitters/clickhouse/to_sql_query.rs, `cypher_union_per_arm`).
+// ---------------------------------------------------------------------------
+
+/// The first arm's ORDER BY / SKIP / LIMIT must bind WITHIN that arm, not to
+/// the union as a whole (live-verified against social_benchmark: 2 sorted
+/// users (skip 2, limit 2) + all 5 posts = 7 rows, not 2).
+#[tokio::test]
+async fn union_first_arm_order_by_skip_limit_binds_to_arm_only() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (u:User) RETURN u.user_id AS id ORDER BY id SKIP 2 LIMIT 2 \
+                  UNION ALL MATCH (p:Post) RETURN p.post_id AS id";
+    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+
+    // The first arm's own ORDER BY/LIMIT/SKIP must appear INSIDE a subselect
+    // that wraps only that arm — never as a bare trailing modifier on the
+    // whole `... UNION ALL ...` chain (which would bind to the combined
+    // result instead of just the first arm).
+    assert!(
+        sql.contains("ORDER BY id ASC\nLIMIT 2, 2\nUNION ALL"),
+        "the first arm's ORDER BY/SKIP/LIMIT must be immediately followed by \
+         UNION ALL (i.e. bound inside the arm's own subselect), not trail the \
+         whole union:\n{sql}"
+    );
+    assert!(
+        !sql.trim_end().ends_with("LIMIT 2, 2"),
+        "the union as a whole must not end with the first arm's LIMIT/SKIP \
+         (that would mean it was hoisted to the combined result):\n{sql}"
+    );
+}
+
+/// Every Cypher UNION arm carrying its own ORDER BY / SKIP / LIMIT must be
+/// parenthesized on Databricks (bare per-arm ORDER BY/LIMIT is a Spark parse
+/// error mid-chain and silently binds to the whole union as the last arm),
+/// matching the treatment `cte_extraction.rs` already applies to
+/// pattern_union branches and #487 applies to aggregated Cypher union arms.
+#[tokio::test]
+async fn union_per_arm_modifiers_parenthesized_for_databricks() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (u:User) RETURN u.user_id AS id ORDER BY id SKIP 2 LIMIT 2 \
+                  UNION ALL MATCH (p:Post) RETURN p.post_id AS id";
+    let sql = render(&schema, cypher, SqlDialect::Databricks).await;
+
+    assert!(
+        sql.trim_start().starts_with('('),
+        "the modifier-carrying first arm must be parenthesized before UNION \
+         ALL on Databricks:\n{sql}"
+    );
+    assert!(
+        sql.contains(")\nUNION ALL"),
+        "the parenthesized arm must close immediately before UNION ALL:\n{sql}"
+    );
+
+    // ClickHouse must stay byte-unaffected by the Databricks-only wrap.
+    let ch_sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+    assert!(
+        !ch_sql.trim_start().starts_with('('),
+        "ClickHouse output must NOT be parenthesized (Databricks-only \
+         treatment):\n{ch_sql}"
+    );
+}
+
+/// A per-arm LIMIT on EACH arm of a non-aggregated union must apply
+/// independently to every arm, not just the first (#512's exact repro
+/// shape, doubled).
+#[tokio::test]
+async fn union_every_arm_limit_applies_independently() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (u:User) RETURN u.user_id AS id LIMIT 2 \
+                  UNION ALL MATCH (p:Post) RETURN p.post_id AS id LIMIT 3";
+    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+
+    // Both arms' LIMITs must survive in the rendered SQL — neither hoisted
+    // away nor collapsed into a single outer LIMIT.
+    let limit_count = sql.matches("LIMIT").count();
+    assert_eq!(
+        limit_count, 2,
+        "expected exactly 2 LIMIT clauses (one bound to each arm), got {limit_count}:\n{sql}"
+    );
+}
