@@ -254,7 +254,17 @@ impl CleanupViewScanFilters {
                             optional_aliases: graph_joins.optional_aliases.clone(),
                             anchor_table: graph_joins.anchor_table.clone(),
                             cte_references: graph_joins.cte_references.clone(),
-                            correlation_predicates: vec![],
+                            // #518: this was hardcoded to `vec![]`, silently
+                            // dropping GraphJoinInference's Phase-4
+                            // relationship-uniqueness guards (and any other
+                            // correlation predicates) for every query whose
+                            // GraphJoins.input got transformed by this pass —
+                            // e.g. a plain directed multi-hop pattern like
+                            // `(a)-[:FLIGHT]->(b)-[:FLIGHT]->(c)`, whose
+                            // uniqueness constraint was computed correctly
+                            // upstream but never survived to the WHERE
+                            // clause.
+                            correlation_predicates: graph_joins.correlation_predicates.clone(),
                         }),
                     )),
                     Transformed::No(_) => Transformed::No(logical_plan),

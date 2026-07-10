@@ -8,3 +8,4 @@ INNER JOIN test_integration.users AS b ON b.user_id = t0.followed_id
 INNER JOIN test_integration.follows AS t1 ON t1.follower_id = b.user_id
 INNER JOIN test_integration.users AS c ON c.user_id = t1.followed_id
 INNER JOIN test_integration.follows AS t2 ON t2.follower_id = c.user_id AND t2.followed_id = a.user_id
+WHERE (((t2.follower_id <> t1.follower_id OR t2.followed_id <> t1.followed_id) AND (t2.follower_id <> t0.follower_id OR t2.followed_id <> t0.followed_id)) AND (t1.follower_id <> t0.follower_id OR t1.followed_id <> t0.followed_id))

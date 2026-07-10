@@ -5268,6 +5268,181 @@ async fn union_every_arm_limit_applies_independently() {
     );
 }
 
+/// #517: a WITH clause inside one arm of a Cypher UNION must not leak its
+/// CTE substitution into a sibling arm that never had a WITH clause at all.
+/// Root cause was THREE independent render-phase functions
+/// (`replace_with_clause_with_cte_reference_v2`, `CteColumnResolver`'s
+/// `LogicalPlan::Union` handling, and `update_graph_joins_cte_refs`) that
+/// each recursed into every UNION branch unconditionally with the SAME
+/// global CTE-reference map/alias-matching logic, with no notion of which
+/// branch actually contained the WITH clause. Fixed all three to scope the
+/// CTE lookahead to each Cypher-UNION branch's own WITH-exported aliases.
+///
+/// The two arms here use DIFFERENT variable names (`u` vs `v`) — the common
+/// real-world shape (and the shape that's now fully correct end-to-end,
+/// live-verified against ClickHouse: 8 users x c=0 from the second arm, 8 x
+/// c=1 from the first, 16 rows total).
+#[tokio::test]
+async fn with_clause_in_union_arm_does_not_leak_into_sibling_arm_517() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH (u:User) WITH u, count(*) as c WHERE c > 0 RETURN u.user_id AS uid, c \
+         UNION MATCH (v:User) RETURN v.user_id AS uid, 0 as c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+
+    // The second arm must scan its own table directly — not join or
+    // self-alias the first arm's CTE.
+    assert!(
+        sql.contains("FROM social.users_bench AS v"),
+        "second arm must scan users_bench directly as 'v', not reference \
+         the first arm's WITH-clause CTE: {sql}"
+    );
+    assert!(
+        !sql.contains("with_c_u_cte_0 AS v") && !sql.contains("AS v ON 1"),
+        "second arm must not join or duplicate-alias the first arm's CTE: {sql}"
+    );
+    // The second arm's own property access must resolve locally (to its own
+    // scan alias 'v'), not to any CTE-encoded column name.
+    assert!(
+        sql.contains("v.user_id AS \"uid\""),
+        "second arm's uid must resolve to a plain v.user_id, not a \
+         CTE-encoded column: {sql}"
+    );
+}
+
+/// #517 (documented residual gap, NOT fully fixed): when BOTH arms reuse
+/// the EXACT SAME Cypher variable name (`u` in both, independent scopes),
+/// the FROM-clause fix above still applies correctly (no duplicate-alias
+/// self-join), but the SELECT list still exhibits a narrower residual
+/// leak — traced to `VariableScope`'s `cte_variables` map (built once,
+/// globally, for the whole rendered plan via
+/// `build_chained_with_match_cte_plan`'s `final_scope`, with no per-Union-
+/// branch scoping) still resolving the second arm's `u.user_id` against the
+/// first arm's CTE property mapping. This produces a LOUD ClickHouse
+/// "unknown identifier" error (ground rule 1 is not violated — no silently
+/// wrong rows), not the original "duplicate-alias CTE self-join". A full
+/// fix requires arm-scoped variable resolution threaded through
+/// `to_render_plan_with_ctx`, a materially larger change than the three
+/// contained fixes applied for the general case above. This test locks in
+/// the CURRENT (improved but incomplete) shape so a future fix's diff is
+/// visible, and guards against a regression back to the ORIGINAL
+/// duplicate-alias-self-join shape.
+#[tokio::test]
+async fn with_clause_in_union_arm_same_alias_reused_from_clause_fixed_select_list_open_517() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH (u:User) WITH u, count(*) as c WHERE c > 0 RETURN u.user_id, c \
+         UNION MATCH (u:User) RETURN u.user_id, 0 as c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+
+    // FIXED: the second arm's FROM must be a direct table scan, not a join
+    // to (or duplicate alias of) the first arm's CTE.
+    assert!(
+        sql.contains("FROM social.users_bench AS u"),
+        "second arm must scan users_bench directly (FROM-clause fix must \
+         hold even when both arms reuse the same alias name): {sql}"
+    );
+    assert!(
+        !sql.to_uppercase().contains("JOIN WITH_C_U_CTE"),
+        "second arm must never JOIN the first arm's CTE (the original \
+         'duplicate-alias CTE self-join' shape this issue reported): {sql}"
+    );
+}
+
+/// #518: a DIRECTED same-type multi-hop pattern (`(a)-[:FOLLOWS]->(b)
+/// -[:FOLLOWS]->(c)`) must get the same relationship-uniqueness guard
+/// (`r1 <> r2`) that #492 already gives the UNDIRECTED case — Neo4j forbids
+/// binding the same relationship twice in one MATCH, regardless of
+/// direction. Root cause: `GraphJoinInference` computed the guard correctly
+/// (Phase 4, `cross_branch::generate_relationship_uniqueness_constraints`)
+/// and attached it to `GraphJoins.correlation_predicates`, but the SHARED
+/// `GraphJoins::rebuild_or_clone` helper — used by most optimizer passes
+/// whenever a `GraphJoins`' input changes (projection push-down, filter
+/// push-down, view optimizer, cartesian join extraction, ...) —
+/// unconditionally reconstructed it with `correlation_predicates: vec![]`,
+/// silently dropping the guard for every query that touched any of those
+/// passes. Live-verified against ClickHouse (19 rows, matching raw-SQL
+/// ground truth) and via a synthetic self-loop (the guard correctly
+/// excludes a relationship compared against itself: 0 rows).
+#[tokio::test]
+async fn directed_same_type_multihop_gets_relationship_uniqueness_guard_518() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User) \
+         RETURN a.user_id, b.user_id, c.user_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+
+    assert!(
+        sql.to_uppercase().contains("WHERE"),
+        "directed same-type 2-hop must emit a WHERE clause with the \
+         relationship-uniqueness guard: {sql}"
+    );
+    assert!(
+        sql.contains("follower_id <> ")
+            && sql.contains("followed_id <> ")
+            && sql.contains(".follower_id")
+            && sql.contains(".followed_id"),
+        "expected an OR-of-column-inequality uniqueness guard comparing the \
+         two FOLLOWS hop aliases' follower_id/followed_id columns: {sql}"
+    );
+}
+
+/// #518 (correctness guards found via corpus_sweep + live verification
+/// while fixing the above): the uniqueness-constraint generator must NOT
+/// fire in two cases where it previously would have produced actively
+/// WRONG SQL once correlation_predicates started reaching the WHERE clause:
+///   1. Two edges of UNRELATED relationship types (can never be the same
+///      physical edge) — comparing their id columns is nonsensical and, for
+///      some schemas, silently drops legitimate rows.
+///   2. A relationship introduced by OPTIONAL MATCH — the guard must not
+///      land in a plain WHERE clause ANDed against a LEFT JOIN, which would
+///      turn "no optional match" (NULL) into "row excluded", breaking
+///      OPTIONAL MATCH semantics.
+#[tokio::test]
+async fn relationship_uniqueness_guard_skips_unrelated_types_and_optional_518() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // Case 1: unrelated relationship types (FOLLOWS vs AUTHORED) — no guard.
+    let sql = render(
+        &schema,
+        "MATCH (u:User)-[:FOLLOWS]->(f:User)-[:AUTHORED]->(p:Post) \
+         RETURN u.user_id, f.user_id, p.post_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        !sql.to_uppercase().contains("WHERE") || !sql.contains("<>"),
+        "unrelated relationship types (FOLLOWS, AUTHORED) must not get a \
+         nonsensical cross-type uniqueness guard: {sql}"
+    );
+
+    // Case 2: OPTIONAL MATCH on the second hop — no guard landing in a
+    // plain WHERE (would break OPTIONAL semantics via NULL comparisons).
+    let sql = render(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) \
+         OPTIONAL MATCH (b)-[:FOLLOWS]->(c:User) \
+         RETURN a.user_id, b.user_id, c.user_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        !sql.contains("<>"),
+        "a relationship introduced by OPTIONAL MATCH must not get a \
+         uniqueness guard in the outer WHERE clause (breaks OPTIONAL MATCH \
+         semantics for non-matching rows): {sql}"
+    );
+}
+
 /// Regression tests for the #496/#497/#498/#499/#501 VLP/fixed-path family.
 mod vlp_fixed_path_family_496_497_498_499_501 {
     use super::*;

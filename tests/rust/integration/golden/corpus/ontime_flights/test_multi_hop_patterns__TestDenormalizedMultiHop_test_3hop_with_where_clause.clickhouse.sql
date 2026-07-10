@@ -7,5 +7,5 @@ SELECT
 FROM default.flights AS f1
 INNER JOIN default.flights AS f2 ON f2.Origin = f1.Dest
 INNER JOIN default.flights AS f3 ON f3.Origin = f2.Dest
-WHERE (f1.airline = f2.airline AND f2.airline = f3.airline)
+WHERE ((((f1.airline = f2.airline AND f2.airline = f3.airline) AND (f3.flight_id <> f2.flight_id OR f3.flight_number <> f2.flight_number)) AND (f3.flight_id <> f1.flight_id OR f3.flight_number <> f1.flight_number)) AND (f2.flight_id <> f1.flight_id OR f2.flight_number <> f1.flight_number))
 LIMIT 5

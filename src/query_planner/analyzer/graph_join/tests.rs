@@ -1358,7 +1358,18 @@ fn test_skip_vlp_relationships_in_uniqueness() {
 
 #[test]
 fn test_uniqueness_constraints_with_different_relationship_types() {
-    // Mixed relationship types should still generate constraints
+    // #518 (corrected, was previously backwards): two edges of UNRELATED
+    // relationship types (FOLLOWS vs WORKS_AT — different tables/schemas
+    // entirely) can never physically be the same relationship, so no
+    // uniqueness constraint should be generated between them. Before the
+    // #518 fix, this function had no type-overlap check at all and would
+    // generate a nonsensical predicate comparing e.g.
+    // `FOLLOWS.id != WORKS_AT.id` — columns from unrelated tables with no
+    // shared meaning — which corpus_sweep + live ClickHouse verification
+    // showed could silently corrupt WHERE clauses for real multi-hop
+    // patterns spanning different relationship types (e.g. `(u)-[:MEMBER_OF]
+    // ->(g)-[:HAS_PERMISSION]->...`). This test previously asserted the
+    // OLD (incorrect) behavior; it now asserts the fix.
     let _analyzer = GraphJoinInference::new();
     let graph_schema = create_test_graph_schema();
 
@@ -1395,8 +1406,9 @@ fn test_uniqueness_constraints_with_different_relationship_types() {
 
     assert_eq!(
         constraints.len(),
-        1,
-        "Different relationship types should still generate constraints"
+        0,
+        "Unrelated relationship types (no shared type) must NOT generate a \
+         uniqueness constraint — they can never be the same physical edge"
     );
 }
 

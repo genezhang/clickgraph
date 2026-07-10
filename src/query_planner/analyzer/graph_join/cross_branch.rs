@@ -103,6 +103,52 @@ pub fn generate_relationship_uniqueness_constraints(
                 continue;
             }
 
+            // #518: `pattern_metadata.edges` can contain MULTIPLE entries for
+            // the SAME edge alias (e.g. a polymorphic edge expanded into one
+            // `PatternEdgeInfo` per (from_type, to_type) combination it could
+            // match) — these are the SAME physical relationship variable,
+            // not two independent hops, so comparing "edge1 != edge2" here
+            // degenerates into a column compared against itself
+            // (`t0.col <> t0.col`), which is always false and would zero out
+            // every result row. Discovered via corpus_sweep + live
+            // verification while fixing #518.
+            if edge1.alias == edge2.alias {
+                continue;
+            }
+
+            // #518: a relationship introduced by OPTIONAL MATCH renders as a
+            // LEFT JOIN; the uniqueness guard must not land in the outer
+            // (non-optional) WHERE clause in that case — `t1.col <> t0.col`
+            // evaluates to NULL (neither true nor false) whenever the LEFT
+            // JOIN found no match, which SQL's WHERE then treats as "exclude
+            // the row" — silently dropping rows the OPTIONAL MATCH was
+            // specifically meant to preserve. Properly supporting the
+            // uniqueness guard for an optional relationship requires folding
+            // it into that LEFT JOIN's ON clause instead, which is out of
+            // scope here — skip rather than emit a filter that breaks
+            // OPTIONAL MATCH semantics. Discovered via corpus_sweep + live
+            // verification while fixing #518.
+            if edge1.is_optional || edge2.is_optional {
+                continue;
+            }
+
+            // #518: the uniqueness constraint only makes sense when the two
+            // edges could physically be the SAME relationship, which
+            // requires sharing at least one relationship type — comparing
+            // id columns from two UNRELATED relationship types (different
+            // tables/schemas entirely, e.g. `ds_memberships.member_id` vs
+            // `ds_permissions.subject_id` in a `(u)-[:MEMBER_OF]->(g)
+            // -[:HAS_PERMISSION]->...`-style pattern) produces a nonsensical
+            // predicate that can silently drop legitimate rows — a ground-
+            // rule-1 violation discovered via corpus_sweep + live
+            // verification while fixing #518 (directed same-type multi-hop
+            // uniqueness). Neo4j's relationship-uniqueness rule never
+            // applies across genuinely different relationship types.
+            let shares_a_type = edge1.rel_types.iter().any(|t| edge2.rel_types.contains(t));
+            if !shares_a_type {
+                continue;
+            }
+
             // Get relationship schemas to determine edge ID columns
             let rel1_schema = match graph_schema.get_rel_schema(&edge1.rel_types[0]) {
                 Ok(schema) => schema,
