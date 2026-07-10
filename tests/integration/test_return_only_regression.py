@@ -97,8 +97,8 @@ class TestReturnOnlyRegression:
         assert result["results"][0]["num"] == 1
     
     def test_return_with_limit_skip(self, simple_graph):
-        """RETURN 1 AS num LIMIT 5 SKIP 0 - Combined modifiers"""
-        result = execute_cypher("RETURN 1 AS num LIMIT 5 SKIP 0", schema_name="social_integration")
+        """RETURN 1 AS num SKIP 0 LIMIT 5 - Combined modifiers"""
+        result = execute_cypher("RETURN 1 AS num SKIP 0 LIMIT 5", schema_name="social_integration")
         assert_query_success(result)
         assert len(result["results"]) == 1
         assert result["results"][0]["num"] == 1
