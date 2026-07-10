@@ -662,12 +662,30 @@ fn rewrite_single_predicate_for_cte(
                             return None;
                         };
 
-                        match fn_call.name.as_str() {
+                        match fn_call.name.to_lowercase().as_str() {
                             "id" => {
                                 let cte_col = format!("{}.{}_id", cte_alias, position);
                                 let rhs_sql = render_rhs_to_sql(rhs, true);
                                 let op_str = render_operator(&op_app.operator);
                                 return Some(format!("{} {} {}", cte_col, op_str, rhs_sql));
+                            }
+                            // #466 round 4.5: elementId in THIS codebase is the
+                            // composite string `Label:id-` (see
+                            // graph_catalog::element_id::generate_node_element_id
+                            // — trailing `-` is a Browser-compat sentinel). The
+                            // CTE exposes exactly its ingredients per row, so
+                            // rebuild it label-agnostically. Previously
+                            // elementId fell through every handler and the
+                            // conjunct was silently dropped.
+                            "elementid" => {
+                                let cte_expr = format!(
+                                    "concat({cte}.{pos}_type, ':', {cte}.{pos}_id, '-')",
+                                    cte = cte_alias,
+                                    pos = position
+                                );
+                                let rhs_sql = render_rhs_to_sql(rhs, true);
+                                let op_str = render_operator(&op_app.operator);
+                                return Some(format!("{} {} {}", cte_expr, op_str, rhs_sql));
                             }
                             "labels" => {
                                 let cte_col = format!("{}.{}_type", cte_alias, position);

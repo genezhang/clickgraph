@@ -2874,6 +2874,25 @@ async fn pattern_union_unresolvable_where_conjuncts_error_cleanly() {
 /// (FK: silent 0,0,0,0) or an invalid single-label column (STD: loud DB
 /// error). SelectBuilder now maps it to the CTE's start_id/end_id — real
 /// ids on both schemas.
+///
+/// Round 4.5 extends the same treatment to `elementId()`, which previously
+/// fell through EVERY handler on pattern_union shapes (silently unfiltered
+/// WHERE / invalid SQL in RETURN). elementId in this codebase is the
+/// composite `Label:id-` string (`generate_node_element_id`; trailing `-`
+/// is a Browser-compat sentinel), so the rewrites rebuild that format from
+/// the CTE's type + id columns: `concat(r.end_type, ':', r.end_id, '-')`.
+/// A bare-id literal like '5' therefore correctly matches NOTHING —
+/// `elementId(o) = 'Order:5-'` is the valid form.
+///
+/// KNOWN LIMITATIONS (review round-4 catalog; NOT fixed here):
+///   - GROUP BY / ORDER BY over `id(o)` still render the generic function
+///     mapping's `toInt64(0)` placeholder (pre-existing on main, both
+///     schemas) — only SELECT/WHERE positions get the label-agnostic
+///     start_id/end_id treatment.
+///   - `LogicalPlan::pattern_union_endpoint_role` does not walk
+///     Unwind/PageRank wrappers. Currently unreachable: a multi-clause
+///     UNWIND+MATCH over a fully-unlabeled pattern prunes to the
+///     `WHERE false` placeholder before reaching the walker.
 #[tokio::test]
 async fn pattern_union_id_function_is_label_agnostic() {
     let std_schema = load_schema(SchemaId::Standard.yaml_path());
@@ -2938,6 +2957,32 @@ async fn pattern_union_id_function_is_label_agnostic() {
         !sql.contains("pattern_union") && sql.contains("user_id"),
         "labeled-anchor id(a) must keep the single-label resolution on the \
          plain join path:\n{sql}"
+    );
+
+    // #466 round 4.5: elementId() gets the same label-agnostic treatment,
+    // rebuilt in the codebase's composite `Label:id-` format from the CTE's
+    // type + id columns (previously fell through every handler: silently
+    // unfiltered WHERE on FK, invalid SQL in RETURN).
+    let sql = render(
+        &fk,
+        "MATCH (n)-[r]-(o) WHERE elementId(o) = 'Order:5-' RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("concat(r.end_type, ':', r.end_id, '-') = 'Order:5-'"),
+        "elementId(o) must rebuild the composite Label:id- format \
+         label-agnostically in the outer WHERE:\n{sql}"
+    );
+    let sql = render(
+        &fk,
+        "MATCH (n)-[r]-(o) RETURN elementId(o) AS e LIMIT 3",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("concat(r.end_type, ':', r.end_id, '-') AS \"e\""),
+        "RETURN elementId(o) must project the composite Label:id- string:\n{sql}"
     );
 }
 

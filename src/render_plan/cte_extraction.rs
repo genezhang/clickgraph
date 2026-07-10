@@ -1254,7 +1254,8 @@ fn resolve_mapped_property(
 /// every node-alias/rel-alias reference against that branch's bindings:
 ///
 /// - `alias.prop` → the bound label's physical column (missing → NULL)
-/// - `id(alias)` / `elementId(alias)` → the branch's id expression
+/// - `id(alias)` → the branch's id expression; `elementId(alias)` → the
+///   composite `Label:id-` string rebuilt from the branch's label + id
 /// - `labels(alias)` / `label(alias)` → the bound label as a string literal
 /// - `rel_alias.prop` → the edge table's physical column (missing → NULL)
 ///
@@ -1302,8 +1303,16 @@ fn substitute_pattern_branch_refs(
                 if let RenderExpr::TableAlias(t) = &f.args[0] {
                     if let Some(binding) = node_bindings.iter().find(|b| b.alias == t.0) {
                         match f.name.to_lowercase().as_str() {
-                            "id" | "elementid" => {
-                                return Ok(RenderExpr::Raw(binding.id_expr.to_string()))
+                            "id" => return Ok(RenderExpr::Raw(binding.id_expr.to_string())),
+                            // elementId is the composite `Label:id-` string
+                            // (generate_node_element_id) — the branch's label
+                            // is static, its id expression per-row.
+                            "elementid" => {
+                                return Ok(RenderExpr::Raw(format!(
+                                    "concat('{}:', {}, '-')",
+                                    binding.label.replace('\'', "''"),
+                                    binding.id_expr
+                                )))
                             }
                             "labels" | "label" => {
                                 return Ok(RenderExpr::Raw(format!(

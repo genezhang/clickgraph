@@ -1118,17 +1118,34 @@ impl SelectBuilder for LogicalPlan {
                             });
                         }
 
-                        // Case 5: id() function - transform to ID column access
+                        // Case 5: id()/elementId() function - transform to ID column access
                         // The id() function needs special handling because:
                         // 1. We preserve ScalarFnCall("id") in LogicalPlan for metadata extraction
                         // 2. But for SQL we need the actual ID column value to compute encoded ID
+                        // elementId() is only handled here for pattern_union
+                        // endpoints (#466 round 4.5) — elsewhere it keeps its
+                        // pre-existing behavior (Bolt id_rewriter / result
+                        // transformer handle Browser traffic).
                         LogicalExpr::ScalarFnCall(fn_call)
-                            if fn_call.name.eq_ignore_ascii_case("id")
+                            if (fn_call.name.eq_ignore_ascii_case("id")
+                                || fn_call.name.eq_ignore_ascii_case("elementid"))
                                 && fn_call.args.len() == 1 =>
                         {
-                            if let LogicalExpr::TableAlias(ref alias) = fn_call.args[0] {
+                            let is_element_id = fn_call.name.eq_ignore_ascii_case("elementid");
+                            // The argument is normally a bare TableAlias; some
+                            // passes rewrite it to a wildcard PropertyAccess
+                            // (`o.*`) — accept both.
+                            let arg_alias = match &fn_call.args[0] {
+                                LogicalExpr::TableAlias(a) => Some(a.clone()),
+                                LogicalExpr::PropertyAccessExp(p) if p.column.raw() == "*" => {
+                                    Some(p.table_alias.clone())
+                                }
+                                _ => None,
+                            };
+                            if let Some(ref alias) = arg_alias {
                                 log::info!(
-                                    "🔍 SelectBuilder: id({}) - transforming to ID column access",
+                                    "🔍 SelectBuilder: {}({}) - transforming to ID column access",
+                                    fn_call.name,
                                     alias.0
                                 );
 
@@ -1140,26 +1157,56 @@ impl SelectBuilder for LogicalPlan {
                                 // label-agnostic start_id/end_id instead
                                 // (left_connection binds start, right binds end;
                                 // real ids, not the toInt64(0) placeholder the
-                                // generic function mapping would emit).
+                                // generic function mapping would emit). For
+                                // elementId(), rebuild the codebase's composite
+                                // `Label:id-` format (generate_node_element_id)
+                                // from the CTE's type + id columns.
                                 if let Some((rel_alias, is_left)) =
                                     self.pattern_union_endpoint_role(&alias.0)
                                 {
-                                    let id_col = if is_left { "start_id" } else { "end_id" };
+                                    let (id_col, type_col) = if is_left {
+                                        ("start_id", "start_type")
+                                    } else {
+                                        ("end_id", "end_type")
+                                    };
                                     log::debug!(
-                                        "🔍 SelectBuilder: id({}) -> {}.{} (pattern_union endpoint)",
+                                        "🔍 SelectBuilder: {}({}) -> {}.{} (pattern_union endpoint)",
+                                        fn_call.name,
                                         alias.0,
                                         rel_alias,
                                         id_col
                                     );
-                                    select_items.push(SelectItem {
-                                        expression: RenderExpr::PropertyAccessExp(PropertyAccess {
+                                    let expression = if is_element_id {
+                                        RenderExpr::Raw(format!(
+                                            "concat({rel_alias}.{type_col}, ':', {rel_alias}.{id_col}, '-')"
+                                        ))
+                                    } else {
+                                        RenderExpr::PropertyAccessExp(PropertyAccess {
                                             table_alias: RenderTableAlias(rel_alias),
                                             column: PropertyValue::Column(id_col.to_string()),
-                                        }),
+                                        })
+                                    };
+                                    select_items.push(SelectItem {
+                                        expression,
                                         col_alias: item
                                             .col_alias
                                             .as_ref()
                                             .map(|ca| ColumnAlias(ca.0.clone())),
+                                    });
+                                    continue;
+                                }
+
+                                // Non-endpoint elementId(): keep pre-existing
+                                // behavior (pass through unchanged; Bolt-layer
+                                // handling / plain-path semantics untouched).
+                                if is_element_id {
+                                    select_items.push(SelectItem {
+                                        expression: item.expression.clone().try_into()?,
+                                        col_alias: item
+                                            .col_alias
+                                            .as_ref()
+                                            .map(|ca| ca.clone().try_into())
+                                            .transpose()?,
                                     });
                                     continue;
                                 }
