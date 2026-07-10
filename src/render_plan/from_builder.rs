@@ -306,6 +306,10 @@ impl LogicalPlan {
         if let Some(combinations) = &graph_rel.pattern_combinations {
             if graph_rel.variable_length.is_none() {
                 let cte_name = format!("pattern_union_{}", graph_rel.alias);
+                // #466: tell the filter builder this CTE is genuinely in
+                // scope — only then may it skip node-property conjuncts that
+                // the CTE applies per-branch (never skip-without-apply).
+                crate::server::query_context::register_pattern_union_in_scope(&cte_name);
                 log::info!(
                     "🔀 PatternResolver 2.0: Using pattern UNION CTE '{}' as FROM ({} combinations)",
                     cte_name,
@@ -461,6 +465,8 @@ impl LogicalPlan {
             // If pattern_combinations exist, use the CTE instead of the relationship table
             if graph_rel.pattern_combinations.is_some() {
                 let cte_name = format!("pattern_union_{}", graph_rel.alias);
+                // #466: see the scope note on the pattern-combinations FROM above.
+                crate::server::query_context::register_pattern_union_in_scope(&cte_name);
                 log::info!(
                     "🔀 PatternResolver 2.0: Using UNION CTE '{}' as FROM for anonymous pattern",
                     cte_name
@@ -811,6 +817,8 @@ impl LogicalPlan {
             match &graph_rel.pattern_combinations {
                 Some(combinations) => {
                     let cte_name = format!("pattern_union_{}", graph_rel.alias);
+                    // #466: see the scope note on the pattern-combinations FROM above.
+                    crate::server::query_context::register_pattern_union_in_scope(&cte_name);
                     log::error!(
                         "🔀 PatternResolver 2.0: Using pattern UNION CTE '{}' as FROM ({} combinations)",
                         cte_name,

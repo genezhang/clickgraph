@@ -1265,6 +1265,35 @@ async fn render(schema: &GraphSchema, cypher: &str, dialect: SqlDialect) -> Stri
     .await
 }
 
+/// Like [`render`] but surfaces planner/render errors as `Err(message)`
+/// instead of panicking — for asserting clean-error behavior (#466).
+async fn try_render(
+    schema: &GraphSchema,
+    cypher: &str,
+    dialect: SqlDialect,
+) -> Result<String, String> {
+    let schema = schema.clone();
+    let cypher = cypher.to_string();
+    let ctx = QueryContext {
+        dialect,
+        ..QueryContext::default()
+    };
+    with_query_context(ctx, async move {
+        set_current_schema(Arc::new(schema.clone()));
+        let cleaned = strip_comments(&cypher);
+        let (_rest, statement) =
+            parse_cypher_statement(&cleaned).map_err(|e| format!("parse: {e:?}"))?;
+        let (logical_plan, plan_ctx) =
+            evaluate_read_statement(statement, &schema, None, None, None)
+                .map_err(|e| format!("plan: {e:?}"))?;
+        let render_plan =
+            logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx))
+                .map_err(|e| format!("render: {e:?}"))?;
+        Ok(render_plan.to_sql())
+    })
+    .await
+}
+
 /// Anonymize the two process-global counters whose values vary with test
 /// ordering/concurrency: `ALIAS_COUNTER` (anonymous rel aliases `t{n}`) and
 /// `CTE_COUNTER` (`cte{n}`). Each is remapped by first appearance, so goldens
@@ -2626,6 +2655,99 @@ async fn pattern_union_where_resolves_node_properties_per_branch() {
         "Post-bound branches must resolve o.name to NULL (filters the branch \
          out for IS NOT NULL):\n{sql}"
     );
+
+    // #466 round 3, blocking finding 1: a renamed property on the ANCHOR
+    // (left) alias arrives PRE-RESOLVED to its physical column name
+    // (`n.amount` arrives as `n.total_amount`, `n.name` as `n.full_name`)
+    // because upstream passes resolve the anchor against its registered
+    // table ctx. The per-branch resolver must accept the physical name too —
+    // without the fallback the conjunct silently became NULL in EVERY branch
+    // (FK `WHERE n.amount > 100` returned 0 instead of 4; live-verified 4
+    // after the fix). The conjunct must also NOT leak into the outer WHERE
+    // (`n.total_amount` is not a CTE column — double emission was invalid
+    // SQL).
+    let sql = render(
+        &fk,
+        "MATCH (n)-[r]-(o) WHERE n.amount > 100 RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("db_fk_edge.orders_fk.total_amount > 100"),
+        "forward branch (n=Order) must resolve the pre-resolved physical \
+         column total_amount:\n{sql}"
+    );
+    assert!(
+        sql.contains("NULL > 100"),
+        "reverse branch (n=Customer, no `amount`) must resolve to NULL:\n{sql}"
+    );
+    assert!(
+        !sql.contains("AS r\nWHERE") && !sql.contains("r\nWHERE n.total_amount"),
+        "the anchor-alias conjunct must not ALSO appear in the outer WHERE \
+         (double emission references a non-CTE column):\n{sql}"
+    );
+    // Standard variant of the same finding: `n.name` arrives as `full_name`.
+    let sql = render(
+        &std_schema,
+        "MATCH (n)-[r]-(o) WHERE n.name IS NOT NULL RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("full_name IS NOT NULL"),
+        "User-bound branches must resolve the pre-resolved full_name:\n{sql}"
+    );
+
+    // #466 round 3, blocking finding 2: the outer-WHERE skip must be coupled
+    // to the pattern_union CTE actually being referenced by FROM/JOIN. In
+    // this multi-MATCH cartesian shape the GraphRel carries
+    // pattern_combinations but the plan renders plain joins (the built CTE
+    // is dead-eliminated) — the o-conjunct must STAY in the outer WHERE
+    // (previously skipped-but-applied-nowhere: returned 8 instead of 3;
+    // live-verified 3 after the fix).
+    let sql = render(
+        &fk,
+        "MATCH (c:Customer) MATCH (n)-[r]-(o) WHERE c.name = 'Alice' AND \
+         o.name = 'Alice' RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        !sql.contains("pattern_union"),
+        "this multi-MATCH shape renders plain joins (pre-existing cartesian \
+         path), not the pattern_union CTE:\n{sql}"
+    );
+    assert!(
+        sql.contains("o.name = 'Alice'"),
+        "the o-conjunct must stay in the outer WHERE when no pattern_union \
+         CTE absorbs it (never skip-without-apply):\n{sql}"
+    );
+}
+
+/// #466 round 3 (ride-along): whole-entity conjuncts (`WHERE o = n`) and
+/// subquery conjuncts (`EXISTS { ... }`) on a pattern that renders through
+/// `pattern_union` cannot be resolved per branch and previously fell through
+/// every classifier — SILENTLY unfiltered (returned all 16 rows). They must
+/// be a clean UnsupportedFeature error instead.
+#[tokio::test]
+async fn pattern_union_unresolvable_where_conjuncts_error_cleanly() {
+    let fk = load_schema(SchemaId::FkEdge.yaml_path());
+    for cypher in [
+        "MATCH (n)-[r]-(o) WHERE o = n RETURN count(*) AS c",
+        "MATCH (n)-[r]-(o) WHERE EXISTS { MATCH (o)-[:PLACED_BY]->() } RETURN count(*) AS c",
+    ] {
+        let result = try_render(&fk, cypher, SqlDialect::ClickHouse).await;
+        match result {
+            Err(msg) => assert!(
+                msg.contains("UnsupportedFeature") || msg.contains("Unsupported feature"),
+                "[{cypher}] must fail with a clean UnsupportedFeature error, got: {msg}"
+            ),
+            Ok(sql) => panic!(
+                "[{cypher}] must error cleanly instead of silently dropping the \
+                 unresolvable conjunct; rendered:\n{sql}"
+            ),
+        }
+    }
 }
 
 /// P0.5 characterization: `MATCH (n) RETURN count(n)` over a heterogeneous

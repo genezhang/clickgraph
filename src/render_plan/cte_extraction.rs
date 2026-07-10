@@ -1062,6 +1062,71 @@ pub(crate) fn conjunct_references_node_property(
     }
 }
 
+/// #466 round 3 (ride-along finding): does this conjunct contain a reference
+/// that can NEVER be resolved per `pattern_union` branch — a bare
+/// whole-entity alias (`WHERE o = n`) or a subquery/pattern expression
+/// (`EXISTS { ... }`, `size((o)-->())`, `x IN (subquery)`)? These previously
+/// fell through every classifier (which only fired on PropertyAccessExp) and
+/// were SILENTLY DROPPED. They must be routed to a clean UnsupportedFeature
+/// error instead (ground rule #1; precedent 99ae1473).
+///
+/// A bare alias that is the sole argument of `id()`/`labels()`/
+/// `elementId()`/`label()` is NOT flagged — those resolve cleanly (outer
+/// rewrite or per-branch substitution). Subquery/pattern expressions are
+/// flagged unconditionally in this context: their subplans reference pattern
+/// variables in ways the per-branch substitution cannot rewrite, and a
+/// GraphRel's `where_predicate` only carries conjuncts scoped to this
+/// pattern.
+pub(crate) fn conjunct_has_unresolvable_entity_ref(
+    expr: &crate::query_planner::logical_expr::LogicalExpr,
+    node_aliases: &[&str],
+) -> bool {
+    use crate::query_planner::logical_expr::LogicalExpr as LE;
+    match expr {
+        LE::TableAlias(t) => node_aliases.contains(&t.0.as_str()),
+        LE::ExistsSubquery(_) | LE::InSubquery(_) | LE::PatternCount(_) | LE::PathPattern(_) => {
+            true
+        }
+        LE::OperatorApplicationExp(op) | LE::Operator(op) => op
+            .operands
+            .iter()
+            .any(|o| conjunct_has_unresolvable_entity_ref(o, node_aliases)),
+        LE::ScalarFnCall(f) => {
+            // id(n)/labels(n) etc. take a bare alias argument legitimately.
+            let is_entity_fn = matches!(
+                f.name.to_lowercase().as_str(),
+                "id" | "elementid" | "labels" | "label"
+            );
+            if is_entity_fn && f.args.len() == 1 && matches!(&f.args[0], LE::TableAlias(_)) {
+                return false;
+            }
+            f.args
+                .iter()
+                .any(|a| conjunct_has_unresolvable_entity_ref(a, node_aliases))
+        }
+        LE::AggregateFnCall(f) => f
+            .args
+            .iter()
+            .any(|a| conjunct_has_unresolvable_entity_ref(a, node_aliases)),
+        LE::List(items) => items
+            .iter()
+            .any(|i| conjunct_has_unresolvable_entity_ref(i, node_aliases)),
+        LE::Case(c) => {
+            c.expr
+                .as_deref()
+                .is_some_and(|e| conjunct_has_unresolvable_entity_ref(e, node_aliases))
+                || c.when_then.iter().any(|(w, t)| {
+                    conjunct_has_unresolvable_entity_ref(w, node_aliases)
+                        || conjunct_has_unresolvable_entity_ref(t, node_aliases)
+                })
+                || c.else_expr
+                    .as_deref()
+                    .is_some_and(|e| conjunct_has_unresolvable_entity_ref(e, node_aliases))
+        }
+        _ => false,
+    }
+}
+
 /// #466: What one endpoint alias of an undirected/multi-type `pattern_union`
 /// branch is bound to, for per-branch WHERE resolution. Bindings differ per
 /// combination and — for undirected patterns — per traversal orientation
@@ -1094,13 +1159,52 @@ fn resolve_branch_property(binding: &PatternBranchBinding, prop: &str) -> Option
             .denorm_props
             .and_then(|m| m.get(prop))
             .or_else(|| binding.denorm_props_alt.and_then(|m| m.get(prop)))
+            // #466 round 3: the property may arrive PRE-RESOLVED to the
+            // physical column (upstream passes resolve the anchor alias
+            // against its registered table ctx before the per-branch
+            // substitution runs). Accept a physical column of this map too.
+            .or_else(|| {
+                binding
+                    .denorm_props
+                    .and_then(|m| m.values().find(|c| c.as_str() == prop))
+            })
+            .or_else(|| {
+                binding
+                    .denorm_props_alt
+                    .and_then(|m| m.values().find(|c| c.as_str() == prop))
+            })
             .map(|col| format!("{}.{}", binding.table, quote_identifier(col)))
     } else {
-        binding.property_mappings.get(prop).map(|pv| match pv {
-            PropertyValue::Column(c) => format!("{}.{}", binding.table, quote_identifier(c)),
-            PropertyValue::Expression(e) => format!("{}.{}", binding.table, e),
-        })
+        resolve_mapped_property(binding.property_mappings, binding.table, prop)
     }
+}
+
+/// Resolve a property reference against a `property_mappings` map for a given
+/// table reference. Looks up by CYPHER name first; falls back to matching the
+/// PHYSICAL column value — upstream passes may have already resolved the
+/// property to its physical column for an alias with a registered table ctx
+/// (e.g. the anchor alias of a rerouted undirected pattern: `n.amount`
+/// arrives as `total_amount`, `n.name` as `full_name`). Without the fallback
+/// such renamed properties silently became NULL in EVERY branch (#466 round-3
+/// blocking finding 1). `None` = the bound label genuinely has no such
+/// property (NULL per Cypher).
+fn resolve_mapped_property(
+    property_mappings: &std::collections::HashMap<String, PropertyValue>,
+    table: &str,
+    prop: &str,
+) -> Option<String> {
+    property_mappings
+        .get(prop)
+        .or_else(|| {
+            property_mappings.values().find(|pv| match pv {
+                PropertyValue::Column(c) => c == prop,
+                PropertyValue::Expression(_) => false,
+            })
+        })
+        .map(|pv| match pv {
+            PropertyValue::Column(c) => format!("{}.{}", table, quote_identifier(c)),
+            PropertyValue::Expression(e) => format!("{}.{}", table, e),
+        })
 }
 
 /// #466: Rewrite a WHERE conjunct for ONE `pattern_union` branch, resolving
@@ -1135,13 +1239,9 @@ fn substitute_pattern_branch_refs(
                     None => RenderExpr::Literal(RLit::Null),
                 })
             } else if alias == rel_alias {
-                let resolved = rel_props.get(prop).map(|pv| match pv {
-                    PropertyValue::Column(c) => {
-                        format!("{rel_table}.{}", quote_identifier(c))
-                    }
-                    PropertyValue::Expression(e) => format!("{rel_table}.{e}"),
-                });
-                Ok(match resolved {
+                // Same cypher-name-first / physical-column-fallback rule as
+                // node properties (the rel alias can also arrive pre-resolved).
+                Ok(match resolve_mapped_property(rel_props, rel_table, prop) {
                     Some(sql) => RenderExpr::Raw(sql),
                     None => RenderExpr::Literal(RLit::Null),
                 })
@@ -4242,30 +4342,40 @@ pub fn extract_ctes_with_context(
                 // missing on a branch's bound label resolves to NULL — the
                 // branch then contributes nothing for comparisons (Cypher:
                 // missing property = NULL) while `IS NULL` stays true.
+                let pattern_node_aliases = [
+                    graph_rel.left_connection.as_str(),
+                    graph_rel.right_connection.as_str(),
+                ];
                 let branch_local_conjuncts: Vec<crate::query_planner::logical_expr::LogicalExpr> =
-                    graph_rel
-                        .where_predicate
-                        .as_ref()
-                        .map(|pred| {
+                    match graph_rel.where_predicate.as_ref() {
+                        Some(pred) => {
                             let mut parts = Vec::new();
                             crate::render_plan::filter_builder::split_and_predicates(
                                 pred, &mut parts,
                             );
+                            // #466 round 3 (ride-along): whole-entity refs
+                            // (`WHERE o = n`) and subquery/pattern conjuncts
+                            // (`EXISTS {...}`) cannot be resolved per branch —
+                            // error loudly instead of silently dropping them.
+                            if let Some(bad) = parts.iter().find(|p| {
+                                conjunct_has_unresolvable_entity_ref(p, &pattern_node_aliases)
+                            }) {
+                                return Err(RenderBuildError::UnsupportedFeature(format!(
+                                    "WHERE predicate on a multi-type/undirected pattern \
+                                     contains a whole-entity or subquery reference that \
+                                     cannot be resolved per UNION branch: {bad:?}"
+                                )));
+                            }
                             parts
                                 .into_iter()
                                 .filter(|p| {
-                                    conjunct_references_node_property(
-                                        p,
-                                        &[
-                                            graph_rel.left_connection.as_str(),
-                                            graph_rel.right_connection.as_str(),
-                                        ],
-                                    )
+                                    conjunct_references_node_property(p, &pattern_node_aliases)
                                 })
                                 .cloned()
                                 .collect()
-                        })
-                        .unwrap_or_default();
+                        }
+                        None => Vec::new(),
+                    };
 
                 // Generate SELECT(s) for each combination: full pattern JOIN
                 // Each branch: (from_node_table JOIN rel_table JOIN to_node_table)
