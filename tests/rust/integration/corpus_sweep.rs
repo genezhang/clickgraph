@@ -36,16 +36,22 @@
 //! UPDATE_GOLDEN=1 cargo test -p clickgraph --test integration corpus_sweep -- --nocapture
 //! ```
 //!
-//! NONDETERMINISM: 15 corpus entries hit a real, pre-existing rendering bug
-//! (root-caused, not fixed — this is a test-only slice): `expand_cte_entity`
-//! (`src/render_plan/select_builder.rs:1590`) sources a bare node/relationship
-//! variable's properties from an unsorted `HashMap`, so its column order
-//! depends on Rust's per-process-randomized `HashMap` seed — the same
-//! `#464`-class issue already documented in `sql_golden_tests.rs`. Those 15
-//! are listed in `tests/corpus/nondeterministic.txt` (`schema/name<TAB>reason`,
-//! which also has the full root-cause writeup) and are still RENDERED here
-//! (so a panic regression would still be caught) but excluded from the
-//! byte-lock comparison/regeneration.
+//! NONDETERMINISM: `tests/corpus/nondeterministic.txt` lists entries excluded
+//! from the byte-lock comparison because their render is not byte-stable.
+//! The 19 historical HashMap-order entries (15 column-order flaps for #480,
+//! 4 coupled-edge middle-node WRONG-COLUMN flaps for #481) were fixed by
+//! sorting every such iteration on the cypher property key and by
+//! owning-edge-first role resolution in `PlanCtx::get_node_strategy`; 14 of
+//! them are now byte-locked. The 5 that remain listed are excluded for a
+//! DIFFERENT, harness-level reason: their CTE name embeds the process-global
+//! anonymous-alias counter (`pattern_union_t<n>`), which `normalize()`'s
+//! `\bt\d+\b` regex cannot remap, so the bytes shift with test order inside
+//! the shared cargo-test process (fully deterministic per fresh process).
+//! See the file's header for the full history and the triage rule for any
+//! new flap (a property/column-ORDER or endpoint-binding diff is a
+//! #480/#481 regression, not an "add to the list" event). Any listed entry
+//! is still RENDERED here (so a panic regression would still be caught) but
+//! excluded from the byte-lock comparison/regeneration.
 
 use std::collections::HashSet;
 use std::sync::Arc;
