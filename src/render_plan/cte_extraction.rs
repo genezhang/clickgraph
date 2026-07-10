@@ -158,7 +158,8 @@ fn recreate_pattern_schema_context(
         schema,
         &graph_rel.alias, // rel_alias
         rel_types,
-        None, // prev_edge_info - not needed for CTE generation
+        None, // prev_left_edge - not needed for CTE generation
+        None, // prev_right_edge - not needed for CTE generation
     )
     .map_err(|e| {
         RenderBuildError::MissingTableInfo(format!("PatternSchemaContext analysis failed: {}", e))

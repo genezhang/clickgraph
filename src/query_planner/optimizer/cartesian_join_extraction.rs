@@ -17,6 +17,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::query_planner::{
+    analyzer::graph_join::helpers::remap_denormalized_aliases_in_expr,
     logical_expr::LogicalExpr,
     logical_plan::{CartesianProduct, Filter, LogicalPlan},
     optimizer::optimizer_pass::{OptimizerPass, OptimizerResult},
@@ -80,13 +81,17 @@ impl OptimizerPass for CartesianJoinExtraction {
                                 &right_aliases,
                             );
 
-                            // Create new CartesianProduct with join_condition
+                            // Create new CartesianProduct with join_condition.
+                            // Denormalized (virtual) node aliases in the condition are
+                            // remapped to the edge aliases that embed them — the node
+                            // alias itself is never bound in FROM/JOIN (issue #482).
                             let new_cp = CartesianProduct {
                                 left: cp.left.clone(),
                                 right: cp.right.clone(),
                                 is_optional: cp.is_optional,
                                 join_condition: join_conditions
-                                    .or_else(|| cp.join_condition.clone()),
+                                    .or_else(|| cp.join_condition.clone())
+                                    .map(|jc| remap_denormalized_aliases_in_expr(jc, plan_ctx)),
                             };
 
                             // Create new WithClause with updated CartesianProduct
@@ -186,12 +191,17 @@ impl OptimizerPass for CartesianJoinExtraction {
                             join_conditions.as_ref().map(|_| 1).unwrap_or(0),
                             remaining_filters.as_ref().map(|_| 1).unwrap_or(0));
 
-                        // Create new CartesianProduct with join_condition
+                        // Create new CartesianProduct with join_condition.
+                        // Denormalized (virtual) node aliases in the condition are
+                        // remapped to the edge aliases that embed them — the node
+                        // alias itself is never bound in FROM/JOIN (issue #482).
                         let new_cp = CartesianProduct {
                             left: cp.left.clone(),
                             right: cp.right.clone(),
                             is_optional: cp.is_optional,
-                            join_condition: join_conditions.or_else(|| cp.join_condition.clone()),
+                            join_condition: join_conditions
+                                .or_else(|| cp.join_condition.clone())
+                                .map(|jc| remap_denormalized_aliases_in_expr(jc, plan_ctx)),
                         };
 
                         let new_cp_plan = Arc::new(LogicalPlan::CartesianProduct(new_cp));

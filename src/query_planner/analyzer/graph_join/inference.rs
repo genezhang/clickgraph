@@ -1386,12 +1386,24 @@ impl GraphJoinInference {
                 collected_graph_joins.extend(left_joins.clone());
                 collected_graph_joins.extend(right_joins.clone());
 
+                // Remap denormalized (virtual) node aliases in the join_condition to
+                // the edge aliases that embed them (e.g. `srcip1.ip = srcip2.ip` →
+                // `t1."id.orig_h" = t2."id.orig_h"`). Both sides have been processed
+                // above, so their node→edge registrations are in plan_ctx. Without
+                // this, the rendered WHERE references aliases that are never bound
+                // in FROM/JOIN and the query fails at execution (issue #482).
+                // Standard-schema aliases have no registration and pass through.
+                let remapped_join_condition = cp
+                    .join_condition
+                    .as_ref()
+                    .map(|jc| helpers::remap_denormalized_aliases_in_expr(jc.clone(), plan_ctx));
+
                 // Extract correlation predicate for WITH...MATCH cross-table patterns
                 // This will be used by the renderer to generate proper JOIN conditions
                 // CRITICAL: Check if the join_condition contains NOT PathPattern
                 // If so, it MUST go in WHERE clause, not JOIN ON (ClickHouse limitation)
                 // We'll add it to correlation_predicates but the renderer will separate it
-                if let Some(join_cond) = &cp.join_condition {
+                if let Some(join_cond) = &remapped_join_condition {
                     log::info!(
                         "📦 CartesianProduct: Extracting predicate: NOT PathPattern={}",
                         join_cond.contains_not_path_pattern()
@@ -1592,8 +1604,12 @@ impl GraphJoinInference {
                     collected_graph_joins.len()
                 );
 
+                // The remapped join_condition must be kept in the rebuilt plan: the
+                // render stage emits it as a WHERE filter (extract_filters), so a
+                // stale unmapped copy would resurface the unbound aliases.
+                let join_condition_changed = remapped_join_condition != cp.join_condition;
                 match (&left_tf, &right_tf) {
-                    (Transformed::No(_), Transformed::No(_)) => {
+                    (Transformed::No(_), Transformed::No(_)) if !join_condition_changed => {
                         Transformed::No(logical_plan.clone())
                     }
                     _ => Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(
@@ -1601,7 +1617,7 @@ impl GraphJoinInference {
                             left: left_tf.get_plan().clone(),
                             right: right_tf.get_plan().clone(),
                             is_optional: cp.is_optional,
-                            join_condition: cp.join_condition.clone(),
+                            join_condition: remapped_join_condition,
                         },
                     ))),
                 }
@@ -2350,7 +2366,8 @@ impl GraphJoinInference {
     /// * `graph_rel` - The relationship pattern from the logical plan
     /// * `plan_ctx` - Planning context with table contexts
     /// * `graph_schema` - The graph schema for schema lookups
-    /// * `prev_edge_info` - Info about previous edge for multi-hop patterns
+    /// * `prev_left_edge` - Previous edge embedding the left connection node
+    /// * `prev_right_edge` - Previous edge embedding the right connection node
     ///
     /// # Returns
     /// * `Some(PatternSchemaContext)` - If schemas can be resolved
@@ -2361,7 +2378,8 @@ impl GraphJoinInference {
         graph_rel: &GraphRel,
         plan_ctx: &PlanCtx,
         graph_schema: &GraphSchema,
-        prev_edge_info: Option<(&str, &str, bool)>,
+        prev_left_edge: Option<(&str, &str, bool)>,
+        prev_right_edge: Option<(&str, &str, bool)>,
     ) -> Option<PatternSchemaContext> {
         // 1. Get node labels from plan_ctx (or infer from relationship schema)
         let left_alias = &graph_rel.left_connection;
@@ -2461,7 +2479,8 @@ impl GraphJoinInference {
             graph_schema,
             &graph_rel.alias,
             rel_types,
-            prev_edge_info,
+            prev_left_edge,
+            prev_right_edge,
         )
         .ok()?; // Convert Result to Option - if error, return None
 
@@ -2478,7 +2497,9 @@ impl GraphJoinInference {
         plan_ctx: &PlanCtx,
         graph_schema: &GraphSchema,
     ) {
-        if let Some(_ctx) = self.compute_pattern_context(graph_rel, plan_ctx, graph_schema, None) {
+        if let Some(_ctx) =
+            self.compute_pattern_context(graph_rel, plan_ctx, graph_schema, None, None)
+        {
             crate::debug_print!("    📊 PatternSchemaContext for {}:", graph_rel.alias);
             crate::debug_print!(
                 "       Left node:  {}",
@@ -3005,26 +3026,42 @@ impl GraphJoinInference {
         // Phase 4: Use PatternSchemaContext for exhaustive pattern matching
         // ============================================================
 
-        // Get previous edge info for multi-hop detection
-        // This is critical for EdgeToEdge and CoupledSameRow strategies
-        // Store in locals to avoid lifetime issues with borrowed references
-        let prev_edge_data: Option<(String, String, bool)> = plan_ctx
-            .get_denormalized_alias_info(&left_alias)
-            .filter(|(prev_alias, _, _, _)| prev_alias != &rel_alias)
-            .map(|(prev_alias, is_from, _, prev_type)| {
-                crate::debug_print!("    📍 MULTI-HOP detected: left '{}' was on prev edge '{}' (type={}, is_from={})",
-                    left_alias, prev_alias, prev_type, is_from);
-                (prev_alias.clone(), prev_type.clone(), is_from)
-            });
+        // Get previous edge info for multi-hop / shared-node detection.
+        // This is critical for EdgeToEdge and CoupledSameRow strategies.
+        // BOTH connections are checked: a node alias shared with an earlier
+        // denormalized edge — whichever side of this pattern it sits on — must
+        // correlate the two edge tables (issue #482).
+        // Store in locals to avoid lifetime issues with borrowed references.
+        let prev_edge_for = |connection_alias: &str| -> Option<(String, String, bool)> {
+            plan_ctx
+                .get_denormalized_alias_info(connection_alias)
+                .filter(|(prev_alias, _, _, _)| prev_alias != &rel_alias)
+                .map(|(prev_alias, is_from, _, prev_type)| {
+                    crate::debug_print!("    📍 MULTI-HOP detected: '{}' was on prev edge '{}' (type={}, is_from={})",
+                        connection_alias, prev_alias, prev_type, is_from);
+                    (prev_alias.clone(), prev_type.clone(), is_from)
+                })
+        };
+        let prev_left_data = prev_edge_for(&left_alias);
+        let prev_right_data = prev_edge_for(&right_alias);
 
         // Convert owned strings to borrowed references for the API
-        let prev_edge_info: Option<(&str, &str, bool)> = prev_edge_data
-            .as_ref()
-            .map(|(alias, rel_type, is_from)| (alias.as_str(), rel_type.as_str(), *is_from));
+        fn as_borrowed(data: &Option<(String, String, bool)>) -> Option<(&str, &str, bool)> {
+            data.as_ref()
+                .map(|(alias, rel_type, is_from)| (alias.as_str(), rel_type.as_str(), *is_from))
+        }
+        let prev_left_edge = as_borrowed(&prev_left_data);
+        let prev_right_edge = as_borrowed(&prev_right_data);
 
         // Compute PatternSchemaContext for this pattern
         let mut ctx = self
-            .compute_pattern_context(graph_rel, plan_ctx, graph_schema, prev_edge_info)
+            .compute_pattern_context(
+                graph_rel,
+                plan_ctx,
+                graph_schema,
+                prev_left_edge,
+                prev_right_edge,
+            )
             .ok_or_else(|| {
                 AnalyzerError::SchemaNotFound(format!(
                     "Pattern context for: left={}, rel={}, right={}",

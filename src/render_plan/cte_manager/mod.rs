@@ -592,9 +592,7 @@ pub struct MixedAccessCteStrategy {
 pub struct EdgeToEdgeCteStrategy {
     pattern_ctx: PatternSchemaContext,
     table: String,
-    _prev_edge_alias: String,
-    _prev_edge_col: String,
-    _curr_edge_col: String,
+    _links: Vec<crate::graph_catalog::pattern_schema::EdgeToEdgeLink>,
     from_col: String,
     to_col: String,
 }
@@ -2232,11 +2230,7 @@ impl EdgeToEdgeCteStrategy {
     pub fn new(pattern_ctx: &PatternSchemaContext) -> Result<Self, CteError> {
         // Validate that this is an edge-to-edge schema
         match &pattern_ctx.join_strategy {
-            JoinStrategy::EdgeToEdge {
-                prev_edge_alias,
-                prev_edge_col,
-                curr_edge_col,
-            } => {
+            JoinStrategy::EdgeToEdge { links } => {
                 // For edge-to-edge, both nodes should be embedded in the edge table
                 let (table, from_col, to_col) = match &pattern_ctx.edge {
                     EdgeAccessStrategy::SeparateTable {
@@ -2255,9 +2249,7 @@ impl EdgeToEdgeCteStrategy {
                 Ok(Self {
                     pattern_ctx: pattern_ctx.clone(),
                     table,
-                    _prev_edge_alias: prev_edge_alias.clone(),
-                    _prev_edge_col: prev_edge_col.clone(),
-                    _curr_edge_col: curr_edge_col.clone(),
+                    _links: links.clone(),
                     from_col,
                     to_col,
                 })
@@ -3616,9 +3608,11 @@ mod tests {
             right_node_alias: "f2".to_string(),
             rel_alias: "r".to_string(),
             join_strategy: JoinStrategy::EdgeToEdge {
-                prev_edge_alias: "f1".to_string(),
-                prev_edge_col: "Dest".to_string(),
-                curr_edge_col: "Origin".to_string(),
+                links: vec![crate::graph_catalog::pattern_schema::EdgeToEdgeLink {
+                    prev_edge_alias: "f1".to_string(),
+                    prev_edge_col: "Dest".to_string(),
+                    curr_edge_col: "Origin".to_string(),
+                }],
             },
             left_node: NodeAccessStrategy::EmbeddedInEdge {
                 edge_alias: "r".to_string(),

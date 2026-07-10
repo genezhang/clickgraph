@@ -8,6 +8,6 @@ SELECT DISTINCT
       domain_source_ip.domain AS "domain", 
       conn."id.resp_h" AS "dest_ip"
 FROM zeek.conn_log AS conn
-INNER JOIN with_domain_source_ip_cte_1 AS domain_source_ip ON src2."id.orig_h" = domain_source_ip.source_ip
-WHERE src2."id.orig_h" = domain_source_ip.source_ip
+INNER JOIN with_domain_source_ip_cte_1 AS domain_source_ip ON conn."id.orig_h" = domain_source_ip.source_ip
+WHERE conn."id.orig_h" = domain_source_ip.source_ip
 ORDER BY domain_source_ip.source_ip ASC, domain_source_ip.domain ASC
