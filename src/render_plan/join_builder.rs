@@ -1918,6 +1918,40 @@ impl JoinBuilder for LogicalPlan {
                     // so the relationship legitimately needs its own JOIN
                     // (dedup against `GraphJoins.joins`'s already-correct entry
                     // for the SAME alias happens later, in the `GraphJoins` arm).
+                    //
+                    // AXIS-DISPATCH NOTE (adversarial review, non-blocking):
+                    // this compares physical table NAMES directly
+                    // (`extract_table_name`/`extract_parameterized_table_ref`),
+                    // which CLAUDE.md's axis-dispatch rule calls out by name as
+                    // the kind of raw check that should route through
+                    // `PatternSchemaContext`/`EdgeAccessStrategy` instead.
+                    // Checked: `EdgeAccessStrategy::FkEdge { node_table,
+                    // fk_column }` (`pattern_schema.rs`) is the structured type
+                    // that models exactly this "edge is a FK column on a node
+                    // table" pattern — but `PatternSchemaContext::build_edge_strategy`
+                    // (the only production constructor of `EdgeAccessStrategy`)
+                    // never actually produces the `FkEdge` variant; it only ever
+                    // returns `Polymorphic` or `SeparateTable`. The sole place
+                    // `FkEdge` is constructed anywhere in this codebase is a
+                    // hand-built struct literal in a `cte_manager` unit test.
+                    // So `EdgeAccessStrategy::FkEdge` is a declared-but-
+                    // unimplemented catalog variant today: routing through it
+                    // would require FIRST teaching `build_edge_strategy` /
+                    // `determine_join_strategy` to detect and construct it in
+                    // production (a foundational catalog change touching every
+                    // caller of `PatternSchemaContext::analyze`, not a small
+                    // extension of this fix) before this call site could even
+                    // consume it. Deliberately left as a direct table-name
+                    // comparison — same idiom already used pervasively
+                    // throughout this file (`extract_table_name`,
+                    // `extract_end_node_table_name`, `extract_parameterized_table_ref`
+                    // are called 20+ times elsewhere in `join_builder.rs` for
+                    // unrelated dedup/lookup purposes) — with this note as the
+                    // fast-follow pointer: implement `FkEdge` construction in
+                    // `build_edge_strategy` first, then this (and the two
+                    // symmetric checks below / the `anchor_is_right &&
+                    // right_is_nested` branch further down) can match on
+                    // `EdgeAccessStrategy::FkEdge { node_table, .. }` instead.
                     let inner_rel_table_for_redundancy_check =
                         extract_parameterized_table_ref(&inner_rel.center);
 
@@ -3007,6 +3041,14 @@ impl JoinBuilder for LogicalPlan {
                     // join" bug. Non-FK-edge schemas never hit this (their edge
                     // and node tables differ), so the reversed-anchor logic below
                     // still fires normally for genuine chains.
+                    //
+                    // AXIS-DISPATCH NOTE: same direct table-name comparison as
+                    // the `shared_is_inner_right`/`shared_is_inner_left`
+                    // branches above — see the detailed justification on
+                    // `inner_rel_table_for_redundancy_check` there for why
+                    // routing through `EdgeAccessStrategy::FkEdge` isn't
+                    // currently possible (that variant is declared but never
+                    // constructed in production) and the fast-follow path.
                     if rel_table == start_table {
                         log::debug!(
                             "🔍 #478: skipping phantom reversed-anchor edge join for '{}' — its \

@@ -1,0 +1,44 @@
+# Minimal schema for #477 adversarial-review regression tests: a genuine
+# separate-edge OPTIONAL MATCH pattern where the optional node has an
+# Array-typed property, plus a CTE-entity IN-subquery scenario.
+#
+# Tables live in the `default` ClickHouse database (dev container):
+#   default.probe_owner (owner_id UInt32, owner_name String)   -- Owner node
+#   default.probe_owns  (owner_id UInt32, item_id UInt32)      -- OWNS edge (separate table)
+#   default.probe_arr   (id UInt32, tags Array(String))        -- Item node, `tags` is Array(String)
+#
+# Fixture data: Alice(1) owns Item 1 (tags=[a,b]); Bob(2) owns Item 2
+# (tags=[c,d]); Carol(3) owns nothing (NULL-extended under OPTIONAL MATCH).
+# This exercises the SAME `apply_optional_node_pre_filters` (join_builder.rs)
+# / `fold_optional_edge_node_join_with_predicate` (plan_optimizer.rs) pre_filter
+# machinery that the #474/#479 fixes route predicates through, with the
+# array-membership `IN` special case as the predicate.
+
+name: array_property_probe
+version: "1.0"
+
+graph_schema:
+  nodes:
+    - label: Owner
+      database: default
+      table: probe_owner
+      node_id: owner_id
+      property_mappings:
+        name: owner_name
+
+    - label: Item
+      database: default
+      table: probe_arr
+      node_id: id
+      property_mappings:
+        tags: tags
+
+  edges:
+    - type: OWNS
+      database: default
+      table: probe_owns
+      from_id: owner_id
+      to_id: item_id
+      from_node: Owner
+      to_node: Item
+      property_mappings: {}

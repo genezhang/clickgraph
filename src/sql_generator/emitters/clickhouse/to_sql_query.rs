@@ -6533,18 +6533,209 @@ impl RenderExpr {
     /// e.g., `LEFT JOIN (SELECT * FROM table WHERE is_active = true) AS b`
     /// The filter should be `is_active = true`, not `b.is_active = true`.
     pub fn to_sql_without_table_alias(&self) -> String {
-        // #477: the table alias must be stripped everywhere a `PropertyAccessExp`
-        // can appear, not just at the top level or directly under an operator —
-        // e.g. `toFloat(o.total_amount)` inside a LEFT JOIN pre_filter subquery
-        // (`SELECT * FROM orders_fk WHERE ...` — no `o` alias in scope there).
-        // `strip_table_alias_everywhere` performs a full AST rewrite (recursing
-        // into function args, list items, CASE branches, array
-        // subscript/slicing, and nested Raw text) turning every
-        // `PropertyAccessExp` into a bare-column `Raw` node, then delegates to
-        // the ordinary `to_sql()` so all of ScalarFnCall's dialect/native-
-        // function special-casing still applies correctly — only the leaf
-        // property accesses are affected.
-        strip_table_alias_everywhere(self).to_sql()
+        match self {
+            RenderExpr::PropertyAccessExp(PropertyAccess { column, .. }) => {
+                // Just render the column without the table alias prefix
+                column.to_sql_column_only()
+            }
+            // OperatorApplicationExp has TWO special cases that pattern-match on
+            // the operand's ORIGINAL TYPE, not its rendered text:
+            //   - `try_rewrite_in_cte_subquery`: `x IN cte.p{N}_col` -> `x IN
+            //     (SELECT col FROM cte)`, detected by operands[1] being a CTE-
+            //     column `PropertyAccessExp`.
+            //   - array membership: `x IN node.tags` -> `has(tags, x)`, detected
+            //     by operands[1] being a plain `PropertyAccessExp`.
+            // Both checks MUST run before any alias-stripping touches
+            // operands[1]'s type (stripping to `Raw` would blind the type
+            // check, silently degrading `has(tags,x)` to a scalar `x IN tags`
+            // — a hard ClickHouse error — or `x IN (SELECT col FROM cte)` to a
+            // bare unqualified `x IN col`, which could quietly bind to an
+            // unrelated same-named column: #477 adversarial review, both
+            // reproduced live). So this arm keeps its own dedicated logic
+            // (restored from before the #477 AST-rewrite refactor) rather than
+            // going through `strip_table_alias_everywhere`: operands are
+            // rendered via recursive `to_sql_without_table_alias()` calls
+            // (mutual recursion — correctly strips arbitrarily nested operator
+            // applications too), while the special-case checks below inspect
+            // `op.operands` (the ORIGINAL, untransformed AST), never the
+            // rendered strings.
+            RenderExpr::OperatorApplicationExp(op) => {
+                fn op_str(o: Operator) -> &'static str {
+                    match o {
+                        Operator::Addition => "+",
+                        Operator::Subtraction => "-",
+                        Operator::Multiplication => "*",
+                        Operator::Division => "/",
+                        Operator::ModuloDivision => "%",
+                        Operator::Exponentiation => "^",
+                        Operator::Equal => "=",
+                        Operator::NotEqual => "<>",
+                        Operator::LessThan => "<",
+                        Operator::GreaterThan => ">",
+                        Operator::LessThanEqual => "<=",
+                        Operator::GreaterThanEqual => ">=",
+                        Operator::RegexMatch => "REGEX", // Special handling below
+                        Operator::And => "AND",
+                        Operator::Or => "OR",
+                        Operator::In => "IN",
+                        Operator::NotIn => "NOT IN",
+                        Operator::StartsWith => "STARTS WITH", // Special handling below
+                        Operator::EndsWith => "ENDS WITH",     // Special handling below
+                        Operator::Contains => "CONTAINS",      // Special handling below
+                        Operator::Not => "NOT",
+                        Operator::Distinct => "DISTINCT",
+                        Operator::IsNull => "IS NULL",
+                        Operator::IsNotNull => "IS NOT NULL",
+                    }
+                }
+
+                // Recursively render operands without table alias
+                let rendered: Vec<String> = op
+                    .operands
+                    .iter()
+                    .map(|e| e.to_sql_without_table_alias())
+                    .collect();
+
+                // Special handling for RegexMatch - ClickHouse uses match() function
+                if op.operator == Operator::RegexMatch && rendered.len() == 2 {
+                    return super::common::regex_match_predicate(&rendered[0], &rendered[1]);
+                }
+
+                // IN/NOT IN with CTE entity column → subquery for set membership.
+                // Type check on the ORIGINAL operand — see the doc comment above.
+                if rendered.len() == 2 {
+                    if let Some(sql) =
+                        try_rewrite_in_cte_subquery(&op.operator, &rendered[0], &op.operands[1])
+                    {
+                        return sql;
+                    }
+                }
+
+                // Special handling for IN/NOT IN with array columns. Type check
+                // on the ORIGINAL operand — see the doc comment above.
+                if op.operator == Operator::In
+                    && rendered.len() == 2
+                    && matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_))
+                {
+                    let contains = crate::sql_generator::function_mapper::current_function_mapper()
+                        .array_contains();
+                    return format!("{}({}, {})", contains, &rendered[1], &rendered[0]);
+                }
+                if op.operator == Operator::NotIn
+                    && rendered.len() == 2
+                    && matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_))
+                {
+                    let contains = crate::sql_generator::function_mapper::current_function_mapper()
+                        .array_contains();
+                    return format!("NOT {}({}, {})", contains, &rendered[1], &rendered[0]);
+                }
+
+                // IN/NOT IN with List containing non-constant elements → expand to OR/AND
+                if (op.operator == Operator::In || op.operator == Operator::NotIn)
+                    && rendered.len() == 2
+                {
+                    if let RenderExpr::List(list_items) = &op.operands[1] {
+                        let has_non_constant = list_items.iter().any(|item| {
+                            !matches!(item, RenderExpr::Literal(_) | RenderExpr::Parameter(_))
+                        });
+                        if has_non_constant {
+                            let lhs = &rendered[0];
+                            let item_sqls: Vec<String> =
+                                list_items.iter().map(|item| item.to_sql()).collect();
+                            if op.operator == Operator::In {
+                                let clauses: Vec<String> = item_sqls
+                                    .iter()
+                                    .map(|rhs| format!("{} = {}", lhs, rhs))
+                                    .collect();
+                                return format!("({})", clauses.join(" OR "));
+                            } else {
+                                let clauses: Vec<String> = item_sqls
+                                    .iter()
+                                    .map(|rhs| format!("{} <> {}", lhs, rhs))
+                                    .collect();
+                                return format!("({})", clauses.join(" AND "));
+                            }
+                        } else if let Some(s) = render_constant_in_list(op, &rendered) {
+                            return s;
+                        }
+                    }
+                }
+
+                // Special handling for string predicates - ClickHouse uses functions
+                if op.operator == Operator::StartsWith && rendered.len() == 2 {
+                    return format!("startsWith({}, {})", &rendered[0], &rendered[1]);
+                }
+                if op.operator == Operator::EndsWith && rendered.len() == 2 {
+                    return format!("endsWith({}, {})", &rendered[0], &rendered[1]);
+                }
+                if op.operator == Operator::Contains && rendered.len() == 2 {
+                    return super::common::contains_predicate(&rendered[0], &rendered[1]);
+                }
+
+                // Addition special cases (list concat, interval arithmetic) —
+                // shared with the other operator paths. (No string-concat case
+                // here, matching this path's original behavior.)
+                if let Some(s) = render_list_addition(op) {
+                    return s;
+                }
+                if let Some(s) = render_interval_arithmetic(op, &rendered) {
+                    return s;
+                }
+
+                let sql_op = op_str(op.operator);
+
+                match rendered.len() {
+                    0 => "".into(),
+                    1 => match op.operator {
+                        Operator::IsNull | Operator::IsNotNull => {
+                            format!("{} {}", &rendered[0], sql_op)
+                        }
+                        _ => {
+                            format!("{} {}", sql_op, &rendered[0])
+                        }
+                    },
+                    2 => match op.operator {
+                        Operator::And | Operator::Or => {
+                            format!("({} {} {})", &rendered[0], sql_op, &rendered[1])
+                        }
+                        _ => {
+                            if render_expr::needs_right_parens(op.operator, &op.operands[1]) {
+                                format!("{} {} ({})", &rendered[0], sql_op, &rendered[1])
+                            } else {
+                                format!("{} {} {}", &rendered[0], sql_op, &rendered[1])
+                            }
+                        }
+                    },
+                    _ => match op.operator {
+                        Operator::And | Operator::Or => {
+                            format!("({})", rendered.join(&format!(" {} ", sql_op)))
+                        }
+                        _ => rendered.join(&format!(" {} ", sql_op)),
+                    },
+                }
+            }
+            RenderExpr::Raw(raw_sql) => strip_raw_alias_prefixes(raw_sql),
+            // #477: composite expression types that are not operator
+            // applications carry no operand-TYPE-sensitive special-casing (a
+            // ScalarFnCall's duration()/datetime() dispatch keys off whether
+            // an ARG is a MapLiteral, which `strip_table_alias_everywhere`
+            // preserves — it only ever rewrites `PropertyAccessExp` leaves
+            // into `Raw`), so it's safe to do a full recursive AST rewrite
+            // (stripping every nested `PropertyAccessExp`) and delegate to the
+            // ordinary `to_sql()` for final rendering — e.g.
+            // `toFloat(o.total_amount)` inside a LEFT JOIN pre_filter subquery
+            // (`SELECT * FROM orders_fk WHERE ...` — no `o` alias in scope
+            // there).
+            RenderExpr::ScalarFnCall(_)
+            | RenderExpr::AggregateFnCall(_)
+            | RenderExpr::List(_)
+            | RenderExpr::Case(_)
+            | RenderExpr::ArraySubscript { .. }
+            | RenderExpr::ArraySlicing { .. }
+            | RenderExpr::MapLiteral(_) => strip_table_alias_everywhere(self).to_sql(),
+            // For other expression types, delegate to regular to_sql
+            _ => self.to_sql(),
+        }
     }
 }
 
@@ -6553,22 +6744,23 @@ impl RenderExpr {
 /// pattern inside a `Raw` string is stripped too. Used to render predicates
 /// destined for a LEFT JOIN pre_filter subquery, where the source table has
 /// no alias in scope yet (see #477).
+///
+/// `OperatorApplicationExp` is deliberately NOT rewritten structurally here —
+/// it is instead treated as a boundary: delegate to the dedicated, type-safe
+/// `to_sql_without_table_alias()` (which has its own IN-array / IN-CTE-
+/// subquery special-casing that depends on inspecting the ORIGINAL operand
+/// type) and wrap the resulting string as `Raw`. This keeps that logic in
+/// exactly one place and means a nested operator application (e.g. inside a
+/// CASE WHEN or as a scalar function argument) is handled correctly too,
+/// instead of this function's own recursion silently destroying the operand
+/// type information those special cases need (see #477 adversarial review).
 fn strip_table_alias_everywhere(expr: &RenderExpr) -> RenderExpr {
     match expr {
         RenderExpr::PropertyAccessExp(PropertyAccess { column, .. }) => {
             RenderExpr::Raw(column.to_sql_column_only())
         }
         RenderExpr::Raw(raw_sql) => RenderExpr::Raw(strip_raw_alias_prefixes(raw_sql)),
-        RenderExpr::OperatorApplicationExp(op) => {
-            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: op.operator,
-                operands: op
-                    .operands
-                    .iter()
-                    .map(strip_table_alias_everywhere)
-                    .collect(),
-            })
-        }
+        RenderExpr::OperatorApplicationExp(_) => RenderExpr::Raw(expr.to_sql_without_table_alias()),
         RenderExpr::ScalarFnCall(f) => RenderExpr::ScalarFnCall(ScalarFnCall {
             name: f.name.clone(),
             args: f.args.iter().map(strip_table_alias_everywhere).collect(),
@@ -6838,6 +7030,114 @@ mod tests {
     fn test_map_literal_empty() {
         let map_expr = RenderExpr::MapLiteral(vec![]);
         assert_eq!(map_expr.to_sql(), "map()");
+    }
+
+    // ---- #477 adversarial review: `to_sql_without_table_alias` must preserve
+    // the IN-array and IN-CTE-subquery special cases, which pattern-match on
+    // the ORIGINAL (unstripped) operand TYPE. A prior version of this function
+    // converted every `PropertyAccessExp` to `Raw` before any type-based
+    // dispatch could run, silently degrading both rewrites — one to a hard
+    // ClickHouse error, the other to a bare unqualified column that could
+    // quietly bind to an unrelated same-named column. ----
+
+    use crate::graph_catalog::expression_parser::PropertyValue as PropVal;
+
+    /// `x IN node.arrayProp` must still become `has(arrayProp, x)`, not the
+    /// bare-column default `x IN arrayProp` (a hard ClickHouse error: "Function
+    /// 'in' is supported only if second argument is constant or table
+    /// expression"). Live-verified against ClickHouse in the #477 follow-up
+    /// (see `array_property_probe.yaml` / `probe_arr.tags`).
+    #[test]
+    fn test_to_sql_without_table_alias_preserves_array_membership_in() {
+        let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::In,
+            operands: vec![
+                RenderExpr::Literal(Literal::String("a".to_string())),
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias("o".to_string()),
+                    column: PropVal::Column("tags".to_string()),
+                }),
+            ],
+        });
+        assert_eq!(expr.to_sql_without_table_alias(), "has(tags, 'a')");
+    }
+
+    /// The NOT IN / array-membership counterpart.
+    #[test]
+    fn test_to_sql_without_table_alias_preserves_array_membership_not_in() {
+        let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::NotIn,
+            operands: vec![
+                RenderExpr::Literal(Literal::String("a".to_string())),
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias("o".to_string()),
+                    column: PropVal::Column("tags".to_string()),
+                }),
+            ],
+        });
+        assert_eq!(expr.to_sql_without_table_alias(), "NOT has(tags, 'a')");
+    }
+
+    /// Array membership nested inside a function argument (exercises the
+    /// `strip_table_alias_everywhere` <-> `to_sql_without_table_alias` boundary:
+    /// a `ScalarFnCall` arg that is itself an `OperatorApplicationExp` must
+    /// delegate back to the dedicated, type-safe logic rather than being
+    /// destructively rewritten as part of the function-arg AST walk).
+    #[test]
+    fn test_to_sql_without_table_alias_preserves_array_membership_nested_in_function() {
+        let inner = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::In,
+            operands: vec![
+                RenderExpr::Literal(Literal::String("a".to_string())),
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias("o".to_string()),
+                    column: PropVal::Column("tags".to_string()),
+                }),
+            ],
+        });
+        let expr = RenderExpr::ScalarFnCall(ScalarFnCall {
+            name: "not".to_string(),
+            args: vec![inner],
+        });
+        assert_eq!(expr.to_sql_without_table_alias(), "not(has(tags, 'a'))");
+    }
+
+    /// `x IN cte.p{N}_col` (a CTE-entity scalar reference, per
+    /// `is_cte_column`) must still expand to `x IN (SELECT col FROM cte)`, not
+    /// degrade to a bare unqualified `x IN col` — which could silently bind to
+    /// an unrelated same-named column elsewhere in the query (the worst class
+    /// of bug per ground rule 1: wrong answer, no error).
+    #[tokio::test]
+    async fn test_to_sql_without_table_alias_preserves_in_cte_subquery_rewrite() {
+        use crate::server::query_context::{set_cte_alias_scope, with_query_context};
+        with_query_context(
+            crate::server::query_context::QueryContext::default(),
+            async {
+                set_cte_alias_scope(
+                    [("u".to_string(), "with_users_cte_0".to_string())]
+                        .into_iter()
+                        .collect(),
+                );
+                let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::In,
+                    operands: vec![
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias("o".to_string()),
+                            column: PropVal::Column("id".to_string()),
+                        }),
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias("u".to_string()),
+                            column: PropVal::Column("p1_u_id".to_string()),
+                        }),
+                    ],
+                });
+                assert_eq!(
+                    expr.to_sql_without_table_alias(),
+                    "id IN (SELECT p1_u_id FROM with_users_cte_0)"
+                );
+            },
+        )
+        .await;
     }
 
     // ---- WHERE alias inlining for Spark/Databricks (LDBC Q10) ----

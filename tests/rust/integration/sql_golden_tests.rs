@@ -2573,10 +2573,17 @@ async fn social_479_plain_optional_where_combined_subquery_preserves_null_extens
 /// relocation diverge from the plain FK-edge case — separate, dedicated
 /// investigation, not a small extension of the fix above.
 ///
-/// Live (db_denormalized, 6 distinct origin airports: ATL/DEN/JFK/LAX/ORD/SFO):
-/// ground truth is 6 rows (LAX and SFO have a Chicago-bound flight; the other
-/// 4 are NULL-extended). Current behavior returns only 2 rows (LAX, SFO) —
-/// drops the 4 NULL-extended airports, the same disease as #479's main case.
+/// Live (db_denormalized): `MATCH (a:Airport)` alone returns 7 distinct
+/// airports (`UNION DISTINCT` of `origin_code`/`dest_code`) —
+/// ATL/DEN/JFK/LAX/ORD/PHX/SFO. PHX is dest-only (never an origin in the
+/// fixture data) but is still a legitimate `Airport` node and must appear as
+/// its own NULL-extended row; it is easy to miss by checking only `SELECT
+/// DISTINCT origin_code` (6 rows) — an earlier draft of this comment did
+/// exactly that and under-counted. Ground truth for the OPTIONAL MATCH WHERE
+/// query is 7 rows (LAX and SFO have a Chicago-bound flight; the other 5,
+/// including PHX, are NULL-extended). Current behavior returns only 2 rows
+/// (LAX, SFO) — drops the 5 NULL-extended airports, the same disease as
+/// #479's main case.
 #[tokio::test]
 async fn denorm_479_plain_optional_where_drops_null_extended_rows_known_broken() {
     let schema = load_schema(SchemaId::Denormalized.yaml_path());
@@ -2587,8 +2594,8 @@ async fn denorm_479_plain_optional_where_drops_null_extended_rows_known_broken()
     // Characterization lock: predicate still sits in a bare outer WHERE
     // (post-join), which drops NULL-extended no-match airports. If this
     // starts failing because the WHERE is gone, that is progress — verify
-    // against live ground truth (6 rows on the committed db_denormalized
-    // fixture) before replacing this test.
+    // against live ground truth (7 rows on the committed db_denormalized
+    // fixture, including dest-only PHX) before replacing this test.
     // Match `WHERE t<N>.dest_city` rather than a literal `t1` — the
     // auto-generated relationship alias's numeric suffix varies with the
     // global alias counter's position across the test binary.
@@ -2600,7 +2607,58 @@ async fn denorm_479_plain_optional_where_drops_null_extended_rows_known_broken()
         has_bare_outer_where,
         "#479 (denormalized) KNOWN BROKEN characterization stale — predicate \
          no longer in a bare outer WHERE; if this is a genuine fix (verify \
-         live: must return 6 rows, not 2), replace this test with a \
+         live: must return 7 rows including dest-only PHX, not 2), replace \
+         this test with a regression test:\n{sql}"
+    );
+}
+
+/// KNOWN BROKEN — deferred. A THIRD #479 gap, found by adversarial review:
+/// composite-key OPTIONAL MATCH WHERE-on-optional-node.
+/// `composite_node_ids.yaml` (Account identified by the TWO-column key
+/// `[bank_id, account_number]`) renders the classic separate-edge two-JOIN
+/// shape (`c LEFT JOIN account_ownership LEFT JOIN accounts`), but the
+/// `fold_optional_edge_node_join_with_predicate` pass (#479,
+/// `plan_optimizer.rs`) correctly DECLINES to fold it: its gate requires a
+/// single-column-key LEFT JOIN (`single_column_join_key` returns `None` when
+/// `join.joining_on.len() != 1`), and a composite-key JOIN's `ON` clause is
+/// two ANDed equalities (`a.bank_id = t1.bank_id AND a.account_number =
+/// t1.account_number`) — deliberately out of scope rather than risk an
+/// incorrect fold on a shape the fix was never verified against. So the WHERE
+/// predicate stays in the pre-existing (and still buggy) bare outer WHERE
+/// placement.
+///
+/// Reproduces identically on `main` (pre-existing, not a regression from any
+/// #477/#478/#479 fix in this family — the fold pass is purely additive and
+/// never removes a pre-existing WHERE placement it doesn't recognize).
+///
+/// Live (db_composite_id, 5 customers): `MATCH (c:Customer) OPTIONAL MATCH
+/// (c)-[:OWNS]->(a:Account) WHERE a.balance > 10000 RETURN c.name,
+/// a.account_number` — ground truth is 5 rows (Alice/SAV-002, Bob/SAV-002
+/// [joint ownership of the same account], Diana/WF-1002, Eve/WF-1004, and
+/// Charlie NULL-extended — his only account, SAV-004, has balance 8500,
+/// below the threshold). Current behavior returns only 4 rows, dropping
+/// Charlie — the same disease as #479's main case.
+#[tokio::test]
+async fn composite_479_plain_optional_where_drops_null_extended_rows_known_broken() {
+    let schema = load_schema(SchemaId::CompositeId.yaml_path());
+    let cypher = "MATCH (c:Customer) OPTIONAL MATCH (c)-[:OWNS]->(a:Account) \
+                  WHERE a.balance > 10000 RETURN c.name, a.account_number";
+    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+
+    // Characterization lock: predicate still sits in a bare outer WHERE
+    // (post-join), which drops NULL-extended no-match customers. If this
+    // starts failing because the WHERE is gone, that is progress toward
+    // extending #479's fold pass to composite keys — verify against live
+    // ground truth (5 rows on the committed db_composite_id fixture) before
+    // replacing this test.
+    let has_bare_outer_where = sql
+        .lines()
+        .any(|l| l.trim_start() == "WHERE a.balance > 10000");
+    assert!(
+        has_bare_outer_where,
+        "#479 (composite-key) KNOWN BROKEN characterization stale — predicate \
+         no longer in a bare outer WHERE; if this is a genuine fix (verify \
+         live: must return 5 rows, not 4), replace this test with a \
          regression test:\n{sql}"
     );
 }
@@ -2635,6 +2693,47 @@ async fn fk_edge_477_pre_filter_strips_alias_inside_function_args() {
         sql.contains("toFloat64(total_amount) > 100"),
         "#477 regressed: expected the bare (alias-free) function-wrapped \
          predicate inside the LEFT JOIN pre_filter subquery:\n{sql}"
+    );
+}
+
+/// Regression: #477 adversarial review — `to_sql_without_table_alias`'s
+/// original AST-rewrite fix (above) converted every `PropertyAccessExp` into
+/// a bare-column `Raw` node BEFORE any type-based special-casing could run,
+/// silently breaking the array-membership `IN` rewrite (`x IN node.arrayProp`
+/// -> `has(arrayProp, x)`): with the RHS already `Raw`, the
+/// `matches!(&op.operands[1], PropertyAccessExp(_))` check in the generic
+/// `to_sql()` never fires, degrading to the bare-column default `x IN
+/// arrayProp` — a HARD ClickHouse error ("Function 'in' is supported only if
+/// second argument is constant or table expression"), reachable via an
+/// ordinary `OPTIONAL MATCH ... WHERE 'x' IN o.arrayProp` whenever the schema
+/// has an array-typed property. This exercises the SAME mechanism as the
+/// #479 combined-subquery fold pass (`plan_optimizer.rs`'s
+/// `combined_predicate.to_sql_without_table_alias()`), via
+/// `array_property_probe.yaml` (Owner --OWNS--> Item, Item.tags is
+/// `Array(String)` on the live ClickHouse dev container's `probe_arr` table).
+///
+/// Live (default DB, dev container): Alice owns Item 1 (tags=[a,b]) — matches
+/// `'a' IN tags`; Bob owns Item 2 (tags=[c,d]) — no match, correctly
+/// NULL-extended (not dropped); Carol owns no item — correctly NULL-extended.
+/// Ground truth is 3 rows (Alice/Item1, Bob/NULL, Carol/NULL); pre-fix SQL
+/// (`has(o.tags, 'a')` degraded to `'a' IN tags`) fails outright with
+/// ClickHouse error 1 (UNSUPPORTED_METHOD) — reproduced live during this fix.
+#[tokio::test]
+async fn array_property_477_pre_filter_preserves_array_membership_in() {
+    let schema = load_schema("schemas/test/array_property_probe.yaml");
+    let cypher = "MATCH (a:Owner) OPTIONAL MATCH (a)-[:OWNS]->(o:Item) \
+                  WHERE 'a' IN o.tags RETURN a.name, o.id";
+    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+
+    assert!(
+        sql.contains("has(tags, 'a')"),
+        "#477 (array-membership) regressed: expected `has(tags, 'a')` inside \
+         the combined LEFT JOIN subquery, got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("'a' IN tags") && !sql.contains("'a' in tags"),
+        "#477 (array-membership) regressed: predicate degraded to a bare \
+         scalar IN, which ClickHouse rejects:\n{sql}"
     );
 }
 
