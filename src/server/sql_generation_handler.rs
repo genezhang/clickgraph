@@ -50,8 +50,12 @@ pub async fn sql_generation_handler(
     }
 
     // Parse and validate schema name
-    // First, do a quick parse to extract USE clause if present
-    let clean_query = payload.query.trim();
+    // First, do a quick parse to extract USE clause if present.
+    // Strip comments before parsing (#516 made parse_cypher_statement
+    // all-consuming — a trailing `//`/`/* */` comment must not be mistaken
+    // for garbage input).
+    let stripped_for_use_check = open_cypher_parser::strip_comments(&payload.query);
+    let clean_query = stripped_for_use_check.trim();
     let schema_name = if clean_query.to_uppercase().starts_with("USE ") {
         // Quick extraction of schema name from USE clause
         match open_cypher_parser::parse_cypher_statement(clean_query) {
@@ -141,7 +145,9 @@ pub async fn sql_generation_handler(
         }
     };
 
-    // Clean query (remove CYPHER prefix if present)
+    // Clean query (remove CYPHER prefix if present), then strip comments
+    // before parsing (#516 made parse_cypher_statement all-consuming — a
+    // trailing `//`/`/* */` comment must not be mistaken for garbage input).
     let clean_query = payload.query.trim();
     let clean_query = if clean_query.to_uppercase().starts_with("CYPHER") {
         clean_query
@@ -150,6 +156,8 @@ pub async fn sql_generation_handler(
     } else {
         clean_query
     };
+    let stripped_query = open_cypher_parser::strip_comments(clean_query);
+    let clean_query = stripped_query.trim();
 
     // Phase 1: Parse query (support UNION ALL)
     let parse_start = Instant::now();

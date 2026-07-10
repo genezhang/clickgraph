@@ -41,9 +41,9 @@ mod with_clause;
 ///
 /// This is the all-consuming top-level entry point: on success, `input` (the
 /// first tuple element) is guaranteed to contain nothing but trailing
-/// whitespace and/or a single trailing semicolon. Any other trailing content
-/// (e.g. a typo'd keyword after a syntactically complete query) is a hard
-/// parse error rather than being silently discarded. See issue #516.
+/// whitespace and/or trailing semicolons. Any other trailing content (e.g. a
+/// typo'd keyword after a syntactically complete query) is a hard parse
+/// error rather than being silently discarded. See issue #516.
 pub fn parse_cypher_statement(
     input: &'_ str,
 ) -> IResult<&'_ str, CypherStatement<'_>, OpenCypherParsingError<'_>> {
@@ -53,9 +53,15 @@ pub fn parse_cypher_statement(
 }
 
 /// Returns an error if `remaining` contains anything other than trailing
-/// whitespace and/or a single trailing semicolon (with optional surrounding
-/// whitespace). Callers are expected to have already stripped comments from
-/// the original input before parsing.
+/// whitespace and/or a trailing semicolon (with optional surrounding
+/// whitespace). Note: `parse_cypher_statement_body` already optionally
+/// consumes one trailing semicolon itself before returning here, so in
+/// practice this tolerates a SECOND semicolon too (e.g. `RETURN n;;` or
+/// `RETURN n; ;` parse successfully, not just `RETURN n;`) — harmless
+/// (strictly more permissive, never masks a genuine trailing-garbage error),
+/// just slightly more lenient than "exactly one" might suggest. Callers are
+/// expected to have already stripped comments from the original input
+/// before parsing.
 fn ensure_fully_consumed(remaining: &'_ str) -> Result<(), nom::Err<OpenCypherParsingError<'_>>> {
     let (rest, _) = opt(ws(tag(";"))).parse(remaining)?;
     if rest.trim().is_empty() {

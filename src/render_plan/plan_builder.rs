@@ -499,20 +499,26 @@ fn validate_cypher_union_column_names(
     // 0-row-contribution marker, not a user-facing column-name mismatch.
     // `normalize_union_branches` applies the same exclusion for the same
     // reason (see its own doc comment).
-    let real_branches: Vec<&RenderPlan> = branch_renders
+    //
+    // Keep each real branch paired with its ORIGINAL position in
+    // `branch_renders` (not its position among just the real branches), so
+    // `arm_index` in the error below reflects the arm's actual place in the
+    // UNION chain even when an earlier arm was a placeholder.
+    let real_branches: Vec<(usize, &RenderPlan)> = branch_renders
         .iter()
-        .filter(|plan| !super::plan_builder_helpers::is_empty_placeholder(plan))
+        .enumerate()
+        .filter(|(_, plan)| !super::plan_builder_helpers::is_empty_placeholder(plan))
         .collect();
     if real_branches.len() < 2 {
         return Ok(());
     }
 
-    let first_columns = column_names(real_branches[0]);
-    for (idx, branch) in real_branches.iter().enumerate().skip(1) {
+    let first_columns = column_names(real_branches[0].1);
+    for (arm_index, branch) in real_branches.iter().skip(1) {
         let arm_columns = column_names(branch);
         if arm_columns != first_columns {
             return Err(RenderBuildError::UnionColumnMismatch {
-                arm_index: idx,
+                arm_index: *arm_index,
                 arm_columns: arm_columns.join(", "),
                 first_columns: first_columns.join(", "),
             });

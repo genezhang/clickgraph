@@ -2134,6 +2134,20 @@ impl BoltHandler {
     ) -> BoltResult<HashMap<String, Value>> {
         use crate::open_cypher_parser::ast::CypherStatement;
 
+        // Strip comments once, up front: #516 made parse_cypher_statement
+        // all-consuming, so every parse_cypher_statement(query) call below
+        // (and the nested extract_copy_to_params helper, which is also
+        // called with this same shadowed `query`) must see comment-free
+        // input, or a legitimate trailing `//` / `/* */` comment in a Bolt
+        // RUN message becomes a hard parse error for every Bolt client
+        // (Neo4j Browser, drivers, MCP). Comments are semantically inert —
+        // strip_comments() preserves string-literal contents and
+        // relationship-pattern arrows byte-for-byte — so rebinding `query`
+        // here keeps every downstream regex/position-based helper in this
+        // function internally self-consistent.
+        let stripped_query = open_cypher_parser::strip_comments(query);
+        let query: &str = &stripped_query;
+
         // ============================================================
         // PHASE 1: Determine Schema (for id() transformation)
         // ============================================================
@@ -2535,12 +2549,20 @@ impl BoltHandler {
 
                         // Translate inner Cypher → SQL
                         let inner_sql = {
-                            let (_, inner_stmt) = open_cypher_parser::parse_cypher_statement(
-                                &export_args.cypher_query,
-                            )
-                            .map_err(|e| {
-                                BoltError::query_error(format!("Inner Cypher parse error: {}", e))
-                            })?;
+                            // `cypher_query` is a Cypher string-literal ARGUMENT to
+                            // apoc.export.*.query(...) — a separate string from the
+                            // outer `query` already stripped above, so it needs its
+                            // own strip_comments() before this independent parse.
+                            let stripped_inner =
+                                open_cypher_parser::strip_comments(&export_args.cypher_query);
+                            let (_, inner_stmt) =
+                                open_cypher_parser::parse_cypher_statement(&stripped_inner)
+                                    .map_err(|e| {
+                                        BoltError::query_error(format!(
+                                            "Inner Cypher parse error: {}",
+                                            e
+                                        ))
+                                    })?;
 
                             use crate::server::bolt_protocol::id_mapper::IdMapper;
                             let inner_mapper = IdMapper::new();
@@ -3498,5 +3520,91 @@ mod tests {
             let context = handler.context.lock().unwrap();
             assert!(context.tx_id.is_none());
         }
+    }
+
+    // ------------------------------------------------------------------
+    // #516 adversarial-review finding: `execute_cypher_query` previously
+    // called `parse_cypher_statement` directly on the raw, un-stripped Bolt
+    // query (no comment stripping anywhere in this file), so #516 made a
+    // perfectly standard, spec-legal trailing `//` / `/* */` comment in a
+    // RUN message a hard `BoltError::query_error` for every Bolt client
+    // (Neo4j Browser, drivers, MCP). Fixed by stripping comments once, up
+    // front, into a shadowed `query` binding covering every
+    // `parse_cypher_statement(query)` call in the function.
+    //
+    // No schema needs to be registered in `GLOBAL_SCHEMAS` for these checks:
+    // `execute_cypher_query` tolerates a missing/unregistered schema (logs a
+    // warning and continues) all the way past its own parse — we only need
+    // to distinguish "still fails to PARSE" (the regression) from "parsing
+    // succeeded, something else failed later" (unrelated, expected here
+    // since no real schema is registered).
+    // ------------------------------------------------------------------
+
+    fn assert_not_a_parse_error(result: &BoltResult<HashMap<String, Value>>, cypher: &str) {
+        if let Err(e) = result {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("Statement parsing failed") && !msg.contains("Unexpected tokens"),
+                "[{cypher}] must not fail at the PARSE stage (a standard trailing \
+                 comment must not be mistaken for garbage input); got: {msg}"
+            );
+        }
+        // Ok(_) trivially means parsing (and everything else) succeeded.
+    }
+
+    #[tokio::test]
+    async fn execute_cypher_query_accepts_trailing_line_comment() {
+        let mut handler = create_test_handler();
+        let result = handler
+            .execute_cypher_query(
+                "RETURN 1 AS x // just a trailing note",
+                HashMap::new(),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await;
+        assert_not_a_parse_error(&result, "RETURN 1 AS x // just a trailing note");
+    }
+
+    #[tokio::test]
+    async fn execute_cypher_query_accepts_trailing_block_comment() {
+        let mut handler = create_test_handler();
+        let result = handler
+            .execute_cypher_query(
+                "RETURN 1 AS x /* trailing block comment */",
+                HashMap::new(),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await;
+        assert_not_a_parse_error(&result, "RETURN 1 AS x /* trailing block comment */");
+    }
+
+    #[tokio::test]
+    async fn execute_cypher_query_still_rejects_genuine_trailing_garbage() {
+        // #516's actual fix must still hold through this real code path: this
+        // is NOT a comment, it's a typo'd keyword, and must still be a hard
+        // parse error surfaced as BoltError::query_error.
+        let mut handler = create_test_handler();
+        let result = handler
+            .execute_cypher_query(
+                "RETURN 1 AS x GARBAGE",
+                HashMap::new(),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await;
+        let err = result.expect_err("genuine trailing garbage must still error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Statement parsing failed") || msg.contains("Unexpected tokens"),
+            "expected a parse-stage error for genuine trailing garbage, got: {msg}"
+        );
     }
 }
