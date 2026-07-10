@@ -2633,6 +2633,284 @@ async fn denorm_optional_join_key_forward_resolved_and_deterministic_470() {
     }
 }
 
+/// #493 regression: `MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b)
+/// RETURN a.code, count(b)` on the denormalized flights schema emitted
+/// `count(b.code)` with `b` never bound to any table alias — ClickHouse
+/// UNKNOWN_IDENTIFIER at execution. The planner correctly rewrites
+/// `count(node)` → `count(node.<node_id>)` for NULL-correct OPTIONAL
+/// counting, but the SELECT extraction only resolved denormalized (virtual)
+/// node references at the TOP level of a projection item, not inside
+/// aggregate arguments. The reference must resolve onto the owning edge's
+/// embedded column: `count(t1.dest_code)` — NULL-sensitive, so optional-miss
+/// rows count 0.
+///
+/// Live-verified on `db_denormalized` (8 flights): OPTIONAL variant returns 7
+/// groups with `PHX -> 0` (the dest-only airport), required variant returns 6
+/// groups, both matching hand-written LEFT-JOIN/GROUP-BY ground truth with
+/// `join_use_nulls=1` (the setting production applies). Both previously
+/// failed with UNKNOWN_IDENTIFIER.
+#[tokio::test]
+async fn denorm_count_node_resolves_embedded_id_column_493() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+
+    // (cypher, the aggregate that must appear after `normalize`'s alias
+    // anonymization — the single edge scan is always the first t-alias, t0 —
+    // and a context tag)
+    let cases = [
+        (
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) RETURN a.code, count(b)",
+            "count(t0.dest_code)",
+            "optional count(b)",
+        ),
+        (
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) RETURN a.code, count(DISTINCT b)",
+            "count(DISTINCT t0.dest_code)",
+            "optional count(DISTINCT b)",
+        ),
+        (
+            "MATCH (a:Airport)-[:FLIGHT]->(b) RETURN a.code, count(b)",
+            "count(t0.dest_code)",
+            "required count(b)",
+        ),
+        // Aggregates NESTED in wrapper expressions (review coverage gap): the
+        // resolver must reach them through operator / scalar-fn wrappers too.
+        (
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) RETURN a.code, count(b) + 0 AS c",
+            "count(t0.dest_code) + 0",
+            "optional count(b) + 0",
+        ),
+        (
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) RETURN a.code, toFloat(count(b)) AS c",
+            "toFloat64(count(t0.dest_code))",
+            "optional toFloat(count(b))",
+        ),
+    ];
+
+    for (cypher, want_agg, tag) in cases {
+        let first = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+        for _ in 0..5 {
+            let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(
+                first, again,
+                "#493 [{tag}]: render is nondeterministic:\nFIRST:\n{first}\nAGAIN:\n{again}"
+            );
+        }
+        // The aggregate must reference the owning edge's embedded to-column…
+        assert!(
+            first.contains(want_agg),
+            "#493 [{tag}]: expected `{want_agg}` (owning edge's embedded id \
+             column, NULL-sensitive), got:\n{first}"
+        );
+        // …and the unbound cypher alias must not leak into the SQL.
+        assert!(
+            !first.contains("count(b.") && !first.contains("count(DISTINCT b."),
+            "#493 [{tag}]: unresolved alias `b` leaked into the aggregate \
+             (UNKNOWN_IDENTIFIER at execution):\n{first}"
+        );
+    }
+}
+
+/// #475 regression: on the coupled cross-table denorm `zeek_merged_test`
+/// schema, `MATCH (a:IP) OPTIONAL MATCH (a)-[:REQUESTED]->(d:Domain) RETURN
+/// a.ip, a.port, d.name` sourced the ANCHOR property `a.port` from the
+/// LEFT-JOINed dns_log edge alias (`t1."id.orig_p"`) instead of the anchor's
+/// own `__denorm_scan_a` CTE column — NULL on exactly the OPTIONAL-miss rows
+/// (live: `93.184.216.34` showed port NULL despite the anchor scan showing
+/// 80). The IP label's port property comes from its conn_log node table, so
+/// the EDGE's declared from-node property set (dns_log IP: only `ip`) did not
+/// cover it and the post-extraction rewrite left it parked on the edge alias.
+///
+/// The fix extends the delegation-path rewrite map with the anchor Union
+/// branch's own property mapping (db column → CTE-exposed property name — the
+/// SELECT-list sibling of #470's JOIN-key forward resolution). Locks: every
+/// anchor property (`a.ip`, `a.port`) resolves through the CTE alias `a`;
+/// the edge-owned `d.name` stays on the edge alias (`query` column); ORDER BY
+/// on the anchor property resolves the same way; determinism.
+///
+/// Live-verified on the zeek fixture (5 conn + 5 dns rows): OPTIONAL-miss
+/// rows keep their anchor port (e.g. `93.184.216.34 | 80 | NULL`), matching
+/// hand-written LEFT-JOIN ground truth; matched rows unchanged.
+#[tokio::test]
+async fn denorm_optional_anchor_property_from_scan_cte_475() {
+    let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+    let repro = "MATCH (a:IP) OPTIONAL MATCH (a)-[:REQUESTED]->(d:Domain) \
+                 RETURN a.ip, a.port, d.name";
+
+    let first = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+    for _ in 0..10 {
+        let again = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#475: OPTIONAL denorm anchor-property render is nondeterministic:\n\
+             FIRST:\n{first}\nAGAIN:\n{again}"
+        );
+    }
+
+    // Both anchor properties must be sourced from the anchor CTE alias…
+    assert!(
+        first.contains(r#"a.ip AS "a.ip""#),
+        "#475: a.ip must resolve through the __denorm_scan CTE:\n{first}"
+    );
+    assert!(
+        first.contains(r#"a.port AS "a.port""#),
+        "#475: a.port must resolve through the __denorm_scan CTE, not the \
+         LEFT-JOINed edge table:\n{first}"
+    );
+    // …and never from the NULL-extended edge alias.
+    assert!(
+        !first.contains(r#""id.orig_p" AS "a.port""#),
+        "#475: a.port must NOT be sourced from the edge table's id.orig_p \
+         (NULL on OPTIONAL-miss rows):\n{first}"
+    );
+    // The edge-owned property stays on the edge alias (NULL-extension is the
+    // CORRECT semantics for d.name).
+    assert!(
+        first.contains(r#".query AS "d.name""#),
+        "#475: d.name must stay sourced from the edge row's query column:\n{first}"
+    );
+
+    // ORDER BY on the anchor property must forward-resolve identically.
+    let ordered = normalize(
+        &render(
+            &schema,
+            "MATCH (a:IP) OPTIONAL MATCH (a)-[:REQUESTED]->(d:Domain) \
+             RETURN a.ip, a.port, d.name ORDER BY a.port",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        ordered.contains("ORDER BY a.port"),
+        "#475: ORDER BY on the anchor property must reference the CTE column:\n{ordered}"
+    );
+}
+
+/// #475 review guard: the anchor-map extension of the OPTIONAL-denorm rewrite
+/// is keyed by raw db-column NAME on the edge alias, but the anchor node table
+/// and the edge table are DIFFERENT physical tables on a coupled cross-table
+/// schema — so a name collision could hijack a legitimate EDGE-OWNED reference
+/// onto the anchor CTE. `schemas/test/zeek_merged_collision.yaml` builds
+/// exactly that shape: IP@conn_log carries `seen: ts` while REQUESTED@dns_log
+/// carries `timestamp: ts` (two different `ts` columns). Without the guard,
+/// `r.timestamp` (edge property, correctly `r.ts`) was rewritten to `a.seen` —
+/// wrong value on matched rows AND non-NULL on OPTIONAL-miss rows where Cypher
+/// requires NULL.
+///
+/// Locks: the edge property stays on the edge alias; the non-colliding anchor
+/// properties (`a.ip`, `a.port`) still forward-resolve through the CTE (#475
+/// fix retained); determinism.
+///
+/// Live-verified on the zeek fixture: 16 rows byte-identical to hand-written
+/// ground truth — matched rows carry dns_log's ts (1700000001…), OPTIONAL-miss
+/// rows have `r.timestamp` NULL.
+///
+/// Residual known limitation (documented at the guard): the SHADOWED anchor
+/// property itself (`a.seen`) still resolves to the edge column (pre-#475
+/// behavior for that column) — disambiguating needs extraction-time
+/// provenance.
+#[tokio::test]
+async fn denorm_optional_edge_column_not_hijacked_by_anchor_475() {
+    let schema = load_schema("schemas/test/zeek_merged_collision.yaml");
+    let repro = "MATCH (a:IP) OPTIONAL MATCH (a)-[r:REQUESTED]->(d:Domain) \
+                 RETURN a.ip, a.port, r.timestamp, d.name";
+
+    let first = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+    for _ in 0..10 {
+        let again = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#475 guard: collision-shape render is nondeterministic:\n\
+             FIRST:\n{first}\nAGAIN:\n{again}"
+        );
+    }
+
+    // The EDGE-OWNED property must stay on the LEFT-JOINed edge alias (r) so
+    // it is NULL-extended on OPTIONAL-miss rows…
+    assert!(
+        first.contains(r#"r.ts AS "r.timestamp""#),
+        "#475 guard: r.timestamp must stay sourced from the edge row's ts \
+         column:\n{first}"
+    );
+    // …and must NEVER be hijacked onto the anchor CTE.
+    assert!(
+        !first.contains(r#"a.seen AS "r.timestamp""#),
+        "#475 guard: edge-owned r.timestamp was hijacked onto the anchor CTE \
+         (wrong value on matched rows, non-NULL on OPTIONAL-miss rows):\n{first}"
+    );
+    // The #475 fix itself is retained: non-colliding anchor properties still
+    // forward-resolve through the __denorm_scan CTE.
+    assert!(
+        first.contains(r#"a.ip AS "a.ip""#) && first.contains(r#"a.port AS "a.port""#),
+        "#475 guard: anchor properties must still resolve through the CTE:\n{first}"
+    );
+}
+
+/// #475 review round 2: the aggregate-arg resolver
+/// (`resolve_denorm_refs_in_expr`, select_builder.rs) rebound the table alias
+/// UNCONDITIONALLY whenever the alias resolved to an override binding — even
+/// when the referenced property did NOT resolve in that binding's property
+/// set. On `zeek_merged_collision.yaml` (IP@conn_log carries `uid: uid`,
+/// REQUESTED@dns_log carries the edge property `uid: uid` — same Cypher name
+/// AND same physical column, different tables), `MATCH (a:IP) OPTIONAL MATCH
+/// (a)-[r:REQUESTED]->(d:Domain) RETURN a.ip, count(a.uid)` turned the ANCHOR
+/// reference `a.uid` into `count(r.uid)`: VALID SQL, silently wrong — the
+/// edge's uid is NULL-extended on OPTIONAL-miss rows, so those IPs count 0
+/// instead of 1. (The `seen: ts` fixture cannot catch this class: `seen` is
+/// not a physical dns_log column, so the bad ref would be loud, not silent.)
+///
+/// The gate: the resolver rebinds the alias ONLY when the reference resolves
+/// on the binding — by Cypher property name (mapping the column) or by
+/// already-mapped column value (keeping the column). Unresolvable references
+/// pass through untouched for the anchor-CTE machinery.
+///
+/// Live-verified on the zeek fixture: OPTIONAL-miss IPs (1.2.3.4, 10.0.0.99,
+/// 142.250.80.46, 93.184.216.34, 93.184.216.35) return count(a.uid) = 1,
+/// matching hand-written ground truth.
+#[tokio::test]
+async fn denorm_optional_anchor_ref_in_aggregate_not_rebound_475() {
+    let schema = load_schema("schemas/test/zeek_merged_collision.yaml");
+    let repro = "MATCH (a:IP) OPTIONAL MATCH (a)-[r:REQUESTED]->(d:Domain) \
+                 RETURN a.ip, count(a.uid)";
+
+    let first = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+    for _ in 0..10 {
+        let again = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#475 r2: anchor-ref-in-aggregate render is nondeterministic:\n\
+             FIRST:\n{first}\nAGAIN:\n{again}"
+        );
+    }
+
+    // The anchor reference must stay sourced from the anchor scan CTE (the
+    // CTE exposes `uid`), never be rebound to the LEFT-JOINed edge alias.
+    assert!(
+        first.contains("count(a.uid)"),
+        "#475 r2: count(a.uid) must stay anchor-sourced:\n{first}"
+    );
+    assert!(
+        !first.contains("count(r.uid)"),
+        "#475 r2: anchor reference a.uid was rebound to the NULL-extended \
+         edge alias (silently counts 0 on OPTIONAL-miss rows):\n{first}"
+    );
+
+    // Cross-check: a genuinely EDGE-OWNED aggregate reference keeps the edge
+    // binding (NULL-extension is correct there).
+    let edge_agg = normalize(
+        &render(
+            &schema,
+            "MATCH (a:IP) OPTIONAL MATCH (a)-[r:REQUESTED]->(d:Domain) \
+             RETURN a.ip, count(r.timestamp)",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        edge_agg.contains("count(r.ts)"),
+        "#475 r2: edge-owned count(r.timestamp) must stay on the edge alias:\n{edge_agg}"
+    );
+}
+
 /// #481 regression: on the coupled-denormalized `zeek_merged_test` schema, a
 /// 2-hop `ACCESSED` chain `(a:IP)->(b:IP)->(c:IP)` resolved the MIDDLE node's
 /// property binding by iterating `PlanCtx::pattern_contexts` (a `HashMap`) and
@@ -2722,6 +3000,93 @@ async fn coupled_multihop_middle_node_binds_shared_endpoint_481() {
         (b_alias.as_str(), b_col.as_str()),
         (c_alias.as_str(), c_col.as_str()),
         "#481: b.ip must not alias c.ip's column (wrong-data variant):\n{first}"
+    );
+}
+
+/// #491 regression: `MATCH (a:Airport)-[:FLIGHT]->(b) OPTIONAL MATCH
+/// (b)-[:FLIGHT]->(c)` on the denormalized flights schema bound the REQUIRED
+/// node `b` to the OPTIONAL hop's LEFT-JOINed table alias (the
+/// `denormalized_node_edges` registry is last-write-wins, and the optional
+/// pattern registers after the required one). `b.code` then rendered as
+/// `<opt_hop>.origin_code`, which is NULL on exactly the rows the optional hop
+/// misses — even though `b` matched in the required MATCH (live: the DEN→PHX
+/// row returned b=NULL instead of b=PHX).
+///
+/// The fix makes an OPTIONAL pattern's registration keep an existing binding:
+/// `b.code` must resolve from the REQUIRED hop's row (`dest_code` on the scan
+/// that also carries `a.code` as `origin_code`), and the optional hop joins on
+/// that same required-side column.
+///
+/// Live-verified on `db_denormalized` (8 flights): 12 rows, with the
+/// optional-miss row `DEN | PHX | NULL` (was `DEN | NULL | NULL`); required
+/// 2-hop and single-hop variants byte-unchanged and matching hand-written SQL.
+#[tokio::test]
+async fn denorm_optional_second_hop_keeps_required_binding_491() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+    let repro = "MATCH (a:Airport)-[:FLIGHT]->(b) OPTIONAL MATCH (b)-[:FLIGHT]->(c) \
+                 RETURN a.code, b.code, c.code";
+
+    // Determinism: repeated in-process renders must be byte-identical.
+    let first = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+    for _ in 0..10 {
+        let again = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#491: OPTIONAL second-hop render is nondeterministic:\n\
+             FIRST:\n{first}\nAGAIN:\n{again}"
+        );
+    }
+
+    // Identify the required-hop and optional-hop scans structurally: a.code
+    // is the required hop's from-column; c.code is the optional hop's
+    // to-column; the optional hop is LEFT JOINed.
+    let binding = |col_alias: &str| -> (String, String) {
+        let re = regex::Regex::new(&format!(
+            r#"(t\d+)\.((?:origin|dest)_code) AS "{}""#,
+            regex::escape(col_alias)
+        ))
+        .unwrap();
+        let caps = re
+            .captures(&first)
+            .unwrap_or_else(|| panic!("#491: no binding for {col_alias}:\n{first}"));
+        (caps[1].to_string(), caps[2].to_string())
+    };
+    let (a_alias, a_col) = binding("a.code");
+    let (b_alias, b_col) = binding("b.code");
+    let (c_alias, c_col) = binding("c.code");
+
+    assert_eq!(
+        a_col, "origin_code",
+        "#491: a.code must be the required hop's from-column:\n{first}"
+    );
+    assert_eq!(
+        c_col, "dest_code",
+        "#491: c.code must be the optional hop's to-column:\n{first}"
+    );
+    assert_ne!(
+        a_alias, c_alias,
+        "#491: required and optional hops must be distinct scans:\n{first}"
+    );
+
+    // THE FIX: b must bind to the REQUIRED hop's row (its to-column), never to
+    // the optional hop's from-column (NULL-extended on optional miss).
+    assert_eq!(
+        (b_alias.as_str(), b_col.as_str()),
+        (a_alias.as_str(), "dest_code"),
+        "#491: b.code must resolve from the REQUIRED pattern's binding \
+         ({a_alias}.dest_code), not the OPTIONAL hop's:\n{first}"
+    );
+
+    // The optional hop must be a LEFT JOIN keyed on the required-side column.
+    let join_line = first
+        .lines()
+        .find(|l| l.contains("LEFT JOIN"))
+        .unwrap_or_else(|| panic!("#491: no LEFT JOIN line:\n{first}"));
+    assert!(
+        join_line.contains(&format!("{c_alias}.origin_code = {a_alias}.dest_code"))
+            || join_line.contains(&format!("{a_alias}.dest_code = {c_alias}.origin_code")),
+        "#491: optional hop must join its from-column to the required hop's \
+         to-column:\n{first}"
     );
 }
 

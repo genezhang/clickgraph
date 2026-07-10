@@ -619,12 +619,35 @@ pub fn register_denormalized_aliases(
     plan_ctx: &mut PlanCtx,
 ) {
     let rel_type = ctx.rel_types.first().cloned().unwrap_or_default();
+    // Is THIS pattern's relationship optional (introduced by OPTIONAL MATCH)?
+    // An OPTIONAL pattern must not steal the owning-edge binding of a node that
+    // an EARLIER pattern already bound: the registry drives both planner
+    // property resolution (`get_node_strategy`) and render alias mapping, so
+    // re-binding e.g. `b` in `MATCH (a)-[t1]->(b) OPTIONAL MATCH (b)-[t2]->(c)`
+    // to the LEFT-JOINed `t2` makes `b`'s properties NULL on exactly the rows
+    // the OPTIONAL hop misses, even though `b` matched (#491). Registration
+    // runs in plan order, so "existing entry" == "bound by an earlier pattern".
+    let rel_is_optional = plan_ctx.is_optional(rel_alias);
 
     match &ctx.join_strategy {
         JoinStrategy::SingleTableScan { .. } => {
             // Both nodes embedded in edge table
-            register_if_embedded(&ctx.left_node, left_alias, rel_alias, &rel_type, plan_ctx);
-            register_if_embedded(&ctx.right_node, right_alias, rel_alias, &rel_type, plan_ctx);
+            register_if_embedded(
+                &ctx.left_node,
+                left_alias,
+                rel_alias,
+                &rel_type,
+                rel_is_optional,
+                plan_ctx,
+            );
+            register_if_embedded(
+                &ctx.right_node,
+                right_alias,
+                rel_alias,
+                &rel_type,
+                rel_is_optional,
+                plan_ctx,
+            );
         }
         JoinStrategy::MixedAccess { joined_node, .. } => {
             // One node is embedded
@@ -637,13 +660,28 @@ pub fn register_denormalized_aliases(
                 embedded_alias,
                 rel_alias,
                 &rel_type,
+                rel_is_optional,
                 plan_ctx,
             );
         }
         JoinStrategy::EdgeToEdge { .. } => {
             // Both nodes embedded in edge
-            register_if_embedded(&ctx.left_node, left_alias, rel_alias, &rel_type, plan_ctx);
-            register_if_embedded(&ctx.right_node, right_alias, rel_alias, &rel_type, plan_ctx);
+            register_if_embedded(
+                &ctx.left_node,
+                left_alias,
+                rel_alias,
+                &rel_type,
+                rel_is_optional,
+                plan_ctx,
+            );
+            register_if_embedded(
+                &ctx.right_node,
+                right_alias,
+                rel_alias,
+                &rel_type,
+                rel_is_optional,
+                plan_ctx,
+            );
         }
         JoinStrategy::CoupledSameRow { unified_alias } => {
             // Both nodes embedded, but on the UNIFIED alias (not rel_alias)
@@ -652,6 +690,7 @@ pub fn register_denormalized_aliases(
                 left_alias,
                 unified_alias,
                 &rel_type,
+                rel_is_optional,
                 plan_ctx,
             );
             register_if_embedded(
@@ -659,6 +698,7 @@ pub fn register_denormalized_aliases(
                 right_alias,
                 unified_alias,
                 &rel_type,
+                rel_is_optional,
                 plan_ctx,
             );
         }
@@ -688,9 +728,25 @@ fn register_if_embedded(
     node_alias: &str,
     edge_alias: &str,
     rel_type: &str,
+    rel_is_optional: bool,
     plan_ctx: &mut PlanCtx,
 ) {
     if let NodeAccessStrategy::EmbeddedInEdge { is_from_node, .. } = strategy {
+        // #491: an OPTIONAL pattern must NOT overwrite an existing binding.
+        // The node's value is fixed by the earlier (plan-order) pattern that
+        // bound it; resolving its properties through the optional pattern's
+        // LEFT-JOINed table alias returns NULL on OPTIONAL-miss rows even
+        // though the node matched. Required patterns keep last-write-wins
+        // (#481): equality of the shared node is enforced by an inner join,
+        // so either binding carries the same value there.
+        if rel_is_optional && plan_ctx.get_denormalized_alias_info(node_alias).is_some() {
+            log::debug!(
+                "register_if_embedded: keeping existing binding for '{}' — optional pattern '{}' does not overwrite (#491)",
+                node_alias,
+                edge_alias
+            );
+            return;
+        }
         // Register in PlanCtx (for query planning phase)
         plan_ctx.register_denormalized_alias(
             node_alias.to_string(),
