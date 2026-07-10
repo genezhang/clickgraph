@@ -2486,55 +2486,122 @@ async fn fk_edge_461_multihop_optional_post_with_disconnected_anchor_known_broke
     );
 }
 
-/// KNOWN BROKEN — deferred (#479, the deepest issue in this family). On
-/// separate-edge schemas (standard `social` schema here; also denormalized
-/// `__denorm_scan` and zeek-coupled per the filing), a PLAIN (no-WITH)
-/// OPTIONAL MATCH node predicate lands in the outer WHERE, dropping the
-/// NULL-extended no-match rows. Root cause is DIFFERENT from #472/#473 (fixed
-/// above) and from #478/#461 (the nested-GraphRel chain-vs-star bug): here the
-/// join structure itself is fine (`u LEFT JOIN follows LEFT JOIN v`, correctly
-/// two separate joins for the separate edge table) but the WHERE-predicate
-/// placement pass never relocates `v.city = 'London'` into either join — it
-/// stays in the outer WHERE.
+/// FIXED (#479, the deepest issue in this family). On separate-edge schemas
+/// (standard `social` schema here), a PLAIN (no-WITH) OPTIONAL MATCH node
+/// predicate used to land in the outer WHERE, dropping the NULL-extended
+/// no-match rows (behaving like an INNER JOIN). Root cause was different from
+/// #472/#473 (fixed earlier) and from #478/#461 (the nested-GraphRel
+/// chain-vs-star bug): the join structure itself was fine (`u LEFT JOIN
+/// follows LEFT JOIN v`, correctly two separate joins for the separate edge
+/// table) but no pass relocated `v.city = 'London'` into either join — it
+/// stayed in the outer WHERE, evaluated AFTER both LEFT JOINs.
 ///
 /// The #474 fix intentionally did NOT touch this shape: a naive "pre_filter on
 /// just the `v` node join" fix was PROVEN WORSE by live ground-truth
 /// experiment (8 users, social schema) — it resurrects the unfiltered `follows`
 /// edge join as spurious duplicate NULL rows (12 rows instead of the correct
-/// 8; see #479's filing for the full experiment). The CORRECT fix folds the
-/// edge JOIN + node JOIN + predicate into ONE combined LEFT JOIN subquery
-/// gated on the anchor key (`u LEFT JOIN (SELECT ... FROM follows JOIN users
-/// WHERE city='London') combined ON combined.follower_id = u.user_id`) — a
-/// structural change to optional-pattern join planning in
-/// `join_builder.rs`/`plan_builder_utils.rs`'s GraphRel join extraction, not a
-/// predicate-relocation pass. Deferred per the explicit caution against
-/// shipping a fix that cannot be justified against hand-derived ground truth:
-/// the correct shape here is provably NOT what either #472's or #474's
-/// machinery would naively produce.
+/// 8; see #479's filing for the full experiment). Fixed with the CORRECT
+/// shape: a new post-hoc RenderPlan pass
+/// (`fold_optional_edge_node_join_with_predicate` in `plan_optimizer.rs`,
+/// registered first in `optimize_joins_in_plan`) that folds the edge JOIN +
+/// node JOIN + predicate into ONE combined LEFT JOIN subquery gated on the
+/// anchor key (`u LEFT JOIN (SELECT f.follower_id AS __cg_combined_anchor_key,
+/// v.* FROM follows AS f JOIN users AS v ON v.user_id = f.followed_id WHERE
+/// city='London') AS v ON v.__cg_combined_anchor_key = u.user_id`) — narrowly
+/// gated (single-column keys, edge alias unreferenced elsewhere, edge
+/// connects straight to FROM) so it only fires on exactly this shape; ALL
+/// WHERE conjuncts referencing solely the optional node are folded together
+/// (never a subset — a partially-folded group would leave the remainder in
+/// the outer WHERE to independently reproduce the same drop-NULL-rows bug).
 ///
-/// Live (social, 8 users): current behavior returns 2 rows; ground truth is 8
-/// (verified live, see PR description). Characterization lock below captures
-/// the current wrong SQL shape (predicate in the outer WHERE).
+/// Live (social, 8 users): ground truth is 8 rows (2 users have a London
+/// FOLLOWS target, 6 are NULL-extended). Old SQL (bare outer WHERE) returned
+/// 2; the "naive pre_filter on just `v`" alternative would have returned 12
+/// (verified live during the #479 investigation). New SQL returns exactly 8,
+/// matching every user and correctly NULL-extending the 6 without a London
+/// follow.
 #[tokio::test]
-async fn social_479_plain_optional_where_drops_null_extended_rows_known_broken() {
+async fn social_479_plain_optional_where_combined_subquery_preserves_null_extension() {
     let schema = load_schema(SchemaId::Standard.yaml_path());
     let cypher = "MATCH (u:User) OPTIONAL MATCH (u)-[:FOLLOWS]->(v:User) \
                   WHERE v.city = 'London' RETURN u.name, v.name";
     let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
 
+    // No bare outer WHERE on the optional node's predicate.
+    assert!(
+        !sql.lines()
+            .any(|l| l.trim_start().starts_with("WHERE v.city")),
+        "#479 regressed: predicate is back in a bare outer WHERE:\n{sql}"
+    );
+    // The combined subquery form: one LEFT JOIN folding the edge + node +
+    // predicate, gated on the anchor key.
+    assert!(
+        sql.contains("JOIN social.users_bench AS v ON v.user_id ="),
+        "#479 regressed: expected the combined subquery's inner node JOIN:\n{sql}"
+    );
+    assert!(
+        sql.contains("WHERE city = 'London'"),
+        "#479 regressed: expected the predicate inside the combined subquery:\n{sql}"
+    );
+    assert!(
+        sql.contains(".__cg_combined_anchor_key = u.user_id"),
+        "#479 regressed: expected the combined JOIN gated on the anchor key:\n{sql}"
+    );
+}
+
+/// KNOWN BROKEN — deferred. #479's OWN filing also names the denormalized
+/// `__denorm_scan` variant as affected, and it is — but via a DIFFERENT
+/// rendering path than the one just fixed above (`fold_optional_edge_node_
+/// join_with_predicate` in `plan_optimizer.rs`), so it is NOT covered by that
+/// fix and needs separate, dedicated investigation.
+///
+/// `MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b:Airport) WHERE
+/// b.city = 'Chicago' RETURN a.code, b.code` (denormalized `flights_denorm`
+/// schema — Airport node properties are embedded directly in the FLIGHT edge
+/// table, no separate Airport table) renders through a `__denorm_scan_a` CTE
+/// + a SINGLE LEFT JOIN (`LEFT JOIN db_denormalized.flights_denorm AS t1 ON
+/// a.code = t1.origin_code`) — i.e. this is the SINGLE-join shape #474's
+/// `apply_optional_node_pre_filters` (`join_builder.rs`) is designed to
+/// recover into a `pre_filter` subquery (exactly like the FK-edge case that
+/// mechanism already fixes) — yet it still leaves `t1.dest_city = 'Chicago'`
+/// in a bare outer WHERE, meaning `apply_optional_node_pre_filters` is either
+/// not reached for the `__denorm_scan` CTE path, or its match conditions
+/// (looking for a plain node JOIN by alias) don't recognize this CTE-fronted
+/// shape. Needs tracing through the `__denorm_scan` CTE construction path
+/// (likely `cte_extraction.rs` / denormalized-specific handling in
+/// `join_builder.rs`) to find where the single-join dedup and predicate
+/// relocation diverge from the plain FK-edge case — separate, dedicated
+/// investigation, not a small extension of the fix above.
+///
+/// Live (db_denormalized, 6 distinct origin airports: ATL/DEN/JFK/LAX/ORD/SFO):
+/// ground truth is 6 rows (LAX and SFO have a Chicago-bound flight; the other
+/// 4 are NULL-extended). Current behavior returns only 2 rows (LAX, SFO) —
+/// drops the 4 NULL-extended airports, the same disease as #479's main case.
+#[tokio::test]
+async fn denorm_479_plain_optional_where_drops_null_extended_rows_known_broken() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+    let cypher = "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b:Airport) \
+                  WHERE b.city = 'Chicago' RETURN a.code, b.code";
+    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+
     // Characterization lock: predicate still sits in a bare outer WHERE
-    // (post-join), which drops NULL-extended no-match users. If this starts
-    // failing because the WHERE is gone, that is progress toward the #479
-    // combined-subquery fix — verify against live ground truth (8 rows on the
-    // committed social fixture) before replacing this test.
-    let has_bare_outer_where = sql
-        .lines()
-        .any(|l| l.trim_start() == "WHERE v.city = 'London'");
+    // (post-join), which drops NULL-extended no-match airports. If this
+    // starts failing because the WHERE is gone, that is progress — verify
+    // against live ground truth (6 rows on the committed db_denormalized
+    // fixture) before replacing this test.
+    // Match `WHERE t<N>.dest_city` rather than a literal `t1` — the
+    // auto-generated relationship alias's numeric suffix varies with the
+    // global alias counter's position across the test binary.
+    let has_bare_outer_where = sql.lines().any(|l| {
+        let l = l.trim_start();
+        l.starts_with("WHERE t") && l.contains(".dest_city")
+    });
     assert!(
         has_bare_outer_where,
-        "#479 KNOWN BROKEN characterization stale — predicate no longer in a \
-         bare outer WHERE; if this is a genuine fix (verify live: must return \
-         8 rows, not 2 or 12), replace this test with a regression test:\n{sql}"
+        "#479 (denormalized) KNOWN BROKEN characterization stale — predicate \
+         no longer in a bare outer WHERE; if this is a genuine fix (verify \
+         live: must return 6 rows, not 2), replace this test with a \
+         regression test:\n{sql}"
     );
 }
 
