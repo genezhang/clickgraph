@@ -1,7 +1,7 @@
 pub mod cte_extraction;
 pub mod cte_generation;
 pub mod cte_manager;
-mod expression_utils;
+pub(crate) mod expression_utils;
 mod feature_flags;
 mod filter_builder;
 mod filter_pipeline;
@@ -110,6 +110,20 @@ pub fn logical_plan_to_render_plan_with_ctx(
     plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
 ) -> Result<RenderPlan, errors::RenderBuildError> {
     use plan_builder::RenderPlanBuilder;
+
+    // #497/#498: fixed-path metadata (path variable, hop count, node/rel
+    // aliases, ID columns, relationship type names) is computed and set on
+    // `render_plan.fixed_path_info` inside `to_render_plan_with_ctx` itself
+    // (see the closure wrapping its body in plan_builder.rs) — schema-pattern-
+    // agnostic (walks the GraphRel chain directly and reads each hop's
+    // ViewScan.from_id/to_id, rather than guessing hop count from a
+    // post-optimization JOIN count, which is wrong for FK-edge where 1 hop =
+    // 1 JOIN instead of 2). That makes `render_plan_to_sql`'s later
+    // best-effort fallback (`extract_fixed_path_info_from_plan`, which DOES
+    // use the wrong JOINs-count heuristic) skip for the common case, and the
+    // join-pruning guards that already check `fixed_path_info.node_aliases`
+    // (plan_optimizer.rs) become effective instead of permanently inert. No
+    // need to recompute it here too.
     logical_plan.to_render_plan_with_ctx(schema, plan_ctx, None)
 }
 
@@ -156,6 +170,19 @@ pub struct FixedPathMetadata {
     pub node_aliases: Vec<String>,
     /// List of relationship aliases (e.g., ["r"])
     pub rel_aliases: Vec<String>,
+    /// Maps node alias to (reference_alias, id_column) — `id_column` is the
+    /// full composite-aware `Identifier` (single or multi-column id), and
+    /// `reference_alias` is whichever alias is actually bound in FROM/JOIN
+    /// (the node's own alias, or the relationship's for a denormalized/
+    /// embedded node). Used to render `nodes(p)`.
+    #[serde(default)]
+    pub node_id_columns:
+        std::collections::HashMap<String, (String, crate::graph_catalog::config::Identifier)>,
+    /// Maps relationship alias to its Cypher relationship type name. Used to
+    /// render `relationships(p)` as an array of type-name literals, mirroring
+    /// the VLP recursive CTE's `path_relationships` column.
+    #[serde(default)]
+    pub rel_types: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

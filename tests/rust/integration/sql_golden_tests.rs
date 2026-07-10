@@ -4902,20 +4902,27 @@ async fn browser_vlp_path_return_uses_only_cte_defined_columns() {
     }
 }
 
-/// CHARACTERIZATION (pending the transitivity-clamp fix): the #488 path-var
-/// re-registration is deliberately GUARDED to directed patterns with
-/// min_hops >= 1, because `VlpTransitivityCheck`'s clamp-to-single-hop is
-/// semantically wrong for two shapes (pre-existing on main, filed as its own
-/// clamp follow-up issue):
+/// #496 UPDATE: `VlpTransitivityCheck`'s clamp-to-single-hop was semantically
+/// wrong for two shapes (pre-existing on main, tracked as #496):
 ///   - `*0..N` — zero-hop paths are real (the start node itself), so a
 ///     single-hop clamp drops rows;
 ///   - undirected — reverse-direction chaining can make >1-hop paths
-///     possible; the clamp never consults direction.
-/// For those shapes the guard keeps main's LOUD failure — `RETURN p` still
-/// renders `tuple(t.path_nodes, ...)` with NO recursive CTE (alias `t`
-/// unbound, ClickHouse Code 47 at exec) — rather than silently returning the
-/// clamped wrong rows. When the clamp itself is fixed, these shapes should
-/// produce real paths and this lock must be replaced with byte-goldens.
+///     possible; the clamp never consulted direction.
+/// The #496 fix does NOT attempt to render either shape (both were shown live
+/// to require the recursive-VLP-CTE machinery to support heterogeneous
+/// start/end node tables across every schema pattern — a real rendering
+/// feature, not a clamp fix, out of scope for #496). Instead it converts
+/// main's previous SILENT-WRONG-RESULTS failure mode (`RETURN p` rendered
+/// `tuple(t.path_nodes, ...)` referencing a NEVER-generated recursive CTE —
+/// alias `t` unbound, ClickHouse Code 47 only surfaces at EXECUTION time, and
+/// only when a path variable happens to be bound) into a clean, immediate
+/// `AnalyzerError::InvalidPlan` at PLAN time, for ANY query using these
+/// shapes (path variable or not — the old bug only manifested with a path
+/// variable bound; the clamp itself was wrong regardless). This is strictly
+/// louder/earlier than before: previously an unbound-path-variable query on
+/// these shapes could still silently return the wrong single-hop-clamped
+/// rows if `RETURN p` wasn't used (e.g. `RETURN count(*)`); now it errors
+/// unconditionally at plan time.
 #[tokio::test]
 async fn fk_edge_nontransitive_vlp_guarded_shapes_stay_loud_488() {
     let schema = load_schema(SchemaId::FkEdge.yaml_path());
@@ -4926,21 +4933,16 @@ async fn fk_edge_nontransitive_vlp_guarded_shapes_stay_loud_488() {
         "MATCH p = (o:Order)-[:PLACED_BY*1..2]-(c) RETURN p",
     ] {
         for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
-            let sql = render(&schema, cypher, dialect).await;
+            let err = try_render(&schema, cypher, dialect)
+                .await
+                .expect_err(&format!(
+                    "guarded shape must fail loudly at plan time (not silently \
+                     clamp) for {dialect:?}: {cypher}"
+                ));
             assert!(
-                sql.contains("t.path_nodes"),
-                "guarded shape must keep the loud unbound-`t` rendering (not \
-                 silently clamp) for {dialect:?}: {cypher}\n{sql}"
-            );
-            assert!(
-                !sql.contains("fixed_path"),
-                "guarded shape must NOT take the fixed-path route (that would \
-                 silently return clamped rows) for {dialect:?}: {cypher}\n{sql}"
-            );
-            assert!(
-                !sql.to_uppercase().contains("WITH RECURSIVE"),
-                "no recursive CTE is expected for these shapes until the clamp \
-                 fix lands for {dialect:?}: {cypher}\n{sql}"
+                err.contains("#496") && err.contains("not yet supported"),
+                "expected a clear #496 UnsupportedFeature-style plan error for \
+                 {dialect:?}: {cypher}\nGot: {err}"
             );
         }
     }
@@ -5264,4 +5266,284 @@ async fn union_every_arm_limit_applies_independently() {
         limit_count, 2,
         "expected exactly 2 LIMIT clauses (one bound to each arm), got {limit_count}:\n{sql}"
     );
+}
+
+/// Regression tests for the #496/#497/#498/#499/#501 VLP/fixed-path family.
+mod vlp_fixed_path_family_496_497_498_499_501 {
+    use super::*;
+
+    /// #497: `nodes(p)`/`relationships(p)` on a FIXED (non-VLP) path must
+    /// expand to real array-construct expressions from the matched node/edge
+    /// aliases, not the literal (unbound) function call. Verified against the
+    /// standard schema; FK-edge and denormalized are covered by the golden
+    /// corpus transitions (test_fixtures/test_path_variables__TestNodesFunction*,
+    /// zeek_dns/test_vlp_path_var_*).
+    #[tokio::test]
+    async fn fixed_path_nodes_and_relationships_expand_497() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH p = (a:User)-[:FOLLOWS]->(b:User) RETURN nodes(p), relationships(p)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !sql.contains("nodes(p) AS") && !sql.contains("relationships(p) AS"),
+            "nodes(p)/relationships(p) must not survive as a literal (unbound) \
+             function call — only as a SELECT column alias label: {sql}"
+        );
+        assert!(
+            sql.contains("array(a.") && sql.contains("array('FOLLOWS')"),
+            "expected array-construct expansion for both functions: {sql}"
+        );
+    }
+
+    /// #498: `length(p)` on a fixed path must return the real hop count AND
+    /// keep the join that provides the end node — on FK-edge specifically,
+    /// where the edge has no separate table and the join was previously
+    /// silently pruned as "unreferenced" once `length(p)` was rewritten to a
+    /// bare literal.
+    #[tokio::test]
+    async fn fixed_path_length_fk_edge_keeps_join_and_correct_constant_498() {
+        let schema = load_schema(SchemaId::FkEdge.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH p = (o:Order)-[:PLACED_BY]->(c) RETURN length(p)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("1 AS \"length(p)\""),
+            "FK-edge length(p) on a 1-hop fixed path must be the literal 1, not 0: {sql}"
+        );
+        assert!(
+            sql.to_uppercase().contains("JOIN"),
+            "the customer join must not be silently pruned just because \
+             length(p) doesn't literally reference the end-node alias: {sql}"
+        );
+    }
+
+    /// #496: undirected and `*0..N` non-transitive VLP patterns must fail
+    /// LOUDLY at plan time (a clear #496 error) instead of silently returning
+    /// clamped-wrong rows. Directed `*1..N` (effective min_hops==1) keeps the
+    /// exact single-hop clamp. Self-loop/transitive relationships (e.g.
+    /// FOLLOWS on Users) are unaffected by any of this — chaining is real for
+    /// them regardless of direction or zero-hop bounds.
+    #[tokio::test]
+    async fn vlp_clamp_loud_for_undirected_and_zero_hop_496() {
+        let schema = load_schema(SchemaId::FkEdge.yaml_path());
+
+        // Zero-hop, directed, non-transitive -> loud #496 error.
+        let err = try_render(
+            &schema,
+            "MATCH (o:Order)-[:PLACED_BY*0..2]->(c) RETURN count(*)",
+            SqlDialect::ClickHouse,
+        )
+        .await
+        .expect_err("zero-hop non-transitive VLP must error, not silently clamp");
+        assert!(err.contains("#496"), "expected a #496 error: {err}");
+
+        // Undirected, non-transitive -> loud #496 error.
+        let err = try_render(
+            &schema,
+            "MATCH (o:Order)-[:PLACED_BY*1..2]-(c) RETURN count(*)",
+            SqlDialect::ClickHouse,
+        )
+        .await
+        .expect_err("undirected non-transitive VLP must error, not silently clamp");
+        assert!(err.contains("#496"), "expected a #496 error: {err}");
+
+        // Directed, min_hops==1, non-transitive -> still the exact clamp
+        // (fixed single-hop join, no CTE, no error).
+        let sql = render(
+            &schema,
+            "MATCH (o:Order)-[:PLACED_BY*1..2]->(c) RETURN count(*)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !sql.to_uppercase().contains("WITH RECURSIVE"),
+            "directed min_hops==1 non-transitive VLP should clamp to a plain \
+             join, not a recursive CTE: {sql}"
+        );
+    }
+
+    /// #499: comma-separated multi-pattern MATCH with two independent path
+    /// variables, each over a non-transitive relationship (so both correctly
+    /// clamp to the fixed-path route per #496) must render BOTH patterns
+    /// fully — not the same broken `tuple(t.path_nodes, ...)` referenced
+    /// twice with no CTE (main's pre-fix behavior).
+    #[tokio::test]
+    async fn multi_pattern_independent_path_vars_fixed_route_499() {
+        let schema = load_schema(SchemaId::FkEdge.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH p1 = (o:Order)-[:PLACED_BY*1..2]->(c), p2 = (o2:Order)-[:PLACED_BY*1..2]->(c2) RETURN p1, p2",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert_eq!(
+            sql.matches("tuple('fixed_path', 'o', 'c'").count(),
+            1,
+            "p1 must be expanded exactly once: {sql}"
+        );
+        assert_eq!(
+            sql.matches("tuple('fixed_path', 'o2', 'c2'").count(),
+            1,
+            "p2 must be expanded exactly once (not a duplicate of p1's CTE \
+             reference): {sql}"
+        );
+        assert!(
+            sql.matches("orders_fk").count() >= 2,
+            "both independent Order patterns must be scanned: {sql}"
+        );
+    }
+
+    /// #499 (remaining architectural gap, not silently wrong): two independent
+    /// patterns that BOTH need a genuine recursive VLP CTE (transitive
+    /// relationships, not clamped by #496) must fail loudly — the CTE-trigger
+    /// machinery only supports one recursive VLP CTE per query today.
+    #[tokio::test]
+    async fn multi_pattern_two_real_vlp_ctes_loud_499() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let err = try_render(
+            &schema,
+            "MATCH p1 = (a:User)-[:FOLLOWS*1..2]->(b:User), p2 = (a2:User)-[:FOLLOWS*1..2]->(b2:User) RETURN p1, p2",
+            SqlDialect::ClickHouse,
+        )
+        .await
+        .expect_err("two independent real VLP CTEs in one MATCH must error, not silently drop one");
+        assert!(err.contains("#499"), "expected a #499 error: {err}");
+    }
+
+    /// #499 (review follow-up): exactly ONE real VLP branch combined with one
+    /// already-fixed sibling branch in a CartesianProduct is just as broken
+    /// as two real VLP branches — the VLP branch's entire FROM/JOIN vanishes
+    /// from the render (not merely a missing JOIN) while its path variable
+    /// still references the never-generated CTE alias `t`. The original
+    /// guard only checked `count > 1`; this exercises the `count == 1`
+    /// (mixed) case the review found escaping it.
+    #[tokio::test]
+    async fn multi_pattern_one_vlp_one_fixed_loud_499() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let err = try_render(
+            &schema,
+            "MATCH p1 = (a:User)-[:FOLLOWS*1..2]->(b:User), p2 = (u2:User)-[:AUTHORED]->(post2) RETURN p1, p2",
+            SqlDialect::ClickHouse,
+        )
+        .await
+        .expect_err(
+            "one real VLP branch mixed with one fixed sibling branch must \
+             error, not silently drop the VLP branch's FROM/JOIN",
+        );
+        assert!(err.contains("#499"), "expected a #499 error: {err}");
+    }
+
+    /// #501: chaining a plain relationship onto a variable-length leg under a
+    /// path variable (`MATCH p = (a)-[:A*1..2]->(b)-[:B]->(c) RETURN c`) must
+    /// keep the trailing leg's JOIN. Root cause was a stale `is_shortest_path`
+    /// check (really just "does any CTE have a path variable") that
+    /// unconditionally stripped every non-CTE JOIN whenever ANY path variable
+    /// was declared — even when the JOIN was demonstrably load-bearing.
+    #[tokio::test]
+    async fn vlp_chained_trailing_leg_keeps_join_under_path_variable_501() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+
+        // RETURN of a node from the trailing (fixed) leg only — no path
+        // function at all — is the strongest form of the regression: the old
+        // buggy code stripped the JOIN for ANY path-variable query.
+        let sql = render(
+            &schema,
+            "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User)-[:AUTHORED]->(c) RETURN c",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.to_uppercase().contains("JOIN") && sql.contains("posts_bench"),
+            "the AUTHORED leg's JOIN to posts must survive: {sql}"
+        );
+        assert!(
+            sql.contains("c.post_id") || sql.contains("c.author_id"),
+            "c's properties must resolve against a bound alias, not an \
+             unbound one: {sql}"
+        );
+
+        // RETURN p: the path tuple's metadata columns must also be backed by
+        // a real JOIN.
+        let sql = render(
+            &schema,
+            "MATCH p = (a:User)-[:FOLLOWS*1..2]->(b:User)-[:AUTHORED]->(c) RETURN p",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("INNER JOIN") && sql.matches("JOIN").count() >= 2,
+            "expected the VLP CTE plus at least one real trailing JOIN: {sql}"
+        );
+    }
+
+    /// #497 (review follow-up, BLOCKING finding): `nodes(p)` on a fixed path
+    /// through a COMPOSITE-key node (`Account`, keyed on `(bank_id,
+    /// account_number)` in `schemas/test/composite_node_ids.yaml`) must carry
+    /// the node's FULL identity. A prior version of the #497 fix read
+    /// `ViewScan.id_column: String` (a single lossy column), which silently
+    /// dropped `account_number` entirely — `nodes(p)` would render
+    /// `array(c.customer_id, a.bank_id, a2.bank_id)`, structurally valid SQL
+    /// that quietly discards half of each Account's identity. Fixed by
+    /// routing through `PatternSchemaContext`/`NodeAccessStrategy`, whose
+    /// `id_column` is a full composite-aware `Identifier`, and pipe-joining
+    /// composite columns the same way the VLP recursive CTE already does
+    /// (`emit_id_expr` in variable_length_cte.rs).
+    #[tokio::test]
+    async fn fixed_path_nodes_composite_id_keeps_all_columns_497() {
+        let schema = load_schema(SchemaId::CompositeId.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH p = (c:Customer)-[:OWNS]->(a:Account)-[:TRANSFERRED]->(a2:Account) RETURN nodes(p)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        // Both Account occurrences must reference BOTH composite columns.
+        for alias in ["a", "a2"] {
+            assert!(
+                sql.contains(&format!("{alias}.bank_id"))
+                    && sql.contains(&format!("{alias}.account_number")),
+                "composite Account id for '{alias}' must reference BOTH \
+                 bank_id AND account_number, not silently drop one: {sql}"
+            );
+        }
+        // The single-column Customer id must still resolve plainly (or, if
+        // cast to string for array-type consistency with the composite
+        // entries, via a string cast — either way it must reference
+        // customer_id, not be silently dropped either).
+        assert!(
+            sql.contains("c.customer_id"),
+            "single-column Customer id must still be present: {sql}"
+        );
+        // A composite id renders as a pipe-joined concat — lock that shape so
+        // a future refactor can't silently regress back to a single column.
+        assert!(
+            sql.contains("concat(") && sql.contains("'|'"),
+            "expected a pipe-joined composite-id expression: {sql}"
+        );
+    }
+
+    /// #497 (review follow-up): a path touching ONLY single-column ids must
+    /// stay byte-identical to before the composite-ID fix — no spurious
+    /// string casts / pipe-joins for the common (non-composite) case.
+    #[tokio::test]
+    async fn fixed_path_nodes_single_column_unaffected_by_composite_fix_497() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH p = (a:User)-[:FOLLOWS]->(b:User) RETURN nodes(p)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("array(a.user_id, b.user_id)"),
+            "single-column ids must render as plain array(...) with no cast \
+             or pipe-join scaffolding: {sql}"
+        );
+    }
 }
