@@ -453,6 +453,74 @@ fn recover_cypher_arm_modifiers(
     Ok(())
 }
 
+/// #515: a genuine Cypher `UNION` (`union.is_cypher_union`) combines its arms
+/// POSITIONALLY once rendered to SQL (`SELECT ... UNION [ALL] SELECT ...`),
+/// with each arm's own column order. Neo4j requires every arm to declare the
+/// SAME column names ("All sub queries in a UNION must have the same column
+/// names") and errors otherwise. Without this check, arms whose column names
+/// matched as a SET but were declared in a different order silently
+/// misaligned values under the wrong column (a value meant for `b` landing
+/// under `a`), and arms with genuinely different names silently NULL-padded
+/// via `normalize_union_branches` — both are internal-union machinery
+/// (denormalized/polymorphic node scans, `pattern_union` CTEs, etc.) that
+/// legitimately reconciles differing branch shapes and must stay untouched
+/// for `is_cypher_union == false`.
+///
+/// We require an EXACT match — same names, same order — rather than
+/// reordering arms to align by name: the SQL is emitted positionally, so
+/// requiring identical order is the simplest, lowest-risk rule that can
+/// never itself misalign a value, and matches Neo4j's rejection behavior for
+/// any of the shapes that Cypher UNION forbids.
+fn validate_cypher_union_column_names(
+    branch_renders: &[RenderPlan],
+    is_cypher_union: bool,
+) -> RenderPlanBuilderResult<()> {
+    if !is_cypher_union || branch_renders.len() < 2 {
+        return Ok(());
+    }
+
+    fn column_names(plan: &RenderPlan) -> Vec<String> {
+        plan.select
+            .items
+            .iter()
+            .map(|item| {
+                item.col_alias
+                    .as_ref()
+                    .map(|a| a.0.clone())
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    // A branch pruned to `LogicalPlan::Empty` (e.g. an unlabeled node/type
+    // probe that Track C determined matches 0 types) renders as the
+    // `SELECT 1 AS "_empty" WHERE false` placeholder, which legitimately has
+    // different columns from its real siblings — that's an internal
+    // 0-row-contribution marker, not a user-facing column-name mismatch.
+    // `normalize_union_branches` applies the same exclusion for the same
+    // reason (see its own doc comment).
+    let real_branches: Vec<&RenderPlan> = branch_renders
+        .iter()
+        .filter(|plan| !super::plan_builder_helpers::is_empty_placeholder(plan))
+        .collect();
+    if real_branches.len() < 2 {
+        return Ok(());
+    }
+
+    let first_columns = column_names(real_branches[0]);
+    for (idx, branch) in real_branches.iter().enumerate().skip(1) {
+        let arm_columns = column_names(branch);
+        if arm_columns != first_columns {
+            return Err(RenderBuildError::UnionColumnMismatch {
+                arm_index: idx,
+                arm_columns: arm_columns.join(", "),
+                first_columns: first_columns.join(", "),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Whether any SELECT item carries an aggregate function anywhere in its
 /// expression tree (directly, or nested inside a scalar call / operator). Used
 /// to decide whether a base+union render must consolidate all branches into
@@ -3595,6 +3663,11 @@ impl RenderPlanBuilder for LogicalPlan {
                         branch_renders.push(branch_render);
                     }
 
+                    // #515: reject a Cypher UNION whose arms don't declare the
+                    // same column names, before any normalization/path-union
+                    // handling could paper over the mismatch.
+                    validate_cypher_union_column_names(&branch_renders, union.is_cypher_union)?;
+
                     // Check if this is a path UNION query by examining the logical plan
                     // Note: UNION branches can be either:
                     // 1. GraphRel directly (from planner's UNION expansion)
@@ -4505,6 +4578,10 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
                 branch_renders.push(branch_render);
             }
+
+            // #515: reject a Cypher UNION whose arms don't declare the same
+            // column names (see the sibling check above for the full rationale).
+            validate_cypher_union_column_names(&branch_renders, union.is_cypher_union)?;
 
             // Use first branch as base and put rest in union.input
             let mut base_render = branch_renders.into_iter().next().unwrap();

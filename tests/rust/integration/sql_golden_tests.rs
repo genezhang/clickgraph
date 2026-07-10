@@ -4488,3 +4488,123 @@ async fn standard_path_unlabeled_pattern_union_name_is_unstable() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// #514: mixed UNION / UNION ALL chains must error, not silently coerce to the
+// first arm's type.
+// ---------------------------------------------------------------------------
+
+/// A chain mixing UNION and UNION ALL previously silently applied the FIRST
+/// clause's type to the whole chain (`... UNION ... UNION ALL ...` ran as if
+/// every arm were UNION). Neo4j rejects this outright ("Invalid combination
+/// of UNION and UNION ALL"); we must too, for every ordering of the mix.
+#[tokio::test]
+async fn mixed_union_and_union_all_errors_cleanly() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    for cypher in [
+        // UNION ... UNION ALL
+        "MATCH (u:User) RETURN u.user_id AS id LIMIT 5 \
+         UNION MATCH (u2:User) RETURN u2.user_id AS id LIMIT 5 \
+         UNION ALL MATCH (u3:User) RETURN u3.user_id AS id LIMIT 5",
+        // UNION ALL ... UNION
+        "MATCH (u:User) RETURN u.user_id AS id LIMIT 5 \
+         UNION ALL MATCH (u2:User) RETURN u2.user_id AS id LIMIT 5 \
+         UNION MATCH (u3:User) RETURN u3.user_id AS id LIMIT 5",
+    ] {
+        let result = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+        match result {
+            Err(msg) => assert!(
+                msg.contains("MixedUnionTypes") || msg.contains("Invalid combination"),
+                "[{cypher}] must fail with a MixedUnionTypes error, got: {msg}"
+            ),
+            Ok(sql) => panic!(
+                "[{cypher}] a UNION chain mixing UNION and UNION ALL must error \
+                 cleanly instead of silently coercing to the first arm's type; \
+                 rendered:\n{sql}"
+            ),
+        }
+    }
+}
+
+/// A uniform chain (all UNION, or all UNION ALL — including chains of 3+
+/// arms) must still render successfully; only a genuine mix is rejected.
+#[tokio::test]
+async fn uniform_union_chains_still_render() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    for cypher in [
+        "MATCH (u:User) RETURN u.user_id AS id LIMIT 5 \
+         UNION MATCH (u2:User) RETURN u2.user_id AS id LIMIT 5 \
+         UNION MATCH (u3:User) RETURN u3.user_id AS id LIMIT 5",
+        "MATCH (u:User) RETURN u.user_id AS id LIMIT 5 \
+         UNION ALL MATCH (u2:User) RETURN u2.user_id AS id LIMIT 5 \
+         UNION ALL MATCH (u3:User) RETURN u3.user_id AS id LIMIT 5",
+    ] {
+        let result = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            result.is_ok(),
+            "[{cypher}] a uniform UNION chain must still render: {:?}",
+            result.err()
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #515: UNION arms are combined positionally with no column-name check.
+// Neo4j requires identical column names (as a set) across every arm.
+// ---------------------------------------------------------------------------
+
+/// Arms with the same column set but declared in a different order must
+/// error rather than silently misaligning values under the wrong column
+/// (live-verified pre-fix: a post title landed under column `a`, despite the
+/// second arm aliasing it `AS b`).
+#[tokio::test]
+async fn union_reordered_column_names_errors_cleanly() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (u:User) RETURN u.user_id AS a, u.name AS b \
+                  UNION MATCH (p:Post) RETURN p.title AS b, p.post_id AS a";
+    let result = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+    match result {
+        Err(msg) => assert!(
+            msg.contains("UnionColumnMismatch") || msg.contains("same column names"),
+            "must fail with a UnionColumnMismatch error, got: {msg}"
+        ),
+        Ok(sql) => panic!(
+            "reordered column names across UNION arms must error cleanly \
+             instead of silently misaligning by position; rendered:\n{sql}"
+        ),
+    }
+}
+
+/// Arms with genuinely different column names must error rather than
+/// silently NULL-padding to the union of both column sets.
+#[tokio::test]
+async fn union_mismatched_column_names_errors_cleanly() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (u:User) RETURN u.user_id AS id \
+                  UNION MATCH (p:Post) RETURN p.title AS title";
+    let result = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+    match result {
+        Err(msg) => assert!(
+            msg.contains("UnionColumnMismatch") || msg.contains("same column names"),
+            "must fail with a UnionColumnMismatch error, got: {msg}"
+        ),
+        Ok(sql) => panic!(
+            "mismatched column names across UNION arms must error cleanly \
+             instead of silently NULL-padding; rendered:\n{sql}"
+        ),
+    }
+}
+
+/// Arms with identical column names in the SAME order must still render
+/// successfully — the common, correct case.
+#[tokio::test]
+async fn union_matching_column_names_still_renders() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (u:User) RETURN u.name AS x UNION MATCH (p:Post) RETURN p.title AS x";
+    let result = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+    assert!(
+        result.is_ok(),
+        "matching column names in the same order must still render: {:?}",
+        result.err()
+    );
+}

@@ -5,6 +5,16 @@ pub enum RenderBuildError {
     #[error("No From Table.")]
     MissingFromTable,
 
+    #[error(
+        "All sub queries in a UNION must have the same column names. Arm {arm_index} returns \
+         [{arm_columns}], but the first arm returns [{first_columns}]."
+    )]
+    UnionColumnMismatch {
+        arm_index: usize,
+        arm_columns: String,
+        first_columns: String,
+    },
+
     #[error("No Select items.")]
     MissingSelectItems,
 

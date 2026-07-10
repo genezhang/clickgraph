@@ -2721,6 +2721,31 @@ pub(super) fn is_invalid_filter_expression(expr: &RenderExpr) -> bool {
     }
 }
 
+/// Whether `p` is exactly the `SELECT 1 AS "_empty" WHERE false` placeholder
+/// a branch renders as when it's pruned to `LogicalPlan::Empty` (e.g. an
+/// unlabeled `MATCH (n)` whose property no node type has). Detected by exact
+/// SHAPE — not by the alias name — so a column a user legitimately aliases
+/// `_empty` (`RETURN x AS _empty`) is never mistaken for the placeholder.
+///
+/// Shared by [`normalize_union_branches`] (so the placeholder's `_empty`
+/// column never enters the unified column set and forces a spurious
+/// `NULL AS "_empty"` on every other branch) and by the `#515` Cypher-UNION
+/// column-name check in `plan_builder.rs` (so a branch that Track C pruned
+/// to 0 rows isn't mistaken for a genuine column-name mismatch).
+pub(super) fn is_empty_placeholder(p: &super::RenderPlan) -> bool {
+    use crate::render_plan::render_expr::{Literal, RenderExpr};
+    p.select.items.len() == 1
+        && p.select.items[0].col_alias.as_ref().map(|a| a.0.as_str()) == Some("_empty")
+        && matches!(
+            p.select.items[0].expression,
+            RenderExpr::Literal(Literal::Integer(1))
+        )
+        && matches!(
+            p.filters.0,
+            Some(RenderExpr::Literal(Literal::Boolean(false)))
+        )
+}
+
 /// Normalize UNION branch SELECT items so all branches have the same columns.
 /// For denormalized node queries where from_node_properties and to_node_properties
 /// might have different property sets, we need to:
@@ -2736,28 +2761,6 @@ pub(super) fn normalize_union_branches(
 
     if union_plans.is_empty() {
         return union_plans;
-    }
-
-    // A branch pruned to `LogicalPlan::Empty` renders as exactly the placeholder
-    // `SELECT 1 AS "_empty" WHERE false` (e.g. an unlabeled `MATCH (n)` whose
-    // property no node type has). Its `_empty` column must NOT enter the unified
-    // column set, or every branch gets padded with a spurious `NULL AS "_empty"`
-    // that breaks the declared RETURN arity (Bolt field-count mismatch / ClickHouse
-    // "UNION different number of columns"). Detect such branches by their exact
-    // SHAPE — not by the alias name — so a column a user legitimately aliases
-    // `_empty` (`RETURN x AS _empty`) is preserved.
-    fn is_empty_placeholder(p: &super::RenderPlan) -> bool {
-        use crate::render_plan::render_expr::{Literal, RenderExpr};
-        p.select.items.len() == 1
-            && p.select.items[0].col_alias.as_ref().map(|a| a.0.as_str()) == Some("_empty")
-            && matches!(
-                p.select.items[0].expression,
-                RenderExpr::Literal(Literal::Integer(1))
-            )
-            && matches!(
-                p.filters.0,
-                Some(RenderExpr::Literal(Literal::Boolean(false)))
-            )
     }
 
     // If every branch is an empty placeholder (the whole UNION pruned to 0 rows),

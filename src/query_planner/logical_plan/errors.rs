@@ -37,6 +37,11 @@ pub enum LogicalPlanError {
     QueryPlanningError(String),
     #[error("Invalid schema for node label '{label}': {reason}")]
     InvalidSchema { label: String, reason: String },
+    #[error(
+        "Invalid combination of UNION and UNION ALL: all arms of a UNION chain must use the \
+         same union type (either all UNION or all UNION ALL)."
+    )]
+    MixedUnionTypes,
 }
 
 impl From<crate::query_planner::logical_expr::errors::LogicalExprError> for LogicalPlanError {
