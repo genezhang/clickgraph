@@ -5268,6 +5268,215 @@ async fn union_every_arm_limit_applies_independently() {
     );
 }
 
+/// #517: a WITH clause inside one arm of a Cypher UNION must not leak its
+/// CTE substitution into a sibling arm that never had a WITH clause at all.
+/// Root cause was THREE independent render-phase functions
+/// (`replace_with_clause_with_cte_reference_v2`, `CteColumnResolver`'s
+/// `LogicalPlan::Union` handling, and `update_graph_joins_cte_refs`) that
+/// each recursed into every UNION branch unconditionally with the SAME
+/// global CTE-reference map/alias-matching logic, with no notion of which
+/// branch actually contained the WITH clause. Fixed all three to scope the
+/// CTE lookahead to each Cypher-UNION branch's own WITH-exported aliases.
+///
+/// The two arms here use DIFFERENT variable names (`u` vs `v`) — the common
+/// real-world shape (and the shape that's now fully correct end-to-end,
+/// live-verified against ClickHouse: 8 users x c=0 from the second arm, 8 x
+/// c=1 from the first, 16 rows total).
+#[tokio::test]
+async fn with_clause_in_union_arm_does_not_leak_into_sibling_arm_517() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH (u:User) WITH u, count(*) as c WHERE c > 0 RETURN u.user_id AS uid, c \
+         UNION MATCH (v:User) RETURN v.user_id AS uid, 0 as c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+
+    // The second arm must scan its own table directly — not join or
+    // self-alias the first arm's CTE.
+    assert!(
+        sql.contains("FROM social.users_bench AS v"),
+        "second arm must scan users_bench directly as 'v', not reference \
+         the first arm's WITH-clause CTE: {sql}"
+    );
+    assert!(
+        !sql.contains("with_c_u_cte_0 AS v") && !sql.contains("AS v ON 1"),
+        "second arm must not join or duplicate-alias the first arm's CTE: {sql}"
+    );
+    // The second arm's own property access must resolve locally (to its own
+    // scan alias 'v'), not to any CTE-encoded column name.
+    assert!(
+        sql.contains("v.user_id AS \"uid\""),
+        "second arm's uid must resolve to a plain v.user_id, not a \
+         CTE-encoded column: {sql}"
+    );
+}
+
+/// #517 (documented residual gap, NOT fully fixed): when BOTH arms reuse
+/// the EXACT SAME Cypher variable name (`u` in both, independent scopes),
+/// the FROM-clause fix above still applies correctly (no duplicate-alias
+/// self-join), but the SELECT list still exhibits a narrower residual
+/// leak — traced to `VariableScope`'s `cte_variables` map (built once,
+/// globally, for the whole rendered plan via
+/// `build_chained_with_match_cte_plan`'s `final_scope`, with no per-Union-
+/// branch scoping) still resolving the second arm's `u.user_id` against the
+/// first arm's CTE property mapping. This produces a LOUD ClickHouse
+/// "unknown identifier" error (ground rule 1 is not violated — no silently
+/// wrong rows), not the original "duplicate-alias CTE self-join". A full
+/// fix requires arm-scoped variable resolution threaded through
+/// `to_render_plan_with_ctx`, a materially larger change than the three
+/// contained fixes applied for the general case above. This test locks in
+/// the CURRENT (improved but incomplete) shape so a future fix's diff is
+/// visible, and guards against a regression back to the ORIGINAL
+/// duplicate-alias-self-join shape.
+#[tokio::test]
+async fn with_clause_in_union_arm_same_alias_reused_from_clause_fixed_select_list_open_517() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH (u:User) WITH u, count(*) as c WHERE c > 0 RETURN u.user_id, c \
+         UNION MATCH (u:User) RETURN u.user_id, 0 as c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+
+    // FIXED: the second arm's FROM must be a direct table scan, not a join
+    // to (or duplicate alias of) the first arm's CTE.
+    assert!(
+        sql.contains("FROM social.users_bench AS u"),
+        "second arm must scan users_bench directly (FROM-clause fix must \
+         hold even when both arms reuse the same alias name): {sql}"
+    );
+    assert!(
+        !sql.to_uppercase().contains("JOIN WITH_C_U_CTE"),
+        "second arm must never JOIN the first arm's CTE (the original \
+         'duplicate-alias CTE self-join' shape this issue reported): {sql}"
+    );
+}
+
+/// #518: a DIRECTED same-type multi-hop pattern (`(a)-[:FOLLOWS]->(b)
+/// -[:FOLLOWS]->(c)`) must get the same relationship-uniqueness guard
+/// (`r1 <> r2`) that #492 already gives the UNDIRECTED case — Neo4j forbids
+/// binding the same relationship twice in one MATCH, regardless of
+/// direction. Root cause: `GraphJoinInference` computed the guard correctly
+/// (Phase 4, `cross_branch::generate_relationship_uniqueness_constraints`)
+/// and attached it to `GraphJoins.correlation_predicates`, but the SHARED
+/// `GraphJoins::rebuild_or_clone` helper — used by most optimizer passes
+/// whenever a `GraphJoins`' input changes (projection push-down, filter
+/// push-down, view optimizer, cartesian join extraction, ...) —
+/// unconditionally reconstructed it with `correlation_predicates: vec![]`,
+/// silently dropping the guard for every query that touched any of those
+/// passes. Live-verified against ClickHouse (19 rows, matching raw-SQL
+/// ground truth) and via a synthetic self-loop (the guard correctly
+/// excludes a relationship compared against itself: 0 rows).
+#[tokio::test]
+async fn directed_same_type_multihop_gets_relationship_uniqueness_guard_518() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS]->(c:User) \
+         RETURN a.user_id, b.user_id, c.user_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+
+    assert!(
+        sql.to_uppercase().contains("WHERE"),
+        "directed same-type 2-hop must emit a WHERE clause with the \
+         relationship-uniqueness guard: {sql}"
+    );
+    assert!(
+        sql.contains("follower_id <> ")
+            && sql.contains("followed_id <> ")
+            && sql.contains(".follower_id")
+            && sql.contains(".followed_id"),
+        "expected an OR-of-column-inequality uniqueness guard comparing the \
+         two FOLLOWS hop aliases' follower_id/followed_id columns: {sql}"
+    );
+}
+
+/// #518 (correctness guards found via corpus_sweep + live verification
+/// while fixing the above): the uniqueness-constraint generator must NOT
+/// fire in two cases where it previously would have produced actively
+/// WRONG SQL once correlation_predicates started reaching the WHERE clause:
+///   1. Two edges of UNRELATED relationship types (can never be the same
+///      physical edge) — comparing their id columns is nonsensical and, for
+///      some schemas, silently drops legitimate rows.
+///   2. A relationship introduced by OPTIONAL MATCH — the guard must not
+///      land in a plain WHERE clause ANDed against a LEFT JOIN, which would
+///      turn "no optional match" (NULL) into "row excluded", breaking
+///      OPTIONAL MATCH semantics.
+#[tokio::test]
+async fn relationship_uniqueness_guard_skips_unrelated_types_and_optional_518() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // Case 1: unrelated relationship types (FOLLOWS vs AUTHORED) — no guard.
+    let sql = render(
+        &schema,
+        "MATCH (u:User)-[:FOLLOWS]->(f:User)-[:AUTHORED]->(p:Post) \
+         RETURN u.user_id, f.user_id, p.post_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        !sql.to_uppercase().contains("WHERE") || !sql.contains("<>"),
+        "unrelated relationship types (FOLLOWS, AUTHORED) must not get a \
+         nonsensical cross-type uniqueness guard: {sql}"
+    );
+
+    // Case 2: OPTIONAL MATCH on the second hop — no guard landing in a
+    // plain WHERE (would break OPTIONAL semantics via NULL comparisons).
+    let sql = render(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) \
+         OPTIONAL MATCH (b)-[:FOLLOWS]->(c:User) \
+         RETURN a.user_id, b.user_id, c.user_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        !sql.contains("<>"),
+        "a relationship introduced by OPTIONAL MATCH must not get a \
+         uniqueness guard in the outer WHERE clause (breaks OPTIONAL MATCH \
+         semantics for non-matching rows): {sql}"
+    );
+}
+
+/// #511: a hardcoded `LIMIT 1000` "safety cap" on every `pattern_union` CTE
+/// branch (unlabeled/multi-type relationship scans, e.g.
+/// `MATCH ()-[r]->() RETURN ...`) silently truncated results — with no
+/// error, no warning, and no way for the caller to detect it — once a
+/// branch's underlying table exceeded 1000 matching rows, even when the
+/// user's query had no LIMIT of its own. No design rationale for the value
+/// was ever documented (git blame traces it to the original feature commit
+/// with no comment). Removed entirely: any limiting the user wants is
+/// expressed via an explicit Cypher `LIMIT`, applied normally at the outer
+/// query level like any other pattern. Live-verified: `MATCH ()-[r]->()
+/// RETURN count(*)` now returns the true total (23, matching a raw-SQL
+/// cross-check), not an artificially capped value.
+#[tokio::test]
+async fn pattern_union_no_hardcoded_limit_cap_511() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH ()-[r]->() RETURN count(*) AS c",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+
+    assert!(
+        sql.contains("pattern_union_r"),
+        "expected this unlabeled relationship scan to route through a \
+         pattern_union CTE: {sql}"
+    );
+    assert!(
+        !sql.to_uppercase().contains("LIMIT 1000"),
+        "pattern_union branches must not carry a hardcoded LIMIT 1000 \
+         safety cap that silently truncates results: {sql}"
+    );
+}
+
 /// Regression tests for the #496/#497/#498/#499/#501 VLP/fixed-path family.
 mod vlp_fixed_path_family_496_497_498_499_501 {
     use super::*;
@@ -5482,6 +5691,64 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
         );
     }
 
+    /// #521: a fixed hop adjacent to a VLP hop on a fully DENORMALIZED
+    /// (virtual-node/`SingleTableScan`) schema must still get a real,
+    /// VLP-correlated JOIN for the trailing leg. Before the fix, the
+    /// `SingleTableScan` strategy's join generator only checked whether the
+    /// edge's own alias was already available — never whether the LEFT node
+    /// (here `b`, a VLP endpoint) was already bound via the VLP CTE — so the
+    /// trailing `b->c` edge degenerated into an unconditional FROM marker
+    /// with no correlation to the VLP CTE, and got dropped entirely by
+    /// downstream anchor-selection logic (`join_builder.rs`'s "Denormalized
+    /// VLP is FROM: dropping anchor" branch mistakenly treating the dangling
+    /// marker as the redundant original VLP anchor). The generated SQL
+    /// referenced `t2.*` columns with no JOIN or FROM binding `t2` at all —
+    /// a loud ClickHouse Code 47 UNKNOWN_IDENTIFIER. This is distinct from
+    /// #501 above, which covers the same shape on the Traditional (non-
+    /// denormalized) strategy — #521 is Denormalized-strategy-specific.
+    #[tokio::test]
+    async fn vlp_fixed_trailing_leg_denormalized_correlates_to_vlp_cte_521() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport)-[:FLIGHT]->(c:Airport) \
+             RETURN a.code, b.code, c.code",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        assert!(
+            sql.to_uppercase().contains("WITH RECURSIVE"),
+            "expected a genuine VLP recursive CTE for a:Airport-[*1..2]->b:Airport: {sql}"
+        );
+        assert!(
+            sql.contains("INNER JOIN") || sql.contains("JOIN"),
+            "the trailing b->c FLIGHT hop must emit a real JOIN, not just \
+             `FROM vlp_a_b AS t` with a dangling t2 reference: {sql}"
+        );
+        // The trailing leg's JOIN must correlate to the VLP CTE's end_id
+        // column (VLP_CTE_FROM_ALIAS == "t") — proving it's a real
+        // correlated join and not an unconditional FROM marker.
+        assert!(
+            sql.contains("t.end_id"),
+            "the trailing leg's JOIN condition must correlate against the \
+             VLP CTE's end_id column: {sql}"
+        );
+        // No dangling alias: whichever alias the trailing leg's edge table
+        // uses in the SELECT (e.g. `t2.code`) must also appear as a JOIN
+        // table_alias, not just be referenced from an unbound alias.
+        let select_and_from_only = sql.split("SELECT").last().expect("SELECT clause present");
+        for alias in ["t2"] {
+            if select_and_from_only.contains(&format!("{alias}.")) {
+                assert!(
+                    sql.contains(&format!("AS {alias} ")) || sql.contains(&format!("AS {alias}\n")),
+                    "alias '{alias}' is referenced in SELECT but never bound \
+                     by a JOIN/FROM: {sql}"
+                );
+            }
+        }
+    }
+
     /// #497 (review follow-up, BLOCKING finding): `nodes(p)` on a fixed path
     /// through a COMPOSITE-key node (`Account`, keyed on `(bank_id,
     /// account_number)` in `schemas/test/composite_node_ids.yaml`) must carry
@@ -5544,6 +5811,132 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
             sql.contains("array(a.user_id, b.user_id)"),
             "single-column ids must render as plain array(...) with no cast \
              or pipe-join scaffolding: {sql}"
+        );
+    }
+
+    /// #489: denormalized VLP `*0..N` must emit a genuine zero-hop base case
+    /// (the start node paired with itself, `hop_count = 0`), matching the
+    /// standard (non-denormalized) VLP CTE's behavior. Before the fix, the
+    /// `DenormalizedCteStrategy` recursive CTE's base case unconditionally
+    /// started at `hop_count = 1` regardless of `min_hops`, so `*0..N`
+    /// silently dropped every zero-hop row. Live-verified against
+    /// ground-truth ClickHouse data (5 airports -> 5 zero-hop rows, 5 direct
+    /// flights -> 5 one-hop rows, 3 real 2-hop chains -> 3 two-hop rows).
+    #[tokio::test]
+    async fn denorm_vlp_zero_hop_min_bound_emits_self_paired_base_case_489() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH p = (a:Airport)-[:FLIGHT*0..2]->(b:Airport) RETURN p",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        assert!(
+            sql.contains("0 as hop_count"),
+            "expected a genuine zero-hop (hop_count = 0) base case branch: {sql}"
+        );
+        assert!(
+            sql.contains("node_universe"),
+            "expected the zero-hop base case to scan a synthesized node \
+             universe (denormalized schemas have no separate node table): {sql}"
+        );
+        // The zero-hop base case's start_id and end_id must be the SAME
+        // column (the node paired with itself) — not two different roles.
+        assert!(
+            sql.contains("node_universe.__node_id as start_id")
+                && sql.contains("node_universe.__node_id as end_id"),
+            "zero-hop row must pair the node with itself: {sql}"
+        );
+        // Empty path_edges/path_relationships in the zero-hop branch must be
+        // explicitly typed (Array(String)) — a bare `[]` would infer
+        // Array(Nothing) and break the recursive term's arrayConcat, which
+        // always concatenates a real String element (ClickHouse Code 70).
+        assert!(
+            sql.contains("CAST([] AS Array(String))"),
+            "zero-hop branch's empty arrays must be explicitly cast to \
+             Array(String) to match the recursive term's column types: {sql}"
+        );
+    }
+
+    /// #489 (regression guard): `*1..N` (no zero-hop) on the SAME
+    /// denormalized schema must be completely unaffected by the zero-hop
+    /// fix — no node_universe scan, no hop_count=0 branch, base case stays
+    /// exactly the direct 1-hop edge-table scan it always was.
+    #[tokio::test]
+    async fn denorm_vlp_min_hops_one_unaffected_by_zero_hop_fix_489() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH p = (a:Airport)-[:FLIGHT*1..2]->(b:Airport) RETURN p",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        assert!(
+            !sql.contains("node_universe"),
+            "min_hops=1 must not go through the new zero-hop node-universe \
+             path at all: {sql}"
+        );
+        assert!(
+            !sql.contains("0 as hop_count"),
+            "min_hops=1 must not emit a zero-hop branch: {sql}"
+        );
+        assert!(
+            sql.contains("1 as hop_count"),
+            "min_hops=1 base case must still start at hop_count=1: {sql}"
+        );
+    }
+
+    /// #494: `labels(x)` on a multi-type VLP end node must resolve the
+    /// PER-ROW actual label from the CTE's `end_type` discriminator column,
+    /// not a static array literal of every statically-possible label.
+    /// Before the fix, the gate meant to detect "genuine multi-type VLP"
+    /// (`table_ctx.is_cte_reference()`) was never actually set true by the
+    /// multi-type VLP auto-inference pass, so `labels(x)` always fell
+    /// through to the static-union branch. Live-verified: AUTHORED-reached
+    /// rows show `[Post]`, FOLLOWS-reached rows show `[User]` — never the
+    /// static `[Post, User]` union on every row.
+    #[tokio::test]
+    async fn multi_type_vlp_labels_resolves_per_row_end_type_494() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x) RETURN labels(x)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        assert!(
+            sql.contains("t.end_type"),
+            "labels(x) must reference the VLP CTE's per-row end_type \
+             column: {sql}"
+        );
+        assert!(
+            !sql.contains("'User', 'Post'") && !sql.contains("'Post', 'User'"),
+            "labels(x) must not be a static array literal of every \
+             statically-possible label: {sql}"
+        );
+    }
+
+    /// #494 (regression guard): a genuinely polymorphic node backed by a
+    /// SINGLE table (no VLP CTE at all — `labels.len() > 1` purely from
+    /// schema-level type ambiguity) must keep its existing static-label
+    /// rendering. This is NOT a multi-type VLP CTE reference, so the #494
+    /// fix's `node_is_multi_type_rel_endpoint` guard must not touch it.
+    #[tokio::test]
+    async fn labels_on_non_vlp_polymorphic_node_unaffected_by_494_fix() {
+        let schema = load_schema("schemas/test/test_fixtures.yaml");
+        let sql = render(
+            &schema,
+            "MATCH (n) RETURN label(n), count(*)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !sql.contains("t.end_type") && !sql.contains(" AS t\n") && !sql.contains(" AS t "),
+            "a non-VLP polymorphic single-table node must not be rewritten \
+             to reference a nonexistent VLP CTE alias 't': {sql}"
         );
     }
 }

@@ -13,14 +13,14 @@ WHERE (u_1.user_id = 1)
 )
 SELECT `label(x)` AS `label(x)`, `x.name` AS `x.name`, `x.content` AS `x.content` FROM (
 SELECT 
-      'Post' AS "label(x)", 
+      t.end_type AS "label(x)", 
       JSONExtractString(t.end_properties, 'name') AS "x.name", 
       JSONExtractString(t.end_properties, 'content') AS "x.content"
 FROM vlp_multi_type_u_x AS t
 WHERE t.start_id = 1
 UNION ALL 
 SELECT 
-      'Post' AS "label(x)", 
+      t.end_type AS "label(x)", 
       JSONExtractString(t.end_properties, 'name') AS "x.name", 
       JSONExtractString(t.end_properties, 'content') AS "x.content"
 FROM vlp_multi_type_u_x_2 AS t

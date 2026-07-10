@@ -29,6 +29,58 @@ use crate::{
     },
 };
 
+/// Collect every alias exported by a `WithClause` anywhere within `plan`
+/// (#517). Used to scope the CTE-reference lookahead to a single Cypher
+/// UNION arm: an alias is only legitimately CTE-backed WITHIN a given arm
+/// if that arm's own subtree actually contains a WITH clause exporting it —
+/// otherwise a same-named alias reused in a sibling arm (independent scope)
+/// would be wrongly treated as CTE-backed too, purely because `plan_ctx`'s
+/// CTE-reference registry is a single global map keyed by alias name with
+/// no notion of which arm registered it.
+fn collect_with_exported_aliases(plan: &LogicalPlan) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    fn walk(plan: &LogicalPlan, out: &mut std::collections::HashSet<String>) {
+        match plan {
+            LogicalPlan::WithClause(wc) => {
+                out.extend(wc.exported_aliases.iter().cloned());
+                walk(&wc.input, out);
+            }
+            LogicalPlan::GraphNode(n) => walk(&n.input, out),
+            LogicalPlan::GraphRel(r) => {
+                walk(&r.left, out);
+                walk(&r.center, out);
+                walk(&r.right, out);
+            }
+            LogicalPlan::Projection(p) => walk(&p.input, out),
+            LogicalPlan::Filter(f) => walk(&f.input, out),
+            LogicalPlan::GroupBy(gb) => walk(&gb.input, out),
+            LogicalPlan::OrderBy(ob) => walk(&ob.input, out),
+            LogicalPlan::GraphJoins(gj) => walk(&gj.input, out),
+            LogicalPlan::Limit(l) => walk(&l.input, out),
+            LogicalPlan::Skip(s) => walk(&s.input, out),
+            LogicalPlan::CartesianProduct(cp) => {
+                walk(&cp.left, out);
+                walk(&cp.right, out);
+            }
+            LogicalPlan::Union(u) => {
+                for input in &u.inputs {
+                    walk(input, out);
+                }
+            }
+            LogicalPlan::ViewScan(vs) => {
+                if let Some(input) = &vs.input {
+                    walk(input, out);
+                }
+            }
+            LogicalPlan::Cte(c) => walk(&c.input, out),
+            LogicalPlan::Unwind(u) => walk(&u.input, out),
+            _ => {}
+        }
+    }
+    walk(plan, &mut out);
+    out
+}
+
 pub struct CteColumnResolver;
 
 impl CteColumnResolver {
@@ -460,9 +512,57 @@ impl AnalyzerPass for CteColumnResolver {
                     .inputs
                     .iter()
                     .map(|input| {
+                        // #517: a genuine Cypher UNION's arms are independent
+                        // scopes, but plan_ctx's CTE-reference registry
+                        // (set by CteSchemaResolver, a prior pass) is a
+                        // single global map keyed by alias name. A WITH
+                        // clause in one arm registers its exported aliases
+                        // as CTE-backed for the WHOLE plan, so a sibling arm
+                        // reusing the same alias name (e.g. `u` bound fresh
+                        // in both arms) would otherwise have ITS `u.prop`
+                        // property accesses wrongly rewritten to reference
+                        // the OTHER arm's CTE column names below. Temporarily
+                        // clear the CTE reference — for the duration of
+                        // processing THIS branch only — for any alias that's
+                        // globally CTE-backed but not actually re-declared by
+                        // a WITH clause within this branch's own subtree.
+                        // Mirrors the WithClause save/clear/restore pattern
+                        // already used in filter_tagging.rs for an analogous
+                        // problem (there, scoped to one WithClause's input;
+                        // here, scoped to one UNION arm).
+                        let mut saved: Vec<(String, Option<String>)> = Vec::new();
+                        if union.is_cypher_union {
+                            let locally_exported = collect_with_exported_aliases(input);
+                            let stale: Vec<String> = plan_ctx
+                                .get_alias_table_ctx_map()
+                                .iter()
+                                .filter(|(alias, tc)| {
+                                    tc.is_cte_reference() && !locally_exported.contains(*alias)
+                                })
+                                .map(|(alias, _)| alias.clone())
+                                .collect();
+                            for alias in stale {
+                                if let Ok(tc) = plan_ctx.get_table_ctx(&alias) {
+                                    saved.push((alias.clone(), tc.get_cte_name().cloned()));
+                                    let mut cleared = tc.clone();
+                                    cleared.set_cte_reference(None);
+                                    plan_ctx.insert_table_ctx(alias.clone(), cleared);
+                                }
+                            }
+                        }
+
                         let child_tf = self
                             .analyze_with_graph_schema(input.clone(), plan_ctx, _graph_schema)
                             .unwrap();
+
+                        for (alias, cte_ref) in &saved {
+                            if let Ok(tc) = plan_ctx.get_table_ctx(alias) {
+                                let mut restored = tc.clone();
+                                restored.set_cte_reference(cte_ref.clone());
+                                plan_ctx.insert_table_ctx(alias.clone(), restored);
+                            }
+                        }
+
                         if child_tf.is_yes() {
                             transformed = true;
                         }

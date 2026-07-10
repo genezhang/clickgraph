@@ -1506,7 +1506,19 @@ impl GraphJoins {
                 optional_aliases: self.optional_aliases.clone(),
                 anchor_table: self.anchor_table.clone(),
                 cte_references: self.cte_references.clone(),
-                correlation_predicates: vec![],
+                // #518: this was hardcoded to `vec![]`. This shared helper
+                // is called by many optimizer passes
+                // (projection_push_down, filter_push_down, view_optimizer,
+                // cartesian_join_extraction, filter_into_graph_rel, ...)
+                // whenever a GraphJoins' input gets transformed, so it
+                // silently dropped GraphJoinInference's Phase-4
+                // relationship-uniqueness guards (and any other correlation
+                // predicate) for EVERY query that hit any of those passes —
+                // e.g. a plain directed multi-hop pattern like
+                // `(a)-[:FLIGHT]->(b)-[:FLIGHT]->(c)`, whose uniqueness
+                // constraint was computed correctly upstream but never
+                // survived to the WHERE clause.
+                correlation_predicates: self.correlation_predicates.clone(),
             }))
         })
     }

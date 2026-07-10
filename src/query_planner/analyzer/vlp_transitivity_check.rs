@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use crate::{
-    graph_catalog::graph_schema::GraphSchema,
+    graph_catalog::{composite_key_utils::extract_type_name, graph_schema::GraphSchema},
     query_planner::{
         logical_plan::{GraphRel, LogicalPlan, VariableLengthSpec},
         plan_ctx::PlanCtx,
@@ -37,15 +37,6 @@ impl VlpTransitivityCheck {
         Self
     }
 
-    /// Extract the base type name from a potentially composite key
-    /// "KNOWS::Person::Person" -> "KNOWS"
-    /// "KNOWS" -> "KNOWS"
-    fn extract_type_name(key: &str) -> &str {
-        // Composite keys have format "TYPE::FROM::TO"
-        // Split by "::" and take the first part
-        key.split("::").next().unwrap_or(key)
-    }
-
     /// Check if a relationship can be transitive (recursive)
     /// Returns true if the TO node can also be a FROM node for the same relationship type
     fn is_transitive_relationship(
@@ -54,14 +45,17 @@ impl VlpTransitivityCheck {
     ) -> Result<bool, AnalyzerError> {
         // Extract base type name from potentially composite key
         // "KNOWS::Person::Person" -> "KNOWS"
-        let base_type = Self::extract_type_name(rel_type);
+        let base_type = extract_type_name(rel_type);
 
         // Get all relationship schemas for this type
         let rel_schemas = schema.rel_schemas_for_type(base_type);
 
         if rel_schemas.is_empty() {
+            // #500: use the display-safe base type name — `rel_type` may be
+            // an internal composite schema key ("TYPE::From::To") which must
+            // never leak into user-facing error text.
             return Err(AnalyzerError::RelationshipTypeNotFound(
-                rel_type.to_string(),
+                base_type.to_string(),
             ));
         }
 
@@ -179,14 +173,18 @@ impl VlpTransitivityCheck {
         // You can't have a path of length 2+ if the relationship is non-transitive!
         if let Some(min) = vlp_spec.min_hops {
             if min > 1 {
+                // #500: `rel_type` may be an internal composite schema key
+                // ("TYPE::From::To"); use the display-safe base type name in
+                // user-facing error text.
+                let display_type = extract_type_name(rel_type);
                 return Err(AnalyzerError::InvalidPlan(
                     format!(
                         "Variable-length path pattern [{}*{}..] is semantically invalid: \
                          relationship '{}' is non-transitive (cannot recurse). \
                          The TO node never appears as a FROM node, so paths longer than 1 hop are impossible.",
-                        rel_type,
+                        display_type,
                         min,
-                        rel_type
+                        display_type
                     )
                 ));
             }
@@ -431,6 +429,11 @@ impl VlpTransitivityCheck {
                             // both the old silent clamp and the silently-wrong
                             // SQL the naive "don't clamp" fix produces.
                             if is_undirected || is_zero_hop {
+                                // #500: `rel_type` may be an internal composite
+                                // schema key ("TYPE::From::To"); use the
+                                // display-safe base type name in user-facing
+                                // error text.
+                                let display_type = extract_type_name(rel_type);
                                 return Err(AnalyzerError::InvalidPlan(format!(
                                     "Variable-length path pattern [{}*{}..{}] is not yet \
                                      supported: relationship '{}' is non-transitive (its FROM \
@@ -440,16 +443,16 @@ impl VlpTransitivityCheck {
                                      tables, which is not yet implemented (tracked: #496). A \
                                      single fixed-hop pattern (e.g. `[{}]` without `*`) is \
                                      supported.",
-                                    rel_type,
+                                    display_type,
                                     vlp_spec.min_hops.map(|m| m.to_string()).unwrap_or_default(),
                                     vlp_spec.max_hops.map(|m| m.to_string()).unwrap_or_default(),
-                                    rel_type,
+                                    display_type,
                                     if is_undirected {
                                         "alternating-direction chaining"
                                     } else {
                                         "a zero-hop (start-node-as-both-endpoints) row"
                                     },
-                                    rel_type,
+                                    display_type,
                                 )));
                             }
 

@@ -13,4 +13,4 @@ INNER JOIN test_integration.users AS c ON c.user_id = t2.followed_id
 INNER JOIN test_integration.follows AS t3 ON t3.follower_id = hub.user_id
 INNER JOIN test_integration.users AS d ON d.user_id = t3.followed_id
 INNER JOIN test_integration.users AS e ON t0.follower_id = e.user_id
-WHERE (hub.user_id = 2 AND hub.user_id = 2)
+WHERE (((((((hub.user_id = 2 AND hub.user_id = 2) AND (t3.follower_id <> t0.follower_id OR t3.followed_id <> t0.followed_id)) AND (t3.follower_id <> t2.follower_id OR t3.followed_id <> t2.followed_id)) AND (t3.follower_id <> t1.follower_id OR t3.followed_id <> t1.followed_id)) AND (t0.follower_id <> t2.follower_id OR t0.followed_id <> t2.followed_id)) AND (t0.follower_id <> t1.follower_id OR t0.followed_id <> t1.followed_id)) AND (t2.follower_id <> t1.follower_id OR t2.followed_id <> t1.followed_id))

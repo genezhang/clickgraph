@@ -24,6 +24,6 @@ WHERE (n_1.user_id = 1)
 )
 SELECT 
       element_at(t.path_relationships, 1) AS `rel_type`, 
-      get_json_object(t.end_properties, '$.end_type') AS `target_label`
+      t.end_type AS `target_label`
 FROM vlp_multi_type_n_m AS t
 WHERE t.start_id = 1

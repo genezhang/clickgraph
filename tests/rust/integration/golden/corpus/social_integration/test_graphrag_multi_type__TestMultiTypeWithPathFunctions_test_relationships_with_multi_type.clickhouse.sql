@@ -14,13 +14,13 @@ WHERE (u_1.user_id = 1)
 SELECT `rels` AS `rels`, `node_type` AS `node_type` FROM (
 SELECT 
       t.path_relationships AS "rels", 
-      JSONExtractString(t.end_properties, 'end_type') AS "node_type"
+      t.end_type AS "node_type"
 FROM vlp_multi_type_u_x AS t
 WHERE t.start_id = 1
 UNION ALL 
 SELECT 
       t.path_relationships AS "rels", 
-      JSONExtractString(t.end_properties, 'end_type') AS "node_type"
+      t.end_type AS "node_type"
 FROM vlp_multi_type_u_x_2 AS t
 WHERE t.start_id = 1
 ) AS __union

@@ -114,6 +114,49 @@ fn rel_uses_pattern_union(plan: &LogicalPlan, rel_alias: &str) -> bool {
     }
 }
 
+/// #494: is `node_alias` the endpoint of a GraphRel with more than one
+/// relationship type (`[:TYPE1|TYPE2]`, with or without `*`)? These are the
+/// ONLY patterns the renderer routes through a `vlp_multi_type_*` CTE
+/// (`select_builder::expand_path_variable`'s `is_multi_type` detection uses
+/// the identical `labels().len() > 1` condition) — so this is the reliable
+/// signal that `table_ctx.get_labels().len() > 1` on `node_alias` means
+/// "genuine multi-type VLP end node bound to a CTE aliased `t`", as opposed
+/// to some other multi-label scenario (e.g. an unlabeled node that's
+/// genuinely polymorphic within a SINGLE table, which has no CTE at all and
+/// must resolve its type a completely different way).
+fn node_is_multi_type_rel_endpoint(plan: &LogicalPlan, node_alias: &str) -> bool {
+    match plan {
+        LogicalPlan::GraphRel(gr) => {
+            let is_multi_type_here = (gr.left_connection == node_alias
+                || gr.right_connection == node_alias)
+                && (gr.labels.as_ref().is_some_and(|l| l.len() > 1)
+                    || gr.pattern_combinations.is_some());
+            is_multi_type_here
+                || node_is_multi_type_rel_endpoint(&gr.left, node_alias)
+                || node_is_multi_type_rel_endpoint(&gr.right, node_alias)
+        }
+        LogicalPlan::GraphNode(node) => node_is_multi_type_rel_endpoint(&node.input, node_alias),
+        LogicalPlan::Projection(proj) => node_is_multi_type_rel_endpoint(&proj.input, node_alias),
+        LogicalPlan::Filter(filter) => node_is_multi_type_rel_endpoint(&filter.input, node_alias),
+        LogicalPlan::GraphJoins(joins) => node_is_multi_type_rel_endpoint(&joins.input, node_alias),
+        LogicalPlan::GroupBy(gb) => node_is_multi_type_rel_endpoint(&gb.input, node_alias),
+        LogicalPlan::OrderBy(order_by) => {
+            node_is_multi_type_rel_endpoint(&order_by.input, node_alias)
+        }
+        LogicalPlan::Limit(limit) => node_is_multi_type_rel_endpoint(&limit.input, node_alias),
+        LogicalPlan::Skip(skip) => node_is_multi_type_rel_endpoint(&skip.input, node_alias),
+        LogicalPlan::CartesianProduct(cp) => {
+            node_is_multi_type_rel_endpoint(&cp.left, node_alias)
+                || node_is_multi_type_rel_endpoint(&cp.right, node_alias)
+        }
+        LogicalPlan::Union(u) => u
+            .inputs
+            .iter()
+            .any(|branch| node_is_multi_type_rel_endpoint(branch, node_alias)),
+        _ => false,
+    }
+}
+
 pub struct ProjectionTagging;
 
 impl AnalyzerPass for ProjectionTagging {
@@ -905,13 +948,29 @@ impl ProjectionTagging {
                             scalar_fn_call.args.first()
                         {
                             if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias) {
-                                // Check if this is multi-type VLP
+                                // Check if this is multi-type VLP. `labels.len() > 1` alone
+                                // is not enough — a genuinely polymorphic node backed by a
+                                // SINGLE table (no CTE at all) can also have multiple
+                                // possible labels at this point; only a real multi-type
+                                // relationship endpoint (routed through a `vlp_multi_type_*`
+                                // CTE) should take the `end_type` rewrite (#494).
+                                let is_multi_type_vlp_node = input_plan
+                                    .is_some_and(|p| node_is_multi_type_rel_endpoint(p, alias));
                                 if let Some(labels) = table_ctx.get_labels() {
-                                    if labels.len() > 1 {
-                                        log::info!("🎯 {}({})[subscript] on multi-type VLP - unwrapping to x.end_type directly", fn_name_lower, alias);
-                                        // Return x.end_type directly (no array, no subscript)
+                                    if labels.len() > 1 && is_multi_type_vlp_node {
+                                        log::info!("🎯 {}({})[subscript] on multi-type VLP - unwrapping to end_type directly", fn_name_lower, alias);
+                                        // Return t.end_type directly (no array, no subscript).
+                                        // #494: must use the VLP CTE's actual render-time FROM
+                                        // alias ("t", VLP_CTE_FROM_ALIAS) rather than the
+                                        // original Cypher alias — the CTE is always rendered as
+                                        // `FROM vlp_multi_type_... AS t`, and end_type is a
+                                        // synthetic CTE-only column with no ordinary
+                                        // property/schema mapping that a later alias-resolution
+                                        // pass could rewrite for us.
                                         item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                            table_alias: TableAlias(alias.clone()),
+                                            table_alias: TableAlias(
+                                                crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string(),
+                                            ),
                                             column: crate::graph_catalog::expression_parser::PropertyValue::Column("end_type".to_string()),
                                         });
                                         return Ok(());
@@ -1067,21 +1126,46 @@ impl ProjectionTagging {
                                     // Check if this is a multi-type VLP pattern
                                     // Multi-type VLP end nodes:
                                     //   1. Have multiple labels from TypeInference (Part 2A)
-                                    //   2. Reference a CTE (vlp_* tables)
+                                    //   2. Reference a CTE (vlp_multi_type_* tables)
                                     //   3. The actual label is stored in the CTE's end_type column
                                     // Example: (u)-[:FOLLOWS|AUTHORED*1..2]->(x) → x.labels = ["User", "Post"], x references vlp_u_x CTE
                                     //
-                                    // For regular UNION queries, the analyze() function above temporarily sets
-                                    // table_ctx to have the branch-specific single label before calling this code.
+                                    // For regular UNION queries, the analyze() function above temporarily
+                                    // sets table_ctx to have the branch-specific single label before calling
+                                    // this code — but that narrowing does NOT cover every multi-label
+                                    // scenario (e.g. a genuinely polymorphic node backed by a single table,
+                                    // with no CTE at all), so `labels.len() > 1` alone is not a reliable
+                                    // signal. #494: additionally require `node_is_multi_type_rel_endpoint`
+                                    // (the same `labels().len() > 1` condition the renderer itself uses to
+                                    // decide whether a pattern routes through a `vlp_multi_type_*` CTE) — a
+                                    // previous version of this gate used `table_ctx.is_cte_reference()`
+                                    // instead, but the multi-type VLP auto-inference site
+                                    // (`type_inference.rs`'s "Multi-type VLP auto-inference" pass) never sets
+                                    // `cte_reference` on the table_ctx it creates/updates, so that condition
+                                    // was always false for the exact case it was meant to detect, silently
+                                    // falling through to the static (all-possible-labels) branch below and
+                                    // stamping every row with the full label union instead of its own row's
+                                    // actual end_type.
+                                    let is_multi_type_vlp_node = input_plan
+                                        .is_some_and(|p| node_is_multi_type_rel_endpoint(p, alias));
                                     if let Some(labels) = table_ctx.get_labels() {
-                                        if labels.len() > 1 && table_ctx.is_cte_reference() {
+                                        if labels.len() > 1 && is_multi_type_vlp_node {
                                             // Multi-type VLP: return array with single element from end_type column
                                             log::info!(
-                                                "🎯 labels({}) has multiple labels ({:?}) AND is CTE reference - mapping to end_type for multi-type VLP",
+                                                "🎯 labels({}) has multiple labels ({:?}) - mapping to end_type for multi-type VLP",
                                                 alias, labels
                                             );
+                                            // #494: must reference the VLP CTE's actual
+                                            // render-time FROM alias ("t", VLP_CTE_FROM_ALIAS),
+                                            // not the original Cypher alias — see the
+                                            // ArraySubscript-form fix above for the full
+                                            // explanation. Without this, the generated SQL
+                                            // referenced an unbound `x.end_type` (the CTE is
+                                            // always rendered as `FROM vlp_multi_type_... AS t`).
                                             let end_type_expr = LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                                table_alias: TableAlias(alias.clone()),
+                                                table_alias: TableAlias(
+                                                    crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string(),
+                                                ),
                                                 column: crate::graph_catalog::expression_parser::PropertyValue::Column("end_type".to_string()),
                                             });
                                             item.expression =
@@ -1124,15 +1208,22 @@ impl ProjectionTagging {
                                 }
 
                                 if !table_ctx.is_relation() {
-                                    // Check if this is a multi-type VLP pattern (same logic as labels())
-                                    // Multi-type VLP: Multiple labels AND CTE reference
-                                    // For regular UNION queries, analyze() has set branch-specific label
+                                    // Check if this is a multi-type VLP pattern (same logic as labels()
+                                    // above — see #494 comment there for why `node_is_multi_type_rel_endpoint`
+                                    // is required alongside `labels.len() > 1`, not `is_cte_reference()`).
+                                    // For regular UNION queries, analyze() has set branch-specific label.
+                                    let is_multi_type_vlp_node = input_plan
+                                        .is_some_and(|p| node_is_multi_type_rel_endpoint(p, alias));
                                     if let Some(labels) = table_ctx.get_labels() {
-                                        if labels.len() > 1 && table_ctx.is_cte_reference() {
-                                            log::info!("🎯 label({}) has multiple labels ({:?}) AND is CTE reference - mapping to end_type for multi-type VLP", alias, labels);
-                                            // Multi-type VLP: map to end_type column
+                                        if labels.len() > 1 && is_multi_type_vlp_node {
+                                            log::info!("🎯 label({}) has multiple labels ({:?}) - mapping to end_type for multi-type VLP", alias, labels);
+                                            // Multi-type VLP: map to end_type column.
+                                            // #494: VLP_CTE_FROM_ALIAS ("t"), not the original
+                                            // Cypher alias — see the labels() fix above.
                                             item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
-                                                table_alias: TableAlias(alias.clone()),
+                                                table_alias: TableAlias(
+                                                    crate::query_planner::join_context::VLP_CTE_FROM_ALIAS.to_string(),
+                                                ),
                                                 column: crate::graph_catalog::expression_parser::PropertyValue::Column("end_type".to_string()),
                                             });
                                             return Ok(());

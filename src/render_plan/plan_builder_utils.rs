@@ -6383,6 +6383,55 @@ fn collect_fresh_scan_aliases(plan: &LogicalPlan, aliases: &mut std::collections
     }
 }
 
+/// Collect every alias exported by a `WithClause` anywhere within `plan`
+/// (#517). Used by `update_graph_joins_cte_refs`'s Union arm to scope a
+/// CTE-reference lookahead to a single Cypher UNION branch — see the
+/// comment there for why an unscoped lookup leaks across arms.
+fn with_exported_aliases_in_branch(plan: &LogicalPlan) -> std::collections::HashSet<String> {
+    use crate::query_planner::logical_plan::LogicalPlan as LP;
+    let mut out = std::collections::HashSet::new();
+    fn walk(plan: &LP, out: &mut std::collections::HashSet<String>) {
+        match plan {
+            LP::WithClause(wc) => {
+                out.extend(wc.exported_aliases.iter().cloned());
+                walk(&wc.input, out);
+            }
+            LP::GraphNode(n) => walk(&n.input, out),
+            LP::GraphRel(r) => {
+                walk(&r.left, out);
+                walk(&r.center, out);
+                walk(&r.right, out);
+            }
+            LP::Projection(p) => walk(&p.input, out),
+            LP::Filter(f) => walk(&f.input, out),
+            LP::GroupBy(gb) => walk(&gb.input, out),
+            LP::OrderBy(ob) => walk(&ob.input, out),
+            LP::GraphJoins(gj) => walk(&gj.input, out),
+            LP::Limit(l) => walk(&l.input, out),
+            LP::Skip(s) => walk(&s.input, out),
+            LP::CartesianProduct(cp) => {
+                walk(&cp.left, out);
+                walk(&cp.right, out);
+            }
+            LP::Union(u) => {
+                for input in &u.inputs {
+                    walk(input, out);
+                }
+            }
+            LP::ViewScan(vs) => {
+                if let Some(input) = &vs.input {
+                    walk(input, out);
+                }
+            }
+            LP::Cte(c) => walk(&c.input, out),
+            LP::Unwind(u) => walk(&u.input, out),
+            _ => {}
+        }
+    }
+    walk(plan, &mut out);
+    out
+}
+
 pub(crate) fn update_graph_joins_cte_refs(
     plan: &LogicalPlan,
     cte_references: &std::collections::HashMap<String, String>,
@@ -6693,8 +6742,45 @@ pub(crate) fn update_graph_joins_cte_refs(
                 .inputs
                 .iter()
                 .map(|input| {
-                    update_graph_joins_cte_refs(input, cte_references, cte_property_mappings)
-                        .map(Arc::new)
+                    // #517: a genuine Cypher UNION's arms are independent
+                    // scopes. `cte_references`/`cte_property_mappings` are
+                    // built ONCE for the whole query (from whichever arm(s)
+                    // had a WITH clause), so blindly recursing into every
+                    // branch with the SAME maps lets one arm's WITH-derived
+                    // CTE substitution leak into a sibling arm that reuses
+                    // the same Cypher variable name but never had that WITH
+                    // clause at all (e.g. `u` bound fresh in both arms of
+                    // `MATCH (u) WITH u... RETURN ... UNION MATCH (u)
+                    // RETURN ...`) — `rewrite_logical_expr_cte_refs` below
+                    // would then rewrite the untouched arm's `u.prop` to
+                    // reference the OTHER arm's raw CTE table name. Scope
+                    // the maps down to only the aliases THIS branch's own
+                    // subtree actually exports via its own WITH clause(s).
+                    // BidirectionalUnion (`is_cypher_union == false`)
+                    // represents a single logical MATCH scope split purely
+                    // for SQL rendering, so every branch legitimately
+                    // shares the same maps there and must keep receiving
+                    // them unscoped.
+                    let (scoped_refs, scoped_props) = if union.is_cypher_union {
+                        let locally_exported = with_exported_aliases_in_branch(input);
+                        let refs: std::collections::HashMap<String, String> = cte_references
+                            .iter()
+                            .filter(|(alias, _)| locally_exported.contains(alias.as_str()))
+                            .map(|(a, b)| (a.clone(), b.clone()))
+                            .collect();
+                        let props: std::collections::HashMap<
+                            String,
+                            std::collections::HashMap<String, String>,
+                        > = cte_property_mappings
+                            .iter()
+                            .filter(|(alias, _)| locally_exported.contains(alias.as_str()))
+                            .map(|(a, b)| (a.clone(), b.clone()))
+                            .collect();
+                        (refs, props)
+                    } else {
+                        (cte_references.clone(), cte_property_mappings.clone())
+                    };
+                    update_graph_joins_cte_refs(input, &scoped_refs, &scoped_props).map(Arc::new)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(LogicalPlan::Union(Union {
@@ -15976,6 +16062,32 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                         i,
                         std::mem::discriminant(input.as_ref())
                     );
+                    // #517: a genuine Cypher UNION's arms are INDEPENDENT
+                    // scopes — a WITH clause in one arm must never leak its
+                    // CTE substitution into a sibling arm, even when that
+                    // sibling reuses the same Cypher variable name (e.g.
+                    // `u` bound fresh in both arms of `MATCH (u) WITH u...
+                    // RETURN ... UNION MATCH (u) RETURN ...`). The
+                    // GraphNode-matching check below (`with_parts.contains
+                    // (&node.alias)`) is a plain by-name membership test
+                    // with no scope awareness, so recursing into every
+                    // branch unconditionally rewrites the untouched arm's
+                    // `u` into the OTHER arm's CTE reference (a duplicate-
+                    // alias self-join / cross-arm contamination bug).
+                    // BidirectionalUnion (`is_cypher_union == false`)
+                    // represents a single logical MATCH scope split purely
+                    // for SQL rendering, so every branch legitimately
+                    // shares the same WITH-derived scope there and must
+                    // keep being processed uniformly.
+                    if union.is_cypher_union
+                        && !find_all_with_clauses_grouped(input).contains_key(with_alias)
+                    {
+                        log::debug!(
+                            "🔀 replace_v2: Cypher UNION branch {} has no WITH clause for key '{}' — leaving untouched",
+                            i, with_alias
+                        );
+                        return Ok(input.clone());
+                    }
                     replace_with_clause_with_cte_reference_v2(
                         input,
                         with_alias,

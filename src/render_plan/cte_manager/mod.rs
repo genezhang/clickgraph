@@ -1542,13 +1542,35 @@ impl DenormalizedCteStrategy {
             (cte_name.clone(), false)
         };
 
-        // Generate base case (1-hop)
-        let base_case = self.generate_base_case_sql(context, properties, filters)?;
+        // #489: `*0..N` needs a genuine zero-hop base case (the start node
+        // paired with itself, `hop_count = 0`) — mirrors the standard
+        // (non-denormalized) VLP CTE, which scans the real node table and
+        // seeds the recursion from there. Denormalized/virtual-node schemas
+        // have no separate node table, so the zero-hop "node universe" is
+        // synthesized from the edge table itself (see
+        // `generate_zero_hop_base_case_sql`). This REPLACES the ordinary
+        // 1-hop base case (rather than adding alongside it): hop_count=1
+        // rows are produced by the recursive term extending from the
+        // zero-hop rows, exactly reproducing what the direct 1-hop scan
+        // would have produced — adding both would double-count every
+        // 1-hop row.
+        let is_zero_hop = min_hops == 0;
+        let base_case = if is_zero_hop {
+            self.generate_zero_hop_base_case_sql(properties)?
+        } else {
+            self.generate_base_case_sql(context, properties, filters)?
+        };
 
         // Generate recursive case if needed.
         // Note: needs_recursion depends on max_hops > 1 (not > min_hops) because the
-        // base case always starts at hop_count=1, so we need recursion whenever max > 1.
-        let needs_recursion = max_hops.is_none_or(|max| max > 1);
+        // ordinary base case always starts at hop_count=1, so we need recursion
+        // whenever max > 1. For the zero-hop base case (hop_count=0), recursion
+        // is needed whenever max_hops allows reaching hop_count>=1 at all.
+        let needs_recursion = if is_zero_hop {
+            max_hops.is_none_or(|max| max >= 1)
+        } else {
+            max_hops.is_none_or(|max| max > 1)
+        };
         let recursive_case = if needs_recursion {
             format!(
                 "\n    UNION ALL\n{}",
@@ -1685,6 +1707,110 @@ impl DenormalizedCteStrategy {
                     format!("\n    WHERE {}", where_clause)
                 },
         )
+    }
+
+    /// Generate the zero-hop base case SQL for `*0..N` VLP on a denormalized
+    /// (single-table / virtual-node) schema (#489).
+    ///
+    /// The standard (non-denormalized) VLP CTE's zero-hop base case scans
+    /// the real node table and pairs each node with itself (`start_id =
+    /// end_id = node.id`, `hop_count = 0`) — the start node standing in as
+    /// its own trivial path. Denormalized/virtual-node schemas have no
+    /// separate node table: a node's identity and properties only exist
+    /// embedded in the edge table, in two different roles (see
+    /// `map_denormalized_property`'s `is_from_node` parameter — the origin
+    /// role vs. the destination role each have their own property-name
+    /// mapping in the schema). The zero-hop "node universe" is therefore
+    /// synthesized as the UNION of distinct node ids appearing in either
+    /// role, so a node that only ever appears on one side (e.g. an airport
+    /// with no outbound flights in the sample data) still gets a zero-hop
+    /// row.
+    ///
+    /// This assumes property values are consistent for the same node id
+    /// regardless of which role (origin/destination) it was scanned under —
+    /// the same assumption every other denormalized-VLP code path in this
+    /// module already relies on (see `map_denormalized_property`). If a
+    /// requested property is only defined for one role (an asymmetric
+    /// schema mapping), this fails loudly (`CteError`) rather than silently
+    /// emitting a NULL-filled or mistyped column.
+    fn generate_zero_hop_base_case_sql(
+        &self,
+        properties: &[NodeProperty],
+    ) -> Result<String, CteError> {
+        let mut from_role_cols = vec![format!("{} AS __node_id", self.from_col)];
+        let mut to_role_cols = vec![format!("{} AS __node_id", self.to_col)];
+        // (canonical alias, source property) pairs, in the SAME order as
+        // `properties`, matching `add_property_selections`'s column
+        // ordering so this branch's column list lines up positionally with
+        // the ordinary 1-hop base case's for the UNION ALL.
+        let mut canon_props: Vec<(String, &NodeProperty)> = Vec::new();
+
+        for (i, prop) in properties.iter().enumerate() {
+            // Skip ID column, mirroring `add_property_selections` (already
+            // covered by start_id/end_id above).
+            if prop.alias == "id" {
+                continue;
+            }
+            // `prop.column_name` is already resolved to prop's OWN role's
+            // physical column (e.g. "OriginCityName" when the property was
+            // requested for the from-node side) — `map_denormalized_property`
+            // only round-trips it for THAT role via its reverse-lookup
+            // fallback, not the opposite one. `prop.alias` is the portable
+            // logical name (e.g. "city") that exists as a key in each role's
+            // property-name mapping, so it's what we need to resolve the
+            // OPPOSITE role's physical column too.
+            let from_physical = self.map_denormalized_property(&prop.alias, true)?;
+            let to_physical = self.map_denormalized_property(&prop.alias, false)?;
+            let canon_alias = format!("__prop_{}", i);
+            from_role_cols.push(format!("{} AS {}", from_physical, canon_alias));
+            to_role_cols.push(format!("{} AS {}", to_physical, canon_alias));
+            canon_props.push((canon_alias, prop));
+        }
+
+        let node_universe = format!(
+            "(\n            SELECT DISTINCT {}\n            FROM {}\n            UNION DISTINCT\n            SELECT DISTINCT {}\n            FROM {}\n        ) AS node_universe",
+            from_role_cols.join(", "),
+            self.table,
+            to_role_cols.join(", "),
+            self.table,
+        );
+
+        // Empty arrays need an explicit type cast here (unlike the ordinary
+        // 1-hop base case, whose `path_edges`/`path_relationships` always
+        // carry at least one real String element): a bare `[]` infers as
+        // `Array(Nothing)`, which the recursive CTE engine rejects when the
+        // recursive term's `arrayConcat(path_edges, [...String...])`
+        // produces `Array(String)` for the same column ("Conversion from
+        // String to Nothing is not supported"). Goes through FunctionMapper
+        // per the dialect-dispatch rule rather than an inline literal, so
+        // every supported SQL dialect gets its own correctly-typed cast.
+        let empty_string_array = crate::sql_generator::function_mapper::current_function_mapper()
+            .empty_string_array_cast();
+        let mut select_items = vec![
+            "node_universe.__node_id as start_id".to_string(),
+            "node_universe.__node_id as end_id".to_string(),
+            "0 as hop_count".to_string(),
+            format!("{} as path_edges", empty_string_array),
+            format!("{} as path_nodes", arr("node_universe.__node_id")),
+            format!("{} as path_relationships", empty_string_array),
+        ];
+
+        for (canon_alias, prop) in &canon_props {
+            let is_from_node = prop.cypher_alias == self.pattern_ctx.left_node_alias;
+            let prefix = if is_from_node { "start_" } else { "end_" };
+            let physical_col = self.map_denormalized_property(&prop.column_name, is_from_node)?;
+            select_items.push(format!(
+                "node_universe.{} as {}{}",
+                canon_alias, prefix, physical_col
+            ));
+        }
+
+        let select_clause = select_items.join(",\n        ");
+
+        Ok(format!(
+            "    SELECT\n        {}\n    FROM {}",
+            select_clause, node_universe
+        ))
     }
 
     /// Generate the recursive case SQL for denormalized schema
