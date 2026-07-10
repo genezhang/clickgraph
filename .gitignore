@@ -80,6 +80,9 @@ server*.log
 *.txt
 # ...but the ratchet-test baseline (guardrail G.1) is source-of-truth and committed
 !tests/rust/ratchet/baseline.txt
+# ...and the P0.6 corpus sweep's nondeterministic-entry exclusion list (also
+# source-of-truth and committed — see tests/rust/integration/corpus_sweep.rs)
+!tests/corpus/nondeterministic.txt
 
 # Temporary scripts and files
 cleanup_*.ps1

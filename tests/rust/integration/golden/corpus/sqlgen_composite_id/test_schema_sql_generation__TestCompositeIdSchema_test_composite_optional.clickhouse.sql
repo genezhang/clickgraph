@@ -1,0 +1,7 @@
+SELECT 
+      c.name AS "c.name", 
+      count(a.bank_id) AS "accounts"
+FROM db_composite_id.customers AS c
+LEFT JOIN db_composite_id.account_ownership AS t0 ON t0.customer_id = c.customer_id
+LEFT JOIN db_composite_id.accounts AS a ON a.bank_id = t0.bank_id AND a.account_number = t0.account_number
+GROUP BY c.name

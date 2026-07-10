@@ -1,0 +1,1 @@
+plan error: AnalyzerError: PlanCtxError: ProjectionTagging: No table context for alias `a`.

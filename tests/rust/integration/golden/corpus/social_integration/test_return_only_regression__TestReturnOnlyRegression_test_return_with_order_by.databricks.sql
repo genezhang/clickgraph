@@ -1,0 +1,3 @@
+SELECT 
+      42 AS `x`
+ORDER BY x ASC

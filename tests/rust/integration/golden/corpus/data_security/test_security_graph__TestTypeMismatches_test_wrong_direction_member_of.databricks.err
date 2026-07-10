@@ -1,0 +1,1 @@
+plan error: AnalyzerError: Invalid relationship pattern: (Group)-[:MEMBER_OF]->(User). Schema defines MEMBER_OF as ($any)-[:MEMBER_OF]->(Group). Please add the missing relationship definition to your schema YAML.

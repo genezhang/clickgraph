@@ -1,0 +1,1 @@
+plan error: AnalyzerError: Invalid relationship pattern: (Post)-[:LIKED]->(User). Schema defines LIKED as (User)-[:LIKED]->(Post). Please add the missing relationship definition to your schema YAML.

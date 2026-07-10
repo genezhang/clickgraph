@@ -1,0 +1,4 @@
+SELECT 
+      count(*) AS "path_count"
+FROM data_security.ds_users AS u
+INNER JOIN data_security.ds_memberships AS t0 ON t0.member_id = u.user_id AND t0.member_type = 'User'

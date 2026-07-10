@@ -1,0 +1,4 @@
+SELECT DISTINCT 
+      u.name AS `u.name`
+FROM test_integration.users AS u
+ORDER BY `u.name` ASC
