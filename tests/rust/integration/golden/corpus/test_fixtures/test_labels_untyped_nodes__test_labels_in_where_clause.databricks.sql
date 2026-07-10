@@ -1,4 +1,4 @@
-SELECT count(`n.product_id`) AS `user_count` FROM (
+SELECT count(coalesce(`n.product_id`, `n.user_id`)) AS `user_count` FROM (
 SELECT 
       NULL AS `age`,
       string(n.category) AS `category`,
@@ -6,7 +6,8 @@ SELECT
       string(n.price) AS `price`,
       string(n.product_id) AS `product_id`,
       NULL AS `user_id`,
-      string(n.product_id) AS `n.product_id`
+      string(n.product_id) AS `n.product_id`,
+      NULL AS `n.user_id`
 FROM test_integration.products AS n
 WHERE labels(n) = array('TestUser')
 UNION ALL 
@@ -17,7 +18,8 @@ SELECT
       NULL AS `price`,
       NULL AS `product_id`,
       string(n.user_id) AS `user_id`,
-      NULL AS `n.product_id`
+      NULL AS `n.product_id`,
+      string(n.user_id) AS `n.user_id`
 FROM test_integration.users AS n
 WHERE labels(n) = array('TestUser')
 ) AS __union

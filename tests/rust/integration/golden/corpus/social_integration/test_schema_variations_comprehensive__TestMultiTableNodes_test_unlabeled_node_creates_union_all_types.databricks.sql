@@ -1,4 +1,4 @@
-SELECT count(`n.post_id`) AS `total` FROM (
+SELECT count(coalesce(`n.post_id`, `n.user_id`)) AS `total` FROM (
 SELECT 
       NULL AS `age`,
       string(n.author_id) AS `author_id`,
@@ -13,7 +13,8 @@ SELECT
       NULL AS `registration_date`,
       string(n.post_title) AS `title`,
       NULL AS `user_id`,
-      string(n.post_id) AS `n.post_id`
+      string(n.post_id) AS `n.post_id`,
+      NULL AS `n.user_id`
 FROM test_integration.posts_test AS n
 UNION ALL 
 SELECT 
@@ -30,6 +31,7 @@ SELECT
       string(n.registration_date) AS `registration_date`,
       NULL AS `title`,
       string(n.user_id) AS `user_id`,
-      NULL AS `n.post_id`
+      NULL AS `n.post_id`,
+      string(n.user_id) AS `n.user_id`
 FROM test_integration.users_test AS n
 ) AS __union

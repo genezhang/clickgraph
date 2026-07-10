@@ -19,5 +19,5 @@ INNER JOIN test_integration.post_likes_test r1 ON a_1.user_id = r1.user_id
 INNER JOIN test_integration.posts_test p2 ON r1.post_id = p2.post_id
 )
 SELECT 
-      count(DISTINCT t.end_id) AS "total"
+      count(DISTINCT tuple(t.end_id, t.end_id)) AS "total"
 FROM vlp_multi_type_a_b AS t

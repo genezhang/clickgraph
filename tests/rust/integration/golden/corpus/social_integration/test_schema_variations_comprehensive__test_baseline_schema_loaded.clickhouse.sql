@@ -1,4 +1,4 @@
-SELECT count(`n.post_id`) AS "count(n)" FROM (
+SELECT count(coalesce(`n.post_id`, `n.user_id`)) AS "count(n)" FROM (
 SELECT 
       NULL AS "age",
       toString(n.author_id) AS "author_id",
@@ -13,7 +13,8 @@ SELECT
       NULL AS "registration_date",
       toString(n.post_title) AS "title",
       NULL AS "user_id",
-      toString(n.post_id) AS "n.post_id"
+      toString(n.post_id) AS "n.post_id",
+      NULL AS "n.user_id"
 FROM test_integration.posts_test AS n
 UNION ALL 
 SELECT 
@@ -30,7 +31,8 @@ SELECT
       toString(n.registration_date) AS "registration_date",
       NULL AS "title",
       toString(n.user_id) AS "user_id",
-      NULL AS "n.post_id"
+      NULL AS "n.post_id",
+      toString(n.user_id) AS "n.user_id"
 FROM test_integration.users_test AS n
 ) AS __union
 LIMIT 1
