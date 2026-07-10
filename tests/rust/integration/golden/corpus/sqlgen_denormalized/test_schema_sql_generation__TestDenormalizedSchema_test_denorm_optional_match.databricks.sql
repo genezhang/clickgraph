@@ -14,7 +14,7 @@ FROM db_denormalized.flights_denorm AS a
 )
 SELECT 
       a.code AS `a.code`, 
-      count(*) AS `outgoing`
+      count(f.flight_id) AS `outgoing`
 FROM __denorm_scan_a AS a
 LEFT JOIN db_denormalized.flights_denorm AS f ON a.code = f.origin_code
 GROUP BY a.code

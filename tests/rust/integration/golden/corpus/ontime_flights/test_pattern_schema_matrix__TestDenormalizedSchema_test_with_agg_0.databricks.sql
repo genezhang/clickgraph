@@ -1,6 +1,6 @@
 WITH with_cnt_prop_cte_0 AS (SELECT 
       r.OriginCityName AS `prop`, 
-      count(*) AS `cnt`
+      count(r.flight_id) AS `cnt`
 FROM default.flights AS r
 GROUP BY r.OriginCityName
 )

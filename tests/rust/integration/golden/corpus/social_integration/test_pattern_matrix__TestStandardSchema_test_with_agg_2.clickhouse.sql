@@ -1,6 +1,6 @@
 WITH with_cnt_prop_cte_0 AS (SELECT 
       a.email_address AS "prop", 
-      count(*) AS "cnt"
+      count(r.follow_id) AS "cnt"
 FROM test_integration.users_test AS a
 INNER JOIN test_integration.user_follows_test AS r ON r.follower_id = a.user_id
 GROUP BY a.email_address

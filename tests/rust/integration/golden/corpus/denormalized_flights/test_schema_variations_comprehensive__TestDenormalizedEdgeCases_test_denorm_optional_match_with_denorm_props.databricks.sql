@@ -15,7 +15,7 @@ FROM test_integration.flights AS a
 SELECT 
       a.code AS `a.code`, 
       f.DestCityName AS `b.city`, 
-      count(*) AS `flights`
+      count(f.flight_id) AS `flights`
 FROM __denorm_scan_a AS a
 LEFT JOIN test_integration.flights AS f ON a.code = f.Origin
 GROUP BY a.code, f.DestCityName

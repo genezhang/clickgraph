@@ -1236,43 +1236,62 @@ impl RenderPlanBuilder for LogicalPlan {
             }
             LogicalPlan::GraphRel(gr) => {
                 // Check if this is an optional denormalized pattern with a Union
-                // as the left side (standalone node scan preserved by UnionDistribution).
+                // on either side (standalone node scan preserved by UnionDistribution).
                 // The OPTIONAL MATCH edge needs to become a LEFT JOIN against the
-                // Union subquery.
-                if super::plan_builder_helpers::is_optional_denorm_union_graphrel(gr) {
-                    log::info!("🎯 OPTIONAL denormalized Union: restructuring to CTE + LEFT JOIN");
+                // Union subquery. `anchor_is_left` tells us which side carries the
+                // anchor: true for the common outgoing-direction shape, false when
+                // rule 4's anchor-aware reversal puts the anchor on the right (e.g.
+                // incoming-direction OPTIONAL MATCH, #506).
+                if let Some(anchor_is_left) =
+                    super::plan_builder_helpers::optional_denorm_union_anchor_is_left(gr)
+                {
+                    log::info!(
+                        "🎯 OPTIONAL denormalized Union (anchor_is_left={}): restructuring to CTE + LEFT JOIN",
+                        anchor_is_left
+                    );
+
+                    let anchor_plan: &LogicalPlan = if anchor_is_left {
+                        gr.left.as_ref()
+                    } else {
+                        gr.right.as_ref()
+                    };
+                    let anchor_connection_fallback: &String = if anchor_is_left {
+                        &gr.left_connection
+                    } else {
+                        &gr.right_connection
+                    };
 
                     // 1. Render the Union as a CTE
-                    let left_render = gr.left.to_render_plan(schema)?;
+                    let anchor_render = anchor_plan.to_render_plan(schema)?;
                     // Capture the columns the denorm-scan CTE actually exposes (its
                     // SELECT-item aliases, i.e. the Cypher *property* names). The LEFT
                     // JOIN key on the CTE side MUST reference one of these — this is the
                     // forward-resolution rule (CLAUDE.md rule 2). We snapshot them here
-                    // before `left_render` is consumed to build the CTE SQL below.
-                    let cte_exposed_columns: std::collections::HashSet<String> = left_render
+                    // before `anchor_render` is consumed to build the CTE SQL below.
+                    let cte_exposed_columns: std::collections::HashSet<String> = anchor_render
                         .select
                         .items
                         .iter()
                         .filter_map(|item| item.col_alias.as_ref().map(|a| a.0.clone()))
                         .collect();
                     // Find the node alias from the first Union branch
-                    let node_alias = if let LogicalPlan::Union(union) = gr.left.as_ref() {
+                    let node_alias = if let LogicalPlan::Union(union) = anchor_plan {
                         if let Some(LogicalPlan::GraphNode(gn)) =
                             union.inputs.first().map(|i| i.as_ref())
                         {
                             gn.alias.clone()
                         } else {
-                            gr.left_connection.clone()
+                            anchor_connection_fallback.clone()
                         }
                     } else {
-                        gr.left_connection.clone()
+                        anchor_connection_fallback.clone()
                     };
 
                     // Build the CTE SQL from the Union render plan
                     let cte_name = format!("__denorm_scan_{}", node_alias);
                     let cte_sql =
                         crate::clickhouse_query_generator::to_sql_query::render_plan_to_sql(
-                            left_render,
+                            anchor_render,
                             10,
                         );
                     let cte = super::Cte::new(
@@ -1289,20 +1308,30 @@ impl RenderPlanBuilder for LogicalPlan {
                         use_final: false,
                     }));
 
-                    // Extract the anchor node's from_node_properties from the Union's first branch.
-                    // These are the actual properties of the anchor node (e.g., IP's {ip_address: "id.orig_h"}),
-                    // not the edge's from_node_properties (which belong to the edge's declared from_node type,
-                    // e.g., Domain's {domain_name: "query"} for RESOLVED_TO).
-                    let anchor_from_node_properties: Option<
+                    // Extract the anchor node's own-side properties from whichever Union
+                    // branch actually carries them (its from/to node-properties, per
+                    // `edge_side_node_properties` — a schema-catalog API, CLAUDE.md rule
+                    // 7). These are the actual properties of the anchor node (e.g., IP's
+                    // {ip_address: "id.orig_h"}), not the edge's.
+                    //
+                    // The anchor's standalone-scan Union has one branch per role, and
+                    // only the branch matching the wanted side has that field populated
+                    // (the OTHER branch's ViewScan carries `None` for it — a different
+                    // node role, #506). Search all branches rather than assuming order.
+                    let anchor_node_properties: Option<
                         std::collections::HashMap<
                             String,
                             crate::graph_catalog::expression_parser::PropertyValue,
                         >,
-                    > = if let LogicalPlan::Union(union) = gr.left.as_ref() {
-                        union.inputs.first().and_then(|input| {
+                    > = if let LogicalPlan::Union(union) = anchor_plan {
+                        union.inputs.iter().find_map(|input| {
                             if let LogicalPlan::GraphNode(gn) = input.as_ref() {
                                 if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
-                                    vs.from_node_properties.clone()
+                                    crate::graph_catalog::pattern_schema::edge_side_node_properties(
+                                        vs,
+                                        anchor_is_left,
+                                    )
+                                    .cloned()
                                 } else {
                                     None
                                 }
@@ -1315,18 +1344,30 @@ impl RenderPlanBuilder for LogicalPlan {
                     };
 
                     // 3. Extract edge info for LEFT JOIN
-                    let (edge_table, edge_alias, from_id_col, node_id_col_opt) =
+                    let (edge_table, edge_alias, anchor_edge_id_col, node_id_col_opt) =
                         if let LogicalPlan::ViewScan(edge_vs) = gr.center.as_ref() {
-                            let from_id = edge_vs
-                                .from_id
-                                .as_ref()
-                                .map(|id| id.first_column().to_string())
-                                .unwrap_or_else(|| edge_vs.id_column.clone());
-                            // Find the Cypher property name that maps to the from_id DB column.
-                            // Use the ANCHOR NODE's from_node_properties, not the edge's.
-                            // When the anchor node type doesn't match the edge's declared from_node
-                            // (e.g., IP anchor for RESOLVED_TO which expects Domain), no mapping
-                            // will be found and we'll generate an impossible join condition.
+                            // The edge column the anchor must join against: from_id when
+                            // the anchor is the edge's FROM side, to_id when it's the TO
+                            // side (#506).
+                            let anchor_edge_id = if anchor_is_left {
+                                edge_vs
+                                    .from_id
+                                    .as_ref()
+                                    .map(|id| id.first_column().to_string())
+                                    .unwrap_or_else(|| edge_vs.id_column.clone())
+                            } else {
+                                edge_vs
+                                    .to_id
+                                    .as_ref()
+                                    .map(|id| id.first_column().to_string())
+                                    .unwrap_or_else(|| edge_vs.id_column.clone())
+                            };
+                            // Find the Cypher property name that maps to the anchor_edge_id
+                            // DB column. Use the ANCHOR NODE's own-side properties, not the
+                            // edge's. When the anchor node type doesn't match the edge's
+                            // declared node type on that side (e.g., IP anchor for
+                            // RESOLVED_TO which expects Domain), no mapping will be found
+                            // and we'll generate an impossible join condition.
                             //
                             // Multiple properties can map to the SAME db column: e.g. when the
                             // node_id's Cypher name (`id.orig_h`) differs from a property that also
@@ -1338,14 +1379,14 @@ impl RenderPlanBuilder for LogicalPlan {
                             // the unexposed name, producing invalid SQL (issue #470).
                             //
                             // Resolve FORWARD through the CTE's exposed columns: among the
-                            // properties that map to from_id, deterministically pick the one the
-                            // denorm-scan CTE actually exposes.
-                            let mut mapped_props: Vec<String> = anchor_from_node_properties
+                            // properties that map to anchor_edge_id, deterministically pick
+                            // the one the denorm-scan CTE actually exposes.
+                            let mut mapped_props: Vec<String> = anchor_node_properties
                                 .as_ref()
                                 .map(|props| {
                                     props
                                         .iter()
-                                        .filter(|(_, prop_val)| prop_val.raw() == from_id)
+                                        .filter(|(_, prop_val)| prop_val.raw() == anchor_edge_id)
                                         .map(|(prop_name, _)| prop_name.clone())
                                         .collect()
                                 })
@@ -1353,9 +1394,10 @@ impl RenderPlanBuilder for LogicalPlan {
                             // Deterministic tie-break for any residual ambiguity.
                             mapped_props.sort();
                             let node_id = if mapped_props.is_empty() {
-                                // No anchor property maps to the edge's from_id (type mismatch,
-                                // e.g. IP anchor for RESOLVED_TO which expects Domain). Fall through
-                                // to the impossible-join branch → always-NULL OPTIONAL MATCH.
+                                // No anchor property maps to the edge's join column (type
+                                // mismatch, e.g. IP anchor for RESOLVED_TO which expects
+                                // Domain). Fall through to the impossible-join branch →
+                                // always-NULL OPTIONAL MATCH.
                                 None
                             } else if let Some(exposed) = mapped_props
                                 .iter()
@@ -1363,20 +1405,21 @@ impl RenderPlanBuilder for LogicalPlan {
                             {
                                 Some(exposed.clone())
                             } else {
-                                // Properties map to from_id but NONE is exposed by the CTE — the
-                                // join key cannot be resolved forward. Surface a clean planning
-                                // error rather than emitting invalid SQL.
+                                // Properties map to anchor_edge_id but NONE is exposed by
+                                // the CTE — the join key cannot be resolved forward.
+                                // Surface a clean planning error rather than emitting
+                                // invalid SQL.
                                 return Err(RenderBuildError::InvalidRenderPlan(format!(
-                                    "OPTIONAL denormalized join: edge from_id '{}' maps to anchor \
+                                    "OPTIONAL denormalized join: edge join column '{}' maps to anchor \
                                      properties {:?}, but denorm-scan CTE '{}' exposes only {:?} — \
                                      no forward-resolvable join key",
-                                    from_id, mapped_props, cte_name, cte_exposed_columns
+                                    anchor_edge_id, mapped_props, cte_name, cte_exposed_columns
                                 )));
                             };
                             (
                                 edge_vs.source_table.clone(),
                                 gr.alias.clone(),
-                                from_id,
+                                anchor_edge_id,
                                 node_id,
                             )
                         } else {
@@ -1385,10 +1428,11 @@ impl RenderPlanBuilder for LogicalPlan {
                             ));
                         };
 
-                    // Build LEFT JOIN condition: CTE.node_id_col = edge.from_id_col.
-                    // If no valid anchor property maps to the edge's from_id (type mismatch,
-                    // e.g., IP node for RESOLVED_TO which expects Domain), generate an
-                    // impossible condition so the OPTIONAL MATCH always returns NULL.
+                    // Build LEFT JOIN condition: CTE.node_id_col = edge.anchor_edge_id_col.
+                    // If no valid anchor property maps to the edge's join column (type
+                    // mismatch, e.g., IP node for RESOLVED_TO which expects Domain),
+                    // generate an impossible condition so the OPTIONAL MATCH always
+                    // returns NULL.
                     let join_condition = if let Some(node_id_col) = node_id_col_opt {
                         OperatorApplication {
                             operator: Operator::Equal,
@@ -1402,16 +1446,16 @@ impl RenderPlanBuilder for LogicalPlan {
                                 RenderExpr::PropertyAccessExp(PropertyAccess {
                                     table_alias: TableAlias(edge_alias.clone()),
                                     column: crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                        from_id_col.clone(),
+                                        anchor_edge_id_col.clone(),
                                     ),
                                 }),
                             ],
                         }
                     } else {
                         log::debug!(
-                            "OPTIONAL MATCH: anchor node has no property mapping to edge from_id '{}' — \
+                            "OPTIONAL MATCH: anchor node has no property mapping to edge join column '{}' — \
                              generating impossible join condition (always-NULL OPTIONAL MATCH)",
-                            from_id_col
+                            anchor_edge_id_col
                         );
                         // 1 = 0: impossible condition, LEFT JOIN always yields NULL
                         OperatorApplication {
@@ -1437,7 +1481,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         // this LEFT JOIN as "unreferenced" (count(r) → count(*) loses
                         // the alias reference, but the join is essential for OPTIONAL
                         // MATCH semantics).
-                        from_id_column: Some(from_id_col),
+                        from_id_column: Some(anchor_edge_id_col),
                         to_id_column: None,
                         graph_rel: None,
                     };
@@ -3405,16 +3449,66 @@ impl RenderPlanBuilder for LogicalPlan {
                     render.joins.0.len(),
                     render.ctes.0.len()
                 );
-                // Re-extract outer SELECT/GROUP BY/ORDER BY from the full plan
+                // Re-extract outer SELECT/GROUP BY/ORDER BY/WHERE from the full plan.
                 render.select = SelectItems {
                     items: <LogicalPlan as SelectBuilder>::extract_select_items(self, plan_ctx)?,
                     distinct: FilterBuilder::extract_distinct(self),
                 };
+                // WHERE was never re-extracted here at all (render.filters stayed
+                // whatever `inner.to_render_plan` produced) — silently dropping any
+                // WHERE clause on this pattern (not an error — silently wrong
+                // results, ground rule 1 violation; caught live on the
+                // incoming-direction shape, #506's own new code path).
+                //
+                // A second layer applies specifically to incoming direction:
+                // `collect_graphrel_predicates` drops a predicate that references
+                // ONLY the non-anchor ("optional") alias whenever `anchor_connection`
+                // is set, expecting some downstream JOIN `pre_filter` to absorb it —
+                // this rendering path has no such mechanism. Outgoing-direction
+                // queries never hit that drop (their `anchor_connection` is `None` by
+                // construction, CLAUDE.md rule 4), so extract on a clone with
+                // `anchor_connection` cleared to get the same "keep all predicates"
+                // behavior outgoing already gets — see
+                // `clear_anchor_connection_for_filters` for the full explanation.
+                let filters_plan =
+                    super::plan_builder_helpers::clear_anchor_connection_for_filters(self);
+                render.filters = FilterItems(FilterBuilder::extract_filters(&filters_plan)?);
                 render.group_by =
                     GroupByExpressions(<LogicalPlan as GroupByBuilder>::extract_group_by(self)?);
                 render.order_by = OrderByItems(super::plan_builder_utils::extract_order_by(self)?);
                 render.skip = SkipItem(super::plan_builder_utils::extract_skip(self));
                 render.limit = LimitItem(super::plan_builder_utils::extract_limit(self));
+
+                // #505: `inner` may be buried under one or more OUTER optional hops
+                // (chained OPTIONAL MATCH, e.g. `MATCH (a) OPTIONAL MATCH
+                // (a)-[:R]->(b) OPTIONAL MATCH (b)-[:R]->(c)` — `inner` is the
+                // FIRST hop's GraphRel, wrapped by the second hop's GraphRel).
+                // `render.joins` so far only has the inner hop's own (correctly
+                // resolved) JOIN. The outer hop(s)' JOINs are NOT built by the
+                // inner-only render above, but they ARE already computed
+                // correctly by the generic JOIN-generation pipeline (they don't
+                // touch the anchor Union at all) — pull them from a full,
+                // generic extraction over `self` and append them, skipping the
+                // inner hop's own (generically-broken, anchor-blind) entry.
+                if let LogicalPlan::GraphRel(inner_gr) = inner {
+                    let inner_alias = inner_gr.alias.clone();
+                    let context = super::cte_generation::CteGenerationContext::new();
+                    if let Ok(all_joins) = <LogicalPlan as JoinBuilder>::extract_joins_with_context(
+                        self, schema, &context,
+                    ) {
+                        let outer_joins: Vec<_> = all_joins
+                            .into_iter()
+                            .filter(|j| j.table_alias != inner_alias)
+                            .collect();
+                        if !outer_joins.is_empty() {
+                            log::info!(
+                                "🎯 #505: stitching {} outer chained-OPTIONAL join(s) after the anchor CTE's own JOIN",
+                                outer_joins.len()
+                            );
+                            render.joins.0.extend(outer_joins);
+                        }
+                    }
+                }
 
                 // Rewrite column references: the SELECT/GROUP BY were extracted from
                 // the full plan which resolves denormalized node properties through the
@@ -3422,9 +3516,25 @@ impl RenderPlanBuilder for LogicalPlan {
                 // the node properties come from the CTE (e.g., a.code).
                 // Build edge_alias.db_col → node_alias.cypher_prop mapping from the GraphRel.
                 if let LogicalPlan::GraphRel(gr) = inner {
+                    // #506: the anchor Union can be on either side (see
+                    // `optional_denorm_union_anchor_is_left`) — an incoming-direction
+                    // OPTIONAL MATCH puts the pre-existing anchor on gr.right, where it
+                    // binds to the edge's TO side rather than the FROM side. Default to
+                    // the left/from-side (outgoing) shape when this GraphRel isn't
+                    // recognized as the special pattern for some reason, matching prior
+                    // behavior.
+                    let anchor_is_left =
+                        super::plan_builder_helpers::optional_denorm_union_anchor_is_left(gr)
+                            .unwrap_or(true);
+                    let anchor_side_plan: &LogicalPlan = if anchor_is_left {
+                        gr.left.as_ref()
+                    } else {
+                        gr.right.as_ref()
+                    };
+
                     if let LogicalPlan::ViewScan(edge_vs) = gr.center.as_ref() {
                         let edge_alias = &gr.alias;
-                        let node_alias = if let LogicalPlan::Union(u) = gr.left.as_ref() {
+                        let node_alias = if let LogicalPlan::Union(u) = anchor_side_plan {
                             u.inputs.first().and_then(|i| {
                                 if let LogicalPlan::GraphNode(gn) = i.as_ref() {
                                     Some(gn.alias.clone())
@@ -3438,18 +3548,26 @@ impl RenderPlanBuilder for LogicalPlan {
 
                         if let Some(ref node_alias) = node_alias {
                             // Build reverse mapping: db_column → (target_alias, cypher_property)
-                            // Include both from_node_properties (left/start node) and
-                            // to_node_properties (right/end node) for complete coverage.
+                            // for the anchor's own side only (`edge_side_node_properties`,
+                            // a schema-catalog API — CLAUDE.md rule 7; #506 needs the
+                            // opposite side from the anchor-is-left/outgoing case). The
+                            // non-anchor node's columns must stay on the LEFT-JOINed edge
+                            // alias (see comment below), so only the anchor side is mapped.
                             let mut col_map: std::collections::HashMap<String, (String, String)> =
                                 std::collections::HashMap::new();
 
-                            if let Some(ref from_props) = edge_vs.from_node_properties {
+                            let anchor_side_props =
+                                crate::graph_catalog::pattern_schema::edge_side_node_properties(
+                                    edge_vs,
+                                    anchor_is_left,
+                                );
+                            if let Some(side_props) = anchor_side_props {
                                 // Sorted so that when two cypher properties map to the
                                 // same db column, the winner is deterministic (HashMap
                                 // iteration order is per-process random, #480 class).
-                                let mut from_props: Vec<_> = from_props.iter().collect();
-                                from_props.sort_by(|a, b| a.0.cmp(b.0));
-                                for (prop, val) in from_props {
+                                let mut side_props: Vec<_> = side_props.iter().collect();
+                                side_props.sort_by(|a, b| a.0.cmp(b.0));
+                                for (prop, val) in side_props {
                                     col_map.insert(
                                         val.raw().to_string(),
                                         (node_alias.clone(), prop.clone()),
@@ -3501,11 +3619,27 @@ impl RenderPlanBuilder for LogicalPlan {
                                 .and_then(|ctx| ctx.get_pattern_context(&gr.alias))
                                 .map(|pc| pc.edge_owned_columns());
                             if let (LogicalPlan::Union(u), Some(edge_owned_columns)) =
-                                (gr.left.as_ref(), edge_owned_columns)
+                                (anchor_side_plan, edge_owned_columns)
                             {
-                                if let Some(LogicalPlan::GraphNode(gn)) =
-                                    u.inputs.first().map(|i| i.as_ref())
-                                {
+                                // Find the branch matching the wanted role (same
+                                // search as `anchor_node_properties` above, via the
+                                // `edge_side_node_properties` schema-catalog API)
+                                // rather than assuming branch order — the OTHER
+                                // branch's `property_mapping` belongs to the
+                                // opposite role (#506).
+                                let anchor_gn = u.inputs.iter().find_map(|i| {
+                                    if let LogicalPlan::GraphNode(gn) = i.as_ref() {
+                                        if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                                            if crate::graph_catalog::pattern_schema::edge_side_node_properties(vs, anchor_is_left).is_some() {
+                                                return Some(gn);
+                                            }
+                                        }
+                                        None
+                                    } else {
+                                        None
+                                    }
+                                });
+                                if let Some(gn) = anchor_gn {
                                     if let LogicalPlan::ViewScan(anchor_vs) = gn.input.as_ref() {
                                         let mut anchor_props: Vec<_> =
                                             anchor_vs.property_mapping.iter().collect();
@@ -3526,15 +3660,17 @@ impl RenderPlanBuilder for LogicalPlan {
                                     }
                                 }
                             }
-                            // The to-node (`gr.right_connection`, e.g. `b`) is NOT
-                            // materialized as its own table here — its columns live on the
-                            // LEFT-JOINed edge row (`edge_alias`, e.g. `t1`) as the edge's
-                            // `to_node_properties` (code→dest_code). So `b.code` IS
-                            // `t1.dest_code` and must stay on the edge alias: rewriting it
-                            // to `b.code` references a non-existent table (invalid SQL / CH
-                            // 500 — #456). Keeping it on `t1` also yields correct OPTIONAL
-                            // NULL-extension (t1 is NULL on no-match). Only the from-node is
-                            // remapped to the CTE below. Do NOT add to_node_properties here.
+                            // The non-anchor node (e.g. `b`) is NOT materialized as its own
+                            // table here — its columns live on the LEFT-JOINed edge row
+                            // (`edge_alias`, e.g. `t1`) as the edge's OPPOSITE-side properties
+                            // (to_node_properties when the anchor is the FROM side / outgoing;
+                            // from_node_properties when the anchor is the TO side / incoming,
+                            // #506). So e.g. `b.code` IS `t1.dest_code` and must stay on the
+                            // edge alias: rewriting it to `b.code` references a non-existent
+                            // table (invalid SQL / CH 500 — #456). Keeping it on `t1` also
+                            // yields correct OPTIONAL NULL-extension (t1 is NULL on no-match).
+                            // Only the anchor side is remapped to the CTE above — do NOT add
+                            // the non-anchor side's properties here.
 
                             // Recursive rewrite: edge_alias.db_col → node_alias.cypher_prop
                             fn rewrite_denorm_refs(

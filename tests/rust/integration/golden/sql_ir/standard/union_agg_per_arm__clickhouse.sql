@@ -1,7 +1,7 @@
 SELECT 
-      count(*) AS "c"
+      count(r.user_id) AS "c"
 FROM social.authored_bench AS r
 UNION DISTINCT 
 SELECT 
-      count(*) AS "c"
+      count(r2.follower_id) AS "c"
 FROM social.user_follows_bench AS r2

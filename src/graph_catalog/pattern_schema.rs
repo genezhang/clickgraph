@@ -1319,6 +1319,28 @@ impl PatternSchemaContext {
     }
 }
 
+/// Select the node-properties map for whichever side of a denormalized edge
+/// `ViewScan` a node occupies: `from_node_properties` for the FROM/origin
+/// side, `to_node_properties` for the TO/destination side.
+///
+/// Centralizes this FROM/TO selection as a schema-catalog API (CLAUDE.md
+/// rule 7 — axis-dispatch) so render code doesn't repeat the raw
+/// `from_node_properties`/`to_node_properties` branch inline at each call
+/// site. Added for #506 (incoming-direction OPTIONAL MATCH on a
+/// denormalized schema needs the anchor's TO-side properties, since
+/// CLAUDE.md rule 4's anchor-aware FROM/JOIN reversal can place the anchor
+/// on the edge's TO side even though it's structurally `GraphRel.right`).
+pub fn edge_side_node_properties(
+    view_scan: &crate::query_planner::logical_plan::ViewScan,
+    is_from_side: bool,
+) -> Option<&HashMap<String, crate::graph_catalog::expression_parser::PropertyValue>> {
+    if is_from_side {
+        view_scan.from_node_properties.as_ref()
+    } else {
+        view_scan.to_node_properties.as_ref()
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================

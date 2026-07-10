@@ -1,6 +1,6 @@
 WITH with_cnt_prop_cte_0 AS (SELECT 
       r.`id.orig_h` AS `prop`, 
-      count(*) AS `cnt`
+      count(r.uid) AS `cnt`
 FROM zeek.dns_log AS r
 GROUP BY r.`id.orig_h`
 )

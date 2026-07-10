@@ -1,6 +1,6 @@
 WITH with_cnt_prop_cte_0 AS (SELECT 
       a.user_id AS "prop", 
-      count(*) AS "cnt"
+      count(r.from_id) AS "cnt"
 FROM brahmand.users_bench AS a
 INNER JOIN brahmand.interactions AS r ON r.from_id = a.user_id AND r.interaction_type = 'FOLLOWS' AND r.from_type = 'User' AND r.to_type = 'User'
 GROUP BY a.user_id

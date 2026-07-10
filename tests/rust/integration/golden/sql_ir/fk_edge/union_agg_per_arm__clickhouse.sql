@@ -1,5 +1,5 @@
 SELECT 
-      count(*) AS "c"
+      count(r.order_id) AS "c"
 FROM db_fk_edge.orders_fk AS r
 UNION ALL 
 SELECT 

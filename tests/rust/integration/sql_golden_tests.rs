@@ -926,6 +926,14 @@ const DENORM_CORPUS: &[(&str, &str)] = &[
     // swapped branches anchoring FROM on the optional node). This byte-lock is
     // a KNOWN-INCOMPLETE shape (directed-only matches), not semantic coverage;
     // fixing it needs an anchor-LEFT-JOIN-onto-match-union renderer structure.
+    //
+    // #505 transitioned this golden: the anchor `a` (bare `MATCH (a:Airport)`,
+    // no required binding) now correctly gets its own `__denorm_scan_a` CTE +
+    // LEFT JOIN instead of silently using the first hop's edge table as FROM
+    // (which dropped anchor rows with no match, e.g. an airport with no
+    // flights at all). The directed-only-match limitation described above is
+    // UNCHANGED and still tracked separately — this fix only restores anchor
+    // preservation for the (already directed-only) shape this golden locks.
     (
         "optional_undirected_2hop",
         "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]-(b:Airport)-[:FLIGHT]-(c:Airport) RETURN a.code, b.code, c.code",
@@ -3140,6 +3148,264 @@ async fn denorm_count_node_resolves_embedded_id_column_493() {
             !first.contains("count(b.") && !first.contains("count(DISTINCT b."),
             "#493 [{tag}]: unresolved alias `b` leaked into the aggregate \
              (UNKNOWN_IDENTIFIER at execution):\n{first}"
+        );
+    }
+}
+
+/// #502 regression: `count(r)` on an OPTIONAL MATCH relationship must render
+/// as a NULL-sensitive count over one of the edge's own (edge_id) columns,
+/// not `count(*)`. `count(*)` counts the anchor row itself, which a LEFT
+/// JOIN always preserves (NULL-extended) even when the relationship never
+/// matched — so a zero-edge anchor silently reported `count(r) == 1`. This
+/// is the relationship-count sibling of #493's node-count fix (`count(b)` ->
+/// `count(t0.dest_code)`).
+#[tokio::test]
+async fn denorm_count_relationship_resolves_edge_id_column_502() {
+    let denorm_schema = load_schema(SchemaId::Denormalized.yaml_path());
+    let coupled_schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+    let standard_schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // (schema, cypher, the aggregate that must appear after `normalize`'s
+    // alias anonymization, a context tag)
+    let cases = [
+        (
+            &denorm_schema,
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[r:FLIGHT]->(b) RETURN a.code, count(r)",
+            "count(r.flight_id)",
+            "denorm optional count(r)",
+        ),
+        (
+            &denorm_schema,
+            "MATCH (a:Airport)-[r:FLIGHT]->(b) RETURN a.code, count(r)",
+            "count(r.flight_id)",
+            "denorm required count(r)",
+        ),
+        (
+            &denorm_schema,
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[r:FLIGHT]->(b) RETURN a.code, count(DISTINCT r)",
+            "count(DISTINCT tuple(r.flight_id, r.flight_number))",
+            "denorm optional count(DISTINCT r)",
+        ),
+        (
+            &coupled_schema,
+            "MATCH (a:IP) OPTIONAL MATCH (a)-[r:REQUESTED]->(d) RETURN a.ip, count(r)",
+            "count(r.uid)",
+            "coupled optional count(r)",
+        ),
+        (
+            &standard_schema,
+            "MATCH (a:User) OPTIONAL MATCH (a)-[r:FOLLOWS]->(b) RETURN a.name, count(r)",
+            "count(r.follower_id)",
+            "standard optional count(r)",
+        ),
+    ];
+
+    for (schema, cypher, want_agg, tag) in cases {
+        let first = normalize(&render(schema, cypher, SqlDialect::ClickHouse).await);
+        for _ in 0..5 {
+            let again = normalize(&render(schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(
+                first, again,
+                "#502 [{tag}]: render is nondeterministic:\nFIRST:\n{first}\nAGAIN:\n{again}"
+            );
+        }
+        // The aggregate must be NULL-sensitive (an edge_id column), never
+        // count(*), which is always 1 on a LEFT JOIN miss.
+        assert!(
+            first.contains(want_agg),
+            "#502 [{tag}]: expected `{want_agg}` (NULL-sensitive edge_id \
+             column), got:\n{first}"
+        );
+        assert!(
+            !first.contains("count(*)"),
+            "#502 [{tag}]: count(r) rendered as NULL-insensitive count(*) — \
+             zero-edge anchors would report count == 1:\n{first}"
+        );
+    }
+}
+
+/// #506 regression: an INCOMING-direction OPTIONAL MATCH on a denormalized
+/// schema (`MATCH (a:Airport) OPTIONAL MATCH (a)<-[:FLIGHT]-(b) ...`) must
+/// render the same shape as the OUTGOING direction — an anchor
+/// `__denorm_scan_a` CTE + a correctly-keyed LEFT JOIN — not collapse to a
+/// standalone Union with an alias (`a`) never introduced in FROM.
+///
+/// Root cause: `is_optional_denorm_union_graphrel` (the gate for the special
+/// CTE + LEFT JOIN rendering) only checked `gr.left` for the anchor's
+/// standalone-scan Union. CLAUDE.md rule 4's anchor-aware FROM/JOIN reversal
+/// puts the anchor on `gr.right` for incoming-direction OPTIONAL MATCH, so
+/// the gate silently never fired, and `UnionDistribution`'s matching
+/// right-Union case had no exception to preserve LEFT JOIN semantics either
+/// (it unconditionally distributed the OPTIONAL edge into each Union branch).
+#[tokio::test]
+async fn denorm_incoming_optional_match_preserves_anchor_scan_and_join_506() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+
+    let cases = [
+        (
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) RETURN a.code, b.code",
+            "a.code = t0.origin_code",
+            "outgoing",
+        ),
+        (
+            "MATCH (a:Airport) OPTIONAL MATCH (a)<-[:FLIGHT]-(b) RETURN a.code, b.code",
+            "a.code = t0.dest_code",
+            "incoming",
+        ),
+    ];
+
+    for (cypher, want_join, tag) in cases {
+        let first = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+        for _ in 0..5 {
+            let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(
+                first, again,
+                "#506 [{tag}]: render is nondeterministic:\nFIRST:\n{first}\nAGAIN:\n{again}"
+            );
+        }
+        // The anchor's standalone-scan CTE must always be present — its
+        // absence is exactly how #505/#506's silent row loss and invalid SQL
+        // happened.
+        assert!(
+            first.contains("__denorm_scan_a"),
+            "#506 [{tag}]: anchor scan CTE __denorm_scan_a missing — anchor \
+             rows with no match would be silently dropped:\n{first}"
+        );
+        // The LEFT JOIN key must reference the correct edge column for this
+        // direction (origin for outgoing, dest for incoming) — never a
+        // fixed/wrong side, and never an impossible `1 = 0`/`1 = 1` fallback.
+        assert!(
+            first.contains(want_join),
+            "#506 [{tag}]: expected join condition `{want_join}`, got:\n{first}"
+        );
+        assert!(
+            !first.contains("ON 1 = 1") && !first.contains("ON 1 = 0"),
+            "#506 [{tag}]: fell back to an impossible/always-true join \
+             condition instead of resolving the anchor's join key:\n{first}"
+        );
+        // Every table alias referenced in SELECT must be introduced by FROM
+        // or a JOIN — the original #506 symptom was `a.*` referenced with no
+        // `AS a` anywhere in the query.
+        assert!(
+            first.contains("__denorm_scan_a AS a") || first.contains("AS a\n"),
+            "#506 [{tag}]: alias 'a' used in SELECT but never introduced in \
+             FROM/JOIN (invalid SQL):\n{first}"
+        );
+    }
+}
+
+/// #505 regression: a chained double-OPTIONAL on a denormalized schema
+/// (`MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) OPTIONAL MATCH
+/// (b)-[:FLIGHT]->(c) ...`) must still preserve the anchor's
+/// `__denorm_scan_a` CTE — the SAME requirement as the single-hop case
+/// (#506's regression test), just with a second OPTIONAL hop chained after
+/// it. Dropping the CTE means anchor rows with no outgoing edge at all (e.g.
+/// an airport with zero flights) silently vanish.
+///
+/// Root cause: `find_inner_optional_denorm_graphrel` located the anchor's
+/// Union only by walking wrapper nodes (GraphJoins/Projection/Filter/etc.),
+/// never into a nested `GraphRel.left`/`.right` — so a SECOND optional hop
+/// (which wraps the first hop's GraphRel as its own `.left`) hid the anchor
+/// Union from the detector entirely, and rendering fell through to the
+/// generic GraphJoins path, which (for this schema pattern) treats the first
+/// hop's edge table as a bare FROM marker instead of building the anchor CTE
+/// + a real JOIN key.
+#[tokio::test]
+async fn denorm_chained_optional_preserves_anchor_scan_505() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+    let cypher = "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) OPTIONAL MATCH (b)-[:FLIGHT]->(c) RETURN a.code, b.code, c.code";
+
+    let first = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+    for _ in 0..5 {
+        let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#505: render is nondeterministic:\nFIRST:\n{first}\nAGAIN:\n{again}"
+        );
+    }
+    assert!(
+        first.contains("__denorm_scan_a"),
+        "#505: anchor scan CTE __denorm_scan_a missing on a chained double- \
+         OPTIONAL — anchor rows with no outgoing edge at all would be \
+         silently dropped:\n{first}"
+    );
+    // Both hops' LEFT JOINs must be present, in dependency order: the first
+    // hop keyed off the anchor CTE, the second keyed off the first hop's
+    // table (never an impossible/always-true fallback condition).
+    assert!(
+        first.contains("a.code = t0.origin_code"),
+        "#505: first hop's JOIN must key off the anchor CTE alias, got:\n{first}"
+    );
+    assert!(
+        first.contains("t1.origin_code = t0.dest_code"),
+        "#505: second hop's JOIN (already correctly computed by the generic \
+         pipeline) must be preserved after the anchor CTE stitch, got:\n{first}"
+    );
+    assert!(
+        !first.contains("ON 1 = 1") && !first.contains("ON 1 = 0"),
+        "#505: fell back to an impossible/always-true join condition:\n{first}"
+    );
+}
+
+/// #506 follow-up (adversarial review, post-merge): incoming-direction denorm
+/// OPTIONAL MATCH silently dropped a WHERE clause on the matched (non-anchor)
+/// node entirely — no error, no WHERE in the generated SQL at all, returning
+/// every anchor row unfiltered instead of the correctly-filtered subset.
+/// Outgoing direction already rendered the WHERE correctly; the two
+/// directions must be consistent.
+///
+/// Root cause (two layers):
+/// 1. The CTE + LEFT JOIN special-case rendering path (`to_render_plan_with_ctx`)
+///    re-extracts SELECT/GROUP BY/ORDER BY/SKIP/LIMIT from the outer plan
+///    after delegating to `inner.to_render_plan`, but never re-extracted
+///    `render.filters` — so any WHERE was silently lost regardless of
+///    direction, UNLESS some other code path happened to keep it.
+/// 2. `collect_graphrel_predicates` deliberately drops a predicate that
+///    references ONLY the non-anchor ("optional") alias whenever
+///    `anchor_connection` is set, expecting a downstream JOIN `pre_filter` to
+///    absorb it — a mechanism this rendering path doesn't have. Outgoing
+///    direction never hit this because its `anchor_connection` is always
+///    `None` (CLAUDE.md rule 4), which happens to route through the
+///    "no anchor determined — keep all predicates" fallback instead.
+#[tokio::test]
+async fn denorm_optional_where_preserved_both_directions_506_followup() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+
+    // (cypher, the WHERE condition that must survive, a context tag)
+    let cases = [
+        (
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[r:FLIGHT]->(b:Airport) WHERE b.state = 'CA' RETURN a.code, b.code",
+            "r.dest_state = 'CA'",
+            "outgoing, single hop",
+        ),
+        (
+            "MATCH (a:Airport) OPTIONAL MATCH (a)<-[r:FLIGHT]-(b:Airport) WHERE b.state = 'CA' RETURN a.code, b.code",
+            "r.origin_state = 'CA'",
+            "incoming, single hop",
+        ),
+        (
+            "MATCH (a:Airport) OPTIONAL MATCH (a)<-[:FLIGHT]-(b:Airport) OPTIONAL MATCH (b)<-[:FLIGHT]-(c:Airport) WHERE c.state = 'CA' RETURN a.code, b.code, c.code",
+            "t1.origin_state = 'CA'",
+            "incoming, chained double-OPTIONAL (#505 shape)",
+        ),
+    ];
+
+    for (cypher, want_where, tag) in cases {
+        let first = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+        for _ in 0..5 {
+            let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(
+                first, again,
+                "#506-followup [{tag}]: render is nondeterministic:\nFIRST:\n{first}\nAGAIN:\n{again}"
+            );
+        }
+        assert!(
+            first.contains("WHERE"),
+            "#506-followup [{tag}]: WHERE clause dropped entirely:\n{first}"
+        );
+        assert!(
+            first.contains(want_where),
+            "#506-followup [{tag}]: expected WHERE condition `{want_where}`, got:\n{first}"
         );
     }
 }
