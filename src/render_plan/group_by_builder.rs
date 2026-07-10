@@ -277,6 +277,32 @@ pub(super) fn resolve_id_function_for_group_order(
         return None;
     }
 
+    // #484 review follow-up (BLOCKING finding): a BARE multi-label alias with
+    // NO GraphRel connection at all (`MATCH (n) RETURN id(n), count(*)`) must
+    // NOT go through the "plain path" below. `find_id_column_for_alias`
+    // always returns the FIRST candidate label's id column (e.g. `post_id`),
+    // which is only valid for a single-label node or a GraphRel-connected
+    // endpoint (both handled correctly elsewhere) — for a bare multi-label
+    // scan, render wraps `alias` in a `(...) AS __union` subquery, so
+    // `GROUP BY alias.post_id` in the OUTER query references a table alias
+    // that plainly does not exist there (ClickHouse Code 47
+    // UNKNOWN_IDENTIFIER). A correct fix needs the multi-label discriminator
+    // (`tuple`/`coalesce` over each label's id column, à la #467's
+    // `count(DISTINCT n)`) to be introduced early enough that
+    // `PropertyRequirementsAnalyzer` projects the per-label columns into each
+    // UNION branch under the `alias.<col>`-quoted-alias convention #467's
+    // aggregate rewrite relies on — that convention is wired specifically
+    // into the aggregate-wrapper render path, not a general mechanism a bare
+    // GROUP BY/ORDER BY key can reuse without materially more plumbing than
+    // fits this fix. Until that follow-up lands, leave this shape on the
+    // PRE-existing (wrong-but-non-fatal) `toInt64(0)` placeholder rather than
+    // regressing it into a hard runtime failure: bail out here so the
+    // fallthrough generic-conversion path (Case 3 in both call sites) takes
+    // over, exactly as it did before this whole `id()` resolution existed.
+    if is_bare_multilabel_alias(input, &alias) {
+        return None;
+    }
+
     // Plain path: same resolution as `handle_table_alias_group_by`.
     let id_col = input.find_id_column_for_alias(&alias).ok()?;
     let table_alias_to_use = match input.get_properties_with_table_alias(&alias) {
@@ -287,6 +313,127 @@ pub(super) fn resolve_id_function_for_group_order(
         table_alias: TableAlias(table_alias_to_use),
         column: PropertyValue::Column(id_col),
     }))
+}
+
+/// Is `alias` a node whose scan is a multi-label `ViewScan` UNION (i.e. a
+/// bare `MATCH (n)` with more than one candidate label), reached with NO
+/// GraphRel connecting it to anything? `find_id_column_for_alias` degrades
+/// gracefully for a GraphRel-connected multi-type endpoint (single-label
+/// ViewScan or a VLP/JOIN-CTE strategy, not a raw per-label Union) — the
+/// unsafe case is specifically a standalone `GraphNode` whose `.input` is a
+/// `Union` of more than one `ViewScan`, one per label, with no relationship
+/// at all to hang a JOIN/CTE alias off of.
+fn is_bare_multilabel_alias(plan: &LogicalPlan, alias: &str) -> bool {
+    // Short-circuit: if `alias` is ever a GraphRel connection (any
+    // direction), it's never the "bare, no relationship" shape — a bare
+    // `MATCH (n)` never has a GraphRel touching `n` at all.
+    if plan_has_graph_rel_connection(plan, alias) {
+        return false;
+    }
+    match plan {
+        // A bare multi-label `MATCH (n)` surfaces as a TOP-LEVEL
+        // `LogicalPlan::Union` wrapping full per-label branches — one
+        // GraphNode per candidate label, all sharing `alias`
+        // (`generate_union_for_untyped_nodes` in type_inference.rs clones
+        // the whole subtree per label combination) — NOT a Union nested
+        // inside a single GraphNode.input (that nested shape is the
+        // denormalized/polymorphic pattern, a different, already-safe case
+        // `find_id_column_for_alias` handles directly). Detect it by
+        // counting how many branches resolve `alias` to a GraphNode.
+        LogicalPlan::Union(u) => {
+            let matching_branches = u
+                .inputs
+                .iter()
+                .filter(|i| plan_contains_graphnode_alias(i, alias))
+                .count();
+            matching_branches > 1 || u.inputs.iter().any(|i| is_bare_multilabel_alias(i, alias))
+        }
+        LogicalPlan::GraphNode(node) => is_bare_multilabel_alias(&node.input, alias),
+        LogicalPlan::GraphRel(rel) => {
+            is_bare_multilabel_alias(&rel.left, alias)
+                || is_bare_multilabel_alias(&rel.center, alias)
+                || is_bare_multilabel_alias(&rel.right, alias)
+        }
+        LogicalPlan::Filter(f) => is_bare_multilabel_alias(&f.input, alias),
+        LogicalPlan::Projection(p) => is_bare_multilabel_alias(&p.input, alias),
+        LogicalPlan::GraphJoins(gj) => is_bare_multilabel_alias(&gj.input, alias),
+        LogicalPlan::GroupBy(gb) => is_bare_multilabel_alias(&gb.input, alias),
+        LogicalPlan::OrderBy(ob) => is_bare_multilabel_alias(&ob.input, alias),
+        LogicalPlan::Skip(s) => is_bare_multilabel_alias(&s.input, alias),
+        LogicalPlan::Limit(l) => is_bare_multilabel_alias(&l.input, alias),
+        LogicalPlan::Cte(cte) => is_bare_multilabel_alias(&cte.input, alias),
+        LogicalPlan::WithClause(wc) => is_bare_multilabel_alias(&wc.input, alias),
+        LogicalPlan::CartesianProduct(cp) => {
+            is_bare_multilabel_alias(&cp.left, alias) || is_bare_multilabel_alias(&cp.right, alias)
+        }
+        _ => false,
+    }
+}
+
+/// Does `alias` appear as a GraphRel connection (left or right, any
+/// direction) anywhere in this subtree?
+fn plan_has_graph_rel_connection(plan: &LogicalPlan, alias: &str) -> bool {
+    match plan {
+        LogicalPlan::GraphRel(rel) => {
+            rel.left_connection == alias
+                || rel.right_connection == alias
+                || plan_has_graph_rel_connection(&rel.left, alias)
+                || plan_has_graph_rel_connection(&rel.center, alias)
+                || plan_has_graph_rel_connection(&rel.right, alias)
+        }
+        LogicalPlan::GraphNode(node) => plan_has_graph_rel_connection(&node.input, alias),
+        LogicalPlan::Filter(f) => plan_has_graph_rel_connection(&f.input, alias),
+        LogicalPlan::Projection(p) => plan_has_graph_rel_connection(&p.input, alias),
+        LogicalPlan::GraphJoins(gj) => plan_has_graph_rel_connection(&gj.input, alias),
+        LogicalPlan::GroupBy(gb) => plan_has_graph_rel_connection(&gb.input, alias),
+        LogicalPlan::OrderBy(ob) => plan_has_graph_rel_connection(&ob.input, alias),
+        LogicalPlan::Skip(s) => plan_has_graph_rel_connection(&s.input, alias),
+        LogicalPlan::Limit(l) => plan_has_graph_rel_connection(&l.input, alias),
+        LogicalPlan::Cte(cte) => plan_has_graph_rel_connection(&cte.input, alias),
+        LogicalPlan::WithClause(wc) => plan_has_graph_rel_connection(&wc.input, alias),
+        LogicalPlan::CartesianProduct(cp) => {
+            plan_has_graph_rel_connection(&cp.left, alias)
+                || plan_has_graph_rel_connection(&cp.right, alias)
+        }
+        LogicalPlan::Union(u) => u
+            .inputs
+            .iter()
+            .any(|i| plan_has_graph_rel_connection(i, alias)),
+        _ => false,
+    }
+}
+
+/// Does this subtree resolve `alias` to a `GraphNode` at all (used to count
+/// how many Union branches represent the same aliased node under a
+/// different label)?
+fn plan_contains_graphnode_alias(plan: &LogicalPlan, alias: &str) -> bool {
+    match plan {
+        LogicalPlan::GraphNode(node) if node.alias == alias => true,
+        LogicalPlan::GraphNode(node) => plan_contains_graphnode_alias(&node.input, alias),
+        LogicalPlan::GraphRel(rel) => {
+            plan_contains_graphnode_alias(&rel.left, alias)
+                || plan_contains_graphnode_alias(&rel.center, alias)
+                || plan_contains_graphnode_alias(&rel.right, alias)
+        }
+        LogicalPlan::Filter(f) => plan_contains_graphnode_alias(&f.input, alias),
+        LogicalPlan::Projection(p) => plan_contains_graphnode_alias(&p.input, alias),
+        LogicalPlan::GraphJoins(gj) => plan_contains_graphnode_alias(&gj.input, alias),
+        LogicalPlan::GroupBy(gb) => plan_contains_graphnode_alias(&gb.input, alias),
+        LogicalPlan::OrderBy(ob) => plan_contains_graphnode_alias(&ob.input, alias),
+        LogicalPlan::Skip(s) => plan_contains_graphnode_alias(&s.input, alias),
+        LogicalPlan::Limit(l) => plan_contains_graphnode_alias(&l.input, alias),
+        LogicalPlan::Cte(cte) => plan_contains_graphnode_alias(&cte.input, alias),
+        LogicalPlan::WithClause(wc) => plan_contains_graphnode_alias(&wc.input, alias),
+        LogicalPlan::CartesianProduct(cp) => {
+            plan_contains_graphnode_alias(&cp.left, alias)
+                || plan_contains_graphnode_alias(&cp.right, alias)
+        }
+        LogicalPlan::Union(u) => u
+            .inputs
+            .iter()
+            .any(|i| plan_contains_graphnode_alias(i, alias)),
+        _ => false,
+    }
 }
 
 pub(super) fn composite_id_group_by_columns(

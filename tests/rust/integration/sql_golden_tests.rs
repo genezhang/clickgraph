@@ -5333,6 +5333,60 @@ mod walker_drift_family_484_490_495_476_483 {
         );
     }
 
+    /// #484 adversarial-review finding (BLOCKING): a BARE multi-label alias
+    /// with NO GraphRel connection (`MATCH (n) RETURN id(n), count(*)`) is a
+    /// natural adjacent shape to the pattern_union-endpoint and single-label
+    /// cases above, but neither of those detectors fires for it — a bare
+    /// `MATCH (n)` scan surfaces as a top-level `LogicalPlan::Union` of full
+    /// per-label branches (see `type_inference.rs`'s
+    /// `generate_union_for_untyped_nodes`), so `n` only exists INSIDE each
+    /// UNION branch subquery, not at the outer `__union`-wrapping scope where
+    /// GROUP BY/ORDER BY apply. The initial #484 fix's "plain path" naively
+    /// called `find_id_column_for_alias` regardless of this shape, which
+    /// returns the FIRST branch's column (`post_id`) and emitted `GROUP BY
+    /// n.post_id` in the OUTER scope — turning the PRE-existing
+    /// wrong-but-non-fatal `GROUP BY toInt64(0)` bug (all rows silently
+    /// collapse into one group) into a HARD ClickHouse Code 47
+    /// UNKNOWN_IDENTIFIER failure. A `tuple`/`coalesce`-style discriminator
+    /// (à la #467's `count(DISTINCT n)`) would be the semantically complete
+    /// fix, but the `alias.<col>`-quoted-column convention that resolution
+    /// needs is wired specifically into the aggregate-wrapper render path,
+    /// not something a bare GROUP BY/ORDER BY key can reuse without
+    /// materially more plumbing (`PropertyRequirementsAnalyzer` timing) than
+    /// fits this fix — see `is_bare_multilabel_alias` in
+    /// `group_by_builder.rs`. Deferred as a follow-up; for now this locks
+    /// the safe minimum: fall through to the PRE-existing (still wrong, but
+    /// executable) placeholder path rather than hard-failing. Live-verified
+    /// (2026-07-10): pre-fix-regression and post-this-fix both return one
+    /// collapsed row (`13`, since all groups still hash to `id(n)`'s
+    /// placeholder) — not a hard error either way.
+    #[tokio::test]
+    async fn group_by_bare_multilabel_id_function_falls_back_not_hard_fail_484() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+
+        let group_by_cypher = "MATCH (n) RETURN id(n), count(*)";
+        let group_by_sql = render(&schema, group_by_cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            !group_by_sql.contains("GROUP BY n.post_id")
+                && !group_by_sql.contains("GROUP BY n.user_id"),
+            "#484 BLOCKING: a bare multi-label alias's GROUP BY must not \
+             reference a table alias (n) that only exists inside the inner \
+             UNION branch subquery, not the outer __union scope — this is a \
+             hard ClickHouse UNKNOWN_IDENTIFIER failure, not just wrong \
+             results:\n{group_by_sql}"
+        );
+
+        let order_by_cypher = "MATCH (n) RETURN id(n), count(*) ORDER BY id(n)";
+        let order_by_sql = render(&schema, order_by_cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            !order_by_sql.contains("GROUP BY n.post_id")
+                && !order_by_sql.contains("GROUP BY n.user_id"),
+            "#484 BLOCKING: same bare multi-label alias, combined with \
+             ORDER BY — the GROUP BY clause must not reference the \
+             inner-subquery-only alias either:\n{order_by_sql}"
+        );
+    }
+
     /// #490: `type(r)` behind a `WITH r` barrier used to hard-code the VLP
     /// alias `t` in the outer SELECT even when the relationship actually
     /// routes through a `pattern_union_r AS r` CTE (both endpoints
