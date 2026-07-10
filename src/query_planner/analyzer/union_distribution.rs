@@ -126,6 +126,7 @@ where
             .map(|branch| Arc::new(make_branch(branch.clone())))
             .collect(),
         union_type: union.union_type.clone(),
+        is_cypher_union: union.is_cypher_union,
     })
 }
 

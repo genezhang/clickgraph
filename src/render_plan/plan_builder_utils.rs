@@ -6700,6 +6700,7 @@ pub(crate) fn update_graph_joins_cte_refs(
             Ok(LogicalPlan::Union(Union {
                 inputs: new_inputs,
                 union_type: union.union_type.clone(),
+                is_cypher_union: union.is_cypher_union,
             }))
         }
         LogicalPlan::CartesianProduct(cp) => {
@@ -10254,6 +10255,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     union: UnionItems(Some(Union {
                         input: rendered_plans,
                         union_type: crate::render_plan::UnionType::All,
+                        is_cypher_union: false,
                     })),
                     fixed_path_info: None,
                     is_multi_label_scan: false,
@@ -14507,6 +14509,7 @@ pub(crate) fn collapse_passthrough_with(
             Ok(LogicalPlan::Union(Union {
                 inputs: new_inputs,
                 union_type: u.union_type.clone(),
+                is_cypher_union: u.is_cypher_union,
             }))
         }
         LogicalPlan::Unwind(uw) => {
@@ -15987,6 +15990,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
             Ok(LogicalPlan::Union(Union {
                 inputs: new_inputs,
                 union_type: union.union_type.clone(),
+                is_cypher_union: union.is_cypher_union,
             }))
         }
 

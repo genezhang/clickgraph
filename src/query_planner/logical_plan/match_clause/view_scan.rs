@@ -305,6 +305,7 @@ pub fn try_generate_view_scan(
                 let union = Union {
                     inputs: union_inputs,
                     union_type: UnionType::Distinct,
+                    is_cypher_union: false,
                 };
 
                 log::info!(
@@ -456,6 +457,7 @@ pub fn try_generate_view_scan(
                     Arc::new(LogicalPlan::ViewScan(Arc::new(to_scan))),
                 ],
                 union_type: UnionType::Distinct,
+                is_cypher_union: false,
             };
 
             log::info!(
@@ -583,6 +585,7 @@ pub fn try_generate_view_scan(
             let union = Union {
                 inputs: union_inputs,
                 union_type: UnionType::All,
+                is_cypher_union: false,
             };
 
             log::info!(

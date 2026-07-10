@@ -567,6 +567,7 @@ mod plan_size_tests {
         Arc::new(LogicalPlan::Union(Union {
             inputs,
             union_type: crate::query_planner::logical_plan::UnionType::All,
+            is_cypher_union: false,
         }))
     }
 

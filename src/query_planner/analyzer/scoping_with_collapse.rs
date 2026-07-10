@@ -231,6 +231,7 @@ fn collapse_recursive(plan: &LogicalPlan) -> LogicalPlan {
             LogicalPlan::Union(Union {
                 inputs: new_inputs,
                 union_type: u.union_type.clone(),
+                is_cypher_union: u.is_cypher_union,
             })
         }
         LogicalPlan::Unwind(uw) => {

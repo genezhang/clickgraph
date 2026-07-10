@@ -3320,6 +3320,7 @@ mod tests {
         plan.union = UnionItems(Some(Union {
             input: vec![branch],
             union_type: crate::render_plan::UnionType::All,
+            is_cypher_union: false,
         }));
 
         optimize_plan(&mut plan);

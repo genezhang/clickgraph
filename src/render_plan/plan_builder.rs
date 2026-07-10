@@ -3013,6 +3013,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 base_plan.union = UnionItems(Some(super::Union {
                     input: union_branches,
                     union_type: render_union_type,
+                    is_cypher_union: union.is_cypher_union,
                 }));
 
                 // 🔧 CRITICAL: After combining UNION branches, rewrite VLP endpoint aliases
@@ -3903,6 +3904,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             union: UnionItems(Some(super::Union {
                                 input: all_branches,
                                 union_type: render_union_type,
+                                is_cypher_union: union.is_cypher_union,
                             })),
                             fixed_path_info: None,
                             is_multi_label_scan: false,
@@ -3915,6 +3917,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         base_render.union = UnionItems(Some(super::Union {
                             input: all_renders,
                             union_type: render_union_type,
+                            is_cypher_union: union.is_cypher_union,
                         }));
                     }
 
@@ -4026,6 +4029,13 @@ impl RenderPlanBuilder for LogicalPlan {
                         || (has_outer_aggregation && base_render.union.0.is_some());
 
                     if should_move_first_branch {
+                        // For a Cypher-level UNION (#487), the base render's GROUP BY /
+                        // HAVING / ORDER BY / SKIP / LIMIT belong to the FIRST ARM's own
+                        // RETURN (each arm is an independent query), so they must move
+                        // into the first branch rather than stay on the union wrapper.
+                        // Planner-internal unions keep them on the base: there the
+                        // aggregation/grouping applies OVER the combined branches.
+                        let is_cypher_union = union.is_cypher_union;
                         if let Some(ref mut union_data) = base_render.union.0 {
                             // Extract the first branch's render components.
                             // Use saved original SELECT (with correct property mappings)
@@ -4047,11 +4057,37 @@ impl RenderPlanBuilder for LogicalPlan {
                                     &mut base_render.filters,
                                     FilterItems(None),
                                 ),
-                                group_by: GroupByExpressions(vec![]),
-                                having_clause: None,
-                                order_by: OrderByItems(vec![]),
-                                skip: SkipItem(None),
-                                limit: LimitItem(None),
+                                group_by: if is_cypher_union {
+                                    std::mem::replace(
+                                        &mut base_render.group_by,
+                                        GroupByExpressions(vec![]),
+                                    )
+                                } else {
+                                    GroupByExpressions(vec![])
+                                },
+                                having_clause: if is_cypher_union {
+                                    base_render.having_clause.take()
+                                } else {
+                                    None
+                                },
+                                order_by: if is_cypher_union {
+                                    std::mem::replace(
+                                        &mut base_render.order_by,
+                                        OrderByItems(vec![]),
+                                    )
+                                } else {
+                                    OrderByItems(vec![])
+                                },
+                                skip: if is_cypher_union {
+                                    SkipItem(base_render.skip.0.take())
+                                } else {
+                                    SkipItem(None)
+                                },
+                                limit: if is_cypher_union {
+                                    LimitItem(base_render.limit.0.take())
+                                } else {
+                                    LimitItem(None)
+                                },
                                 union: UnionItems(None),
                                 fixed_path_info: None,
                                 is_multi_label_scan: false,
@@ -4379,6 +4415,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 base_render.union = UnionItems(Some(super::Union {
                     input: remaining_renders,
                     union_type: render_union_type,
+                    is_cypher_union: union.is_cypher_union,
                 }));
             }
 

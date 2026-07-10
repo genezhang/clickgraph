@@ -141,6 +141,7 @@ fn transform_bidirectional(
                 let union = Union {
                     inputs: branches,
                     union_type: UnionType::All,
+                    is_cypher_union: false,
                 };
 
                 crate::debug_print!(
@@ -279,6 +280,7 @@ fn transform_bidirectional(
                 let union_plan = Arc::new(LogicalPlan::Union(Union {
                     inputs: branches,
                     union_type,
+                    is_cypher_union: false,
                 }));
 
                 // Collapse redundant Union when both endpoints are already bound
@@ -357,6 +359,7 @@ fn transform_bidirectional(
                 Ok(Transformed::Yes(Arc::new(LogicalPlan::Union(Union {
                     inputs: new_inputs,
                     union_type: union.union_type.clone(),
+                    is_cypher_union: union.is_cypher_union,
                 }))))
             } else {
                 Ok(Transformed::No(plan.clone()))

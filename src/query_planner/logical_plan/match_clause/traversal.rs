@@ -1860,6 +1860,7 @@ pub(super) fn traverse_node_pattern(
             let wrapped_union = Union {
                 inputs: wrapped_inputs,
                 union_type: union.union_type.clone(),
+                is_cypher_union: union.is_cypher_union,
             };
             log::info!(
                 "✓✓✓ WRAPPING UNION: {} branches being wrapped in GraphNodes ✓✓✓",

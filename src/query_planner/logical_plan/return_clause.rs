@@ -605,6 +605,7 @@ pub fn evaluate_return_clause<'a>(
         return Ok(Arc::new(LogicalPlan::Union(Union {
             inputs: projected_branches,
             union_type,
+            is_cypher_union: union.is_cypher_union,
         })));
     }
 
@@ -734,6 +735,7 @@ fn build_union_with_aggregation(
     let inner_union = Arc::new(LogicalPlan::Union(Union {
         inputs: projected_branches,
         union_type: union.union_type.clone(),
+        is_cypher_union: union.is_cypher_union,
     }));
 
     // Step 5: Collect non-aggregate items for GROUP BY
