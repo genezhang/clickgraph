@@ -6000,4 +6000,75 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
             assert_eq!(origin_role, again, "#519: nondeterministic render");
         }
     }
+
+    /// KNOWN BROKEN — deferred (#520): `WITH <bare node alias>, count(*) AS n`
+    /// over an undirected multi-hop pattern (`(a)-[:FOLLOWS]-(b)-[:FOLLOWS]-(c)`,
+    /// #492's 4-branch direction-permutation UNION) emits `GROUP BY a.user_id`
+    /// against a `__union` derived table whose branches only ever project
+    /// `a.full_name` — `a.user_id` is never selected by any branch. ClickHouse
+    /// UNKNOWN_IDENTIFIER (loud failure today).
+    ///
+    /// Root cause (confirmed via investigation, NOT fixed here):
+    /// `group_by_builder.rs::handle_table_alias_group_by` — a THIRD
+    /// near-duplicate of the GROUP BY id-column-optimization already found
+    /// twice in `plan_builder_utils.rs` (`extract_group_by`'s `GroupBy` arm
+    /// and `expand_table_alias_to_group_by_id_only`, both fixed for #510's
+    /// denorm-CTE-anchor case). This THIRD site calls
+    /// `find_id_column_for_alias` unconditionally, with zero awareness of
+    /// what columns the underlying source actually projects — correct when
+    /// the source is a real table/CTE with a genuine id column exposed, but
+    /// wrong here because the source is a Union of 4 branches whose SELECT
+    /// list was pruned (by `PropertyRequirementsAnalyzer`) down to only what
+    /// the outer RETURN needs (`a.name`), never the id.
+    ///
+    /// Deferred rather than fixed: unlike #510 (a narrowly-scoped anchor
+    /// pattern with an unambiguous, verifiable single fix site), this bug
+    /// sits inside a THIRD duplicate of an already-triplicated GROUP BY
+    /// mechanism, feeding off #492's undirected-multihop UNION machinery.
+    /// Naively silencing the loud GROUP BY error (e.g. by forcing the id
+    /// column into each branch's SELECT without independently re-verifying
+    /// that #492's per-branch direction-swap alias binding is ALSO correctly
+    /// threaded through the WITH-clause's property-requirements-driven
+    /// pruning) risks trading a loud failure for a silent wrong-result bug —
+    /// strictly worse per ground rule 1. Static inspection of the 4 UNION
+    /// branches (see the `with a, b, c, count(*)` 3-alias probe used during
+    /// investigation) shows each branch's `a`/`b`/`c` bindings DO look
+    /// structurally correct per-orientation, but this was not confirmed
+    /// against live row-level ground truth (doing so requires the very code
+    /// change being deferred). Needs dedicated follow-up: (1) collapse the
+    /// GROUP BY triplication (route all three sites through one shared,
+    /// export-aware helper, mirroring the `denorm_scan_cte_anchor_*`
+    /// pattern #510 introduced), and (2) live-verify row counts across all
+    /// 4 branches before considering this closed.
+    ///
+    /// If this test starts failing because the GROUP BY error is gone,
+    /// treat that as a PROMPT to live-verify — not proof of correctness —
+    /// before replacing this characterization with a regression test.
+    #[tokio::test]
+    async fn undirected_multihop_with_aggregate_group_by_unexported_known_broken_520() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS]-(b)-[:FOLLOWS]-(c) WITH a, count(*) AS n \
+             RETURN a.name, n",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        assert!(
+            sql.contains("GROUP BY a.user_id"),
+            "#520 KNOWN BROKEN characterization stale — GROUP BY no longer \
+             references the unexported `a.user_id` column; if this is a \
+             genuine fix, live-verify row-level correctness across all UNION \
+             branches before replacing this test with a regression test:\n{sql}"
+        );
+        assert!(
+            !sql.contains("a.user_id AS")
+                && !sql.contains("a.user_id\" AS")
+                && !sql.contains(".user_id AS \"a.user_id\""),
+            "#520 KNOWN BROKEN characterization stale — `a.user_id` now \
+             appears to be exported by a UNION branch; if this is a genuine \
+             fix, live-verify before replacing this test:\n{sql}"
+        );
+    }
 }
