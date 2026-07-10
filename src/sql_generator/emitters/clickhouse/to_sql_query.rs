@@ -3536,6 +3536,190 @@ fn render_union_branch_sql(branch: &RenderPlan) -> String {
     bsql
 }
 
+/// Render one arm of a Cypher-level `UNION` as a complete standalone query (#487).
+///
+/// Planner-internal unions expand ONE logical pattern over several tables, so
+/// `render_union_branch_sql` deliberately leaves aggregation / GROUP BY to the
+/// outer plan. A Cypher UNION arm is the opposite: an independent query whose
+/// aggregation, GROUP BY, HAVING, ORDER BY, SKIP and LIMIT bind WITHIN the arm
+/// and must never be hoisted over the union.
+///
+/// If the arm itself carries a planner-internal union in its `union` field
+/// (per-direction bidirectional expansion of the arm's own MATCH), an arm-level
+/// aggregate is hoisted over THAT inner union only — mirroring the top-level
+/// internal-union treatment.
+/// Build the inner (de-aggregated) SELECT for an aggregation-union branch that
+/// carries its OWN SELECT items (e.g. coupled-schema / denormalized from-to
+/// unions), whose column mappings are already resolved to DB column names.
+///
+/// The branch items are merged with the outer plan's items so that:
+/// - outer non-aggregate aliased columns missing from the branch pass through
+///   the `__union` subquery by alias, and
+/// - outer aggregate items contribute their ARGUMENT columns (extracted by
+///   `build_union_inner_select` with dotted aliases); the aggregates themselves
+///   are filtered from the inner SELECT.
+fn build_branch_inner_select_with_own_items(
+    branch_select: &SelectItems,
+    outer_select: &SelectItems,
+    drop_path_metadata: bool,
+) -> String {
+    let mut merged_select = branch_select.clone();
+    let branch_aliases: std::collections::HashSet<String> = merged_select
+        .items
+        .iter()
+        .filter_map(|i| i.col_alias.as_ref().map(|a| a.0.clone()))
+        .collect();
+    for outer_item in &outer_select.items {
+        if !render_expr_contains_aggregate(&outer_item.expression) {
+            if let Some(ref alias) = outer_item.col_alias {
+                if !branch_aliases.contains(&alias.0) {
+                    merged_select.items.push(outer_item.clone());
+                }
+            }
+        }
+    }
+    for outer_item in &outer_select.items {
+        if render_expr_contains_aggregate(&outer_item.expression) {
+            merged_select.items.push(outer_item.clone());
+        }
+    }
+    let (branch_inner, _) = build_union_inner_select(&merged_select, drop_path_metadata);
+    branch_inner
+}
+
+fn render_cypher_union_arm(arm: &RenderPlan) -> String {
+    // Isolate this arm's alias context, exactly like render_union_branch_sql.
+    let snapshot = snapshot_branch_context();
+    activate_scope_context(&arm.from, &arm.joins);
+
+    let has_aggregation = arm
+        .select
+        .items
+        .iter()
+        .any(|item| render_expr_contains_aggregate(&item.expression));
+
+    let mut core = String::new();
+    if let Some(inner) = &arm.union.0 {
+        let inner_type_str = match inner.union_type {
+            UnionType::Distinct => "UNION DISTINCT \n",
+            UnionType::All => "UNION ALL \n",
+        };
+        if has_aggregation {
+            // Aggregate OVER the arm's internal union: outer aggregate SELECT
+            // wrapping the de-aggregated inner branches.
+            let drop_path_metadata = arm.group_by.0.is_empty();
+            let (inner_select_sql, agg_arg_cols) =
+                build_union_inner_select(&arm.select, drop_path_metadata);
+            core.push_str("SELECT ");
+            core.push_str(&build_outer_aggregate_select(
+                &arm.select,
+                &agg_arg_cols,
+                drop_path_metadata,
+            ));
+            core.push_str(" FROM (\n");
+            let mut parts: Vec<String> = Vec::new();
+            if arm.from.0.is_some() {
+                let mut part = String::new();
+                part.push_str(&inner_select_sql);
+                part.push_str(&arm.from.to_sql());
+                part.push_str(&arm.joins.to_sql());
+                part.push_str(&arm.filters.to_sql());
+                parts.push(part);
+            }
+            for inner_branch in &inner.input {
+                let mut part = String::new();
+                // Inner branches with their own SELECT items (e.g. denormalized
+                // from/to unions) carry correctly mapped DB column names — the
+                // arm-level inner_select_sql may have unmapped Cypher property
+                // names. Mirror the main hoisting path's own-select handling.
+                if !inner_branch.select.items.is_empty() {
+                    part.push_str(&build_branch_inner_select_with_own_items(
+                        &inner_branch.select,
+                        &arm.select,
+                        drop_path_metadata,
+                    ));
+                } else {
+                    part.push_str(&inner_select_sql);
+                }
+                part.push_str(&inner_branch.from.to_sql());
+                part.push_str(&inner_branch.joins.to_sql());
+                part.push_str(&inner_branch.filters.to_sql());
+                parts.push(part);
+            }
+            core.push_str(&parts.join(inner_type_str));
+            core.push_str(") AS __union\n");
+            core.push_str(&build_aliased_group_by(&arm.group_by, &arm.select));
+            if let Some(having_expr) = &arm.having_clause {
+                core.push_str("HAVING ");
+                core.push_str(&having_expr.to_sql());
+                core.push('\n');
+            }
+        } else {
+            // Non-aggregated arm with an internal union: plain union of the
+            // arm's internal branches.
+            let mut parts: Vec<String> = Vec::new();
+            if arm.from.0.is_some() {
+                let mut part = String::new();
+                part.push_str(&arm.select.to_sql());
+                part.push_str(&arm.from.to_sql());
+                part.push_str(&arm.joins.to_sql());
+                part.push_str(&arm.filters.to_sql());
+                parts.push(part);
+            }
+            for inner_branch in &inner.input {
+                parts.push(render_union_branch_sql(inner_branch));
+            }
+            core.push_str(&parts.join(inner_type_str));
+        }
+    } else {
+        core.push_str(&arm.select.to_sql());
+        core.push_str(&arm.from.to_sql());
+        core.push_str(&arm.joins.to_sql());
+        core.push_str(&arm.array_join.to_sql());
+        core.push_str(&arm.filters.to_sql());
+        core.push_str(&arm.group_by.to_sql());
+        if let Some(having_expr) = &arm.having_clause {
+            core.push_str("HAVING ");
+            core.push_str(&having_expr.to_sql());
+            core.push('\n');
+        }
+    }
+
+    // Per-arm ORDER BY / SKIP / LIMIT bind to this arm only: wrap the core in a
+    // subselect so ClickHouse doesn't attach them to the whole UNION.
+    let needs_wrap = !arm.order_by.0.is_empty() || arm.limit.0.is_some() || arm.skip.0.is_some();
+    let result = if needs_wrap {
+        let mut wrapped = String::new();
+        wrapped.push_str("SELECT * FROM (\n");
+        wrapped.push_str(&core);
+        wrapped.push_str(")\n");
+        wrapped.push_str(&arm.order_by.to_sql());
+        let clause = limit_offset_clause(arm.skip.0, arm.limit.0);
+        if !clause.is_empty() {
+            wrapped.push_str(&clause);
+            wrapped.push('\n');
+        }
+        // Spark/Databricks forbids a bare per-arm ORDER BY / LIMIT in a set
+        // operation (mid-chain: parse error "Expected ), found UNION"; as the
+        // LAST arm it silently binds to the WHOLE union). The arm must be
+        // parenthesized. ClickHouse accepts the bare form, so only wrap for
+        // Databricks to keep CH output byte-identical — same treatment as the
+        // pattern_union branches in cte_extraction.rs.
+        if matches!(
+            crate::server::query_context::get_current_dialect(),
+            crate::sql_generator::SqlDialect::Databricks
+        ) {
+            wrapped = format!("({wrapped})\n");
+        }
+        wrapped
+    } else {
+        core
+    };
+
+    restore_branch_context(snapshot);
+    result
+}
+
 /// Ensure a table name has a database prefix for base table references.
 /// CTE references (names starting with `with_`, `vlp_`, `pattern_`, `rel_`, `__`)
 /// are returned as-is. Base table names that are missing the `db.` prefix get it
@@ -4019,6 +4203,72 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
     if plan.union.0.is_some() {
         sql.push_str(&plan.ctes.to_sql());
 
+        // #487: A Cypher-level UNION whose arms carry their own aggregation or
+        // GROUP BY must render each arm as a complete standalone query. The
+        // hoisting machinery below (outer aggregate SELECT over a `__union`
+        // subquery of de-aggregated branches) is only valid for planner-internal
+        // unions, where the union spans ONE logical pattern. Applying it to a
+        // Cypher UNION computes the aggregate over the combined rows instead of
+        // per arm — silently wrong results.
+        {
+            let cypher_union_per_arm =
+                plan.union.0.as_ref().is_some_and(|u| {
+                    u.is_cypher_union
+                        && (plan
+                            .select
+                            .items
+                            .iter()
+                            .any(|item| render_expr_contains_aggregate(&item.expression))
+                            || !plan.group_by.0.is_empty()
+                            || u.input.iter().any(|arm| {
+                                !arm.group_by.0.is_empty()
+                                    || arm.select.items.iter().any(|item| {
+                                        render_expr_contains_aggregate(&item.expression)
+                                    })
+                            }))
+                });
+            if cypher_union_per_arm {
+                let union = plan.union.0.as_ref().expect("checked above");
+                let union_type_str = match union.union_type {
+                    UnionType::Distinct => "UNION DISTINCT \n",
+                    UnionType::All => "UNION ALL \n",
+                };
+
+                let mut first = true;
+                // When the base plan still holds the first arm's fields (it was
+                // not consolidated into union.input), render it as an arm too.
+                if plan.from.0.is_some() {
+                    let base_arm = RenderPlan {
+                        ctes: CteItems(vec![]),
+                        select: plan.select.clone(),
+                        from: plan.from.clone(),
+                        joins: plan.joins.clone(),
+                        array_join: plan.array_join.clone(),
+                        filters: plan.filters.clone(),
+                        group_by: plan.group_by.clone(),
+                        having_clause: plan.having_clause.clone(),
+                        order_by: plan.order_by.clone(),
+                        skip: plan.skip.clone(),
+                        limit: plan.limit.clone(),
+                        union: UnionItems(None),
+                        fixed_path_info: None,
+                        is_multi_label_scan: false,
+                        variable_registry: None,
+                    };
+                    sql.push_str(&render_cypher_union_arm(&base_arm));
+                    first = false;
+                }
+                for arm in &union.input {
+                    if !first {
+                        sql.push_str(union_type_str);
+                    }
+                    first = false;
+                    sql.push_str(&render_cypher_union_arm(arm));
+                }
+                return sql;
+            }
+        }
+
         // Extract ORDER BY columns that need to be added to UNION branches
         let order_by_columns = if !plan.order_by.0.is_empty() {
             extract_order_by_columns_for_union(&plan.order_by)
@@ -4257,40 +4507,11 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                             !union_branch.select.items.is_empty() && branch_vlp_cte.is_none();
 
                         if branch_has_own_select {
-                            // Build inner SELECT from branch's own items (correctly mapped)
-                            // Filter out aggregate items and add agg arg columns.
-                            // Also include outer plan's non-aggregate aliased columns
-                            // (RETURN aliases like personId → friend.id) that aren't
-                            // already in the branch SELECT — the outer SELECT references
-                            // these by alias through the __union subquery.
-                            let mut merged_select = union_branch.select.clone();
-                            let branch_aliases: std::collections::HashSet<String> = merged_select
-                                .items
-                                .iter()
-                                .filter_map(|i| i.col_alias.as_ref().map(|a| a.0.clone()))
-                                .collect();
-                            for outer_item in &plan.select.items {
-                                if !render_expr_contains_aggregate(&outer_item.expression) {
-                                    if let Some(ref alias) = outer_item.col_alias {
-                                        if !branch_aliases.contains(&alias.0) {
-                                            merged_select.items.push(outer_item.clone());
-                                        }
-                                    }
-                                }
-                            }
-                            // Also add aggregate items from outer plan so their
-                            // argument columns get extracted by build_union_inner_select.
-                            // These aggregates won't appear in the inner SELECT (filtered),
-                            // but their args (tag.name, comment.id) will be added with
-                            // dotted aliases (tag.name AS "tag.name").
-                            for outer_item in &plan.select.items {
-                                if render_expr_contains_aggregate(&outer_item.expression) {
-                                    merged_select.items.push(outer_item.clone());
-                                }
-                            }
-                            let (branch_inner, _) =
-                                build_union_inner_select(&merged_select, drop_path_metadata);
-                            branch_sql.push_str(&branch_inner);
+                            branch_sql.push_str(&build_branch_inner_select_with_own_items(
+                                &union_branch.select,
+                                &plan.select,
+                                drop_path_metadata,
+                            ));
                         } else if needs_swap {
                             // Swap t.start_id ↔ t.end_id and start_* ↔ end_* in SELECT
                             let swapped = swap_vlp_start_end(inner_sql);
@@ -6819,6 +7040,7 @@ mod tests {
         plan.union = UnionItems(Some(Union {
             input: vec![branch],
             union_type: UnionType::All,
+            is_cypher_union: false,
         }));
 
         inline_where_alias_refs_recursive(&mut plan);
@@ -6851,6 +7073,7 @@ mod tests {
         plan.union = UnionItems(Some(Union {
             input: vec![branch],
             union_type: UnionType::All,
+            is_cypher_union: false,
         }));
 
         inline_where_alias_refs_recursive(&mut plan);
@@ -6952,6 +7175,7 @@ mod tests {
         plan.union = UnionItems(Some(Union {
             input: vec![branch],
             union_type: UnionType::All,
+            is_cypher_union: false,
         }));
 
         inline_where_alias_refs_recursive(&mut plan);

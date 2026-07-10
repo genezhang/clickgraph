@@ -635,6 +635,7 @@ impl GraphTRaversalPlanning {
             let rel_plan: Arc<LogicalPlan> = Arc::new(LogicalPlan::Union(Union {
                 inputs: vec![Arc::new(LogicalPlan::Empty), Arc::new(LogicalPlan::Empty)],
                 union_type: UnionType::Distinct,
+                is_cypher_union: false,
             }));
 
             let rel_insubquery: LogicalExpr = self.build_insubquery(

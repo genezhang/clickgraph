@@ -79,6 +79,7 @@ pub fn evaluate_where_clause<'a>(
         return Ok(Arc::new(LogicalPlan::Union(Union {
             inputs: filtered_branches,
             union_type: union.union_type.clone(),
+            is_cypher_union: union.is_cypher_union,
         })));
     }
 

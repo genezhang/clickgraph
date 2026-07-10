@@ -296,6 +296,7 @@ pub fn evaluate_cypher_statement(
                     Arc::new(LogicalPlan::Union(Union {
                         inputs: all_plans,
                         union_type,
+                        is_cypher_union: true,
                     }))
                 }
             };
@@ -1048,6 +1049,23 @@ pub struct Union {
     #[serde(with = "serde_arc_vec")]
     pub inputs: Vec<Arc<LogicalPlan>>,
     pub union_type: UnionType,
+    /// True when this Union comes from an explicit Cypher `UNION` clause:
+    /// each input is an independent complete query with its own RETURN, so
+    /// aggregation / GROUP BY / ORDER BY / LIMIT apply WITHIN each branch and
+    /// must never be hoisted over the union (#487).
+    ///
+    /// False for planner-internal unions (multi-label scans, denormalized
+    /// from/to unions, bidirectional expansion) where the union represents
+    /// ONE logical pattern and the outer projection (e.g. `count(r)`)
+    /// aggregates OVER the combined branches.
+    ///
+    /// NOTE: `#[serde(default)]` deserializes a missing field as `false` — if
+    /// LogicalPlan ever gains a production (de)serialization flow, a plan
+    /// serialized without this field would silently demote a Cypher union to
+    /// an internal one (aggregation hoisted over the union). Revisit the
+    /// default before relying on serialized plans.
+    #[serde(default)]
+    pub is_cypher_union: bool,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -1498,6 +1516,7 @@ impl Union {
             Transformed::Yes(Arc::new(LogicalPlan::Union(Union {
                 inputs: new_inputs,
                 union_type: self.union_type.clone(),
+                is_cypher_union: self.is_cypher_union,
             })))
         } else {
             Transformed::No(old_plan)

@@ -416,6 +416,7 @@ impl OptimizerPass for CartesianJoinExtraction {
                         crate::query_planner::logical_plan::Union {
                             inputs: new_inputs,
                             union_type: union.union_type.clone(),
+                            is_cypher_union: union.is_cypher_union,
                         },
                     )))
                 } else {

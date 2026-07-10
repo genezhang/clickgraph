@@ -968,6 +968,7 @@ impl TypeInference {
                     let new_union = crate::query_planner::logical_plan::Union {
                         inputs: new_inputs,
                         union_type: union.union_type.clone(),
+                        is_cypher_union: union.is_cypher_union,
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::Union(new_union))))
                 } else {
@@ -1269,6 +1270,7 @@ impl TypeInference {
         let union_plan = crate::query_planner::logical_plan::Union {
             inputs: union_branches,
             union_type: crate::query_planner::logical_plan::UnionType::All,
+            is_cypher_union: false,
         };
 
         Ok(Transformed::Yes(Arc::new(LogicalPlan::Union(union_plan))))
@@ -1759,6 +1761,7 @@ impl TypeInference {
             let union_plan = Union {
                 inputs: union_branches,
                 union_type: UnionType::All,
+                is_cypher_union: false,
             };
             let union_arc = Arc::new(LogicalPlan::Union(union_plan));
 
@@ -1798,6 +1801,7 @@ impl TypeInference {
             let union_plan = Union {
                 inputs: union_branches,
                 union_type: UnionType::All,
+                is_cypher_union: false,
             };
             let union_arc = Arc::new(LogicalPlan::Union(union_plan));
 
@@ -3833,6 +3837,7 @@ impl AnalyzerPass for TypeInference {
                     crate::query_planner::logical_plan::Union {
                         inputs: new_inputs,
                         union_type: top_union.union_type.clone(),
+                        is_cypher_union: top_union.is_cypher_union,
                     },
                 ));
             } else {
@@ -5147,6 +5152,7 @@ fn materialize_standalone_denorm_scans(
                             LogicalPlan::Union(scan_union) => LogicalPlan::Union(Union {
                                 inputs: scan_union.inputs.iter().cloned().map(wrap).collect(),
                                 union_type: scan_union.union_type.clone(),
+                                is_cypher_union: scan_union.is_cypher_union,
                             }),
                             _ => (*wrap(scan)).clone(),
                         };
@@ -5196,6 +5202,7 @@ fn materialize_standalone_denorm_scans(
                             })
                             .collect(),
                         union_type,
+                        is_cypher_union: child_union.is_cypher_union,
                     });
                 }
             }
@@ -5223,6 +5230,7 @@ fn materialize_standalone_denorm_scans(
                         })
                         .collect(),
                     union_type: child_union.union_type.clone(),
+                    is_cypher_union: child_union.is_cypher_union,
                 });
             }
             LogicalPlan::Filter(Filter {

@@ -466,6 +466,14 @@ pub struct UnionItems(pub Option<Union>);
 pub struct Union {
     pub input: Vec<RenderPlan>,
     pub union_type: UnionType,
+    /// True when this comes from an explicit Cypher `UNION` clause: each
+    /// branch is an independent complete query, so aggregation / GROUP BY /
+    /// ORDER BY / LIMIT apply WITHIN each branch and must never be hoisted
+    /// over the union (#487). False for planner-internal unions (multi-label
+    /// scans, denormalized from/to, bidirectional expansion) where outer
+    /// aggregation applies OVER the combined branches.
+    #[serde(default)]
+    pub is_cypher_union: bool,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]

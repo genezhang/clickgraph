@@ -1060,6 +1060,7 @@ fn test_denormalized_standalone_node_both_positions() {
     let union = LogicalPlan::Union(Union {
         inputs: vec![Arc::new(from_node), Arc::new(to_node)],
         union_type: UnionType::Distinct,
+        is_cypher_union: false,
     });
 
     // Create Projection with RETURN a (whole node return)

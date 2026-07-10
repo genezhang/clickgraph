@@ -2842,6 +2842,7 @@ pub(super) fn normalize_union_branches(
                     .map(|b| normalize_branch(b, all_aliases))
                     .collect(),
                 union_type: u.union_type,
+                is_cypher_union: u.is_cypher_union,
             }
         }));
 
@@ -4559,6 +4560,7 @@ mod tests {
             UnionItems(Some(crate::render_plan::Union {
                 input: vec![direction_b],
                 union_type: crate::render_plan::UnionType::All,
+                is_cypher_union: false,
             })),
             false,
         );

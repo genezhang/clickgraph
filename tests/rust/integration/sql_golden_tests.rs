@@ -327,6 +327,43 @@ const CORPUS: &[(&str, &str)] = &[
         "union",
         "MATCH (u:User) RETURN u.name AS x UNION MATCH (p:Post) RETURN p.title AS x",
     ),
+    // #487: each Cypher UNION arm is an independent query — its aggregate
+    // computes WITHIN the arm and the arms are then unioned. Pre-fix, the
+    // internal-union hoisting path wrapped `count(*)` around a UNION DISTINCT
+    // of de-aggregated `SELECT 1 AS __dummy` arms → returned 1 instead of
+    // {5, 10} (live-verified against social_benchmark).
+    (
+        "union_agg_per_arm",
+        "MATCH ()-[r:AUTHORED]->() RETURN count(r) AS c UNION MATCH ()-[r2:FOLLOWS]->() RETURN count(r2) AS c",
+    ),
+    (
+        "union_all_agg_per_arm",
+        "MATCH ()-[r:AUTHORED]->() RETURN count(r) AS c UNION ALL MATCH ()-[r2:FOLLOWS]->() RETURN count(r2) AS c",
+    ),
+    // #487: per-arm GROUP BY must render inside each arm (live-verified:
+    // 4 authored + 6 liked per-user rows, matching per-table ground truth).
+    (
+        "union_agg_grouped_per_arm",
+        "MATCH (u:User)-[:AUTHORED]->() RETURN u.name AS name, count(*) AS c UNION ALL MATCH (u2:User)-[:LIKED]->() RETURN u2.name AS name, count(*) AS c",
+    ),
+    // #487 review F1: per-arm ORDER BY / LIMIT on GROUPED aggregated arms.
+    // Graph-join inference hides them under the arm's outer GraphJoins
+    // (GraphJoins(Limit(OrderBy(GraphJoins(GroupBy(...)))))), so they were
+    // silently dropped — 10 rows instead of 4 (live-verified: per-arm top-2).
+    // The Databricks variant locks review F2: each modifier-carrying arm is
+    // parenthesized (a bare per-arm LIMIT is a Spark parse error mid-chain
+    // and binds to the WHOLE union as the last arm).
+    (
+        "union_agg_grouped_ordered_per_arm",
+        "MATCH (u:User)-[:AUTHORED]->() RETURN u.name AS name, count(*) AS c ORDER BY c DESC LIMIT 2 UNION ALL MATCH (u2:User)-[:LIKED]->() RETURN u2.name AS name, count(*) AS c ORDER BY c DESC LIMIT 2",
+    ),
+    // #487: aggregate only in the SECOND arm — the base plan still holds the
+    // first (non-aggregated) arm, exercising the base-is-arm render path
+    // (live-verified: 8 user ids + one count row = 9 rows).
+    (
+        "union_agg_second_arm_only",
+        "MATCH (u:User) RETURN u.user_id AS v UNION ALL MATCH ()-[r:FOLLOWS]->() RETURN count(r) AS v",
+    ),
     (
         "group_two_keys",
         "MATCH (u:User) RETURN u.country, u.city, count(u) AS n",
@@ -476,6 +513,20 @@ const BROWSER_CORPUS: &[(&str, &str)] = &[
     (
         "browser_type_probe",
         "MATCH ()-[r]->() RETURN DISTINCT type(r) LIMIT 25",
+    ),
+    // #487 issue shape: Cypher UNION over unlabeled patterns — both arms'
+    // pattern_union CTEs must be present and joined with UNION DISTINCT
+    // (live-verified: 3 deduped type rows).
+    (
+        "cypher_union_unlabeled_type",
+        "MATCH ()-[r]->() RETURN type(r) AS t UNION MATCH ()-[r2]->() RETURN type(r2) AS t",
+    ),
+    // #487 executable control: count(r) per arm over the pattern_union scan.
+    // Pre-fix returned 1 (count of the deduped __dummy row) instead of 23
+    // (live-verified: identical arms → UNION DISTINCT → one row of 23).
+    (
+        "cypher_union_unlabeled_count",
+        "MATCH ()-[r]->() RETURN count(r) AS c UNION MATCH ()-[r2]->() RETURN count(r2) AS c",
     ),
 ];
 
@@ -731,6 +782,12 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
         "vlp_nontransitive_path_var",
         "MATCH p = (o:Order)-[:PLACED_BY*1..2]->(c) RETURN p",
     ),
+    // #487: Cypher UNION arm whose count(o) spans the FK-edge scan — the
+    // aggregate must compute WITHIN each arm, never over the combined arms.
+    (
+        "union_agg_per_arm",
+        "MATCH ()-[r:PLACED_BY]->() RETURN count(r) AS c UNION ALL MATCH (c2:Customer) RETURN count(c2) AS c",
+    ),
 ];
 
 /// Denormalized variation (`schemas/dev/flights_denormalized.yaml`): a single
@@ -887,6 +944,15 @@ const DENORM_CORPUS: &[(&str, &str)] = &[
     (
         "vlp_recursive",
         "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport) RETURN b.code",
+    ),
+    // #487: Cypher UNION whose first arm aggregates over the denormalized
+    // virtual-node from/to union. count(a) must hoist over the arm's OWN
+    // internal union (origin_code/dest_code, correctly mapped — NOT unmapped
+    // `a.code`) while staying WITHIN the arm (live-verified: {7 airports,
+    // 8 flights} against db_denormalized).
+    (
+        "union_agg_per_arm",
+        "MATCH (a:Airport) RETURN count(a) AS c UNION ALL MATCH ()-[f:FLIGHT]->() RETURN count(f) AS c",
     ),
 ];
 

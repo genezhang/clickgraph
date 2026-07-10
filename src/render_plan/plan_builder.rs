@@ -419,6 +419,40 @@ fn move_first_branch_into_union(plan: RenderPlan) -> Option<Union> {
     }
 }
 
+/// #487 (F1): recover a Cypher UNION arm's trailing ORDER BY / SKIP / LIMIT
+/// when they are hidden UNDER the arm's outermost GraphJoins.
+///
+/// Graph-join inference wraps a "complex" union branch in GraphJoins without
+/// seeing through modifier wrappers, so a grouped arm arrives as
+/// `GraphJoins(Limit(OrderBy(GraphJoins(GroupBy(Projection(...))))))`. The
+/// GraphJoins render path extracts ORDER BY / SKIP / LIMIT only from wrappers
+/// OUTSIDE the outermost GraphJoins, so the arm's own modifiers were silently
+/// dropped (extra rows at execution). After the arm has rendered, pull them
+/// from directly under the outer GraphJoins. No-op when the render already
+/// carries modifiers (nothing was hidden).
+fn recover_cypher_arm_modifiers(
+    branch: &LogicalPlan,
+    render: &mut RenderPlan,
+) -> RenderPlanBuilderResult<()> {
+    if !render.order_by.0.is_empty() || render.limit.0.is_some() || render.skip.0.is_some() {
+        return Ok(());
+    }
+    let LogicalPlan::GraphJoins(gj) = branch else {
+        return Ok(());
+    };
+    let inner = gj.input.as_ref();
+    if !matches!(
+        inner,
+        LogicalPlan::Limit(_) | LogicalPlan::Skip(_) | LogicalPlan::OrderBy(_)
+    ) {
+        return Ok(());
+    }
+    render.order_by = OrderByItems(super::plan_builder_utils::extract_order_by(inner)?);
+    render.skip = SkipItem(super::plan_builder_utils::extract_skip(inner));
+    render.limit = LimitItem(super::plan_builder_utils::extract_limit(inner));
+    Ok(())
+}
+
 /// Whether any SELECT item carries an aggregate function anywhere in its
 /// expression tree (directly, or nested inside a scalar call / operator). Used
 /// to decide whether a base+union render must consolidate all branches into
@@ -3013,6 +3047,7 @@ impl RenderPlanBuilder for LogicalPlan {
                 base_plan.union = UnionItems(Some(super::Union {
                     input: union_branches,
                     union_type: render_union_type,
+                    is_cypher_union: union.is_cypher_union,
                 }));
 
                 // 🔧 CRITICAL: After combining UNION branches, rewrite VLP endpoint aliases
@@ -3552,8 +3587,11 @@ impl RenderPlanBuilder for LogicalPlan {
                     // Render each branch with plan_ctx
                     let mut branch_renders = Vec::new();
                     for branch in union.inputs.iter() {
-                        let branch_render =
+                        let mut branch_render =
                             branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
+                        if union.is_cypher_union {
+                            recover_cypher_arm_modifiers(branch, &mut branch_render)?;
+                        }
                         branch_renders.push(branch_render);
                     }
 
@@ -3973,6 +4011,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             union: UnionItems(Some(super::Union {
                                 input: all_branches,
                                 union_type: render_union_type,
+                                is_cypher_union: union.is_cypher_union,
                             })),
                             fixed_path_info: None,
                             is_multi_label_scan: false,
@@ -3985,6 +4024,7 @@ impl RenderPlanBuilder for LogicalPlan {
                         base_render.union = UnionItems(Some(super::Union {
                             input: all_renders,
                             union_type: render_union_type,
+                            is_cypher_union: union.is_cypher_union,
                         }));
                     }
 
@@ -4096,6 +4136,13 @@ impl RenderPlanBuilder for LogicalPlan {
                         || (has_outer_aggregation && base_render.union.0.is_some());
 
                     if should_move_first_branch {
+                        // For a Cypher-level UNION (#487), the base render's GROUP BY /
+                        // HAVING / ORDER BY / SKIP / LIMIT belong to the FIRST ARM's own
+                        // RETURN (each arm is an independent query), so they must move
+                        // into the first branch rather than stay on the union wrapper.
+                        // Planner-internal unions keep them on the base: there the
+                        // aggregation/grouping applies OVER the combined branches.
+                        let is_cypher_union = union.is_cypher_union;
                         if let Some(ref mut union_data) = base_render.union.0 {
                             // Extract the first branch's render components.
                             // Use saved original SELECT (with correct property mappings)
@@ -4117,11 +4164,37 @@ impl RenderPlanBuilder for LogicalPlan {
                                     &mut base_render.filters,
                                     FilterItems(None),
                                 ),
-                                group_by: GroupByExpressions(vec![]),
-                                having_clause: None,
-                                order_by: OrderByItems(vec![]),
-                                skip: SkipItem(None),
-                                limit: LimitItem(None),
+                                group_by: if is_cypher_union {
+                                    std::mem::replace(
+                                        &mut base_render.group_by,
+                                        GroupByExpressions(vec![]),
+                                    )
+                                } else {
+                                    GroupByExpressions(vec![])
+                                },
+                                having_clause: if is_cypher_union {
+                                    base_render.having_clause.take()
+                                } else {
+                                    None
+                                },
+                                order_by: if is_cypher_union {
+                                    std::mem::replace(
+                                        &mut base_render.order_by,
+                                        OrderByItems(vec![]),
+                                    )
+                                } else {
+                                    OrderByItems(vec![])
+                                },
+                                skip: if is_cypher_union {
+                                    SkipItem(base_render.skip.0.take())
+                                } else {
+                                    SkipItem(None)
+                                },
+                                limit: if is_cypher_union {
+                                    LimitItem(base_render.limit.0.take())
+                                } else {
+                                    LimitItem(None)
+                                },
                                 union: UnionItems(None),
                                 fixed_path_info: None,
                                 is_multi_label_scan: false,
@@ -4426,7 +4499,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     idx,
                     std::mem::discriminant(branch.as_ref())
                 );
-                let branch_render = branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
+                let mut branch_render = branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
+                if union.is_cypher_union {
+                    recover_cypher_arm_modifiers(branch, &mut branch_render)?;
+                }
                 branch_renders.push(branch_render);
             }
 
@@ -4440,15 +4516,21 @@ impl RenderPlanBuilder for LogicalPlan {
                     .enumerate()
                     .map(|(idx, branch)| {
                         log::debug!("Converting Union branch {} to RenderPlan", idx + 1);
-                        branch.to_render_plan_with_ctx(schema, plan_ctx, scope)
+                        let mut branch_render =
+                            branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
+                        if union.is_cypher_union {
+                            recover_cypher_arm_modifiers(branch, &mut branch_render)?;
+                        }
+                        Ok(branch_render)
                     })
-                    .collect::<RenderPlanBuilderResult<Vec<_>>>()?;
+                    .collect::<RenderPlanBuilderResult<Vec<RenderPlan>>>()?;
 
                 let render_union_type = super::UnionType::try_from(union.union_type.clone())
                     .unwrap_or(super::UnionType::All);
                 base_render.union = UnionItems(Some(super::Union {
                     input: remaining_renders,
                     union_type: render_union_type,
+                    is_cypher_union: union.is_cypher_union,
                 }));
             }
 
