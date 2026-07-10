@@ -1,5 +1,10 @@
 WITH __denorm_scan_a AS (
 SELECT 
+      "code" AS "code",
+      min("city") AS "city",
+      min("state") AS "state"
+FROM (
+SELECT 
       a.origin_city AS "city", 
       a.origin_code AS "code", 
       a.origin_state AS "state"
@@ -10,6 +15,9 @@ SELECT
       a.dest_code AS "code", 
       a.dest_state AS "state"
 FROM db_denormalized.flights_denorm AS a
+
+)
+GROUP BY "code"
 
 )
 SELECT 

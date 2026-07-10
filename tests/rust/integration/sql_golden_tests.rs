@@ -5661,4 +5661,86 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
              synthetic column:\n{sql}"
         );
     }
+
+    /// #507: the coupled-schema anchor scan CTE (`__denorm_scan_a`, built by
+    /// the OPTIONAL-denorm CTE+LEFT JOIN path shared with #502/#505/#506)
+    /// must collapse to NODE grain (one row per distinct node id) before the
+    /// LEFT JOIN, not TABLE grain (one row per unique combination of every
+    /// exposed column). On `zeek_merged_test.yaml`, `IP@conn_log` exposes
+    /// both `ip` (the identity) and `port` (a per-connection attribute) —
+    /// `UNION DISTINCT` over both columns dedups on the (ip, port) PAIR, so
+    /// an IP with 3 distinct ports fans out any downstream per-node
+    /// aggregate LEFT JOINed against the CTE by 3x.
+    ///
+    /// Live-verified on the zeek fixture: 192.168.1.10 has 3 distinct
+    /// `id.orig_p` values as a connection source but exactly 3 REQUESTED
+    /// (dns_log) rows — pre-fix this rendered `count(r) = 9` (3 grain rows ×
+    /// 3 matches); post-fix it correctly returns 3, matching hand-written
+    /// ground truth (`... LEFT JOIN ... SETTINGS join_use_nulls = 1`, to
+    /// mirror ClickHouse's default non-Nullable LEFT JOIN column fill which
+    /// would otherwise mask the NULL-extension semantics `#502` relies on).
+    /// 192.168.1.20 (2 distinct ports, 1 REQUESTED row) went from 2 to the
+    /// correct 1.
+    #[tokio::test]
+    async fn denorm_anchor_scan_cte_collapses_to_node_grain_507() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (a:IP) OPTIONAL MATCH (a)-[r:REQUESTED]->(d:Domain) \
+                 RETURN a.ip, count(r)",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        // The anchor CTE must wrap the raw origin/dest UNION in an outer
+        // GROUP BY keyed on the node's own id property, picking a
+        // deterministic representative (`min`) for the non-identity `port`
+        // column — not a bare `UNION DISTINCT` over both columns.
+        assert!(
+            sql.contains("GROUP BY \"ip\"") && sql.contains("min(\"port\")"),
+            "#507: anchor scan CTE must collapse to node grain via an outer \
+             GROUP BY on the id property, with non-identity columns wrapped \
+             in a deterministic aggregate:\n{sql}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(
+                &render(
+                    &schema,
+                    "MATCH (a:IP) OPTIONAL MATCH (a)-[r:REQUESTED]->(d:Domain) \
+                     RETURN a.ip, count(r)",
+                    SqlDialect::ClickHouse,
+                )
+                .await,
+            );
+            assert_eq!(sql, again, "#507: nondeterministic render");
+        }
+    }
+
+    /// #507 (no-op guard): when the anchor node's standalone scan exposes
+    /// ONLY its id property (no other columns to conflate), the grain-fix
+    /// wrap must be skipped entirely — `UNION DISTINCT` over a single column
+    /// is already node grain. Locks that single-property anchors (e.g. the
+    /// zeek `dns_log`-only IP role used by `RESOLVED_TO`) render exactly as
+    /// before #507 (no gratuitous extra SELECT/GROUP BY wrapper).
+    #[tokio::test]
+    async fn denorm_anchor_scan_cte_no_wrap_for_single_property_507() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (rip:ResolvedIP) OPTIONAL MATCH (d:Domain)-[r:RESOLVED_TO]->(rip) \
+                 RETURN rip.ip, count(r)",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert!(
+            !sql.contains("GROUP BY \"ip\"") && !sql.to_lowercase().contains("min(\""),
+            "#507: single-property anchor scan must NOT get the grain-fix \
+             wrap (UNION DISTINCT over one column is already node grain):\n{sql}"
+        );
+    }
 }

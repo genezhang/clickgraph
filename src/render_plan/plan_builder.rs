@@ -1287,13 +1287,100 @@ impl RenderPlanBuilder for LogicalPlan {
                         anchor_connection_fallback.clone()
                     };
 
+                    // Extract the anchor node's own-side properties from whichever Union
+                    // branch actually carries them (its from/to node-properties, per
+                    // `edge_side_node_properties` — a schema-catalog API, CLAUDE.md rule
+                    // 7). These are the actual properties of the anchor node (e.g., IP's
+                    // {ip_address: "id.orig_h"}), not the edge's.
+                    //
+                    // The anchor's standalone-scan Union has one branch per role, and
+                    // only the branch matching the wanted side has that field populated
+                    // (the OTHER branch's ViewScan carries `None` for it — a different
+                    // node role, #506). Search all branches rather than assuming order.
+                    // We also capture that branch's own `id_column` (the physical column
+                    // the schema declares as this node's identity) alongside the
+                    // properties — needed below (#507) to determine the CTE's true
+                    // node-grain dedup key.
+                    let (anchor_node_properties, anchor_id_column): (
+                        Option<
+                            std::collections::HashMap<
+                                String,
+                                crate::graph_catalog::expression_parser::PropertyValue,
+                            >,
+                        >,
+                        Option<String>,
+                    ) = if let LogicalPlan::Union(union) = anchor_plan {
+                        union
+                            .inputs
+                            .iter()
+                            .find_map(|input| {
+                                if let LogicalPlan::GraphNode(gn) = input.as_ref() {
+                                    if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                                        crate::graph_catalog::pattern_schema::edge_side_node_properties(
+                                            vs,
+                                            anchor_is_left,
+                                        )
+                                        .cloned()
+                                        .map(|props| (props, vs.id_column.clone()))
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            })
+                            .map_or((None, None), |(props, id_col)| (Some(props), Some(id_col)))
+                    } else {
+                        (None, None)
+                    };
+
+                    // #507: on a coupled/cross-table denorm schema, a node's `label`
+                    // carries MORE columns than just its identity (e.g. zeek IP@conn_log
+                    // also carries `port`). The Union above projects every from/to
+                    // property, so `UNION DISTINCT` dedups on the FULL (id, other...)
+                    // tuple — TABLE grain, not NODE grain. A single id with multiple
+                    // distinct `port` values across rows then survives as multiple CTE
+                    // rows, fanning out any downstream per-node aggregate that LEFT JOINs
+                    // against this CTE (count(r) inflated by the number of extra grain
+                    // rows). Collapse to true node grain: wrap the CTE body in an outer
+                    // `GROUP BY <id property>`, picking a single deterministic
+                    // representative value (`min()`) for every other exposed column.
+                    // Only the anchor's OWN id property is used as the key — never a
+                    // schema-pattern flag — so this stays schema-shape agnostic; when the
+                    // id property can't be forward-resolved (rare), skip the wrap and
+                    // keep prior behavior (no regression, matches pre-#507 rendering).
+                    let node_id_prop_name: Option<String> = anchor_node_properties
+                        .as_ref()
+                        .zip(anchor_id_column.as_ref())
+                        .and_then(|(props, id_col)| {
+                            let mut candidates: Vec<&String> = props
+                                .iter()
+                                .filter(|(_, v)| v.raw() == id_col.as_str())
+                                .map(|(k, _)| k)
+                                .collect();
+                            candidates.sort();
+                            candidates
+                                .into_iter()
+                                .find(|name| cte_exposed_columns.contains(name.as_str()))
+                                .cloned()
+                        });
+
                     // Build the CTE SQL from the Union render plan
                     let cte_name = format!("__denorm_scan_{}", node_alias);
-                    let cte_sql =
+                    let inner_cte_sql =
                         crate::clickhouse_query_generator::to_sql_query::render_plan_to_sql(
                             anchor_render,
                             10,
                         );
+                    let cte_sql = if let Some(ref id_prop) = node_id_prop_name {
+                        super::plan_builder_helpers::wrap_denorm_scan_cte_at_node_grain(
+                            &inner_cte_sql,
+                            id_prop,
+                            &cte_exposed_columns,
+                        )
+                    } else {
+                        inner_cte_sql
+                    };
                     let cte = super::Cte::new(
                         cte_name.clone(),
                         super::CteContent::RawSql(cte_sql),
@@ -1307,41 +1394,6 @@ impl RenderPlanBuilder for LogicalPlan {
                         alias: Some(node_alias.clone()),
                         use_final: false,
                     }));
-
-                    // Extract the anchor node's own-side properties from whichever Union
-                    // branch actually carries them (its from/to node-properties, per
-                    // `edge_side_node_properties` — a schema-catalog API, CLAUDE.md rule
-                    // 7). These are the actual properties of the anchor node (e.g., IP's
-                    // {ip_address: "id.orig_h"}), not the edge's.
-                    //
-                    // The anchor's standalone-scan Union has one branch per role, and
-                    // only the branch matching the wanted side has that field populated
-                    // (the OTHER branch's ViewScan carries `None` for it — a different
-                    // node role, #506). Search all branches rather than assuming order.
-                    let anchor_node_properties: Option<
-                        std::collections::HashMap<
-                            String,
-                            crate::graph_catalog::expression_parser::PropertyValue,
-                        >,
-                    > = if let LogicalPlan::Union(union) = anchor_plan {
-                        union.inputs.iter().find_map(|input| {
-                            if let LogicalPlan::GraphNode(gn) = input.as_ref() {
-                                if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
-                                    crate::graph_catalog::pattern_schema::edge_side_node_properties(
-                                        vs,
-                                        anchor_is_left,
-                                    )
-                                    .cloned()
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
-                        })
-                    } else {
-                        None
-                    };
 
                     // 3. Extract edge info for LEFT JOIN
                     let (edge_table, edge_alias, anchor_edge_id_col, node_id_col_opt) =

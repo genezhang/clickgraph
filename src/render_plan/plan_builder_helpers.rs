@@ -5624,3 +5624,58 @@ fn build_format_row_json(
         .json_row_object(&aliased_cols.join(", "));
     RenderExpr::Raw(format_expr)
 }
+
+/// #507: collapse a denorm-scan CTE's UNION body from TABLE grain (one row
+/// per unique combination of every projected column) to NODE grain (one row
+/// per distinct `id_column` value).
+///
+/// On a coupled cross-table denormalized schema, a node label can carry MORE
+/// columns than just its identity — e.g. zeek's `IP@conn_log` also exposes a
+/// `port` property. The anchor's standalone-scan Union (built by the
+/// OPTIONAL-denorm CTE+LEFT JOIN path, #502/#505/#506) projects every
+/// from/to-role property and combines roles with `UNION DISTINCT`, which
+/// dedups on the FULL row — so one IP with several distinct port values
+/// across its rows survives as several CTE rows instead of one. Any
+/// downstream per-node aggregate that LEFT JOINs against this CTE (e.g.
+/// `count(r)`) is then inflated by however many extra grain rows that node
+/// has (observed: count 9 instead of 3 for one IP with 3 distinct ports).
+///
+/// Wraps `inner_sql` (a plain `SELECT ... UNION ... SELECT ...` producing one
+/// row per (id, other columns...) combination) in an outer
+/// `SELECT id, min(other) ... FROM (inner_sql) GROUP BY id`. `min()` (not
+/// `any()`/`anyLast()`) is used for the non-identity columns so the render is
+/// deterministic across repeated runs — the schema itself conflates several
+/// physical rows under one node id, so Cypher's single-value `a.<property>`
+/// needs SOME deterministic representative, and this preserves that
+/// contract without changing which NODE ids the query returns.
+pub(super) fn wrap_denorm_scan_cte_at_node_grain(
+    inner_sql: &str,
+    id_column: &str,
+    exposed_columns: &std::collections::HashSet<String>,
+) -> String {
+    let mut others: Vec<&String> = exposed_columns
+        .iter()
+        .filter(|c| c.as_str() != id_column)
+        .collect();
+    // Nothing beyond the id column is exposed — `UNION DISTINCT` over just the
+    // id is already node grain (the bug this wrap fixes only exists when
+    // OTHER, non-identity columns can vary per id and get pulled into the
+    // dedup key). Skip the wrap so single-property anchors render exactly as
+    // before (no gratuitous SQL/golden churn for a no-op case).
+    if others.is_empty() {
+        return inner_sql.to_string();
+    }
+    others.sort();
+
+    let mut select_list = format!("      \"{id}\" AS \"{id}\"", id = id_column);
+    for col in &others {
+        select_list.push_str(&format!(",\n      min(\"{col}\") AS \"{col}\""));
+    }
+
+    format!(
+        "SELECT \n{select}\nFROM (\n{inner}\n)\nGROUP BY \"{id}\"\n",
+        select = select_list,
+        inner = inner_sql,
+        id = id_column,
+    )
+}
