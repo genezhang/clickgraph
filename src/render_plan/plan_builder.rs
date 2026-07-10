@@ -4956,7 +4956,9 @@ impl RenderPlanBuilder for LogicalPlan {
         // fixed paths instead of leaving them as unbound literal function
         // calls (#497).
         if render_plan.fixed_path_info.is_none() {
-            if let Ok(Some(info)) = super::cte_extraction::get_fixed_path_info(self) {
+            if let Ok(Some(info)) =
+                super::cte_extraction::get_fixed_path_info(self, schema, plan_ctx)
+            {
                 render_plan.fixed_path_info = Some(FixedPathMetadata {
                     path_variable: info.path_var_name,
                     hop_count: info.hop_count,

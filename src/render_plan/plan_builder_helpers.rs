@@ -1213,6 +1213,73 @@ pub(super) fn rewrite_path_functions(expr: &RenderExpr, path_var_name: &str) -> 
 
 use super::cte_extraction::FixedPathInfo;
 
+/// Build a composite-aware SQL expression for a node's id, given the alias
+/// it's actually bound under. Single-column ids render as `alias.col` (or
+/// `toString(alias.col)` when `force_string_cast` is set); composite ids
+/// always collapse into a pipe-joined string
+/// (`concat(toString(alias.c1), '|', toString(alias.c2), ...)`), mirroring
+/// the VLP recursive CTE's own composite-ID convention (`emit_id_expr` in
+/// `sql_generator/emitters/clickhouse/variable_length_cte.rs`) so a
+/// composite-key node's `nodes(p)` entry carries its FULL identity instead of
+/// silently dropping every column past the first.
+///
+/// `force_string_cast` exists because `nodes(p)` builds a single SQL
+/// `array(...)`, which requires every element to share a common type.
+/// A path mixing a single-column node (e.g. an integer `Customer.customer_id`)
+/// with a composite-key node (whose pipe-join is always a string, e.g.
+/// `Account(bank_id, account_number)`) would otherwise produce an
+/// array of INCOMPATIBLE types (ClickHouse: `NO_COMMON_TYPE`) — the caller
+/// sets this whenever any node id on the path is composite, so every element
+/// (including plain single-column ones) casts to string uniformly.
+fn id_expr_for_alias(
+    alias: &str,
+    id: &crate::graph_catalog::config::Identifier,
+    force_string_cast: bool,
+) -> RenderExpr {
+    use crate::graph_catalog::config::Identifier;
+    match id {
+        Identifier::Single(col) => {
+            let prop = RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(alias.to_string()),
+                column: PropertyValue::Column(col.clone()),
+            });
+            if force_string_cast {
+                RenderExpr::ScalarFnCall(ScalarFnCall {
+                    name: current_function_mapper().cast_string().to_string(),
+                    args: vec![prop],
+                })
+            } else {
+                prop
+            }
+        }
+        Identifier::Composite(cols) => {
+            let cast_name = current_function_mapper().cast_string().to_string();
+            let cast_col = |col: &String| {
+                RenderExpr::ScalarFnCall(ScalarFnCall {
+                    name: cast_name.clone(),
+                    args: vec![RenderExpr::PropertyAccessExp(PropertyAccess {
+                        table_alias: TableAlias(alias.to_string()),
+                        column: PropertyValue::Column(col.clone()),
+                    })],
+                })
+            };
+            let mut args = Vec::with_capacity(cols.len() * 2 - 1);
+            for (i, col) in cols.iter().enumerate() {
+                if i > 0 {
+                    args.push(RenderExpr::Literal(super::render_expr::Literal::String(
+                        "|".to_string(),
+                    )));
+                }
+                args.push(cast_col(col));
+            }
+            RenderExpr::ScalarFnCall(ScalarFnCall {
+                name: "concat".to_string(),
+                args,
+            })
+        }
+    }
+}
+
 /// Rewrite path function calls for FIXED multi-hop patterns (no variable length)
 /// For fixed patterns, we know the hop count and aliases at compile time
 /// Converts:
@@ -1256,18 +1323,37 @@ pub fn rewrite_fixed_path_functions_with_info(
                                     return expr.clone();
                                 }
 
-                                // Build array of node ID references: [r1.Origin, r1.Dest, r2.Dest]
+                                // Build array of node ID references: [r1.Origin, r1.Dest, r2.Dest].
+                                // #497 composite-ID fix: a node's `Identifier`
+                                // may be `Composite` (e.g. Account keyed on
+                                // (bank_id, account_number)) — a single
+                                // `PropertyAccessExp` would silently drop
+                                // every column past the first. Pipe-join
+                                // composite columns via `id_expr_for_alias`,
+                                // mirroring the VLP recursive CTE's own
+                                // composite-ID convention (`emit_id_expr` in
+                                // variable_length_cte.rs). If the path mixes a
+                                // composite-key node with a plain single-column
+                                // one, cast every element to string so the
+                                // resulting `array(...)` has one common type
+                                // (unmixed single-column paths keep the
+                                // existing untouched — no behavior change).
+                                let any_composite = path_info.node_aliases.iter().any(|a| {
+                                    matches!(
+                                        path_info.node_id_columns.get(a),
+                                        Some((
+                                            _,
+                                            crate::graph_catalog::config::Identifier::Composite(_)
+                                        ))
+                                    )
+                                });
                                 let node_args: Vec<RenderExpr> = path_info
                                     .node_aliases
                                     .iter()
                                     .filter_map(|node_alias| {
-                                        // Look up the ID column for this node
                                         path_info.node_id_columns.get(node_alias).map(
-                                            |(rel_alias, id_col)| {
-                                                RenderExpr::PropertyAccessExp(PropertyAccess {
-                                                    table_alias: TableAlias(rel_alias.clone()),
-                                                    column: PropertyValue::Column(id_col.clone()),
-                                                })
+                                            |(rel_alias, id)| {
+                                                id_expr_for_alias(rel_alias, id, any_composite)
                                             },
                                         )
                                     })

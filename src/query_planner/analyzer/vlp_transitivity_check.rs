@@ -209,26 +209,38 @@ impl AnalyzerPass for VlpTransitivityCheck {
         // When a pattern's VLP is non-transitive it's clamped to a fixed hop
         // above (now reachable in every branch thanks to the CartesianProduct
         // arm) and renders fine via the ordinary fixed-path route (verified
-        // live). But when TWO OR MORE independent branches each still need a
+        // live). But when at least one independent branch still needs a
         // genuine recursive VLP CTE, the FROM/CTE-trigger machinery
         // (`find_vlp_graph_rel` in from_builder.rs, `vlp_overrides_from` in
-        // join_builder.rs) only ever finds/builds ONE CTE — main's SQL for
-        // this shape references the same CTE alias twice
-        // (`tuple(t.path_nodes,...)` for both path variables) with no second
-        // CTE ever generated, ClickHouse Code 47. Supporting N independent VLP
-        // CTEs (each own name/alias, its own FROM/JOIN + its own RETURN-side
-        // gating) is a real rendering feature, not a clamp fix — out of scope
-        // here. Fail loudly instead of emitting that broken SQL.
+        // join_builder.rs) doesn't know how to combine a VLP CTE with a
+        // SIBLING CartesianProduct branch at all — verified live, even with
+        // just ONE VLP branch + one already-fixed sibling
+        // (`MATCH p1=(a)-[:A*1..2]->(b), p2=(c)-[:B]->(d) RETURN p1, p2`): the
+        // VLP branch's entire FROM/JOIN vanishes (not merely a missing JOIN —
+        // the WHOLE pattern), while `p1` still renders as
+        // `tuple(t.path_nodes, ...)` referencing a never-generated CTE alias
+        // `t` (ClickHouse Code 47). Two-or-more VLP-needing branches hit the
+        // same wall via a different symptom (one CTE referenced twice).
+        // Supporting N independent VLP CTEs coexisting with CartesianProduct
+        // siblings (each own name/alias, its own FROM/JOIN + its own
+        // RETURN-side gating) is a real rendering feature, not a clamp fix —
+        // out of scope here. Fail loudly instead of emitting broken SQL for
+        // EITHER shape: any CartesianProduct with at least one VLP-needing
+        // branch, not just >1.
         let plan_ref: &Arc<LogicalPlan> = match &result {
             Transformed::Yes(p) | Transformed::No(p) => p,
         };
-        if count_cartesian_branches_needing_vlp_cte(plan_ref.as_ref()) > 1 {
+        let vlp_branch_count = count_cartesian_branches_needing_vlp_cte(plan_ref.as_ref());
+        let has_cartesian_product = plan_contains_cartesian_product(plan_ref.as_ref());
+        if vlp_branch_count > 1 || (has_cartesian_product && vlp_branch_count >= 1) {
             return Err(AnalyzerError::InvalidPlan(
-                "Multiple independent variable-length path patterns in one MATCH \
-                 (e.g. `MATCH p1 = (a)-[:A*1..3]->(b), p2 = (c)-[:B*1..3]->(d) ...`, or \
-                 several path variables each requiring their own recursive CTE) is not \
-                 yet supported: only one variable-length recursive CTE can be generated \
-                 per query today. Split the independent variable-length patterns into \
+                "A variable-length path pattern combined with another independent \
+                 pattern in one MATCH (comma-separated patterns or multiple path \
+                 variables, e.g. `MATCH p1 = (a)-[:A*1..3]->(b), p2 = (c)-[:B]->(d) \
+                 ...`) is not yet supported when at least one pattern still needs its \
+                 own recursive VLP CTE: only one variable-length recursive CTE can be \
+                 generated per query today, and it cannot yet coexist with an \
+                 independent sibling pattern. Split the independent patterns into \
                  separate queries. (tracked: #499)"
                     .to_string(),
             ));
@@ -238,10 +250,26 @@ impl AnalyzerPass for VlpTransitivityCheck {
     }
 }
 
+/// Whether a CartesianProduct (comma-separated MATCH / multiple independent
+/// patterns) appears anywhere in the plan.
+fn plan_contains_cartesian_product(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::CartesianProduct(_) => true,
+        LogicalPlan::Projection(p) => plan_contains_cartesian_product(&p.input),
+        LogicalPlan::Filter(f) => plan_contains_cartesian_product(&f.input),
+        LogicalPlan::GraphJoins(gj) => plan_contains_cartesian_product(&gj.input),
+        LogicalPlan::GroupBy(gb) => plan_contains_cartesian_product(&gb.input),
+        LogicalPlan::OrderBy(ob) => plan_contains_cartesian_product(&ob.input),
+        LogicalPlan::Limit(l) => plan_contains_cartesian_product(&l.input),
+        LogicalPlan::Skip(s) => plan_contains_cartesian_product(&s.input),
+        _ => false,
+    }
+}
+
 /// Count how many independent branches of a CartesianProduct (comma-separated
 /// MATCH / multiple path variables) still need their own recursive VLP CTE
-/// after transitivity clamping. See #499 doc comment above for why >1 is
-/// unsupported today.
+/// after transitivity clamping. See #499 doc comment above for why any
+/// nonzero count combined with a CartesianProduct is unsupported today.
 fn count_cartesian_branches_needing_vlp_cte(plan: &LogicalPlan) -> usize {
     match plan {
         LogicalPlan::CartesianProduct(cp) => {

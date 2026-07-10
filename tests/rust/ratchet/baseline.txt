@@ -86,7 +86,7 @@ schema	is_denormalized	src/query_planner/optimizer/filter_into_graph_rel.rs	14
 schema	is_denormalized	src/query_planner/translator/property_resolver.rs	16
 schema	is_denormalized	src/query_planner/write_guard.rs	2
 schema	is_denormalized	src/render_plan/alias_resolver.rs	11
-schema	is_denormalized	src/render_plan/cte_extraction.rs	50
+schema	is_denormalized	src/render_plan/cte_extraction.rs	49
 schema	is_denormalized	src/render_plan/cte_generation.rs	1
 schema	is_denormalized	src/render_plan/cte_manager/mod.rs	13
 schema	is_denormalized	src/render_plan/expression_utils.rs	4

@@ -4639,6 +4639,29 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
         assert!(err.contains("#499"), "expected a #499 error: {err}");
     }
 
+    /// #499 (review follow-up): exactly ONE real VLP branch combined with one
+    /// already-fixed sibling branch in a CartesianProduct is just as broken
+    /// as two real VLP branches — the VLP branch's entire FROM/JOIN vanishes
+    /// from the render (not merely a missing JOIN) while its path variable
+    /// still references the never-generated CTE alias `t`. The original
+    /// guard only checked `count > 1`; this exercises the `count == 1`
+    /// (mixed) case the review found escaping it.
+    #[tokio::test]
+    async fn multi_pattern_one_vlp_one_fixed_loud_499() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let err = try_render(
+            &schema,
+            "MATCH p1 = (a:User)-[:FOLLOWS*1..2]->(b:User), p2 = (u2:User)-[:AUTHORED]->(post2) RETURN p1, p2",
+            SqlDialect::ClickHouse,
+        )
+        .await
+        .expect_err(
+            "one real VLP branch mixed with one fixed sibling branch must \
+             error, not silently drop the VLP branch's FROM/JOIN",
+        );
+        assert!(err.contains("#499"), "expected a #499 error: {err}");
+    }
+
     /// #501: chaining a plain relationship onto a variable-length leg under a
     /// path variable (`MATCH p = (a)-[:A*1..2]->(b)-[:B]->(c) RETURN c`) must
     /// keep the trailing leg's JOIN. Root cause was a stale `is_shortest_path`
@@ -4679,6 +4702,71 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
         assert!(
             sql.contains("INNER JOIN") && sql.matches("JOIN").count() >= 2,
             "expected the VLP CTE plus at least one real trailing JOIN: {sql}"
+        );
+    }
+
+    /// #497 (review follow-up, BLOCKING finding): `nodes(p)` on a fixed path
+    /// through a COMPOSITE-key node (`Account`, keyed on `(bank_id,
+    /// account_number)` in `schemas/test/composite_node_ids.yaml`) must carry
+    /// the node's FULL identity. A prior version of the #497 fix read
+    /// `ViewScan.id_column: String` (a single lossy column), which silently
+    /// dropped `account_number` entirely — `nodes(p)` would render
+    /// `array(c.customer_id, a.bank_id, a2.bank_id)`, structurally valid SQL
+    /// that quietly discards half of each Account's identity. Fixed by
+    /// routing through `PatternSchemaContext`/`NodeAccessStrategy`, whose
+    /// `id_column` is a full composite-aware `Identifier`, and pipe-joining
+    /// composite columns the same way the VLP recursive CTE already does
+    /// (`emit_id_expr` in variable_length_cte.rs).
+    #[tokio::test]
+    async fn fixed_path_nodes_composite_id_keeps_all_columns_497() {
+        let schema = load_schema(SchemaId::CompositeId.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH p = (c:Customer)-[:OWNS]->(a:Account)-[:TRANSFERRED]->(a2:Account) RETURN nodes(p)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        // Both Account occurrences must reference BOTH composite columns.
+        for alias in ["a", "a2"] {
+            assert!(
+                sql.contains(&format!("{alias}.bank_id"))
+                    && sql.contains(&format!("{alias}.account_number")),
+                "composite Account id for '{alias}' must reference BOTH \
+                 bank_id AND account_number, not silently drop one: {sql}"
+            );
+        }
+        // The single-column Customer id must still resolve plainly (or, if
+        // cast to string for array-type consistency with the composite
+        // entries, via a string cast — either way it must reference
+        // customer_id, not be silently dropped either).
+        assert!(
+            sql.contains("c.customer_id"),
+            "single-column Customer id must still be present: {sql}"
+        );
+        // A composite id renders as a pipe-joined concat — lock that shape so
+        // a future refactor can't silently regress back to a single column.
+        assert!(
+            sql.contains("concat(") && sql.contains("'|'"),
+            "expected a pipe-joined composite-id expression: {sql}"
+        );
+    }
+
+    /// #497 (review follow-up): a path touching ONLY single-column ids must
+    /// stay byte-identical to before the composite-ID fix — no spurious
+    /// string casts / pipe-joins for the common (non-composite) case.
+    #[tokio::test]
+    async fn fixed_path_nodes_single_column_unaffected_by_composite_fix_497() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH p = (a:User)-[:FOLLOWS]->(b:User) RETURN nodes(p)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("array(a.user_id, b.user_id)"),
+            "single-column ids must render as plain array(...) with no cast \
+             or pipe-join scaffolding: {sql}"
         );
     }
 }
