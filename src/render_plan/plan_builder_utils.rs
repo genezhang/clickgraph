@@ -13076,53 +13076,56 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         );
                     }
 
-                    // #462 GAP 1: cross-alias / OR conjuncts were routed to the
-                    // outer WHERE (`render_plan.filters`) by
-                    // `collect_graphrel_predicates` — wrong for OPTIONAL MATCH, as
-                    // the outer WHERE drops the NULL-extended no-match anchor rows.
-                    // Move every already-resolved filter conjunct that references
-                    // the optional node alias into the LEFT JOIN's ON condition
-                    // (anchor `c` references were already resolved to CTE columns,
-                    // e.g. `c.p1_c_customer_id`, when the filter was rendered).
-                    // Pure-anchor conjuncts stay in the outer WHERE.
+                    // #462/#472: every conjunct in `render_plan.filters` at this
+                    // point belongs EXCLUSIVELY to this post-WITH OPTIONAL MATCH's
+                    // own WHERE (the tight `post_with_optional_restructure` guard
+                    // above ensures a single-branch optional pattern; any WHERE
+                    // attached to the WITH projection itself was already folded
+                    // into the CTE body and is not visible here). `
+                    // collect_graphrel_predicates` routed the whole thing to the
+                    // outer WHERE — wrong for OPTIONAL MATCH, since the outer WHERE
+                    // drops the NULL-extended no-match anchor rows. Move EVERY
+                    // conjunct into the LEFT JOIN's ON condition, including
+                    // pure-anchor ones (#472): for a LEFT JOIN a false ON condition
+                    // just NULL-extends the row rather than dropping it, so folding
+                    // the whole predicate into ON is always safe and never changes
+                    // which rows are kept vs. dropped when the FROM side is the
+                    // anchor CTE. (Anchor `c` references were already resolved to
+                    // CTE columns, e.g. `c.p1_c_customer_id`, when the filter was
+                    // rendered.) Nothing is left behind in the outer WHERE for this
+                    // segment.
                     let mut extra_on_conditions: Vec<OperatorApplication> = Vec::new();
                     if let Some(filter_expr) = render_plan.filters.0.take() {
-                        let mut kept: Vec<RenderExpr> = Vec::new();
                         for conj in split_render_and_conjuncts(filter_expr) {
-                            if super::expression_utils::references_alias(
-                                &conj,
-                                &optional_from_alias,
-                            ) {
-                                match conj {
-                                    RenderExpr::OperatorApplicationExp(op) => {
-                                        extra_on_conditions.push(op);
-                                    }
-                                    // A boolean conjunct that is not an operator
-                                    // application (e.g. a bare scalar-fn predicate)
-                                    // cannot be expressed as a joining_on
-                                    // `OperatorApplication`. Rather than silently
-                                    // leave it in the outer WHERE (wrong semantics)
-                                    // or drop it, refuse with a clean error (#462).
-                                    other => {
-                                        return Err(RenderBuildError::InvalidRenderPlan(format!(
-                                            "post-WITH OPTIONAL MATCH WHERE conjunct referencing \
-                                             optional alias '{}' is not an operator application and \
-                                             cannot be moved into the LEFT JOIN ON condition; \
-                                             refusing to place it in the outer WHERE (would drop \
-                                             NULL-extended rows): {:?}",
-                                            optional_from_alias, other
-                                        )));
-                                    }
+                            match conj {
+                                RenderExpr::OperatorApplicationExp(op) => {
+                                    extra_on_conditions.push(op);
                                 }
-                            } else {
-                                kept.push(conj);
+                                // A boolean conjunct that is not an operator
+                                // application (e.g. a bare scalar-fn predicate)
+                                // cannot be expressed as a joining_on
+                                // `OperatorApplication`. Rather than silently leave
+                                // it in the outer WHERE (wrong semantics) or drop
+                                // it, refuse with a clean error (#462/#472).
+                                other => {
+                                    return Err(RenderBuildError::InvalidRenderPlan(format!(
+                                        "post-WITH OPTIONAL MATCH WHERE conjunct is not an \
+                                         operator application and cannot be moved into the \
+                                         LEFT JOIN ON condition for alias '{}'; refusing to \
+                                         place it in the outer WHERE (would drop NULL-extended \
+                                         rows): {:?}",
+                                        optional_from_alias, other
+                                    )));
+                                }
                             }
                         }
-                        render_plan.filters.0 = combine_render_exprs_with_and(kept);
+                        // No `kept` remainder: the whole post-OPTIONAL WHERE moves
+                        // into the ON condition, so `render_plan.filters` stays
+                        // cleared (no outer WHERE for this segment).
                     }
                     if !extra_on_conditions.is_empty() {
                         log::info!(
-                            "🔧 build_chained_with_match_cte_plan: #462 moved {} cross-alias/OR WHERE conjunct(s) into LEFT JOIN ON for alias '{}'",
+                            "🔧 build_chained_with_match_cte_plan: #462/#472 moved {} WHERE conjunct(s) (incl. pure-anchor) into LEFT JOIN ON for alias '{}'",
                             extra_on_conditions.len(),
                             optional_from_alias
                         );
