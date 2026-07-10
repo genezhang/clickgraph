@@ -5,6 +5,7 @@ WITH RECURSIVE vlp_a_b_inner AS (
         1 as hop_count,
         [t0.Origin] as path_edges,
         [t0.Origin, t0.Dest] as path_nodes,
+        [] as path_relationships,
         t0.Origin as start_Origin,
         t0.Dest as end_Dest
     FROM default.flights AS t0
@@ -16,6 +17,7 @@ WITH RECURSIVE vlp_a_b_inner AS (
         vp.hop_count + 1,
         arrayConcat(vp.path_edges, [next.Origin]),
         arrayConcat(vp.path_nodes, [next.Dest]),
+        [] as path_relationships,
         vp.start_Origin as start_Origin,
         next.Dest as end_Dest
     FROM vlp_a_b_inner vp

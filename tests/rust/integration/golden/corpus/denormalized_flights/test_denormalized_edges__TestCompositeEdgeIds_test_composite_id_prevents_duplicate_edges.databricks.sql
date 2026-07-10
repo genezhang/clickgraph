@@ -5,6 +5,7 @@ WITH RECURSIVE vlp_origin_dest_inner AS (
         1 as hop_count,
         array(f.Origin) as path_edges,
         array(f.Origin, f.Dest) as path_nodes,
+        array('FLIGHT') as path_relationships,
         f.Dest as end_Dest
     FROM test_integration.flights AS f
     WHERE f.Origin = 'LAX' AND hop_count <= 2
@@ -15,6 +16,7 @@ WITH RECURSIVE vlp_origin_dest_inner AS (
         vp.hop_count + 1,
         concat(vp.path_edges, array(next.Origin)),
         concat(vp.path_nodes, array(next.Dest)),
+        concat(vp.path_relationships, array('FLIGHT')) as path_relationships,
         next.Dest as end_Dest
     FROM vlp_origin_dest_inner vp
     JOIN test_integration.flights next ON next.Origin = vp.end_id

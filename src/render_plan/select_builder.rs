@@ -1544,7 +1544,7 @@ impl LogicalPlan {
                 // This is a known limitation: edge properties are not tracked in the CTE for
                 // single-type VLP patterns like (u)-[r:TYPE*1..2]->(n).
                 //
-                // The CTE for single-type VLP uses columns: start_id, end_id, path_edges,
+                // The CTE for single-type VLP uses columns: start_id, end_id, hop_count,
                 // path_relationships, path_nodes - but NOT rel_properties.
                 //
                 // For multi-type VLP ([:TYPE1|TYPE2]) or pattern_combinations, the CTE
@@ -2118,8 +2118,8 @@ impl LogicalPlan {
     /// Expand a path variable to its constituent components
     ///
     /// For VLP (variable-length paths) queries:
-    ///   - Uses VLP CTE columns: path_nodes, path_edges, path_relationships, hop_count
-    ///   - tuple(t.path_nodes, t.path_edges, t.path_relationships, t.hop_count) AS "p"
+    ///   - Uses VLP CTE columns: path_nodes, path_relationships, hop_count
+    ///   - tuple(t.path_nodes, t.path_relationships, t.hop_count) AS "p"
     ///
     /// For fixed single-hop paths:
     ///   - Constructs path from actual node/relationship aliases
@@ -2224,8 +2224,14 @@ impl LogicalPlan {
                 return;
             }
 
-            // Standard VLP with path_nodes and path_edges
-            // tuple(t.path_nodes, t.path_edges, t.path_relationships, t.hop_count)
+            // Standard (single-type) VLP: materialize the path from what the
+            // recursive CTE actually projects — path_nodes, path_relationships,
+            // hop_count. Note: the CTE deliberately does NOT project a
+            // `path_edges` column (cycle detection is node-uniqueness via
+            // path_nodes; per-edge arrays were dropped as a memory
+            // optimization). Referencing it here produced unbound-identifier
+            // SQL (ClickHouse Code 47) for every `RETURN p` over a VLP (#469).
+            // tuple(t.path_nodes, t.path_relationships, t.hop_count)
             select_items.push(SelectItem {
                 expression: RenderExpr::ScalarFnCall(ScalarFnCall {
                     name: "tuple".to_string(),
@@ -2233,10 +2239,6 @@ impl LogicalPlan {
                         RenderExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: RenderTableAlias(cte_alias.to_string()),
                             column: PropertyValue::Column("path_nodes".to_string()),
-                        }),
-                        RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: RenderTableAlias(cte_alias.to_string()),
-                            column: PropertyValue::Column("path_edges".to_string()),
                         }),
                         RenderExpr::PropertyAccessExp(PropertyAccess {
                             table_alias: RenderTableAlias(cte_alias.to_string()),
