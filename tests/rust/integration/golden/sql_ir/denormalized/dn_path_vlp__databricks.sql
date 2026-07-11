@@ -7,7 +7,7 @@ WITH RECURSIVE vlp_a_b AS (
         array(t0.origin_code, t0.dest_code) as path_nodes,
         array('FLIGHT') as path_relationships
     FROM db_denormalized.flights_denorm AS t0
-    WHERE hop_count <= 2
+    WHERE 1 <= 2
     UNION ALL
     SELECT
         vp.start_id as start_id,

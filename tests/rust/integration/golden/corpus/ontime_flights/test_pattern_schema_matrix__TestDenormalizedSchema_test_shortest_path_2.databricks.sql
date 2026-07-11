@@ -7,7 +7,7 @@ WITH RECURSIVE vlp_a_b AS (
         array(t0.Origin, t0.Dest) as path_nodes,
         array('FLIGHT') as path_relationships
     FROM default.flights AS t0
-    WHERE t0.OriginCityName != t0.DestCityName AND hop_count <= 5
+    WHERE t0.OriginCityName != t0.DestCityName AND 1 <= 5
     UNION ALL
     SELECT
         vp.start_id as start_id,

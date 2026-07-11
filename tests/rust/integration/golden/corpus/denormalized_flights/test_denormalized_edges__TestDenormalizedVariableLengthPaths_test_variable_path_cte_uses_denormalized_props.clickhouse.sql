@@ -8,7 +8,7 @@ WITH RECURSIVE vlp_origin_dest AS (
         [] as path_relationships,
         f.DestCityName as end_DestCityName
     FROM test_integration.flights AS f
-    WHERE f.OriginCityName = 'Los Angeles' AND hop_count <= 2
+    WHERE f.OriginCityName = 'Los Angeles' AND 1 <= 2
     UNION ALL
     SELECT
         vp.start_id as start_id,

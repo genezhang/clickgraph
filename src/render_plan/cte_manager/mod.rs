@@ -1994,8 +1994,21 @@ impl DenormalizedCteStrategy {
         // Add hop count constraints
         // Only max_hops limit in base case — the base case always produces hop_count=1 rows.
         // The min_hops >= N filter is applied in the outer wrapper CTE, not here.
+        //
+        // #525: this used to push `hop_count <= {max_hops}` — but `hop_count`
+        // is a SELECT-list alias (`1 as hop_count`) in the SAME SELECT, not a
+        // real column, and standard SQL forbids WHERE from referencing a
+        // SELECT-list alias. It only "worked" because ClickHouse
+        // non-standardly substitutes the alias's expression, evaluating
+        // `1 <= {max_hops}` — a tautology for every max_hops >= 1, never a
+        // real bound (the base case is hardcoded to hop_count = 1; the real
+        // recursion bound lives in the recursive term's `vp.hop_count < N`).
+        // Emit that literal comparison directly: standard-SQL-portable and
+        // provably identical to what ClickHouse evaluated before. (Only this
+        // strategy's base case had the alias reference; the zero-hop base
+        // case of #489 builds its own SQL without this WHERE clause.)
         if let Some(max_hops) = context.spec.max_hops {
-            conditions.push(format!("hop_count <= {}", max_hops));
+            conditions.push(format!("1 <= {}", max_hops));
         }
 
         Ok(conditions.join(" AND "))

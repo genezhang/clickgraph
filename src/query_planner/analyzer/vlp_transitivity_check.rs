@@ -347,95 +347,134 @@ impl VlpTransitivityCheck {
                         })?;
                         log::info!("🔍 VLP Transitivity Check: rel_types={:?}", rel_types);
 
-                        // For simplicity, check the first relationship type
-                        // TODO: Handle multiple types (TYPE1|TYPE2)
-                        let rel_type = rel_types.first().ok_or_else(|| {
-                            AnalyzerError::InvalidPlan(
+                        if rel_types.is_empty() {
+                            return Err(AnalyzerError::InvalidPlan(
                                 "Variable-length path has empty relationship type list".to_string(),
-                            )
-                        })?;
+                            ));
+                        }
 
-                        // Check if this relationship is transitive. This check
-                        // is inherently direction-agnostic (it only looks at
-                        // schema from/to label overlap), which is correct: a
-                        // relationship is either self-loop/overlapping (safe to
-                        // chain regardless of direction) or it isn't.
-                        log::info!(
-                            "⚠ VLP Transitivity Check: Checking if '{}' is transitive...",
-                            rel_type
-                        );
-                        let is_transitive =
-                            Self::is_transitive_relationship(rel_type, graph_schema)?;
-                        log::info!(
-                            "⚠ VLP transitivity: '{}' is {}!",
-                            rel_type,
-                            if is_transitive {
-                                "TRANSITIVE"
-                            } else {
-                                "NON-TRANSITIVE"
-                            }
-                        );
+                        // #528: a multi-type VLP (`[:A|B|C*..]`) must NOT be
+                        // judged — let alone clamped — by any single type.
+                        // The old code checked only `rel_types.first()`, so
+                        // `[:AUTHORED|LIKED|FOLLOWS*1..2]` (non-transitive
+                        // type listed first) had its `variable_length`
+                        // silently STRIPPED (dropping legitimate multi-hop
+                        // paths like FOLLOWS→AUTHORED), while the identical
+                        // query with FOLLOWS listed first kept it — pure
+                        // type-list-order dependence. Worse, the clamped
+                        // GraphRel keeps `labels.len() > 1`, and
+                        // `from_builder.rs::find_multi_type_graph_rel`'s
+                        // purely syntactic check still emitted
+                        // `FROM vlp_multi_type_{a}_{b}` for it — a CTE the
+                        // render phase only builds when `variable_length`
+                        // survives — producing the undefined-CTE crash #528
+                        // describes. Multi-type VLP path validity is instead
+                        // enumerated per-hop against the schema by
+                        // `multi_type_vlp_expansion::enumerate_vlp_paths`
+                        // (via `MultiTypeVlpJoinGenerator`), which generates
+                        // only valid hop combinations — including zero-hop
+                        // base cases and undirected traversal — and naturally
+                        // yields just the 1-hop branches when longer chains
+                        // are impossible. So: skip the single-type clamp for
+                        // multi-type VLPs entirely and let that machinery
+                        // decide.
+                        if rel_types.len() > 1 {
+                            log::info!(
+                                "🔧 VLP Transitivity Check: multi-type VLP ({:?}) — skipping \
+                                 single-type transitivity clamp; per-hop validity is handled \
+                                 by multi-type join expansion (#528)",
+                                rel_types
+                            );
+                            // Fall through to child recursion below.
+                        } else {
+                            let rel_type = rel_types.first().ok_or_else(|| {
+                                AnalyzerError::InvalidPlan(
+                                    "Variable-length path has empty relationship type list"
+                                        .to_string(),
+                                )
+                            })?;
 
-                        if !is_transitive {
-                            let is_undirected = rel.direction
-                                == crate::query_planner::logical_expr::Direction::Either;
-                            let is_zero_hop = vlp_spec.min_hops == Some(0);
+                            // Check if this relationship is transitive. This check
+                            // is inherently direction-agnostic (it only looks at
+                            // schema from/to label overlap), which is correct: a
+                            // relationship is either self-loop/overlapping (safe to
+                            // chain regardless of direction) or it isn't.
+                            log::info!(
+                                "⚠ VLP Transitivity Check: Checking if '{}' is transitive...",
+                                rel_type
+                            );
+                            let is_transitive =
+                                Self::is_transitive_relationship(rel_type, graph_schema)?;
+                            log::info!(
+                                "⚠ VLP transitivity: '{}' is {}!",
+                                rel_type,
+                                if is_transitive {
+                                    "TRANSITIVE"
+                                } else {
+                                    "NON-TRANSITIVE"
+                                }
+                            );
 
-                            // #496: two shapes need MORE than a single fixed
-                            // hop to be correct, and both require the SQL
-                            // renderer to reconstruct a path across the
-                            // relationship's two DIFFERENT node tables (a
-                            // non-transitive relationship is by construction
-                            // heterogeneous — see `is_transitive_relationship`'s
-                            // self-loop check above: any from/to label overlap
-                            // already returns transitive=true, so every case
-                            // reaching here has genuinely different node types
-                            // on each end):
-                            //
-                            //   - undirected (`-[..]-`): reverse-direction
-                            //     chaining can make >1-hop paths real (e.g.
-                            //     Order-PLACED_BY->Customer<-PLACED_BY-Order),
-                            //     so simply clamping to 1 hop drops rows.
-                            //   - `*0..N`: the zero-hop row (start node
-                            //     standing in as its own path) is real and
-                            //     must not be dropped by clamping straight to
-                            //     a required 1-hop join.
-                            //
-                            // Verified empirically (2026-07, live SQL inspection
-                            // against fk_edge/standard schemas) that simply
-                            // *not* clamping and routing these through the
-                            // existing recursive-VLP-CTE machinery does NOT
-                            // work: both the zero-hop base case and the
-                            // recursive/base-case JOIN generators in
-                            // variable_length_cte.rs hard-assume the start and
-                            // end node tables are the SAME (a safe assumption
-                            // for every case they've been exercised on so far,
-                            // since genuinely transitive relationships are
-                            // always self-loop/overlapping by definition) —
-                            // e.g. `MATCH (o:Order)-[:PLACED_BY*0..2]->(c)
-                            // RETURN count(*)` produced a recursive term that
-                            // joined `orders_fk` to itself and never touched
-                            // `customers_fk`; the undirected 1..2 case produced
-                            // a base-case join predicate comparing Order's own
-                            // id column to Customer's id column. Both are
-                            // syntactically-valid-but-semantically-wrong SQL —
-                            // i.e. exactly the silent-wrong-results failure
-                            // mode ground rule (1) forbids, just relocated.
-                            // Extending that machinery to support heterogeneous
-                            // start/end tables across every schema pattern
-                            // (standard/fk_edge/denormalized/polymorphic) is a
-                            // real feature, not a clamp fix — out of scope
-                            // here. Fail LOUDLY instead: strictly better than
-                            // both the old silent clamp and the silently-wrong
-                            // SQL the naive "don't clamp" fix produces.
-                            if is_undirected || is_zero_hop {
-                                // #500: `rel_type` may be an internal composite
-                                // schema key ("TYPE::From::To"); use the
-                                // display-safe base type name in user-facing
-                                // error text.
-                                let display_type = extract_type_name(rel_type);
-                                return Err(AnalyzerError::InvalidPlan(format!(
-                                    "Variable-length path pattern [{}*{}..{}] is not yet \
+                            if !is_transitive {
+                                let is_undirected = rel.direction
+                                    == crate::query_planner::logical_expr::Direction::Either;
+                                let is_zero_hop = vlp_spec.min_hops == Some(0);
+
+                                // #496: two shapes need MORE than a single fixed
+                                // hop to be correct, and both require the SQL
+                                // renderer to reconstruct a path across the
+                                // relationship's two DIFFERENT node tables (a
+                                // non-transitive relationship is by construction
+                                // heterogeneous — see `is_transitive_relationship`'s
+                                // self-loop check above: any from/to label overlap
+                                // already returns transitive=true, so every case
+                                // reaching here has genuinely different node types
+                                // on each end):
+                                //
+                                //   - undirected (`-[..]-`): reverse-direction
+                                //     chaining can make >1-hop paths real (e.g.
+                                //     Order-PLACED_BY->Customer<-PLACED_BY-Order),
+                                //     so simply clamping to 1 hop drops rows.
+                                //   - `*0..N`: the zero-hop row (start node
+                                //     standing in as its own path) is real and
+                                //     must not be dropped by clamping straight to
+                                //     a required 1-hop join.
+                                //
+                                // Verified empirically (2026-07, live SQL inspection
+                                // against fk_edge/standard schemas) that simply
+                                // *not* clamping and routing these through the
+                                // existing recursive-VLP-CTE machinery does NOT
+                                // work: both the zero-hop base case and the
+                                // recursive/base-case JOIN generators in
+                                // variable_length_cte.rs hard-assume the start and
+                                // end node tables are the SAME (a safe assumption
+                                // for every case they've been exercised on so far,
+                                // since genuinely transitive relationships are
+                                // always self-loop/overlapping by definition) —
+                                // e.g. `MATCH (o:Order)-[:PLACED_BY*0..2]->(c)
+                                // RETURN count(*)` produced a recursive term that
+                                // joined `orders_fk` to itself and never touched
+                                // `customers_fk`; the undirected 1..2 case produced
+                                // a base-case join predicate comparing Order's own
+                                // id column to Customer's id column. Both are
+                                // syntactically-valid-but-semantically-wrong SQL —
+                                // i.e. exactly the silent-wrong-results failure
+                                // mode ground rule (1) forbids, just relocated.
+                                // Extending that machinery to support heterogeneous
+                                // start/end tables across every schema pattern
+                                // (standard/fk_edge/denormalized/polymorphic) is a
+                                // real feature, not a clamp fix — out of scope
+                                // here. Fail LOUDLY instead: strictly better than
+                                // both the old silent clamp and the silently-wrong
+                                // SQL the naive "don't clamp" fix produces.
+                                if is_undirected || is_zero_hop {
+                                    // #500: `rel_type` may be an internal composite
+                                    // schema key ("TYPE::From::To"); use the
+                                    // display-safe base type name in user-facing
+                                    // error text.
+                                    let display_type = extract_type_name(rel_type);
+                                    return Err(AnalyzerError::InvalidPlan(format!(
+                                        "Variable-length path pattern [{}*{}..{}] is not yet \
                                      supported: relationship '{}' is non-transitive (its FROM \
                                      and TO node types differ), and this pattern requires {} \
                                      across those two different node tables. This needs the SQL \
@@ -443,87 +482,96 @@ impl VlpTransitivityCheck {
                                      tables, which is not yet implemented (tracked: #496). A \
                                      single fixed-hop pattern (e.g. `[{}]` without `*`) is \
                                      supported.",
-                                    display_type,
-                                    vlp_spec.min_hops.map(|m| m.to_string()).unwrap_or_default(),
-                                    vlp_spec.max_hops.map(|m| m.to_string()).unwrap_or_default(),
-                                    display_type,
-                                    if is_undirected {
-                                        "alternating-direction chaining"
-                                    } else {
-                                        "a zero-hop (start-node-as-both-endpoints) row"
-                                    },
-                                    display_type,
-                                )));
-                            }
+                                        display_type,
+                                        vlp_spec
+                                            .min_hops
+                                            .map(|m| m.to_string())
+                                            .unwrap_or_default(),
+                                        vlp_spec
+                                            .max_hops
+                                            .map(|m| m.to_string())
+                                            .unwrap_or_default(),
+                                        display_type,
+                                        if is_undirected {
+                                            "alternating-direction chaining"
+                                        } else {
+                                            "a zero-hop (start-node-as-both-endpoints) row"
+                                        },
+                                        display_type,
+                                    )));
+                                }
 
-                            // Remaining case: DIRECTED, effective min_hops == 1
-                            // (Cypher defaults an unspecified min to 1). Here
-                            // the clamp is semantically exact — chaining past 1
-                            // hop is impossible (non-transitive) and the
-                            // zero-hop shape doesn't apply (min >= 1) — so
-                            // remove variable_length entirely and become a
-                            // simple single-hop edge, exactly like before.
-                            //
-                            // Validate first: min_hops > 1 is a hard semantic
-                            // error (a path of length 2+ is impossible for a
-                            // non-transitive relationship).
-                            Self::validate_non_transitive(vlp_spec, rel_type)?;
+                                // Remaining case: DIRECTED, effective min_hops == 1
+                                // (Cypher defaults an unspecified min to 1). Here
+                                // the clamp is semantically exact — chaining past 1
+                                // hop is impossible (non-transitive) and the
+                                // zero-hop shape doesn't apply (min >= 1) — so
+                                // remove variable_length entirely and become a
+                                // simple single-hop edge, exactly like before.
+                                //
+                                // Validate first: min_hops > 1 is a hard semantic
+                                // error (a path of length 2+ is impossible for a
+                                // non-transitive relationship).
+                                Self::validate_non_transitive(vlp_spec, rel_type)?;
 
-                            log::info!(
+                                log::info!(
                                 "→ Removing VLP from non-transitive [{}*] - converting to simple single-hop pattern",
                                 rel_type
                             );
 
-                            // #488: keep the path-variable registration
-                            // consistent with the rewritten plan. `MATCH p =
-                            // ...` registered the path with the VLP's length
-                            // bounds; if those stay in place the renderer
-                            // emits tuple(t.path_nodes, ...) referencing a
-                            // recursive VLP CTE that is never generated for
-                            // this (now single-hop) pattern — unbound alias
-                            // `t`, ClickHouse Code 47. Re-register as a fixed
-                            // single-hop path so rendering takes the
-                            // fixed-path route.
-                            //
-                            // #496: this arm is only reached for DIRECTED
-                            // patterns with effective min_hops == 1 (undirected
-                            // and zero-hop shapes are handled above and never
-                            // fall through to here), so the clamp is always
-                            // sound at this point — no extra guard needed
-                            // beyond "was this path variable actually
-                            // registered for this relationship".
-                            if let Some(ref pvar) = rel.path_variable {
-                                let registered_for_this_rel = plan_ctx
-                                    .lookup_variable(pvar)
-                                    .and_then(|v| v.as_path())
-                                    .is_some_and(|p| {
-                                        p.relationship.as_deref() == Some(rel.alias.as_str())
-                                            && !p.is_shortest_path
-                                    });
-                                if registered_for_this_rel {
-                                    log::info!(
+                                // #488: keep the path-variable registration
+                                // consistent with the rewritten plan. `MATCH p =
+                                // ...` registered the path with the VLP's length
+                                // bounds; if those stay in place the renderer
+                                // emits tuple(t.path_nodes, ...) referencing a
+                                // recursive VLP CTE that is never generated for
+                                // this (now single-hop) pattern — unbound alias
+                                // `t`, ClickHouse Code 47. Re-register as a fixed
+                                // single-hop path so rendering takes the
+                                // fixed-path route.
+                                //
+                                // #496: this arm is only reached for DIRECTED
+                                // patterns with effective min_hops == 1 (undirected
+                                // and zero-hop shapes are handled above and never
+                                // fall through to here), so the clamp is always
+                                // sound at this point — no extra guard needed
+                                // beyond "was this path variable actually
+                                // registered for this relationship".
+                                if let Some(ref pvar) = rel.path_variable {
+                                    let registered_for_this_rel = plan_ctx
+                                        .lookup_variable(pvar)
+                                        .and_then(|v| v.as_path())
+                                        .is_some_and(|p| {
+                                            p.relationship.as_deref() == Some(rel.alias.as_str())
+                                                && !p.is_shortest_path
+                                        });
+                                    if registered_for_this_rel {
+                                        log::info!(
                                         "→ Re-registering path variable '{}' as fixed single-hop (VLP stripped)",
                                         pvar
                                     );
-                                    plan_ctx.define_path(
-                                        pvar.clone(),
-                                        Some(rel.left_connection.clone()),
-                                        Some(rel.right_connection.clone()),
-                                        Some(rel.alias.clone()),
-                                        None,
-                                        false,
-                                    );
+                                        plan_ctx.define_path(
+                                            pvar.clone(),
+                                            Some(rel.left_connection.clone()),
+                                            Some(rel.right_connection.clone()),
+                                            Some(rel.alias.clone()),
+                                            None,
+                                            false,
+                                        );
+                                    }
                                 }
+
+                                // Create new GraphRel WITHOUT variable_length
+                                let new_rel = GraphRel {
+                                    variable_length: None, // Remove VLP - just a normal edge
+                                    ..rel.clone()
+                                };
+
+                                return Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphRel(
+                                    new_rel,
+                                ))));
                             }
-
-                            // Create new GraphRel WITHOUT variable_length
-                            let new_rel = GraphRel {
-                                variable_length: None, // Remove VLP - just a normal edge
-                                ..rel.clone()
-                            };
-
-                            return Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphRel(new_rel))));
-                        }
+                        } // end single-type transitivity clamp (#528: multi-type skips it)
                     }
                 }
 

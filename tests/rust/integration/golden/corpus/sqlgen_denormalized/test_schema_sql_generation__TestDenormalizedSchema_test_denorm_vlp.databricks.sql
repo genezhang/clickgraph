@@ -8,7 +8,7 @@ WITH RECURSIVE vlp_a_b AS (
         array() as path_relationships,
         t0.dest_city as end_dest_city
     FROM db_denormalized.flights_denorm AS t0
-    WHERE t0.origin_city = 'Seattle' AND hop_count <= 2
+    WHERE t0.origin_city = 'Seattle' AND 1 <= 2
     UNION ALL
     SELECT
         vp.start_id as start_id,

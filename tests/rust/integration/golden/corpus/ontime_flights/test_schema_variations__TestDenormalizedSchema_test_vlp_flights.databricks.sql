@@ -9,7 +9,7 @@ WITH RECURSIVE vlp_a_dest AS (
         t0.DestCityName as end_DestCityName,
         t0.Dest as end_Dest
     FROM default.flights AS t0
-    WHERE t0.Origin = 'JFK' AND hop_count <= 2
+    WHERE t0.Origin = 'JFK' AND 1 <= 2
     UNION ALL
     SELECT
         vp.start_id as start_id,

@@ -87,6 +87,14 @@ pub enum AnalyzerError {
     #[error("Optimizer error during analysis: {message}")]
     OptimizerError { message: String },
 
+    /// A pattern the engine cannot yet translate CORRECTLY. Unlike other
+    /// analyzer errors (which the pipeline may swallow, falling back to the
+    /// untransformed plan), this variant is FATAL: proceeding would produce
+    /// silently wrong results, which is worse than failing loudly (#544).
+    /// The `initial_analyzing` catch around GraphJoinInference re-raises it.
+    #[error("Unsupported pattern: {message}")]
+    UnsupportedPattern { message: String },
+
     #[error("Invalid relationship pattern: ({from})-[:{rel_type}]->({to}). Schema defines {rel_type} as ({schema_from})-[:{rel_type}]->({schema_to}). Please add the missing relationship definition to your schema YAML.")]
     InvalidRelationInQuery {
         rel_type: String,

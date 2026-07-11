@@ -8,7 +8,7 @@ WITH RECURSIVE vlp_origin_dest AS (
         array() as path_relationships,
         f.Dest as end_Dest
     FROM test_integration.flights AS f
-    WHERE f.Origin = 'LAX' AND hop_count <= 3
+    WHERE f.Origin = 'LAX' AND 1 <= 3
     UNION ALL
     SELECT
         vp.start_id as start_id,

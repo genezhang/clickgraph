@@ -572,12 +572,34 @@ async fn ldbc_bi_14() {
     assert!(sql.contains("SELECT"));
 }
 
+/// BI-17 contains TWO independent `[:REPLY_OF*0..]` variable-length paths in
+/// one MATCH scope (`message1 -> post1` and `message2 -> post2`). Before the
+/// #544 guard, this test locked silently WRONG SQL: the render phase only
+/// generated ONE of the two VLP CTEs and conflated both message->post
+/// correlations onto it (the other VLP — and the filters riding on it —
+/// silently vanished). Until multiple recursive VLP CTEs per scope are
+/// actually supported, planning must fail loudly instead.
 #[tokio::test]
-async fn ldbc_bi_17() {
+async fn ldbc_bi_17_multi_vlp_scope_rejected_loudly_544() {
     let schema = load_ldbc_schema();
-    let sql = generate_sql(&schema, "benchmarks/ldbc_snb/queries/adapted/bi-17.cypher").await;
-    assert!(!sql.is_empty());
-    assert!(sql.contains("SELECT"));
+    let raw = std::fs::read_to_string("benchmarks/ldbc_snb/queries/adapted/bi-17.cypher")
+        .expect("read bi-17.cypher");
+    let cleaned = strip_comments(&raw);
+
+    let ctx = QueryContext::new(Some("default".to_string()));
+    with_query_context(ctx, async {
+        set_current_schema(Arc::new(schema.clone()));
+        let (_rest, statement) = clickgraph::open_cypher_parser::parse_cypher_statement(&cleaned)
+            .expect("bi-17 must still parse");
+        let err = evaluate_read_statement(statement, &schema, None, None, None)
+            .expect_err("bi-17 has two REPLY_OF*0.. VLPs in one MATCH scope — must be rejected");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("#544"),
+            "expected the #544 multi-VLP-per-scope rejection, got: {msg}"
+        );
+    })
+    .await;
 }
 
 #[tokio::test]

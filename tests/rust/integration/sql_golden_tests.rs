@@ -8249,41 +8249,52 @@ mod vlp_cte_binding_family_524_528_538_525 {
         );
     }
 
-    /// #528 — KNOWN BROKEN, deliberately left unfixed. A 3+ relationship-type
-    /// VLP combined with an explicitly-labeled end node (e.g.
-    /// `(u:User)-[:AUTHORED|LIKED|FOLLOWS*1..2]->(x:Post)`) references a
-    /// `vlp_multi_type_u_x` CTE that is NEVER DEFINED — no `WITH` clause at
-    /// all is emitted, just a bare `SELECT ... FROM vlp_multi_type_u_x AS t`.
-    /// Live-verified to crash with ClickHouse `Code: 47 UNKNOWN_IDENTIFIER`.
+    /// #528 — FIXED (this branch); this replaces the prior KNOWN-BROKEN
+    /// characterization test per its own instructions. The earlier
+    /// characterization blamed a from_builder/cte_extraction divergence; the
+    /// true root cause (found via targeted tracing this round) sat one pass
+    /// earlier: `VlpTransitivityCheck` judged a multi-type VLP's transitivity
+    /// by `rel_types.first()` ALONE (an explicit `TODO: Handle multiple
+    /// types`), so `[:AUTHORED|LIKED|FOLLOWS*1..2]` (non-transitive type
+    /// listed FIRST) had its `variable_length` silently stripped — the
+    /// failing axis was the TYPE-LIST ORDER, not the 3-types-or-labeled-end
+    /// framing: `[:FOLLOWS|AUTHORED|LIKED*1..2]` (transitive type first)
+    /// always worked, and even the 2-type `[:AUTHORED|LIKED*1..2]` failed.
+    /// The stripped GraphRel still had `labels.len() > 1`, so
+    /// `from_builder.rs::find_multi_type_graph_rel`'s syntactic check
+    /// emitted `FROM vlp_multi_type_u_x` for a CTE the render phase only
+    /// builds when `variable_length` survives → undefined-CTE crash.
     ///
-    /// Root cause (confirmed via targeted tracing, NOT yet fixed): TWO
-    /// independent "is this a multi-type VLP" checks can disagree —
-    /// `from_builder.rs::find_multi_type_graph_rel` uses a purely syntactic
-    /// heuristic (`graph_rel.labels.len() > 1`) to decide the FROM clause
-    /// should reference `vlp_multi_type_{start}_{end}`, while
-    /// `cte_extraction.rs::should_use_join_expansion` independently decides
-    /// whether to actually BUILD that CTE. For this specific query shape,
-    /// `should_use_join_expansion`'s branch is never reached at all — no CTE
-    /// is registered under this alias (confirmed via
-    /// `get_relationship_cte_name` returning `None`), yet
-    /// `find_multi_type_graph_rel` still fires because `labels.len() == 3`.
+    /// Fix: `VlpTransitivityCheck` now skips the single-type clamp for
+    /// multi-type VLPs entirely — per-hop path validity is enumerated
+    /// against the schema by `multi_type_vlp_expansion` (which handles
+    /// zero-hop and undirected too, and naturally yields only the 1-hop
+    /// branches when longer chains are impossible). This also fixes the
+    /// silent-wrong-results side of the same bug: the old clamp dropped
+    /// legitimate 2-hop paths (e.g. FOLLOWS→AUTHORED) whenever the first
+    /// listed type happened to be non-transitive.
     ///
-    /// A fix attempt (making `from_builder.rs` verify CTE registration before
-    /// trusting the naive check, mirroring the pattern the chained-VLP check
-    /// one block below it already uses) was tried and REVERTED: it broke a
-    /// previously-working case (undirected multi-type VLP,
-    /// `(u:User)-[:FOLLOWS|AUTHORED|LIKED*1..2]-(x)`), because
-    /// `find_multi_type_graph_rel`'s discovered `GraphRel` and the alias
-    /// under which the REAL CTE got registered can diverge across
-    /// `bidirectional_union`'s direction-split branches. A correct fix needs
-    /// to reconcile alias correspondence across that split, which is a
-    /// larger, riskier change than fits this batch — left open per the
-    /// task's explicit "prioritize #524/#528 crashes, but don't force a risky
-    /// rewrite" guidance. This test locks the CURRENT (broken) shape so a
-    /// future fix has a clear regression target and diff.
+    /// Live-verified (2026-07-11, `social` fixture): `count(*)` for the
+    /// repro returns 39, exactly matching a hand-written 4-branch UNION
+    /// ground-truth query; type-list order is now irrelevant (39/39 directed,
+    /// 217/217 undirected across both orders). The prior fix attempt's
+    /// regression case (undirected `[:FOLLOWS|AUTHORED|LIKED*1..2]-(x)`)
+    /// still renders its CTE (this fix touches the analyzer, not
+    /// from_builder's alias correspondence).
+    ///
+    /// NOTE (pre-existing, NOT introduced or fixed here, candidates for new
+    /// issues): on EVERY multi-type labeled-end VLP — including the
+    /// previously-"working" FOLLOWS-first order, verified byte-identical on
+    /// a pre-branch binary — (a) `ORDER BY x.title` resolves to a
+    /// nonexistent `t.end_post_title` CTE column (Code 47), and (b)
+    /// `RETURN x.title` extracts `JSONExtractString(end_properties,
+    /// 'post_title')` while the CTE builds the JSON with cypher-name keys
+    /// (`... AS title`), silently returning ''.
     #[tokio::test]
-    async fn multi_type_vlp_three_types_labeled_end_known_broken_undefined_cte_528() {
+    async fn multi_type_vlp_nontransitive_first_type_order_invariant_528() {
         let schema = load_schema(SchemaId::Standard.yaml_path());
+
+        // The filed repro: non-transitive AUTHORED listed first, labeled end.
         let sql = render(
             &schema,
             "MATCH (u:User)-[:AUTHORED|LIKED|FOLLOWS*1..2]->(x:Post) \
@@ -8291,49 +8302,116 @@ mod vlp_cte_binding_family_524_528_538_525 {
             SqlDialect::ClickHouse,
         )
         .await;
-
         assert!(
-            sql.contains("FROM vlp_multi_type_u_x AS t"),
-            "#528 KNOWN BROKEN characterization stale — no longer references \
-             vlp_multi_type_u_x at all: {sql}"
+            sql.contains("WITH vlp_multi_type_u_x AS ("),
+            "#528: the multi-type VLP CTE must actually be DEFINED: {sql}"
         );
         assert!(
-            !sql.to_uppercase().contains("WITH"),
-            "#528 KNOWN BROKEN characterization stale — a WITH clause now \
-             defines the referenced CTE (this bug may be fixed — if so, \
-             replace this characterization with a real regression test \
-             asserting correct behavior): {sql}"
+            sql.contains("FROM vlp_multi_type_u_x AS t"),
+            "#528: outer query must consume the defined CTE: {sql}"
+        );
+        // The 2-hop chains (FOLLOWS then AUTHORED/LIKED) that the old
+        // first-type clamp silently dropped must be enumerated.
+        assert!(
+            sql.contains("2 AS hop_count"),
+            "#528: legitimate 2-hop branches (FOLLOWS→AUTHORED/LIKED) must \
+             not be clamped away by first-type transitivity: {sql}"
+        );
+
+        // Type-list order must not change the generated branch set: the
+        // FOLLOWS-first spelling of the same query must produce the same
+        // number of UNION ALL branches.
+        let sql_follows_first = render(
+            &schema,
+            "MATCH (u:User)-[:FOLLOWS|AUTHORED|LIKED*1..2]->(x:Post) \
+             RETURN u.name, x.title",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert_eq!(
+            sql.matches("UNION ALL").count(),
+            sql_follows_first.matches("UNION ALL").count(),
+            "#528: branch enumeration must be type-list-order invariant:\n\
+             AUTHORED-first:\n{sql}\nFOLLOWS-first:\n{sql_follows_first}"
         );
     }
 
-    /// #525 — investigated, NOT fixed, no live bug found (documentation-only
-    /// finding, hence no behavior-locking assertion beyond confirming the
-    /// fragile shape still exists). The denormalized VLP base case's WHERE
-    /// clause includes `hop_count <= N`, but `hop_count` is a SELECT-list
-    /// alias (`1 AS hop_count`) in the SAME SELECT, not a real column —
-    /// standard SQL forbids a WHERE clause from referencing a SELECT-list
-    /// alias. This only "works" because ClickHouse non-standardly substitutes
-    /// the alias's expression, making the condition a tautology (`1 <= N`,
-    /// always true for any `max_hops >= 1`) rather than a real bound.
-    ///
-    /// Live-verified (2026-07-10): a bounded denorm VLP query (`*1..2` on
-    /// `db_denormalized`) returns correct results today — this is a fragile
-    /// no-op, not a live break. Confirmed still present after the #524 fixes
-    /// in this same file (`DenormalizedCteStrategy::build_where_clause` in
-    /// `cte_manager/mod.rs`, the `hop_count <= {max_hops}` push).
-    ///
-    /// Deferred fix sketch (not applied — see rationale below): replace the
-    /// alias reference with the literal the base case's `hop_count` column
-    /// is always hardcoded to (`1`), i.e. push `"1 <= {max_hops}"` instead of
-    /// `"hop_count <= {max_hops}"` — standard-SQL-portable, and provably
-    /// identical in behavior since the base case's `hop_count` is always the
-    /// literal `1`. Not applied in this batch: it touches the same core VLP
-    /// CTE generation already modified for #524 in this PR, would need golden
-    /// regeneration across the denormalized VLP corpus, and is not fixing a
-    /// live bug — the task's explicit guidance is to avoid a risky rewrite of
-    /// core VLP CTE generation for a non-currently-broken robustness concern.
+    /// #528 (fix must not over-reach): all-non-transitive multi-type VLP
+    /// (`[:AUTHORED|LIKED*1..2]`, no chainable type at all) must render only
+    /// the possible 1-hop branches — the enumeration naturally proves no
+    /// 2-hop chain exists (Post has no outgoing AUTHORED/LIKED), which is
+    /// exactly what the old first-type clamp APPROXIMATED for this case.
+    /// Semantically identical results, now without the order dependence.
     #[tokio::test]
-    async fn denorm_vlp_base_case_hop_count_alias_where_clause_fragile_not_broken_525() {
+    async fn multi_type_vlp_all_nontransitive_only_one_hop_branches_528() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (u:User)-[:AUTHORED|LIKED*1..2]->(x:Post) RETURN u.name, x.title",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("WITH vlp_multi_type_u_x AS ("),
+            "#528: CTE must be defined for the all-non-transitive case too: {sql}"
+        );
+        assert!(
+            sql.contains("1 AS hop_count") && !sql.contains("2 AS hop_count"),
+            "#528: no 2-hop branch can exist for AUTHORED|LIKED (Post has no \
+             outgoing edges of these types) — enumeration must prove that, \
+             not invent branches: {sql}"
+        );
+    }
+
+    /// #528 (single-type behavior unchanged): the multi-type skip must not
+    /// perturb the single-type non-transitive clamp/error paths (#496) —
+    /// directed min-1 clamps to a plain join, undirected errors loudly.
+    #[tokio::test]
+    async fn single_type_nontransitive_clamp_unchanged_by_528_fix() {
+        let schema = load_schema(SchemaId::FkEdge.yaml_path());
+
+        let sql = render(
+            &schema,
+            "MATCH (o:Order)-[:PLACED_BY*1..2]->(c) RETURN count(*)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !sql.to_uppercase().contains("WITH RECURSIVE"),
+            "single-type directed non-transitive VLP must still clamp to a \
+             plain join: {sql}"
+        );
+
+        let err = try_render(
+            &schema,
+            "MATCH (o:Order)-[:PLACED_BY*1..2]-(c) RETURN count(*)",
+            SqlDialect::ClickHouse,
+        )
+        .await
+        .expect_err("single-type undirected non-transitive VLP must still error (#496)");
+        assert!(err.contains("#496"), "expected a #496 error: {err}");
+    }
+
+    /// #525 — FIXED (fix/544-vlp-family-remnants); this replaces the prior
+    /// fragile-shape characterization per its own instructions. The
+    /// denormalized VLP base case's WHERE clause used to include
+    /// `hop_count <= N`, where `hop_count` is a SELECT-list alias
+    /// (`1 AS hop_count`) in the SAME SELECT, not a real column — standard
+    /// SQL forbids a WHERE clause from referencing a SELECT-list alias, and
+    /// it only "worked" because ClickHouse non-standardly substitutes the
+    /// alias's expression, evaluating `1 <= N` (a tautology for any
+    /// `max_hops >= 1`, never a real bound — the real recursion bound is the
+    /// recursive term's `vp.hop_count < N`).
+    ///
+    /// Fixed exactly per the previously-deferred sketch: push the literal
+    /// comparison `1 <= {max_hops}` directly
+    /// (`DenormalizedCteStrategy::build_where_clause`, `cte_manager/mod.rs`)
+    /// — standard-SQL-portable and PROVABLY identical in behavior, since
+    /// it's literally the expression ClickHouse evaluated after alias
+    /// substitution. Live-verified (2026-07-11, `db_denormalized`): the
+    /// bounded `*1..2` query below returns the same rows before and after.
+    #[tokio::test]
+    async fn denorm_vlp_base_case_hop_count_bound_is_portable_literal_525() {
         let schema = load_schema(SchemaId::Denormalized.yaml_path());
         let sql = render(
             &schema,
@@ -8343,14 +8421,21 @@ mod vlp_cte_binding_family_524_528_538_525 {
         .await;
 
         assert!(
-            sql.contains("WHERE hop_count <= 2"),
-            "#525: base case WHERE clause references the `hop_count` SELECT \
-             alias (fragile, ClickHouse-specific alias substitution) rather \
-             than the literal 1 it's always equal to in the base case — if \
-             this assertion fails because the shape changed, check whether \
-             it's now a real column reference or a portable literal (in \
-             which case #525 may be fixed; update this test to lock the new, \
-             fixed shape instead of this characterization): {sql}"
+            sql.contains("WHERE 1 <= 2"),
+            "#525: base case WHERE clause must bound via the portable \
+             literal comparison (what ClickHouse always evaluated anyway), \
+             not a SELECT-alias reference: {sql}"
+        );
+        assert!(
+            !sql.contains("WHERE hop_count <="),
+            "#525: base case WHERE clause must not reference the hop_count \
+             SELECT alias (non-standard SQL, ClickHouse-specific alias \
+             substitution): {sql}"
+        );
+        // The REAL recursion bound must be untouched.
+        assert!(
+            sql.contains("vp.hop_count < 2"),
+            "#525: the recursive term's genuine hop bound must be preserved: {sql}"
         );
     }
 }
@@ -8729,6 +8814,243 @@ mod label_id_resolution_family_536_537_539_540_541_526_527 {
             sql.contains("GROUP BY `id(o)`") && sql.contains("ORDER BY `id(o)` ASC"),
             "#540: id(o) must resolve to a real, consistently-referenced \
              column in both GROUP BY and ORDER BY:\n{sql}"
+        );
+    }
+}
+
+/// Regression tests for the #544/#545/#528/#525 family — the follow-up batch
+/// from the fix/524-vlp-cte-binding-family adversarial review (see the
+/// `vlp_cte_binding_family_524_528_538_525` module above for the prior
+/// round's fixes and the original #528/#525 characterizations).
+///
+/// #544's root cause generalizes well beyond the issue's literal repro shape:
+/// the ENTIRE VLP pipeline (the `PlanCtx` endpoint registry keyed by node
+/// alias, the render phase's single shared `VLP_CTE_FROM_ALIAS` (`"t"`) outer
+/// alias, and `rewrite_vlp_select_aliases`'s single-CTE rewrite) supports
+/// exactly ONE required recursive VLP per MATCH scope, plus one deliberate
+/// exception (same-end fan-in, explicitly JOINed by `to_sql_query.rs`). Every
+/// other multi-VLP configuration — fixed-hop-bridged (the filed repro),
+/// directly chained, fan-out, disjoint — was live-verified to silently DROP
+/// all but one VLP's CTE and conflate its endpoints with the surviving one.
+/// Silently wrong results being the worst possible outcome, the fix makes the
+/// planner reject these loudly (`AnalyzerError::UnsupportedPattern`, marked
+/// FATAL so `initial_analyzing`'s GraphJoinInference catch re-raises instead
+/// of falling back to the untransformed — and silently wrong — plan) until
+/// the render phase can emit N independently-aliased VLP CTEs.
+mod vlp_family_remnants_544_545_528_525 {
+    use super::*;
+
+    /// #544 (the filed repro shape): two independent VLPs with non-overlapping
+    /// aliases bridged by a fixed hop. Pre-fix this rendered `a.name`/`b.name`
+    /// from the c→d CTE's start/end columns (the a→b VLP was silently dropped
+    /// and never even built) — byte-verified silently wrong. Must now fail
+    /// loudly with the #544 rejection.
+    #[tokio::test]
+    async fn multi_vlp_fixed_hop_bridge_rejected_loudly_544() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let err = try_render(
+            &schema,
+            "MATCH (a:User)-[*1..2]->(b:User)-[:FOLLOWS]->(c:User)-[*2..3]->(d:User) \
+             RETURN a.name, b.name, c.name, d.name",
+            SqlDialect::ClickHouse,
+        )
+        .await
+        .expect_err("two VLPs bridged by a fixed hop must error, not conflate endpoints");
+        assert!(err.contains("#544"), "expected a #544 error: {err}");
+    }
+
+    /// #544 (chained variant): two directly adjacent VLPs sharing the middle
+    /// node. Pre-fix only `vlp_b_c` was emitted — `a.name` silently became
+    /// b's start_name and the a→b hop constraint vanished entirely.
+    #[tokio::test]
+    async fn chained_vlps_rejected_loudly_544() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let err = try_render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User) \
+             RETURN a.name, c.name",
+            SqlDialect::ClickHouse,
+        )
+        .await
+        .expect_err("chained VLPs must error, not silently drop the first VLP");
+        assert!(err.contains("#544"), "expected a #544 error: {err}");
+    }
+
+    /// #544 (fan-out variant): one start fanning out through two VLPs. Unlike
+    /// same-end fan-in (below), fan-OUT has no render-phase support at all:
+    /// pre-fix `vlp_x_a` was silently dropped and `a.name` was projected from
+    /// `vlp_x_b`'s end column (`a.name` == `b.name` for every row).
+    #[tokio::test]
+    async fn fan_out_vlps_rejected_loudly_544() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let err = try_render(
+            &schema,
+            "MATCH (x:User)-[:FOLLOWS*1..2]->(a:User), (x)-[:FOLLOWS*1..2]->(b:User) \
+             RETURN x.name, a.name, b.name",
+            SqlDialect::ClickHouse,
+        )
+        .await
+        .expect_err("fan-out VLPs must error, not conflate the two end nodes");
+        assert!(err.contains("#544"), "expected a #544 error: {err}");
+    }
+
+    /// #544 (guard must NOT over-fire): same-end fan-in is the one multi-VLP
+    /// configuration with genuine render support (`to_sql_query.rs` detects
+    /// it and INNER JOINs the sibling CTEs on end_id). It must keep working.
+    ///
+    /// KNOWN REMAINING GAP (deliberately not locked here): projecting the
+    /// SECOND fan-in VLP's start-node properties (e.g. `RETURN b.name`) still
+    /// resolves to the shared `t` alias (`t.start_name`, i.e. `a`'s value)
+    /// instead of `t_fi_0.start_name` — same root cause as #544 (single
+    /// shared VLP alias), fixable only by the same render-phase multi-alias
+    /// work. End-alias projections (x) and the join structure are correct.
+    #[tokio::test]
+    async fn fan_in_same_end_vlps_still_render_544() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*1..2]->(x:User), (b:User)-[:FOLLOWS*1..2]->(x:User) \
+             RETURN x.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("vlp_a_x") && sql.contains("vlp_b_x"),
+            "fan-in must still build BOTH VLP CTEs: {sql}"
+        );
+        assert!(
+            sql.contains("ON t_fi_0.end_id = t.end_id"),
+            "fan-in must still INNER JOIN the sibling CTE on end_id: {sql}"
+        );
+    }
+
+    /// #544 (guard must NOT over-fire): a single VLP with fixed hops on
+    /// either side — the #521/#524 shapes — is one VLP per scope and must be
+    /// completely unaffected by the multi-VLP rejection.
+    #[tokio::test]
+    async fn single_vlp_with_fixed_hops_unaffected_by_544_guard() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS]->(b:User)-[:FOLLOWS*1..2]->(c:User)-[:AUTHORED]->(p:Post) \
+             RETURN a.name, p.title",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.to_uppercase().contains("WITH RECURSIVE"),
+            "single VLP flanked by fixed hops must still render its CTE: {sql}"
+        );
+    }
+
+    /// #544 (guard must NOT over-fire): an undirected single VLP splits into
+    /// two direction-variant Union branches that REUSE the same alias pair —
+    /// each branch has exactly one VLP and must not trip the per-scope count.
+    #[tokio::test]
+    async fn undirected_single_vlp_unaffected_by_544_guard() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (u1:User)-[:FOLLOWS*1..2]-(u2:User)-[:AUTHORED]->(p:Post) \
+             RETURN u1.name, p.title",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("vlp_u1_u2") && sql.contains("vlp_u2_u1"),
+            "undirected VLP must still render both direction CTEs: {sql}"
+        );
+    }
+
+    /// #545 — could NOT be reproduced as filed, despite substantial effort
+    /// (locked as a PASSING regression test, the same honest outcome as #540
+    /// last wave). The claim was: requesting a property with the same
+    /// canonical/logical alias on BOTH VLP endpoints of a denormalized
+    /// virtual node (e.g. `a.ip`/`b.ip`, both mapping to logical name `ip`)
+    /// drops one side's column entirely. Tested (2026-07-11, `cg sql` +
+    /// live ClickHouse where syntactically possible) on BOTH zeek schemas
+    /// across directed/undirected, GROUP BY, ORDER BY, collect(), `*0..2`,
+    /// OPTIONAL MATCH, asymmetric requirements (`RETURN a, b.ip`), and the
+    /// deliberately-colliding `seen: ts`/`uid: uid` mappings of
+    /// `schemas/test/zeek_merged_collision.yaml` (same logical name AND same
+    /// physical column on both roles): the denormalized VLP CTE's
+    /// `start_`/`end_` prefixing disambiguated every case — both sides
+    /// always exported and projected distinctly, and the `a.seen`/`b.seen`
+    /// query returns correct, distinct-per-side values against live data
+    /// (multi-hop rows show different start/end timestamps).
+    ///
+    /// Two ADJACENT (loud, NOT silent) zeek bugs were found while trying to
+    /// reproduce — both distinct from #545's same-logical-name axis, left
+    /// unfixed here and documented for follow-up filing:
+    ///
+    /// 1. Tuple-field (dotted) physical columns, e.g. IP's `ip:
+    ///    "id.orig_h"`, are embedded UNQUOTED into the denorm VLP CTE's
+    ///    column aliases (`t1.id.orig_h as start_id.orig_h`) — ClickHouse
+    ///    Code 62 SYNTAX_ERROR on execution for ANY query touching such a
+    ///    property through a denorm VLP CTE. Root:
+    ///    `DenormalizedCteStrategy`'s `cte_column_name = format!("{}{}",
+    ///    prefix, prop.column_name)` (`cte_manager/mod.rs`, ~line 1412) and
+    ///    the matching `add_property_selections` emission — a dotted DB
+    ///    column needs identifier quoting (and a dot-free alias) there.
+    /// 2. A leading fixed hop into a VLP start endpoint whose label maps to
+    ///    MULTIPLE tables with per-role property mappings
+    ///    (`(x:IP)-[:ACCESSED]->(a:IP)-[:ACCESSED*1..2]->(b:IP)` on
+    ///    `schemas/dev/zeek_merged_test.yaml`) resolves `a.ip` in the outer
+    ///    SELECT via the TO-role mapping (`id.resp_h` → nonexistent
+    ///    `t."start_id.resp_h"`) while the CTE exports the FROM-role column
+    ///    (`start_id.orig_h`) — ClickHouse Code 47 UNKNOWN_IDENTIFIER
+    ///    (behind the Code 62 above). The leading hop's JOIN itself is
+    ///    correctly correlated (`t1."id.resp_h" = t.start_id`) — #524's fix
+    ///    holds; only the projection's role choice is wrong.
+    #[tokio::test]
+    async fn same_logical_property_both_vlp_endpoints_projects_both_distinctly_545() {
+        // Deliberate collision schema: `seen: ts` on BOTH from/to role maps.
+        let schema = load_schema("schemas/test/zeek_merged_collision.yaml");
+        let sql = render(
+            &schema,
+            "MATCH (a:IP)-[:ACCESSED*1..2]->(b:IP) RETURN a.seen, b.seen",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        // NOTE: the edge-table alias number (t1/t654/…) comes from a
+        // process-wide counter and is not per-test deterministic — match on
+        // the column expression only.
+        assert!(
+            sql.contains(".ts as start_ts") && sql.contains(".ts as end_ts"),
+            "#545: BOTH endpoints' same-logical-name property must be \
+             exported under distinct start_/end_ CTE columns: {sql}"
+        );
+        assert!(
+            sql.contains(r#"t.start_ts AS "a.seen""#) && sql.contains(r#"t.end_ts AS "b.seen""#),
+            "#545: the outer SELECT must project each side from its own \
+             prefixed CTE column: {sql}"
+        );
+        // The recursive term must thread the start side and advance the end
+        // side — NOT collapse them onto one expression.
+        assert!(
+            sql.contains("vp.start_ts as start_ts") && sql.contains("next.ts as end_ts"),
+            "#545: recursive case must keep the two sides independent: {sql}"
+        );
+
+        // Same-logical-name `ip` on the dev zeek schema (different physical
+        // columns per role) — also both exported, both projected.
+        let schema2 = load_schema("schemas/dev/zeek_merged_test.yaml");
+        let sql2 = render(
+            &schema2,
+            "MATCH (a:IP)-[:ACCESSED*1..2]->(b:IP) RETURN a.ip, b.ip",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql2.contains(r#"AS "a.ip""#) && sql2.contains(r#"AS "b.ip""#),
+            "#545: both endpoint projections must be present: {sql2}"
+        );
+        assert!(
+            sql2.contains("start_id.orig_h") && sql2.contains("end_id.resp_h"),
+            "#545: each side must resolve to its own role's physical column \
+             (NOTE: these dotted aliases are themselves a live Code 62 \
+             syntax bug — adjacent finding #1 in this test's doc comment — \
+             but the column-export logic under test here is correct): {sql2}"
         );
     }
 }

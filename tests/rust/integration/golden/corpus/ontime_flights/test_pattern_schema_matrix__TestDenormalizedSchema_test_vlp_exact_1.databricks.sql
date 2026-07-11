@@ -7,7 +7,7 @@ WITH RECURSIVE vlp_a_b_inner AS (
         array(t0.Origin, t0.Dest) as path_nodes,
         array() as path_relationships
     FROM default.flights AS t0
-    WHERE hop_count <= 2
+    WHERE 1 <= 2
     UNION ALL
     SELECT
         vp.start_id as start_id,
