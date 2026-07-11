@@ -1,0 +1,31 @@
+# Regression schema for #546 (adversarial-review Bug 2, name coincidence):
+# Comment's id column is `comment_id`, but Comment ALSO exposes a plain
+# property `user_id` (its author's id, mapping to the `author` column) that
+# happens to SHARE Author's id-column NAME. The reverted first #546 salvage
+# collected coalesce candidates by iterating EVERY schema label and matching
+# any projected column named "{alias}.{id_col}", so `n.user_id` (non-NULL on
+# BOTH branches — Author's own id AND Comment's author reference) hijacked
+# the ordering key and Comments sorted by their AUTHOR's id instead of their
+# own. The reworked salvage reads each union branch's own ViewScan id_column
+# instead, so no cross-label name matching can occur.
+#
+# Tables are notional — the tests using this schema are SQL-generation only.
+name: review546_name_coincidence
+graph_schema:
+  nodes:
+    - label: Author
+      database: review_546_scratch
+      table: users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+        name: full_name
+    - label: Comment
+      database: review_546_scratch
+      table: comments
+      node_id: comment_id
+      property_mappings:
+        comment_id: comment_id
+        user_id: author
+        body: body
+  edges: []

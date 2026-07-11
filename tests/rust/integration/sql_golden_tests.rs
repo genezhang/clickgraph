@@ -8749,17 +8749,20 @@ mod order_by_id_union_family_546_547 {
     /// "removed" branch gave up on the whole clause rather than trying
     /// anything else, so rows silently came back unordered with no error.
     ///
-    /// Fix: whenever the alias's whole-node projection is present (as it
-    /// always is for a bare `RETURN n`), every candidate label's real id
-    /// column is ALREADY projected in the outer `__union` scope under
-    /// `"{alias}.{id_col}"` (NULL-padded on every branch but that label's
-    /// own) — `coalesce(...)` over those columns is a real, deterministic
-    /// per-row ordering key. Live-verified (2026-07-11, local `social`
-    /// fixture via ClickHouse): rows come back in ascending
-    /// post_id/user_id order (1,1,2,2,3,...), matching hand-computed ground
-    /// truth for the JOIN-free coalesce key.
+    /// Fix (reworked after adversarial review): each union branch projects
+    /// its OWN id column — read from the branch's FROM-bound `ViewScan`, the
+    /// scan built from exactly that branch's label's schema — as a
+    /// `__order_col_{N}` helper wrapped in the typed total-order key
+    /// `tuple(toInt128OrNull(toString(id)), toString(id))`, and the outer
+    /// query orders by that helper. The review's Bug 1 killed the first
+    /// attempt (a `coalesce` over the branches' ALREADY-stringified display
+    /// columns): a String key sorts numeric ids LEXICOGRAPHICALLY, which
+    /// only LOOKED right on single-digit fixtures. Live-verified with
+    /// MULTI-DIGIT ids (2026-07-11, users/posts ids 1..12 via ClickHouse):
+    /// `LIMIT 8` returns ids 1,1,2,2,3,3,4,4 — the lexicographic key
+    /// returned 1,1,10,10,11,11,12,12.
     #[tokio::test]
-    async fn order_by_id_bare_multi_label_union_resolves_via_coalesce_546() {
+    async fn order_by_id_bare_multi_label_union_uses_per_branch_typed_key_546() {
         let schema = load_schema(SchemaId::Standard.yaml_path());
         let sql = render(
             &schema,
@@ -8768,30 +8771,88 @@ mod order_by_id_union_family_546_547 {
         )
         .await;
         assert!(
-            sql.contains("ORDER BY"),
+            sql.contains("ORDER BY __union.`__order_col_0` ASC"),
             "#546: ORDER BY id(n) over a bare multi-label union must not be \
-             silently dropped — rows must not come back unordered with no \
-             error:\n{sql}"
+             silently dropped — it must order on the per-branch helper \
+             column:\n{sql}"
+        );
+        // Each branch's helper must be that branch's OWN id column, in the
+        // typed (numerically-ordering) key shape — NOT a coalesce over the
+        // stringified display columns (review Bug 1: lexicographic 1,10,11,
+        // ...,2 ordering on multi-digit numeric ids).
+        assert!(
+            sql.contains(
+                "tuple(toInt128OrNull(toString(n.user_id)), toString(n.user_id)) AS \"__order_col_0\""
+            ) && sql.contains(
+                "tuple(toInt128OrNull(toString(n.post_id)), toString(n.post_id)) AS \"__order_col_0\""
+            ),
+            "#546: every union branch must project its own label's id column \
+             as the typed __order_col_0 helper key:\n{sql}"
         );
         assert!(
-            sql.contains("coalesce(__union.`n.post_id`, __union.`n.user_id`)")
-                || sql.contains("coalesce(__union.`n.user_id`, __union.`n.post_id`)"),
-            "#546: the salvaged ORDER BY key must coalesce over each \
-             candidate label's already-projected id column (non-NULL on \
-             exactly one branch per row):\n{sql}"
+            !sql.contains("coalesce(__union."),
+            "#546: the reverted lexicographic coalesce-over-display-columns \
+             key must not come back:\n{sql}"
         );
     }
 
-    /// #546 residual (documented, NOT fixed): a bare `RETURN id(n)` with no
-    /// whole-node/property projection to coalesce over has no salvageable
-    /// ordering key available at this stage — this narrower case still falls
-    /// back to the pre-#546 safe-but-lossy "drop the ORDER BY clause"
-    /// behavior (matching the established GROUP BY precedent from the #484
-    /// fix family: prefer a wrong-but-non-fatal placeholder over a hard
-    /// runtime failure). Locked here as a "known limitation" characterization
-    /// test, not a "this is correct" one.
+    /// #546 (review Bug 2 — name coincidence): `Comment`'s id column is
+    /// `comment_id`, but Comment ALSO has a plain property `user_id` (its
+    /// author's id) that shares `Author`'s id-column NAME. The reverted
+    /// first salvage collected coalesce candidates by iterating EVERY schema
+    /// label (`expand_node_type("$any")`) and name-matching projected
+    /// columns, so the key became `coalesce(n.user_id, n.comment_id)` —
+    /// `n.user_id` is non-NULL on BOTH branches (Author's own id AND
+    /// Comment's author reference), so Comments sorted by their AUTHOR's id.
+    /// Live-reproduced (2026-07-11): with authors 1..12 and comments whose
+    /// author = 13 - comment_id, comment_12 (author 1) sorted FIRST.
+    ///
+    /// The rework reads each branch's own `ViewScan.id_column` (built from
+    /// exactly that branch's label's schema), so the Comment branch keys on
+    /// `comment_id` and the Author branch on `user_id` — no cross-label name
+    /// matching exists to hijack. Live-verified (2026-07-11): comments
+    /// interleave by their OWN comment_id (comment_1..comment_4 in the first
+    /// 8 rows), not by author id.
     #[tokio::test]
-    async fn order_by_id_bare_projection_only_still_has_no_salvageable_key_546() {
+    async fn order_by_id_name_coincidence_property_does_not_hijack_key_546() {
+        let schema = load_schema("schemas/dev/review546_name_coincidence.yaml");
+        let sql = render(
+            &schema,
+            "MATCH (n) RETURN n ORDER BY id(n)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("ORDER BY __union.`__order_col_0` ASC"),
+            "#546: the salvage must still fire on this shape:\n{sql}"
+        );
+        // The Comment branch's key must be ITS OWN id column (comment_id) —
+        // never the author-reference user_id that merely shares Author's
+        // id-column name. The Comment branch is identifiable by its `body`
+        // projection being non-NULL.
+        assert!(
+            sql.contains(
+                "tuple(toInt128OrNull(toString(n.comment_id)), toString(n.comment_id)) AS \"__order_col_0\""
+            ),
+            "#546 Bug 2: the Comment branch must order by its own comment_id:\n{sql}"
+        );
+        assert!(
+            !sql.contains("coalesce(__union."),
+            "#546 Bug 2: no outer coalesce key (the mechanism that let \
+             `n.user_id` hijack Comment ordering) may be emitted:\n{sql}"
+        );
+    }
+
+    /// #546 (former residual, now covered by the rework): a bare
+    /// `RETURN id(n)` used to have no salvageable key — the first attempt
+    /// could only coalesce over ALREADY-projected columns, and this shape
+    /// projects none. The per-branch helper key doesn't depend on existing
+    /// projections (each branch can always project its own id column), so
+    /// this now orders correctly too. The RETURNED `id(n)` value itself is
+    /// still the pre-existing #484-family `toInt64(0)` placeholder — that
+    /// documented limitation is unchanged; only the ORDERING is real now.
+    #[tokio::test]
+    async fn order_by_id_bare_projection_only_now_salvaged_546() {
         let schema = load_schema(SchemaId::Standard.yaml_path());
         let sql = render(
             &schema,
@@ -8800,35 +8861,72 @@ mod order_by_id_union_family_546_547 {
         )
         .await;
         assert!(
-            !sql.contains("ORDER BY"),
-            "#546 residual: a bare `RETURN id(n)` (no whole-node projection) \
-             has no per-label id column to coalesce over — if this now \
-             contains an ORDER BY, the coalesce salvage got smarter; update \
-             this test to assert the (now fixed) real ordering instead:\n{sql}"
+            sql.contains("ORDER BY __union.`__order_col_0` ASC")
+                && sql.contains("tuple(toInt128OrNull(toString(n.user_id)), toString(n.user_id))"),
+            "#546: a bare `RETURN id(n)` now gets the same per-branch typed \
+             ordering key (the helper column doesn't depend on the RETURN \
+             projection):\n{sql}"
         );
     }
 
-    /// #547: a multi-item ORDER BY where an unsafe raw-union `id()` is
-    /// dropped by `extract_order_by_columns_for_union` (per the same
-    /// safe-placeholder logic as #546) and a LATER item survives used to
-    /// misalign: the final ORDER BY clause looked up survivors by their
-    /// ORIGINAL positional index into a list that only contains SURVIVORS
-    /// (shorter than the original list whenever anything was dropped),
-    /// silently attaching an EARLIER (dropped) item's sort direction to a
-    /// LATER item's column and losing the later item's own ordering key
-    /// entirely.
+    /// #547: a multi-item ORDER BY where an unresolvable raw-union item is
+    /// dropped by `extract_order_by_columns_for_union` and a LATER item
+    /// survives used to misalign: the final ORDER BY clause looked up
+    /// survivors by their ORIGINAL positional index into a list that only
+    /// contains SURVIVORS (shorter than the original list whenever anything
+    /// was dropped), silently attaching an EARLIER (dropped) item's sort
+    /// direction to a LATER item's column and losing the later item's own
+    /// ordering key entirely.
     ///
     /// Fix: derive each surviving column's original ORDER BY item from the
     /// index encoded in its own `__order_col_{N}` alias (assigned by
     /// `extract_order_by_columns_for_union` from the ORIGINAL list position),
     /// rather than a naive parallel walk of the original list that silently
     /// desynchronizes whenever an earlier item was dropped.
+    ///
+    /// Uses `elementId(n)` as the dropped item: after the #546 rework,
+    /// `id(n)` on this shape is salvaged (see the mixed test below), while
+    /// `elementId()` still has no raw-union resolution and keeps the
+    /// documented drop — so it still exercises the dropped-then-survivor
+    /// alignment path this test locks.
     #[tokio::test]
-    async fn order_by_multi_item_survivor_after_dropped_id_keeps_own_key_547() {
+    async fn order_by_multi_item_survivor_after_dropped_item_keeps_own_key_547() {
         let schema = load_schema(SchemaId::Standard.yaml_path());
-        // `n` is multi-label (bare unlabeled scan) so `id(n)` is the unsafe
-        // dropped item; the literal `1` is an unrelated second ORDER BY key
-        // that must survive with its OWN column reference.
+        let sql = render(
+            &schema,
+            "MATCH (n) RETURN n ORDER BY elementId(n), 1",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("ORDER BY"),
+            "#547: the surviving literal ORDER BY key must not vanish just \
+             because an earlier item (elementId(n)) was unresolvable:\n{sql}"
+        );
+        // `elementId(n)` is dropped, but the literal survivor must keep its
+        // own `__order_col_1` alias (its ORIGINAL position in the 2-item
+        // list) rather than being misattributed to the first (dropped)
+        // item's position — and it must be the ONLY column in the clause.
+        assert!(
+            sql.contains("ORDER BY __union.`__order_col_1` ASC") && !sql.contains("__order_col_0"),
+            "#547: the second ORDER BY item (literal `1`) must be referenced \
+             by ITS OWN encoded index (__order_col_1), not misattributed to \
+             the first (dropped) item's position, and no stray __order_col_0 \
+             (which was never generated, since elementId(n) was dropped) \
+             should appear:\n{sql}"
+        );
+    }
+
+    /// #546 rework bonus (the review's non-blocking finding 3): a mixed
+    /// `ORDER BY id(n), <survivor>` used to silently drop the id key while
+    /// keeping the survivor — the first #546 salvage only ran when EVERY
+    /// item had been dropped. The rework salvages `id(n)` at extraction
+    /// time, so it flows through the normal surviving-columns path alongside
+    /// the survivor and BOTH keys are kept, each under its own encoded
+    /// index.
+    #[tokio::test]
+    async fn order_by_mixed_id_and_survivor_keeps_both_keys_546() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
         let sql = render(
             &schema,
             "MATCH (n) RETURN n ORDER BY id(n), 1",
@@ -8836,24 +8934,59 @@ mod order_by_id_union_family_546_547 {
         )
         .await;
         assert!(
-            sql.contains("ORDER BY"),
-            "#547: the surviving literal ORDER BY key must not vanish just \
-             because an earlier item (id(n)) was unresolvable:\n{sql}"
+            sql.contains("ORDER BY __union.`__order_col_0` ASC, __union.`__order_col_1` ASC"),
+            "#546/finding 3: BOTH the salvaged id(n) key (__order_col_0) and \
+             the surviving literal (__order_col_1) must appear, in query \
+             order:\n{sql}"
         );
-        // `id(n)` is still dropped here (this "some survive" branch doesn't
-        // attempt #546's coalesce salvage — that only applies when EVERY
-        // item was dropped), but the literal survivor must keep its own
-        // `__order_col_1` alias (its ORIGINAL position in the 2-item list)
-        // rather than being misattributed to the first (dropped) item's
-        // position — and it must be the ONLY column in the clause (not
-        // duplicated, not silently swapped for the dropped item's slot).
         assert!(
-            sql.contains("ORDER BY __union.`__order_col_1` ASC") && !sql.contains("__order_col_0"),
-            "#547: the second ORDER BY item (literal `1`) must be referenced \
-             by ITS OWN encoded index (__order_col_1), not misattributed to \
-             the first (dropped) item's position, and no stray __order_col_0 \
-             (which was never generated, since id(n) was dropped) should \
-             appear:\n{sql}"
+            sql.contains("tuple(toInt128OrNull(toString(n.user_id)), toString(n.user_id))"),
+            "#546/finding 3: the id(n) key must be the per-branch typed id \
+             key, not a placeholder:\n{sql}"
+        );
+    }
+
+    /// #546 rework residual (documented, deliberate): a multi-label union
+    /// containing a COMPOSITE-id label keeps the pre-#546 drop.
+    /// `ViewScan.id_column` is a single `String` by construction and holds
+    /// only the FIRST composite component (#537's known truncation), so a
+    /// key built from it would silently interleave distinct composite ids —
+    /// the salvage is all-or-nothing across branches and refuses instead
+    /// (`branch_scan_label_has_composite_id`), preferring the documented
+    /// unordered-with-warning behavior over a plausible-looking wrong order.
+    #[tokio::test]
+    async fn order_by_id_composite_id_union_keeps_documented_drop_546() {
+        let schema = load_schema(SchemaId::CompositeId.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (n) RETURN n ORDER BY id(n)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !sql.contains("ORDER BY"),
+            "#546 residual: a composite-id label in the union has no \
+             single-column per-branch id key — if this now contains an \
+             ORDER BY, the salvage learned composite keys; update this test \
+             to assert the full composite ordering instead:\n{sql}"
+        );
+    }
+
+    /// #546 rework: DESC direction is preserved on the salvaged key.
+    /// Live-verified (2026-07-11, users/posts ids 1..12): `DESC LIMIT 4`
+    /// returns ids 12,12,11,11.
+    #[tokio::test]
+    async fn order_by_id_desc_direction_preserved_546() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (n) RETURN n ORDER BY id(n) DESC",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("ORDER BY __union.`__order_col_0` DESC"),
+            "#546: DESC must survive onto the salvaged per-branch key:\n{sql}"
         );
     }
 }

@@ -2725,8 +2725,17 @@ fn rewrite_fixed_path_functions(mut plan: RenderPlan) -> RenderPlan {
 
 /// Extract column references from ORDER BY expressions for UNION queries
 /// Returns (original_expr, union_column_alias) pairs
-/// Returns empty if any expression contains id() function (not supported in UNION)
-fn extract_order_by_columns_for_union(order_by: &OrderByItems) -> Vec<(RenderExpr, String)> {
+///
+/// `salvageable_id_aliases` (#546, see `collect_salvageable_id_order_aliases`)
+/// holds the `id(alias)` aliases verified salvageable on this plan: those
+/// items are KEPT (their `id(alias)` expression becomes a marker that
+/// `add_order_by_columns_to_select` resolves per branch to the branch's own
+/// typed id key) instead of dropped. Everything else id()-shaped is dropped
+/// as before.
+fn extract_order_by_columns_for_union(
+    order_by: &OrderByItems,
+    salvageable_id_aliases: &HashSet<String>,
+) -> Vec<(RenderExpr, String)> {
     let mut columns = Vec::new();
 
     for (idx, item) in order_by.0.iter().enumerate() {
@@ -2752,6 +2761,20 @@ fn extract_order_by_columns_for_union(order_by: &OrderByItems) -> Vec<(RenderExp
         // column of its own.
         if matches!(&item.expression, RenderExpr::ScalarFnCall(f) if f.name.eq_ignore_ascii_case("id") || f.name.eq_ignore_ascii_case("elementid"))
         {
+            // #546 rework: a verified-salvageable `id(alias)` is kept as a
+            // marker — each branch resolves it to its OWN typed id key in
+            // `add_order_by_columns_to_select`, so no branch pushes an
+            // expression textually identical to an existing SELECT item (the
+            // `build_aliased_group_by` collision hazard below only bites on
+            // identical SQL text, and salvage is disabled for aggregate
+            // shapes anyway — see `collect_salvageable_id_order_aliases`).
+            if let Some(alias) = id_order_item_alias(&item.expression) {
+                if salvageable_id_aliases.contains(&alias) {
+                    let col_alias = format!("__order_col_{}", idx);
+                    columns.push((item.expression.clone(), col_alias));
+                    continue;
+                }
+            }
             log::warn!(
                 "⚠️  Dropping ORDER BY {}() from UNION branch columns (unresolved raw-union id — falls back to the SELECT-list placeholder)",
                 if let RenderExpr::ScalarFnCall(f) = &item.expression { &f.name } else { "id" }
@@ -2785,67 +2808,230 @@ fn extract_order_by_columns_for_union(order_by: &OrderByItems) -> Vec<(RenderExp
     columns
 }
 
-/// #546: resolve `id(alias)` in ORDER BY position to a real, correct
-/// ordering key when `alias` renders via a raw per-label UNION with no safe
-/// single-alias-CTE column to reference (see `group_by_builder.rs`'s
-/// `renders_via_raw_label_union` — the render-plan analogue of the same
-/// discriminator, which leaves such `id()` calls as unresolved
-/// `ScalarFnCall`s for exactly this reason).
-///
-/// Whenever `alias`'s whole-node/whole-relationship projection is present in
-/// this scope (the common case, e.g. `MATCH (n) RETURN n`), every candidate
-/// label's real id column is ALREADY projected here under
-/// `"{alias}.{id_col}"` — NULL-padded on every branch except that label's own
-/// (the same per-label NULL-pad convention the whole-node UNION machinery
-/// always builds, since the `RETURN n` projection needs each label's own
-/// properties anyway). `coalesce(...)` over those already-projected columns
-/// is therefore non-NULL exactly once per row and gives a genuine,
-/// deterministic per-row ordering key — the same multi-label-union
-/// discriminator already proven for `count(DISTINCT n)` (#467,
-/// `projection_tagging.rs`) and `select_builder.rs`'s `node_alias_id_expr`
-/// (#509).
-///
-/// Returns `None` when no candidate label's id column is projected (e.g. a
-/// bare `RETURN id(n)` with no whole-node/property projection to coalesce
-/// over) — callers must fall back to the existing, pre-#546, safe-but-lossy
-/// "drop the ORDER BY item" behavior in that narrower residual case rather
-/// than emit SQL referencing a column that was never projected.
-fn coalesce_id_order_key_for_union_alias(alias: &str, select: &SelectItems) -> Option<String> {
-    let schema = crate::server::query_context::get_current_schema_with_fallback()?;
+/// #546 (reworked after adversarial review): the alias of a single-argument
+/// `id(alias)` call, when `expr` is such a call. An `id()` `ScalarFnCall`
+/// reaching the emitter still unresolved means the render-side guard
+/// (`group_by_builder.rs`'s `renders_via_raw_label_union`) deliberately left
+/// it alone because `alias` renders via a raw per-label UNION with no single
+/// addressable id column in the outer `__union` scope.
+fn id_order_item_alias(expr: &RenderExpr) -> Option<String> {
+    let RenderExpr::ScalarFnCall(f) = expr else {
+        return None;
+    };
+    if !f.name.eq_ignore_ascii_case("id") || f.args.len() != 1 {
+        return None;
+    }
+    match &f.args[0] {
+        RenderExpr::TableAlias(a) => Some(a.0.clone()),
+        RenderExpr::PropertyAccessExp(p) if p.column.raw() == "*" => Some(p.table_alias.0.clone()),
+        _ => None,
+    }
+}
 
-    let mut id_cols: Vec<String> = Vec::new();
-    let mut seen = HashSet::new();
+/// #546: this union branch's OWN node-id column for `alias`, read straight
+/// from the branch's FROM-bound `ViewScan` — which was constructed from
+/// exactly this branch's label's node schema, so the answer is correct BY
+/// CONSTRUCTION for whichever label (and, for denormalized nodes, whichever
+/// from/to position) this branch scans. No cross-label name matching is
+/// involved: the reverted first #546 attempt instead matched ANY projected
+/// outer column named `"{alias}.{id_col}"` for EVERY schema label
+/// (`expand_node_type("$any")`), so a plain property that merely SHARED an
+/// unrelated label's id-column name could hijack the ordering key (adversarial
+/// review, Bug 2 — Comments sorted by their AUTHOR's id).
+///
+/// Returns `None` when this branch doesn't bind `alias` as its FROM scan
+/// (e.g. `alias` only appears as a JOIN alias — the #467 directed-chain
+/// shape), when the binding isn't a node-table `ViewScan` (relationship
+/// scans carry `from_id`/`to_id`; CTE-backed FROMs aren't `ViewScan`s), or
+/// when the label's id is composite: `ViewScan.id_column` is a single
+/// `String` by construction and holds only the FIRST composite component
+/// (#537's known truncation), and ordering by one component of a composite
+/// id would silently interleave distinct ids — the documented drop is
+/// preferable.
+fn union_branch_own_id_column(branch: &RenderPlan, alias: &str) -> Option<String> {
+    let from = branch.from.0.as_ref()?;
+    if from.alias.as_deref() != Some(alias) {
+        return None;
+    }
+    let LogicalPlan::ViewScan(vs) = from.source.as_ref() else {
+        return None;
+    };
+    if vs.from_id.is_some() || vs.to_id.is_some() {
+        // Relationship scan: `id(rel)` has no per-branch node-id column.
+        return None;
+    }
+    if vs.id_column.is_empty() {
+        return None;
+    }
+    if branch_scan_label_has_composite_id(vs) {
+        return None;
+    }
+    Some(vs.id_column.clone())
+}
+
+/// Composite-id guard for [`union_branch_own_id_column`]: does the node label
+/// this `ViewScan` was built from declare a multi-column (composite) id?
+/// Prefers the scan's own `node_label` when populated; otherwise checks every
+/// schema label whose table matches the scan's source (any of them could be
+/// the one the scan was built from, so be conservative over all). Returns
+/// `true` (i.e. "refuse the salvage") whenever this can't be positively
+/// answered.
+fn branch_scan_label_has_composite_id(vs: &crate::query_planner::logical_plan::ViewScan) -> bool {
+    let Some(schema) = crate::server::query_context::get_current_schema_with_fallback() else {
+        return true;
+    };
+    if let Some(label) = &vs.node_label {
+        return schema
+            .node_schema(label)
+            .map(|ns| ns.node_id.columns().len() > 1)
+            .unwrap_or(true);
+    }
+    let mut matched = false;
     for label in schema.expand_node_type("$any") {
-        let Ok(node_schema) = schema.node_schema(&label) else {
+        let Ok(ns) = schema.node_schema(&label) else {
             continue;
         };
-        for id_col in node_schema.node_id.columns() {
-            let target = format!("{alias}.{id_col}");
-            if !seen.insert(target.clone()) {
-                continue;
-            }
-            let is_projected = select
-                .items
-                .iter()
-                .any(|item| item.col_alias.as_ref().is_some_and(|a| a.0 == target));
-            if is_projected {
-                id_cols.push(target);
+        let qualified = format!("{}.{}", ns.database, ns.table_name);
+        if qualified == vs.source_table || ns.table_name == vs.source_table {
+            matched = true;
+            if ns.node_id.columns().len() > 1 {
+                return true;
             }
         }
     }
+    // No node label matches this table at all — not a node scan this salvage
+    // understands; refuse.
+    !matched
+}
 
-    if id_cols.is_empty() {
-        return None;
+/// #546: the type-robust total-order key the salvage orders by, over one
+/// branch's own id column:
+///
+/// ```text
+/// tuple(toInt128OrNull(toString(alias.id_col)), toString(alias.id_col))
+/// ```
+///
+/// The raw-union branches normalize every projected column through the
+/// dialect's string cast (`normalize_union_branches`), so a naive key over
+/// the projected columns is a String and sorts NUMERIC ids
+/// LEXICOGRAPHICALLY (adversarial review, Bug 1: ids 1,1,10,10,11,... instead
+/// of 1,1,2,2,3,...). The branches' native id-column types can't just be
+/// projected as-is either: labels may declare ids of non-unifiable types
+/// (String IP on one label, UInt64 on another → ClickHouse Code 386
+/// NO_COMMON_TYPE, a hard failure where the query previously ran). This key
+/// has the SAME type on every branch by construction and implements one
+/// documented total order:
+///
+/// - integer-valued ids order NUMERICALLY (exact through the full
+///   UInt64/Int64 ranges via the 128-bit parse — no float truncation), and
+///   sort before non-integer ids (the parse is NULL there, and NULLs order
+///   last inside a tuple in both directions);
+/// - non-integer ids order lexicographically among themselves via the second
+///   element, which also deterministically tie-breaks integer collisions
+///   across id spaces (e.g. "01" vs "1").
+///
+/// Multi-label id spaces are mutually incomparable anyway (Neo4j interleaves
+/// them arbitrarily), so any deterministic total order is admissible here —
+/// what is NOT admissible is the reverted lexicographic key, which silently
+/// mis-orders the pure-numeric common case. Single-label / safely-resolvable
+/// aliases never reach this path and keep their native column ordering.
+fn typed_id_order_key_expr(alias: &str, id_column: &str) -> RenderExpr {
+    let mapper = crate::sql_generator::function_mapper::current_function_mapper();
+    let col_sql = RenderExpr::PropertyAccessExp(PropertyAccess {
+        table_alias: TableAlias(alias.to_string()),
+        column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+            id_column.to_string(),
+        ),
+    })
+    .to_sql();
+    let str_sql = format!("{}({})", mapper.cast_string(), col_sql);
+    RenderExpr::Raw(format!(
+        "{}({}, {})",
+        mapper.tuple_constructor(),
+        mapper.try_parse_int128(&str_sql),
+        str_sql
+    ))
+}
+
+/// Same-shaped dummy key for scopes that render no rows (pruned `WHERE false`
+/// placeholder branches, and a shell base plan whose SELECT is never emitted
+/// as a union arm). A bare `NULL` won't do: ClickHouse has no supertype for
+/// `Tuple(...)` vs `Nullable(Nothing)` (Code 386), so arity-padding must keep
+/// the tuple shape.
+fn typed_id_order_dummy_expr() -> RenderExpr {
+    let mapper = crate::sql_generator::function_mapper::current_function_mapper();
+    RenderExpr::Raw(format!(
+        "{}({}, '')",
+        mapper.tuple_constructor(),
+        mapper.try_parse_int128("''"),
+    ))
+}
+
+/// #546: is `ORDER BY id(alias)` salvageable on this raw-union plan — i.e.
+/// does EVERY row-producing union branch (the base plan when its FROM is
+/// inline, every arm in `union.input`, and every nested sibling arm — the
+/// #547 bidirectional shape) bind `alias`'s own node scan in FROM position,
+/// so each can project its own [`typed_id_order_key_expr`]? All-or-nothing on
+/// purpose: a key that is real on some branches and a dummy on others would
+/// deterministically sort the unresolved branches' rows to one end — a
+/// plausible-looking but WRONG ordering, worse than the documented drop.
+fn union_branches_all_salvage_id(plan: &RenderPlan, alias: &str) -> bool {
+    use crate::render_plan::plan_builder_helpers::is_empty_placeholder;
+
+    fn walk(branch: &RenderPlan, alias: &str, resolved: &mut usize, is_base: bool) -> bool {
+        let is_placeholder = is_empty_placeholder(branch);
+        if branch.from.0.is_some() && !is_placeholder {
+            if union_branch_own_id_column(branch, alias).is_none() {
+                return false;
+            }
+            *resolved += 1;
+        } else if !is_base && !is_placeholder {
+            // A FROM-less non-placeholder arm is a shape this salvage doesn't
+            // understand — refuse rather than order its rows by a dummy key.
+            return false;
+        }
+        if let Some(u) = &branch.union.0 {
+            for b in &u.input {
+                if !walk(b, alias, resolved, false) {
+                    return false;
+                }
+            }
+        }
+        true
     }
-    if id_cols.len() == 1 {
-        return Some(format!("__union.`{}`", id_cols[0]));
+
+    let mut resolved = 0usize;
+    walk(plan, alias, &mut resolved, true) && resolved > 0
+}
+
+/// #546: the `id(alias)` ORDER BY aliases on `plan` that
+/// [`union_branches_all_salvage_id`] verified as salvageable, so
+/// `extract_order_by_columns_for_union` keeps those items (as markers that
+/// `add_order_by_columns_to_select` resolves per branch) instead of dropping
+/// them. Empty for aggregate/GROUP BY shapes: there the id() key would have
+/// to survive the outer aggregate projection machinery
+/// (`build_aliased_group_by` and friends), which the #484-family placeholder
+/// path deliberately owns — those keep the documented pre-#546 drop.
+fn collect_salvageable_id_order_aliases(
+    plan: &RenderPlan,
+    has_aggregation: bool,
+) -> HashSet<String> {
+    let mut out = HashSet::new();
+    if has_aggregation || !plan.group_by.0.is_empty() {
+        return out;
     }
-    let args = id_cols
-        .iter()
-        .map(|c| format!("__union.`{c}`"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    Some(format!("coalesce({args})"))
+    for item in &plan.order_by.0 {
+        let Some(alias) = id_order_item_alias(&item.expression) else {
+            continue;
+        };
+        if out.contains(&alias) {
+            continue;
+        }
+        if union_branches_all_salvage_id(plan, &alias) {
+            out.insert(alias);
+        }
+    }
+    out
 }
 
 /// Add ORDER BY columns to a RenderPlan's SELECT (for UNION branches)
@@ -2877,7 +3063,19 @@ fn add_order_by_columns_to_select(
     let path_context = extract_path_context_from_select(&plan.select);
 
     for (expr, alias) in order_columns {
-        let resolved_expr = if let Some(ref ctx) = path_context {
+        let resolved_expr = if let Some(id_alias) = id_order_item_alias(expr) {
+            // #546: an `id(alias)` marker survives extraction only after
+            // `union_branches_all_salvage_id` verified that EVERY
+            // row-producing branch binds `alias`'s own node scan in FROM
+            // position — so this branch either resolves to its OWN label's
+            // typed id key, or is a no-rows scope (pruned `WHERE false`
+            // placeholder / shell base whose SELECT never renders as an arm)
+            // that only needs a same-shaped dummy for UNION arity.
+            match union_branch_own_id_column(&plan, &id_alias) {
+                Some(id_col) => typed_id_order_key_expr(&id_alias, &id_col),
+                None => typed_id_order_dummy_expr(),
+            }
+        } else if let Some(ref ctx) = path_context {
             resolve_denormalized_order_by_expr(expr, ctx)
         } else {
             // No path context (e.g., standalone node UNION scan).
@@ -4510,9 +4708,29 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
             }
         }
 
+        // Check if SELECT items contain aggregation (e.g., count(*), sum(), etc.)
+        // Uses recursive check to detect aggregates nested in CASE, function
+        // calls, etc. Computed BEFORE the ORDER BY helper columns are added:
+        // the #546 id() salvage must not fire in aggregate shapes, and the
+        // helper columns themselves are never aggregates, so this is
+        // equivalent to the previous post-modification computation.
+        let has_aggregation = plan
+            .select
+            .items
+            .iter()
+            .any(|item| render_expr_contains_aggregate(&item.expression));
+
+        // #546: which `id(alias)` ORDER BY items can be salvaged with a real,
+        // per-branch typed id key instead of being dropped.
+        let salvageable_id_aliases = if !plan.order_by.0.is_empty() {
+            collect_salvageable_id_order_aliases(&plan, has_aggregation)
+        } else {
+            HashSet::new()
+        };
+
         // Extract ORDER BY columns that need to be added to UNION branches
         let order_by_columns = if !plan.order_by.0.is_empty() {
-            extract_order_by_columns_for_union(&plan.order_by)
+            extract_order_by_columns_for_union(&plan.order_by, &salvageable_id_aliases)
         } else {
             Vec::new()
         };
@@ -4538,14 +4756,6 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
 
         // Use the modified plan for SQL generation
         plan = modified_plan;
-
-        // Check if SELECT items contain aggregation (e.g., count(*), sum(), etc.)
-        // Uses recursive check to detect aggregates nested in CASE, function calls, etc.
-        let has_aggregation = plan
-            .select
-            .items
-            .iter()
-            .any(|item| render_expr_contains_aggregate(&item.expression));
 
         // Aggregate without GROUP BY = no implicit grouping by path → VLP
         // path-materialization metadata constants must not appear in the
@@ -4972,69 +5182,26 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                 sql.push('\n');
             } else if order_by_columns.is_empty() && !plan.order_by.0.is_empty() {
                 // #546: every ORDER BY item was dropped as an unresolved
-                // raw-union `id()`/`elementId()`/pseudo-property reference —
-                // silently proceeding with NO ordering at all is a semantic
-                // deviation from the requested query (rows come back
-                // unordered with no error). Before giving up entirely, try to
-                // salvage a REAL, correct ordering key for any `id(alias)`
-                // item: whenever the alias's whole-node projection is present
-                // (the common case, e.g. `RETURN n`), every candidate label's
-                // real id column is already projected in this outer `__union`
-                // scope under `"{alias}.{id_col}"` (NULL-padded on every
-                // other label's branch by the existing whole-node-union
-                // machinery), so `coalesce(...)` over those columns is a
-                // genuine, deterministic per-row ordering key — the same
-                // multi-label-union discriminator #467's `count(DISTINCT n)`
-                // rewrite and `select_builder.rs`'s `node_alias_id_expr`
-                // (#509) already rely on for this exact axis.
-                let resolved: Vec<String> = plan
-                    .order_by
-                    .0
-                    .iter()
-                    .filter_map(|item| {
-                        let RenderExpr::ScalarFnCall(f) = &item.expression else {
-                            return None;
-                        };
-                        if !f.name.eq_ignore_ascii_case("id") || f.args.len() != 1 {
-                            // `elementId()` and other unresolved shapes have no
-                            // established resolution here — leave them dropped,
-                            // matching prior (pre-#546) behavior.
-                            return None;
-                        }
-                        let alias = match &f.args[0] {
-                            RenderExpr::TableAlias(a) => a.0.clone(),
-                            RenderExpr::PropertyAccessExp(p) if p.column.raw() == "*" => {
-                                p.table_alias.0.clone()
-                            }
-                            _ => return None,
-                        };
-                        let key = coalesce_id_order_key_for_union_alias(&alias, &plan.select)?;
-                        let order_str = match item.order {
-                            OrderByOrder::Asc => "ASC",
-                            OrderByOrder::Desc => "DESC",
-                        };
-                        Some(format!("{key} {order_str}"))
-                    })
-                    .collect();
-                if resolved.is_empty() {
-                    // No salvageable ordering key (e.g. a bare `RETURN id(n)`
-                    // with no whole-node/property projection to coalesce
-                    // over) — fall back to the prior, safe-but-lossy
-                    // behavior: drop the ORDER BY clause rather than emit
-                    // invalid SQL referencing a column that isn't projected.
-                    log::warn!(
-                        "  ORDER BY removed (contains unresolved id()/elementId() in UNION context with no salvageable ordering key — #546)"
-                    );
-                } else {
-                    log::info!(
-                        "  ORDER BY resolved via coalesce over per-label id columns (#546): {} of {} item(s)",
-                        resolved.len(),
-                        plan.order_by.0.len()
-                    );
-                    sql.push_str("ORDER BY ");
-                    sql.push_str(&resolved.join(", "));
-                    sql.push('\n');
-                }
+                // raw-union `id()`/`elementId()`/pseudo-property reference,
+                // AND none was salvageable via the per-branch typed id key
+                // (`collect_salvageable_id_order_aliases` — e.g. the alias
+                // only appears as a JOIN alias inside the branches, its
+                // label's id is composite, or the shape carries aggregation).
+                // Fall back to the documented, pre-#546 safe-but-lossy
+                // behavior: drop the ORDER BY clause (rows come back
+                // unordered, with this warning) rather than emit SQL
+                // referencing a column that was never projected — or a
+                // name-matched column that may not BE this alias's id (the
+                // reverted first #546 attempt coalesced ANY projected outer
+                // column named `"{alias}.{id_col}"` across ALL schema
+                // labels, which was wrong on both type — lexicographic over
+                // the branches' string normalization — and provenance — a
+                // plain property sharing an unrelated label's id-column name
+                // hijacked the key; see the adversarial-review rework notes
+                // on `union_branch_own_id_column`/`typed_id_order_key_expr`).
+                log::warn!(
+                    "  ORDER BY removed (contains unresolved id()/elementId() in UNION context with no salvageable ordering key — #546)"
+                );
             } else {
                 sql.push_str(&plan.order_by.to_sql());
             }

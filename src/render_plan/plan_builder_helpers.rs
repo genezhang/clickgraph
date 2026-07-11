@@ -3289,10 +3289,13 @@ pub(super) fn is_invalid_filter_expression(expr: &RenderExpr) -> bool {
 ///
 /// Shared by [`normalize_union_branches`] (so the placeholder's `_empty`
 /// column never enters the unified column set and forces a spurious
-/// `NULL AS "_empty"` on every other branch) and by the `#515` Cypher-UNION
+/// `NULL AS "_empty"` on every other branch), by the `#515` Cypher-UNION
 /// column-name check in `plan_builder.rs` (so a branch that Track C pruned
-/// to 0 rows isn't mistaken for a genuine column-name mismatch).
-pub(super) fn is_empty_placeholder(p: &super::RenderPlan) -> bool {
+/// to 0 rows isn't mistaken for a genuine column-name mismatch), and by the
+/// #546 `ORDER BY id()` union-key salvage in the ClickHouse emitter (a
+/// placeholder branch produces no rows, so it gets a same-shaped dummy key
+/// instead of blocking the salvage).
+pub(crate) fn is_empty_placeholder(p: &super::RenderPlan) -> bool {
     use crate::render_plan::render_expr::{Literal, RenderExpr};
     p.select.items.len() == 1
         && p.select.items[0].col_alias.as_ref().map(|a| a.0.as_str()) == Some("_empty")

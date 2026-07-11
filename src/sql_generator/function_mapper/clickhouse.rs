@@ -113,6 +113,10 @@ impl FunctionMapper for ClickhouseFunctionMapper {
     fn json_row_object(&self, columns: &str) -> String {
         format!("formatRowNoNewline('JSONEachRow', {})", columns)
     }
+
+    fn try_parse_int128(&self, expr: &str) -> String {
+        format!("toInt128OrNull({})", expr)
+    }
 }
 
 #[cfg(test)]

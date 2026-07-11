@@ -205,6 +205,12 @@ impl FunctionMapper for DatabricksFunctionMapper {
         // struct(p.col) yields key `col` (table prefix stripped).
         format!("to_json(struct({}))", columns)
     }
+
+    fn try_parse_int128(&self, expr: &str) -> String {
+        // DECIMAL(38,0) covers the full UInt64/Int64 ranges (max 20 digits)
+        // exactly; `try_cast` yields NULL (never an error) on non-integers.
+        format!("try_cast({} AS DECIMAL(38,0))", expr)
+    }
 }
 
 #[cfg(test)]
