@@ -1502,14 +1502,28 @@ async fn test_with_alias_rename_where_filter() {
 /// Migrated to the PRODUCTION render path (`logical_plan_to_render_plan_with_ctx`,
 /// #459) — identical to what server / bolt / embedded emit
 /// (`to_render_plan_with_ctx(schema, Some(&plan_ctx), None)`). KNOWN-SUSPICIOUS
-/// (pre-existing production bug, NOT introduced here, NOT fixed here — file a
-/// follow-up): for `WITH u, collect(u) UNWIND users as user`, production collapses
-/// the collect/unwind and renders a WITH CTE (`with_u_cte_1`) that projects ONLY
-/// `p1_u_city`, while the outer SELECT still references `u.full_name` / `u.email_address`
-/// off that CTE — columns it does not project → invalid SQL (unknown identifier on
-/// ClickHouse). The ctx-less path (no production callers) happened to project all
-/// three into the CTE, masking this. This test still guards the ORIGINAL invariant
-/// it was written for — no DUPLICATE CTE column — which holds on both paths.
+/// FIXED by #465: for `WITH u, collect(u) UNWIND users as user`, production used to
+/// collapse the collect/unwind (`CollectUnwindElimination`) and render a WITH CTE
+/// (`with_u_cte_1`) that projected ONLY `p1_u_city`, while the outer SELECT still
+/// referenced `u.full_name` / `u.email_address` off that CTE — columns it didn't
+/// project → invalid SQL (unknown identifier on ClickHouse).
+///
+/// Root cause: `CollectUnwindElimination`'s alias rewrite (`user` -> `u`) carried
+/// over a PropertyAccessExp whose `column` had ALREADY been schema-mapped to the DB
+/// column name (`user.name` -> `PropertyAccessExp(user, "full_name")`) — because
+/// `user` (the UNWIND alias) wasn't recognized as CTE-exported when schema mapping
+/// ran, unlike the standard "before WITH" case where an exported alias like `u`
+/// deliberately stays unmapped (CLAUDE.md rule 2) until CTE column resolution.
+/// `PropertyRequirementsAnalyzer` then recorded requirements for `u` keyed by DB
+/// column name ("full_name", "email_address") instead of Cypher property name
+/// ("name", "email"). `expand_alias_properties_core`'s pruning filter matched only
+/// on Cypher name, so renamed properties (name/email) were silently dropped while
+/// "city" (whose Cypher name equals its DB column) survived by coincidence — the
+/// under-projection. Fixed in `render_plan/property_expansion.rs` by matching a
+/// required property against EITHER its Cypher name or its DB column name.
+///
+/// Live-verified (2026-07-10, `test_integration` DB): returns the expected 3 rows
+/// with name/email/city all populated (previously: invalid SQL, unknown identifier).
 #[tokio::test]
 async fn test_collect_unwind_no_duplicate_cte_columns() {
     use clickgraph::server::query_context::{set_current_schema, with_query_context, QueryContext};
@@ -1561,17 +1575,42 @@ async fn test_collect_unwind_no_duplicate_cte_columns() {
     );
 
     // Verify no DUPLICATE columns in CTE body (case-insensitive split on FROM).
-    // The original bug duplicated `p1_u_name`; the guard is "at most once". On the
-    // production path this collect+unwind mis-renders and `P1_U_NAME` is absent
-    // from the CTE entirely (see the KNOWN-SUSPICIOUS note on this test) — 0 is
-    // still "no duplicate". A count of 2+ would be the original regression.
+    // The original bug duplicated `p1_u_name`; the guard is "exactly once".
     let sql_upper = sql.to_uppercase();
     let cte_body = sql_upper.split("FROM").next().unwrap_or("");
     let name_count = cte_body.matches("P1_U_NAME").count();
+    assert_eq!(
+        name_count, 1,
+        "P1_U_NAME must be projected exactly once in the CTE body, found {}.\nSQL:\n{}",
+        name_count, sql
+    );
+
+    // #465: all THREE properties referenced downstream (name, email, city) must be
+    // projected into the CTE — not just the one whose Cypher name happens to equal
+    // its DB column name. Under the bug, only `p1_u_city` survived.
+    let email_count = cte_body.matches("P1_U_EMAIL").count();
+    let city_count = cte_body.matches("P1_U_CITY").count();
+    assert_eq!(
+        email_count, 1,
+        "P1_U_EMAIL must be projected exactly once in the CTE body, found {}.\nSQL:\n{}",
+        email_count, sql
+    );
+    assert_eq!(
+        city_count, 1,
+        "P1_U_CITY must be projected exactly once in the CTE body, found {}.\nSQL:\n{}",
+        city_count, sql
+    );
+
+    // The outer SELECT (text after the LAST "SELECT" keyword — the CTE body has
+    // its own earlier SELECT) must reference the CTE columns (forward through
+    // scope, CLAUDE.md rule 2), never fall back to raw DB column names off the
+    // CTE alias — #465's actual failure mode: `u.full_name`/`u.email_address`
+    // don't exist as columns on `with_u_cte_1`.
+    let outer_select = sql_upper.rsplit("SELECT").next().unwrap_or("");
     assert!(
-        name_count <= 1,
-        "P1_U_NAME must not be duplicated in the CTE body, found {}.\nSQL:\n{}",
-        name_count,
+        !outer_select.contains("FULL_NAME") && !outer_select.contains("EMAIL_ADDRESS"),
+        "Outer query must reference CTE columns (p1_u_name/p1_u_email), not raw \
+         DB columns (full_name/email_address) off the CTE alias.\nSQL:\n{}",
         sql
     );
 }

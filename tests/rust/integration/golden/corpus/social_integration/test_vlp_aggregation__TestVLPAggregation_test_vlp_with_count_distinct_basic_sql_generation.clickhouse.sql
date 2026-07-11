@@ -50,14 +50,16 @@ vlp_u2_u1 AS (
 SELECT `userId` AS "userId", count(DISTINCT `p.post_id`) AS "postCount" FROM (
 SELECT 
       t.end_id AS "userId",
-      p.post_id AS "p.post_id"
+      p.post_id AS "p.post_id",
+      t.end_id AS "t.end_id"
 FROM vlp_u1_u2 AS t
 INNER JOIN test_integration.posts_test AS t0 ON t0.author_id = t.end_id
 INNER JOIN test_integration.posts_test AS p ON p.post_id = t0.post_id
 UNION ALL 
 SELECT 
       t.start_id AS "userId",
-      p.post_id AS "p.post_id"
+      p.post_id AS "p.post_id",
+      t.start_id AS "t.start_id"
 FROM vlp_u2_u1 AS t
 INNER JOIN test_integration.posts_test AS t0 ON t0.author_id = t.start_id
 INNER JOIN test_integration.posts_test AS p ON p.post_id = t0.post_id

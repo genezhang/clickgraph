@@ -4,7 +4,8 @@ use crate::{
     render_plan::{
         render_expr::{
             self, AggregateFnCall, Column, ColumnAlias, InSubquery, Literal, Operator,
-            OperatorApplication, PropertyAccess, RenderCase, RenderExpr, ScalarFnCall, TableAlias,
+            OperatorApplication, PropertyAccess, ReduceExpr, RenderCase, RenderExpr, ScalarFnCall,
+            TableAlias,
         },
         ViewTableRef,
         {
@@ -3075,6 +3076,59 @@ fn collect_nested_aggregate_args(expr: &RenderExpr, agg_arg_cols: &mut Vec<Strin
     }
 }
 
+/// #476: the set of physical DB column names actually available on a UNION
+/// branch's own table. Used to NULL-pad per-branch when a shared aggregate
+/// argument list (e.g. `count(coalesce(post_id, user_id))` from a multi-label
+/// whole-node count, #467) is projected identically into every branch of a
+/// WITH-CTE aggregate union — some of those columns only exist on SOME
+/// branches' tables.
+///
+/// Resolved via the schema catalog by the branch's own physical table name
+/// (`ViewTableRef::name`, set from `ViewScan::source_table` at plan-build
+/// time — matches `NodeSchema::full_table_name()`'s `db.table` form). The
+/// `ViewTableRef::source` `LogicalPlan` link itself is NOT usable here: by
+/// the time a WITH-CTE body reaches SQL generation its union branches carry
+/// `LogicalPlan::Empty` placeholders (the original ViewScan is discarded
+/// upstream), so this routes through `GraphSchema::all_node_schemas()`
+/// instead — a table-name comparison, but against the schema catalog's own
+/// authoritative table names rather than a raw string embedded ad hoc in
+/// render/SQL-gen code.
+///
+/// Returns `None` when no schema, or no node schema with a matching table
+/// name, can be found — callers must then fall back to the pre-#476
+/// unconditional behavior rather than silently NULLing everything.
+fn table_valid_columns(from: &FromTableItem) -> Option<HashSet<String>> {
+    let view_ref = from.0.as_ref()?;
+    let schema = crate::server::query_context::get_current_schema_with_fallback()?;
+    let mut cols: HashSet<String> = HashSet::new();
+    let mut found = false;
+    for node_schema in schema.all_node_schemas().values() {
+        if node_schema.full_table_name() == view_ref.name {
+            found = true;
+            cols.extend(node_schema.node_id.columns().iter().map(|c| c.to_string()));
+            for value in node_schema.property_mappings.values() {
+                if let crate::graph_catalog::expression_parser::PropertyValue::Column(col) = value {
+                    cols.insert(col.clone());
+                }
+            }
+        }
+    }
+    if found {
+        Some(cols)
+    } else {
+        None
+    }
+}
+
+/// #476: is `col_sql` (a raw aggregate-argument column, e.g. `n.post_id` or
+/// a dotted alias-form `"n.post_id"`) one of the physical columns that
+/// actually exist on this branch's table? Compares by the unqualified
+/// (post-final-dot) column name since `col_sql` may be table-qualified.
+fn agg_arg_col_valid_for_branch(col_sql: &str, valid_columns: &HashSet<String>) -> bool {
+    let physical = col_sql.rsplit('.').next().unwrap_or(col_sql);
+    valid_columns.contains(physical)
+}
+
 /// Path-materialization metadata column aliases.
 ///
 /// These are constants emitted by VLP UNION branches so the Bolt result
@@ -3110,9 +3164,30 @@ fn is_path_metadata_alias(alias: &str) -> bool {
 /// no GROUP BY — in that case the metadata columns would trip Code 215.
 /// For `RETURN p, COUNT(*)` (implicit grouping by `p`), GROUP BY is non-empty
 /// and the metadata columns must survive so the path can be rebuilt.
+///
+/// `valid_columns_for_branch`, when `Some`, restricts which `agg_arg_cols`
+/// are actually projected from THIS branch's table (#476): a shared
+/// aggregate-argument list (e.g. `count(coalesce(post_id, user_id))` from a
+/// multi-label whole-node count, #467) may name columns that only exist on
+/// SOME union branches — the others must NULL-pad rather than reference a
+/// nonexistent column (ClickHouse Code 47 `UNKNOWN_IDENTIFIER`). `None`
+/// preserves the original unconditional behavior for callers that already
+/// guarantee every referenced column exists on every branch (e.g. VLP CTEs,
+/// denormalized coupled unions with their own SELECT items).
+///
+/// `extra_required_exprs` (#520): additional expressions (the plan/arm's own
+/// `GROUP BY` list) whose referenced property-access columns must ALSO be
+/// exported from this inner SELECT, exactly like aggregate-argument columns.
+/// Without this, a WITH-CTE aggregate over a UNION (e.g. implicit grouping by
+/// a passthrough alias's id: `WITH a, count(*) AS n`) computes a GROUP BY key
+/// (`a.user_id`) that the inner union branches never project, so the outer
+/// `GROUP BY a.user_id` dangles (ClickHouse Code 47) — there is no `a` table
+/// at the outer `__union` scope, only whatever the inner SELECT exported.
 fn build_union_inner_select(
     select: &SelectItems,
     drop_path_metadata: bool,
+    valid_columns_for_branch: Option<&HashSet<String>>,
+    extra_required_exprs: &[RenderExpr],
 ) -> (String, Vec<String>) {
     let non_agg_items: Vec<&SelectItem> = select
         .items
@@ -3138,6 +3213,12 @@ fn build_union_inner_select(
     let mut agg_arg_cols: Vec<String> = Vec::new();
     for item in &select.items {
         collect_nested_aggregate_args(&item.expression, &mut agg_arg_cols);
+    }
+    // #520: GROUP BY keys need the same treatment — their referenced columns
+    // must be exported from the inner SELECT so the outer GROUP BY (against
+    // the `__union` derived table) has something real to reference.
+    for expr in extra_required_exprs {
+        collect_property_access_sql(expr, &mut agg_arg_cols);
     }
     agg_arg_cols.sort();
     agg_arg_cols.dedup();
@@ -3214,7 +3295,15 @@ fn build_union_inner_select(
     // This fixes denormalized schemas where DB column ≠ Cypher property name
     // (e.g., Airport.code → flights.Origin/Dest).
     for col_sql in &agg_arg_cols {
-        let expr_sql = if let Some(dot_pos) = col_sql.rfind('.') {
+        // #476: a column named by the shared aggregate-argument list may not
+        // exist on THIS branch's table (e.g. a per-label id column from a
+        // multi-label whole-node count). NULL-pad rather than emit a
+        // reference ClickHouse can't resolve.
+        let branch_has_column = valid_columns_for_branch
+            .is_none_or(|valid| agg_arg_col_valid_for_branch(col_sql, valid));
+        let expr_sql = if !branch_has_column {
+            "NULL".to_string()
+        } else if let Some(dot_pos) = col_sql.rfind('.') {
             let property_part = &col_sql[dot_pos + 1..];
             non_agg_items
                 .iter()
@@ -3400,6 +3489,26 @@ fn build_aliased_group_by(group_by: &GroupByExpressions, select: &SelectItems) -
         let expr_sql = RenderExpr::to_sql(expr);
         if let Some(alias) = expr_to_alias.get(&expr_sql) {
             sql.push_str(&format!("`{}`", alias));
+        } else if matches!(
+            expr,
+            RenderExpr::PropertyAccessExp(_) | RenderExpr::Column(_)
+        ) && expr_sql.contains('.')
+        {
+            // #520: a qualified `alias.column` GROUP BY key with no matching
+            // outer SELECT alias (e.g. implicit grouping by a passthrough
+            // node's id, `WITH a, count(*) AS n`) has no real `alias` table at
+            // THIS scope — only the `__union` derived table. `build_union_inner_select`
+            // (fed this same group_by list via `extra_required_exprs`, which only
+            // captures DOTTED qualified columns — see `collect_property_access_sql`)
+            // exports such columns from the inner SELECT under their literal
+            // dotted text as a quoted alias (matching the aggregate-argument-column
+            // convention, e.g. `` `n.post_id` `` in the #476/#467 family) — so
+            // the raw `alias.column` reference is backtick-quoted here to
+            // resolve against that exported column instead of a nonexistent
+            // outer-scope table (ClickHouse Code 47 `UNKNOWN_IDENTIFIER`). An
+            // unqualified bare column isn't exported this way, so it's excluded
+            // (falls through to the raw fallback below, unchanged behavior).
+            sql.push_str(&format!("`{}`", expr_sql));
         } else {
             sql.push_str(&expr_sql);
         }
@@ -3589,6 +3698,7 @@ fn build_branch_inner_select_with_own_items(
     branch_select: &SelectItems,
     outer_select: &SelectItems,
     drop_path_metadata: bool,
+    group_by_exprs: &[RenderExpr],
 ) -> String {
     let mut merged_select = branch_select.clone();
     let branch_aliases: std::collections::HashSet<String> = merged_select
@@ -3610,7 +3720,8 @@ fn build_branch_inner_select_with_own_items(
             merged_select.items.push(outer_item.clone());
         }
     }
-    let (branch_inner, _) = build_union_inner_select(&merged_select, drop_path_metadata);
+    let (branch_inner, _) =
+        build_union_inner_select(&merged_select, drop_path_metadata, None, group_by_exprs);
     branch_inner
 }
 
@@ -3636,7 +3747,7 @@ fn render_cypher_union_arm(arm: &RenderPlan) -> String {
             // wrapping the de-aggregated inner branches.
             let drop_path_metadata = arm.group_by.0.is_empty();
             let (inner_select_sql, agg_arg_cols) =
-                build_union_inner_select(&arm.select, drop_path_metadata);
+                build_union_inner_select(&arm.select, drop_path_metadata, None, &arm.group_by.0);
             core.push_str("SELECT ");
             core.push_str(&build_outer_aggregate_select(
                 &arm.select,
@@ -3664,6 +3775,7 @@ fn render_cypher_union_arm(arm: &RenderPlan) -> String {
                         &inner_branch.select,
                         &arm.select,
                         drop_path_metadata,
+                        &arm.group_by.0,
                     ));
                 } else {
                     part.push_str(&inner_select_sql);
@@ -4349,7 +4461,8 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
 
         // Pre-compute inner SELECT and aggregate arg columns for aggregation+UNION case
         let (inner_select_sql, agg_arg_cols) = if has_aggregation {
-            let (sql, cols) = build_union_inner_select(&plan.select, drop_path_metadata);
+            let (sql, cols) =
+                build_union_inner_select(&plan.select, drop_path_metadata, None, &plan.group_by.0);
             (Some(sql), cols)
         } else {
             (None, vec![])
@@ -4543,13 +4656,31 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                                 &union_branch.select,
                                 &plan.select,
                                 drop_path_metadata,
+                                &plan.group_by.0,
                             ));
                         } else if needs_swap {
                             // Swap t.start_id ↔ t.end_id and start_* ↔ end_* in SELECT
                             let swapped = swap_vlp_start_end(inner_sql);
                             branch_sql.push_str(&swapped);
                         } else {
-                            branch_sql.push_str(inner_sql);
+                            // #476: the shared `inner_sql` may reference columns
+                            // (e.g. a multi-label whole-node count's per-label id
+                            // columns) that don't all exist on THIS branch's table.
+                            // Recompute per-branch when we can identify the branch's
+                            // own ViewScan; otherwise fall back to the shared string
+                            // (unchanged behavior for branches we can't introspect).
+                            match table_valid_columns(&union_branch.from) {
+                                Some(valid_cols) => {
+                                    let (branch_inner_sql, _) = build_union_inner_select(
+                                        &plan.select,
+                                        drop_path_metadata,
+                                        Some(&valid_cols),
+                                        &plan.group_by.0,
+                                    );
+                                    branch_sql.push_str(&branch_inner_sql);
+                                }
+                                None => branch_sql.push_str(inner_sql),
+                            }
                         }
 
                         branch_sql.push_str(&union_branch.from.to_sql());
@@ -5258,8 +5389,27 @@ impl ToSql for Cte {
                             // Aggregate + UNION: inner branches project raw columns,
                             // outer SELECT applies aggregation over the __union subquery
                             let drop_path_metadata = !has_group_by;
-                            let (inner_select_sql, agg_arg_cols) =
-                                build_union_inner_select(&plan.select, drop_path_metadata);
+                            // #476: don't reuse ONE shared inner SELECT string across every
+                            // branch — a shared aggregate-argument list (e.g. a multi-label
+                            // whole-node count's per-label id columns, #467) may name columns
+                            // that only exist on SOME branches' tables. Recompute per branch,
+                            // NULL-padding columns absent from that branch's own ViewScan.
+                            let branch_inner_select = |from: &FromTableItem| -> String {
+                                let valid_cols = table_valid_columns(from);
+                                build_union_inner_select(
+                                    &plan.select,
+                                    drop_path_metadata,
+                                    valid_cols.as_ref(),
+                                    &plan.group_by.0,
+                                )
+                                .0
+                            };
+                            let (_, agg_arg_cols) = build_union_inner_select(
+                                &plan.select,
+                                drop_path_metadata,
+                                None,
+                                &plan.group_by.0,
+                            );
                             let outer_select = build_outer_aggregate_select(
                                 &plan.select,
                                 &agg_arg_cols,
@@ -5272,7 +5422,7 @@ impl ToSql for Cte {
                             let array_join_sql = plan.array_join.to_sql();
 
                             // First branch with non-aggregate inner SELECT
-                            cte_body.push_str(&inner_select_sql);
+                            cte_body.push_str(&branch_inner_select(&plan.from));
                             cte_body.push_str(&plan.from.to_sql());
                             cte_body.push_str(&plan.joins.to_sql());
                             cte_body.push_str(&array_join_sql);
@@ -5285,7 +5435,7 @@ impl ToSql for Cte {
                                 };
                                 for branch in &union.input {
                                     cte_body.push_str(union_type_str);
-                                    cte_body.push_str(&inner_select_sql);
+                                    cte_body.push_str(&branch_inner_select(&branch.from));
                                     cte_body.push_str(&branch.from.to_sql());
                                     cte_body.push_str(&branch.joins.to_sql());
                                     if branch.array_join.0.is_empty() {
@@ -6754,6 +6904,26 @@ impl RenderExpr {
                     }
                 }
 
+                // #535: Cypher literal equality (three-valued logic) was
+                // missing from this path. `cypher_literal_eq` only ever
+                // pattern-matches on literal/List/MapLiteral operand
+                // STRUCTURE (never renders or touches a table alias — it
+                // returns `None` immediately for any non-literal operand,
+                // e.g. a `PropertyAccessExp`), so it's always safe to call
+                // directly against the original, unstripped operands here.
+                if matches!(op.operator, Operator::Equal | Operator::NotEqual)
+                    && op.operands.len() == 2
+                {
+                    if let Some(tri) = cypher_literal_eq(&op.operands[0], &op.operands[1]) {
+                        let result = if op.operator == Operator::NotEqual {
+                            tri.negate()
+                        } else {
+                            tri
+                        };
+                        return result.sql_str().to_string();
+                    }
+                }
+
                 // Recursively render operands without table alias
                 let rendered: Vec<String> = op
                     .operands
@@ -6837,11 +7007,34 @@ impl RenderExpr {
                     return super::common::contains_predicate(&rendered[0], &rendered[1]);
                 }
 
-                // Addition special cases (list concat, interval arithmetic) —
-                // shared with the other operator paths. (No string-concat case
-                // here, matching this path's original behavior.)
+                // Addition special cases (list concat, string concat, interval
+                // arithmetic) — shared with the other operator paths.
                 if let Some(s) = render_list_addition(op) {
                     return s;
+                }
+                // #535: string `+` -> `concat(...)` was missing from this path
+                // (ClickHouse has no `+` for strings, so falling through to the
+                // generic `op_str` join below would emit invalid `a + b` SQL for
+                // a string-concat predicate inside a LEFT JOIN pre_filter
+                // subquery). `render_string_addition` inspects operand TEXT via
+                // `flatten_addition_operands`, which calls the ALIAS-PRESERVING
+                // `to_sql()` on each leaf — so it must run against an
+                // alias-STRIPPED copy of the operands here, not the original
+                // `op`, or a leaf `PropertyAccessExp` operand would leak its
+                // table alias back into the subquery (the exact class of bug
+                // this whole function exists to prevent).
+                if has_string_operand(&op.operands) {
+                    let stripped_op = OperatorApplication {
+                        operator: op.operator,
+                        operands: op
+                            .operands
+                            .iter()
+                            .map(strip_table_alias_everywhere)
+                            .collect(),
+                    };
+                    if let Some(s) = render_string_addition(&stripped_op) {
+                        return s;
+                    }
                 }
                 if let Some(s) = render_interval_arithmetic(op, &rendered) {
                     return s;
@@ -6891,14 +7084,21 @@ impl RenderExpr {
             // `toFloat(o.total_amount)` inside a LEFT JOIN pre_filter subquery
             // (`SELECT * FROM orders_fk WHERE ...` — no `o` alias in scope
             // there).
+            // #535: `ReduceExpr` (`reduce(acc = init, x IN list | expr)`) can
+            // embed a `PropertyAccessExp` on the outer alias in any of its
+            // three sub-expressions — same reasoning as the #477 group below.
             RenderExpr::ScalarFnCall(_)
             | RenderExpr::AggregateFnCall(_)
             | RenderExpr::List(_)
             | RenderExpr::Case(_)
             | RenderExpr::ArraySubscript { .. }
             | RenderExpr::ArraySlicing { .. }
-            | RenderExpr::MapLiteral(_) => strip_table_alias_everywhere(self).to_sql(),
-            // For other expression types, delegate to regular to_sql
+            | RenderExpr::MapLiteral(_)
+            | RenderExpr::ReduceExpr(_) => strip_table_alias_everywhere(self).to_sql(),
+            // For other expression types (including `InSubquery`/
+            // `ExistsSubquery` — see the `strip_table_alias_everywhere` doc
+            // comment on why those two are deliberately left alone), delegate
+            // to regular to_sql.
             _ => self.to_sql(),
         }
     }
@@ -6976,10 +7176,28 @@ fn strip_table_alias_everywhere(expr: &RenderExpr) -> RenderExpr {
                 .map(|(k, v)| (k.clone(), strip_table_alias_everywhere(v)))
                 .collect(),
         ),
-        // Other variants (Literal, Column, Parameter, subqueries, pattern
-        // counts, CTE entity refs, ...) either carry no table-alias-qualified
-        // property access or are out of scope for a pre_filter predicate;
-        // leave them unchanged, matching prior behavior.
+        // #535: `reduce(acc = init, x IN list | expr)` carries three nested
+        // sub-expressions (`initial_value`, `list`, `expression`) that can
+        // each independently reference the outer alias being stripped (e.g.
+        // `reduce(total = 0, x IN o.items | total + x.price)` inside a
+        // pre_filter predicate) — `accumulator`/`variable` are lambda-bound
+        // names, not table aliases, and are left untouched.
+        RenderExpr::ReduceExpr(reduce) => RenderExpr::ReduceExpr(ReduceExpr {
+            accumulator: reduce.accumulator.clone(),
+            initial_value: Box::new(strip_table_alias_everywhere(&reduce.initial_value)),
+            variable: reduce.variable.clone(),
+            list: Box::new(strip_table_alias_everywhere(&reduce.list)),
+            expression: Box::new(strip_table_alias_everywhere(&reduce.expression)),
+        }),
+        // Other variants (Literal, Column, Parameter, `InSubquery`/
+        // `ExistsSubquery` correlated subqueries, pattern counts, CTE entity
+        // refs, ...) either carry no table-alias-qualified property access at
+        // this level or embed a full nested query scope of their own (a
+        // correlated subquery's OWN FROM/JOINs establish separate aliasing —
+        // blindly text-stripping into it is a materially different, riskier
+        // change than rewriting a plain expression tree) and are left
+        // unchanged, matching prior behavior. See #535 for the known
+        // remaining gap on those two subquery variants.
         _ => expr.clone(),
     }
 }

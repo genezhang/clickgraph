@@ -50,12 +50,14 @@ vlp_u2_u1 AS (
 SELECT `u1.user_id` AS `u1.user_id`, count(DISTINCT `t.end_id`) AS `friendCount` FROM (
 SELECT 
       t.start_id AS `u1.user_id`,
-      t.end_id AS `t.end_id`
+      t.end_id AS `t.end_id`,
+      t.start_id AS `t.start_id`
 FROM vlp_u1_u2 AS t
 UNION ALL 
 SELECT 
       t.end_id AS `u1.user_id`,
-      t.start_id AS `t.start_id`
+      t.start_id AS `t.start_id`,
+      t.end_id AS `t.end_id`
 FROM vlp_u2_u1 AS t
 ) AS __union
 GROUP BY `u1.user_id`

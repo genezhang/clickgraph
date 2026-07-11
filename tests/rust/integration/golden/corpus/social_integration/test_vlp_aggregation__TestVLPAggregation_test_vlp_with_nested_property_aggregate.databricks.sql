@@ -49,12 +49,14 @@ vlp_u2_u1 AS (
 )
 SELECT `userId` AS `userId`, sum(1) AS `totalPosts` FROM (
 SELECT 
-      t.end_id AS `userId`
+      t.end_id AS `userId`,
+      t.end_id AS `t.end_id`
 FROM vlp_u1_u2 AS t
 INNER JOIN test_integration.posts_test AS t0 ON t0.author_id = t.end_id
 UNION ALL 
 SELECT 
-      t.start_id AS `userId`
+      t.start_id AS `userId`,
+      t.start_id AS `t.start_id`
 FROM vlp_u2_u1 AS t
 INNER JOIN test_integration.posts_test AS t0 ON t0.author_id = t.start_id
 ) AS __union

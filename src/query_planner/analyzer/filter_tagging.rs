@@ -2038,6 +2038,41 @@ impl FilterTagging {
                 }
                 found_table_alias_opt
             }
+            // #542: an IN-list literal (`x.a IN [1, 2, 3]`) previously fell
+            // through to `_ => None` — its elements were invisible to this
+            // function, so a caller's outer `OperatorApplicationExp(In, [x.a,
+            // List(...)])` arm only ever saw `x.a`'s alias and reported the
+            // whole condition as single-table for `x`, even when the list
+            // ITSELF contains a cross-table correlation (`x.a IN [y.b]`,
+            // e.g. `srcip1.ip IN [srcip2.ip]`) — the caller then treated a
+            // genuinely two-table condition as `x`-only, leaking `y`'s alias
+            // into a scope where it's never bound (unbound-alias SQL, #542's
+            // confirmed repro). Recursing here — mirroring `ScalarFnCall`'s
+            // "collect every operand's alias, require they all agree" — makes
+            // a cross-table list element surface as a distinct alias, so the
+            // existing "operands disagree -> None (not single-table)" rule
+            // correctly kicks in. A same-table or literal-only list (no
+            // aliases found in any element) is unaffected: this only ADDS
+            // visibility into list contents, it never removes it — the 8
+            // other call sites' existing single-table classifications for
+            // conditions that don't involve an IN-list are unchanged.
+            LogicalExpr::List(exprs) => {
+                let mut found_table_alias_opt: Option<String> = None;
+                for item in exprs {
+                    if let Some(current_table_alias) =
+                        Self::get_table_alias_if_single_table_condition(item, with_agg_fn)
+                    {
+                        if let Some(found_table_alias) = found_table_alias_opt.as_ref() {
+                            if *found_table_alias != current_table_alias {
+                                return None;
+                            }
+                        } else {
+                            found_table_alias_opt = Some(current_table_alias.clone());
+                        }
+                    }
+                }
+                found_table_alias_opt
+            }
             _ => None,
         }
     }

@@ -13,7 +13,8 @@ WHERE (u_1.user_id = 1)
 )
 SELECT `node_type` AS "node_type", count(*) AS "cnt" FROM (
 SELECT DISTINCT 
-      t.end_type AS "node_type"
+      t.end_type AS "node_type",
+      t.end_type AS "t.end_type"
 FROM vlp_multi_type_u_x AS t
 UNION ALL 
 SELECT 
@@ -30,7 +31,8 @@ SELECT
       toString(t.registration_date) AS "registration_date",
       NULL AS "title",
       toString(t.user_id) AS "user_id",
-      t.end_type AS "node_type"
+      t.end_type AS "node_type",
+      t.end_type AS "t.end_type"
 FROM vlp_multi_type_u_x_2 AS t
 ) AS __union
 GROUP BY `node_type`

@@ -17,13 +17,15 @@ WHERE (u_1.user_id = 1)
 )
 SELECT `node_type` AS "node_type", count(*) AS "cnt" FROM (
 SELECT DISTINCT 
-      t.end_type AS "node_type"
+      t.end_type AS "node_type",
+      t.end_type AS "t.end_type"
 FROM vlp_multi_type_u_x AS t
 INNER JOIN test_integration.vlp_multi_type_u_x AS t0 ON t0.from_node_id = t.start_id
 WHERE t.start_id = 1
 UNION ALL 
 SELECT DISTINCT 
-      t.end_type AS "node_type"
+      t.end_type AS "node_type",
+      t.end_type AS "t.end_type"
 FROM vlp_multi_type_u_x_2 AS t
 INNER JOIN test_integration.vlp_multi_type_u_x AS t0 ON t0.from_node_id = t.start_id
 WHERE t.start_id = 1
