@@ -573,6 +573,43 @@ impl RenderPlanBuilder for LogicalPlan {
                 }
             }
             LogicalPlan::GraphRel(rel) => {
+                // #538: a MULTI-TYPE VLP (`variable_length.is_some() && labels.len() > 1`)
+                // ALWAYS collapses to the generic `start_id`/`end_id` columns of its
+                // `vlp_multi_type_*` CTE — regardless of whether a GraphNode with a
+                // real-looking ViewScan happens to exist for one of the endpoint's
+                // candidate labels. Type inference on an unlabeled/any-type endpoint
+                // (e.g. `(a:IP)-[r*1..2]-(b)` on a denormalized virtual-node schema)
+                // attaches a ViewScan for ONE candidate label to `rel.right`/`rel.left`
+                // purely for planning purposes; below, "first try the actual GraphNode's
+                // ID column" would find and trust THAT per-type column (e.g. Domain's
+                // `node_id: query`) — a column the CTE never defines (only `end_id`),
+                // producing `Code 47 UNKNOWN_IDENTIFIER`, live-verified on the zeek
+                // fixture (`schemas/dev/zeek_merged_test.yaml`). So for multi-type VLP
+                // specifically, check the VLP endpoint fallback FIRST, before trusting
+                // any found GraphNode. Single-type VLP is unaffected — falls through to
+                // the unchanged ordering below, which already resolves correctly there.
+                if rel.variable_length.is_some() && rel.labels.as_ref().is_some_and(|l| l.len() > 1)
+                {
+                    let start_alias = &rel.left_connection;
+                    let end_alias = &rel.right_connection;
+                    if alias == start_alias {
+                        log::info!(
+                            "🎯 VLP: Alias '{}' is multi-type VLP start endpoint -> using '{}' as ID column (#538)",
+                            alias,
+                            VLP_START_ID_COLUMN
+                        );
+                        return Ok(VLP_START_ID_COLUMN.to_string());
+                    }
+                    if alias == end_alias {
+                        log::info!(
+                            "🎯 VLP: Alias '{}' is multi-type VLP end endpoint -> using '{}' as ID column (#538)",
+                            alias,
+                            VLP_END_ID_COLUMN
+                        );
+                        return Ok(VLP_END_ID_COLUMN.to_string());
+                    }
+                }
+
                 // First try to find the actual GraphNode's ID column in left/right branches.
                 // This takes priority because the node's real ID column (e.g., "user_id")
                 // is the correct answer for WITH CTE schemas.

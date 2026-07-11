@@ -1394,6 +1394,63 @@ impl SelectBuilder for LogicalPlan {
                                 // Get schema from plan_ctx to find the ID column
                                 if let Some(ctx) = plan_ctx {
                                     if let Some(typed_var) = ctx.lookup_variable(&alias.0) {
+                                        // #538: a node that is a VLP endpoint (bound via
+                                        // a `vlp_*`/`vlp_multi_type_*` recursive CTE) has
+                                        // no per-type `node_id` column in that CTE — the
+                                        // CTE always exposes node identity generically as
+                                        // `start_id`/`end_id`, regardless of the node's
+                                        // schema-declared `node_id` column name (e.g.
+                                        // Domain's `node_id: query` in
+                                        // schemas/dev/zeek_merged_test.yaml). Falling
+                                        // through to the schema-based `node_id` lookup
+                                        // below (designed for ordinary denormalized nodes
+                                        // with a real per-type property mapping) produces
+                                        // a column like `end_query` that the CTE never
+                                        // defines — Code 47 UNKNOWN_IDENTIFIER,
+                                        // live-verified on the zeek fixture.
+                                        //
+                                        // Note: `typed_var.source()` is NOT reliable here
+                                        // — it still reports `VariableSource::Match` for a
+                                        // VLP-endpoint node at this point in the pipeline
+                                        // (confirmed live), unlike `expand_cte_entity`'s
+                                        // caller, which only runs once the variable really
+                                        // is `Cte`-sourced. `PlanCtx::get_vlp_endpoint` is
+                                        // the mechanism the analyzer itself already uses
+                                        // for this exact purpose (see
+                                        // `join_generation.rs`'s `get_vlp_join_reference`),
+                                        // so use it directly instead of re-deriving
+                                        // CTE-boundedness from `VariableSource`.
+                                        if matches!(typed_var, TypedVariable::Node(_)) {
+                                            if let Some(vlp_info) = ctx.get_vlp_endpoint(&alias.0)
+                                            {
+                                                let from_alias =
+                                                    crate::query_planner::join_context::VLP_CTE_FROM_ALIAS
+                                                        .to_string();
+                                                let id_col = vlp_info.cte_column();
+                                                log::debug!(
+                                                    "🔍 SelectBuilder: id({}) -> VLP CTE '{}'.'{}' (#538)",
+                                                    alias.0, from_alias, id_col
+                                                );
+                                                select_items.push(SelectItem {
+                                                    expression: RenderExpr::PropertyAccessExp(
+                                                        PropertyAccess {
+                                                            table_alias: RenderTableAlias(
+                                                                from_alias,
+                                                            ),
+                                                            column: PropertyValue::Column(
+                                                                id_col.to_string(),
+                                                            ),
+                                                        },
+                                                    ),
+                                                    col_alias: item
+                                                        .col_alias
+                                                        .as_ref()
+                                                        .map(|ca| ColumnAlias(ca.0.clone())),
+                                                });
+                                                continue;
+                                            }
+                                        }
+
                                         let id_column = match typed_var {
                                             TypedVariable::Node(node_var) => {
                                                 if let Some(label) = node_var.labels.first() {

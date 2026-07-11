@@ -12,7 +12,7 @@ WITH RECURSIVE vlp_a_b AS (
     WHERE hop_count <= 2
     UNION ALL
     SELECT
-        next.origin_code as start_id,
+        vp.start_id as start_id,
         next.dest_code as end_id,
         vp.hop_count + 1,
         concat(vp.path_edges, array(next.origin_code)),

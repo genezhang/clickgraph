@@ -1822,8 +1822,19 @@ impl DenormalizedCteStrategy {
         recursive_cte_name: &str,
     ) -> Result<String, CteError> {
         // Build SELECT clause for recursive case
+        //
+        // `start_id` must carry the TRUE start of the whole VLP path forward
+        // unchanged on every recursive hop — it's the generic join-key column
+        // consumers correlate against (e.g. a fixed hop preceding this VLP,
+        // via `PlanCtx::get_vlp_join_reference` / #524). It must NOT be
+        // reassigned to `next.{from_col}` (the current hop's own origin,
+        // which is just `vp.end_id` restated) — that drifts start_id to the
+        // latest intermediate node on every hop beyond the first, silently
+        // corrupting any downstream correlation for hop_count > 1 rows.
+        // Mirrors the already-correct pattern in `add_recursive_property_selections`
+        // below, which carries forward `vp.start_{property}` for the same reason.
         let mut select_items = vec![
-            format!("next.{} as start_id", self.from_col),
+            "vp.start_id as start_id".to_string(),
             format!("next.{} as end_id", self.to_col),
             "vp.hop_count + 1".to_string(),
             arr_append("vp.path_edges", &format!("next.{}", self.from_col)), // Extend edge path array

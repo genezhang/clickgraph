@@ -10,7 +10,7 @@ WITH RECURSIVE vlp_a_b AS (
     WHERE t0.OriginCityName = 'Seattle' AND hop_count <= 2
     UNION ALL
     SELECT
-        next.Origin as start_id,
+        vp.start_id as start_id,
         next.Dest as end_id,
         vp.hop_count + 1,
         arrayConcat(vp.path_edges, [next.Origin]),
