@@ -2729,9 +2729,33 @@ fn extract_order_by_columns_for_union(order_by: &OrderByItems) -> Vec<(RenderExp
     let mut columns = Vec::new();
 
     for (idx, item) in order_by.0.iter().enumerate() {
-        // Log unsupported expressions but still include them — don't silently drop ORDER BY
-        if matches!(&item.expression, RenderExpr::ScalarFnCall(f) if f.name == "id") {
-            log::warn!("⚠️  ORDER BY id() may not work correctly in UNION queries");
+        // #484 review follow-up: an unresolved `id()`/`elementId()` ScalarFnCall
+        // reaching this point means the render-side guard
+        // (`group_by_builder.rs`'s `renders_via_raw_label_union`, invoked via
+        // `resolve_id_function_for_group_order`) deliberately left it
+        // unresolved because the alias renders via a raw per-label UNION —
+        // there is no single addressable column to reference here, and the
+        // SELECT list already carries the same placeholder under its own
+        // alias (e.g. `id(item)`, mapped through the function-registry
+        // `toInt64(0)` placeholder). Pushing ANOTHER copy of this expression
+        // as a fresh `__order_col_N` SELECT item is not just redundant: since
+        // its SQL text is IDENTICAL to the existing SELECT item's expression,
+        // it collides in `build_aliased_group_by`'s expression→alias map and
+        // silently corrupts the GROUP BY clause into referencing
+        // `__order_col_N` — a column that only exists in the outer aggregate
+        // SELECT, not inside the `__union` branches this list is for. Skip
+        // it, exactly like the pre-existing "unresolvable pseudo-property"
+        // `PropertyAccessExp` case below — the raw expression is still
+        // emitted directly by the ORDER BY clause itself (safe: it renders to
+        // the same constant placeholder), it just doesn't need a union-branch
+        // column of its own.
+        if matches!(&item.expression, RenderExpr::ScalarFnCall(f) if f.name.eq_ignore_ascii_case("id") || f.name.eq_ignore_ascii_case("elementid"))
+        {
+            log::warn!(
+                "⚠️  Dropping ORDER BY {}() from UNION branch columns (unresolved raw-union id — falls back to the SELECT-list placeholder)",
+                if let RenderExpr::ScalarFnCall(f) = &item.expression { &f.name } else { "id" }
+            );
+            continue;
         }
 
         // Skip unresolvable "id" pseudo-property in UNION branches.

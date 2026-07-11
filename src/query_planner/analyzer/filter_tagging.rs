@@ -1247,7 +1247,48 @@ impl FilterTagging {
 
                         // Get the table context to determine if it's a node or relationship
                         if let Ok(table_ctx) = plan_ctx.get_table_ctx(alias_str) {
-                            if let Some(label) = table_ctx.get_label_opt() {
+                            // #484 review follow-up: a multi-label NODE alias that renders
+                            // via a RAW per-label UNION ALL (not collapsed into a
+                            // single-alias CTE) must not resolve id() to a single
+                            // (arbitrarily-first) label's id column here — the same
+                            // raw-union hazard the render-side GROUP BY/ORDER BY fix
+                            // guards against (`group_by_builder.rs`'s
+                            // `renders_via_raw_label_union`), but reached from a DIFFERENT
+                            // entry point: this WHERE/ORDER BY property-mapping path runs
+                            // during FilterTagging, well before render_plan, and (unlike
+                            // RETURN-list items, which preserve id() via
+                            // `apply_property_mapping_for_projection`) resolves id(item)
+                            // eagerly here. By the time render_plan's guard would run, the
+                            // alias is already a concrete-but-wrong-scope
+                            // `PropertyAccessExp`, not the `ScalarFnCall` that guard
+                            // inspects — so the crash has to be prevented here instead.
+                            // Reuses the same discriminator #467/#483 already established
+                            // in `projection_tagging.rs`'s `count(DISTINCT alias)` rewrite:
+                            // multi-label AND not an UNDIRECTED GraphRel endpoint
+                            // (`graph_rel_connection_role` — that shape collapses into a
+                            // single `multi_type_vlp_joins`/`bidirectional_union` CTE
+                            // exposing one `start_id`/`end_id`, safe to resolve here). A
+                            // DIRECTED GraphRel endpoint or a bare multi-label scan both
+                            // render as raw per-label branches with no single addressable
+                            // column here, so treat the label as unresolved — falls through
+                            // to the "could not resolve id(), passing through unchanged"
+                            // path below, keeping id() as a `ScalarFnCall` so it reaches
+                            // render_plan intact for `resolve_id_function_for_group_order`
+                            // to safely fall back to the placeholder instead of crashing.
+                            let is_unsafe_raw_union_multilabel = !table_ctx.is_relation()
+                                && table_ctx
+                                    .get_labels()
+                                    .map(|ls| ls.len() > 1)
+                                    .unwrap_or(false)
+                                && plan
+                                    .map(|p| p.graph_rel_connection_role(alias_str).is_none())
+                                    .unwrap_or(true);
+                            let label_opt = if is_unsafe_raw_union_multilabel {
+                                None
+                            } else {
+                                table_ctx.get_label_opt()
+                            };
+                            if let Some(label) = label_opt {
                                 let id_column = if table_ctx.is_relation() {
                                     // For relationships, get the from_id column (or edge_id if defined)
                                     if let Ok(rel_schema) = graph_schema.get_rel_schema(&label) {

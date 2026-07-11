@@ -5387,6 +5387,72 @@ mod walker_drift_family_484_490_495_476_483 {
         );
     }
 
+    /// #484 adversarial-review follow-up (BLOCKING): the bare-multilabel guard
+    /// above only fired when the alias had NO GraphRel connection at all —
+    /// but a multi-label alias reached through a DIRECTED GraphRel chain
+    /// (e.g. `(folder:Folder)-[:CONTAINS]->(item)` with `item` unlabeled)
+    /// renders via the exact same raw per-label `UNION ALL` shape
+    /// (`generate_union_for_untyped_nodes` clones the WHOLE `GraphRel`
+    /// subtree per label, not just the `GraphNode`), so `item` is STILL only
+    /// addressable inside each UNION branch, not the outer `__union` scope
+    /// — yet the old guard's "has a GraphRel connection" check treated any
+    /// GraphRel connection as safe, regardless of direction, and let this
+    /// shape fall through to the unsafe "plain path"
+    /// (`find_id_column_for_alias`), emitting `GROUP BY item.fs_id` /
+    /// `ORDER BY item.fs_id` — a hard ClickHouse Code 47 UNKNOWN_IDENTIFIER
+    /// failure. The fix (`renders_via_raw_label_union` in
+    /// `group_by_builder.rs`) replaces the "no GraphRel connection" proxy
+    /// with the real discriminator already established by #467/#483 in
+    /// `projection_tagging.rs`'s `count(DISTINCT alias)` rewrite:
+    /// `graph_rel_connection_role` (`Some` only for an UNDIRECTED endpoint,
+    /// which collapses into a single-alias `multi_type_vlp_joins`/
+    /// `bidirectional_union` CTE — safe). A DIRECTED connection returns
+    /// `None` from that check, correctly falling into the same raw-union
+    /// bucket as the bare case. The ORDER BY side of this same shape also
+    /// needed a companion fix in `FilterTagging::apply_property_mapping`
+    /// (`filter_tagging.rs`) and `extract_order_by_columns_for_union`
+    /// (`to_sql_query.rs`): ORDER BY's `id()` resolution runs much earlier
+    /// (during FilterTagging, which eagerly resolves `id(item)` to a
+    /// concrete-but-wrong-scope property access, unlike RETURN-list items
+    /// which preserve `id()` for the render-side guard to see).
+    #[tokio::test]
+    async fn group_by_order_by_directed_multilabel_raw_union_not_hard_fail_484() {
+        let schema = load_schema("examples/data_security/data_security.yaml");
+
+        let group_by_cypher = "MATCH (folder:Folder)-[:CONTAINS]->(item) RETURN id(item), count(*)";
+        let group_by_sql = render(&schema, group_by_cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            !group_by_sql.contains("GROUP BY item."),
+            "#484 BLOCKING: a multi-label alias reached through a DIRECTED \
+             GraphRel must not GROUP BY a table alias (item) that only \
+             exists inside the inner UNION branch subquery, not the outer \
+             __union scope:\n{group_by_sql}"
+        );
+        assert!(
+            group_by_sql.contains("GROUP BY `id(item)`"),
+            "expected the safe fallback: GROUP BY the outer SELECT-list \
+             alias, not an inner-scope-only column reference:\n{group_by_sql}"
+        );
+
+        let order_by_cypher =
+            "MATCH (folder:Folder)-[:CONTAINS]->(item) RETURN id(item), count(*) ORDER BY id(item)";
+        let order_by_sql = render(&schema, order_by_cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            !order_by_sql.contains("GROUP BY item.") && !order_by_sql.contains("ORDER BY item."),
+            "#484 BLOCKING: same directed multi-label alias, combined with \
+             ORDER BY — neither GROUP BY nor ORDER BY may reference the \
+             inner-subquery-only alias:\n{order_by_sql}"
+        );
+        assert!(
+            !order_by_sql.contains("__order_col"),
+            "ORDER BY id() on a raw-union multi-label alias must not push a \
+             redundant duplicate SELECT item — that collides with the \
+             existing id(item) SELECT alias in build_aliased_group_by's \
+             expression map and corrupts GROUP BY into referencing a \
+             column that doesn't exist in the __union scope:\n{order_by_sql}"
+        );
+    }
+
     /// #490: `type(r)` behind a `WITH r` barrier used to hard-code the VLP
     /// alias `t` in the outer SELECT even when the relationship actually
     /// routes through a `pattern_union_r AS r` CTE (both endpoints
