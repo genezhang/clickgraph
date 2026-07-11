@@ -1372,22 +1372,46 @@ fn traverse_connected_pattern_with_mode<'a>(
             let (left_node_label_for_rel, right_node_label_for_rel) =
                 compute_rel_node_labels(&rel.direction, &start_node_label, &end_node_label);
 
+            // #543: `left`/`right` (and `left_connection`/`right_connection`) must
+            // follow the GraphRel-wide normalized convention — `left` is ALWAYS the
+            // edge's `from`-side, `right` is ALWAYS the `to`-side, regardless of
+            // which alias happens to be the pre-existing anchor (see the doc
+            // comment on `GraphRel` itself). `compute_connection_aliases` already
+            // implements this swap (used by the sibling "start already in ctx"
+            // branch above) — reuse it here instead of unconditionally pinning
+            // left=start/right=end. Without this, a `Direction::Incoming` pattern
+            // whose ALREADY-BOUND anchor is written as the pattern's END node
+            // (e.g. `MATCH (a) OPTIONAL MATCH (b)<-[:R]-(a)`) silently flipped
+            // which physical column (from_id vs to_id) each alias binds to
+            // relative to the textually-equivalent `(a)-[:R]->(b)` form — for a
+            // SYMMETRIC coupled edge (both endpoints share the same schema-level
+            // property names, e.g. `IP-[:ACCESSED]->IP`), nothing downstream could
+            // detect the mismatch, so it silently rendered a real-but-WRONG JOIN
+            // (from/to columns swapped) instead of erroring (#543).
+            let (left_conn, right_conn) =
+                compute_connection_aliases(&rel.direction, &start_node_alias, &end_node_alias);
+            let start_node = Arc::new(LogicalPlan::GraphNode(start_graph_node));
+            let (left_node, right_node) = match rel.direction {
+                ast::Direction::Incoming => (plan.clone(), start_node),
+                ast::Direction::Outgoing | ast::Direction::Either => (start_node, plan.clone()),
+            };
+
             let graph_rel_node = GraphRel {
-                left: Arc::new(LogicalPlan::GraphNode(start_graph_node)),
+                left: left_node,
                 center: generate_relationship_center(
                     &rel_alias,
                     &rel_labels,
-                    &start_node_alias,
-                    &end_node_alias,
-                    &start_node_label,
-                    &end_node_label,
+                    &left_conn,
+                    &right_conn,
+                    &left_node_label_for_rel,
+                    &right_node_label_for_rel,
                     plan_ctx,
                 )?,
-                right: plan.clone(),
+                right: right_node,
                 alias: rel_alias.clone(),
                 direction: rel.direction.clone().into(),
-                left_connection: start_node_alias.clone(),
-                right_connection: end_node_alias.clone(),
+                left_connection: left_conn,
+                right_connection: right_conn,
                 is_rel_anchor: false,
                 variable_length: compute_variable_length(rel, &rel_labels),
                 shortest_path_mode: shortest_path_mode.clone(),

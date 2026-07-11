@@ -5314,9 +5314,25 @@ fn materialize_standalone_denorm_scans(
                         .inputs
                         .iter()
                         .map(|branch| {
+                            // #530: each branch here is a JUST-materialized
+                            // denormalized node scan (e.g. the origin/dest role
+                            // split for a virtual node stored on an edge table) with
+                            // its OWN concrete, role-specific `property_mapping` —
+                            // remap the predicate (still holding the raw, unmapped
+                            // Cypher property name, e.g. `code`) through THAT
+                            // branch's mapping instead of cloning it unchanged into
+                            // every branch, which rendered a WHERE clause against a
+                            // column that doesn't exist on that branch's physical
+                            // table (e.g. `WHERE a.code = ...` when the branch only
+                            // exposes `origin_code`/`dest_code`). No-op for
+                            // non-denormalized branches (see helper's own doc).
+                            let predicate = crate::query_planner::logical_expr::expression_rewriter::remap_predicate_for_denorm_union_branch(
+                                &f.predicate,
+                                branch,
+                            );
                             Arc::new(LogicalPlan::Filter(Filter {
                                 input: branch.clone(),
-                                predicate: f.predicate.clone(),
+                                predicate,
                             }))
                         })
                         .collect(),

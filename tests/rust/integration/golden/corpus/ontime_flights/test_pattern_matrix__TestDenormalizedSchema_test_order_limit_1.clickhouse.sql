@@ -7,7 +7,7 @@ WHERE n.OriginCityName IS NOT NULL
 UNION DISTINCT 
 SELECT 
       n.DestCityName AS "n.city", 
-      n.OriginCityName AS "__order_col_0"
+      n.DestCityName AS "__order_col_0"
 FROM default.flights AS n
 WHERE n.DestCityName IS NOT NULL
 ) AS __union

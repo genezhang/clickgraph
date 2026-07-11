@@ -490,6 +490,31 @@ impl OptimizerPass for FilterIntoGraphRel {
                                     })
                                 });
 
+                            // #530: `table_ctx.get_filters()` holds the RAW, unmapped
+                            // Cypher property name (e.g. `code`) — fine for a
+                            // non-denormalized scan (one physical mapping, resolved
+                            // later), but WRONG for a denormalized node scan: this
+                            // exact `GraphNode` may be ONE of several per-role UNION
+                            // branches sharing the SAME alias (e.g. Airport's
+                            // origin/dest split over `flights_denorm`), each with its
+                            // OWN concrete `property_mapping`. Injecting the raw
+                            // property name unchanged rendered `WHERE a.code = ...`
+                            // against a physical table that only exposes
+                            // `origin_code`/`dest_code` — UNKNOWN_IDENTIFIER. Remap
+                            // through THIS branch's own `property_mapping` before
+                            // injecting; a no-op for non-denormalized scans.
+                            let combined_predicate = combined_predicate.map(|predicate| {
+                                if crate::graph_catalog::pattern_schema::scan_denormalized_flag(view_scan) {
+                                    crate::query_planner::logical_expr::expression_rewriter::rewrite_expression_with_concrete_property_map(
+                                        &predicate,
+                                        &graph_node.alias,
+                                        &view_scan.property_mapping,
+                                    )
+                                } else {
+                                    predicate
+                                }
+                            });
+
                             if let Some(predicate) = combined_predicate {
                                 // Create new ViewScan with the filter
                                 let new_view_scan = Arc::new(LogicalPlan::ViewScan(Arc::new(

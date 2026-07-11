@@ -1341,6 +1341,25 @@ pub fn edge_side_node_properties(
     }
 }
 
+/// Is this `ViewScan` a denormalized (virtual/embedded) node or edge scan?
+///
+/// Schema-catalog dispatch point (CLAUDE.md rule 7) for the plan-level
+/// `ViewScan.is_denormalized` flag, so callers outside `graph_catalog` route
+/// through this function instead of testing the raw field directly.
+pub fn scan_denormalized_flag(view_scan: &crate::query_planner::logical_plan::ViewScan) -> bool {
+    view_scan.is_denormalized
+}
+
+/// Is this `GraphNode` marked as denormalized (its properties live on an edge
+/// table rather than a dedicated node table)?
+///
+/// Schema-catalog dispatch point (CLAUDE.md rule 7) for the plan-level
+/// `GraphNode.is_denormalized` flag, so callers outside `graph_catalog` route
+/// through this function instead of testing the raw field directly.
+pub fn node_denormalized_flag(graph_node: &crate::query_planner::logical_plan::GraphNode) -> bool {
+    graph_node.is_denormalized
+}
+
 // ============================================================================
 // Tests
 // ============================================================================

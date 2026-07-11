@@ -7879,6 +7879,112 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
         }
     }
 
+    /// #543 (FIXED): a textually-reversed OPTIONAL MATCH on a SYMMETRIC
+    /// coupled edge — `IP-[:ACCESSED]->IP` over `conn_log`, where BOTH
+    /// endpoints have valid `from`/`to` property mappings (unlike #508's
+    /// `Domain`/`ResolvedIP`, which is asymmetric — only one side ever
+    /// resolves) — silently rendered a DIFFERENT, both-non-empty JOIN
+    /// depending on arrow direction, because #508's
+    /// `resolve_anchor_is_from_side` fallback only fires when the PRIMARY
+    /// attempt finds NO mapping at all; on a symmetric edge the primary
+    /// attempt always finds SOME (wrong) mapping, so the fallback never runs
+    /// and the underlying bug survives untouched.
+    ///
+    /// Root cause (upstream of anything #508 touches): `GraphRel`'s doc
+    /// comment establishes a codebase-wide invariant — `left` is ALWAYS the
+    /// edge's `from`-side, `right` is ALWAYS the `to`-side, regardless of
+    /// arrow direction (`compute_connection_aliases` swaps aliases for
+    /// `Direction::Incoming` to enforce this). `traverse_connected_pattern_with_mode`
+    /// (`query_planner/logical_plan/match_clause/traversal.rs`) has TWO
+    /// separate branches for building an OPTIONAL MATCH's `GraphRel` — one for
+    /// when the pattern's START alias is already bound (the common case,
+    /// anchor written first), one for when the END alias is already bound
+    /// (anchor written second, e.g. `MATCH (a) OPTIONAL MATCH (b)<-[:R]-(a)`).
+    /// The FIRST branch already called `compute_connection_aliases` and
+    /// swapped `left`/`right` node placement for `Direction::Incoming`
+    /// (needed for #506). The SECOND branch did NOT — it unconditionally set
+    /// `left_connection = start_node_alias`, `right_connection =
+    /// end_node_alias` regardless of direction, so a `Direction::Incoming`
+    /// pattern landing in this branch silently violated the `left=from`
+    /// invariant: the anchor (bound alias, `end_node_alias`) ended up on
+    /// `right` instead of `left`, and downstream JOIN-key/property resolution
+    /// (which trusts `left=from` per the documented convention) picked the
+    /// wrong physical column for BOTH the anchor and the optional node — a
+    /// real, resolvable join, just wired backwards, not the "no mapping
+    /// found" case #508's fallback detects.
+    ///
+    /// Fixed by making the second branch match the first: compute
+    /// `left_conn`/`right_conn` via `compute_connection_aliases` and swap
+    /// `left`/`right` node placement for `Direction::Incoming`, exactly
+    /// mirroring the already-correct, already-tested first branch (this
+    /// exact `anchor_is_left=false`-for-`Incoming` configuration is already
+    /// produced and handled correctly by that branch, e.g. #506 — this fix
+    /// makes the second branch produce it too instead of the opposite
+    /// (wrong) pairing).
+    ///
+    /// Live-verified against `zeek_merged_test` (`conn_log`, 5 rows): forward
+    /// and reversed now render byte-identical SQL and BOTH execute returning
+    /// the SAME 7 rows: `(10.0.0.99, NULL)`, `(142.250.80.46, NULL)`,
+    /// `(192.168.1.10, 10.0.0.99)`, `(192.168.1.10, 192.168.1.20)`,
+    /// `(192.168.1.10, 93.184.216.34)`, `(192.168.1.20, 142.250.80.46)`,
+    /// `(93.184.216.34, 192.168.1.10)` — matching `conn_log`'s
+    /// `id.orig_h`/`id.resp_h` pairs exactly (a is genuinely the FROM side in
+    /// both textual forms). Pre-fix, the reversed form instead rendered a
+    /// backwards JOIN and returned a DIFFERENT, non-empty 5-row set with
+    /// swapped/wrong pairings (e.g. `(10.0.0.99, 192.168.1.10)` — backwards;
+    /// `conn_log` actually has `192.168.1.10 -> 10.0.0.99`, not the reverse).
+    #[tokio::test]
+    async fn coupled_symmetric_edge_reversed_optional_match_resolves_from_side_543() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+        let forward = normalize(
+            &render(
+                &schema,
+                "MATCH (a:IP) OPTIONAL MATCH (a)-[:ACCESSED]->(b:IP) RETURN a.ip, b.ip",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        let reversed = normalize(
+            &render(
+                &schema,
+                "MATCH (a:IP) OPTIONAL MATCH (b:IP)<-[:ACCESSED]-(a) RETURN a.ip, b.ip",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+
+        assert_eq!(
+            forward, reversed,
+            "#543: a textually-reversed but semantically identical OPTIONAL \
+             MATCH over a SYMMETRIC coupled edge must render identically to \
+             the forward form:\nFORWARD:\n{forward}\nREVERSED:\n{reversed}"
+        );
+        assert!(
+            reversed.contains(r#"ON a.ip = "#) && reversed.contains(r#"."id.orig_h""#),
+            "#543: the anchor `a` must join on the edge's FROM column \
+             (`id.orig_h`) — it genuinely IS `ACCESSED`'s from-node in both \
+             textual forms:\n{reversed}"
+        );
+        assert!(
+            reversed.contains(r#"."id.resp_h" AS "b.ip""#),
+            "#543: `b` must resolve from the edge's TO column \
+             (`id.resp_h`):\n{reversed}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(
+                &render(
+                    &schema,
+                    "MATCH (a:IP) OPTIONAL MATCH (b:IP)<-[:ACCESSED]-(a) RETURN a.ip, b.ip",
+                    SqlDialect::ClickHouse,
+                )
+                .await,
+            );
+            assert_eq!(reversed, again, "#543: nondeterministic render");
+        }
+    }
+
     /// #529 shape 2 (FIXED): `WITH a, count(r) AS c` after an OPTIONAL
     /// undirected pattern on a coupled anchor (`MATCH (a:IP) OPTIONAL MATCH
     /// (a)-[r:ACCESSED]-(b:IP) WITH a, count(r) AS c RETURN a.ip, c`) emitted
@@ -7955,33 +8061,54 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
         }
     }
 
-    /// #529 shape 1 — KNOWN BROKEN, investigated but NOT fixed here (distinct
-    /// mechanism from shape 2 above; out of scope for this fix stream's
-    /// remaining budget). `MATCH (a:IP)-[r:ACCESSED]-(b:IP) WITH a, count(r)
-    /// AS c RETURN a.ip, c` (a PLAIN, non-optional undirected self-edge
-    /// feeding a `WITH`-aggregate) generates a malformed CTE column alias
-    /// containing an embedded, doubled double-quote inside a backtick
-    /// identifier: `` `r."id.orig_h"` `` — ClickHouse parses the backticks as
-    /// ONE identifier literally named `r."id.orig_h"` (quote characters
+    /// #529 shape 1 — KNOWN BROKEN, investigated further (R2) but STILL NOT
+    /// fixed here (distinct mechanism from shape 2 above; the exact
+    /// mutation site remains unpinned despite two investigation rounds).
+    /// `MATCH (a:IP)-[r:ACCESSED]-(b:IP) WITH a, count(r) AS c RETURN a.ip,
+    /// c` (a PLAIN, non-optional undirected self-edge feeding a
+    /// `WITH`-aggregate) generates a malformed CTE column alias containing
+    /// an embedded, doubled double-quote inside a backtick identifier:
+    /// `` `r."id.orig_h"` `` — ClickHouse parses the backticks as ONE
+    /// identifier literally named `r."id.orig_h"` (quote characters
     /// included), which doesn't exist — UNKNOWN_IDENTIFIER.
     ///
     /// This does NOT go through the OPTIONAL-denorm-CTE-anchor machinery
     /// (`find_inner_optional_denorm_graphrel` /
     /// `denorm_scan_cte_anchor_id_property`, shape 2's fix site) at all — no
-    /// `OPTIONAL` keyword, no anchor CTE. Some OTHER site in the WITH-clause
-    /// aggregate CTE builder (`plan_builder_utils.rs`, ~19K lines) is, for a
-    /// bare relationship variable used as an aggregate arg on an undirected
-    /// self-edge, building a column alias from the property's fully-rendered
-    /// SQL text (already quoted, e.g. `r."id.orig_h"`) instead of the raw
-    /// Cypher/db column name — a plausible culprit is `quote_qualified_col`
-    /// (builds `alias."col"` for value-reference purposes) being reused for
-    /// alias-construction purposes at some call site, but the exact call
-    /// site was not conclusively pinned within this fix stream's time
-    /// budget. Needs dedicated follow-up.
+    /// `OPTIONAL` keyword, no anchor CTE.
+    ///
+    /// R2 progress (still not conclusive): the malformed name is NOT
+    /// invented at NULL-padding time — `plan_builder_helpers.rs`'s
+    /// `normalize_union_branches` (which pads a UNION branch missing a
+    /// column with `NULL AS <alias>`, explaining why BOTH inner-union
+    /// branches show `NULL AS "r.""id.orig_h"""` in the render, not just
+    /// one) only ever REPLAYS a `col_alias` string that some earlier branch
+    /// already carried into its `all_aliases` collection
+    /// (`union_plans.iter().flat_map(|plan| plan.select.items...col_alias)`) —
+    /// it never constructs a new name itself. So the malformed name
+    /// `r."id.orig_h"` (with literal embedded quote characters) must
+    /// originate as a GENUINE `col_alias` on some OTHER, not-directly-shown
+    /// branch/expression upstream of this normalization step, most likely
+    /// wherever the WITH-clause CTE builder decides what column name should
+    /// represent the bare relationship variable `r`'s identity for the inner
+    /// per-role union (since IP is denormalized over `conn_log`, an
+    /// undirected self-edge needs a from/to-role split even outside the
+    /// OPTIONAL-anchor path) — a plausible culprit remains
+    /// `quote_qualified_col` (or an equivalent value-reference quoting
+    /// helper, builds `alias."col"` for VALUE-reference purposes) being
+    /// reused to construct a column ALIAS (which must be a bare identifier,
+    /// not a quoted qualified reference) at some call site within
+    /// `plan_builder_utils.rs`'s ~19K lines, but that exact site is still
+    /// not conclusively pinned. Needs dedicated follow-up with the
+    /// `normalize_union_branches` finding above as a starting point (trace
+    /// backward from `all_aliases` to find which branch/expression first
+    /// carries the malformed `col_alias`, rather than forward from
+    /// NULL-padding).
     ///
     /// Live-confirmed: loud failure (UNKNOWN_IDENTIFIER), not silent wrong
-    /// results — lower urgency than #504/#508/#529-shape-2's silent-wrong or
-    /// wrongly-empty-join symptoms.
+    /// results — lower urgency than #504's silent-wrong symptom; #508/#530/
+    /// #543/#471/#529-shape-2 are all fixed in this stream (R1 fixed #508/
+    /// shape-2; R2 fixed #543/#530/#471).
     #[tokio::test]
     async fn undirected_plain_with_aggregate_malformed_cte_alias_known_broken_529_shape1() {
         let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
@@ -8003,43 +8130,59 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
         );
     }
 
-    /// #530 — KNOWN BROKEN, investigated but NOT fixed here. An inline
-    /// property-map filter on an OPTIONAL MATCH anchor —
-    /// `MATCH (a:Airport {code: 'JFK'}) OPTIONAL MATCH (a)-[r:FLIGHT]-(b:Airport)
-    /// RETURN a.code, r, b.code` on the denormalized flights schema — renders
-    /// `WHERE a.code = 'JFK'` inside BOTH branches of the anchor scan CTE
-    /// (`__denorm_scan_a`), where the real physical columns are
-    /// `origin_code`/`dest_code` — no `code` column exists on
-    /// `db_denormalized.flights_denorm` — UNKNOWN_IDENTIFIER. The outer
-    /// query's OWN WHERE (`r.origin_code = 'JFK'` / `r.dest_code = 'JFK'`,
-    /// from the SAME inline map, folded into the main GraphRel's predicate)
-    /// renders correctly — confirming this is a SEPARATE site from #519's
-    /// fix (`collect_graphrel_predicates`).
+    /// #530 (FIXED): an inline property-map filter on an OPTIONAL MATCH
+    /// anchor — `MATCH (a:Airport {code: 'JFK'}) OPTIONAL MATCH
+    /// (a)-[r:FLIGHT]-(b:Airport) RETURN a.code, r, b.code` on the
+    /// denormalized flights schema — used to render `WHERE a.code = 'JFK'`
+    /// inside BOTH branches of the anchor scan CTE (`__denorm_scan_a`), where
+    /// the real physical columns are `origin_code`/`dest_code` — no `code`
+    /// column exists on `db_denormalized.flights_denorm` — UNKNOWN_IDENTIFIER.
+    /// The outer query's OWN WHERE (`r.origin_code = 'JFK'` /
+    /// `r.dest_code = 'JFK'`, from the SAME inline map, folded into the main
+    /// GraphRel's predicate) already rendered correctly — confirming this was
+    /// a SEPARATE site from #519's fix (`collect_graphrel_predicates`).
     ///
-    /// Root cause (pinned more precisely than the original filing):
-    /// `distribute_union_impl`'s `LogicalPlan::Filter` arm
-    /// (`src/query_planner/analyzer/union_distribution.rs` ~line 292-311)
-    /// distributes a Filter over a Union's branches by cloning
-    /// `f.predicate` UNCHANGED into every branch — correct for a plain
-    /// (non-denormalized) Union, but wrong here: the anchor's standalone
-    /// scan Union has ONE branch per physical role (origin vs dest), each
-    /// needing the INLINE map's raw Cypher property name (`code`) remapped
-    /// through THAT branch's own `from_node_properties`/`to_node_properties`
-    /// (the same schema-catalog API, `edge_side_node_properties`, this fix
-    /// stream's #508 fix already routes through) — instead the identical raw
-    /// predicate is replicated into both branches unchanged.
+    /// Root cause (pinned more precisely than the original filing, and more
+    /// precisely than the R1 investigation, which pointed at
+    /// `union_distribution.rs`'s Filter-over-Union distribution): the actual
+    /// site is `FilterIntoGraphRel`'s `GraphNode` arm
+    /// (`src/query_planner/optimizer/filter_into_graph_rel.rs`, the
+    /// `LogicalPlan::GraphNode(graph_node)` case) — it fetches the anchor's
+    /// filters from `plan_ctx`'s shared per-alias `TableCtx` (still holding
+    /// the RAW, unmapped Cypher property name, e.g. `code`) and injects them
+    /// unchanged into `ViewScan.view_filter`. After `type_inference.rs`'s
+    /// `materialize_standalone_denorm_scans` expands the denormalized
+    /// anchor's single (Empty) scan into a `Union` of per-role branches
+    /// (`GraphNode(ViewScan)` for `origin` and `dest`, EACH still carrying the
+    /// SAME alias `a` but its OWN concrete `property_mapping` — `code` ->
+    /// `origin_code` for one branch, `code` -> `dest_code` for the other),
+    /// this optimizer pass visits BOTH branches under that shared alias and
+    /// injects the identical raw predicate into each, instead of remapping it
+    /// through THAT branch's own resolved mapping.
     ///
-    /// NOT fixed here: determining which physical role each Union branch
-    /// represents at this analyzer stage (well before the render-time
-    /// `anchor_is_left`/`resolve_anchor_is_from_side` machinery this fix
-    /// stream added) needs independent verification to avoid a
-    /// silently-wrong branch/column pairing — strictly worse than today's
-    /// loud failure, per ground rule 1. Deferred as a dedicated follow-up.
+    /// Fixed via a new `rewrite_expression_with_concrete_property_map`
+    /// (`query_planner/logical_expr/expression_rewriter.rs`) — rewrites a
+    /// `PropertyAccessExp` for one target alias using an ALREADY-CONCRETE,
+    /// per-branch `property_mapping` (not a schema/label lookup, which cannot
+    /// distinguish a node's `from`-role from its `to`-role) — applied at the
+    /// `FilterIntoGraphRel` injection site, gated on `view_scan.is_denormalized`
+    /// so non-denormalized scans (the overwhelming majority) are a complete
+    /// no-op. A second, defense-in-depth instance of the SAME bug shape
+    /// (predicate cloned unchanged across denormalized Union branches) was
+    /// also fixed in `union_distribution.rs`'s and
+    /// `materialize_standalone_denorm_scans`'s own `Filter`-over-`Union`
+    /// arms via a shared `remap_predicate_for_denorm_union_branch` helper,
+    /// though neither of those two sites is actually exercised by this
+    /// specific repro (confirmed via targeted tracing) — kept for
+    /// consistency in case a differently-shaped query reaches them.
     ///
-    /// Live-confirmed: loud failure (UNKNOWN_IDENTIFIER), not silent wrong
-    /// results.
+    /// Live-verified against `db_denormalized`: the fixed SQL executes and
+    /// returns exactly 2 rows — `flight_id=1` (`LAX`->`JFK`) and `flight_id=5`
+    /// (`JFK`->`LAX`) — matching
+    /// `SELECT origin_code, dest_code, flight_id FROM db_denormalized.flights_denorm
+    /// WHERE origin_code='JFK' OR dest_code='JFK'` (2 rows: exactly those two).
     #[tokio::test]
-    async fn denorm_optional_inline_map_filter_unmapped_in_anchor_cte_known_broken_530() {
+    async fn denorm_optional_inline_map_filter_resolves_per_branch_530() {
         let schema = load_schema(SchemaId::Denormalized.yaml_path());
         let sql = normalize(
             &render(
@@ -8052,50 +8195,87 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
         );
 
         assert!(
-            sql.contains("WHERE a.code = 'JFK'"),
-            "#530 KNOWN BROKEN characterization stale — the anchor scan \
-             CTE's internal filter no longer references the raw unmapped \
-             `a.code`; if this is a genuine fix, live-verify against \
-             db_denormalized before replacing this test with a regression \
-             test:\n{sql}"
+            !sql.contains("WHERE a.code = 'JFK'"),
+            "#530: the anchor scan CTE's internal filter must not reference \
+             the raw, unmapped `a.code` — `db_denormalized.flights_denorm` \
+             has no `code` column:\n{sql}"
         );
+        assert!(
+            sql.contains("WHERE a.origin_code = 'JFK'"),
+            "#530: the origin-role branch of the anchor scan CTE must filter \
+             on its own physical column `origin_code`:\n{sql}"
+        );
+        assert!(
+            sql.contains("WHERE a.dest_code = 'JFK'"),
+            "#530: the dest-role branch of the anchor scan CTE must filter \
+             on its own physical column `dest_code`:\n{sql}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(
+                &render(
+                    &schema,
+                    "MATCH (a:Airport {code: 'JFK'}) OPTIONAL MATCH (a)-[r:FLIGHT]-(b:Airport) \
+                     RETURN a.code, r, b.code",
+                    SqlDialect::ClickHouse,
+                )
+                .await,
+            );
+            assert_eq!(sql, again, "#530: nondeterministic render");
+        }
     }
 
-    /// #471 — KNOWN BROKEN, investigated but NOT fixed here.
-    /// `MATCH (a:Airport) RETURN a.state, count(*) ORDER BY a.state` on the
-    /// denormalized flights schema emits `ORDER BY a.origin_state` — the raw
-    /// DB column under the anchor's stale Cypher alias — instead of the
-    /// `__union` derived table's exposed `` `a.state` `` alias (which the
-    /// SELECT list and GROUP BY, in the SAME query, already correctly use).
-    /// Live-confirmed: `UNKNOWN_IDENTIFIER 'a.origin_state'` — the query
-    /// WITHOUT `ORDER BY` executes correctly.
+    /// #471 (FIXED): `MATCH (a:Airport) RETURN a.state, count(*) ORDER BY
+    /// a.state` on the denormalized flights schema used to emit
+    /// `ORDER BY a.origin_state` — the raw DB column under the anchor's stale
+    /// Cypher alias — instead of the `__union` derived table's exposed
+    /// `` `a.state` `` alias (which the SELECT list and GROUP BY, in the SAME
+    /// query, already correctly use). Live-confirmed pre-fix:
+    /// `UNKNOWN_IDENTIFIER 'a.origin_state'` — the query WITHOUT `ORDER BY`
+    /// executed correctly.
     ///
-    /// Root cause: `to_sql_query.rs`'s `has_aggregation` ORDER BY branch
-    /// (~line 4618-4716) has an established 4-strategy fallback chain
-    /// (alias-text match → `same_property_ref` → expression-text match →
-    /// `unambiguous_column_match`, the last added by R2/#503) for matching an
-    /// ORDER BY item against an existing outer SELECT item — but ALL four
-    /// require the ORDER BY item's `PropertyAccessExp` column name to
-    /// literally match (by identity, text, or name) a SELECT item's column.
-    /// Here the ORDER BY item was independently schema-mapped to the raw DB
-    /// column (`origin_state`) upstream, while the matching outer SELECT
-    /// item is a plain reference to the union's already-resolved alias
-    /// (`state` — no per-branch column visible at this point at all,
-    /// distinct from GROUP BY's simpler match which succeeds only because
-    /// GROUP BY and SELECT's expressions are BOTH left unmapped at the point
-    /// `build_aliased_group_by` compares them). None of the four existing
-    /// fallbacks can bridge "mapped DB column" to "already-resolved Cypher
-    /// alias" — a 5th strategy (reverse-map the DB column back to its Cypher
-    /// property name via schema context, or stop DB-mapping ORDER BY
-    /// property refs for denorm-union anchors upstream so it carries the
-    /// same unmapped form SELECT/GROUP BY use) is needed, deferred as a
-    /// dedicated follow-up given `to_sql_query.rs`'s ORDER BY resolution is
-    /// pure-string/no-schema-context at this stage.
+    /// Root cause (pinned more precisely than the original filing, and one
+    /// analyzer stage further upstream than `to_sql_query.rs`'s ORDER BY
+    /// matching, which the original filing suspected): `FilterTagging`'s
+    /// `LogicalPlan::OrderBy` case (`query_planner/analyzer/filter_tagging.rs`)
+    /// calls `apply_property_mapping` on every ORDER BY item — `GroupBy`'s
+    /// own case, right above it, never calls this at all, and stays
+    /// correctly unmapped for the EXACT same alias/property. For a
+    /// standalone (no owning-edge role context) denormalized node reference,
+    /// that mapping bottoms out in `ViewResolver::resolve_node_property_with_role`'s
+    /// `role=None` arm, which — by its own doc comment — picks
+    /// `from_properties` FIRST as an arbitrary "default for node-only
+    /// queries", noting "UNION ALL for both positions is handled at a higher
+    /// level." True for SELECT (`property_expansion` walks each Union branch
+    /// independently and re-resolves per branch) but NOT for ORDER BY, which
+    /// took that guessed column (`origin_state`) as final — the unmapped
+    /// `to_sql_query.rs`-level fallback chain (alias-text match ->
+    /// `same_property_ref` -> expression-text match -> `unambiguous_column_match`)
+    /// could never bridge a raw mapped DB column back to the union's own
+    /// already-resolved alias.
     ///
-    /// Lowest severity of this fix stream's 5 issues: a clean SQL error, not
-    /// a silent wrong result.
+    /// Fixed by skipping the mapping for exactly this ambiguous case — a new
+    /// `FilterTagging::order_by_property_is_ambiguous_denorm_standalone`
+    /// check (true only when: the item is a `PropertyAccessExp`; the alias's
+    /// node has NO owning-edge role context via `find_owning_edge_for_node`;
+    /// the node is denormalized; AND the property maps to DIFFERENT physical
+    /// columns on the from vs to role) leaves the ORDER BY item in the SAME
+    /// unmapped form GROUP BY/SELECT already use — so the existing
+    /// alias-text ORDER BY-to-SELECT matching in `to_sql_query.rs` (which
+    /// already handles GROUP BY's identical unmapped form) finds it, with NO
+    /// changes needed there. A property that exists on only one role, or
+    /// maps to the SAME column on both, is left mapped exactly as before
+    /// (genuinely unambiguous — no behavior change for those or for any
+    /// non-denormalized/edge-embedded case).
+    ///
+    /// Live-verified against `db_denormalized`: the fixed SQL executes and
+    /// returns all 6 states in ascending order (`AZ, CA, CO, GA, IL, NY`),
+    /// each with `count(*) = 1` — matching the no-`ORDER BY` form's
+    /// already-correct 6-state/count-1-each result, just now correctly
+    /// ordered.
     #[tokio::test]
-    async fn denorm_union_aggregate_order_by_raw_column_known_broken_471() {
+    async fn denorm_union_aggregate_order_by_resolves_union_alias_471() {
         let schema = load_schema(SchemaId::Denormalized.yaml_path());
         let sql = normalize(
             &render(
@@ -8107,17 +8287,35 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
         );
 
         assert!(
-            sql.contains("ORDER BY a.origin_state"),
-            "#471 KNOWN BROKEN characterization stale — ORDER BY no longer \
-             emits the raw unmapped `a.origin_state`; if this is a genuine \
-             fix, live-verify against db_denormalized before replacing this \
-             test with a regression test:\n{sql}"
+            !sql.contains("ORDER BY a.origin_state") && !sql.contains("ORDER BY a.dest_state"),
+            "#471: ORDER BY must not reference either role's raw physical \
+             column (the inner UNION branches legitimately reference them \
+             as their OWN source columns — only the ORDER BY clause itself \
+             must not):\n{sql}"
         );
         assert!(
             sql.contains(r#"SELECT `a.state` AS "a.state""#),
-            "#471 KNOWN BROKEN characterization stale — the outer SELECT no \
-             longer resolves through the union's `a.state` alias:\n{sql}"
+            "#471: the outer SELECT must still resolve through the union's \
+             `a.state` alias:\n{sql}"
         );
+        assert!(
+            sql.contains("ORDER BY `a.state` ASC") || sql.contains(r#"ORDER BY "a.state" ASC"#),
+            "#471: ORDER BY must reference the same quoted union alias the \
+             SELECT list and GROUP BY already use:\n{sql}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(
+                &render(
+                    &schema,
+                    "MATCH (a:Airport) RETURN a.state, count(*) ORDER BY a.state",
+                    SqlDialect::ClickHouse,
+                )
+                .await,
+            );
+            assert_eq!(sql, again, "#471: nondeterministic render");
+        }
     }
 }
 
