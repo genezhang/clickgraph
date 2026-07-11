@@ -7521,4 +7521,90 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
             );
         }
     }
+
+    /// Blocking finding (adversarial review of #465/#476/#520): `table_valid_columns`
+    /// (the #476/#520 UNION branch NULL-padding helper, `to_sql_query.rs`) only
+    /// consulted `property_mappings` when computing which physical columns are
+    /// valid for a branch's own table — it never consulted `from_properties`/
+    /// `to_properties`, the documented denormalized pattern where a node's real
+    /// columns live there instead of (or in addition to) `property_mappings`
+    /// (`schemas/dev/flights_denormalized.yaml`'s `Airport` node has EMPTY
+    /// `property_mappings`, with `code`/`city`/`state` entirely resolved via
+    /// `from_node_properties`/`to_node_properties`).
+    ///
+    /// On the buggy commit, this made EVERY branch of a 2-hop undirected
+    /// direction-permutation UNION NULL-pad `b.city` (`t2.origin_city`) because
+    /// `table_valid_columns` never saw `origin_city`/`dest_city` as valid columns
+    /// for the `Airport` table — collapsing all distinct cities into a single
+    /// `b.city = NULL` row whose count summed every group together (silently
+    /// wrong results, not a loud failure).
+    ///
+    /// Fixed by routing `table_valid_columns` through
+    /// `NodeSchema::all_valid_physical_columns()`, the canonical three-source
+    /// accessor (`property_mappings` + `from_properties` + `to_properties`,
+    /// mirroring `has_cypher_property`) instead of reading `property_mappings`
+    /// alone.
+    ///
+    /// Live-verified (2026-07-11, db_denormalized, ClickHouse) via `cg query`:
+    /// pre-fix this query returned a single collapsed row (`b.city = NULL`,
+    /// `n = 32`); post-fix it returns 6 distinct, correctly-grouped rows
+    /// (New York=5, Chicago=3, Atlanta=5, Denver=1, Los Angeles=16,
+    /// San Francisco=2 — summing to the same 32, confirming no rows were lost,
+    /// only mis-grouped pre-fix) — byte-identical to the pre-#465-branch `main`
+    /// baseline's output for the same query.
+    #[tokio::test]
+    async fn denorm_with_aggregate_group_by_middle_node_no_null_collapse_465_blocking() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (a:Airport)-[:FLIGHT]-(b:Airport)-[:FLIGHT]-(c:Airport) \
+                 WITH b, count(*) AS n RETURN b.city, n",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+
+        // Assert on the physical column name only, not the specific `tN` alias
+        // assigned to it — `normalize()` canonicalizes alias *numbering*
+        // relative to first appearance within THIS query's own text, but the
+        // canonical digit chosen depends on how many aliases the shared
+        // test-process alias counter had already consumed before this test
+        // ran, not just this query's structure.
+        let null_pad_re = regex::Regex::new(r#"NULL AS "t\d+\.origin_city""#).unwrap();
+        assert!(
+            !null_pad_re.is_match(&sql),
+            "465-blocking: b.city must not be NULL-padded — Airport's real \
+             columns live in from_node_properties/to_node_properties, which \
+             table_valid_columns must now consult:\n{sql}"
+        );
+        let export_re = regex::Regex::new(r#"t\d+\.origin_city AS "t\d+\.origin_city""#).unwrap();
+        let export_count = export_re.find_iter(&sql).count();
+        assert!(
+            export_count >= 4,
+            "465-blocking: every branch of the 4-way direction-permutation \
+             UNION must export the real `origin_city` column (not NULL), \
+             found {export_count} exports:\n{sql}"
+        );
+        let group_by_re = regex::Regex::new(r#"GROUP BY `?t\d+\.origin_city`?"#).unwrap();
+        assert!(
+            group_by_re.is_match(&sql),
+            "465-blocking: outer GROUP BY must reference the exported real \
+             column:\n{sql}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(
+                &render(
+                    &schema,
+                    "MATCH (a:Airport)-[:FLIGHT]-(b:Airport)-[:FLIGHT]-(c:Airport) \
+                     WITH b, count(*) AS n RETURN b.city, n",
+                    SqlDialect::ClickHouse,
+                )
+                .await,
+            );
+            assert_eq!(sql, again, "465-blocking: nondeterministic render");
+        }
+    }
 }

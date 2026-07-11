@@ -3097,6 +3097,19 @@ fn collect_nested_aggregate_args(expr: &RenderExpr, agg_arg_cols: &mut Vec<Strin
 /// Returns `None` when no schema, or no node schema with a matching table
 /// name, can be found — callers must then fall back to the pre-#476
 /// unconditional behavior rather than silently NULLing everything.
+///
+/// Blocking review finding (post-#476/#520): this used to only look at
+/// `property_mappings`, missing `from_properties`/`to_properties` — the
+/// documented denormalized pattern where a node's real columns live there
+/// instead of (or in addition to) `property_mappings` (e.g.
+/// `schemas/dev/flights_denormalized.yaml`'s `Airport` node: empty
+/// `property_mappings`, real columns in `from_node_properties`/
+/// `to_node_properties`). That blind spot silently NULL-padded every
+/// UNION branch's denormalized GROUP-BY/aggregate-argument columns,
+/// collapsing distinct groups into one NULL-keyed row. Now routes through
+/// `NodeSchema::all_valid_physical_columns()`, the canonical three-source
+/// accessor (mirrors `has_cypher_property`/property-resolution logic)
+/// instead of reading `property_mappings` alone.
 fn table_valid_columns(from: &FromTableItem) -> Option<HashSet<String>> {
     let view_ref = from.0.as_ref()?;
     let schema = crate::server::query_context::get_current_schema_with_fallback()?;
@@ -3106,11 +3119,7 @@ fn table_valid_columns(from: &FromTableItem) -> Option<HashSet<String>> {
         if node_schema.full_table_name() == view_ref.name {
             found = true;
             cols.extend(node_schema.node_id.columns().iter().map(|c| c.to_string()));
-            for value in node_schema.property_mappings.values() {
-                if let crate::graph_catalog::expression_parser::PropertyValue::Column(col) = value {
-                    cols.insert(col.clone());
-                }
-            }
+            cols.extend(node_schema.all_valid_physical_columns());
         }
     }
     if found {
