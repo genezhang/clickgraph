@@ -441,6 +441,200 @@ pub fn rewrite_expression_with_property_mapping(
     }
 }
 
+/// #530: Rewrite a `PropertyAccessExp` for `target_alias` using an already-CONCRETE,
+/// per-branch `property_mapping` (Cypher property name -> physical DB column) instead
+/// of a schema/label lookup.
+///
+/// Used when a Filter/predicate is being pushed down into ONE specific branch of an
+/// already-materialized denormalized-node Union (e.g. an anchor's own standalone
+/// `origin`/`dest`-role scans over the same physical table, each branch already
+/// carrying its OWN resolved `ViewScan.property_mapping` — see
+/// `materialize_standalone_denorm_scans` in `type_inference.rs`). Unlike
+/// `rewrite_expression_with_property_mapping` (which re-derives the mapping from the
+/// alias's LABEL via the schema catalog — the same physical column for every branch,
+/// since a label alone cannot distinguish "this node as an edge's FROM" from "this
+/// node as the edge's TO"), this takes the mapping that already correctly
+/// distinguishes the two roles and applies it directly — routing through the same
+/// `PropertyValue`-keyed map the SELECT-list rendering for that exact branch already
+/// uses, so a symmetric or asymmetric role split is handled identically (no branch-role
+/// guessing here at all).
+///
+/// Only rewrites `PropertyAccessExp` nodes whose `table_alias` matches `target_alias`;
+/// other aliases in a multi-alias predicate are left untouched (this function is only
+/// ever applied to a single node's own inline-map/filter predicate). If a referenced
+/// property has no entry in `mapping` (shouldn't happen for a well-formed inline map
+/// filter, since both roles expose the same Cypher property set), the original
+/// (unmapped) expression is kept — matching prior behavior rather than fabricating a
+/// column, so a schema/property mismatch surfaces as a loud unresolved-column error
+/// instead of silently substituting the wrong data.
+pub fn rewrite_expression_with_concrete_property_map(
+    expr: &LogicalExpr,
+    target_alias: &str,
+    mapping: &std::collections::HashMap<String, PropertyValue>,
+) -> LogicalExpr {
+    match expr {
+        LogicalExpr::PropertyAccessExp(prop) => {
+            if prop.table_alias.0 != target_alias {
+                return expr.clone();
+            }
+            let cypher_property = prop.column.raw();
+            match mapping.get(cypher_property) {
+                Some(mapped) => LogicalExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: prop.table_alias.clone(),
+                    column: mapped.clone(),
+                }),
+                None => expr.clone(),
+            }
+        }
+        LogicalExpr::ScalarFnCall(fn_call) => LogicalExpr::ScalarFnCall(ScalarFnCall {
+            name: fn_call.name.clone(),
+            args: fn_call
+                .args
+                .iter()
+                .map(|arg| {
+                    rewrite_expression_with_concrete_property_map(arg, target_alias, mapping)
+                })
+                .collect(),
+        }),
+        LogicalExpr::AggregateFnCall(agg) => LogicalExpr::AggregateFnCall(AggregateFnCall {
+            name: agg.name.clone(),
+            args: agg
+                .args
+                .iter()
+                .map(|arg| {
+                    rewrite_expression_with_concrete_property_map(arg, target_alias, mapping)
+                })
+                .collect(),
+        }),
+        LogicalExpr::OperatorApplicationExp(op) => {
+            LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator,
+                operands: op
+                    .operands
+                    .iter()
+                    .map(|operand| {
+                        rewrite_expression_with_concrete_property_map(
+                            operand,
+                            target_alias,
+                            mapping,
+                        )
+                    })
+                    .collect(),
+            })
+        }
+        LogicalExpr::Case(case) => LogicalExpr::Case(LogicalCase {
+            expr: case.expr.as_ref().map(|e| {
+                Box::new(rewrite_expression_with_concrete_property_map(
+                    e,
+                    target_alias,
+                    mapping,
+                ))
+            }),
+            when_then: case
+                .when_then
+                .iter()
+                .map(|(when, then)| {
+                    (
+                        rewrite_expression_with_concrete_property_map(when, target_alias, mapping),
+                        rewrite_expression_with_concrete_property_map(then, target_alias, mapping),
+                    )
+                })
+                .collect(),
+            else_expr: case.else_expr.as_ref().map(|e| {
+                Box::new(rewrite_expression_with_concrete_property_map(
+                    e,
+                    target_alias,
+                    mapping,
+                ))
+            }),
+        }),
+        LogicalExpr::List(items) => LogicalExpr::List(
+            items
+                .iter()
+                .map(|item| {
+                    rewrite_expression_with_concrete_property_map(item, target_alias, mapping)
+                })
+                .collect(),
+        ),
+        LogicalExpr::ArraySubscript { array, index } => LogicalExpr::ArraySubscript {
+            array: Box::new(rewrite_expression_with_concrete_property_map(
+                array,
+                target_alias,
+                mapping,
+            )),
+            index: Box::new(rewrite_expression_with_concrete_property_map(
+                index,
+                target_alias,
+                mapping,
+            )),
+        },
+        LogicalExpr::ArraySlicing { array, from, to } => LogicalExpr::ArraySlicing {
+            array: Box::new(rewrite_expression_with_concrete_property_map(
+                array,
+                target_alias,
+                mapping,
+            )),
+            from: from.as_ref().map(|f| {
+                Box::new(rewrite_expression_with_concrete_property_map(
+                    f,
+                    target_alias,
+                    mapping,
+                ))
+            }),
+            to: to.as_ref().map(|t| {
+                Box::new(rewrite_expression_with_concrete_property_map(
+                    t,
+                    target_alias,
+                    mapping,
+                ))
+            }),
+        },
+        // Leaf / not-yet-needed variants: left unchanged. An inline-map filter's
+        // predicate is built purely from comparisons over property accesses, so these
+        // shapes are not expected here — if a future caller needs them, extend
+        // analogous to `rewrite_expression_with_property_mapping` above.
+        _ => expr.clone(),
+    }
+}
+
+/// #530: remap a predicate being pushed down into ONE branch of an
+/// already-materialized denormalized-node `Union` (each branch a `GraphNode` wrapping
+/// a `ViewScan` with its OWN concrete, role-specific `property_mapping` — e.g. the
+/// `origin`/`dest` role split for a denormalized `Airport` node over `flights_denorm`).
+///
+/// Both `union_distribution.rs` and `type_inference.rs`'s
+/// `materialize_standalone_denorm_scans` distribute a `Filter`'s predicate over such a
+/// Union's branches; before this helper, both cloned the predicate UNCHANGED into
+/// every branch — fine for a plain (non-denormalized) Union, but wrong here: an
+/// inline-map filter's predicate still holds the RAW, unmapped Cypher property name
+/// (e.g. `code`) at this point, and each branch needs it resolved through ITS OWN
+/// role-specific mapping (`origin_code` vs `dest_code`), not the same raw name
+/// rendered verbatim into a WHERE clause where no such column exists (#530).
+///
+/// Falls back to returning `predicate` completely UNCHANGED when `branch` isn't a
+/// denormalized `GraphNode(ViewScan)` — i.e. for every non-denormalized
+/// Union-distribution shape (the overwhelming majority of callers), this is a
+/// complete no-op, identical to the prior behavior.
+pub fn remap_predicate_for_denorm_union_branch(
+    predicate: &LogicalExpr,
+    branch: &LogicalPlan,
+) -> LogicalExpr {
+    if let LogicalPlan::GraphNode(gn) = branch {
+        if crate::graph_catalog::pattern_schema::node_denormalized_flag(gn) {
+            if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                if crate::graph_catalog::pattern_schema::scan_denormalized_flag(vs) {
+                    return rewrite_expression_with_concrete_property_map(
+                        predicate,
+                        &gn.alias,
+                        &vs.property_mapping,
+                    );
+                }
+            }
+        }
+    }
+    predicate.clone()
+}
+
 /// Rewrite all expressions in a list of ProjectionItems.
 ///
 /// This is a convenience function for WITH/RETURN clause processing.

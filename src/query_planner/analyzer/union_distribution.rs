@@ -298,9 +298,19 @@ fn distribute_union_impl(plan: &LogicalPlan, depth: usize) -> LogicalPlan {
                     union.inputs.len()
                 );
                 return distribute_over_union(union, |branch| {
+                    // #530: each branch may be a denormalized node scan with its OWN
+                    // role-specific property mapping (e.g. origin/dest) — remap the
+                    // predicate through THAT branch's mapping rather than cloning the
+                    // raw, unmapped Cypher property name unchanged into every branch.
+                    // No-op for non-denormalized branches (see helper's own doc).
+                    let predicate =
+                        crate::query_planner::logical_expr::expression_rewriter::remap_predicate_for_denorm_union_branch(
+                            &f.predicate,
+                            &branch,
+                        );
                     LogicalPlan::Filter(Filter {
                         input: branch,
-                        predicate: f.predicate.clone(),
+                        predicate,
                     })
                 });
             }

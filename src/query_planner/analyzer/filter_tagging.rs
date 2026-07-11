@@ -354,6 +354,35 @@ impl AnalyzerPass for FilterTagging {
                 // Apply property mapping to order by expressions
                 let mut mapped_items = Vec::new();
                 for item in &order_by.items {
+                    // #471: skip mapping for a property that is genuinely AMBIGUOUS on a
+                    // standalone denormalized node (no owning-edge role context, and the
+                    // property has DIFFERENT columns on the from/to roles — e.g. Airport's
+                    // `state` -> `origin_state` vs `dest_state`). `GroupBy`'s own handling
+                    // (just above) never calls `apply_property_mapping` at all and stays
+                    // correctly unmapped for the exact same alias/property; ORDER BY's own
+                    // copy used to independently resolve through
+                    // `ViewResolver::resolve_node_property_with_role(..., role=None)`,
+                    // which (by its own doc comment) picks `from_properties` FIRST as an
+                    // arbitrary "default for node-only queries", expecting "UNION ALL for
+                    // both positions... handled at a higher level" — true for SELECT
+                    // (`property_expansion` walks each Union branch independently) but NOT
+                    // for ORDER BY, which took the guessed column as final. Skipping the
+                    // mapping keeps ORDER BY's item in the SAME unmapped form GROUP BY/
+                    // SELECT already use, so `to_sql_query.rs`'s alias-text ORDER BY-to-
+                    // SELECT matching (which already handles GROUP BY's identical unmapped
+                    // form) finds it instead.
+                    if Self::order_by_property_is_ambiguous_denorm_standalone(
+                        &item.expression,
+                        plan_ctx,
+                        graph_schema,
+                        child_plan_ref,
+                    ) {
+                        mapped_items.push(crate::query_planner::logical_plan::OrderByItem {
+                            expression: item.expression.clone(),
+                            order: item.order.clone(),
+                        });
+                        continue;
+                    }
                     let mapped_expr = self.apply_property_mapping(
                         item.expression.clone(),
                         plan_ctx,
@@ -2106,6 +2135,77 @@ impl FilterTagging {
             LogicalExpr::List(exprs) => exprs
                 .iter()
                 .any(|e| Self::references_projection_alias(e, plan_ctx)),
+            _ => false,
+        }
+    }
+
+    /// #471: is `expr` a `PropertyAccessExp` on a STANDALONE denormalized node (no
+    /// owning-edge role context) whose property resolves to a DIFFERENT physical
+    /// column depending on from/to role (e.g. Airport's `state` -> `origin_state`
+    /// on the from-role, `dest_state` on the to-role)? If so, mapping it here
+    /// would have to arbitrarily pick one role — see
+    /// `ViewResolver::resolve_node_property_with_role`'s own `None` arm, which
+    /// admits it picks `from_properties` first as a "default", not a real
+    /// resolution.
+    ///
+    /// Returns `false` (safe to map as before) for: non-`PropertyAccessExp`
+    /// expressions, non-denormalized nodes, nodes with a known edge role, and
+    /// properties that map to the SAME column (or exist on only one role) —
+    /// i.e. every case where mapping is actually unambiguous.
+    fn order_by_property_is_ambiguous_denorm_standalone(
+        expr: &LogicalExpr,
+        plan_ctx: &PlanCtx,
+        graph_schema: &GraphSchema,
+        _plan: &LogicalPlan,
+    ) -> bool {
+        let LogicalExpr::PropertyAccessExp(prop) = expr else {
+            return false;
+        };
+        let alias = &prop.table_alias.0;
+        let property = prop.column.raw();
+
+        // A known `EmbeddedInEdge` strategy means the role (from/to) is
+        // determined by a real relationship pattern in THIS query, not guessed.
+        // Deliberately NOT `find_owning_edge_for_node` here — that helper checks
+        // a DIFFERENT denormalization sub-pattern (node data defined at the
+        // edge-schema level, e.g. zeek's coupled edges), which is unset for
+        // schemas like `flights_denormalized` that define their node/edge role
+        // split at the NODE-schema level instead — using it here misclassified
+        // an ordinary `(a)-[:FLIGHT]->(b)` pattern as "no owning edge" and
+        // skipped a mapping that was actually unambiguous, regressing #455's
+        // `denorm_order_by_uses_table_alias_not_cypher_alias_455` golden.
+        if matches!(
+            plan_ctx.get_node_strategy(alias, None),
+            Some(crate::graph_catalog::pattern_schema::NodeAccessStrategy::EmbeddedInEdge { .. })
+        ) {
+            return false;
+        }
+
+        let Ok(table_ctx) = plan_ctx.get_table_ctx(alias) else {
+            return false;
+        };
+        let Some(label) = table_ctx.get_label_opt() else {
+            return false;
+        };
+        let Ok(node_schema) = graph_schema.node_schema(&label) else {
+            return false;
+        };
+        // Schema-catalog dispatch (CLAUDE.md rule 7) instead of a raw
+        // denormalized-flag field check.
+        if !crate::graph_catalog::node_classification::is_node_denormalized(node_schema) {
+            return false;
+        }
+
+        let from_col = node_schema
+            .from_properties
+            .as_ref()
+            .and_then(|p| p.get(property));
+        let to_col = node_schema
+            .to_properties
+            .as_ref()
+            .and_then(|p| p.get(property));
+        match (from_col, to_col) {
+            (Some(f), Some(t)) => f != t, // Ambiguous only when the roles genuinely disagree.
             _ => false,
         }
     }
