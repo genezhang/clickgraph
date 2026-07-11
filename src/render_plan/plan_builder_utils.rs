@@ -6189,8 +6189,52 @@ pub(crate) fn expand_table_alias_to_group_by_id_only(
             id_columns,
             alias
         );
+        // #550: the schema's `node_id.columns()` are CYPHER PROPERTY names,
+        // and `alias` is the Cypher pattern alias — neither is necessarily a
+        // physical column/table in the CTE body being rendered. For a
+        // composite-id node that is ALSO denormalized (its properties live on
+        // the edge table under role-specific names), qualifying the raw
+        // property names with the Cypher alias emitted a dangling
+        // `GROUP BY b.code, b.state` (no table `b` in scope, no `code`/`state`
+        // columns anywhere — ClickHouse Code 47 UNKNOWN_IDENTIFIER). Resolve
+        // each id property through the plan's own property resolution
+        // (`get_properties_with_table_alias` — the same call the
+        // single-column denorm fallback below and `group_by_builder.rs`'s
+        // `table_alias_to_use` resolution already rely on; it dispatches per
+        // schema pattern internally): it yields the role-specific physical
+        // column (e.g. `code` → `origin_code`) and the actual table alias to
+        // qualify with (e.g. the edge alias `t2`). For standard composite-id
+        // nodes it returns identity property mappings and no alias override,
+        // reproducing the pre-#550 output byte-for-byte (#457's shape); if
+        // resolution fails or returns nothing, fall back to the pre-#550
+        // behavior unchanged.
+        let (resolved_columns, group_alias): (Vec<String>, String) =
+            match plan.get_properties_with_table_alias(alias) {
+                Ok((props, actual_table_alias)) if !props.is_empty() => {
+                    let prop_map: HashMap<&str, &str> = props
+                        .iter()
+                        .map(|(name, col)| (name.as_str(), col.as_str()))
+                        .collect();
+                    (
+                        id_columns
+                            .iter()
+                            .map(|c| {
+                                prop_map
+                                    .get(c.as_str())
+                                    .map_or(c.clone(), |m| m.to_string())
+                            })
+                            .collect(),
+                        actual_table_alias.unwrap_or_else(|| alias.to_string()),
+                    )
+                }
+                _ => (id_columns.clone(), alias.to_string()),
+            };
         let mut result = Vec::new();
-        super::group_by_builder::push_composite_id_group_by(&mut result, alias, &id_columns);
+        super::group_by_builder::push_composite_id_group_by(
+            &mut result,
+            &group_alias,
+            &resolved_columns,
+        );
         return result;
     }
 
