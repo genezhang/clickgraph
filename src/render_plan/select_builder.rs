@@ -1391,6 +1391,55 @@ impl SelectBuilder for LogicalPlan {
                                     continue;
                                 }
 
+                                // #537: a VLP endpoint on a COMPOSITE-id node (e.g. Account
+                                // keyed by `(bank_id, account_number)`) must resolve `id()`
+                                // to the FULL composite tuple. The generic path below (schema
+                                // lookup + `get_properties_with_table_alias`) instead takes
+                                // only the FIRST composite id column (e.g. `bank_id`) and
+                                // maps it through the VLP endpoint's per-property rewriting
+                                // (`bank_id` -> `end_bank_id`), silently merging every
+                                // distinct node sharing that first component into one row
+                                // identity — the SELECT-list sibling of the GROUP BY bug
+                                // fixed in `group_by_builder.rs`'s
+                                // `resolve_id_function_for_group_order` (reuses the exact
+                                // same `graph_rel_vlp_endpoint_role`/
+                                // `composite_id_group_by_columns` discriminator pair, plus
+                                // the shared `composite_id_concat_expr` builder — see that
+                                // module's #537 comment for why referencing the CTE's own
+                                // `start_id`/`end_id` sentinel column directly does NOT work
+                                // here: it collides with the endpoint property rewriter's
+                                // fallback and double-prefixes into `end_end_id`).
+                                if self.graph_rel_vlp_endpoint_role(&alias.0).is_some() {
+                                    if let Some(id_columns) =
+                                        super::group_by_builder::composite_id_group_by_columns(
+                                            self, &alias.0,
+                                        )
+                                    {
+                                        let resolved_alias = match self
+                                            .get_properties_with_table_alias(&alias.0)
+                                        {
+                                            Ok((props, Some(actual_alias)))
+                                                if !props.is_empty() =>
+                                            {
+                                                actual_alias
+                                            }
+                                            _ => alias.0.clone(),
+                                        };
+                                        select_items.push(SelectItem {
+                                            expression:
+                                                super::group_by_builder::composite_id_concat_expr(
+                                                    &resolved_alias,
+                                                    &id_columns,
+                                                ),
+                                            col_alias: item
+                                                .col_alias
+                                                .as_ref()
+                                                .map(|ca| ColumnAlias(ca.0.clone())),
+                                        });
+                                        continue;
+                                    }
+                                }
+
                                 // Get schema from plan_ctx to find the ID column
                                 if let Some(ctx) = plan_ctx {
                                     if let Some(typed_var) = ctx.lookup_variable(&alias.0) {

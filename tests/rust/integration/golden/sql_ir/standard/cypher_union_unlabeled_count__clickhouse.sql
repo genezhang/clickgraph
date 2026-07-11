@@ -13,9 +13,9 @@ UNION ALL
 SELECT 'User' AS start_type, toString(social.users_bench.user_id) as start_id, toString(social.posts_bench.post_id) as end_id, 'Post' AS end_type, ['LIKED'] as path_relationships, [formatRowNoNewline('JSONEachRow', social.post_likes_bench.like_date AS like_date)] as rel_properties, formatRowNoNewline('JSONEachRow', social.users_bench.city, social.users_bench.country, social.users_bench.email_address, social.users_bench.is_active, social.users_bench.full_name, social.users_bench.registration_date, social.users_bench.user_id) as start_properties, formatRowNoNewline('JSONEachRow', social.posts_bench.author_id, social.posts_bench.post_content, social.posts_bench.post_date, social.posts_bench.post_id, social.posts_bench.post_title) as end_properties, NULL AS authored_date, NULL AS follow_date, social.post_likes_bench.like_date AS like_date FROM social.post_likes_bench INNER JOIN social.users_bench ON social.users_bench.user_id = social.post_likes_bench.user_id INNER JOIN social.posts_bench ON social.posts_bench.post_id = social.post_likes_bench.post_id
 )
 SELECT 
-      count(r.user_id) AS "c"
+      count(r.start_id) AS "c"
 FROM pattern_union_r AS r
 UNION DISTINCT 
 SELECT 
-      count(r2.user_id) AS "c"
+      count(r2.start_id) AS "c"
 FROM pattern_union_r2 AS r2

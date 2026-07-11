@@ -110,51 +110,76 @@ impl<'a> IdFunctionTransformer<'a> {
             Expression::FunctionCallExp(func) => {
                 log::debug!("    Found FunctionCall: {}", func.name);
 
-                // Special handling for id(var) in ORDER BY / SELECT
-                // Transform to var.id_property (let SQL generator handle it)
+                // Special handling for id(var) in ORDER BY / SELECT.
+                // Only rewrite to a `var.<real_id_column>` property access when we can
+                // resolve a SINGLE, concrete label for `var` right now — from an
+                // `id(var) = N` / `id(var) IN [...]` constraint recorded earlier in
+                // this same query (`self.label_constraints`; NOT populated from plain
+                // MATCH labels, which aren't known to this pre-planning AST pass).
                 if func.name.eq_ignore_ascii_case("id") && func.args.len() == 1 {
                     if let Expression::Variable(var) = &func.args[0] {
-                        log::info!(
-                            "    🔄 Transforming standalone id({}) to property access",
+                        // Try to find the label from constraints
+                        let label = self.schema.and_then(|_| {
+                            self.label_constraints
+                                .get(*var)
+                                .and_then(|labels| labels.iter().next().map(|s| s.as_str()))
+                        });
+
+                        if let (Some(schema), Some(label)) = (self.schema, label) {
+                            if let Ok(ns) = schema.node_schema(label) {
+                                if let Some(first_col) = ns.node_id.columns().first() {
+                                    log::info!(
+                                        "    🔄 Transforming standalone id({}) to property access ({}, known label {})",
+                                        var, first_col, label
+                                    );
+                                    let property_str = self.arena.alloc_str(first_col);
+                                    return Expression::PropertyAccessExp(
+                                        crate::open_cypher_parser::ast::PropertyAccess {
+                                            base: var,
+                                            key: property_str,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+
+                        // #536: label NOT resolvable at this pre-planning AST stage
+                        // (no id()=/IN constraint recorded for `var` — the common case,
+                        // e.g. a bare `ORDER BY id(x)` with no WHERE id() comparison at
+                        // all). Do NOT rewrite to a synthetic `var.id` property access:
+                        // no schema label defines a Cypher property literally named
+                        // "id", so `type_inference.rs`'s Phase 2 property-based
+                        // candidate pruning (which treats every PropertyAccessExp as a
+                        // real constraint) would see it, find that ZERO candidate
+                        // labels have that property, and prune every candidate to
+                        // nothing — silently collapsing the whole query to 0 rows
+                        // instead of erroring (`SELECT 1 WHERE false`). This bit
+                        // ClickGraph on the live HTTP/Bolt server path (this
+                        // `transform_id_functions` AST pass only runs there —
+                        // `sql_only`/embedded queries never call it and so never hit
+                        // this bug at all).
+                        //
+                        // Leaving `id(var)` as an unresolved FunctionCallExp instead
+                        // lets it flow unchanged into logical planning as a
+                        // `ScalarFnCall("id", [var])`, where it is safely resolved
+                        // AFTER type inference has determined var's actual label(s) —
+                        // by `filter_tagging.rs`'s `apply_property_mapping` (which
+                        // FilterTagging already applies to every ORDER BY item, see
+                        // its `LogicalPlan::OrderBy` arm) using the exact same
+                        // known-label / unsafe-raw-union-placeholder-fallback logic
+                        // (`graph_rel_vlp_endpoint_role`) already proven for
+                        // WHERE-clause id() and GROUP BY id() in the #484 fix family.
+                        // This is the sql_only/embedded path's behavior today (it
+                        // never runs this AST pass), and it resolves `ORDER BY id(u)`
+                        // correctly — reusing it here rather than duplicating a worse,
+                        // earlier, label-blind version of the same resolution.
+                        log::debug!(
+                            "    id({}) label not resolvable at AST-transform stage — \
+                             leaving as unresolved id() function call for \
+                             FilterTagging/render_plan to resolve post-type-inference",
                             var
                         );
-
-                        // Determine the ID property name from schema
-                        let id_property = if let Some(schema) = self.schema {
-                            // Try to find the label from constraints
-                            let label = self
-                                .label_constraints
-                                .get(*var)
-                                .and_then(|labels| labels.iter().next().map(|s| s.as_str()));
-
-                            if let Some(label) = label {
-                                // Known label: use the first ID column
-                                if let Ok(ns) = schema.node_schema(label) {
-                                    let cols = ns.node_id.columns();
-                                    if let Some(first_col) = cols.first() {
-                                        self.arena.alloc_str(first_col)
-                                    } else {
-                                        "id"
-                                    }
-                                } else {
-                                    "id"
-                                }
-                            } else {
-                                // Unknown label — use generic "id" and let
-                                // the SQL generator handle it
-                                "id"
-                            }
-                        } else {
-                            "id"
-                        };
-
-                        let property_str = self.arena.alloc_str(id_property);
-                        return Expression::PropertyAccessExp(
-                            crate::open_cypher_parser::ast::PropertyAccess {
-                                base: var,
-                                key: property_str,
-                            },
-                        );
+                        return Expression::FunctionCallExp(func);
                     }
                 }
 
@@ -752,5 +777,107 @@ mod tests {
             result,
             Expression::Literal(Literal::Boolean(false))
         ));
+    }
+
+    /// #536: a standalone `id(x)` (e.g. from a bare `ORDER BY id(x)`, which has
+    /// no `id(x) = N` / `id(x) IN [...]` WHERE-clause comparison to populate
+    /// `label_constraints` from) must NOT be rewritten to a synthetic `x.id`
+    /// property access when `x`'s label can't be resolved at this
+    /// pre-planning AST stage. No schema label defines a Cypher property
+    /// literally named "id", so downstream `type_inference.rs` Phase 2
+    /// (property-based candidate pruning) would see that PropertyAccessExp,
+    /// find that ZERO candidate labels have an "id" property, and prune every
+    /// candidate to nothing — silently collapsing the whole query to `SELECT
+    /// 1 WHERE false` (0 rows, no error) instead of returning real results.
+    /// This only reproduces via the server/Bolt path (`transform_id_functions`
+    /// is only invoked there — see `src/server/handlers.rs` and
+    /// `src/server/bolt_protocol/handler.rs`); `sql_only`/embedded queries
+    /// never call this AST pass and so never hit this fallback at all, which
+    /// is why this needs a dedicated unit test here rather than a golden SQL
+    /// test (the golden harness's `render()` helper deliberately skips this
+    /// AST-transform stage, matching the embedded/`cg` code path).
+    #[test]
+    fn test_536_standalone_id_unresolvable_label_stays_unresolved() {
+        let arena = StringArena::new();
+        let id_mapper = IdMapper::new();
+        // No schema, no prior `id(x) = N` constraint recorded for "x" —
+        // exactly the common case: a bare `ORDER BY id(x)` with no WHERE
+        // id() comparison at all.
+        let mut transformer = IdFunctionTransformer::new(&arena, &id_mapper, None);
+
+        let expr = Expression::FunctionCallExp(FunctionCall {
+            name: "id".to_string(),
+            args: vec![Expression::Variable("x")],
+        });
+        let result = transformer.transform_expression(expr);
+
+        match result {
+            Expression::FunctionCallExp(f) => {
+                assert_eq!(
+                    f.name, "id",
+                    "#536: must remain an id() function call, not be replaced \
+                     by a different function"
+                );
+            }
+            other => panic!(
+                "#536: unresolvable id(x) must stay as an unresolved \
+                 FunctionCallExp (so FilterTagging/render_plan can resolve it \
+                 later, after type inference knows x's real label), not be \
+                 eagerly rewritten to a bogus `x.id` PropertyAccessExp here — \
+                 got {other:?}"
+            ),
+        }
+    }
+
+    /// #536 regression guard: the KNOWN-label path (an `id(x) = N` constraint
+    /// was already recorded for "x" earlier in the same query, e.g. `WHERE
+    /// id(x) = 5 RETURN id(x)`) must still resolve directly to the real ID
+    /// column — this branch was NOT part of the #536 bug and must keep
+    /// working unchanged.
+    #[test]
+    fn test_536_standalone_id_known_label_still_resolves_to_real_column() {
+        let arena = StringArena::new();
+        let id_mapper = IdMapper::new();
+        let schema_yaml = r#"
+graph_schema:
+  nodes:
+    - label: User
+      database: test_db
+      table: users
+      node_id: user_id
+      property_mappings:
+        user_id: user_id
+  edges: []
+"#;
+        let config = crate::graph_catalog::config::GraphSchemaConfig::from_yaml_str(schema_yaml)
+            .expect("valid test schema yaml");
+        let schema = config
+            .to_graph_schema()
+            .expect("config converts to GraphSchema");
+
+        let mut transformer = IdFunctionTransformer::new(&arena, &id_mapper, Some(&schema));
+        transformer
+            .label_constraints
+            .entry("x".to_string())
+            .or_default()
+            .insert("User".to_string());
+
+        let expr = Expression::FunctionCallExp(FunctionCall {
+            name: "id".to_string(),
+            args: vec![Expression::Variable("x")],
+        });
+        let result = transformer.transform_expression(expr);
+
+        match result {
+            Expression::PropertyAccessExp(pa) => {
+                assert_eq!(pa.base, "x");
+                assert_eq!(
+                    pa.key, "user_id",
+                    "known-label id(x) must resolve to the real schema ID \
+                     column, not a placeholder"
+                );
+            }
+            other => panic!("known-label id(x) must resolve to a PropertyAccessExp: {other:?}"),
+        }
     }
 }
