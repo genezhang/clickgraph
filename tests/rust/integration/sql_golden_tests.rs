@@ -7437,3 +7437,291 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
         }
     }
 }
+
+/// #524/#528/#538/#525: a batch of VLP CTE definition/binding bugs surfaced by
+/// the #486/#489/#494/#500/#511/#517/#518/#521 adversarial review
+/// (2026-07-10). #524 and #538 are fixed here; #528 is characterized as a
+/// deeper, still-open bug (deliberately left unfixed — see its test's doc
+/// comment); #525 is a documented, non-currently-broken robustness finding
+/// (no code change — see the doc comment on this module for details).
+mod vlp_cte_binding_family_524_528_538_525 {
+    use super::*;
+
+    /// #524: a fixed-length hop BEFORE a variable-length hop on a
+    /// denormalized (virtual-node) schema — `(a)-[:REL1]->(b)-[:REL2*1..N]->(c)`
+    /// — used to emit an unconditional (`ON 1 = 1`) JOIN for the leading fixed
+    /// hop, because `PlanCtx`'s VLP-endpoint registry only learned that `b`
+    /// was a VLP endpoint once the VLP relationship's OWN `GraphRel` was
+    /// visited by `collect_graph_joins`'s single left-to-right pass — which
+    /// happens AFTER the leading fixed hop's JOIN is generated. On a
+    /// denormalized schema (no separate node table) the unconditional JOIN
+    /// referenced a nonexistent column (`t.start_dest_code`), live-verified
+    /// pre-fix to crash with ClickHouse `Code: 47 UNKNOWN_IDENTIFIER`.
+    ///
+    /// #521 (merged earlier) already fixed the REVERSE ordering (VLP hop
+    /// visited first, so a LATER fixed hop already sees the endpoint) via the
+    /// same `PlanCtx::is_vlp_endpoint`/`get_vlp_join_reference` machinery in
+    /// `join_generation.rs`. This fixes the forward ordering by adding
+    /// `GraphJoinInference::pre_register_vlp_endpoints` — a pre-pass that
+    /// walks the WHOLE pattern tree for each join-collection scope and
+    /// registers every required VLP's endpoints in `PlanCtx` BEFORE the
+    /// main traversal begins, so visitation order no longer matters.
+    ///
+    /// Live-verified against `db_denormalized`: the fixed query returns rows
+    /// (e.g. `ATL -> JFK`, `LAX -> LAX`, …) matching a hand-written raw-JOIN
+    /// ground-truth query exactly (19 distinct (a,b,c) triples for `*1..2`).
+    #[tokio::test]
+    async fn vlp_fixed_leading_leg_denormalized_correlates_to_vlp_cte_524() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (a:Airport)-[:FLIGHT]->(b:Airport)-[:FLIGHT*1..2]->(c:Airport) \
+             RETURN a.code, c.code",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        assert!(
+            sql.to_uppercase().contains("WITH RECURSIVE"),
+            "expected a genuine VLP recursive CTE for b:Airport-[*1..2]->c:Airport: {sql}"
+        );
+        assert!(
+            !sql.contains("ON 1 = 1") && !sql.contains("ON 1=1"),
+            "the leading a->b FLIGHT hop must emit a real correlated JOIN, \
+             not an unconditional `ON 1 = 1` marker: {sql}"
+        );
+        assert!(
+            sql.contains("t.start_id"),
+            "the leading leg's JOIN condition must correlate against the \
+             VLP CTE's start_id column: {sql}"
+        );
+    }
+
+    /// #524 (companion correctness bug, found while verifying the fix above
+    /// against live data): the denormalized VLP recursive CTE's `start_id`
+    /// column was being REASSIGNED on every recursive hop
+    /// (`next.{from_col} as start_id`, i.e. `vp.end_id` restated) instead of
+    /// threaded through unchanged (`vp.start_id as start_id`) — silently
+    /// drifting to the latest intermediate node for any `hop_count > 1` row.
+    /// This is invisible for `*1..1`-equivalent single-hop VLP (the only row
+    /// shape is the base case, where `start_id` is still correct), but
+    /// corrupts exactly the correlation the #524 fix above depends on for
+    /// real multi-hop paths: `t1.dest_code = t.start_id` would join the
+    /// leading hop against the WRONG (drifted) node for `hop_count == 2`
+    /// rows. Fixed in `DenormalizedCteStrategy::generate_recursive_case_sql`
+    /// (`cte_manager/mod.rs`) by preserving `vp.start_id`, mirroring the
+    /// already-correct pattern used one function away
+    /// (`add_recursive_property_selections`'s `vp.start_{property}`) and the
+    /// non-denormalized `TraditionalCteStrategy`/`FkEdgeCteStrategy`, which
+    /// already did this correctly.
+    ///
+    /// Live-verified: with the fix, `SELECT DISTINCT a,b,c FROM
+    /// (leading-hop-correlated 2-hop VLP query)` on `db_denormalized`
+    /// produces EXACTLY the same 19-row set as a hand-written raw-JOIN
+    /// ground-truth query (e.g. includes `LAX->ATL->JFK` via the 2-hop
+    /// `ATL->LAX->JFK` VLP leg — impossible to get right if `start_id` had
+    /// drifted to `LAX` instead of staying `ATL`).
+    #[tokio::test]
+    async fn denorm_vlp_recursive_start_id_threaded_not_reassigned_524() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (b:Airport)-[:FLIGHT*1..2]->(c:Airport) RETURN b.code, c.code",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        // The recursive term must thread the CTE's own start_id forward...
+        assert!(
+            sql.contains("vp.start_id as start_id"),
+            "recursive case must carry `vp.start_id` forward unchanged: {sql}"
+        );
+        // ...and must NOT reassign it to the current hop's own origin column
+        // (which is just `vp.end_id` restated under a different name).
+        assert!(
+            !sql.contains("next.origin_code as start_id"),
+            "recursive case must not reassign start_id to next.origin_code \
+             (silently drifts to the latest intermediate node): {sql}"
+        );
+    }
+
+    /// #538: `id()`/GROUP BY on a denormalized virtual-node VLP endpoint with
+    /// a bare any-type pattern (`-[r]-`, no relationship-type label) crashed
+    /// `Code 47 UNKNOWN_IDENTIFIER` on a column (e.g. `t.end_query`) the VLP
+    /// CTE never defines — it only exposes the generic `end_id`/`start_id`
+    /// columns. Two independent bugs, both root-caused via targeted tracing:
+    ///
+    /// 1. `select_builder.rs`'s `id(alias)` SELECT-item resolution looked up
+    ///    the node's schema-declared `node_id` column name (e.g. Domain's
+    ///    `node_id: query` in `schemas/dev/zeek_merged_test.yaml`) and
+    ///    prefixed it `end_`/`start_` — correct for an ordinary denormalized
+    ///    node with a real per-type property mapping, but wrong for a
+    ///    multi-type VLP endpoint, whose CTE only ever exposes the generic
+    ///    `end_id`/`start_id` columns. Fixed by checking
+    ///    `PlanCtx::get_vlp_endpoint` FIRST (the same mechanism
+    ///    `join_generation.rs` already uses for the analogous #524 problem)
+    ///    and resolving directly to `start_id`/`end_id` when the alias is a
+    ///    VLP endpoint — bypassing the schema `node_id` lookup entirely.
+    ///    (Note: `typed_var.source()` is NOT a reliable signal here — it
+    ///    still reports `VariableSource::Match` for a VLP-endpoint node at
+    ///    this point in the pipeline, confirmed live.)
+    /// 2. `plan_builder.rs`'s `find_id_column_for_alias` (used for GROUP
+    ///    BY/ORDER BY `id()` resolution) tried the actual GraphNode's real
+    ///    `ViewScan.id_column` BEFORE its own "VLP ENDPOINT FALLBACK" — for a
+    ///    multi-type VLP endpoint, type inference on an unlabeled/any-type
+    ///    node attaches a ViewScan for ONE candidate label purely for
+    ///    planning purposes, and this ordering trusted that per-type column
+    ///    over the generic CTE column that's actually correct. Fixed by
+    ///    checking `variable_length.is_some() && labels.len() > 1`
+    ///    (multi-type VLP) FIRST and returning the generic start_id/end_id
+    ///    fallback immediately in that case, before ever trusting a found
+    ///    GraphNode's per-type id column. Single-type VLP is unaffected —
+    ///    unchanged ordering there already resolved correctly.
+    ///
+    /// Live-verified on the zeek fixture: `id(b)` returns real values
+    /// (`google.com`, `192.168.1.10`, …) with correct per-key counts, and
+    /// `RETURN b, count(*)` groups correctly by node identity across mixed
+    /// IP/Domain endpoint types.
+    #[tokio::test]
+    async fn denorm_virtual_node_vlp_endpoint_id_and_group_by_resolve_to_generic_cte_column_538() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+
+        let sql = render(
+            &schema,
+            "MATCH (a:IP)-[r*1..2]-(b) RETURN id(b), count(*)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("t.end_id") && sql.contains("GROUP BY t.end_id"),
+            "id(b) SELECT item and its GROUP BY key must both resolve to the \
+             VLP CTE's generic end_id column, not a per-type schema column \
+             like end_query: {sql}"
+        );
+        assert!(
+            !sql.contains("end_query"),
+            "must not reference the nonexistent end_query column: {sql}"
+        );
+
+        let sql2 = render(
+            &schema,
+            "MATCH (a:IP)-[r*1..2]-(b) RETURN b, count(*)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql2.contains(r#"t.end_id AS "b.id""#) && sql2.contains("GROUP BY t.end_id"),
+            "bare RETURN b's id column and its GROUP BY key must both \
+             resolve to the VLP CTE's generic end_id column: {sql2}"
+        );
+        assert!(
+            !sql2.contains("end_query"),
+            "must not reference the nonexistent end_query column: {sql2}"
+        );
+    }
+
+    /// #528 — KNOWN BROKEN, deliberately left unfixed. A 3+ relationship-type
+    /// VLP combined with an explicitly-labeled end node (e.g.
+    /// `(u:User)-[:AUTHORED|LIKED|FOLLOWS*1..2]->(x:Post)`) references a
+    /// `vlp_multi_type_u_x` CTE that is NEVER DEFINED — no `WITH` clause at
+    /// all is emitted, just a bare `SELECT ... FROM vlp_multi_type_u_x AS t`.
+    /// Live-verified to crash with ClickHouse `Code: 47 UNKNOWN_IDENTIFIER`.
+    ///
+    /// Root cause (confirmed via targeted tracing, NOT yet fixed): TWO
+    /// independent "is this a multi-type VLP" checks can disagree —
+    /// `from_builder.rs::find_multi_type_graph_rel` uses a purely syntactic
+    /// heuristic (`graph_rel.labels.len() > 1`) to decide the FROM clause
+    /// should reference `vlp_multi_type_{start}_{end}`, while
+    /// `cte_extraction.rs::should_use_join_expansion` independently decides
+    /// whether to actually BUILD that CTE. For this specific query shape,
+    /// `should_use_join_expansion`'s branch is never reached at all — no CTE
+    /// is registered under this alias (confirmed via
+    /// `get_relationship_cte_name` returning `None`), yet
+    /// `find_multi_type_graph_rel` still fires because `labels.len() == 3`.
+    ///
+    /// A fix attempt (making `from_builder.rs` verify CTE registration before
+    /// trusting the naive check, mirroring the pattern the chained-VLP check
+    /// one block below it already uses) was tried and REVERTED: it broke a
+    /// previously-working case (undirected multi-type VLP,
+    /// `(u:User)-[:FOLLOWS|AUTHORED|LIKED*1..2]-(x)`), because
+    /// `find_multi_type_graph_rel`'s discovered `GraphRel` and the alias
+    /// under which the REAL CTE got registered can diverge across
+    /// `bidirectional_union`'s direction-split branches. A correct fix needs
+    /// to reconcile alias correspondence across that split, which is a
+    /// larger, riskier change than fits this batch — left open per the
+    /// task's explicit "prioritize #524/#528 crashes, but don't force a risky
+    /// rewrite" guidance. This test locks the CURRENT (broken) shape so a
+    /// future fix has a clear regression target and diff.
+    #[tokio::test]
+    async fn multi_type_vlp_three_types_labeled_end_known_broken_undefined_cte_528() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (u:User)-[:AUTHORED|LIKED|FOLLOWS*1..2]->(x:Post) \
+             RETURN u.name, x.title",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        assert!(
+            sql.contains("FROM vlp_multi_type_u_x AS t"),
+            "#528 KNOWN BROKEN characterization stale — no longer references \
+             vlp_multi_type_u_x at all: {sql}"
+        );
+        assert!(
+            !sql.to_uppercase().contains("WITH"),
+            "#528 KNOWN BROKEN characterization stale — a WITH clause now \
+             defines the referenced CTE (this bug may be fixed — if so, \
+             replace this characterization with a real regression test \
+             asserting correct behavior): {sql}"
+        );
+    }
+
+    /// #525 — investigated, NOT fixed, no live bug found (documentation-only
+    /// finding, hence no behavior-locking assertion beyond confirming the
+    /// fragile shape still exists). The denormalized VLP base case's WHERE
+    /// clause includes `hop_count <= N`, but `hop_count` is a SELECT-list
+    /// alias (`1 AS hop_count`) in the SAME SELECT, not a real column —
+    /// standard SQL forbids a WHERE clause from referencing a SELECT-list
+    /// alias. This only "works" because ClickHouse non-standardly substitutes
+    /// the alias's expression, making the condition a tautology (`1 <= N`,
+    /// always true for any `max_hops >= 1`) rather than a real bound.
+    ///
+    /// Live-verified (2026-07-10): a bounded denorm VLP query (`*1..2` on
+    /// `db_denormalized`) returns correct results today — this is a fragile
+    /// no-op, not a live break. Confirmed still present after the #524 fixes
+    /// in this same file (`DenormalizedCteStrategy::build_where_clause` in
+    /// `cte_manager/mod.rs`, the `hop_count <= {max_hops}` push).
+    ///
+    /// Deferred fix sketch (not applied — see rationale below): replace the
+    /// alias reference with the literal the base case's `hop_count` column
+    /// is always hardcoded to (`1`), i.e. push `"1 <= {max_hops}"` instead of
+    /// `"hop_count <= {max_hops}"` — standard-SQL-portable, and provably
+    /// identical in behavior since the base case's `hop_count` is always the
+    /// literal `1`. Not applied in this batch: it touches the same core VLP
+    /// CTE generation already modified for #524 in this PR, would need golden
+    /// regeneration across the denormalized VLP corpus, and is not fixing a
+    /// live bug — the task's explicit guidance is to avoid a risky rewrite of
+    /// core VLP CTE generation for a non-currently-broken robustness concern.
+    #[tokio::test]
+    async fn denorm_vlp_base_case_hop_count_alias_where_clause_fragile_not_broken_525() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport) RETURN a.code, b.code",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        assert!(
+            sql.contains("WHERE hop_count <= 2"),
+            "#525: base case WHERE clause references the `hop_count` SELECT \
+             alias (fragile, ClickHouse-specific alias substitution) rather \
+             than the literal 1 it's always equal to in the base case — if \
+             this assertion fails because the shape changed, check whether \
+             it's now a real column reference or a portable literal (in \
+             which case #525 may be fixed; update this test to lock the new, \
+             fixed shape instead of this characterization): {sql}"
+        );
+    }
+}

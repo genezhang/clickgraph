@@ -104,6 +104,14 @@ impl AnalyzerPass for GraphJoinInference {
         let mut join_ctx = JoinContext::new();
         let mut node_appearances: HashMap<String, Vec<NodeAppearance>> = HashMap::new(); // Track cross-branch shared nodes
         let cte_scope_aliases = HashSet::new(); // Start with empty CTE scope
+
+        // #524: Register required-VLP endpoints for this whole scope up front,
+        // before the left-to-right join-collection pass, so a fixed hop that
+        // precedes its VLP hop in pattern order (e.g. `(a)-[:R1]->(b)-[:R2*1..3]->(c)`)
+        // still sees `b` as a known VLP endpoint when its JOIN is generated.
+        // See `pre_register_vlp_endpoints` doc comment for the full explanation.
+        Self::pre_register_vlp_endpoints(&logical_plan, plan_ctx);
+
         self.collect_graph_joins(
             logical_plan.clone(),
             logical_plan.clone(), // Pass root plan for reference checking
@@ -862,6 +870,10 @@ impl GraphJoinInference {
                             branch_metadata.edges.len()
                         );
 
+                        // #524: pre-register this branch's required-VLP endpoints
+                        // before collecting its joins (see pre_register_vlp_endpoints doc).
+                        Self::pre_register_vlp_endpoints(branch.as_ref(), &mut branch_plan_ctx);
+
                         // Collect additional joins for this specific branch
                         graph_join_inference.collect_graph_joins(
                             branch.clone(),
@@ -1208,6 +1220,10 @@ impl GraphJoinInference {
                     let inner_metadata =
                         Self::build_pattern_metadata(group_by.input.as_ref(), &inner_plan_ctx)
                             .unwrap_or_default();
+
+                    // #524: pre-register this inner scope's required-VLP endpoints
+                    // before collecting its joins (see pre_register_vlp_endpoints doc).
+                    Self::pre_register_vlp_endpoints(group_by.input.as_ref(), &mut inner_plan_ctx);
 
                     // IMPORTANT: We need to collect joins for the inner scope FIRST
                     // because collect_graph_joins stopped at the boundary during the main traversal
@@ -1707,6 +1723,14 @@ impl GraphJoinInference {
                 let mut inner_joins = Vec::new();
                 let mut inner_join_ctx = JoinContext::new();
                 let mut inner_plan_ctx_mut = inner_plan_ctx;
+
+                // #524: pre-register this WITH scope's required-VLP endpoints
+                // before collecting its joins (see pre_register_vlp_endpoints doc).
+                Self::pre_register_vlp_endpoints(
+                    with_clause.input.as_ref(),
+                    &mut inner_plan_ctx_mut,
+                );
+
                 let inner_inference = GraphJoinInference::new();
                 inner_inference.collect_graph_joins(
                     with_clause.input.clone(),
@@ -3227,6 +3251,129 @@ impl GraphJoinInference {
     // ========================================================================
     // Phase 3: Extracted Helper Methods (Breaking Up God Method)
     // ========================================================================
+
+    /// Pre-scan a pattern tree for required (non-optional, non-fixed-length) VLP
+    /// relationships and register their start/end endpoints in `plan_ctx` BEFORE
+    /// the main left-to-right `collect_graph_joins` traversal begins.
+    ///
+    /// # Root cause (#524)
+    /// `should_skip_for_vlp` registers a VLP's endpoints in `plan_ctx` only when
+    /// the VLP's own `GraphRel` is visited during `collect_graph_joins`'s single
+    /// left-to-right pass. For `(a)-[:REL1]->(b)-[:REL2*1..3]->(c)`, the fixed
+    /// hop a-b is visited (and its JOIN generated) *before* the VLP hop b-c, so
+    /// at JOIN-generation time for a-b, `plan_ctx.is_vlp_endpoint("b")` is still
+    /// false — the fixed hop's trailing alias binds via an unconditional
+    /// (`1=1`) JOIN instead of correlating to the VLP CTE. On denormalized
+    /// schemas (no separate node table) this crashes (`Code 47`, references a
+    /// column that never existed); on standard schemas it silently emits a
+    /// cartesian join that inflates row counts without erroring.
+    ///
+    /// #521 (merged) already fixed the *reverse* ordering (VLP hop visited
+    /// first, so by the time the fixed hop is processed the endpoint is
+    /// already known) via `plan_ctx.is_vlp_endpoint`/`get_vlp_join_reference`
+    /// in `join_generation.rs::generate_pattern_joins`, and the same
+    /// `apply_vlp_rewrites` post-pass patches `PropertyAccessExp` join
+    /// conditions for the "Traditional" strategy. Both mechanisms already
+    /// generalize correctly — they just need endpoint info to exist *before*
+    /// they run. This function supplies that by registering every required
+    /// VLP's endpoints up front, so visitation order no longer matters.
+    ///
+    /// `vlp_alias` here is a placeholder — it isn't read for required
+    /// (non-optional) VLP JOIN generation (`get_vlp_join_reference` always
+    /// returns the fixed `VLP_CTE_FROM_ALIAS` = "t" for the join alias). The
+    /// real `should_skip_for_vlp` call, reached later during the actual
+    /// traversal, overwrites this placeholder entry with a freshly-allocated
+    /// `vt{N}` alias from `plan_ctx.next_vlp_alias()` — so this pre-pass does
+    /// not perturb the `vt0`/`vt1`/... counter used by optional VLP endpoints
+    /// (whose golden SQL embeds those literal aliases).
+    ///
+    /// Stops at `WithClause` boundaries: each WITH scope calls this
+    /// separately (via its own `collect_graph_joins` entry point) with its
+    /// own `plan_ctx`, so crossing the boundary here would double-register
+    /// into the wrong scope.
+    fn pre_register_vlp_endpoints(plan: &LogicalPlan, plan_ctx: &mut PlanCtx) {
+        const PRE_PASS_VLP_ALIAS_PLACEHOLDER: &str = "__pre_registered_vlp__";
+
+        match plan {
+            LogicalPlan::GraphRel(gr) => {
+                Self::pre_register_vlp_endpoints(&gr.left, plan_ctx);
+                Self::pre_register_vlp_endpoints(&gr.right, plan_ctx);
+
+                if let Some(spec) = gr.variable_length.as_ref() {
+                    let is_fixed_length =
+                        spec.exact_hop_count().is_some() && gr.shortest_path_mode.is_none();
+                    let is_optional = gr.is_optional.unwrap_or(false);
+
+                    // Only required (non-optional, non-fixed-length) VLPs hit the
+                    // CTE-skip path in should_skip_for_vlp — mirror that condition
+                    // exactly so we don't perturb optional-VLP or fixed-length
+                    // handling (which don't have the forward-reference problem;
+                    // optional VLP marks its endpoint locally within the same
+                    // infer_graph_join call, and fixed-length never skips).
+                    if !is_fixed_length && !is_optional {
+                        let left_alias = gr.left_connection.clone();
+                        let right_alias = gr.right_connection.clone();
+                        let rel_alias = gr.alias.clone();
+
+                        plan_ctx.register_vlp_endpoint(
+                            left_alias.clone(),
+                            VlpEndpointInfo {
+                                position: VlpPosition::Start,
+                                other_endpoint_alias: right_alias.clone(),
+                                rel_alias: rel_alias.clone(),
+                                vlp_alias: PRE_PASS_VLP_ALIAS_PLACEHOLDER.to_string(),
+                            },
+                        );
+                        plan_ctx.register_vlp_endpoint(
+                            right_alias,
+                            VlpEndpointInfo {
+                                position: VlpPosition::End,
+                                other_endpoint_alias: left_alias,
+                                rel_alias,
+                                vlp_alias: PRE_PASS_VLP_ALIAS_PLACEHOLDER.to_string(),
+                            },
+                        );
+                    }
+                }
+            }
+            LogicalPlan::GraphNode(gn) => Self::pre_register_vlp_endpoints(&gn.input, plan_ctx),
+            LogicalPlan::Filter(f) => Self::pre_register_vlp_endpoints(&f.input, plan_ctx),
+            LogicalPlan::Projection(p) => Self::pre_register_vlp_endpoints(&p.input, plan_ctx),
+            LogicalPlan::GroupBy(g) => Self::pre_register_vlp_endpoints(&g.input, plan_ctx),
+            LogicalPlan::OrderBy(o) => Self::pre_register_vlp_endpoints(&o.input, plan_ctx),
+            LogicalPlan::Skip(s) => Self::pre_register_vlp_endpoints(&s.input, plan_ctx),
+            LogicalPlan::Limit(l) => Self::pre_register_vlp_endpoints(&l.input, plan_ctx),
+            LogicalPlan::Cte(c) => Self::pre_register_vlp_endpoints(&c.input, plan_ctx),
+            LogicalPlan::GraphJoins(gj) => Self::pre_register_vlp_endpoints(&gj.input, plan_ctx),
+            // CRITICAL: do NOT recurse into UNION branches here, matching
+            // `collect_graph_joins`'s own documented invariant just above
+            // ("If we recurse here with shared state, branches pollute each
+            // other"). Each branch gets its OWN independent pre-pass call,
+            // over its OWN cloned `plan_ctx`, at the Union-branch site in
+            // `build_graph_joins` (where `branch_plan_ctx` is created).
+            // Recursing into both branches here with the SHARED top-level
+            // `plan_ctx` was confirmed live to cause a genuine regression: for
+            // an undirected VLP (`(u1)-[:R*1..2]-(u2)`), both direction
+            // variants share the aliases u1/u2 but with swapped
+            // left_connection/right_connection; registering both into one
+            // HashMap keyed by alias means the second registration silently
+            // overwrites the first, and cloning that contaminated state into
+            // EACH branch produced a duplicate JOIN for a downstream fixed
+            // hop off the VLP endpoint (e.g.
+            // `(u1)-[:FOLLOWS*1..2]-(u2)-[:AUTHORED]->(p)` gained a second,
+            // redundant `posts_test` JOIN under a different alias — see the
+            // golden-test fix accompanying this change).
+            LogicalPlan::Union(_) => {}
+            LogicalPlan::Unwind(u) => Self::pre_register_vlp_endpoints(&u.input, plan_ctx),
+            LogicalPlan::CartesianProduct(cp) => {
+                Self::pre_register_vlp_endpoints(&cp.left, plan_ctx);
+                Self::pre_register_vlp_endpoints(&cp.right, plan_ctx);
+            }
+            // WithClause is a separate scope boundary — its inner scope gets
+            // its own pre-pass call at its own collect_graph_joins call site.
+            _ => {}
+        }
+    }
 
     /// Check if this pattern should skip JOIN inference due to variable-length path.
     ///
