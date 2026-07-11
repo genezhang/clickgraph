@@ -31,7 +31,7 @@ use std::collections::HashSet;
 use super::errors::RenderBuildError;
 use super::plan_builder::RenderPlanBuilder;
 use super::plan_builder_helpers::apply_property_mapping_to_expr;
-use super::render_expr::{PropertyAccess, RenderExpr, TableAlias};
+use super::render_expr::{Literal as RenderLiteral, PropertyAccess, RenderExpr, TableAlias};
 
 /// Result type for GROUP BY builder operations
 pub type GroupByBuilderResult<T> = Result<T, RenderBuildError>;
@@ -325,6 +325,45 @@ pub(super) fn resolve_id_function_for_group_order(
         return None;
     }
 
+    // #537: a VLP endpoint on a COMPOSITE-id node (e.g. Account keyed by
+    // `(bank_id, account_number)`) must resolve `id()`/GROUP BY to the FULL
+    // composite tuple, not just the FIRST component. `find_id_column_for_alias`
+    // below would return just `bank_id` — its GraphNode-branch takes priority
+    // over its own VLP fallback (its doc comment: "the node's real ID column
+    // ... is the correct answer for WITH CTE schemas") and finds the
+    // endpoint's underlying (pre-VLP-rewrite) GraphNode first, returning
+    // `ViewScan.id_column` — a single `String` by construction — silently
+    // truncating to the FIRST composite component and merging every distinct
+    // account at the same bank into one GROUP BY group (issue #537).
+    //
+    // Tried and DISCARDED: referencing the VLP CTE's own pipe-joined
+    // `start_id`/`end_id` sentinel column (`emit_id_expr` in
+    // `variable_length_cte.rs`) directly via `VLP_START_ID_COLUMN`/
+    // `VLP_END_ID_COLUMN` — this collides with
+    // `rewrite_render_expr_for_vlp_with_endpoint_info`'s (`plan_builder_utils.rs`)
+    // endpoint-property rewriter: its direct `cte_column_mapping` lookup is
+    // keyed by genuine SCHEMA property names ("bank_id"), so looking up the
+    // already-synthetic name "end_id" misses and falls to that function's own
+    // blind `format!("{prefix}{col_name}")` fallback, double-prefixing into
+    // `end_end_id` (a hard Code 47 UNKNOWN_IDENTIFIER — worse than the
+    // original silent merge). Build `concat(toString(c1),'|',toString(c2),...)`
+    // over the RAW schema composite columns instead (`composite_id_group_by_columns`,
+    // #457's `is_composite()` check), mirroring `emit_id_expr`'s own pipe-join
+    // convention — this is the exact shape `handle_table_alias_group_by`'s
+    // bare-alias composite path already uses successfully for `RETURN a2,
+    // count(*)` (proven correct: renders `GROUP BY t.end_bank_id,
+    // t.end_account_number`), so the SAME already-correct endpoint rewriter
+    // maps each RAW column individually instead of needing a workaround here.
+    if input.graph_rel_vlp_endpoint_role(&alias).is_some() {
+        if let Some(id_columns) = composite_id_group_by_columns(input, &alias) {
+            let table_alias_to_use = match input.get_properties_with_table_alias(&alias) {
+                Ok((props, Some(actual_alias))) if !props.is_empty() => actual_alias,
+                _ => alias.clone(),
+            };
+            return Some(composite_id_concat_expr(&table_alias_to_use, &id_columns));
+        }
+    }
+
     // Plain path: same resolution as `handle_table_alias_group_by`.
     let id_col = input.find_id_column_for_alias(&alias).ok()?;
     let table_alias_to_use = match input.get_properties_with_table_alias(&alias) {
@@ -335,6 +374,47 @@ pub(super) fn resolve_id_function_for_group_order(
         table_alias: TableAlias(table_alias_to_use),
         column: PropertyValue::Column(id_col),
     }))
+}
+
+/// Build `concat(toString(alias.c1), '|', toString(alias.c2), ...)` over a
+/// composite id's raw schema columns — mirrors `emit_id_expr`'s pipe-join
+/// convention (`sql_generator/emitters/clickhouse/variable_length_cte.rs`)
+/// used by the VLP CTE's own `start_id`/`end_id` columns, so an `id()`/
+/// GROUP BY resolution built from this renders an identical string to what
+/// the CTE itself would materialize for a non-VLP composite id. Shared by
+/// `resolve_id_function_for_group_order` (here) and `select_builder.rs`'s
+/// SELECT-list `id()` Case 5 (#537) — both hit the same VLP-endpoint
+/// composite-id gap.
+pub(super) fn composite_id_concat_expr(table_alias: &str, id_columns: &[String]) -> RenderExpr {
+    let to_string_calls: Vec<RenderExpr> = id_columns
+        .iter()
+        .map(|col| {
+            RenderExpr::ScalarFnCall(crate::render_plan::render_expr::ScalarFnCall {
+                name: "toString".to_string(),
+                args: vec![RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(table_alias.to_string()),
+                    column: PropertyValue::Column(col.clone()),
+                })],
+            })
+        })
+        .collect();
+
+    if to_string_calls.len() == 1 {
+        return to_string_calls.into_iter().next().unwrap();
+    }
+
+    // Interleave with '|' literal separators: concat(toString(c1), '|', toString(c2), ...)
+    let mut args = Vec::with_capacity(to_string_calls.len() * 2 - 1);
+    for (i, call) in to_string_calls.into_iter().enumerate() {
+        if i > 0 {
+            args.push(RenderExpr::Literal(RenderLiteral::String("|".to_string())));
+        }
+        args.push(call);
+    }
+    RenderExpr::ScalarFnCall(crate::render_plan::render_expr::ScalarFnCall {
+        name: "concat".to_string(),
+        args,
+    })
 }
 
 /// Does `alias` render via a RAW per-label `UNION ALL` (multiple physical
