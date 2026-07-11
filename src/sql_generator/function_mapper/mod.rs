@@ -171,6 +171,15 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// `t.col` yields key `col`, matching CH's column-name keys), and both
     /// preserve native value types. `columns` is the pre-joined fragment.
     fn json_row_object(&self, columns: &str) -> String;
+
+    /// Best-effort integer parse of a STRING expression, yielding a wide
+    /// (128-bit / 38-digit) integer when `expr` is a pure integer literal and
+    /// NULL otherwise — never an error. CH: `toInt128OrNull({expr})`. Spark:
+    /// `try_cast({expr} AS DECIMAL(38,0))`. Wide enough to round-trip the
+    /// full `UInt64`/`Int64` ranges exactly (no float truncation). Used by
+    /// the #546 typed `ORDER BY id()` union key so numeric ids order
+    /// numerically even after the union branches' string normalization.
+    fn try_parse_int128(&self, expr: &str) -> String;
 }
 
 /// Returns the function mapper for the active SQL dialect, read from the

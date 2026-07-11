@@ -2015,57 +2015,23 @@ impl FilterTagging {
         match &expr {
             LogicalExpr::PropertyAccessExp(prop_acc) => Some(prop_acc.table_alias.0.clone()),
             LogicalExpr::OperatorApplicationExp(op_app) => {
-                let mut found_table_alias_opt: Option<String> = None;
-                for operand in &op_app.operands {
-                    if let Some(current_table_alias) =
-                        Self::get_table_alias_if_single_table_condition(operand, with_agg_fn)
-                    {
-                        if let Some(found_table_alias) = found_table_alias_opt.as_ref() {
-                            if *found_table_alias != current_table_alias {
-                                return None;
-                            }
-                        } else {
-                            found_table_alias_opt = Some(current_table_alias.clone());
-                        }
-                    }
-                }
-                found_table_alias_opt
+                Self::combine_operand_aliases_if_single_table(op_app.operands.iter(), with_agg_fn)
             }
             LogicalExpr::ScalarFnCall(scalar_fn_call) => {
-                let mut found_table_alias_opt: Option<String> = None;
-                for arg in &scalar_fn_call.args {
-                    if let Some(current_table_alias) =
-                        Self::get_table_alias_if_single_table_condition(arg, with_agg_fn)
-                    {
-                        if let Some(found_table_alias) = found_table_alias_opt.as_ref() {
-                            if *found_table_alias != current_table_alias {
-                                return None;
-                            }
-                        } else {
-                            found_table_alias_opt = Some(current_table_alias.clone());
-                        }
-                    }
-                }
-                found_table_alias_opt
+                Self::combine_operand_aliases_if_single_table(
+                    scalar_fn_call.args.iter(),
+                    with_agg_fn,
+                )
             }
             LogicalExpr::AggregateFnCall(aggregate_fn_call) => {
-                let mut found_table_alias_opt: Option<String> = None;
                 if with_agg_fn {
-                    for arg in &aggregate_fn_call.args {
-                        if let Some(current_table_alias) =
-                            Self::get_table_alias_if_single_table_condition(arg, with_agg_fn)
-                        {
-                            if let Some(found_table_alias) = found_table_alias_opt.as_ref() {
-                                if *found_table_alias != current_table_alias {
-                                    return None;
-                                }
-                            } else {
-                                found_table_alias_opt = Some(current_table_alias.clone());
-                            }
-                        }
-                    }
+                    Self::combine_operand_aliases_if_single_table(
+                        aggregate_fn_call.args.iter(),
+                        with_agg_fn,
+                    )
+                } else {
+                    None
                 }
-                found_table_alias_opt
             }
             // #542: an IN-list literal (`x.a IN [1, 2, 3]`) previously fell
             // through to `_ => None` — its elements were invisible to this
@@ -2086,24 +2052,87 @@ impl FilterTagging {
             // other call sites' existing single-table classifications for
             // conditions that don't involve an IN-list are unchanged.
             LogicalExpr::List(exprs) => {
-                let mut found_table_alias_opt: Option<String> = None;
-                for item in exprs {
-                    if let Some(current_table_alias) =
-                        Self::get_table_alias_if_single_table_condition(item, with_agg_fn)
-                    {
-                        if let Some(found_table_alias) = found_table_alias_opt.as_ref() {
-                            if *found_table_alias != current_table_alias {
-                                return None;
-                            }
-                        } else {
-                            found_table_alias_opt = Some(current_table_alias.clone());
-                        }
-                    }
-                }
-                found_table_alias_opt
+                Self::combine_operand_aliases_if_single_table(exprs.iter(), with_agg_fn)
             }
             _ => None,
         }
+    }
+
+    /// #548 follow-up to #542: fold a sequence of sub-expressions (an
+    /// `OperatorApplicationExp`'s operands, a `ScalarFnCall`/
+    /// `AggregateFnCall`'s args, or a `List`'s elements) into a single "all
+    /// reference the same table" alias, or `None` if they don't / carry no
+    /// alias info at all. Shared by every `get_table_alias_if_single_table_condition`
+    /// arm above that walks such a sequence, so they all apply the identical
+    /// cross-table-List-operand conflict check below rather than four
+    /// independent (and, before #548, inconsistent) copies of the same fold.
+    ///
+    /// #542 taught `get_table_alias_if_single_table_condition`'s own `List`
+    /// arm to detect when a list's elements reference 2+ DIFFERENT tables
+    /// (`x.a IN [y.b, z.c]`) — but it reports that conflict as a bare `None`,
+    /// which is indistinguishable, to a naive `if let Some(alias) = ...`
+    /// caller, from "this operand carries no alias info at all" (e.g. a pure
+    /// literal). Every one of the four folds above used exactly that naive
+    /// pattern: when a `List` operand's OWN recursive resolution collapsed to
+    /// `None` because ITS elements disagreed, the caller's loop simply
+    /// skipped the operand instead of treating the internal conflict as a
+    /// hard "the whole containing expression is NOT single-table" signal —
+    /// silently misclassifying `x.a IN [y.b, z.c]` (2+ elements, multiple
+    /// DIFFERENT cross-table aliases) as single-table `x` (#548; the
+    /// single-cross-table-element case `x.a IN [y.b]` was already fixed by
+    /// #542, since THAT List resolves to a concrete `Some("y")`, which the
+    /// naive `if let Some(...)` pattern already compared correctly). Checking
+    /// each operand explicitly here — BEFORE folding its own resolution in —
+    /// closes that gap for all four call sites at once without changing
+    /// behavior for any other input shape (same-table lists, single-element
+    /// lists, literal-only lists, and non-List operands are untouched).
+    fn combine_operand_aliases_if_single_table<'a>(
+        operands: impl Iterator<Item = &'a LogicalExpr>,
+        with_agg_fn: bool,
+    ) -> Option<String> {
+        let mut found_table_alias_opt: Option<String> = None;
+        for operand in operands {
+            if let LogicalExpr::List(items) = operand {
+                if Self::list_has_conflicting_aliases(items, with_agg_fn) {
+                    return None;
+                }
+            }
+            if let Some(current_table_alias) =
+                Self::get_table_alias_if_single_table_condition(operand, with_agg_fn)
+            {
+                if let Some(found_table_alias) = found_table_alias_opt.as_ref() {
+                    if *found_table_alias != current_table_alias {
+                        return None;
+                    }
+                } else {
+                    found_table_alias_opt = Some(current_table_alias.clone());
+                }
+            }
+        }
+        found_table_alias_opt
+    }
+
+    /// #548: true when a list's elements resolve to 2+ DIFFERENT table
+    /// aliases (e.g. `[y.b, z.c]` in `x.a IN [y.b, z.c]`) — a genuine
+    /// cross-table condition. `get_table_alias_if_single_table_condition`'s
+    /// own `List` arm already detects this internally (its "elements
+    /// disagree -> None" rule, #542) but reports it as a bare `None`,
+    /// indistinguishable to a caller from "no alias info at all"; this
+    /// standalone check lets `combine_operand_aliases_if_single_table` tell
+    /// the two apart before folding a `List` operand's resolution in.
+    fn list_has_conflicting_aliases(list_items: &[LogicalExpr], with_agg_fn: bool) -> bool {
+        let mut seen: Option<String> = None;
+        for item in list_items {
+            if let Some(alias) = Self::get_table_alias_if_single_table_condition(item, with_agg_fn)
+            {
+                match &seen {
+                    Some(existing) if *existing != alias => return true,
+                    None => seen = Some(alias),
+                    _ => {}
+                }
+            }
+        }
+        false
     }
 
     // ========================================================================
