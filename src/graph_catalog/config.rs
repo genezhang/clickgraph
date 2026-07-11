@@ -1367,7 +1367,7 @@ fn build_node_schema(
         &node_def.label,
     )?;
 
-    Ok(NodeSchema {
+    let mut node_schema = NodeSchema {
         database: node_def.database.clone(),
         table_name: node_def.table.clone(),
         column_names: property_mappings
@@ -1398,7 +1398,26 @@ fn build_node_schema(
         source: node_def.source.clone(),
         property_types,
         id_generation: parse_id_generation(&node_def.id_generation, &node_def.label)?,
-    })
+    };
+
+    // #549: bake the property_mappings merge into the role-specific maps at
+    // load time (`denorm_role_properties` — role mappings win on collisions,
+    // `node_id` names excluded), so EVERY downstream reader of
+    // `from_properties`/`to_properties` — the relationship-level copies in
+    // `build_relationship_schema`/`resolve_denormalized_edge_props`, plus
+    // the many direct node-level readers (standalone-scan ViewScan
+    // construction, `view_resolver.rs`, `select_builder.rs`,
+    // `cte_generation.rs`, ...) — sees one consistent merged view, instead
+    // of each call site independently needing to remember the extra
+    // `property_mappings` source. `None`-ness is preserved (`Some` in →
+    // `Some` out only), so `is_denormalized`-adjacent checks are unaffected.
+    // For every real in-repo schema this is a no-op (their denormalized
+    // nodes carry only the auto-identity `node_id` entry, which the merge
+    // skips).
+    node_schema.from_properties = node_schema.denorm_role_properties(true);
+    node_schema.to_properties = node_schema.denorm_role_properties(false);
+
+    Ok(node_schema)
 }
 
 /// Build a RelationshipSchema from a legacy RelationshipDefinition
@@ -1472,14 +1491,21 @@ fn build_relationship_schema(
     let from_composite_key = format!("{}::{}::{}", rel_def.database, rel_def.table, from_node);
     let to_composite_key = format!("{}::{}::{}", rel_def.database, rel_def.table, to_node);
 
+    // #549: use `denorm_role_properties()` rather than reading `from_properties`/
+    // `to_properties` directly — it also merges in any additional properties the
+    // node declares via `property_mappings` (role-specific mapping still wins on
+    // a name collision), so a property that doesn't vary by role isn't silently
+    // dropped from every downstream consumer of this relationship's
+    // `from_node_properties`/`to_node_properties` (WITH-aggregate CTE export,
+    // `ViewScan` construction, `PatternSchemaContext`, ...).
     let from_node_props = nodes
         .get(&from_composite_key)
         .or_else(|| nodes.get(&from_node))
-        .and_then(|n| n.from_properties.clone());
+        .and_then(|n| n.denorm_role_properties(true));
     let to_node_props = nodes
         .get(&to_composite_key)
         .or_else(|| nodes.get(&to_node))
-        .and_then(|n| n.to_properties.clone());
+        .and_then(|n| n.denorm_role_properties(false));
 
     // Detect FK-edge pattern:
     // The edge is represented by a FK column on one of the node tables.
@@ -1576,12 +1602,12 @@ fn resolve_denormalized_edge_props(
     is_from: bool,
 ) -> Option<HashMap<String, String>> {
     // Case 1 (coupled): node lives on the edge's own table — composite key matches.
+    // #549: route through `denorm_role_properties()` (not the raw `from_properties`/
+    // `to_properties` field) so a `property_mappings`-sourced property isn't
+    // silently dropped from the edge-level map when the node ALSO declares one
+    // alongside its role-specific from/to maps.
     if let Some(n) = nodes.get(composite_key) {
-        return if is_from {
-            n.from_properties.clone()
-        } else {
-            n.to_properties.clone()
-        };
+        return n.denorm_role_properties(is_from);
     }
 
     // Case 2 (foreign edge): node found by label only → its table differs from the

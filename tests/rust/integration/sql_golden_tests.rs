@@ -2626,54 +2626,108 @@ async fn denorm_479_plain_optional_where_drops_null_extended_rows_known_broken()
     );
 }
 
-/// KNOWN BROKEN — deferred. A THIRD #479 gap, found by adversarial review:
-/// composite-key OPTIONAL MATCH WHERE-on-optional-node.
-/// `composite_node_ids.yaml` (Account identified by the TWO-column key
-/// `[bank_id, account_number]`) renders the classic separate-edge two-JOIN
-/// shape (`c LEFT JOIN account_ownership LEFT JOIN accounts`), but the
-/// `fold_optional_edge_node_join_with_predicate` pass (#479,
-/// `plan_optimizer.rs`) correctly DECLINES to fold it: its gate requires a
-/// single-column-key LEFT JOIN (`single_column_join_key` returns `None` when
-/// `join.joining_on.len() != 1`), and a composite-key JOIN's `ON` clause is
-/// two ANDed equalities (`a.bank_id = t1.bank_id AND a.account_number =
-/// t1.account_number`) — deliberately out of scope rather than risk an
-/// incorrect fold on a shape the fix was never verified against. So the WHERE
-/// predicate stays in the pre-existing (and still buggy) bare outer WHERE
-/// placement.
+/// FIXED (#533, was the third #479 gap): composite-key OPTIONAL MATCH
+/// WHERE-on-optional-node. `composite_node_ids.yaml` (Account identified by
+/// the TWO-column key `[bank_id, account_number]`) renders the classic
+/// separate-edge two-JOIN shape (`c LEFT JOIN account_ownership LEFT JOIN
+/// accounts`), but #479's original `fold_optional_edge_node_join_with_predicate`
+/// pass (`plan_optimizer.rs`) declined to fold it: its gate hard-required a
+/// single-column-key LEFT JOIN (`joining_on.len() == 1`), and a composite-key
+/// JOIN's ON is two ANDed equalities (`a.bank_id = t1.bank_id AND
+/// a.account_number = t1.account_number`). The predicate therefore stayed in
+/// the bare outer WHERE, dropping NULL-extended no-match anchors — the same
+/// disease as #479's main case.
 ///
-/// Reproduces identically on `main` (pre-existing, not a regression from any
-/// #477/#478/#479 fix in this family — the fold pass is purely additive and
-/// never removes a pre-existing WHERE placement it doesn't recognize).
+/// Fixed by generalizing the gate (`equality_join_key_columns`, replacing
+/// `single_column_join_key`): every ON condition must be a bare column
+/// equality connecting the join's own alias to the SAME single other alias —
+/// single- or multi-column — and the combined subquery exports one synthetic
+/// `__cg_combined_anchor_key*` per edge→anchor key column (the first keeps
+/// the original unsuffixed name, so single-column output is byte-identical
+/// to #479's).
 ///
-/// Live (db_composite_id, 5 customers): `MATCH (c:Customer) OPTIONAL MATCH
-/// (c)-[:OWNS]->(a:Account) WHERE a.balance > 10000 RETURN c.name,
-/// a.account_number` — ground truth is 5 rows (Alice/SAV-002, Bob/SAV-002
-/// [joint ownership of the same account], Diana/WF-1002, Eve/WF-1004, and
-/// Charlie NULL-extended — his only account, SAV-004, has balance 8500,
-/// below the threshold). Current behavior returns only 4 rows, dropping
-/// Charlie — the same disease as #479's main case.
+/// Live-verified (2026-07-11, db_composite_id, 5 customers): pre-fix this
+/// returned 4 rows (Charlie dropped — his only account, SAV-004, has balance
+/// 8500, below the threshold); post-fix exactly the 5-row ground truth
+/// (Alice/SAV-002, Bob/SAV-002 [joint ownership], Charlie/NULL,
+/// Diana/WF-1002, Eve/WF-1004).
 #[tokio::test]
-async fn composite_479_plain_optional_where_drops_null_extended_rows_known_broken() {
+async fn composite_479_optional_where_folds_into_combined_join_533() {
     let schema = load_schema(SchemaId::CompositeId.yaml_path());
     let cypher = "MATCH (c:Customer) OPTIONAL MATCH (c)-[:OWNS]->(a:Account) \
                   WHERE a.balance > 10000 RETURN c.name, a.account_number";
     let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
 
-    // Characterization lock: predicate still sits in a bare outer WHERE
-    // (post-join), which drops NULL-extended no-match customers. If this
-    // starts failing because the WHERE is gone, that is progress toward
-    // extending #479's fold pass to composite keys — verify against live
-    // ground truth (5 rows on the committed db_composite_id fixture) before
-    // replacing this test.
-    let has_bare_outer_where = sql
-        .lines()
-        .any(|l| l.trim_start() == "WHERE a.balance > 10000");
+    // No bare outer WHERE on the optional node's predicate.
     assert!(
-        has_bare_outer_where,
-        "#479 (composite-key) KNOWN BROKEN characterization stale — predicate \
-         no longer in a bare outer WHERE; if this is a genuine fix (verify \
-         live: must return 5 rows, not 4), replace this test with a \
-         regression test:\n{sql}"
+        !sql.lines()
+            .any(|l| l.trim_start().starts_with("WHERE a.balance")),
+        "#533 regressed: predicate is back in a bare outer WHERE (drops \
+         NULL-extended anchors):\n{sql}"
+    );
+    // The combined subquery form: the composite-key inner node JOIN plus the
+    // predicate inside it, gated on the (single-column, OWNS from_id) anchor
+    // key.
+    assert!(
+        sql.contains("JOIN db_composite_id.accounts AS a ON a.bank_id ="),
+        "#533 regressed: expected the combined subquery's inner composite-key \
+         node JOIN:\n{sql}"
+    );
+    assert!(
+        sql.contains("WHERE balance > 10000"),
+        "#533 regressed: expected the (alias-stripped) predicate inside the \
+         combined subquery:\n{sql}"
+    );
+    assert!(
+        sql.contains(".__cg_combined_anchor_key = c.customer_id"),
+        "#533 regressed: expected the combined JOIN gated on the anchor \
+         key:\n{sql}"
+    );
+}
+
+/// #533 companion: the FULLY-composite variant — both the node→edge key AND
+/// the edge→anchor key are two-column (`TRANSFERRED`: `from_id: [from_bank_id,
+/// from_account_number]`, `to_id: [to_bank_id, to_account_number]`). The
+/// combined subquery must export one synthetic anchor key per edge→anchor
+/// column (`__cg_combined_anchor_key` + `__cg_combined_anchor_key_1`) and the
+/// outer combined JOIN must carry both equalities.
+///
+/// Live-verified (2026-07-11, db_composite_id, 8 accounts): output matches a
+/// hand-written combined-subquery ground-truth query row-for-row — 8 rows,
+/// every account present, NULL-extended where no qualifying (balance > 10000)
+/// transfer target exists (CHK-001→SAV-002, SAV-004→WF-1002, WF-1002→WF-1004,
+/// the other five NULL).
+#[tokio::test]
+async fn composite_479_optional_where_folds_fully_composite_keys_533() {
+    let schema = load_schema(SchemaId::CompositeId.yaml_path());
+    let cypher = "MATCH (a:Account) OPTIONAL MATCH (a)-[:TRANSFERRED]->(b:Account) \
+                  WHERE b.balance > 10000 RETURN a.account_number, b.account_number";
+    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+
+    assert!(
+        !sql.lines()
+            .any(|l| l.trim_start().starts_with("WHERE b.balance")),
+        "#533 (fully-composite) regressed: predicate is back in a bare outer \
+         WHERE:\n{sql}"
+    );
+    // Two synthetic anchor keys exported, one per edge→anchor key column.
+    assert!(
+        sql.contains("AS __cg_combined_anchor_key,")
+            && sql.contains("AS __cg_combined_anchor_key_1,"),
+        "#533 (fully-composite) regressed: expected one synthetic anchor key \
+         per composite edge→anchor column:\n{sql}"
+    );
+    // The outer combined JOIN gates on BOTH anchor key columns.
+    assert!(
+        sql.contains(".__cg_combined_anchor_key = a.bank_id")
+            && sql.contains(".__cg_combined_anchor_key_1 = a.account_number"),
+        "#533 (fully-composite) regressed: expected the combined JOIN gated \
+         on both anchor key columns:\n{sql}"
+    );
+    assert!(
+        sql.contains("WHERE balance > 10000"),
+        "#533 (fully-composite) regressed: expected the predicate inside the \
+         combined subquery:\n{sql}"
     );
 }
 
@@ -8729,6 +8783,224 @@ mod label_id_resolution_family_536_537_539_540_541_526_527 {
             sql.contains("GROUP BY `id(o)`") && sql.contains("ORDER BY `id(o)` ASC"),
             "#540: id(o) must resolve to a real, consistently-referenced \
              column in both GROUP BY and ORDER BY:\n{sql}"
+        );
+    }
+}
+
+/// Regression tests for the #549/#550 family: WITH-aggregate CTE export on
+/// denormalized nodes whose schema shape goes beyond what any real in-repo
+/// schema exercises — found (and filed as follow-ups) during the adversarial
+/// review of fix/465-with-aggregate-family (merged 995267c6). Both reproduce
+/// on a dedicated synthetic schema, `schemas/dev/flights_denorm_mixed_sources.yaml`
+/// (a SEPARATE file rather than an extension of `flights_denormalized.yaml`:
+/// adding labels to the shared denormalized schema changes the shape of every
+/// fully-unlabeled pattern query against SchemaId::Denormalized —
+/// pattern_union grows extra per-label branches — breaking unrelated goldens).
+/// The synthetic labels map onto the SAME physical `db_denormalized
+/// .flights_denorm` table, so everything here is live-verifiable against the
+/// standard fixture (scripts/setup/setup_denormalized_data.sh).
+mod with_aggregate_denorm_mixed_sources_family_549_550 {
+    use super::*;
+
+    const MIXED_SOURCES_SCHEMA: &str = "schemas/dev/flights_denorm_mixed_sources.yaml";
+
+    /// #549: a node with non-empty `property_mappings` ALSO combined with
+    /// `from_node_properties`/`to_node_properties` on the SAME node
+    /// (`AirportWithCarrier`: role-varying `code`/`city`/`state` in the role
+    /// maps, role-INvariant `carrier` in `property_mappings`). A
+    /// `property_mappings`-sourced column referenced downstream of a
+    /// WITH-aggregate barrier alongside a from/to-sourced column used to be
+    /// silently DROPPED from the CTE export entirely (not NULL-padded — just
+    /// absent): the CTE exported only `p1_b_city`, while the outer SELECT
+    /// still referenced `b_n.carrier` — ClickHouse Code 47 UNKNOWN_IDENTIFIER
+    /// at execution.
+    ///
+    /// Root cause: the role-specific node property maps copied onto
+    /// `RelationshipSchema::from_node_properties`/`to_node_properties` at
+    /// schema-load time (`build_relationship_schema`/
+    /// `resolve_denormalized_edge_props`, `graph_catalog/config.rs`) were
+    /// read straight from `NodeSchema::from_properties`/`to_properties`,
+    /// never consulting the node's own `property_mappings` — so every
+    /// downstream property-resolution site (ViewScan construction,
+    /// `PatternSchemaContext`, `properties_builder.rs`, the WITH-CTE export)
+    /// simply never knew `carrier` existed on this node.
+    ///
+    /// Fixed at that single load-time source via
+    /// `NodeSchema::denorm_role_properties()` (graph_schema.rs): merges
+    /// `property_mappings` entries into the role map for property names not
+    /// already covered — role-specific mappings always win on a collision,
+    /// and `node_id` property names are excluded entirely (their
+    /// auto-generated identity entries in `property_mappings` are spurious
+    /// for denormalized nodes; letting them merge would grow a phantom
+    /// property on the real zeek schema, whose id NAME `id.orig_h` differs
+    /// from every role-map name). All real in-repo schemas render
+    /// byte-identically pre/post fix (their denorm nodes carry only the
+    /// auto-identity `node_id` entry in `property_mappings`).
+    ///
+    /// Live-verified (2026-07-11, db_denormalized, ClickHouse via `cg query`):
+    /// pre-fix this query fails at execution (`Unknown identifier 'carrier'`
+    /// shape — the CTE exports no carrier column); post-fix it executes and
+    /// returns 4 rows.
+    ///
+    /// CAVEAT (adversarial review, 2026-07-11): 4 rows is NOT correct
+    /// grouping — true node-identity grouping (by `origin_code`) is 5 rows
+    /// (LAX=6, ORD=2, JFK=1, ATL=1, DEN=1). The 4-row result reflects a
+    /// PRE-EXISTING, independent bug: single-id denorm nodes fall through
+    /// `expand_table_alias_to_group_by_id_only`'s "Fallback 2: use first
+    /// property" (plan_builder_utils.rs ~6290), so the CTE groups by
+    /// `t2.carrier` instead of node identity, silently merging
+    /// Atlanta/Delta with LAX's Delta flights and Los Angeles/American
+    /// with JFK's. That bug exists identically on main (byte-identical
+    /// GROUP BY pre/post this branch) and is tracked as its own issue;
+    /// this test only locks the (genuinely fixed) property-EXPORT shape,
+    /// not the grouping.
+    #[tokio::test]
+    async fn property_mappings_column_survives_with_aggregate_barrier_549() {
+        let schema = load_schema(MIXED_SOURCES_SCHEMA);
+        let cypher = "MATCH (a:AirportWithCarrier)-[:CARRIER_FLIGHT]->(b:AirportWithCarrier)\
+                      -[:CARRIER_FLIGHT]->(c:AirportWithCarrier) \
+                      WITH b, count(*) AS n RETURN b.city, b.carrier, n";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        // The property_mappings-sourced column must be exported by the
+        // WITH-aggregate CTE under the standard p{N}_{alias}_{property} name.
+        // Assert on the physical column, not the specific tN alias (see the
+        // normalize() note on cross-test alias-counter dependence).
+        let export_re = regex::Regex::new(r#"anyLast\(t\d+\.carrier\) AS "p1_b_carrier""#).unwrap();
+        assert!(
+            export_re.is_match(&sql),
+            "#549 regressed: the property_mappings-sourced `carrier` column \
+             must be exported by the WITH-aggregate CTE:\n{sql}"
+        );
+        // ... and the outer SELECT must reference that exported CTE column,
+        // never a raw `carrier` column the CTE does not expose.
+        assert!(
+            sql.contains("b_n.p1_b_carrier AS \"b.carrier\""),
+            "#549 regressed: outer SELECT must reference the exported \
+             p1_b_carrier CTE column:\n{sql}"
+        );
+        assert!(
+            !sql.contains("b_n.carrier"),
+            "#549 regressed: outer SELECT references `b_n.carrier`, a column \
+             the CTE does not export (ClickHouse Code 47 at execution):\n{sql}"
+        );
+        // The from/to-sourced sibling column must still resolve through the
+        // role-specific mapping (never a raw `city` column).
+        let city_re = regex::Regex::new(r#"anyLast\(t\d+\.origin_city\) AS "p1_b_city""#).unwrap();
+        assert!(
+            city_re.is_match(&sql),
+            "#549: the role-mapped `city` export must be unaffected:\n{sql}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(sql, again, "#549: nondeterministic render");
+        }
+    }
+
+    /// #549 guard: the fix must NOT change how the real coupled-denormalized
+    /// schemas render. `flights_denormalized.yaml`'s `Airport` and the zeek
+    /// nodes carry ONLY the auto-generated `node_id` identity entry in
+    /// `property_mappings` (e.g. `code -> code`), which `denorm_role_properties`
+    /// deliberately excludes from the merge — `code` must keep resolving to
+    /// the role-specific `origin_code`/`dest_code`, never leak a dangling
+    /// physical `code` column reference.
+    #[tokio::test]
+    async fn real_denorm_schema_unaffected_by_549_merge() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let cypher = "MATCH (a:Airport)-[:FLIGHT]->(b:Airport)-[:FLIGHT]->(c:Airport) \
+                      WITH b, count(*) AS n RETURN b.city, b.code, n";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        let code_re = regex::Regex::new(r#"anyLast\(t\d+\.origin_code\) AS "p1_b_code""#).unwrap();
+        assert!(
+            code_re.is_match(&sql),
+            "#549 guard: Airport's node_id property `code` must still resolve \
+             through the role-specific map (origin_code), not a raw `code` \
+             column:\n{sql}"
+        );
+        let dangling_re = regex::Regex::new(r#"t\d+\.code\b"#).unwrap();
+        assert!(
+            !dangling_re.is_match(&sql),
+            "#549 guard: the auto-identity `code -> code` property_mappings \
+             entry must never leak into rendering (flights_denorm has no \
+             `code` column):\n{sql}"
+        );
+    }
+
+    /// #550: a composite (list) `node_id` on a denormalized node
+    /// (`AirportComposite`, `node_id: [code, state]`), referenced in a
+    /// WITH-aggregate query, used to emit `GROUP BY b.code, b.state` — a
+    /// dangling table alias (no table `b` in the CTE body's scope; the denorm
+    /// edge table is `tN`) over nonexistent physical columns (only
+    /// `origin_code`/`origin_state` exist) — ClickHouse Code 47
+    /// UNKNOWN_IDENTIFIER at execution.
+    ///
+    /// Root cause: `expand_table_alias_to_group_by_id_only`'s composite guard
+    /// (the #457 WITH→CTE-path copy, `plan_builder_utils.rs`) qualified the
+    /// schema's raw `node_id.columns()` — CYPHER PROPERTY names — with the
+    /// Cypher pattern alias, with no property→physical-column resolution at
+    /// all. Fixed by resolving each id property through the plan's own
+    /// `get_properties_with_table_alias` (the same call the single-column
+    /// denorm fallback and `group_by_builder.rs`'s `table_alias_to_use`
+    /// resolution already use — it dispatches per schema pattern internally),
+    /// yielding the role-specific physical columns and the actual edge table
+    /// alias. Standard composite-id schemas resolve to identity mappings with
+    /// no alias override, verified byte-identical pre/post fix (git-stash
+    /// A/B on `composite_node_id_test.yaml`).
+    ///
+    /// Live-verified (2026-07-11, db_denormalized, ClickHouse via `cg query`):
+    /// post-fix returns 5 rows matching the non-WITH control
+    /// (`RETURN b.city, count(*) AS n`) row-for-row (New York=1, Chicago=2,
+    /// Atlanta=1, Denver=1, Los Angeles=6).
+    #[tokio::test]
+    async fn composite_node_id_with_aggregate_group_by_resolves_physical_columns_550() {
+        let schema = load_schema(MIXED_SOURCES_SCHEMA);
+        let cypher = "MATCH (a:AirportComposite)-[:COMPOSITE_FLIGHT]->(b:AirportComposite)\
+                      -[:COMPOSITE_FLIGHT]->(c:AirportComposite) \
+                      WITH b, count(*) AS n RETURN b.city, n";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        // GROUP BY must reference BOTH composite id columns, resolved to the
+        // role-specific physical columns on the edge table's alias.
+        let group_by_re =
+            regex::Regex::new(r#"GROUP BY t\d+\.origin_code, t\d+\.origin_state"#).unwrap();
+        assert!(
+            group_by_re.is_match(&sql),
+            "#550 regressed: GROUP BY must reference the role-mapped physical \
+             composite id columns on the edge alias:\n{sql}"
+        );
+        // Never the dangling Cypher-alias/property-name form.
+        assert!(
+            !sql.contains("GROUP BY b.code") && !sql.contains("b.state"),
+            "#550 regressed: GROUP BY references the dangling Cypher alias \
+             `b` / unmapped property names (ClickHouse Code 47):\n{sql}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(sql, again, "#550: nondeterministic render");
+        }
+    }
+
+    /// #550 guard: the composite-guard rewrite must leave STANDARD
+    /// composite-id schemas byte-identical (verified via git-stash A/B during
+    /// the fix; locked here structurally). `Account`'s id properties carry
+    /// identity mappings and the node has its own table, so GROUP BY keeps
+    /// the Cypher alias + raw id columns.
+    #[tokio::test]
+    async fn standard_composite_id_with_aggregate_group_by_unchanged_550() {
+        let schema = load_schema(SchemaId::CompositeId.yaml_path());
+        let cypher = "MATCH (c:Customer)-[:OWNS]->(a:Account) \
+                      WITH a, count(*) AS n RETURN a.account_type, n";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        assert!(
+            sql.contains("GROUP BY a.bank_id, a.account_number"),
+            "#550 guard: standard composite-id GROUP BY must keep the \
+             pre-#550 alias + identity-column form:\n{sql}"
         );
     }
 }

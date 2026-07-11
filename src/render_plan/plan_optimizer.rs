@@ -1461,21 +1461,36 @@ fn column_defines_alias(col_trimmed: &str, alias: &str) -> bool {
 /// Narrowly scoped for safety — fires only when ALL of:
 ///   (a) a WHERE conjunct references EXACTLY one alias (the candidate
 ///       "optional node", not the FROM/anchor alias itself);
-///   (b) that alias has a single-column-key LEFT JOIN with no existing
+///   (b) that alias has an equality-keyed LEFT JOIN with no existing
 ///       `pre_filter`, whose ON connects it to exactly one OTHER alias (the
-///       candidate "edge");
-///   (c) that edge alias has ITS OWN single-column-key LEFT JOIN with no
+///       candidate "edge") — single- OR multi-column (#533 extended the
+///       original single-column-only gate to composite keys: every ON
+///       condition must be a bare column equality between the node alias
+///       and the SAME edge alias, e.g. `a.bank_id = t1.bank_id AND
+///       a.account_number = t1.account_number`);
+///   (c) that edge alias has ITS OWN equality-keyed LEFT JOIN with no
 ///       existing `pre_filter`, whose ON connects it DIRECTLY to the FROM/
 ///       anchor alias (so the combined subquery's correlation is always
-///       renderable regardless of JOIN ordering);
+///       renderable regardless of JOIN ordering) — also single- or
+///       multi-column, with one synthetic `__cg_combined_anchor_key*`
+///       exported per anchor-key column;
 ///   (d) the edge alias is referenced NOWHERE else in the plan (SELECT,
 ///       other JOINs' ON/pre_filter, GROUP BY, ORDER BY, HAVING) — folding
 ///       it away must change nothing else about the query.
-/// Any shape outside this (composite keys, multi-hop chains, edge properties
-/// referenced elsewhere, a predicate spanning multiple aliases, an edge that
-/// doesn't connect straight to FROM) is left untouched — safer to leave it in
-/// its current (imperfect) outer-WHERE placement than risk another "naive fix
-/// that's worse than the bug" regression, per this exact family's history.
+/// Any shape outside this (multi-hop chains, edge properties referenced
+/// elsewhere, a predicate spanning multiple aliases, an edge that doesn't
+/// connect straight to FROM, any non-equality or non-column ON condition) is
+/// left untouched — safer to leave it in its current (imperfect) outer-WHERE
+/// placement than risk another "naive fix that's worse than the bug"
+/// regression, per this exact family's history.
+///
+/// NOT covered (remains open under #533): the DENORMALIZED `__denorm_scan`
+/// variant — it renders through a CTE-fronted anchor + a SINGLE LEFT JOIN of
+/// the edge table (node properties embedded in the edge row, no separate
+/// node JOIN to fold), so this two-join fold structurally cannot match it;
+/// it needs #474's `apply_optional_node_pre_filters` (join_builder.rs) to
+/// recognize the CTE-fronted single-join shape instead. Locked as
+/// `denorm_479_..._known_broken` in `sql_golden_tests.rs`.
 fn fold_optional_edge_node_join_with_predicate(plan: &mut RenderPlan) {
     let Some(from_alias) = plan.from.0.as_ref().and_then(|f| f.alias.clone()) else {
         return;
@@ -1515,13 +1530,16 @@ fn fold_optional_edge_node_join_with_predicate(plan: &mut RenderPlan) {
                 j.table_alias == node_alias
                     && j.join_type == JoinType::Left
                     && j.pre_filter.is_none()
-                    && j.joining_on.len() == 1
+                    && !j.joining_on.is_empty()
             }) else {
                 continue;
             };
 
-            let Some((node_col, edge_alias, node_side_edge_col)) =
-                single_column_join_key(&plan.joins.0[node_join_idx], &node_alias)
+            // #533: single- or multi-column (composite-key) equality join —
+            // every ON condition must connect the node alias to the SAME
+            // other alias (the candidate edge).
+            let Some((node_key_pairs, edge_alias)) =
+                equality_join_key_columns(&plan.joins.0[node_join_idx], &node_alias)
             else {
                 continue;
             };
@@ -1535,13 +1553,13 @@ fn fold_optional_edge_node_join_with_predicate(plan: &mut RenderPlan) {
                 j.table_alias == edge_alias
                     && j.join_type == JoinType::Left
                     && j.pre_filter.is_none()
-                    && j.joining_on.len() == 1
+                    && !j.joining_on.is_empty()
             }) else {
                 continue;
             };
 
-            let Some((edge_side_anchor_col, anchor_alias, anchor_col)) =
-                single_column_join_key(&plan.joins.0[edge_join_idx], &edge_alias)
+            let Some((anchor_key_pairs, anchor_alias)) =
+                equality_join_key_columns(&plan.joins.0[edge_join_idx], &edge_alias)
             else {
                 continue;
             };
@@ -1579,7 +1597,20 @@ fn fold_optional_edge_node_join_with_predicate(plan: &mut RenderPlan) {
             // stripping it bare). ALL conjuncts referencing only this alias
             // are combined with AND — see the comment above `groups` for why
             // folding only a subset would be unsafe.
-            let synthetic_key = "__cg_combined_anchor_key";
+            //
+            // #533: one synthetic anchor-key column is exported per
+            // edge→anchor key column (a composite-key edge join has several),
+            // and the subquery's inner JOIN ON / the outer combined JOIN's ON
+            // carry one equality per key pair. The first key keeps the
+            // original unsuffixed `__cg_combined_anchor_key` name so the
+            // single-column output stays byte-identical to #479's.
+            let synthetic_key = |i: usize| -> String {
+                if i == 0 {
+                    "__cg_combined_anchor_key".to_string()
+                } else {
+                    format!("__cg_combined_anchor_key_{i}")
+                }
+            };
             let combined_predicate = combine_and_conjuncts(
                 member_indices
                     .iter()
@@ -1590,29 +1621,51 @@ fn fold_optional_edge_node_join_with_predicate(plan: &mut RenderPlan) {
                 "member_indices is non-empty by construction (groups only holds non-empty Vecs)",
             );
             let stripped_predicate = combined_predicate.to_sql_without_table_alias();
+            let synthetic_key_exports = anchor_key_pairs
+                .iter()
+                .enumerate()
+                .map(|(i, (edge_side_anchor_col, _))| {
+                    format!(
+                        "{edge_alias}.{edge_side_anchor_col} AS {}",
+                        synthetic_key(i)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let inner_join_on = node_key_pairs
+                .iter()
+                .map(|(node_col, node_side_edge_col)| {
+                    format!("{node_alias}.{node_col} = {edge_alias}.{node_side_edge_col}")
+                })
+                .collect::<Vec<_>>()
+                .join(" AND ");
             let subquery = format!(
-                "(SELECT {edge_alias}.{edge_side_anchor_col} AS {synthetic_key}, {node_alias}.* \
+                "(SELECT {synthetic_key_exports}, {node_alias}.* \
                  FROM {edge_table} AS {edge_alias} \
-                 JOIN {node_table} AS {node_alias} ON {node_alias}.{node_col} = {edge_alias}.{node_side_edge_col} \
+                 JOIN {node_table} AS {node_alias} ON {inner_join_on} \
                  WHERE {stripped_predicate})"
             );
 
             let combined_join = Join {
                 table_name: subquery,
                 table_alias: node_alias.clone(),
-                joining_on: vec![OperatorApplication {
-                    operator: Operator::Equal,
-                    operands: vec![
-                        RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias(node_alias.clone()),
-                            column: PropertyValue::Column(synthetic_key.to_string()),
-                        }),
-                        RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias(anchor_alias.clone()),
-                            column: PropertyValue::Column(anchor_col.clone()),
-                        }),
-                    ],
-                }],
+                joining_on: anchor_key_pairs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (_, anchor_col))| OperatorApplication {
+                        operator: Operator::Equal,
+                        operands: vec![
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(node_alias.clone()),
+                                column: PropertyValue::Column(synthetic_key(i)),
+                            }),
+                            RenderExpr::PropertyAccessExp(PropertyAccess {
+                                table_alias: TableAlias(anchor_alias.clone()),
+                                column: PropertyValue::Column(anchor_col.clone()),
+                            }),
+                        ],
+                    })
+                    .collect(),
                 join_type: JoinType::Left,
                 pre_filter: None,
                 from_id_column: None,
@@ -1676,37 +1729,57 @@ fn combine_and_conjuncts(exprs: Vec<RenderExpr>) -> Option<RenderExpr> {
     })
 }
 
-/// If `join`'s single ON condition connects `this_alias` to exactly one other
-/// alias via a bare column equality, return
-/// `(this_alias_column, other_alias, other_alias_column)`.
-fn single_column_join_key(join: &Join, this_alias: &str) -> Option<(String, String, String)> {
-    if join.joining_on.len() != 1 {
+/// If EVERY one of `join`'s ON conditions connects `this_alias` to the SAME
+/// single other alias via a bare column equality, return the ordered key
+/// pairs `[(this_alias_column, other_alias_column), ...]` plus that other
+/// alias. Returns `None` for any non-equality/non-column condition, mixed
+/// other-aliases, or an empty ON list.
+///
+/// #533: generalizes #479's original `single_column_join_key` (which hard
+///-required `joining_on.len() == 1`) so the fold pass also covers
+/// composite-key schemas, whose node JOIN carries one equality per id
+/// column (`a.bank_id = t1.bank_id AND a.account_number = t1.account_number`).
+fn equality_join_key_columns(
+    join: &Join,
+    this_alias: &str,
+) -> Option<(Vec<(String, String)>, String)> {
+    if join.joining_on.is_empty() {
         return None;
     }
-    let cond = &join.joining_on[0];
-    if cond.operator != Operator::Equal || cond.operands.len() != 2 {
-        return None;
-    }
-    match (&cond.operands[0], &cond.operands[1]) {
-        (RenderExpr::PropertyAccessExp(a), RenderExpr::PropertyAccessExp(b)) => {
-            if a.table_alias.0 == this_alias && b.table_alias.0 != this_alias {
-                Some((
-                    a.column.raw().to_string(),
-                    b.table_alias.0.clone(),
-                    b.column.raw().to_string(),
-                ))
-            } else if b.table_alias.0 == this_alias && a.table_alias.0 != this_alias {
-                Some((
-                    b.column.raw().to_string(),
-                    a.table_alias.0.clone(),
-                    a.column.raw().to_string(),
-                ))
-            } else {
-                None
-            }
+    let mut other_alias: Option<String> = None;
+    let mut pairs: Vec<(String, String)> = Vec::with_capacity(join.joining_on.len());
+    for cond in &join.joining_on {
+        if cond.operator != Operator::Equal || cond.operands.len() != 2 {
+            return None;
         }
-        _ => None,
+        let (this_col, other, other_col) = match (&cond.operands[0], &cond.operands[1]) {
+            (RenderExpr::PropertyAccessExp(a), RenderExpr::PropertyAccessExp(b)) => {
+                if a.table_alias.0 == this_alias && b.table_alias.0 != this_alias {
+                    (
+                        a.column.raw().to_string(),
+                        b.table_alias.0.clone(),
+                        b.column.raw().to_string(),
+                    )
+                } else if b.table_alias.0 == this_alias && a.table_alias.0 != this_alias {
+                    (
+                        b.column.raw().to_string(),
+                        a.table_alias.0.clone(),
+                        a.column.raw().to_string(),
+                    )
+                } else {
+                    return None;
+                }
+            }
+            _ => return None,
+        };
+        match &other_alias {
+            None => other_alias = Some(other),
+            Some(existing) if *existing == other => {}
+            Some(_) => return None, // conditions span multiple other aliases
+        }
+        pairs.push((this_col, other_col));
     }
+    Some((pairs, other_alias.expect("joining_on is non-empty")))
 }
 
 fn remove_redundant_edge_self_joins(plan: &mut RenderPlan) {

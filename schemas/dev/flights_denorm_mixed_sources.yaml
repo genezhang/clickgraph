@@ -1,0 +1,108 @@
+# Synthetic test-only schema for issues #549 and #550 — denormalized nodes
+# combining property sources / composite ids in ways no real schema in the
+# repo currently exercises. Deliberately a SEPARATE file from
+# flights_denormalized.yaml: adding these labels there changes the shape of
+# every fully-unlabeled pattern query against the denormalized SchemaId
+# (pattern_union grows extra per-label branches), breaking unrelated goldens.
+#
+# Reuses the same physical db_denormalized.flights_denorm table
+# (scripts/setup/setup_denormalized_data.sh), so queries against this schema
+# can be live-verified against the standard db_denormalized fixture.
+#
+# - AirportWithCarrier (#549): non-empty property_mappings (carrier) ALONGSIDE
+#   from_node_properties/to_node_properties on the same node. Before the #549
+#   fix, a property_mappings-sourced column referenced downstream of a
+#   WITH-aggregate barrier was silently dropped from the CTE export entirely
+#   (ClickHouse "Unknown identifier").
+# - AirportComposite (#550): composite (list) node_id on a denormalized node.
+#   Before the #550 fix, `WITH b, count(*)` emitted a GROUP BY on a dangling
+#   table alias (`b.code, b.state`) instead of the role-mapped physical
+#   columns on the edge alias.
+
+name: flights_denorm_mixed_sources
+
+graph_schema:
+  nodes:
+    # ===== #549 shape =====
+    # Same physical table as flights_denormalized.yaml's Airport, but ALSO
+    # carries a non-empty property_mappings entry (`carrier` — a column that
+    # does not vary by from/to role) alongside its role-specific maps.
+    - label: AirportWithCarrier
+      database: db_denormalized
+      table: flights_denorm
+      node_id: code
+      property_mappings:
+        carrier: carrier
+
+      from_node_properties:
+        code: origin_code
+        city: origin_city
+        state: origin_state
+
+      to_node_properties:
+        code: dest_code
+        city: dest_city
+        state: dest_state
+
+    # ===== #550 shape =====
+    # Composite (list) node_id combined with denormalized from/to-side
+    # property maps on one node.
+    - label: AirportComposite
+      database: db_denormalized
+      table: flights_denorm
+      node_id: [code, state]
+      property_mappings: {}
+
+      from_node_properties:
+        code: origin_code
+        state: origin_state
+        city: origin_city
+
+      to_node_properties:
+        code: dest_code
+        state: dest_state
+        city: dest_city
+
+  edges:
+    # #549 edge (AirportWithCarrier endpoints).
+    - type: CARRIER_FLIGHT
+      database: db_denormalized
+      table: flights_denorm
+      from_id: origin_code
+      to_id: dest_code
+      from_node: AirportWithCarrier
+      to_node: AirportWithCarrier
+
+      edge_id: [flight_id, flight_number]
+
+      property_mappings:
+        flight_id: flight_id
+        flight_num: flight_number
+        carrier: carrier
+        departure_time: departure_time
+        arrival_time: arrival_time
+        distance: distance
+
+    # #550 edge (AirportComposite endpoints).
+    # NOTE: from_id/to_id are deliberately kept as SINGLE columns — #550 is
+    # about a composite NODE_ID on a denormalized node, not a composite edge
+    # from_id/to_id (a separate, pre-existing join-condition bug reproduces if
+    # from_id/to_id are ALSO made composite; keeping them single isolates the
+    # #550 shape from that unrelated issue).
+    - type: COMPOSITE_FLIGHT
+      database: db_denormalized
+      table: flights_denorm
+      from_id: origin_code
+      to_id: dest_code
+      from_node: AirportComposite
+      to_node: AirportComposite
+
+      edge_id: [flight_id, flight_number]
+
+      property_mappings:
+        flight_id: flight_id
+        flight_num: flight_number
+        carrier: carrier
+        departure_time: departure_time
+        arrival_time: arrival_time
+        distance: distance

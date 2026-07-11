@@ -562,6 +562,33 @@ async fn ldbc_bi_13() {
     .await;
     assert!(!sql.is_empty());
     assert!(sql.contains("SELECT"));
+
+    // #534: end-to-end lock for the IN-CTE-subquery rewrite
+    // (`try_rewrite_in_cte_subquery`, to_sql_query.rs). bi-13's
+    // `WHERE likerZombie IN zombies` — membership in a collect()ed node list
+    // carried across a WITH/UNWIND barrier — is the motivating (#184) and
+    // only known correctly-rendering end-to-end shape for this rewrite: the
+    // collected list survives as a scalar CTE entity column
+    // (`p{N}_zombie_id`), so the predicate MUST expand to a subquery
+    // (`x IN (SELECT p6_zombie_id FROM with_..._cte_N)`), never degrade to a
+    // bare `x IN p6_zombie_id` column reference — which ClickHouse either
+    // rejects ("second argument must be constant or table expression") or,
+    // worse, silently binds to an unrelated same-named column. Previously
+    // only unit-covered at the RenderExpr level
+    // (`test_to_sql_without_table_alias_preserves_in_cte_subquery_rewrite`);
+    // this asserts it through the full parse→plan→render pipeline.
+    let in_subquery_re =
+        regex::Regex::new(r"IN \(SELECT p6_zombie_id FROM with_\w+_cte_\d+\)").unwrap();
+    assert!(
+        in_subquery_re.is_match(&sql),
+        "#534: bi-13's `likerZombie IN zombies` must render as an IN-CTE \
+         subquery over the collected zombie ids:\n{sql}"
+    );
+    let degraded_re = regex::Regex::new(r"IN p6_zombie_id").unwrap();
+    assert!(
+        !degraded_re.is_match(&sql),
+        "#534: IN-CTE rewrite degraded to a bare scalar column reference:\n{sql}"
+    );
 }
 
 #[tokio::test]
