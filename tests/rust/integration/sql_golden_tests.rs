@@ -8839,9 +8839,21 @@ mod with_aggregate_denorm_mixed_sources_family_549_550 {
     ///
     /// Live-verified (2026-07-11, db_denormalized, ClickHouse via `cg query`):
     /// pre-fix this query fails at execution (`Unknown identifier 'carrier'`
-    /// shape — the CTE exports no carrier column); post-fix it returns 4
-    /// correctly-grouped rows (Los Angeles/American=5, Chicago/United=2,
-    /// Atlanta/Delta=3, Denver/Southwest=1).
+    /// shape — the CTE exports no carrier column); post-fix it executes and
+    /// returns 4 rows.
+    ///
+    /// CAVEAT (adversarial review, 2026-07-11): 4 rows is NOT correct
+    /// grouping — true node-identity grouping (by `origin_code`) is 5 rows
+    /// (LAX=6, ORD=2, JFK=1, ATL=1, DEN=1). The 4-row result reflects a
+    /// PRE-EXISTING, independent bug: single-id denorm nodes fall through
+    /// `expand_table_alias_to_group_by_id_only`'s "Fallback 2: use first
+    /// property" (plan_builder_utils.rs ~6290), so the CTE groups by
+    /// `t2.carrier` instead of node identity, silently merging
+    /// Atlanta/Delta with LAX's Delta flights and Los Angeles/American
+    /// with JFK's. That bug exists identically on main (byte-identical
+    /// GROUP BY pre/post this branch) and is tracked as its own issue;
+    /// this test only locks the (genuinely fixed) property-EXPORT shape,
+    /// not the grouping.
     #[tokio::test]
     async fn property_mappings_column_survives_with_aggregate_barrier_549() {
         let schema = load_schema(MIXED_SOURCES_SCHEMA);
