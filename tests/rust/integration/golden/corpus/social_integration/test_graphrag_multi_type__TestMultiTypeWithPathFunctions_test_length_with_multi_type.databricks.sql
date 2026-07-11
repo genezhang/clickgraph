@@ -13,7 +13,8 @@ WHERE (u_1.user_id = 1)
 )
 SELECT `path_length` AS `path_length`, count(*) AS `cnt` FROM (
 SELECT 
-      t.hop_count AS `path_length`
+      t.hop_count AS `path_length`,
+      t.hop_count AS `t.hop_count`
 FROM vlp_multi_type_u_x AS t
 UNION ALL 
 SELECT 
@@ -40,7 +41,8 @@ SELECT
       x.full_name AS `name_2`,
       x.registration_date AS `registration_date_2`,
       x.user_id AS `user_id_2`,
-      t.hop_count AS `path_length`
+      t.hop_count AS `path_length`,
+      t.hop_count AS `t.hop_count`
 FROM vlp_multi_type_u_x_2 AS t
 ) AS __union
 GROUP BY `path_length`

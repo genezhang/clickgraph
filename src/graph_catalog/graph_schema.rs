@@ -8,7 +8,7 @@
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 use super::config::Identifier;
@@ -152,6 +152,36 @@ impl NodeSchema {
             }
         }
         false
+    }
+
+    /// The full set of physical DB column names this node schema can resolve
+    /// a property to, across ALL three resolution sources checked by
+    /// `has_cypher_property`/`resolve_property`-style lookups: `property_mappings`
+    /// (standard/polymorphic), and `from_properties`/`to_properties`
+    /// (denormalized — a node whose real columns live on an edge table under
+    /// role-specific names, e.g. `schemas/dev/flights_denormalized.yaml`'s
+    /// `Airport` node with empty `property_mappings` and its columns entirely
+    /// in `from_node_properties`/`to_node_properties`).
+    ///
+    /// Canonical accessor for "is this physical column valid for this node's
+    /// table" checks (e.g. #476/#520 UNION branch NULL-padding in
+    /// `to_sql_query.rs`'s `table_valid_columns`) — callers must route
+    /// through this rather than reading `property_mappings` alone, which
+    /// silently misses denormalized columns.
+    pub fn all_valid_physical_columns(&self) -> HashSet<String> {
+        let mut cols: HashSet<String> = HashSet::new();
+        for value in self.property_mappings.values() {
+            if let PropertyValue::Column(col) = value {
+                cols.insert(col.clone());
+            }
+        }
+        if let Some(ref from_props) = self.from_properties {
+            cols.extend(from_props.values().cloned());
+        }
+        if let Some(ref to_props) = self.to_properties {
+            cols.extend(to_props.values().cloned());
+        }
+        cols
     }
 
     /// Check if this engine supports FINAL (regardless of whether we use it by default)

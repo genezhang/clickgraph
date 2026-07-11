@@ -62,14 +62,16 @@ vlp_b_a AS (
 ), 
 with_b_distance_cte_0 AS (SELECT any_value(end_name) AS `p1_b_name`, min(length(`path`)) AS `distance` FROM (
 SELECT 
+      b.user_id AS `b.user_id`,
       path AS `path`
 FROM vlp_a_b AS t
 UNION ALL 
 SELECT 
+      b.user_id AS `b.user_id`,
       path AS `path`
 FROM vlp_b_a AS t
 ) AS __union
-GROUP BY b.user_id
+GROUP BY `b.user_id`
 )
 SELECT 
       b_distance.p1_b_name AS `b.name`, 

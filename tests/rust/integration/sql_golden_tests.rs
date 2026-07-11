@@ -774,6 +774,20 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
         "optional_where_no_with_fn_arg",
         "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE toFloat(o.total_amount) > 100 RETURN c.customer_id, o.order_id",
     ),
+    // FIXED (#535): same pre_filter-subquery shape as `optional_where_no_with_fn_arg`
+    // above, but for STRING `+` (Cypher concatenation) instead of a function-arg
+    // property access. `RenderExpr::to_sql_without_table_alias`'s OperatorApplicationExp
+    // arm never called `render_string_addition` (unlike the two other operator-
+    // rendering paths), so `o.status + 'X'` fell through to the generic operator-join
+    // formatting — ClickHouse has no `+` for strings, so this would emit invalid SQL
+    // (or, if alias-stripping partially applied, a dangling `+`-joined non-function
+    // expression) inside the LEFT JOIN pre_filter subquery. Now renders
+    // `concat(status, 'X')` (alias-stripped AND converted to the dialect's string-concat
+    // function). Same bug class as #477 (missing arm in this hand-rolled walker).
+    (
+        "optional_where_no_with_string_concat",
+        "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE o.status + 'X' = 'shippedX' RETURN c.customer_id, o.order_id",
+    ),
     // Same shape, WHERE on the relationship alias r (order_date). Already correct
     // before #474 (rel-alias pre_filter recovery): r and o share orders_fk, so the
     // predicate sits in the LEFT JOIN pre_filter. Locked to prove #474 did not
@@ -5712,6 +5726,79 @@ async fn pattern_union_no_hardcoded_limit_cap_511() {
     );
 }
 
+/// #542: `get_table_alias_if_single_table_condition` (`filter_tagging.rs`,
+/// used to decide whether an OR-branch / condition belongs to a single table
+/// so it can be tagged for pushdown) fell through to `_ => None` for
+/// `LogicalExpr::List` — an IN-list's elements were invisible to it. For a
+/// denormalized cross-alias correlation like `srcip1.ip IN [srcip2.ip]`, the
+/// enclosing `OperatorApplicationExp(In, [srcip1.ip, List([srcip2.ip])])` arm
+/// only ever saw `srcip1.ip`'s alias (the list operand silently contributed
+/// nothing), so the WHOLE condition was misclassified as single-table for
+/// `srcip1` — losing track that `srcip2` is a second, real correlated alias.
+/// Downstream this leaked `srcip2` as a raw, never-bound SQL identifier
+/// (`toString(srcip2."id.orig_h")`) instead of resolving it to its actual
+/// joined table alias (`t2`).
+///
+/// Fix: added a `LogicalExpr::List` arm (mirroring the existing
+/// `ScalarFnCall`/`AggregateFnCall` "collect every operand's alias, require
+/// they all agree" pattern) so a cross-table list element now surfaces its
+/// alias, correctly triggering the existing "operands disagree -> None (not
+/// single-table)" rule. This only ADDS visibility into list contents — a
+/// same-table or literal-only list (no aliases inside) still resolves
+/// exactly as before, so all 8 other call sites of this shared function are
+/// unaffected for their existing (non-list, or single-table list) usages.
+///
+/// Live-verified (2026-07-10, `schemas/dev/zeek_merged_test.yaml`): the
+/// #542-reported repro now renders the correlation bound to `conn_log`'s
+/// real JOIN alias (e.g. `t2."id.orig_h"`) instead of the dangling
+/// `srcip2."id.orig_h"`.
+#[tokio::test]
+async fn in_list_cross_alias_correlation_resolves_bound_alias_542() {
+    let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+    let sql = render(
+        &schema,
+        "MATCH (srcip1:IP)-[:REQUESTED]->(d:Domain), \
+         (srcip2:IP)-[:ACCESSED]->(destip:IP) \
+         WHERE srcip1.ip IN [srcip2.ip] \
+         RETURN srcip1.ip, d.name, destip.ip",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+
+    // Check the WHERE clause specifically (not the outer SELECT list, whose
+    // output column aliases legitimately spell the Cypher alias as a quoted
+    // string, e.g. `AS "destip.ip"` — that's a display label, not a SQL
+    // identifier reference). The WHERE clause is where the bug's unbound
+    // `srcip2."id.orig_h"` reference actually appeared.
+    let where_clause = sql
+        .rsplit("WHERE")
+        .next()
+        .expect("query must have a WHERE clause");
+    assert!(
+        !where_clause.contains("srcip1.")
+            && !where_clause.contains("srcip2.")
+            && !where_clause.contains("destip."),
+        "#542: no raw Cypher alias should leak into the WHERE clause as an \
+         unbound SQL identifier — every reference must resolve to its bound \
+         JOIN alias (e.g. `t1`/`t2`):\n{sql}"
+    );
+    // The JOIN alias generator uses a process-wide counter (not test-local),
+    // so the exact numeric suffix (`t2`, `t537`, ...) isn't stable across a
+    // full-suite run — extract whatever alias `conn_log` (srcip2's table) was
+    // actually assigned and confirm the WHERE clause references THAT alias.
+    let conn_log_alias = sql
+        .split("zeek.conn_log AS ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("expected a `JOIN zeek.conn_log AS <alias>`:\n{sql}"));
+    assert!(
+        where_clause.contains(&format!("{conn_log_alias}.")),
+        "#542: expected the correlated `srcip2` alias to resolve to its real \
+         bound JOIN alias `{conn_log_alias}` in the WHERE clause, not vanish \
+         or stay unbound:\n{sql}"
+    );
+}
+
 /// Regression tests for the #484/#490/#495/#476/#483 hand-rolled-walker-drift
 /// family (silent wrong results / unbound aliases from expression walkers
 /// missing match arms).
@@ -7176,51 +7263,46 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
         }
     }
 
-    /// KNOWN BROKEN — deferred (#520): `WITH <bare node alias>, count(*) AS n`
-    /// over an undirected multi-hop pattern (`(a)-[:FOLLOWS]-(b)-[:FOLLOWS]-(c)`,
-    /// #492's 4-branch direction-permutation UNION) emits `GROUP BY a.user_id`
-    /// against a `__union` derived table whose branches only ever project
-    /// `a.full_name` — `a.user_id` is never selected by any branch. ClickHouse
-    /// UNKNOWN_IDENTIFIER (loud failure today).
+    /// FIXED (#520): `WITH <bare node alias>, count(*) AS n` over an undirected
+    /// multi-hop pattern (`(a)-[:FOLLOWS]-(b)-[:FOLLOWS]-(c)`, #492's 4-branch
+    /// direction-permutation UNION) used to emit `GROUP BY a.user_id` against a
+    /// `__union` derived table whose branches only ever projected `a.full_name`
+    /// — `a.user_id` was never selected by any branch (ClickHouse
+    /// UNKNOWN_IDENTIFIER, Code 47).
     ///
-    /// Root cause (confirmed via investigation, NOT fixed here):
-    /// `group_by_builder.rs::handle_table_alias_group_by` — a THIRD
-    /// near-duplicate of the GROUP BY id-column-optimization already found
-    /// twice in `plan_builder_utils.rs` (`extract_group_by`'s `GroupBy` arm
-    /// and `expand_table_alias_to_group_by_id_only`, both fixed for #510's
-    /// denorm-CTE-anchor case). This THIRD site calls
-    /// `find_id_column_for_alias` unconditionally, with zero awareness of
-    /// what columns the underlying source actually projects — correct when
-    /// the source is a real table/CTE with a genuine id column exposed, but
-    /// wrong here because the source is a Union of 4 branches whose SELECT
-    /// list was pruned (by `PropertyRequirementsAnalyzer`) down to only what
-    /// the outer RETURN needs (`a.name`), never the id.
+    /// Root cause: `build_union_inner_select` (the shared WITH-CTE
+    /// aggregate+union SELECT builder, `to_sql_query.rs`) only exported columns
+    /// referenced by AGGREGATE ARGUMENTS into each UNION branch — it never
+    /// looked at the plan's own `GROUP BY` list. An implicit-grouping key like
+    /// `a.user_id` (from a bare passthrough alias `a` in `WITH a, count(*) AS n`)
+    /// was therefore never exported by any branch, so the outer `GROUP BY
+    /// a.user_id` dangled against the `__union` derived table (no real `a`
+    /// table exists at that scope).
     ///
-    /// Deferred rather than fixed: unlike #510 (a narrowly-scoped anchor
-    /// pattern with an unambiguous, verifiable single fix site), this bug
-    /// sits inside a THIRD duplicate of an already-triplicated GROUP BY
-    /// mechanism, feeding off #492's undirected-multihop UNION machinery.
-    /// Naively silencing the loud GROUP BY error (e.g. by forcing the id
-    /// column into each branch's SELECT without independently re-verifying
-    /// that #492's per-branch direction-swap alias binding is ALSO correctly
-    /// threaded through the WITH-clause's property-requirements-driven
-    /// pruning) risks trading a loud failure for a silent wrong-result bug —
-    /// strictly worse per ground rule 1. Static inspection of the 4 UNION
-    /// branches (see the `with a, b, c, count(*)` 3-alias probe used during
-    /// investigation) shows each branch's `a`/`b`/`c` bindings DO look
-    /// structurally correct per-orientation, but this was not confirmed
-    /// against live row-level ground truth (doing so requires the very code
-    /// change being deferred). Needs dedicated follow-up: (1) collapse the
-    /// GROUP BY triplication (route all three sites through one shared,
-    /// export-aware helper, mirroring the `denorm_scan_cte_anchor_*`
-    /// pattern #510 introduced), and (2) live-verify row counts across all
-    /// 4 branches before considering this closed.
+    /// Fix: `build_union_inner_select` now also takes the plan's GROUP BY
+    /// expressions (`extra_required_exprs`) and exports their referenced
+    /// columns the same way as aggregate-argument columns (NULL-padded
+    /// per-branch via the #476 mechanism when a column doesn't exist on a given
+    /// branch's table). `build_aliased_group_by` backtick-quotes a qualified
+    /// `alias.column` GROUP BY key that has no outer-SELECT-alias match,
+    /// referencing the newly-exported dotted-alias column instead of a
+    /// nonexistent outer-scope table alias.
     ///
-    /// If this test starts failing because the GROUP BY error is gone,
-    /// treat that as a PROMPT to live-verify — not proof of correctness —
-    /// before replacing this characterization with a regression test.
+    /// This also resolves the second concern raised in #520 (direction swaps
+    /// not applied inside WITH-CTE union projections): once the referenced
+    /// columns are exported from EACH branch using the branch's own (already
+    /// correctly per-orientation-swapped) FROM/JOIN structure, no separate
+    /// swap step is needed — live-verified below for both the anchor alias
+    /// (`a`) and the swapped middle alias (`b`).
+    ///
+    /// Live-verified (2026-07-10, social_benchmark, ClickHouse): `WITH a,
+    /// count(*) AS n RETURN a.name, n` returns 5 rows (Alice=13, Bob=15,
+    /// Charlie=15, Diana=12, Eve=9) — BYTE-IDENTICAL to the non-WITH control
+    /// `RETURN a.name, count(*) AS n`. `WITH a, b, count(*) AS n RETURN a.name,
+    /// b.name, n` (projecting the swapped middle alias `b`) also matches its
+    /// non-WITH control row-for-row (e.g. Alice/Bob=6, Bob/Alice=12).
     #[tokio::test]
-    async fn undirected_multihop_with_aggregate_group_by_unexported_known_broken_520() {
+    async fn undirected_multihop_with_aggregate_group_by_export_520() {
         let schema = load_schema(SchemaId::Standard.yaml_path());
         let sql = render(
             &schema,
@@ -7231,19 +7313,22 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
         .await;
 
         assert!(
-            sql.contains("GROUP BY a.user_id"),
-            "#520 KNOWN BROKEN characterization stale — GROUP BY no longer \
-             references the unexported `a.user_id` column; if this is a \
-             genuine fix, live-verify row-level correctness across all UNION \
-             branches before replacing this test with a regression test:\n{sql}"
+            sql.contains("GROUP BY `a.user_id`"),
+            "#520: GROUP BY must reference the exported dotted-alias column \
+             `a.user_id` (backtick-quoted, resolving against the __union \
+             derived table), not the raw unquoted `a.user_id`:\n{sql}"
         );
+        // The id column must now be exported by EVERY UNION branch (NULL-padded
+        // where the branch's own table doesn't carry it) so the outer GROUP BY
+        // has something real to reference.
+        let export_count = sql.matches("a.user_id AS \"a.user_id\"").count();
         assert!(
-            !sql.contains("a.user_id AS")
-                && !sql.contains("a.user_id\" AS")
-                && !sql.contains(".user_id AS \"a.user_id\""),
-            "#520 KNOWN BROKEN characterization stale — `a.user_id` now \
-             appears to be exported by a UNION branch; if this is a genuine \
-             fix, live-verify before replacing this test:\n{sql}"
+            export_count >= 4,
+            "#520: `a.user_id` must be exported by every UNION branch (expected \
+             >= 4 branches for the 4-way direction-permutation union), found {} \
+             exports:\n{}",
+            export_count,
+            sql
         );
     }
 
@@ -7434,6 +7519,92 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
                  (deliberate, uniform-by-shape treatment across all \
                  aggregate names):\n{sql}"
             );
+        }
+    }
+
+    /// Blocking finding (adversarial review of #465/#476/#520): `table_valid_columns`
+    /// (the #476/#520 UNION branch NULL-padding helper, `to_sql_query.rs`) only
+    /// consulted `property_mappings` when computing which physical columns are
+    /// valid for a branch's own table — it never consulted `from_properties`/
+    /// `to_properties`, the documented denormalized pattern where a node's real
+    /// columns live there instead of (or in addition to) `property_mappings`
+    /// (`schemas/dev/flights_denormalized.yaml`'s `Airport` node has EMPTY
+    /// `property_mappings`, with `code`/`city`/`state` entirely resolved via
+    /// `from_node_properties`/`to_node_properties`).
+    ///
+    /// On the buggy commit, this made EVERY branch of a 2-hop undirected
+    /// direction-permutation UNION NULL-pad `b.city` (`t2.origin_city`) because
+    /// `table_valid_columns` never saw `origin_city`/`dest_city` as valid columns
+    /// for the `Airport` table — collapsing all distinct cities into a single
+    /// `b.city = NULL` row whose count summed every group together (silently
+    /// wrong results, not a loud failure).
+    ///
+    /// Fixed by routing `table_valid_columns` through
+    /// `NodeSchema::all_valid_physical_columns()`, the canonical three-source
+    /// accessor (`property_mappings` + `from_properties` + `to_properties`,
+    /// mirroring `has_cypher_property`) instead of reading `property_mappings`
+    /// alone.
+    ///
+    /// Live-verified (2026-07-11, db_denormalized, ClickHouse) via `cg query`:
+    /// pre-fix this query returned a single collapsed row (`b.city = NULL`,
+    /// `n = 32`); post-fix it returns 6 distinct, correctly-grouped rows
+    /// (New York=5, Chicago=3, Atlanta=5, Denver=1, Los Angeles=16,
+    /// San Francisco=2 — summing to the same 32, confirming no rows were lost,
+    /// only mis-grouped pre-fix) — byte-identical to the pre-#465-branch `main`
+    /// baseline's output for the same query.
+    #[tokio::test]
+    async fn denorm_with_aggregate_group_by_middle_node_no_null_collapse_465_blocking() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (a:Airport)-[:FLIGHT]-(b:Airport)-[:FLIGHT]-(c:Airport) \
+                 WITH b, count(*) AS n RETURN b.city, n",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+
+        // Assert on the physical column name only, not the specific `tN` alias
+        // assigned to it — `normalize()` canonicalizes alias *numbering*
+        // relative to first appearance within THIS query's own text, but the
+        // canonical digit chosen depends on how many aliases the shared
+        // test-process alias counter had already consumed before this test
+        // ran, not just this query's structure.
+        let null_pad_re = regex::Regex::new(r#"NULL AS "t\d+\.origin_city""#).unwrap();
+        assert!(
+            !null_pad_re.is_match(&sql),
+            "465-blocking: b.city must not be NULL-padded — Airport's real \
+             columns live in from_node_properties/to_node_properties, which \
+             table_valid_columns must now consult:\n{sql}"
+        );
+        let export_re = regex::Regex::new(r#"t\d+\.origin_city AS "t\d+\.origin_city""#).unwrap();
+        let export_count = export_re.find_iter(&sql).count();
+        assert!(
+            export_count >= 4,
+            "465-blocking: every branch of the 4-way direction-permutation \
+             UNION must export the real `origin_city` column (not NULL), \
+             found {export_count} exports:\n{sql}"
+        );
+        let group_by_re = regex::Regex::new(r#"GROUP BY `?t\d+\.origin_city`?"#).unwrap();
+        assert!(
+            group_by_re.is_match(&sql),
+            "465-blocking: outer GROUP BY must reference the exported real \
+             column:\n{sql}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(
+                &render(
+                    &schema,
+                    "MATCH (a:Airport)-[:FLIGHT]-(b:Airport)-[:FLIGHT]-(c:Airport) \
+                     WITH b, count(*) AS n RETURN b.city, n",
+                    SqlDialect::ClickHouse,
+                )
+                .await,
+            );
+            assert_eq!(sql, again, "465-blocking: nondeterministic render");
         }
     }
 }

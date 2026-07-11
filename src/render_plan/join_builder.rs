@@ -375,6 +375,38 @@ fn wrap_conditions_and(conditions: Vec<OperatorApplication>) -> OperatorApplicat
 
 /// Map a node Identifier to CTE column form, guarding against double-naming.
 /// When the column is already CTE-named (e.g. `p1_c_id`), returns it as-is.
+/// #532: the #478 FK-edge "node IS the edge" redundancy check (below, in the
+/// nested-`GraphRel` JOIN builder) originally compared physical table names
+/// directly. `GraphSchema::fk_edge_anchor_is_from` already encodes exactly
+/// this axis (whether an FK-edge relationship's own table equals its
+/// from-node's table or its to-node's table) via the schema catalog rather
+/// than a raw string comparison — prefer it when the relationship's schema
+/// resolves to a recognized FK-edge entry, gated on `non_shared_is_from_side`
+/// (true when the non-shared node sits on the relationship's from-side,
+/// i.e. `left`/`left_connection`; false for the to-side/`right`).
+///
+/// Falls back to `fallback_table_match` (the pre-existing raw table-name
+/// comparison) when the relationship type can't be resolved to a schema
+/// entry (unlabeled/multi-type relationship) or isn't a recognized FK edge —
+/// preserves prior behavior exactly in those cases.
+fn fk_edge_non_shared_is_rel_table(
+    inner_rel: &crate::query_planner::logical_plan::GraphRel,
+    schema: &GraphSchema,
+    non_shared_is_from_side: bool,
+    fallback_table_match: bool,
+) -> bool {
+    let anchor_is_from = inner_rel
+        .labels
+        .as_ref()
+        .and_then(|labels| labels.first())
+        .and_then(|rel_type| schema.get_rel_schema(rel_type).ok())
+        .and_then(|rel_schema| schema.fk_edge_anchor_is_from(rel_schema));
+    match anchor_is_from {
+        Some(is_from) => is_from == non_shared_is_from_side,
+        None => fallback_table_match,
+    }
+}
+
 fn cte_safe_identifier(alias: &str, id: &Identifier) -> Identifier {
     match id {
         Identifier::Single(col) => Identifier::Single(if is_cte_column(col) {
@@ -1919,39 +1951,28 @@ impl JoinBuilder for LogicalPlan {
                     // (dedup against `GraphJoins.joins`'s already-correct entry
                     // for the SAME alias happens later, in the `GraphJoins` arm).
                     //
-                    // AXIS-DISPATCH NOTE (adversarial review, non-blocking):
-                    // this compares physical table NAMES directly
+                    // AXIS-DISPATCH NOTE (#532, resolved): this redundancy check
+                    // used to compare physical table NAMES directly
                     // (`extract_table_name`/`extract_parameterized_table_ref`),
                     // which CLAUDE.md's axis-dispatch rule calls out by name as
-                    // the kind of raw check that should route through
-                    // `PatternSchemaContext`/`EdgeAccessStrategy` instead.
-                    // Checked: `EdgeAccessStrategy::FkEdge { node_table,
-                    // fk_column }` (`pattern_schema.rs`) is the structured type
-                    // that models exactly this "edge is a FK column on a node
-                    // table" pattern — but `PatternSchemaContext::build_edge_strategy`
-                    // (the only production constructor of `EdgeAccessStrategy`)
-                    // never actually produces the `FkEdge` variant; it only ever
-                    // returns `Polymorphic` or `SeparateTable`. The sole place
-                    // `FkEdge` is constructed anywhere in this codebase is a
-                    // hand-built struct literal in a `cte_manager` unit test.
-                    // So `EdgeAccessStrategy::FkEdge` is a declared-but-
-                    // unimplemented catalog variant today: routing through it
-                    // would require FIRST teaching `build_edge_strategy` /
-                    // `determine_join_strategy` to detect and construct it in
-                    // production (a foundational catalog change touching every
-                    // caller of `PatternSchemaContext::analyze`, not a small
-                    // extension of this fix) before this call site could even
-                    // consume it. Deliberately left as a direct table-name
-                    // comparison — same idiom already used pervasively
-                    // throughout this file (`extract_table_name`,
-                    // `extract_end_node_table_name`, `extract_parameterized_table_ref`
-                    // are called 20+ times elsewhere in `join_builder.rs` for
-                    // unrelated dedup/lookup purposes) — with this note as the
-                    // fast-follow pointer: implement `FkEdge` construction in
-                    // `build_edge_strategy` first, then this (and the two
-                    // symmetric checks below / the `anchor_is_right &&
-                    // right_is_nested` branch further down) can match on
-                    // `EdgeAccessStrategy::FkEdge { node_table, .. }` instead.
+                    // the kind of raw check that should route through a
+                    // schema-catalog API instead. `EdgeAccessStrategy::FkEdge`
+                    // (`pattern_schema.rs`) would be the structured type for
+                    // this, but `PatternSchemaContext::build_edge_strategy`
+                    // never actually constructs it in production (only
+                    // `Polymorphic`/`SeparateTable`) — routing through it would
+                    // require foundational catalog work, out of scope here.
+                    // `GraphSchema::fk_edge_anchor_is_from` (`graph_schema.rs`,
+                    // added by #492) already gates on the relationship's own
+                    // FK-edge flag plus table identity and is reachable via the relationship's
+                    // schema lookup (`schema.get_rel_schema`) — cheaper than a
+                    // raw table-name comparison and closes a theoretical
+                    // false-positive gap (table names coincidentally matching
+                    // without a real FK-edge relationship). Below,
+                    // `fk_edge_non_shared_is_rel_table` prefers it and falls
+                    // back to the original table-name comparison only when the
+                    // relationship type can't be resolved to a schema entry
+                    // (unlabeled/multi-type relationship).
                     let inner_rel_table_for_redundancy_check =
                         extract_parameterized_table_ref(&inner_rel.center);
 
@@ -1964,11 +1985,18 @@ impl JoinBuilder for LogicalPlan {
 
                         let non_shared_alias = inner_left_alias;
 
-                        let non_shared_is_rel_table = inner_rel_table_for_redundancy_check
+                        let fallback_table_match = inner_rel_table_for_redundancy_check
                             .as_deref()
                             .is_some_and(|rt| {
                                 extract_table_name(&inner_rel.left).as_deref() == Some(rt)
                             });
+                        // #532: non-shared (left) is the relationship's from-side.
+                        let non_shared_is_rel_table = fk_edge_non_shared_is_rel_table(
+                            inner_rel,
+                            schema,
+                            true,
+                            fallback_table_match,
+                        );
 
                         if non_shared_is_rel_table {
                             log::debug!(
@@ -2206,11 +2234,18 @@ impl JoinBuilder for LogicalPlan {
                         // the shared node here sits on inner's LEFT, so the
                         // non-shared node is inner's RIGHT (an end-node
                         // connection — use `extract_end_node_table_name`).
-                        let non_shared_is_rel_table = inner_rel_table_for_redundancy_check
+                        let fallback_table_match = inner_rel_table_for_redundancy_check
                             .as_deref()
                             .is_some_and(|rt| {
                                 extract_end_node_table_name(&inner_rel.right).as_deref() == Some(rt)
                             });
+                        // #532: non-shared (right) is the relationship's to-side.
+                        let non_shared_is_rel_table = fk_edge_non_shared_is_rel_table(
+                            inner_rel,
+                            schema,
+                            false,
+                            fallback_table_match,
+                        );
 
                         if non_shared_is_rel_table {
                             log::debug!(

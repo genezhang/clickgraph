@@ -132,10 +132,30 @@ pub fn expand_alias_properties_core(
         } else if let Some(required_props) = reqs.get_requirements(alias) {
             // Filter to only required properties
             // Always include ID column even if not explicitly required
+            //
+            // #465: `required_props` is normally keyed by the Cypher property
+            // name (`prop_name`, e.g. "name") — the shape `PropertyRequirementsAnalyzer`
+            // records for references to an exported-but-not-yet-schema-mapped
+            // alias (the standard "before WITH" case, per CLAUDE.md rule 2).
+            // But a `collect(u)` + `UNWIND ... AS user` no-op elimination
+            // (`CollectUnwindElimination`) can rewrite a fresh, already
+            // schema-mapped alias's PropertyAccessExp (e.g. `user.name` ->
+            // `PropertyAccessExp(user, "full_name")`, mapped because `user`
+            // wasn't recognized as CTE-exported when FilterTagging ran) onto
+            // the CTE-exported alias `u` — so `required_props` for `u` ends up
+            // holding the DB COLUMN name ("full_name") instead of the Cypher
+            // name ("name"). Renamed properties (name -> full_name) then
+            // silently failed this Cypher-name-only comparison and got pruned
+            // out of the CTE entirely, while unrenamed ones (e.g. "city",
+            // where Cypher name == DB column) passed by coincidence — the
+            // exact under-projection bug in #465. Check both forms so a
+            // requirement recorded under either representation is honored.
             let filtered: Vec<_> = properties
                 .into_iter()
                 .filter(|(prop_name, col_name)| {
-                    required_props.contains(prop_name) || col_name == id_column
+                    required_props.contains(prop_name)
+                        || required_props.contains(col_name)
+                        || col_name == id_column
                 })
                 .collect();
 

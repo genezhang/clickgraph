@@ -50,19 +50,21 @@ vlp_u2_u1 AS (
 with_postCount_u2_cte_0 AS (SELECT `p2_u2_user_id` AS `p2_u2_user_id`, count(DISTINCT `p.post_id`) AS `postCount` FROM (
 SELECT 
       end_id AS `p2_u2_user_id`,
-      p.post_id AS `p.post_id`
+      p.post_id AS `p.post_id`,
+      u2.user_id AS `u2.user_id`
 FROM vlp_u1_u2 AS t
 INNER JOIN test_integration.posts_test AS t0 ON t0.author_id = t.end_id
 INNER JOIN test_integration.posts_test AS p ON p.post_id = t0.post_id
 UNION ALL 
 SELECT 
       end_id AS `p2_u2_user_id`,
-      p.post_id AS `p.post_id`
+      p.post_id AS `p.post_id`,
+      u2.user_id AS `u2.user_id`
 FROM vlp_u2_u1 AS t
 INNER JOIN test_integration.posts_test AS t0 ON t0.author_id = t.start_id
 INNER JOIN test_integration.posts_test AS p ON p.post_id = t0.post_id
 ) AS __union
-GROUP BY u2.user_id
+GROUP BY `u2.user_id`
 HAVING postCount > 0
 )
 SELECT 

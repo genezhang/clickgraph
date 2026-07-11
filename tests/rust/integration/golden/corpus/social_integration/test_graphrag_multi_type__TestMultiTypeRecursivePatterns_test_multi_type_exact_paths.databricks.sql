@@ -13,12 +13,14 @@ WHERE (u_1.user_id = 1)
 )
 SELECT `node_type` AS `node_type`, count(*) AS `cnt` FROM (
 SELECT 
-      t.end_type AS `node_type`
+      t.end_type AS `node_type`,
+      t.end_type AS `t.end_type`
 FROM vlp_multi_type_u_x AS t
 WHERE t.start_id = 1
 UNION ALL 
 SELECT 
-      t.end_type AS `node_type`
+      t.end_type AS `node_type`,
+      t.end_type AS `t.end_type`
 FROM vlp_multi_type_u_x_2 AS t
 WHERE t.start_id = 1
 ) AS __union

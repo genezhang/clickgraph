@@ -8,6 +8,7 @@ SELECT
       toString(b.content) AS "title",
       toString(a.user_id) AS "user_id",
       a.email_address AS "a.email",
+      a.email_address AS "a.email_address",
       r.from_id AS "r.from_id"
 FROM brahmand.users_bench AS a
 LEFT JOIN (SELECT * FROM brahmand.interactions WHERE (interaction_type = 'FOLLOWS' AND from_type = 'User' AND to_type = 'Post')) AS r ON r.from_id = a.user_id
@@ -22,6 +23,7 @@ SELECT
       NULL AS "title",
       toString(b.user_id) AS "user_id",
       a.email_address AS "a.email",
+      a.email_address AS "a.email_address",
       r.from_id AS "r.from_id"
 FROM brahmand.users_bench AS a
 LEFT JOIN (SELECT * FROM brahmand.interactions WHERE (interaction_type = 'FOLLOWS' AND from_type = 'User' AND to_type = 'User')) AS r ON r.from_id = a.user_id
