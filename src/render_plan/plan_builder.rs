@@ -1299,6 +1299,18 @@ impl RenderPlanBuilder for LogicalPlan {
                     // node role, #506). Search all branches rather than assuming order.
                     // (The node-grain dedup key below (#507/#520) is resolved separately,
                     // via a role-agnostic shared helper — see its own comment.)
+                    //
+                    // #508: kept role-specific to `anchor_is_left` here (NOT merged
+                    // across both roles) — an earlier attempt at this fix merged both
+                    // roles into one map, but that silently DISCARDS information for a
+                    // node label whose from/to property maps use the SAME Cypher name
+                    // for DIFFERENT physical columns (e.g. zeek `IP`'s `ip` ->
+                    // `id.orig_h` on one role, `ip` -> `id.resp_h` on the other) —
+                    // exactly the shape the already-passing `denorm_optional_anchor_*`
+                    // and B1 tests exercise, so merging would silently break those. The
+                    // actual #508 root cause is `anchor_edge_id`'s assumption below
+                    // (`anchor_is_left` ⟹ `from_id`, else `to_id`) — see its own comment
+                    // and `anchor_node_properties_opposite_role` for the real fix.
                     let anchor_node_properties: Option<
                         std::collections::HashMap<
                             String,
@@ -1311,6 +1323,50 @@ impl RenderPlanBuilder for LogicalPlan {
                                     crate::graph_catalog::pattern_schema::edge_side_node_properties(
                                         vs,
                                         anchor_is_left,
+                                    )
+                                    .cloned()
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        })
+                    } else {
+                        None
+                    };
+                    // #508: the OPPOSITE role's property map, used ONLY as a fallback
+                    // when the `anchor_is_left`-implied edge-id column below fails to
+                    // resolve against `anchor_node_properties` (see the `mapped_props`
+                    // fallback a few lines down). `anchor_is_left` reflects which side
+                    // of THIS GraphRel's plan tree the anchor Union sits on — a
+                    // structural fact about how the anchor was already bound — but the
+                    // edge's actual from/to role for the anchor's OWN node label is an
+                    // independent, schema-driven fact that can disagree with it: a
+                    // textually-reversed OPTIONAL MATCH (`(rip)<-[:RESOLVED_TO]-(d)`
+                    // instead of `(d)-[:RESOLVED_TO]->(rip)`, live-verified) puts the
+                    // anchor `d` on the opposite structural side while `d` is STILL the
+                    // edge's `from`-node — `anchor_is_left`'s from/to assumption breaks,
+                    // and the primary (`anchor_is_left`-implied) attempt below finds no
+                    // mapping, wrongly falling into the impossible-join (`1 = 0`)
+                    // fallback for what is actually a resolvable join. Trying the
+                    // opposite role only when the primary attempt is empty cannot
+                    // regress any currently-working shape (that empty case previously
+                    // ALWAYS produced `1 = 0`), and correctly stays `1 = 0` when the
+                    // anchor's label genuinely cannot reach the edge's other column
+                    // either (e.g. an IP anchor for `RESOLVED_TO`, which needs Domain).
+                    let anchor_node_properties_opposite_role: Option<
+                        std::collections::HashMap<
+                            String,
+                            crate::graph_catalog::expression_parser::PropertyValue,
+                        >,
+                    > = if let LogicalPlan::Union(union) = anchor_plan {
+                        union.inputs.iter().find_map(|input| {
+                            if let LogicalPlan::GraphNode(gn) = input.as_ref() {
+                                if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                                    crate::graph_catalog::pattern_schema::edge_side_node_properties(
+                                        vs,
+                                        !anchor_is_left,
                                     )
                                     .cloned()
                                 } else {
@@ -1343,7 +1399,10 @@ impl RenderPlanBuilder for LogicalPlan {
                     // #520/B1: resolved via the shared `denorm_scan_cte_anchor_id_property`
                     // helper (plan_builder_helpers.rs) — NOT the `anchor_node_properties`/
                     // `anchor_id_column` pair above (those stay role-specific to
-                    // `anchor_is_left`, correctly, for the JOIN-key derivation below).
+                    // `anchor_is_left`, correctly — see #508's own comment on why merging
+                    // them would be unsafe — with an opposite-role FALLBACK tried only
+                    // when the primary attempt is empty, for the JOIN-key derivation
+                    // below).
                     // The id-property lookup must search BOTH roles regardless of
                     // `anchor_is_left`: an UNDIRECTED pattern renders this SAME code path
                     // once per UnionDistribution branch (once per direction), and the
@@ -1396,7 +1455,7 @@ impl RenderPlanBuilder for LogicalPlan {
                             // The edge column the anchor must join against: from_id when
                             // the anchor is the edge's FROM side, to_id when it's the TO
                             // side (#506).
-                            let anchor_edge_id = if anchor_is_left {
+                            let anchor_edge_id_primary = if anchor_is_left {
                                 edge_vs
                                     .from_id
                                     .as_ref()
@@ -1428,18 +1487,68 @@ impl RenderPlanBuilder for LogicalPlan {
                             // Resolve FORWARD through the CTE's exposed columns: among the
                             // properties that map to anchor_edge_id, deterministically pick
                             // the one the denorm-scan CTE actually exposes.
-                            let mut mapped_props: Vec<String> = anchor_node_properties
-                                .as_ref()
-                                .map(|props| {
-                                    props
-                                        .iter()
-                                        .filter(|(_, prop_val)| prop_val.raw() == anchor_edge_id)
-                                        .map(|(prop_name, _)| prop_name.clone())
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            // Deterministic tie-break for any residual ambiguity.
-                            mapped_props.sort();
+                            fn mapped_props_for(
+                                props: Option<
+                                    &std::collections::HashMap<
+                                        String,
+                                        crate::graph_catalog::expression_parser::PropertyValue,
+                                    >,
+                                >,
+                                edge_id: &str,
+                            ) -> Vec<String> {
+                                let mut mapped: Vec<String> = props
+                                    .map(|props| {
+                                        props
+                                            .iter()
+                                            .filter(|(_, prop_val)| prop_val.raw() == edge_id)
+                                            .map(|(prop_name, _)| prop_name.clone())
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                // Deterministic tie-break for any residual ambiguity.
+                                mapped.sort();
+                                mapped
+                            }
+                            let mapped_props_primary = mapped_props_for(
+                                anchor_node_properties.as_ref(),
+                                &anchor_edge_id_primary,
+                            );
+                            // #508: the `anchor_is_left`-implied from/to pick above is a
+                            // structural guess that can disagree with the edge's actual
+                            // from/to role for the anchor's own label — a
+                            // textually-reversed OPTIONAL MATCH (`(rip)<-[:R]-(d)` vs
+                            // `(d)-[:R]->(rip)`) flips `anchor_is_left` while `d` is
+                            // STILL the edge's `from`-node, live-verified to otherwise
+                            // fall into the impossible-join branch below even though a
+                            // real join exists. Only tried when the primary attempt is
+                            // empty — cannot regress any case that already resolves.
+                            let (anchor_edge_id, mapped_props) = if !mapped_props_primary.is_empty()
+                            {
+                                (anchor_edge_id_primary, mapped_props_primary)
+                            } else {
+                                let anchor_edge_id_fallback = if anchor_is_left {
+                                    edge_vs
+                                        .to_id
+                                        .as_ref()
+                                        .map(|id| id.first_column().to_string())
+                                        .unwrap_or_else(|| edge_vs.id_column.clone())
+                                } else {
+                                    edge_vs
+                                        .from_id
+                                        .as_ref()
+                                        .map(|id| id.first_column().to_string())
+                                        .unwrap_or_else(|| edge_vs.id_column.clone())
+                                };
+                                let mapped_props_fallback = mapped_props_for(
+                                    anchor_node_properties_opposite_role.as_ref(),
+                                    &anchor_edge_id_fallback,
+                                );
+                                if !mapped_props_fallback.is_empty() {
+                                    (anchor_edge_id_fallback, mapped_props_fallback)
+                                } else {
+                                    (anchor_edge_id_primary, mapped_props_primary)
+                                }
+                            };
                             let node_id = if mapped_props.is_empty() {
                                 // No anchor property maps to the edge's join column (type
                                 // mismatch, e.g. IP anchor for RESOLVED_TO which expects
@@ -3607,6 +3716,22 @@ impl RenderPlanBuilder for LogicalPlan {
                             };
 
                             if let Some(ref node_alias) = node_alias {
+                                // #508: resolve which side (from/to) of the EDGE the anchor
+                                // actually occupies, rather than assuming it matches
+                                // `anchor_is_left` (a structural fact about this GraphRel's
+                                // plan tree that can disagree with the edge's real from/to
+                                // role — see `resolve_anchor_is_from_side`'s own doc for the
+                                // live-verified mismatch). Using raw `anchor_is_left` here
+                                // silently attributed the OTHER (non-anchor) node's own
+                                // to/from-node-properties onto the anchor's alias for a
+                                // textually-reversed OPTIONAL MATCH (label conflation:
+                                // `rip.ip` rendering as `d.ip`).
+                                let anchor_is_from_side =
+                                    super::plan_builder_helpers::resolve_anchor_is_from_side(
+                                        anchor_side_plan,
+                                        edge_vs,
+                                        anchor_is_left,
+                                    );
                                 // Build reverse mapping: db_column → (target_alias, cypher_property)
                                 // for the anchor's own side only (`edge_side_node_properties`,
                                 // a schema-catalog API — CLAUDE.md rule 7; #506 needs the
@@ -3621,7 +3746,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                 let anchor_side_props =
                                     crate::graph_catalog::pattern_schema::edge_side_node_properties(
                                         edge_vs,
-                                        anchor_is_left,
+                                        anchor_is_from_side,
                                     );
                                 if let Some(side_props) = anchor_side_props {
                                     // Sorted so that when two cypher properties map to the
@@ -3692,7 +3817,7 @@ impl RenderPlanBuilder for LogicalPlan {
                                     let anchor_gn = u.inputs.iter().find_map(|i| {
                                         if let LogicalPlan::GraphNode(gn) = i.as_ref() {
                                             if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
-                                                if crate::graph_catalog::pattern_schema::edge_side_node_properties(vs, anchor_is_left).is_some() {
+                                                if crate::graph_catalog::pattern_schema::edge_side_node_properties(vs, anchor_is_from_side).is_some() {
                                                     return Some(gn);
                                                 }
                                             }

@@ -403,6 +403,72 @@ pub(super) fn optional_denorm_union_anchor_is_left(
     None
 }
 
+/// #508: determine whether the OPTIONAL denorm CTE + LEFT JOIN anchor is
+/// genuinely on the edge's FROM side or TO side — independent of
+/// `anchor_is_left`, which only records a STRUCTURAL fact (which side of
+/// THIS `GraphRel`'s plan tree the anchor's standalone scan Union sits on)
+/// that can disagree with the edge's actual from/to role for the anchor's
+/// label. Live-verified mismatch: a textually-reversed OPTIONAL MATCH
+/// (`(rip)<-[:RESOLVED_TO]-(d)` instead of `(d)-[:RESOLVED_TO]->(rip)`)
+/// flips `anchor_is_left` to `false` while `d` is STILL `RESOLVED_TO`'s
+/// `from`-node — using `anchor_is_left` directly (as both the JOIN-key
+/// derivation and the SELECT-list anchor-property rewrite previously did)
+/// picked the edge's `to_id` column (`answers`, ResolvedIP's own column) for
+/// the anchor, which either produced an impossible `1 = 0` JOIN (no anchor
+/// property maps to it) or, worse, silently attributed the OTHER node's own
+/// to-side property map onto the anchor's alias (label conflation: `rip.ip`
+/// rendering as `d.ip`).
+///
+/// Tries the `anchor_is_left`-implied side first (preserves the existing
+/// resolution for every already-working shape unchanged); falls back to the
+/// opposite side only when the primary side's edge id column has no
+/// property mapping anywhere in the anchor's own scan Union. Returns the
+/// original `anchor_is_left` guess when NEITHER side resolves (a genuine
+/// label-impossible hop, e.g. an `IP` anchor for `RESOLVED_TO` which expects
+/// `Domain`) — unchanged from prior behavior, correctly falls through to the
+/// impossible-join / no-mapping paths downstream.
+pub(super) fn resolve_anchor_is_from_side(
+    anchor_plan: &LogicalPlan,
+    edge_vs: &crate::query_planner::logical_plan::ViewScan,
+    anchor_is_left: bool,
+) -> bool {
+    let has_mapping_for = |is_from_side: bool, edge_id_col: &str| -> bool {
+        let LogicalPlan::Union(union) = anchor_plan else {
+            return false;
+        };
+        union.inputs.iter().any(|input| {
+            let LogicalPlan::GraphNode(gn) = input.as_ref() else {
+                return false;
+            };
+            let LogicalPlan::ViewScan(vs) = gn.input.as_ref() else {
+                return false;
+            };
+            crate::graph_catalog::pattern_schema::edge_side_node_properties(vs, is_from_side)
+                .is_some_and(|props| props.values().any(|v| v.raw() == edge_id_col))
+        })
+    };
+    let from_id_col = edge_vs
+        .from_id
+        .as_ref()
+        .map(|id| id.first_column().to_string());
+    let to_id_col = edge_vs
+        .to_id
+        .as_ref()
+        .map(|id| id.first_column().to_string());
+    let (primary_is_from, primary_col, fallback_is_from, fallback_col) = if anchor_is_left {
+        (true, from_id_col, false, to_id_col)
+    } else {
+        (false, to_id_col, true, from_id_col)
+    };
+    if primary_col.is_some_and(|col| has_mapping_for(primary_is_from, &col)) {
+        return primary_is_from;
+    }
+    if fallback_col.is_some_and(|col| has_mapping_for(fallback_is_from, &col)) {
+        return fallback_is_from;
+    }
+    anchor_is_left
+}
+
 /// Traverse through wrapper nodes (GraphJoins, Projection, GroupBy, etc.) to find
 /// an OPTIONAL denormalized GraphRel with Union left. Returns the inner GraphRel
 /// plan node if found.
@@ -418,6 +484,25 @@ pub(super) fn find_inner_optional_denorm_graphrel(plan: &LogicalPlan) -> Option<
         // the outer hop(s)' already-correct JOINs back in (see #505 fix site).
         LogicalPlan::GraphRel(gr) => find_inner_optional_denorm_graphrel(&gr.left)
             .or_else(|| find_inner_optional_denorm_graphrel(&gr.right)),
+        // NOTE: deliberately NO generic `LogicalPlan::Union` arm here. This
+        // function has a second caller (`to_render_plan_with_ctx`'s top-level
+        // OPTIONAL-denorm-Union detection, `plan_builder.rs` ~3596) that
+        // relies on it returning `None` when `plan` ITSELF is the bidirectional
+        // pattern's outer `Union` of two direction-permutation GraphRel
+        // branches (built by `bidirectional_union.rs` for an undirected
+        // pattern) — that caller's OWN union-of-two-branches rendering must
+        // run instead (each branch gets its own correctly-anchored LEFT JOIN,
+        // #507/B1). A blanket Union arm here was tried and reverted: it made
+        // this top-level call SUCCEED for that outer Union too, incorrectly
+        // delegating to a single inner branch's render and silently dropping
+        // the other direction branch — confirmed via `MATCH (a:IP) OPTIONAL
+        // MATCH (a)-[r:ACCESSED]-(b:IP) RETURN a.ip, a.port, count(r) AS c`
+        // (the B1 golden test's own repro) losing its outer SELECT/second
+        // UNION branch entirely. #529 shape 2 (an undirected OPTIONAL pattern
+        // feeding a `WITH`-aggregate) is instead fixed at its OWN narrower
+        // caller, `denorm_scan_cte_anchor_names_and_id_col` below, which
+        // unwraps a `Union` of GraphRel branches itself before delegating
+        // to this function per-branch — see that function's own comment.
         LogicalPlan::GraphJoins(gj) => find_inner_optional_denorm_graphrel(&gj.input),
         LogicalPlan::Projection(p) => find_inner_optional_denorm_graphrel(&p.input),
         LogicalPlan::GroupBy(gb) => find_inner_optional_denorm_graphrel(&gb.input),
@@ -551,6 +636,27 @@ fn denorm_scan_cte_anchor_names_and_id_col(
     std::collections::HashSet<String>,
     String,
 )> {
+    // #529 shape 2: an UNDIRECTED OPTIONAL MATCH is expanded (by
+    // `bidirectional_union.rs`) into a `Union` of two direction-permutation
+    // GraphRel branches BEFORE this traversal ever runs — e.g. `MATCH (a)
+    // OPTIONAL MATCH (a)-[r]-(b) WITH a, count(r) AS c ...` on a coupled
+    // schema. `find_inner_optional_denorm_graphrel` deliberately has NO
+    // generic `Union` arm (a DIFFERENT caller, `to_render_plan_with_ctx`'s
+    // top-level detection, needs it to return `None` for exactly this shape
+    // of Union — see that function's own comment), so unwrap it HERE
+    // instead, scoped to only this helper's two callers
+    // (`denorm_scan_cte_anchor_id_property`/`_properties`, used by the
+    // WITH-clause GROUP BY / SELECT expansion in `plan_builder_utils.rs`).
+    // Without this, the anchor was invisible to this helper for an undirected
+    // OPTIONAL pattern, so callers fell back to the raw physical db column —
+    // invalid SQL (`GROUP BY a."id.orig_h"` against a CTE that only exposes
+    // `"ip"`).
+    if let LogicalPlan::Union(u) = plan {
+        return u
+            .inputs
+            .iter()
+            .find_map(|branch| denorm_scan_cte_anchor_names_and_id_col(branch, alias));
+    }
     let inner = find_inner_optional_denorm_graphrel(plan)?;
     let LogicalPlan::GraphRel(gr) = inner else {
         return None;
