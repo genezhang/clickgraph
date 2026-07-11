@@ -7437,3 +7437,461 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
         }
     }
 }
+
+mod coupled_anchor_optional_family_504_508_529_530_471 {
+    use super::*;
+
+    /// #504 — KNOWN BROKEN, investigated and deliberately NOT fixed here.
+    ///
+    /// `MATCH (a:IP)-[:REQUESTED]->(d) OPTIONAL MATCH (d)-[:RESOLVED_TO]->(rip)
+    /// RETURN a.ip, d.name, count(rip)` on the coupled `zeek_merged_test`
+    /// schema renders `count(t1.answers)` with NO join/array-unnest at all —
+    /// both REQUESTED and RESOLVED_TO are genuinely the SAME physical
+    /// `dns_log` row (a correct `JoinStrategy::CoupledSameRow` decision —
+    /// confirmed via `are_edges_coupled`, `graph_catalog/graph_schema.rs:1632`
+    /// and `pattern_schema.rs:1009-1021`), so there is no missing JOIN to add.
+    ///
+    /// The actual bug: `RESOLVED_TO.to_id = "answers"` is a ClickHouse
+    /// `Array(String)` column (schema: `edge_id: [uid, answers]`,
+    /// `to_node_properties: { ip: answers }` on `ResolvedIP`), but the schema
+    /// catalog has NO concept of an array-valued edge/property column
+    /// anywhere — `map_clickhouse_type` (`src/graph_catalog/schema_types.rs`)
+    /// collapses `Array(String)` to plain `String`, and neither
+    /// `RelationshipSchema` nor `NodeSchema` carry a multiplicity/array flag.
+    /// The analyzer's NULL-correct OPTIONAL-count rewrite (`count(rip)` ->
+    /// `count(rip.answers)`, `projection_tagging.rs:1464-1467,1600`) resolves
+    /// `rip.answers` through the owning edge's embedded column
+    /// (`select_builder.rs` "Case 6a", ~1499-1526) straight to `t1.answers` —
+    /// but `count(t1.answers)` in ClickHouse counts NON-NULL ROWS, not array
+    /// ELEMENTS, so every dns_log row reports count=1 regardless of how many
+    /// DNS answers it actually has (0 would also wrongly read 1, though no
+    /// fixture row is empty today). A correct render needs a NEW capability —
+    /// schema-level array-column awareness plus `ARRAY JOIN`/`LEFT ARRAY
+    /// JOIN` wiring reusing the existing `ArrayJoinItem` render primitive
+    /// (today only fed by UNWIND, see `render_plan/mod.rs:292` and
+    /// `plan_builder.rs`'s `extract_array_join`) — a multi-file feature
+    /// addition, not a bounded bug fix, so it is explicitly OUT OF SCOPE for
+    /// this fix stream. `fold_optional_edge_node_join_with_predicate`
+    /// (`plan_optimizer.rs:1479`) was ruled out: this query produces zero
+    /// JOINs (`FROM zeek.dns_log AS t1` alone), so that pass never runs here.
+    ///
+    /// Confirmed identical wrong SQL for the PLAIN (non-optional) two-hop
+    /// form too (`MATCH (a:IP)-[:REQUESTED]->(d) MATCH
+    /// (d)-[:RESOLVED_TO]->(rip) ...`) — this is NOT an OPTIONAL-MATCH/
+    /// NULL-extension bug at the SQL-shape level, it is the array-count
+    /// semantics gap, which happens to be exposed via #504's OPTIONAL query.
+    ///
+    /// Live-verified ground truth (`SELECT "id.orig_h", query,
+    /// length(answers) FROM zeek.dns_log`): `cdn.example.com` has 2 answers
+    /// (`['93.184.216.34','93.184.216.35']`), all other rows have 1. Running
+    /// the ACTUAL generated SQL live returns `count = 1` for ALL FOUR rows,
+    /// including `cdn.example.com` — silently wrong (should be 2).
+    ///
+    /// If this test starts failing because the SQL shape changed, treat that
+    /// as a PROMPT to live-verify the new behavior against the ground truth
+    /// above (especially the `cdn.example.com` / count=2 row) before
+    /// replacing this with a real regression test — do not assume a shape
+    /// change alone means it's fixed.
+    #[tokio::test]
+    async fn coupled_array_valued_edge_count_wrong_no_unnest_known_broken_504() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (a:IP)-[:REQUESTED]->(d) \
+                 OPTIONAL MATCH (d)-[:RESOLVED_TO]->(rip) \
+                 RETURN a.ip, d.name, count(rip)",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+
+        // No JOIN at all — both edges genuinely collapse onto one dns_log row.
+        assert!(
+            !sql.contains("JOIN"),
+            "#504 KNOWN BROKEN characterization stale — a JOIN appeared; if \
+             array-unnest support was added, live-verify the cdn.example.com \
+             row now returns count=2 before replacing this test:\n{sql}"
+        );
+        // The count() argument is still the raw array column, not an
+        // ARRAY JOIN-unnested per-element reference — the actual bug. The
+        // scan alias (t0/t1/...) is an internal counter detail, not part of
+        // the characterization — match on the shape, not the exact alias.
+        assert!(
+            sql.contains("count(") && sql.contains(".answers)"),
+            "#504 KNOWN BROKEN characterization stale — count() no longer \
+             targets the raw `answers` array column directly; if array-unnest \
+             (ARRAY JOIN) support was added, live-verify row-level counts \
+             (esp. cdn.example.com = 2) before replacing this test:\n{sql}"
+        );
+        assert!(
+            !sql.contains("ARRAY JOIN") && !sql.contains("arrayJoin"),
+            "#504 KNOWN BROKEN characterization stale — an ARRAY JOIN/\
+             arrayJoin() now appears, suggesting array-unnest support was \
+             added; live-verify before replacing this test:\n{sql}"
+        );
+
+        // Determinism (even a known-broken render must be deterministic).
+        for _ in 0..5 {
+            let again = normalize(
+                &render(
+                    &schema,
+                    "MATCH (a:IP)-[:REQUESTED]->(d) \
+                     OPTIONAL MATCH (d)-[:RESOLVED_TO]->(rip) \
+                     RETURN a.ip, d.name, count(rip)",
+                    SqlDialect::ClickHouse,
+                )
+                .await,
+            );
+            assert_eq!(sql, again, "#504: nondeterministic render");
+        }
+    }
+
+    /// #508 (FIXED, 2-table coupled case only): a textually-reversed OPTIONAL
+    /// MATCH on the coupled `zeek_merged_test` schema —
+    /// `MATCH (d:Domain) OPTIONAL MATCH (rip:ResolvedIP)<-[:RESOLVED_TO]-(d)`
+    /// instead of the equivalent `MATCH (d:Domain) OPTIONAL MATCH
+    /// (d)-[:RESOLVED_TO]->(rip:ResolvedIP)` — rendered TWO distinct wrong
+    /// symptoms pre-fix: (1) `LEFT JOIN zeek.dns_log AS t1 ON 1 = 0` (an
+    /// always-empty impossible join, even though `d` genuinely IS
+    /// `RESOLVED_TO`'s `from`-node and a real join exists), and (2)
+    /// `d.ip AS "rip.ip"` — `rip`'s own property silently attributed to the
+    /// ANCHOR alias `d` (label conflation; `d`'s CTE doesn't even expose an
+    /// `ip` column, so this specific case surfaced as a clean
+    /// UNKNOWN_IDENTIFIER, but the same mechanism could silently misattribute
+    /// a REAL column under a different schema shape).
+    ///
+    /// Root cause: `anchor_is_left` (`plan_builder.rs`'s
+    /// `optional_denorm_union_anchor_is_left`) records a STRUCTURAL fact
+    /// (which side of the `GraphRel` plan tree the anchor's standalone scan
+    /// Union sits on) that both the JOIN-key derivation and the SELECT-list
+    /// anchor-property rewrite WRONGLY treated as if it also meant "the
+    /// anchor is the edge's `from`-node" — true for the common
+    /// left-anchor/outgoing shape, but false here: reversing the arrow keeps
+    /// `d` as `RESOLVED_TO`'s `from`-node while flipping which structural
+    /// side its Union sits on. Fixed via `resolve_anchor_is_from_side`
+    /// (`plan_builder_helpers.rs`), which tries the `anchor_is_left`-implied
+    /// side first (a no-op for every already-working shape — verified
+    /// against `denorm_optional_anchor_property_from_scan_cte_475`,
+    /// `denorm_optional_edge_column_not_hijacked_by_anchor_475`, and
+    /// `undirected_coupled_schema_anchor_cte_single_grain_b1`, all still
+    /// passing byte-identical) and falls back to the opposite side only when
+    /// the primary attempt can't resolve a mapping — so a genuinely
+    /// label-impossible hop (e.g. an `IP` anchor for `RESOLVED_TO`, which
+    /// expects `Domain`) still correctly falls through to the impossible-join
+    /// `1 = 0` fallback (BOTH attempts fail).
+    ///
+    /// Scope: fixed for this 2-table coupled shape (`zeek_merged_test`'s
+    /// `Domain`/`ResolvedIP` via `dns_log`). NOT independently verified against
+    /// 3+-table coupling or other schema patterns (FK-edge, polymorphic,
+    /// composite-id) — the ratchet-enforced dispatch (`edge_side_node_properties`,
+    /// a `PatternSchemaContext`-adjacent schema-catalog API) means the fix is
+    /// pattern-agnostic in principle, but only THIS shape was live-verified.
+    ///
+    /// Live-verified on the zeek fixture: the reversed query now renders
+    /// BYTE-IDENTICAL to the forward query, and both execute returning all 4
+    /// dns_log rows correctly matched (`example.com`, `malware.bad`,
+    /// `google.com`, `cdn.example.com`), matching the forward direction's
+    /// already-correct result.
+    #[tokio::test]
+    async fn coupled_reversed_optional_match_resolves_anchor_side_508() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+        let forward = normalize(
+            &render(
+                &schema,
+                "MATCH (d:Domain) OPTIONAL MATCH (d)-[:RESOLVED_TO]->(rip:ResolvedIP) \
+                 RETURN d.name, rip.ip",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        let reversed = normalize(
+            &render(
+                &schema,
+                "MATCH (d:Domain) OPTIONAL MATCH (rip:ResolvedIP)<-[:RESOLVED_TO]-(d) \
+                 RETURN d.name, rip.ip",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+
+        assert!(
+            !reversed.contains("1 = 0"),
+            "#508: reversed OPTIONAL MATCH must not fall into the \
+             impossible-join fallback — a real join exists:\n{reversed}"
+        );
+        assert!(
+            reversed.contains(r#".answers AS "rip.ip""#) && !reversed.contains(r#"d.answers"#),
+            "#508: rip.ip must resolve from the LEFT-JOINed edge alias \
+             (ResolvedIP's own `answers` column), not be conflated onto the \
+             anchor `d`:\n{reversed}"
+        );
+        assert!(
+            !reversed.contains(r#"d.ip AS "rip.ip""#),
+            "#508: rip.ip must NOT be attributed to the anchor's `d.ip` — \
+             `d`'s CTE doesn't even expose an `ip` column (label \
+             conflation):\n{reversed}"
+        );
+        assert_eq!(
+            forward, reversed,
+            "#508: a textually-reversed but semantically identical OPTIONAL \
+             MATCH must render identically to the forward form:\n\
+             FORWARD:\n{forward}\nREVERSED:\n{reversed}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(
+                &render(
+                    &schema,
+                    "MATCH (d:Domain) OPTIONAL MATCH (rip:ResolvedIP)<-[:RESOLVED_TO]-(d) \
+                     RETURN d.name, rip.ip",
+                    SqlDialect::ClickHouse,
+                )
+                .await,
+            );
+            assert_eq!(reversed, again, "#508: nondeterministic render");
+        }
+    }
+
+    /// #529 shape 2 (FIXED): `WITH a, count(r) AS c` after an OPTIONAL
+    /// undirected pattern on a coupled anchor (`MATCH (a:IP) OPTIONAL MATCH
+    /// (a)-[r:ACCESSED]-(b:IP) WITH a, count(r) AS c RETURN a.ip, c`) emitted
+    /// `GROUP BY a."id.orig_h"` — a RAW physical column reference against a
+    /// `__union` derived table that only exposes the CTE column name
+    /// (`p1_a_ip`) — invalid SQL (UNKNOWN_IDENTIFIER).
+    ///
+    /// Root cause: an undirected OPTIONAL MATCH is expanded (by
+    /// `bidirectional_union.rs`) into a `Union` of two direction-permutation
+    /// `GraphRel` branches BEFORE `plan_builder_helpers::
+    /// find_inner_optional_denorm_graphrel` ever runs. That helper has no
+    /// generic `Union` traversal arm (deliberately — a DIFFERENT caller,
+    /// `to_render_plan_with_ctx`'s top-level OPTIONAL-denorm-Union detection,
+    /// needs it to return `None` for exactly this outer-Union shape, so its
+    /// OWN two-branch rendering runs instead of an incorrect single-branch
+    /// delegation — regression-tested below). So the anchor was invisible to
+    /// `denorm_scan_cte_anchor_id_property`/`_properties`
+    /// (`plan_builder_helpers.rs`), which fell back to the raw physical
+    /// column. Fixed by unwrapping a `Union` of branches ONLY inside
+    /// `denorm_scan_cte_anchor_names_and_id_col` — the shared lookup behind
+    /// those two specific callers — trying each branch in turn, leaving
+    /// `find_inner_optional_denorm_graphrel` itself untouched.
+    ///
+    /// Live-verified on the zeek fixture: `a.ip = '192.168.1.10'` (which
+    /// touches 4 distinct `conn_log` rows unambiguously, per the raw ground
+    /// truth already established by `undirected_coupled_schema_anchor_cte_single_grain_b1`)
+    /// returns `c = 4` — unaffected by the fix (matches the pre-existing,
+    /// separately-tracked LEFT-JOIN NULL-extension behavior for this same
+    /// mechanism; this test only locks the SQL becoming valid + the
+    /// unambiguous count, not a general audit of undirected OPTIONAL MATCH
+    /// counting semantics, which is out of scope here).
+    #[tokio::test]
+    async fn undirected_optional_with_aggregate_coupled_anchor_group_by_529() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+        let repro = "MATCH (a:IP) OPTIONAL MATCH (a)-[r:ACCESSED]-(b:IP) \
+                     WITH a, count(r) AS c RETURN a.ip, c";
+        let sql = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+
+        assert!(
+            !sql.contains(r#"GROUP BY a."id.orig_h""#),
+            "#529 shape 2: GROUP BY must not reference the raw physical \
+             column — the __union derived table only exposes the CTE \
+             column:\n{sql}"
+        );
+        assert!(
+            sql.contains("GROUP BY `p1_a_ip`") || sql.contains("GROUP BY \"p1_a_ip\""),
+            "#529 shape 2: GROUP BY must reference the properly-quoted CTE \
+             column exposed by the inner UNION:\n{sql}"
+        );
+
+        // Sibling B1 path (top-level OPTIONAL-denorm-Union detection) must be
+        // unaffected: still renders its own full two-branch union, not a
+        // single-branch delegation (the risk the narrow fix scoping avoids).
+        let b1_repro = "MATCH (a:IP) OPTIONAL MATCH (a)-[r:ACCESSED]-(b:IP) \
+                         RETURN a.ip, a.port, count(r) AS c";
+        let b1_sql = normalize(&render(&schema, b1_repro, SqlDialect::ClickHouse).await);
+        assert!(
+            b1_sql.contains("__denorm_scan_a") && !b1_sql.contains("__denorm_scan_a_2"),
+            "#529 shape 2 fix must not regress B1 (single shared anchor CTE):\n{b1_sql}"
+        );
+        assert_eq!(
+            b1_sql
+                .matches("LEFT JOIN zeek.conn_log AS r ON a.ip =")
+                .count(),
+            2,
+            "#529 shape 2 fix must not regress B1 (both direction branches \
+             LEFT JOIN against the anchor CTE):\n{b1_sql}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+            assert_eq!(sql, again, "#529 shape 2: nondeterministic render");
+        }
+    }
+
+    /// #529 shape 1 — KNOWN BROKEN, investigated but NOT fixed here (distinct
+    /// mechanism from shape 2 above; out of scope for this fix stream's
+    /// remaining budget). `MATCH (a:IP)-[r:ACCESSED]-(b:IP) WITH a, count(r)
+    /// AS c RETURN a.ip, c` (a PLAIN, non-optional undirected self-edge
+    /// feeding a `WITH`-aggregate) generates a malformed CTE column alias
+    /// containing an embedded, doubled double-quote inside a backtick
+    /// identifier: `` `r."id.orig_h"` `` — ClickHouse parses the backticks as
+    /// ONE identifier literally named `r."id.orig_h"` (quote characters
+    /// included), which doesn't exist — UNKNOWN_IDENTIFIER.
+    ///
+    /// This does NOT go through the OPTIONAL-denorm-CTE-anchor machinery
+    /// (`find_inner_optional_denorm_graphrel` /
+    /// `denorm_scan_cte_anchor_id_property`, shape 2's fix site) at all — no
+    /// `OPTIONAL` keyword, no anchor CTE. Some OTHER site in the WITH-clause
+    /// aggregate CTE builder (`plan_builder_utils.rs`, ~19K lines) is, for a
+    /// bare relationship variable used as an aggregate arg on an undirected
+    /// self-edge, building a column alias from the property's fully-rendered
+    /// SQL text (already quoted, e.g. `r."id.orig_h"`) instead of the raw
+    /// Cypher/db column name — a plausible culprit is `quote_qualified_col`
+    /// (builds `alias."col"` for value-reference purposes) being reused for
+    /// alias-construction purposes at some call site, but the exact call
+    /// site was not conclusively pinned within this fix stream's time
+    /// budget. Needs dedicated follow-up.
+    ///
+    /// Live-confirmed: loud failure (UNKNOWN_IDENTIFIER), not silent wrong
+    /// results — lower urgency than #504/#508/#529-shape-2's silent-wrong or
+    /// wrongly-empty-join symptoms.
+    #[tokio::test]
+    async fn undirected_plain_with_aggregate_malformed_cte_alias_known_broken_529_shape1() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (a:IP)-[r:ACCESSED]-(b:IP) WITH a, count(r) AS c RETURN a.ip, c",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+
+        assert!(
+            sql.contains(r#"r."id.orig_h""#),
+            "#529 shape 1 KNOWN BROKEN characterization stale — the \
+             malformed embedded-quote alias is gone; if this is a genuine \
+             fix, live-verify the query actually executes before replacing \
+             this test with a regression test:\n{sql}"
+        );
+    }
+
+    /// #530 — KNOWN BROKEN, investigated but NOT fixed here. An inline
+    /// property-map filter on an OPTIONAL MATCH anchor —
+    /// `MATCH (a:Airport {code: 'JFK'}) OPTIONAL MATCH (a)-[r:FLIGHT]-(b:Airport)
+    /// RETURN a.code, r, b.code` on the denormalized flights schema — renders
+    /// `WHERE a.code = 'JFK'` inside BOTH branches of the anchor scan CTE
+    /// (`__denorm_scan_a`), where the real physical columns are
+    /// `origin_code`/`dest_code` — no `code` column exists on
+    /// `db_denormalized.flights_denorm` — UNKNOWN_IDENTIFIER. The outer
+    /// query's OWN WHERE (`r.origin_code = 'JFK'` / `r.dest_code = 'JFK'`,
+    /// from the SAME inline map, folded into the main GraphRel's predicate)
+    /// renders correctly — confirming this is a SEPARATE site from #519's
+    /// fix (`collect_graphrel_predicates`).
+    ///
+    /// Root cause (pinned more precisely than the original filing):
+    /// `distribute_union_impl`'s `LogicalPlan::Filter` arm
+    /// (`src/query_planner/analyzer/union_distribution.rs` ~line 292-311)
+    /// distributes a Filter over a Union's branches by cloning
+    /// `f.predicate` UNCHANGED into every branch — correct for a plain
+    /// (non-denormalized) Union, but wrong here: the anchor's standalone
+    /// scan Union has ONE branch per physical role (origin vs dest), each
+    /// needing the INLINE map's raw Cypher property name (`code`) remapped
+    /// through THAT branch's own `from_node_properties`/`to_node_properties`
+    /// (the same schema-catalog API, `edge_side_node_properties`, this fix
+    /// stream's #508 fix already routes through) — instead the identical raw
+    /// predicate is replicated into both branches unchanged.
+    ///
+    /// NOT fixed here: determining which physical role each Union branch
+    /// represents at this analyzer stage (well before the render-time
+    /// `anchor_is_left`/`resolve_anchor_is_from_side` machinery this fix
+    /// stream added) needs independent verification to avoid a
+    /// silently-wrong branch/column pairing — strictly worse than today's
+    /// loud failure, per ground rule 1. Deferred as a dedicated follow-up.
+    ///
+    /// Live-confirmed: loud failure (UNKNOWN_IDENTIFIER), not silent wrong
+    /// results.
+    #[tokio::test]
+    async fn denorm_optional_inline_map_filter_unmapped_in_anchor_cte_known_broken_530() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (a:Airport {code: 'JFK'}) OPTIONAL MATCH (a)-[r:FLIGHT]-(b:Airport) \
+                 RETURN a.code, r, b.code",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+
+        assert!(
+            sql.contains("WHERE a.code = 'JFK'"),
+            "#530 KNOWN BROKEN characterization stale — the anchor scan \
+             CTE's internal filter no longer references the raw unmapped \
+             `a.code`; if this is a genuine fix, live-verify against \
+             db_denormalized before replacing this test with a regression \
+             test:\n{sql}"
+        );
+    }
+
+    /// #471 — KNOWN BROKEN, investigated but NOT fixed here.
+    /// `MATCH (a:Airport) RETURN a.state, count(*) ORDER BY a.state` on the
+    /// denormalized flights schema emits `ORDER BY a.origin_state` — the raw
+    /// DB column under the anchor's stale Cypher alias — instead of the
+    /// `__union` derived table's exposed `` `a.state` `` alias (which the
+    /// SELECT list and GROUP BY, in the SAME query, already correctly use).
+    /// Live-confirmed: `UNKNOWN_IDENTIFIER 'a.origin_state'` — the query
+    /// WITHOUT `ORDER BY` executes correctly.
+    ///
+    /// Root cause: `to_sql_query.rs`'s `has_aggregation` ORDER BY branch
+    /// (~line 4618-4716) has an established 4-strategy fallback chain
+    /// (alias-text match → `same_property_ref` → expression-text match →
+    /// `unambiguous_column_match`, the last added by R2/#503) for matching an
+    /// ORDER BY item against an existing outer SELECT item — but ALL four
+    /// require the ORDER BY item's `PropertyAccessExp` column name to
+    /// literally match (by identity, text, or name) a SELECT item's column.
+    /// Here the ORDER BY item was independently schema-mapped to the raw DB
+    /// column (`origin_state`) upstream, while the matching outer SELECT
+    /// item is a plain reference to the union's already-resolved alias
+    /// (`state` — no per-branch column visible at this point at all,
+    /// distinct from GROUP BY's simpler match which succeeds only because
+    /// GROUP BY and SELECT's expressions are BOTH left unmapped at the point
+    /// `build_aliased_group_by` compares them). None of the four existing
+    /// fallbacks can bridge "mapped DB column" to "already-resolved Cypher
+    /// alias" — a 5th strategy (reverse-map the DB column back to its Cypher
+    /// property name via schema context, or stop DB-mapping ORDER BY
+    /// property refs for denorm-union anchors upstream so it carries the
+    /// same unmapped form SELECT/GROUP BY use) is needed, deferred as a
+    /// dedicated follow-up given `to_sql_query.rs`'s ORDER BY resolution is
+    /// pure-string/no-schema-context at this stage.
+    ///
+    /// Lowest severity of this fix stream's 5 issues: a clean SQL error, not
+    /// a silent wrong result.
+    #[tokio::test]
+    async fn denorm_union_aggregate_order_by_raw_column_known_broken_471() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (a:Airport) RETURN a.state, count(*) ORDER BY a.state",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+
+        assert!(
+            sql.contains("ORDER BY a.origin_state"),
+            "#471 KNOWN BROKEN characterization stale — ORDER BY no longer \
+             emits the raw unmapped `a.origin_state`; if this is a genuine \
+             fix, live-verify against db_denormalized before replacing this \
+             test with a regression test:\n{sql}"
+        );
+        assert!(
+            sql.contains(r#"SELECT `a.state` AS "a.state""#),
+            "#471 KNOWN BROKEN characterization stale — the outer SELECT no \
+             longer resolves through the union's `a.state` alias:\n{sql}"
+        );
+    }
+}
