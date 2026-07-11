@@ -756,6 +756,24 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
         "optional_where_no_with",
         "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE o.total_amount > 100 RETURN c.customer_id, o.order_id",
     ),
+    // FIXED (#477): the pre_filter renderer stripped the node alias from bare
+    // columns (`o.total_amount` -> `total_amount`) but NOT when the same
+    // column appeared inside a function argument (`toFloat(o.total_amount)`
+    // kept the `o.` prefix), producing `LEFT JOIN (SELECT * FROM orders_fk
+    // WHERE toFloat64(o.total_amount) > 100) AS o` — invalid SQL, ClickHouse
+    // error 47 UNKNOWN_IDENTIFIER (`o` is not in scope inside the subquery).
+    // Root cause: `RenderExpr::to_sql_without_table_alias` special-cased
+    // `PropertyAccessExp` and `OperatorApplicationExp` but fell through to the
+    // ordinary alias-preserving `to_sql()` for `ScalarFnCall` args (and other
+    // composite variants). Fixed by a full AST rewrite
+    // (`strip_table_alias_everywhere`) that recurses into function args, list
+    // items, CASE branches, and array subscript/slicing before delegating to
+    // `to_sql()`. Live (db_fk_edge): now renders `toFloat64(total_amount)`
+    // (no dangling alias) and executes, returning 4 rows.
+    (
+        "optional_where_no_with_fn_arg",
+        "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE toFloat(o.total_amount) > 100 RETURN c.customer_id, o.order_id",
+    ),
     // Same shape, WHERE on the relationship alias r (order_date). Already correct
     // before #474 (rel-alias pre_filter recovery): r and o share orders_fk, so the
     // predicate sits in the LEFT JOIN pre_filter. Locked to prove #474 did not
@@ -2315,71 +2333,89 @@ async fn fk_edge_473_walker_fix_covers_plain_cross_alias_or() {
     }
 }
 
-/// KNOWN BROKEN — deferred, shares a root cause with #461 (see below).
+/// FIXED (#478). Two OPTIONAL MATCH clauses sharing the same anchor (`c`) on
+/// an FK-edge schema (`(o:Order)-[:PLACED_BY]->(c)` twice) used to emit a
+/// spurious extra INNER JOIN plus a spurious extra LEFT JOIN of `orders_fk`
+/// (aliases `t1`/`t2`, the auto-generated aliases for the two unnamed
+/// `PLACED_BY` relationship variables), on top of the correct `o`/`o2` node
+/// joins. The INNER JOIN dropped order-less customers — a straight OPTIONAL
+/// MATCH semantics violation; even flipped to LEFT, `t1`/`t2` would duplicate
+/// `o`/`o2`'s own join condition and fan out rows (an #479-style "naive fix
+/// is provably worse" trap) — so a superficial join-type flip was never a
+/// safe fix here.
 ///
-/// Two OPTIONAL MATCH clauses sharing the same anchor (`c`) on an FK-edge
-/// schema (`(o:Order)-[:PLACED_BY]->(c)` twice) emit a spurious extra INNER
-/// JOIN plus a spurious extra LEFT JOIN of `orders_fk` (aliases `t1`/`t2`,
-/// the auto-generated aliases for the two unnamed `PLACED_BY` relationship
-/// variables), on top of the correct `o`/`o2` node joins. The INNER JOIN drops
-/// order-less customers — a straight OPTIONAL MATCH semantics violation; even
-/// if it were flipped to LEFT, `t1`/`t2` duplicate `o`/`o2`'s own join
-/// condition, which would fan out rows (an #479-style "naive fix is provably
-/// worse" trap), so a superficial join-type flip is NOT a safe fix here.
-///
-/// Root cause (traced live, 2026-07): the query planner represents "two 1-hop
+/// Root cause (traced live, 2026-07): the planner represents "two 1-hop
 /// patterns sharing one anchor" as a nested/chained `GraphRel` — outer
 /// `GraphRel{left: o2, right: GraphRel{left: o, right: c}}` — reusing the same
-/// encoding as a genuine 2-hop chain `(o2)-[t2]->(o)-[t1]->(c)`. The tell:
-/// both the outer AND inner `GraphRel.right_connection` are `"c"` (a real
-/// chain would have `outer.right_connection == inner.left_connection`, i.e.
-/// `o2 -> o -> c` with `o` as the shared midpoint). `join_builder.rs`'s
-/// `extract_joins` (`right_is_nested` handling) walks this as if it were a
-/// real chain and materialises a join for the inner relationship alias that
-/// should never have been rendered as a chain hop at all — each pattern is
-/// independently anchored on `c`, not sequentially connected. The correct fix
-/// is a planner- or render-time change to detect this "star at a shared
-/// anchor" shape (by the `right_connection == right_connection` signature
-/// above, not a raw pattern-flag) and route it through the same join-building
-/// path used for a single OPTIONAL MATCH (which correctly emits ONLY `o`,
-/// with no phantom edge alias) — NOT the multi-hop chain path. This is planner
-/// / join-extraction structural work, not a small predicate-placement fix, so
-/// it is deferred (see #461 test below — same signature, different symptom).
+/// encoding as a genuine 2-hop chain `(o2)-[t2]->(o)-[t1]->(c)`. There turns
+/// out to be NO tree-shape difference between this "star at a shared anchor"
+/// and a genuine chain (a real 2-hop pattern fanning through a midpoint is
+/// structurally identical to two edges fanning into a shared endpoint) — so
+/// `outer.right_connection == inner.right_connection` alone cannot
+/// distinguish them, contrary to the original diagnosis. What DOES reliably
+/// distinguish this shape on an FK-edge ("node IS the edge") schema: the
+/// inner/outer relationship's own table is IDENTICAL to its non-shared node's
+/// table (e.g. `orders_fk` for both `o`/`o2` and their `PLACED_BY` edges).
+/// When that holds, the non-shared node already fully represents both itself
+/// AND its edge to the shared anchor in one row, and the analyzer's
+/// `GraphJoins.joins` already carries the single correct JOIN for it —
+/// `join_builder.rs`'s `extract_joins` materializing a SEPARATE join keyed by
+/// the auto-generated relationship alias (`t1`/`t2`) was always redundant and
+/// wrong. Fixed in three symmetric spots in `extract_joins`'s nested-GraphRel
+/// handling (the `shared_is_inner_right`/`shared_is_inner_left` branches, and
+/// the reversed-anchor `anchor_is_right && right_is_nested` branch) by
+/// checking `rel_table == <non-shared node's own table>` and skipping the
+/// phantom join when it holds (recursing only for 3+-way sibling nesting).
+/// Non-FK-edge (separate edge table) schemas never hit this — the tables
+/// differ, so genuine chains still materialize their edge joins normally.
 ///
-/// Live (db_fk_edge): current SQL is captured verbatim below as a
-/// characterization lock (documents the bug, does not endorse it).
+/// Live (db_fk_edge, 4 customers / their orders): ground truth (hand-derived
+/// LEFT JOIN ... LEFT JOIN ... AND total_amount>100) is 8 rows. Old SQL
+/// (INNER JOIN t1 + LEFT JOIN t2 on top of the correct o/o2 joins) executed
+/// but returned far more than 8 rows (duplicate fan-out from the phantom
+/// joins) — verified live during this fix. New SQL returns exactly 8 rows,
+/// matching ground truth.
 #[tokio::test]
-async fn fk_edge_478_two_optional_matches_spurious_inner_join_known_broken() {
+async fn fk_edge_478_two_optional_matches_no_phantom_edge_joins() {
     let schema = load_schema(SchemaId::FkEdge.yaml_path());
     let cypher = "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) \
                   OPTIONAL MATCH (o2:Order)-[:PLACED_BY]->(c) WHERE o2.total_amount > 100 \
                   RETURN c.customer_id, o.order_id, o2.order_id";
     let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
 
-    // Characterization lock: the spurious extra joins (auto-generated
-    // `t<N>`-aliased phantom edge joins — the exact number varies with the
-    // global alias counter's position across the test binary, so match the
-    // `t` prefix rather than a specific number) are still present, ON TOP OF
-    // the correct `o`/`o2` node joins. If this assertion starts failing
-    // because the extra joins are GONE, that is progress — update/remove this
-    // test as part of a real #478/#461 structural fix, verifying against live
-    // row counts first.
+    // No phantom `t<N>`-aliased relationship join anywhere (INNER or LEFT).
     assert!(
-        sql.contains("INNER JOIN db_fk_edge.orders_fk AS t"),
-        "#478 KNOWN BROKEN characterization stale — spurious INNER JOIN of a \
-         phantom `t<N>`-aliased orders_fk edge join no longer present; if this \
-         is a genuine fix, replace this test with a regression test (verify \
-         live row count first):\n{sql}"
+        !sql.contains("JOIN db_fk_edge.orders_fk AS t"),
+        "#478 regressed: a phantom `t<N>`-aliased orders_fk edge join is back:\n{sql}"
+    );
+    // Exactly the two genuine node joins (o, o2), both LEFT (OPTIONAL), on
+    // top of the anchor FROM.
+    assert!(
+        sql.contains("LEFT JOIN db_fk_edge.orders_fk AS o ON o.customer_id = c.customer_id"),
+        "#478: expected the plain `o` LEFT JOIN:\n{sql}"
     );
     assert!(
-        sql.contains("LEFT JOIN db_fk_edge.orders_fk AS t"),
-        "#478 KNOWN BROKEN characterization stale — spurious LEFT JOIN of a \
-         phantom `t<N>`-aliased orders_fk edge join no longer present:\n{sql}"
+        sql.contains("o2.customer_id = c.customer_id") && sql.contains("total_amount > 100"),
+        "#478: expected the `o2` LEFT JOIN pre_filter subquery gated on total_amount:\n{sql}"
     );
 }
 
-/// KNOWN BROKEN — deferred, same root cause as #478 (see doc comment above):
-/// "two 1-hop patterns sharing one anchor" mis-encoded as a chained `GraphRel`.
+/// KNOWN BROKEN — deferred. Originally suspected to share #478's root cause
+/// (both are "two 1-hop patterns sharing one anchor" mis-encoded as a chained
+/// `GraphRel`), but verified NOT the case: the #478 fix (three symmetric
+/// FK-edge-collapse guards in `extract_joins`'s nested-GraphRel handling —
+/// see the doc comment above `fk_edge_478_two_optional_matches_no_phantom_edge_joins`)
+/// leaves this exact test byte-identical (still failing this same
+/// characterization, confirmed by re-running it after the #478 fix landed).
+/// This shape's `GraphJoins.joins` (the analyzer-precomputed join list) is
+/// itself already fully correct — it has distinct, correct entries for both
+/// `o` (Inner) and `o2` — so the bug is NOT in `extract_joins`/`join_builder.rs`
+/// at all; it must be in a different post-WITH-specific code path
+/// (`build_chained_with_match_cte_plan`'s segment handling, per the original
+/// #461 filing) that fails to consume `GraphJoins.joins` correctly for a
+/// segment mixing a required and an optional pattern on the same anchor.
+/// Genuinely separate, deeper planner-level work — deferred per the original
+/// filing's own assessment.
 ///
 /// Shape 1 — mixed required + optional in one post-WITH segment: a REQUIRED
 /// match (`o`) sharing a post-WITH segment with an OPTIONAL match (`o2`), both
@@ -2450,55 +2486,254 @@ async fn fk_edge_461_multihop_optional_post_with_disconnected_anchor_known_broke
     );
 }
 
-/// KNOWN BROKEN — deferred (#479, the deepest issue in this family). On
-/// separate-edge schemas (standard `social` schema here; also denormalized
-/// `__denorm_scan` and zeek-coupled per the filing), a PLAIN (no-WITH)
-/// OPTIONAL MATCH node predicate lands in the outer WHERE, dropping the
-/// NULL-extended no-match rows. Root cause is DIFFERENT from #472/#473 (fixed
-/// above) and from #478/#461 (the nested-GraphRel chain-vs-star bug): here the
-/// join structure itself is fine (`u LEFT JOIN follows LEFT JOIN v`, correctly
-/// two separate joins for the separate edge table) but the WHERE-predicate
-/// placement pass never relocates `v.city = 'London'` into either join — it
-/// stays in the outer WHERE.
+/// FIXED (#479, the deepest issue in this family). On separate-edge schemas
+/// (standard `social` schema here), a PLAIN (no-WITH) OPTIONAL MATCH node
+/// predicate used to land in the outer WHERE, dropping the NULL-extended
+/// no-match rows (behaving like an INNER JOIN). Root cause was different from
+/// #472/#473 (fixed earlier) and from #478/#461 (the nested-GraphRel
+/// chain-vs-star bug): the join structure itself was fine (`u LEFT JOIN
+/// follows LEFT JOIN v`, correctly two separate joins for the separate edge
+/// table) but no pass relocated `v.city = 'London'` into either join — it
+/// stayed in the outer WHERE, evaluated AFTER both LEFT JOINs.
 ///
 /// The #474 fix intentionally did NOT touch this shape: a naive "pre_filter on
 /// just the `v` node join" fix was PROVEN WORSE by live ground-truth
 /// experiment (8 users, social schema) — it resurrects the unfiltered `follows`
 /// edge join as spurious duplicate NULL rows (12 rows instead of the correct
-/// 8; see #479's filing for the full experiment). The CORRECT fix folds the
-/// edge JOIN + node JOIN + predicate into ONE combined LEFT JOIN subquery
-/// gated on the anchor key (`u LEFT JOIN (SELECT ... FROM follows JOIN users
-/// WHERE city='London') combined ON combined.follower_id = u.user_id`) — a
-/// structural change to optional-pattern join planning in
-/// `join_builder.rs`/`plan_builder_utils.rs`'s GraphRel join extraction, not a
-/// predicate-relocation pass. Deferred per the explicit caution against
-/// shipping a fix that cannot be justified against hand-derived ground truth:
-/// the correct shape here is provably NOT what either #472's or #474's
-/// machinery would naively produce.
+/// 8; see #479's filing for the full experiment). Fixed with the CORRECT
+/// shape: a new post-hoc RenderPlan pass
+/// (`fold_optional_edge_node_join_with_predicate` in `plan_optimizer.rs`,
+/// registered first in `optimize_joins_in_plan`) that folds the edge JOIN +
+/// node JOIN + predicate into ONE combined LEFT JOIN subquery gated on the
+/// anchor key (`u LEFT JOIN (SELECT f.follower_id AS __cg_combined_anchor_key,
+/// v.* FROM follows AS f JOIN users AS v ON v.user_id = f.followed_id WHERE
+/// city='London') AS v ON v.__cg_combined_anchor_key = u.user_id`) — narrowly
+/// gated (single-column keys, edge alias unreferenced elsewhere, edge
+/// connects straight to FROM) so it only fires on exactly this shape; ALL
+/// WHERE conjuncts referencing solely the optional node are folded together
+/// (never a subset — a partially-folded group would leave the remainder in
+/// the outer WHERE to independently reproduce the same drop-NULL-rows bug).
 ///
-/// Live (social, 8 users): current behavior returns 2 rows; ground truth is 8
-/// (verified live, see PR description). Characterization lock below captures
-/// the current wrong SQL shape (predicate in the outer WHERE).
+/// Live (social, 8 users): ground truth is 8 rows (2 users have a London
+/// FOLLOWS target, 6 are NULL-extended). Old SQL (bare outer WHERE) returned
+/// 2; the "naive pre_filter on just `v`" alternative would have returned 12
+/// (verified live during the #479 investigation). New SQL returns exactly 8,
+/// matching every user and correctly NULL-extending the 6 without a London
+/// follow.
 #[tokio::test]
-async fn social_479_plain_optional_where_drops_null_extended_rows_known_broken() {
+async fn social_479_plain_optional_where_combined_subquery_preserves_null_extension() {
     let schema = load_schema(SchemaId::Standard.yaml_path());
     let cypher = "MATCH (u:User) OPTIONAL MATCH (u)-[:FOLLOWS]->(v:User) \
                   WHERE v.city = 'London' RETURN u.name, v.name";
     let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
 
+    // No bare outer WHERE on the optional node's predicate.
+    assert!(
+        !sql.lines()
+            .any(|l| l.trim_start().starts_with("WHERE v.city")),
+        "#479 regressed: predicate is back in a bare outer WHERE:\n{sql}"
+    );
+    // The combined subquery form: one LEFT JOIN folding the edge + node +
+    // predicate, gated on the anchor key.
+    assert!(
+        sql.contains("JOIN social.users_bench AS v ON v.user_id ="),
+        "#479 regressed: expected the combined subquery's inner node JOIN:\n{sql}"
+    );
+    assert!(
+        sql.contains("WHERE city = 'London'"),
+        "#479 regressed: expected the predicate inside the combined subquery:\n{sql}"
+    );
+    assert!(
+        sql.contains(".__cg_combined_anchor_key = u.user_id"),
+        "#479 regressed: expected the combined JOIN gated on the anchor key:\n{sql}"
+    );
+}
+
+/// KNOWN BROKEN — deferred. #479's OWN filing also names the denormalized
+/// `__denorm_scan` variant as affected, and it is — but via a DIFFERENT
+/// rendering path than the one just fixed above (`fold_optional_edge_node_
+/// join_with_predicate` in `plan_optimizer.rs`), so it is NOT covered by that
+/// fix and needs separate, dedicated investigation.
+///
+/// `MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b:Airport) WHERE
+/// b.city = 'Chicago' RETURN a.code, b.code` (denormalized `flights_denorm`
+/// schema — Airport node properties are embedded directly in the FLIGHT edge
+/// table, no separate Airport table) renders through a `__denorm_scan_a` CTE
+/// + a SINGLE LEFT JOIN (`LEFT JOIN db_denormalized.flights_denorm AS t1 ON
+/// a.code = t1.origin_code`) — i.e. this is the SINGLE-join shape #474's
+/// `apply_optional_node_pre_filters` (`join_builder.rs`) is designed to
+/// recover into a `pre_filter` subquery (exactly like the FK-edge case that
+/// mechanism already fixes) — yet it still leaves `t1.dest_city = 'Chicago'`
+/// in a bare outer WHERE, meaning `apply_optional_node_pre_filters` is either
+/// not reached for the `__denorm_scan` CTE path, or its match conditions
+/// (looking for a plain node JOIN by alias) don't recognize this CTE-fronted
+/// shape. Needs tracing through the `__denorm_scan` CTE construction path
+/// (likely `cte_extraction.rs` / denormalized-specific handling in
+/// `join_builder.rs`) to find where the single-join dedup and predicate
+/// relocation diverge from the plain FK-edge case — separate, dedicated
+/// investigation, not a small extension of the fix above.
+///
+/// Live (db_denormalized): `MATCH (a:Airport)` alone returns 7 distinct
+/// airports (`UNION DISTINCT` of `origin_code`/`dest_code`) —
+/// ATL/DEN/JFK/LAX/ORD/PHX/SFO. PHX is dest-only (never an origin in the
+/// fixture data) but is still a legitimate `Airport` node and must appear as
+/// its own NULL-extended row; it is easy to miss by checking only `SELECT
+/// DISTINCT origin_code` (6 rows) — an earlier draft of this comment did
+/// exactly that and under-counted. Ground truth for the OPTIONAL MATCH WHERE
+/// query is 7 rows (LAX and SFO have a Chicago-bound flight; the other 5,
+/// including PHX, are NULL-extended). Current behavior returns only 2 rows
+/// (LAX, SFO) — drops the 5 NULL-extended airports, the same disease as
+/// #479's main case.
+#[tokio::test]
+async fn denorm_479_plain_optional_where_drops_null_extended_rows_known_broken() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+    let cypher = "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b:Airport) \
+                  WHERE b.city = 'Chicago' RETURN a.code, b.code";
+    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+
     // Characterization lock: predicate still sits in a bare outer WHERE
-    // (post-join), which drops NULL-extended no-match users. If this starts
-    // failing because the WHERE is gone, that is progress toward the #479
-    // combined-subquery fix — verify against live ground truth (8 rows on the
-    // committed social fixture) before replacing this test.
-    let has_bare_outer_where = sql
-        .lines()
-        .any(|l| l.trim_start() == "WHERE v.city = 'London'");
+    // (post-join), which drops NULL-extended no-match airports. If this
+    // starts failing because the WHERE is gone, that is progress — verify
+    // against live ground truth (7 rows on the committed db_denormalized
+    // fixture, including dest-only PHX) before replacing this test.
+    // Match `WHERE t<N>.dest_city` rather than a literal `t1` — the
+    // auto-generated relationship alias's numeric suffix varies with the
+    // global alias counter's position across the test binary.
+    let has_bare_outer_where = sql.lines().any(|l| {
+        let l = l.trim_start();
+        l.starts_with("WHERE t") && l.contains(".dest_city")
+    });
     assert!(
         has_bare_outer_where,
-        "#479 KNOWN BROKEN characterization stale — predicate no longer in a \
-         bare outer WHERE; if this is a genuine fix (verify live: must return \
-         8 rows, not 2 or 12), replace this test with a regression test:\n{sql}"
+        "#479 (denormalized) KNOWN BROKEN characterization stale — predicate \
+         no longer in a bare outer WHERE; if this is a genuine fix (verify \
+         live: must return 7 rows including dest-only PHX, not 2), replace \
+         this test with a regression test:\n{sql}"
+    );
+}
+
+/// KNOWN BROKEN — deferred. A THIRD #479 gap, found by adversarial review:
+/// composite-key OPTIONAL MATCH WHERE-on-optional-node.
+/// `composite_node_ids.yaml` (Account identified by the TWO-column key
+/// `[bank_id, account_number]`) renders the classic separate-edge two-JOIN
+/// shape (`c LEFT JOIN account_ownership LEFT JOIN accounts`), but the
+/// `fold_optional_edge_node_join_with_predicate` pass (#479,
+/// `plan_optimizer.rs`) correctly DECLINES to fold it: its gate requires a
+/// single-column-key LEFT JOIN (`single_column_join_key` returns `None` when
+/// `join.joining_on.len() != 1`), and a composite-key JOIN's `ON` clause is
+/// two ANDed equalities (`a.bank_id = t1.bank_id AND a.account_number =
+/// t1.account_number`) — deliberately out of scope rather than risk an
+/// incorrect fold on a shape the fix was never verified against. So the WHERE
+/// predicate stays in the pre-existing (and still buggy) bare outer WHERE
+/// placement.
+///
+/// Reproduces identically on `main` (pre-existing, not a regression from any
+/// #477/#478/#479 fix in this family — the fold pass is purely additive and
+/// never removes a pre-existing WHERE placement it doesn't recognize).
+///
+/// Live (db_composite_id, 5 customers): `MATCH (c:Customer) OPTIONAL MATCH
+/// (c)-[:OWNS]->(a:Account) WHERE a.balance > 10000 RETURN c.name,
+/// a.account_number` — ground truth is 5 rows (Alice/SAV-002, Bob/SAV-002
+/// [joint ownership of the same account], Diana/WF-1002, Eve/WF-1004, and
+/// Charlie NULL-extended — his only account, SAV-004, has balance 8500,
+/// below the threshold). Current behavior returns only 4 rows, dropping
+/// Charlie — the same disease as #479's main case.
+#[tokio::test]
+async fn composite_479_plain_optional_where_drops_null_extended_rows_known_broken() {
+    let schema = load_schema(SchemaId::CompositeId.yaml_path());
+    let cypher = "MATCH (c:Customer) OPTIONAL MATCH (c)-[:OWNS]->(a:Account) \
+                  WHERE a.balance > 10000 RETURN c.name, a.account_number";
+    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+
+    // Characterization lock: predicate still sits in a bare outer WHERE
+    // (post-join), which drops NULL-extended no-match customers. If this
+    // starts failing because the WHERE is gone, that is progress toward
+    // extending #479's fold pass to composite keys — verify against live
+    // ground truth (5 rows on the committed db_composite_id fixture) before
+    // replacing this test.
+    let has_bare_outer_where = sql
+        .lines()
+        .any(|l| l.trim_start() == "WHERE a.balance > 10000");
+    assert!(
+        has_bare_outer_where,
+        "#479 (composite-key) KNOWN BROKEN characterization stale — predicate \
+         no longer in a bare outer WHERE; if this is a genuine fix (verify \
+         live: must return 5 rows, not 4), replace this test with a \
+         regression test:\n{sql}"
+    );
+}
+
+/// Regression: #477 — `to_sql_without_table_alias` (used to render a LEFT
+/// JOIN pre_filter subquery, `LEFT JOIN (SELECT * FROM t WHERE <pred>) AS
+/// alias`) stripped the node alias from bare columns but NOT from columns
+/// nested inside a function argument: `toFloat(o.total_amount)` kept the `o.`
+/// prefix, producing SQL that references an alias not in scope inside the
+/// subquery (ClickHouse error 47 UNKNOWN_IDENTIFIER). Verified live
+/// (db_fk_edge): the pre-fix SQL shape
+/// (`LEFT JOIN (SELECT * FROM orders_fk WHERE toFloat64(o.total_amount) > 100)
+/// AS o`) fails with Code 47; the fixed shape
+/// (`toFloat64(total_amount) > 100`, no alias) executes and returns 4 rows
+/// (customers 100/101/102/103, each keeping its one order with
+/// total_amount > 100).
+#[tokio::test]
+async fn fk_edge_477_pre_filter_strips_alias_inside_function_args() {
+    let schema = load_schema(SchemaId::FkEdge.yaml_path());
+    let cypher = "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) \
+                  WHERE toFloat(o.total_amount) > 100 RETURN c.customer_id, o.order_id";
+    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+
+    // The pre_filter subquery must NOT reference the `o.` alias anywhere —
+    // the subquery selects directly from orders_fk with no alias in scope.
+    assert!(
+        !sql.contains("o.total_amount"),
+        "#477 regressed: pre_filter subquery still references the dangling \
+         `o.` alias inside a function argument:\n{sql}"
+    );
+    assert!(
+        sql.contains("toFloat64(total_amount) > 100"),
+        "#477 regressed: expected the bare (alias-free) function-wrapped \
+         predicate inside the LEFT JOIN pre_filter subquery:\n{sql}"
+    );
+}
+
+/// Regression: #477 adversarial review — `to_sql_without_table_alias`'s
+/// original AST-rewrite fix (above) converted every `PropertyAccessExp` into
+/// a bare-column `Raw` node BEFORE any type-based special-casing could run,
+/// silently breaking the array-membership `IN` rewrite (`x IN node.arrayProp`
+/// -> `has(arrayProp, x)`): with the RHS already `Raw`, the
+/// `matches!(&op.operands[1], PropertyAccessExp(_))` check in the generic
+/// `to_sql()` never fires, degrading to the bare-column default `x IN
+/// arrayProp` — a HARD ClickHouse error ("Function 'in' is supported only if
+/// second argument is constant or table expression"), reachable via an
+/// ordinary `OPTIONAL MATCH ... WHERE 'x' IN o.arrayProp` whenever the schema
+/// has an array-typed property. This exercises the SAME mechanism as the
+/// #479 combined-subquery fold pass (`plan_optimizer.rs`'s
+/// `combined_predicate.to_sql_without_table_alias()`), via
+/// `array_property_probe.yaml` (Owner --OWNS--> Item, Item.tags is
+/// `Array(String)` on the live ClickHouse dev container's `probe_arr` table).
+///
+/// Live (default DB, dev container): Alice owns Item 1 (tags=[a,b]) — matches
+/// `'a' IN tags`; Bob owns Item 2 (tags=[c,d]) — no match, correctly
+/// NULL-extended (not dropped); Carol owns no item — correctly NULL-extended.
+/// Ground truth is 3 rows (Alice/Item1, Bob/NULL, Carol/NULL); pre-fix SQL
+/// (`has(o.tags, 'a')` degraded to `'a' IN tags`) fails outright with
+/// ClickHouse error 1 (UNSUPPORTED_METHOD) — reproduced live during this fix.
+#[tokio::test]
+async fn array_property_477_pre_filter_preserves_array_membership_in() {
+    let schema = load_schema("schemas/test/array_property_probe.yaml");
+    let cypher = "MATCH (a:Owner) OPTIONAL MATCH (a)-[:OWNS]->(o:Item) \
+                  WHERE 'a' IN o.tags RETURN a.name, o.id";
+    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+
+    assert!(
+        sql.contains("has(tags, 'a')"),
+        "#477 (array-membership) regressed: expected `has(tags, 'a')` inside \
+         the combined LEFT JOIN subquery, got:\n{sql}"
+    );
+    assert!(
+        !sql.contains("'a' IN tags") && !sql.contains("'a' in tags"),
+        "#477 (array-membership) regressed: predicate degraded to a bare \
+         scalar IN, which ClickHouse rejects:\n{sql}"
     );
 }
 

@@ -1427,6 +1427,288 @@ fn column_defines_alias(col_trimmed: &str, alias: &str) -> bool {
 /// JOIN are untouched) and every value. Non-FK-edge schemas never hit this:
 /// their edge tables are distinct from every node table, so the
 /// same-physical-table guard fails.
+///
+/// #479: fold a plain OPTIONAL MATCH's edge JOIN + node JOIN + WHERE predicate
+/// into ONE combined LEFT JOIN subquery, gated on the anchor key.
+///
+/// On separate-edge schemas (standard `social`, denormalized `__denorm_scan`,
+/// zeek-coupled), `MATCH (u) OPTIONAL MATCH (u)-[:FOLLOWS]->(v) WHERE
+/// v.city = 'X'` renders two independent LEFT JOINs (`u LEFT JOIN follows
+/// LEFT JOIN v`) with the node predicate left in the outer WHERE. A bare
+/// outer WHERE is evaluated AFTER both LEFT JOINs, so `v.city = 'X'` being
+/// NULL for a `u` with no (or no *qualifying*) FOLLOWS edge fails the WHERE
+/// and the whole row is dropped — an OPTIONAL MATCH semantics violation
+/// (behaves like an INNER JOIN).
+///
+/// The correct shape folds the edge JOIN and the node JOIN into ONE combined
+/// LEFT JOIN subquery, with the predicate applied INSIDE it (before the join,
+/// not after):
+/// `u LEFT JOIN (SELECT f.follower_id AS __cg_combined_anchor_key, v.* FROM
+///  follows AS f JOIN users AS v ON v.user_id = f.followed_id WHERE
+///  v.city = 'X') AS v ON v.__cg_combined_anchor_key = u.user_id`.
+///
+/// This is deliberately NOT the same as filtering just the node's own JOIN
+/// subquery (`v LEFT JOIN (SELECT * FROM users WHERE city = 'X') AS v ON
+/// v.user_id = f.followed_id`, with `f` left unfiltered) — that naive form
+/// leaves the unfiltered edge LEFT JOIN alive and manufactures a spurious
+/// extra NULL-extended row for every edge whose target fails the filter.
+/// Proven live on the committed `social` fixture (8 users): the correct
+/// combined-subquery form returns 8 rows; the naive per-join pre_filter form
+/// returns 12 (duplicated NULL rows); the pre-existing outer-WHERE placement
+/// this pass replaces returns 2 (drops every non-matching anchor). See
+/// #479's filing for the full ground-truth experiment.
+///
+/// Narrowly scoped for safety — fires only when ALL of:
+///   (a) a WHERE conjunct references EXACTLY one alias (the candidate
+///       "optional node", not the FROM/anchor alias itself);
+///   (b) that alias has a single-column-key LEFT JOIN with no existing
+///       `pre_filter`, whose ON connects it to exactly one OTHER alias (the
+///       candidate "edge");
+///   (c) that edge alias has ITS OWN single-column-key LEFT JOIN with no
+///       existing `pre_filter`, whose ON connects it DIRECTLY to the FROM/
+///       anchor alias (so the combined subquery's correlation is always
+///       renderable regardless of JOIN ordering);
+///   (d) the edge alias is referenced NOWHERE else in the plan (SELECT,
+///       other JOINs' ON/pre_filter, GROUP BY, ORDER BY, HAVING) — folding
+///       it away must change nothing else about the query.
+/// Any shape outside this (composite keys, multi-hop chains, edge properties
+/// referenced elsewhere, a predicate spanning multiple aliases, an edge that
+/// doesn't connect straight to FROM) is left untouched — safer to leave it in
+/// its current (imperfect) outer-WHERE placement than risk another "naive fix
+/// that's worse than the bug" regression, per this exact family's history.
+fn fold_optional_edge_node_join_with_predicate(plan: &mut RenderPlan) {
+    let Some(from_alias) = plan.from.0.as_ref().and_then(|f| f.alias.clone()) else {
+        return;
+    };
+
+    loop {
+        let Some(filter) = plan.filters.0.clone() else {
+            return;
+        };
+        let conjuncts = split_top_level_and(&filter);
+
+        let mut folded = false;
+
+        // Group every conjunct that references EXACTLY one (non-anchor) alias
+        // by that alias. ALL conjuncts in a group must be folded together (or
+        // none at all) — folding only a subset would leave the others in the
+        // outer WHERE, where they'd independently reproduce the exact #479
+        // bug (`NULL <> 'x'` fails a bare post-join WHERE, dropping the
+        // NULL-extended row) for the very node this pass is fixing.
+        let mut groups: std::collections::BTreeMap<String, Vec<usize>> =
+            std::collections::BTreeMap::new();
+        for (ci, conjunct) in conjuncts.iter().enumerate() {
+            let mut aliases = HashSet::new();
+            collect_aliases_from_expr(conjunct, &mut aliases);
+            if aliases.len() != 1 {
+                continue;
+            }
+            let alias = aliases.into_iter().next().unwrap();
+            if alias == from_alias {
+                continue;
+            }
+            groups.entry(alias).or_default().push(ci);
+        }
+
+        for (node_alias, member_indices) in groups {
+            let Some(node_join_idx) = plan.joins.0.iter().position(|j| {
+                j.table_alias == node_alias
+                    && j.join_type == JoinType::Left
+                    && j.pre_filter.is_none()
+                    && j.joining_on.len() == 1
+            }) else {
+                continue;
+            };
+
+            let Some((node_col, edge_alias, node_side_edge_col)) =
+                single_column_join_key(&plan.joins.0[node_join_idx], &node_alias)
+            else {
+                continue;
+            };
+            if edge_alias == from_alias {
+                // Node connects directly to the anchor: not the "separate
+                // edge table" shape this pass targets.
+                continue;
+            }
+
+            let Some(edge_join_idx) = plan.joins.0.iter().position(|j| {
+                j.table_alias == edge_alias
+                    && j.join_type == JoinType::Left
+                    && j.pre_filter.is_none()
+                    && j.joining_on.len() == 1
+            }) else {
+                continue;
+            };
+
+            let Some((edge_side_anchor_col, anchor_alias, anchor_col)) =
+                single_column_join_key(&plan.joins.0[edge_join_idx], &edge_alias)
+            else {
+                continue;
+            };
+            if anchor_alias != from_alias {
+                // Edge doesn't connect directly to FROM — out of scope.
+                continue;
+            }
+
+            // Edge alias must not be needed anywhere else in the plan.
+            if is_alias_referenced_in_plan(plan, &edge_alias) {
+                continue;
+            }
+            let referenced_in_other_join = plan.joins.0.iter().enumerate().any(|(i, j)| {
+                if i == node_join_idx || i == edge_join_idx {
+                    return false;
+                }
+                j.joining_on
+                    .iter()
+                    .any(|c| c.operands.iter().any(|o| references_alias(o, &edge_alias)))
+                    || j.pre_filter
+                        .as_ref()
+                        .is_some_and(|pf| references_alias(pf, &edge_alias))
+            });
+            if referenced_in_other_join {
+                continue;
+            }
+
+            let node_table = plan.joins.0[node_join_idx].table_name.clone();
+            let edge_table = plan.joins.0[edge_join_idx].table_name.clone();
+
+            // Build the combined subquery text. `to_sql_without_table_alias`
+            // strips the node alias (there's no such alias in scope until the
+            // subquery's own JOIN establishes it under the LOCAL alias
+            // `node_alias`, so re-qualify with that local alias rather than
+            // stripping it bare). ALL conjuncts referencing only this alias
+            // are combined with AND — see the comment above `groups` for why
+            // folding only a subset would be unsafe.
+            let synthetic_key = "__cg_combined_anchor_key";
+            let combined_predicate = combine_and_conjuncts(
+                member_indices
+                    .iter()
+                    .map(|&i| conjuncts[i].clone())
+                    .collect(),
+            )
+            .expect(
+                "member_indices is non-empty by construction (groups only holds non-empty Vecs)",
+            );
+            let stripped_predicate = combined_predicate.to_sql_without_table_alias();
+            let subquery = format!(
+                "(SELECT {edge_alias}.{edge_side_anchor_col} AS {synthetic_key}, {node_alias}.* \
+                 FROM {edge_table} AS {edge_alias} \
+                 JOIN {node_table} AS {node_alias} ON {node_alias}.{node_col} = {edge_alias}.{node_side_edge_col} \
+                 WHERE {stripped_predicate})"
+            );
+
+            let combined_join = Join {
+                table_name: subquery,
+                table_alias: node_alias.clone(),
+                joining_on: vec![OperatorApplication {
+                    operator: Operator::Equal,
+                    operands: vec![
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(node_alias.clone()),
+                            column: PropertyValue::Column(synthetic_key.to_string()),
+                        }),
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(anchor_alias.clone()),
+                            column: PropertyValue::Column(anchor_col.clone()),
+                        }),
+                    ],
+                }],
+                join_type: JoinType::Left,
+                pre_filter: None,
+                from_id_column: None,
+                to_id_column: None,
+                graph_rel: None,
+            };
+
+            // Replace the node join in place, drop the edge join.
+            plan.joins.0[node_join_idx] = combined_join;
+            plan.joins.0.remove(edge_join_idx);
+
+            // Remove ALL folded conjuncts (the whole group) from the outer WHERE.
+            let member_set: HashSet<usize> = member_indices.iter().copied().collect();
+            let remaining: Vec<RenderExpr> = conjuncts
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !member_set.contains(i))
+                .map(|(_, e)| e.clone())
+                .collect();
+            plan.filters.0 = combine_and_conjuncts(remaining);
+
+            log::debug!(
+                "#479: folded edge '{}' + node '{}' JOINs into one combined LEFT JOIN \
+                 subquery, moving {} WHERE conjunct(s) inside it",
+                edge_alias,
+                node_alias,
+                member_indices.len()
+            );
+
+            folded = true;
+            break;
+        }
+
+        if !folded {
+            return;
+        }
+        // Loop again: multiple independent OPTIONAL patterns in the same
+        // plan may each qualify; each fold changes join/filter indices, so
+        // re-scan from scratch rather than continuing the stale iteration.
+    }
+}
+
+/// Split a RenderExpr into its top-level AND conjuncts (non-AND expressions
+/// yield a single-element list).
+fn split_top_level_and(expr: &RenderExpr) -> Vec<RenderExpr> {
+    match expr {
+        RenderExpr::OperatorApplicationExp(op) if op.operator == Operator::And => {
+            op.operands.iter().flat_map(split_top_level_and).collect()
+        }
+        other => vec![other.clone()],
+    }
+}
+
+/// Re-combine conjuncts with AND. Inverse of [`split_top_level_and`].
+fn combine_and_conjuncts(exprs: Vec<RenderExpr>) -> Option<RenderExpr> {
+    exprs.into_iter().reduce(|acc, e| {
+        RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::And,
+            operands: vec![acc, e],
+        })
+    })
+}
+
+/// If `join`'s single ON condition connects `this_alias` to exactly one other
+/// alias via a bare column equality, return
+/// `(this_alias_column, other_alias, other_alias_column)`.
+fn single_column_join_key(join: &Join, this_alias: &str) -> Option<(String, String, String)> {
+    if join.joining_on.len() != 1 {
+        return None;
+    }
+    let cond = &join.joining_on[0];
+    if cond.operator != Operator::Equal || cond.operands.len() != 2 {
+        return None;
+    }
+    match (&cond.operands[0], &cond.operands[1]) {
+        (RenderExpr::PropertyAccessExp(a), RenderExpr::PropertyAccessExp(b)) => {
+            if a.table_alias.0 == this_alias && b.table_alias.0 != this_alias {
+                Some((
+                    a.column.raw().to_string(),
+                    b.table_alias.0.clone(),
+                    b.column.raw().to_string(),
+                ))
+            } else if b.table_alias.0 == this_alias && a.table_alias.0 != this_alias {
+                Some((
+                    b.column.raw().to_string(),
+                    a.table_alias.0.clone(),
+                    a.column.raw().to_string(),
+                ))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 fn remove_redundant_edge_self_joins(plan: &mut RenderPlan) {
     // The PK (node_id) lookup needs the schema. Query-processing code accesses it
     // via the task-local QueryContext; if it's unavailable we cannot prove any
@@ -1588,6 +1870,9 @@ fn remove_redundant_edge_self_joins(plan: &mut RenderPlan) {
 }
 
 fn optimize_joins_in_plan(plan: &mut RenderPlan, protected_aliases: &HashSet<String>) {
+    // #479: runs first, on the untouched edge+node JOIN pair straight from
+    // `extract_joins`, before any other pass restructures them.
+    fold_optional_edge_node_join_with_predicate(plan);
     remove_unreferenced_joins(plan, protected_aliases);
     eliminate_bridge_nodes_in_plan(plan, protected_aliases);
     remove_redundant_edge_self_joins(plan);

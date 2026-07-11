@@ -6679,6 +6679,27 @@ impl RenderExpr {
                 // Just render the column without the table alias prefix
                 column.to_sql_column_only()
             }
+            // OperatorApplicationExp has TWO special cases that pattern-match on
+            // the operand's ORIGINAL TYPE, not its rendered text:
+            //   - `try_rewrite_in_cte_subquery`: `x IN cte.p{N}_col` -> `x IN
+            //     (SELECT col FROM cte)`, detected by operands[1] being a CTE-
+            //     column `PropertyAccessExp`.
+            //   - array membership: `x IN node.tags` -> `has(tags, x)`, detected
+            //     by operands[1] being a plain `PropertyAccessExp`.
+            // Both checks MUST run before any alias-stripping touches
+            // operands[1]'s type (stripping to `Raw` would blind the type
+            // check, silently degrading `has(tags,x)` to a scalar `x IN tags`
+            // — a hard ClickHouse error — or `x IN (SELECT col FROM cte)` to a
+            // bare unqualified `x IN col`, which could quietly bind to an
+            // unrelated same-named column: #477 adversarial review, both
+            // reproduced live). So this arm keeps its own dedicated logic
+            // (restored from before the #477 AST-rewrite refactor) rather than
+            // going through `strip_table_alias_everywhere`: operands are
+            // rendered via recursive `to_sql_without_table_alias()` calls
+            // (mutual recursion — correctly strips arbitrarily nested operator
+            // applications too), while the special-case checks below inspect
+            // `op.operands` (the ORIGINAL, untransformed AST), never the
+            // rendered strings.
             RenderExpr::OperatorApplicationExp(op) => {
                 fn op_str(o: Operator) -> &'static str {
                     match o {
@@ -6722,6 +6743,7 @@ impl RenderExpr {
                 }
 
                 // IN/NOT IN with CTE entity column → subquery for set membership.
+                // Type check on the ORIGINAL operand — see the doc comment above.
                 if rendered.len() == 2 {
                     if let Some(sql) =
                         try_rewrite_in_cte_subquery(&op.operator, &rendered[0], &op.operands[1])
@@ -6730,7 +6752,8 @@ impl RenderExpr {
                     }
                 }
 
-                // Special handling for IN/NOT IN with array columns
+                // Special handling for IN/NOT IN with array columns. Type check
+                // on the ORIGINAL operand — see the doc comment above.
                 if op.operator == Operator::In
                     && rendered.len() == 2
                     && matches!(&op.operands[1], RenderExpr::PropertyAccessExp(_))
@@ -6832,40 +6855,131 @@ impl RenderExpr {
                     },
                 }
             }
-            // For Raw expressions, strip table alias prefixes (e.g., "alias.column" -> "column")
-            // This is needed for LEFT JOIN subqueries where the filter is inside SELECT * FROM table
-            RenderExpr::Raw(raw_sql) => {
-                // Simple approach: look for "word.word" patterns and keep only the part after the dot
-                // This handles cases like "alias.column = 'value'" -> "column = 'value'"
-                let result = raw_sql.clone();
-                // Find and replace all "identifier.identifier" patterns
-                let parts: Vec<&str> = result.split_whitespace().collect();
-                let mut new_parts = Vec::new();
-                for part in parts {
-                    if part.contains('.') && !part.starts_with('\'') && !part.starts_with('"') {
-                        // Split on dot and take the last part (the column name)
-                        // But preserve the structure (e.g., "alias.column" becomes "column")
-                        let dot_parts: Vec<&str> = part.split('.').collect();
-                        if dot_parts.len() == 2
-                            && !dot_parts[0].is_empty()
-                            && !dot_parts[1].is_empty()
-                        {
-                            // Check if first part looks like an identifier (not a number)
-                            let first_char = dot_parts[0].chars().next().unwrap_or('0');
-                            if first_char.is_alphabetic() || first_char == '_' {
-                                new_parts.push(dot_parts[1].to_string());
-                                continue;
-                            }
-                        }
-                    }
-                    new_parts.push(part.to_string());
-                }
-                new_parts.join(" ")
-            }
+            RenderExpr::Raw(raw_sql) => strip_raw_alias_prefixes(raw_sql),
+            // #477: composite expression types that are not operator
+            // applications carry no operand-TYPE-sensitive special-casing (a
+            // ScalarFnCall's duration()/datetime() dispatch keys off whether
+            // an ARG is a MapLiteral, which `strip_table_alias_everywhere`
+            // preserves — it only ever rewrites `PropertyAccessExp` leaves
+            // into `Raw`), so it's safe to do a full recursive AST rewrite
+            // (stripping every nested `PropertyAccessExp`) and delegate to the
+            // ordinary `to_sql()` for final rendering — e.g.
+            // `toFloat(o.total_amount)` inside a LEFT JOIN pre_filter subquery
+            // (`SELECT * FROM orders_fk WHERE ...` — no `o` alias in scope
+            // there).
+            RenderExpr::ScalarFnCall(_)
+            | RenderExpr::AggregateFnCall(_)
+            | RenderExpr::List(_)
+            | RenderExpr::Case(_)
+            | RenderExpr::ArraySubscript { .. }
+            | RenderExpr::ArraySlicing { .. }
+            | RenderExpr::MapLiteral(_) => strip_table_alias_everywhere(self).to_sql(),
             // For other expression types, delegate to regular to_sql
             _ => self.to_sql(),
         }
     }
+}
+
+/// Recursively rewrite `expr` so every `PropertyAccessExp` becomes a bare
+/// column reference (no table alias) and every embedded `alias.column`
+/// pattern inside a `Raw` string is stripped too. Used to render predicates
+/// destined for a LEFT JOIN pre_filter subquery, where the source table has
+/// no alias in scope yet (see #477).
+///
+/// `OperatorApplicationExp` is deliberately NOT rewritten structurally here —
+/// it is instead treated as a boundary: delegate to the dedicated, type-safe
+/// `to_sql_without_table_alias()` (which has its own IN-array / IN-CTE-
+/// subquery special-casing that depends on inspecting the ORIGINAL operand
+/// type) and wrap the resulting string as `Raw`. This keeps that logic in
+/// exactly one place and means a nested operator application (e.g. inside a
+/// CASE WHEN or as a scalar function argument) is handled correctly too,
+/// instead of this function's own recursion silently destroying the operand
+/// type information those special cases need (see #477 adversarial review).
+fn strip_table_alias_everywhere(expr: &RenderExpr) -> RenderExpr {
+    match expr {
+        RenderExpr::PropertyAccessExp(PropertyAccess { column, .. }) => {
+            RenderExpr::Raw(column.to_sql_column_only())
+        }
+        RenderExpr::Raw(raw_sql) => RenderExpr::Raw(strip_raw_alias_prefixes(raw_sql)),
+        RenderExpr::OperatorApplicationExp(_) => RenderExpr::Raw(expr.to_sql_without_table_alias()),
+        RenderExpr::ScalarFnCall(f) => RenderExpr::ScalarFnCall(ScalarFnCall {
+            name: f.name.clone(),
+            args: f.args.iter().map(strip_table_alias_everywhere).collect(),
+        }),
+        RenderExpr::AggregateFnCall(f) => RenderExpr::AggregateFnCall(AggregateFnCall {
+            name: f.name.clone(),
+            args: f.args.iter().map(strip_table_alias_everywhere).collect(),
+        }),
+        RenderExpr::List(items) => {
+            RenderExpr::List(items.iter().map(strip_table_alias_everywhere).collect())
+        }
+        RenderExpr::Case(case) => RenderExpr::Case(RenderCase {
+            expr: case
+                .expr
+                .as_ref()
+                .map(|e| Box::new(strip_table_alias_everywhere(e))),
+            when_then: case
+                .when_then
+                .iter()
+                .map(|(w, t)| {
+                    (
+                        strip_table_alias_everywhere(w),
+                        strip_table_alias_everywhere(t),
+                    )
+                })
+                .collect(),
+            else_expr: case
+                .else_expr
+                .as_ref()
+                .map(|e| Box::new(strip_table_alias_everywhere(e))),
+        }),
+        RenderExpr::ArraySubscript { array, index } => RenderExpr::ArraySubscript {
+            array: Box::new(strip_table_alias_everywhere(array)),
+            index: Box::new(strip_table_alias_everywhere(index)),
+        },
+        RenderExpr::ArraySlicing { array, from, to } => RenderExpr::ArraySlicing {
+            array: Box::new(strip_table_alias_everywhere(array)),
+            from: from
+                .as_ref()
+                .map(|e| Box::new(strip_table_alias_everywhere(e))),
+            to: to
+                .as_ref()
+                .map(|e| Box::new(strip_table_alias_everywhere(e))),
+        },
+        RenderExpr::MapLiteral(entries) => RenderExpr::MapLiteral(
+            entries
+                .iter()
+                .map(|(k, v)| (k.clone(), strip_table_alias_everywhere(v)))
+                .collect(),
+        ),
+        // Other variants (Literal, Column, Parameter, subqueries, pattern
+        // counts, CTE entity refs, ...) either carry no table-alias-qualified
+        // property access or are out of scope for a pre_filter predicate;
+        // leave them unchanged, matching prior behavior.
+        _ => expr.clone(),
+    }
+}
+
+/// Strip `alias.` prefixes from `identifier.identifier` tokens in a raw SQL
+/// string (e.g. `"alias.column = 'value'"` -> `"column = 'value'"`). Shared by
+/// `strip_table_alias_everywhere` for both top-level and nested `Raw` nodes.
+fn strip_raw_alias_prefixes(raw_sql: &str) -> String {
+    let parts: Vec<&str> = raw_sql.split_whitespace().collect();
+    let mut new_parts = Vec::new();
+    for part in parts {
+        if part.contains('.') && !part.starts_with('\'') && !part.starts_with('"') {
+            let dot_parts: Vec<&str> = part.split('.').collect();
+            if dot_parts.len() == 2 && !dot_parts[0].is_empty() && !dot_parts[1].is_empty() {
+                let first_char = dot_parts[0].chars().next().unwrap_or('0');
+                if first_char.is_alphabetic() || first_char == '_' {
+                    new_parts.push(dot_parts[1].to_string());
+                    continue;
+                }
+            }
+        }
+        new_parts.push(part.to_string());
+    }
+    new_parts.join(" ")
 }
 
 impl ToSql for OperatorApplication {
@@ -7057,6 +7171,114 @@ mod tests {
     fn test_map_literal_empty() {
         let map_expr = RenderExpr::MapLiteral(vec![]);
         assert_eq!(map_expr.to_sql(), "map()");
+    }
+
+    // ---- #477 adversarial review: `to_sql_without_table_alias` must preserve
+    // the IN-array and IN-CTE-subquery special cases, which pattern-match on
+    // the ORIGINAL (unstripped) operand TYPE. A prior version of this function
+    // converted every `PropertyAccessExp` to `Raw` before any type-based
+    // dispatch could run, silently degrading both rewrites — one to a hard
+    // ClickHouse error, the other to a bare unqualified column that could
+    // quietly bind to an unrelated same-named column. ----
+
+    use crate::graph_catalog::expression_parser::PropertyValue as PropVal;
+
+    /// `x IN node.arrayProp` must still become `has(arrayProp, x)`, not the
+    /// bare-column default `x IN arrayProp` (a hard ClickHouse error: "Function
+    /// 'in' is supported only if second argument is constant or table
+    /// expression"). Live-verified against ClickHouse in the #477 follow-up
+    /// (see `array_property_probe.yaml` / `probe_arr.tags`).
+    #[test]
+    fn test_to_sql_without_table_alias_preserves_array_membership_in() {
+        let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::In,
+            operands: vec![
+                RenderExpr::Literal(Literal::String("a".to_string())),
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias("o".to_string()),
+                    column: PropVal::Column("tags".to_string()),
+                }),
+            ],
+        });
+        assert_eq!(expr.to_sql_without_table_alias(), "has(tags, 'a')");
+    }
+
+    /// The NOT IN / array-membership counterpart.
+    #[test]
+    fn test_to_sql_without_table_alias_preserves_array_membership_not_in() {
+        let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::NotIn,
+            operands: vec![
+                RenderExpr::Literal(Literal::String("a".to_string())),
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias("o".to_string()),
+                    column: PropVal::Column("tags".to_string()),
+                }),
+            ],
+        });
+        assert_eq!(expr.to_sql_without_table_alias(), "NOT has(tags, 'a')");
+    }
+
+    /// Array membership nested inside a function argument (exercises the
+    /// `strip_table_alias_everywhere` <-> `to_sql_without_table_alias` boundary:
+    /// a `ScalarFnCall` arg that is itself an `OperatorApplicationExp` must
+    /// delegate back to the dedicated, type-safe logic rather than being
+    /// destructively rewritten as part of the function-arg AST walk).
+    #[test]
+    fn test_to_sql_without_table_alias_preserves_array_membership_nested_in_function() {
+        let inner = RenderExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::In,
+            operands: vec![
+                RenderExpr::Literal(Literal::String("a".to_string())),
+                RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias("o".to_string()),
+                    column: PropVal::Column("tags".to_string()),
+                }),
+            ],
+        });
+        let expr = RenderExpr::ScalarFnCall(ScalarFnCall {
+            name: "not".to_string(),
+            args: vec![inner],
+        });
+        assert_eq!(expr.to_sql_without_table_alias(), "not(has(tags, 'a'))");
+    }
+
+    /// `x IN cte.p{N}_col` (a CTE-entity scalar reference, per
+    /// `is_cte_column`) must still expand to `x IN (SELECT col FROM cte)`, not
+    /// degrade to a bare unqualified `x IN col` — which could silently bind to
+    /// an unrelated same-named column elsewhere in the query (the worst class
+    /// of bug per ground rule 1: wrong answer, no error).
+    #[tokio::test]
+    async fn test_to_sql_without_table_alias_preserves_in_cte_subquery_rewrite() {
+        use crate::server::query_context::{set_cte_alias_scope, with_query_context};
+        with_query_context(
+            crate::server::query_context::QueryContext::default(),
+            async {
+                set_cte_alias_scope(
+                    [("u".to_string(), "with_users_cte_0".to_string())]
+                        .into_iter()
+                        .collect(),
+                );
+                let expr = RenderExpr::OperatorApplicationExp(OperatorApplication {
+                    operator: Operator::In,
+                    operands: vec![
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias("o".to_string()),
+                            column: PropVal::Column("id".to_string()),
+                        }),
+                        RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias("u".to_string()),
+                            column: PropVal::Column("p1_u_id".to_string()),
+                        }),
+                    ],
+                });
+                assert_eq!(
+                    expr.to_sql_without_table_alias(),
+                    "id IN (SELECT p1_u_id FROM with_users_cte_0)"
+                );
+            },
+        )
+        .await;
     }
 
     // ---- WHERE alias inlining for Spark/Databricks (LDBC Q10) ----
