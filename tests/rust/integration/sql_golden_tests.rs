@@ -7437,3 +7437,381 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
         }
     }
 }
+
+/// Regression tests for the #536/#537/#539/#540/#541/#526/#527 family — a
+/// follow-up batch found during the fix/484-walker-drift-family review
+/// rounds (merged fb6aca89). Several of these are literally the SAME
+/// underlying question that #484 (`walker_drift_family` module above)
+/// tackled — "does this alias resolve to a real column in the current SQL
+/// scope, or does it only exist inside an inner UNION ALL/pattern_union/VLP
+/// CTE branch" — but at DIFFERENT call sites #484 didn't touch:
+///
+/// - #541/#539/#526 all reuse (or newly apply) the proven-sound
+///   `graph_rel_vlp_endpoint_role`/`rel_alias_uses_pattern_union` discriminators
+///   from #484's round 3, at `projection_tagging.rs`'s `count`/`count(DISTINCT
+///   ...)` rewrite call sites.
+/// - #537 is a related-but-distinct composite-id gap: `find_id_column_for_alias`'s
+///   GraphNode-branch priority returns a single (first) composite column for a
+///   VLP endpoint instead of deferring to the VLP CTE's already-composite-safe
+///   resolution.
+/// - #527 is a related-but-distinct gap in `labels()`/`label()`'s static-label
+///   fallback for a genuinely polymorphic node reached WITHOUT a VLP CTE.
+/// - #536 is the highest-priority, standalone silent-wrong-results bug in
+///   `ast_transform::id_function.rs` (see its own unit tests in that module —
+///   the golden harness's `render()` never exercises that AST pass, matching
+///   the embedded/`cg` code path, so a SQL golden test can't reach it).
+/// - #540 could NOT be reproduced as literally filed (see the `540` test
+///   below) despite substantial effort (`cg sql`/`cg query` against live
+///   ClickHouse, multiple query shapes, before AND after this branch's other
+///   fixes) — locked here as a passing regression test instead of a fix.
+mod label_id_resolution_family_536_537_539_540_541_526_527 {
+    use super::*;
+
+    /// #526: `count(r)`/`count(DISTINCT r)` where `r` is bound via the
+    /// `pattern_union` CTE (both endpoints unlabeled, e.g. `MATCH
+    /// (n)-[r]-(o)`) used to resolve through `table_ctx.get_label_opt()`,
+    /// which — for a pattern_union relationship — arbitrarily returns just
+    /// the FIRST candidate relationship type's schema (e.g. `AUTHORED`,
+    /// whose `from_id` is `user_id`), emitting `count(r.user_id)` — a column
+    /// that doesn't exist on the `pattern_union_r` CTE's actual output shape
+    /// (`start_type`/`start_id`/`end_type`/`end_id`/`path_relationships`/...).
+    /// Live-verified (2026-07-10, local `social` fixture): pre-fix crashes
+    /// ClickHouse Code 47 (`Identifier 'r.user_id' cannot be resolved`);
+    /// post-fix `count(r)` returns 46 (matches
+    /// `(authored+follows+likes) * 2` for the undirected doubling), and
+    /// `count(DISTINCT r)` returns 40 (fewer than 46 — some rows share an
+    /// identical (type, start, end) identity).
+    #[tokio::test]
+    async fn pattern_union_relationship_count_resolves_cte_columns_526() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+
+        let sql = render(
+            &schema,
+            "MATCH (n)-[r]-(o) RETURN count(r)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !sql.contains("r.user_id") && !sql.contains("r.follower_id"),
+            "#526: count(r) over a pattern_union relationship must not \
+             reference a per-label schema column (e.g. r.user_id/r.follower_id) \
+             that doesn't exist on the pattern_union_r CTE's output — this is \
+             a ClickHouse Code 47 UNKNOWN_IDENTIFIER crash:\n{sql}"
+        );
+        assert!(
+            sql.contains("count(r.start_id)"),
+            "#526: count(r) must resolve to the CTE's label-agnostic \
+             start_id column (NULL-sensitive, matches the non-pattern_union \
+             single-edge-id-column style):\n{sql}"
+        );
+
+        let distinct_sql = render(
+            &schema,
+            "MATCH (n)-[r]-(o) RETURN count(DISTINCT r)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            distinct_sql.contains(
+                "tuple(r.start_type, r.start_id, r.end_type, r.end_id, r.path_relationships[1])"
+            ),
+            "#526: count(DISTINCT r) must build a full row-identity tuple \
+             over the CTE's label-agnostic columns (type-paired with id, \
+             since start_id/end_id are label-agnostic strings that can \
+             collide across label spaces, plus the relationship type/direction \
+             to distinguish otherwise-identical (start,end) pairs reached via \
+             a different relationship type):\n{distinct_sql}"
+        );
+    }
+
+    /// #539: `count(id(x))`/`count(DISTINCT id(x))` didn't recognize an
+    /// `id()`/`elementId()`-wrapped alias as an aggregate identity target at
+    /// all (only a BARE alias or `DISTINCT` bare-alias matched) — so it fell
+    /// through untouched, leaving the raw `id()` ScalarFnCall in place, which
+    /// the SQL generator then replaced with the generic function-registry
+    /// placeholder (`id` -> `toInt64(0)`), silently collapsing
+    /// `count(DISTINCT id(x))` to 1 regardless of how many distinct nodes
+    /// actually exist. Live-verified (2026-07-10, local `social` fixture):
+    /// pre-fix `count(DISTINCT id(o))` for `MATCH (n)-[r:FOLLOWS]->(o:User)`
+    /// returned 1 (`count(DISTINCT toInt64(0))`); post-fix returns 5
+    /// (matches `count(DISTINCT r.followed_id) = 5`) — reproduces even for a
+    /// SINGLE-label node, independent of the multi-label raw-union axis the
+    /// title emphasizes. Also live-verified on the 3-label raw-union shape
+    /// (`examples/data_security/data_security.yaml`,
+    /// `(folder:Folder)-[:CONTAINS]->(item)`): pre-fix
+    /// `count(DISTINCT id(item))` returned 1; post-fix returns 200 (matches
+    /// an independently-computed `count(DISTINCT id)` over the 3 unioned
+    /// child tables).
+    #[tokio::test]
+    async fn count_distinct_id_function_resolves_identity_not_placeholder_539() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (n)-[r:FOLLOWS]->(o:User) RETURN count(DISTINCT id(o))",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !sql.contains("toInt64(0)"),
+            "#539: count(DISTINCT id(o)) must not fall back to the \
+             function-registry id() placeholder — every row would silently \
+             count as the same value:\n{sql}"
+        );
+        assert!(
+            sql.contains("count(DISTINCT r.followed_id)"),
+            "#539: count(DISTINCT id(o)) over a single-label node must \
+             resolve to the real joined id column:\n{sql}"
+        );
+
+        let non_distinct_sql = render(
+            &schema,
+            "MATCH (n)-[r:FOLLOWS]->(o:User) RETURN count(id(o))",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !non_distinct_sql.contains("toInt64(0)"),
+            "#539: count(id(o)) (non-DISTINCT) must also resolve to a real \
+             column, not the id() placeholder:\n{non_distinct_sql}"
+        );
+
+        // Multi-label raw-union shape (data_security junction-table schema):
+        // 3 candidate labels (File/Group/User) share the CONTAINS relationship.
+        let junction_schema = load_schema("examples/data_security/data_security.yaml");
+        let junction_sql = render(
+            &junction_schema,
+            "MATCH (folder:Folder)-[:CONTAINS]->(item) RETURN count(DISTINCT id(item))",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !junction_sql.contains("toInt64(0)"),
+            "#539: count(DISTINCT id(item)) over a 3-label raw union must not \
+             collapse to the id() placeholder either:\n{junction_sql}"
+        );
+    }
+
+    /// #541: `graph_rel_connection_role` (introduced by #483 for
+    /// `projection_tagging.rs`'s `count(DISTINCT alias)` rewrite) assumes any
+    /// UNDIRECTED GraphRel endpoint collapses into a single-alias
+    /// `multi_type_vlp_joins`/`bidirectional_union` CTE exposing label-agnostic
+    /// `end_id`/`type` columns — false for a junction-table/polymorphic schema
+    /// whose relationship dispatches through a discriminator/junction table
+    /// (single relationship type, ambiguous NODE label): `(folder:Folder)
+    /// -[:CONTAINS]-(item)` on `data_security.yaml` is undirected
+    /// (`graph_rel_connection_role(item).is_some()`) yet still clones the
+    /// whole `GraphRel` per candidate label into a raw `UNION ALL` (no VLP CTE
+    /// — `variable_length` is `None`), so `item.end_id`/`item.type` reference
+    /// columns that don't exist on ANY of the per-label branches (each has its
+    /// own real columns: fs_id/group_id/user_id). Fixed by switching this call
+    /// site to the round-3, proven-sound `graph_rel_vlp_endpoint_role`
+    /// discriminator (`variable_length.is_some()`) — the exact fix #484's
+    /// review already applied to `group_by_builder.rs`/`filter_tagging.rs` for
+    /// the same unsound assumption, just not yet to this THIRD call site.
+    /// Live-verified (2026-07-10): pre-fix crashes ClickHouse Code 47
+    /// (`item.end_id` unresolvable); post-fix `count(DISTINCT item)` returns
+    /// 200 (matches an independently-computed `count(DISTINCT id)` over the
+    /// 3 unioned child tables — same ground truth as the #539 junction-table
+    /// case above, since both count the same underlying CONTAINS children).
+    #[tokio::test]
+    async fn graph_rel_connection_role_replaced_by_vlp_endpoint_role_in_count_distinct_alias_541() {
+        let schema = load_schema("examples/data_security/data_security.yaml");
+        let sql = render(
+            &schema,
+            "MATCH (folder:Folder)-[:CONTAINS]-(item) RETURN count(DISTINCT item)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !sql.contains("item.end_id")
+                && !sql.contains("item.type")
+                && !sql.contains("item.start_id"),
+            "#541: count(DISTINCT item) over a junction-table undirected \
+             endpoint must not reference the multi_type_vlp_joins CTE's \
+             end_id/type columns — this junction-table schema has no such \
+             CTE, only a raw per-label UNION with real fs_id/group_id/user_id \
+             columns per branch (Code 47 UNKNOWN_IDENTIFIER otherwise):\n{sql}"
+        );
+        assert!(
+            sql.contains("tuple(`item.fs_id`, `item.group_id`, `item.user_id`)"),
+            "#541: must fall through to the per-label id-column tuple \
+             (#467-style), using the REAL per-branch columns:\n{sql}"
+        );
+    }
+
+    /// #537: `id(a2)`/GROUP BY over a composite-id VLP endpoint (Account
+    /// keyed by `(bank_id, account_number)`) used to resolve to only the
+    /// FIRST composite-id column (`find_id_column_for_alias`'s GraphNode
+    /// branch returns the endpoint's underlying `ViewScan.id_column`, a
+    /// single `String` by construction, BEFORE ever reaching its own VLP
+    /// fallback), silently merging every distinct account at the same bank
+    /// into one GROUP BY group. Fixed by building
+    /// `concat(toString(c1),'|',toString(c2),...)` over the RAW composite
+    /// schema columns (mirroring `emit_id_expr`'s own pipe-join convention),
+    /// reusing the `graph_rel_vlp_endpoint_role` discriminator plus #457's
+    /// `composite_id_group_by_columns` `is_composite()` gate. (Referencing the
+    /// VLP CTE's OWN pre-joined `start_id`/`end_id` sentinel column directly
+    /// was tried and discarded — it collides with
+    /// `rewrite_render_expr_for_vlp_with_endpoint_info`'s endpoint-property
+    /// rewriter, whose direct lookup is keyed by genuine schema property
+    /// names and whose fallback blindly re-prefixes, producing
+    /// `end_end_id` — a hard Code 47, worse than the original silent merge.)
+    /// Live-verified (2026-07-10, `db_composite_id` fixture): pre-fix
+    /// `id(a2)` GROUP BY collapsed 8 distinct accounts into 2 groups (one per
+    /// bank, counts 7/8, sum 15); post-fix correctly distinguishes all 8
+    /// accounts (counts sum to the SAME 15 total rows, now correctly
+    /// disaggregated) — scope note: this fix is for the STANDARD schema
+    /// pattern (both VLP endpoint nodes have real tables); FK-edge/
+    /// denormalized/mixed VLP generators were not touched and are not
+    /// claimed fixed by this change.
+    #[tokio::test]
+    async fn composite_id_vlp_endpoint_id_function_uses_full_tuple_537() {
+        let schema = load_schema(SchemaId::CompositeId.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (a:Account)-[:TRANSFERRED*1..3]->(a2:Account) RETURN id(a2), count(*)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !sql.contains("end_end_id") && !sql.contains("t.end_bank_id AS"),
+            "#537: must not double-prefix into end_end_id, and must not \
+             collapse to just the first composite column (end_bank_id) \
+             alone:\n{sql}"
+        );
+        assert!(
+            sql.contains("concat(toString(t.end_bank_id), '|', toString(t.end_account_number))"),
+            "#537: id(a2) must concat BOTH composite id columns \
+             (bank_id AND account_number), matching emit_id_expr's own \
+             pipe-join convention:\n{sql}"
+        );
+        // The GROUP BY key must be the SAME full-tuple expression (a SQL
+        // requirement: every non-aggregate SELECT item must appear, in full,
+        // in GROUP BY), not a truncated single-column key.
+        assert!(
+            sql.matches("concat(toString(t.end_bank_id), '|', toString(t.end_account_number))")
+                .count()
+                >= 2,
+            "#537: the full composite tuple expression must appear in BOTH \
+             the SELECT list and the GROUP BY clause:\n{sql}"
+        );
+    }
+
+    /// #527: `labels()`/`label()` on a genuinely polymorphic node backed by a
+    /// SINGLE shared physical table (schema `label_column`/`label_value` —
+    /// e.g. Folder/File both mapping to `ds_fs_objects`, distinguished by
+    /// `fs_type`) reached WITHOUT a VLP CTE at all (an unlabeled `MATCH (n)`
+    /// whose candidate labels resolve to the IDENTICAL table+columns, so
+    /// type-inference/dedup collapses the would-be per-label UNION into a
+    /// single scan with NO per-branch `WHERE fs_type = 'X'` filter) used to
+    /// return a static label list instead of reading the actual per-row
+    /// discriminator column — the non-VLP sibling of #494 (which fixed this
+    /// same bug class for multi-type VLP path nodes). Live-verified
+    /// (2026-07-10, `data_security` fixture): `MATCH (n) WHERE n.fs_id IN
+    /// ['1','1001'] RETURN n.fs_id, labels(n)` — fs_id 1 is a Folder, fs_id
+    /// 1001 is a File; pre-fix both rows showed the SAME static label;
+    /// post-fix each row correctly shows its own actual label
+    /// (`[Folder]`/`[File]`).
+    #[tokio::test]
+    async fn polymorphic_labels_reads_per_row_discriminator_527() {
+        let schema = load_schema("examples/data_security/data_security.yaml");
+
+        let labels_sql = render(
+            &schema,
+            "MATCH (n) WHERE n.fs_id IN ['1','1001'] RETURN labels(n)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            labels_sql.contains("[toString(n.fs_type)]"),
+            "#527: labels(n) on a single-table polymorphic node must read \
+             the per-row label_column discriminator, not a static literal \
+             list:\n{labels_sql}"
+        );
+
+        let label_sql = render(
+            &schema,
+            "MATCH (n) WHERE n.fs_id IN ['1','1001'] RETURN label(n)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            label_sql.contains("n.fs_type AS"),
+            "#527: label(n) must read the per-row label_column discriminator \
+             too:\n{label_sql}"
+        );
+
+        // Regression guard: an explicitly-labeled match must still be safe —
+        // reading the live column returns the IDENTICAL value the static
+        // literal would (the label match already constrains every row to
+        // that discriminator value), so this is a behavior-preserving switch
+        // for the already-correct case too.
+        let explicit_sql = render(
+            &schema,
+            "MATCH (f:Folder) RETURN labels(f) LIMIT 3",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            explicit_sql.contains("[toString(f.fs_type)]"),
+            "#527 regression guard: an explicitly-labeled node's labels() may \
+             now read the live column instead of a literal, but must still \
+             produce a value-correct result (schema-filtered branch \
+             guarantees fs_type = 'Folder' for every row):\n{explicit_sql}"
+        );
+    }
+
+    /// #540: could NOT be reproduced as literally filed, despite substantial
+    /// effort — `MATCH (n)-[r:FOLLOWS]-(o) RETURN id(o), count(*) ORDER BY
+    /// id(o)` on `social_benchmark.yaml` (the issue's exact repro) renders
+    /// and EXECUTES correctly both before and after this branch's other
+    /// fixes (live-verified against ClickHouse: 7 rows, follower counts
+    /// 7/4/3/2/2/1/1, internally consistent with the graph's FOLLOWS edges).
+    /// `extract_order_by_columns_for_union`'s `__order_col_N` mechanism is
+    /// simply never reached for this single-ORDER-BY-item query: `id(o)`
+    /// resolves to a real column (`o.user_id`) via the SAME safe/precise
+    /// discriminator this whole family exercises, and GROUP BY/ORDER BY both
+    /// reference the resolved `id(o)` alias directly — no synthetic
+    /// `__order_col_*` column is ever introduced. Locked as a passing
+    /// regression test (not a "known broken" characterization) since the
+    /// literal repro is, in fact, NOT broken.
+    ///
+    /// NOTE: while investigating this, a DIFFERENT, deeper latent bug was
+    /// found in the same subsystem — a multi-item `ORDER BY` where the FIRST
+    /// item is an unsafe raw-union `id()` (dropped by
+    /// `extract_order_by_columns_for_union`'s skip logic) and a LATER item
+    /// survives produces a UNION with MISMATCHED ARITY across nested
+    /// direction-sub-branches (`add_order_by_columns_to_select` doesn't
+    /// recurse into a NESTED `Union`-of-`Union` shape from combined
+    /// `bidirectional_union` direction-splitting + per-label raw union) — a
+    /// separate, structurally deeper bug NOT covered by this test and
+    /// deliberately left unfixed (out of scope for this batch; needs
+    /// `add_order_by_columns_to_select` to recurse into nested union
+    /// branches, a materially larger change than this fix family's other
+    /// items). Repro sketch (junction-table schema, NON-aggregating so the
+    /// `order_by_columns` UNION-rendering path is reached instead of the
+    /// has_aggregation path): `MATCH (folder:Folder)-[:CONTAINS]-(item)
+    /// RETURN item.name ORDER BY id(item), item.name`.
+    #[tokio::test]
+    async fn order_by_id_unlabeled_rel_typed_endpoint_540() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (n)-[r:FOLLOWS]-(o) RETURN id(o), count(*) ORDER BY id(o)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !sql.contains("__order_col"),
+            "#540: this single-ORDER-BY-item query must never introduce a \
+             synthetic __order_col_N column reference — if this now fails, \
+             live-verify against ClickHouse before treating it as a genuine \
+             regression:\n{sql}"
+        );
+        assert!(
+            sql.contains("GROUP BY `id(o)`") && sql.contains("ORDER BY `id(o)` ASC"),
+            "#540: id(o) must resolve to a real, consistently-referenced \
+             column in both GROUP BY and ORDER BY:\n{sql}"
+        );
+    }
+}

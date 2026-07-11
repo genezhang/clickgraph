@@ -6,5 +6,5 @@ UNION ALL
 SELECT 'TestUser' AS start_type, toString(test_integration.users.user_id) as start_id, toString(test_integration.products.product_id) as end_id, 'TestProduct' AS end_type, ['TEST_PURCHASED'] as path_relationships, [formatRowNoNewline('JSONEachRow', test_integration.purchases.purchase_date AS purchase_date, test_integration.purchases.quantity AS quantity)] as rel_properties, formatRowNoNewline('JSONEachRow', test_integration.users.age, test_integration.users.name, test_integration.users.user_id) as start_properties, formatRowNoNewline('JSONEachRow', test_integration.products.category, test_integration.products.name, test_integration.products.price, test_integration.products.product_id) as end_properties, test_integration.purchases.purchase_date AS purchase_date, test_integration.purchases.quantity AS quantity, NULL AS since FROM test_integration.purchases INNER JOIN test_integration.users ON test_integration.users.user_id = test_integration.purchases.user_id INNER JOIN test_integration.products ON test_integration.products.product_id = test_integration.purchases.product_id
 )
 SELECT 
-      count(r.follower_id) AS "total"
+      count(r.start_id) AS "total"
 FROM pattern_union_r AS r
