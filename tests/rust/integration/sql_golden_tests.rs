@@ -8732,3 +8732,194 @@ mod label_id_resolution_family_536_537_539_540_541_526_527 {
         );
     }
 }
+
+/// Regression tests for the #546/#547 ORDER BY id() family — milder siblings
+/// of #536's GROUP BY/ORDER BY id()-resolution-when-label-unresolvable bug,
+/// found during that fix's adversarial review (both pre-existing on `main`,
+/// reproducing identically before and after fix/536).
+mod order_by_id_union_family_546_547 {
+    use super::*;
+
+    /// #546: `MATCH (n) RETURN n ORDER BY id(n)` on a genuinely unsafe raw
+    /// multi-label union (bare unlabeled node scan, no VLP/pattern_union
+    /// connection to anchor a safe single-alias column) used to silently
+    /// DROP the ORDER BY clause entirely — `extract_order_by_columns_for_union`
+    /// drops the unresolved `id()` call (there is no single addressable
+    /// column for it in the OUTER `__union` scope), and the renderer's
+    /// "removed" branch gave up on the whole clause rather than trying
+    /// anything else, so rows silently came back unordered with no error.
+    ///
+    /// Fix: whenever the alias's whole-node projection is present (as it
+    /// always is for a bare `RETURN n`), every candidate label's real id
+    /// column is ALREADY projected in the outer `__union` scope under
+    /// `"{alias}.{id_col}"` (NULL-padded on every branch but that label's
+    /// own) — `coalesce(...)` over those columns is a real, deterministic
+    /// per-row ordering key. Live-verified (2026-07-11, local `social`
+    /// fixture via ClickHouse): rows come back in ascending
+    /// post_id/user_id order (1,1,2,2,3,...), matching hand-computed ground
+    /// truth for the JOIN-free coalesce key.
+    #[tokio::test]
+    async fn order_by_id_bare_multi_label_union_resolves_via_coalesce_546() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (n) RETURN n ORDER BY id(n)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("ORDER BY"),
+            "#546: ORDER BY id(n) over a bare multi-label union must not be \
+             silently dropped — rows must not come back unordered with no \
+             error:\n{sql}"
+        );
+        assert!(
+            sql.contains("coalesce(__union.`n.post_id`, __union.`n.user_id`)")
+                || sql.contains("coalesce(__union.`n.user_id`, __union.`n.post_id`)"),
+            "#546: the salvaged ORDER BY key must coalesce over each \
+             candidate label's already-projected id column (non-NULL on \
+             exactly one branch per row):\n{sql}"
+        );
+    }
+
+    /// #546 residual (documented, NOT fixed): a bare `RETURN id(n)` with no
+    /// whole-node/property projection to coalesce over has no salvageable
+    /// ordering key available at this stage — this narrower case still falls
+    /// back to the pre-#546 safe-but-lossy "drop the ORDER BY clause"
+    /// behavior (matching the established GROUP BY precedent from the #484
+    /// fix family: prefer a wrong-but-non-fatal placeholder over a hard
+    /// runtime failure). Locked here as a "known limitation" characterization
+    /// test, not a "this is correct" one.
+    #[tokio::test]
+    async fn order_by_id_bare_projection_only_still_has_no_salvageable_key_546() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (n) RETURN id(n) ORDER BY id(n)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            !sql.contains("ORDER BY"),
+            "#546 residual: a bare `RETURN id(n)` (no whole-node projection) \
+             has no per-label id column to coalesce over — if this now \
+             contains an ORDER BY, the coalesce salvage got smarter; update \
+             this test to assert the (now fixed) real ordering instead:\n{sql}"
+        );
+    }
+
+    /// #547: a multi-item ORDER BY where an unsafe raw-union `id()` is
+    /// dropped by `extract_order_by_columns_for_union` (per the same
+    /// safe-placeholder logic as #546) and a LATER item survives used to
+    /// misalign: the final ORDER BY clause looked up survivors by their
+    /// ORIGINAL positional index into a list that only contains SURVIVORS
+    /// (shorter than the original list whenever anything was dropped),
+    /// silently attaching an EARLIER (dropped) item's sort direction to a
+    /// LATER item's column and losing the later item's own ordering key
+    /// entirely.
+    ///
+    /// Fix: derive each surviving column's original ORDER BY item from the
+    /// index encoded in its own `__order_col_{N}` alias (assigned by
+    /// `extract_order_by_columns_for_union` from the ORIGINAL list position),
+    /// rather than a naive parallel walk of the original list that silently
+    /// desynchronizes whenever an earlier item was dropped.
+    #[tokio::test]
+    async fn order_by_multi_item_survivor_after_dropped_id_keeps_own_key_547() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        // `n` is multi-label (bare unlabeled scan) so `id(n)` is the unsafe
+        // dropped item; the literal `1` is an unrelated second ORDER BY key
+        // that must survive with its OWN column reference.
+        let sql = render(
+            &schema,
+            "MATCH (n) RETURN n ORDER BY id(n), 1",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("ORDER BY"),
+            "#547: the surviving literal ORDER BY key must not vanish just \
+             because an earlier item (id(n)) was unresolvable:\n{sql}"
+        );
+        // `id(n)` is still dropped here (this "some survive" branch doesn't
+        // attempt #546's coalesce salvage — that only applies when EVERY
+        // item was dropped), but the literal survivor must keep its own
+        // `__order_col_1` alias (its ORIGINAL position in the 2-item list)
+        // rather than being misattributed to the first (dropped) item's
+        // position — and it must be the ONLY column in the clause (not
+        // duplicated, not silently swapped for the dropped item's slot).
+        assert!(
+            sql.contains("ORDER BY __union.`__order_col_1` ASC") && !sql.contains("__order_col_0"),
+            "#547: the second ORDER BY item (literal `1`) must be referenced \
+             by ITS OWN encoded index (__order_col_1), not misattributed to \
+             the first (dropped) item's position, and no stray __order_col_0 \
+             (which was never generated, since id(n) was dropped) should \
+             appear:\n{sql}"
+        );
+    }
+}
+
+/// Regression test for #548: `get_table_alias_if_single_table_condition`
+/// (`filter_tagging.rs`) correctly handles a single cross-table reference in
+/// an IN-list (`x.a IN [y.b]`, fixed by #542), but a 2+-element list where
+/// MULTIPLE elements reference DIFFERENT tables (`x.a IN [y.b, z.c]`) was
+/// still misclassified as single-table — because the List arm's own
+/// "elements disagree -> None" conflict signal was indistinguishable, to
+/// every caller's `if let Some(alias) = ...` pattern, from "this operand
+/// carries no alias info at all", so the conflict was silently dropped
+/// instead of propagated as "not single-table". Downstream this leaked a raw,
+/// never-bound Cypher alias into the WHERE clause (e.g. `srcip2."id.orig_h"`
+/// referencing a table alias that only exists as an un-joined Cypher name,
+/// never a real JOIN alias) — the exact same class of bug #542 fixed for the
+/// single-cross-table-element case.
+mod filter_tagging_in_list_family_548 {
+    use super::*;
+
+    /// Live-verified (2026-07-11, `schemas/dev/zeek_merged_test.yaml`):
+    /// before the fix, the WHERE clause read `t1."id.orig_h" =
+    /// toString(srcip2."id.orig_h") OR t1."id.orig_h" =
+    /// toString(destip."id.resp_h")` — both `srcip2` and `destip` are raw,
+    /// unbound Cypher aliases (neither is a real FROM/JOIN alias; only `t1`/
+    /// `t2` are). After the fix both resolve to `conn_log`'s real bound JOIN
+    /// alias (`t2`).
+    #[tokio::test]
+    async fn in_list_multi_element_cross_alias_correlation_resolves_bound_aliases_548() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+        let sql = render(
+            &schema,
+            "MATCH (srcip1:IP)-[:REQUESTED]->(d:Domain), \
+             (srcip2:IP)-[:ACCESSED]->(destip:IP) \
+             WHERE srcip1.ip IN [srcip2.ip, destip.ip] \
+             RETURN srcip1.ip, d.name, destip.ip",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        let where_clause = sql
+            .rsplit("WHERE")
+            .next()
+            .expect("query must have a WHERE clause");
+        assert!(
+            !where_clause.contains("srcip1.")
+                && !where_clause.contains("srcip2.")
+                && !where_clause.contains("destip."),
+            "#548: no raw Cypher alias should leak into the WHERE clause as \
+             an unbound SQL identifier — every reference must resolve to its \
+             bound JOIN alias (e.g. `t1`/`t2`):\n{sql}"
+        );
+        let conn_log_alias = sql
+            .split("zeek.conn_log AS ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .unwrap_or_else(|| panic!("expected a `JOIN zeek.conn_log AS <alias>`:\n{sql}"));
+        assert!(
+            where_clause.contains(&format!("{conn_log_alias}.")), // `srcip2` and `destip` are two DIFFERENT references onto the
+                                                                  // same `conn_log` table (two columns of the same JOIN), so
+                                                                  // both may legitimately share one alias occurrence count of
+                                                                  // 2 in the WHERE clause — just assert the alias is used.
+            "#548: expected both correlated list elements (`srcip2`, \
+             `destip`) to resolve to conn_log's real bound JOIN alias \
+             `{conn_log_alias}` in the WHERE clause, not vanish or stay \
+             unbound:\n{sql}"
+        );
+    }
+}
