@@ -8913,9 +8913,9 @@ mod filter_tagging_in_list_family_548 {
             .unwrap_or_else(|| panic!("expected a `JOIN zeek.conn_log AS <alias>`:\n{sql}"));
         assert!(
             where_clause.contains(&format!("{conn_log_alias}.")), // `srcip2` and `destip` are two DIFFERENT references onto the
-                                                                  // same `conn_log` table (two columns of the same JOIN), so
-                                                                  // both may legitimately share one alias occurrence count of
-                                                                  // 2 in the WHERE clause — just assert the alias is used.
+            // same `conn_log` table (two columns of the same JOIN), so
+            // both may legitimately share one alias occurrence count of
+            // 2 in the WHERE clause — just assert the alias is used.
             "#548: expected both correlated list elements (`srcip2`, \
              `destip`) to resolve to conn_log's real bound JOIN alias \
              `{conn_log_alias}` in the WHERE clause, not vanish or stay \
