@@ -184,6 +184,73 @@ impl NodeSchema {
         cols
     }
 
+    /// #549: merge this node's role-specific denormalized property map
+    /// (`from_properties`/`to_properties`) with any ADDITIONAL properties
+    /// declared in `property_mappings` that aren't already covered by the
+    /// role-specific map. Complements `all_valid_physical_columns()` (which
+    /// answers "is this column valid" via a flat set) by preserving
+    /// NAME→COLUMN mapping semantics for property *resolution*.
+    ///
+    /// `RelationshipSchema::from_node_properties`/`to_node_properties` are
+    /// populated FROM this at schema-load time (`graph_catalog::config`'s
+    /// `build_relationship_schema`), and virtually every downstream
+    /// property-resolution site (`ViewScan` construction in
+    /// `query_planner::logical_plan::match_clause::view_scan`,
+    /// `PatternSchemaContext::extract_denorm_props`, `properties_builder.rs`'s
+    /// `GraphRel` branch, `filter_tagging.rs`, ...) reads the relationship-level
+    /// field rather than this node-level one — routing the merge through here
+    /// ONCE at schema-load time fixes all of them, rather than requiring each
+    /// call site to independently remember to also consult
+    /// `property_mappings`. Before this fix, a `property_mappings`-sourced
+    /// property on a node that ALSO had role-specific from/to maps was never
+    /// included in the role-specific map at all, so any downstream reference
+    /// to it (e.g. across a WITH-aggregate CTE barrier) was silently dropped
+    /// from the projection entirely — not NULL-padded, just absent — causing
+    /// a ClickHouse "Unknown identifier" error.
+    ///
+    /// Returns `None` exactly when this node has no role-specific mapping for
+    /// this role (i.e. it isn't denormalized on this side) — callers must
+    /// preserve that `None`-ness (it drives `is_denormalized`-adjacent checks
+    /// downstream, e.g. `RelationshipSchema::from_node_properties.is_some()`),
+    /// never conflating "no role mapping" with "empty map".
+    ///
+    /// Role-specific mappings ALWAYS win on a property-name collision, and
+    /// `node_id` property names are excluded from the merge entirely.
+    /// `build_node_property_mappings` (`graph_catalog::config`) auto-adds an
+    /// IDENTITY entry to `property_mappings` for every `node_id` property
+    /// name that wasn't manually mapped — for a denormalized node that
+    /// identity mapping is spurious: e.g. `flights_denormalized.yaml`'s
+    /// `Airport` gets `code -> code` but no physical `code` column exists
+    /// (only `origin_code`/`dest_code`), and zeek's `IP` gets
+    /// `"id.orig_h" -> "id.orig_h"`, a column its role maps deliberately
+    /// expose only under the Cypher name `ip`. Merging those would either
+    /// resolve to a dangling physical column (Airport, if it won a collision)
+    /// or grow a phantom extra property on a real, already-working schema
+    /// (zeek, where the id NAME differs from every role-map name so
+    /// `or_insert` would not catch it). A denormalized node's identity
+    /// columns are always covered by its role-specific maps (schema
+    /// validation requires them, and node_id resolution goes through them),
+    /// so skipping the id names loses nothing.
+    pub fn denorm_role_properties(&self, is_from_node: bool) -> Option<HashMap<String, String>> {
+        let role_props = if is_from_node {
+            self.from_properties.as_ref()
+        } else {
+            self.to_properties.as_ref()
+        }?;
+
+        let id_names = self.node_id.columns();
+        let mut result = role_props.clone();
+        for (prop_name, prop_value) in &self.property_mappings {
+            if id_names.contains(&prop_name.as_str()) {
+                continue;
+            }
+            result
+                .entry(prop_name.clone())
+                .or_insert_with(|| prop_value.raw_column_name());
+        }
+        Some(result)
+    }
+
     /// Check if this engine supports FINAL (regardless of whether we use it by default)
     pub fn can_use_final(&self) -> bool {
         if let Some(ref engine) = self.engine {
