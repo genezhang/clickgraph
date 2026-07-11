@@ -9,7 +9,7 @@ WITH RECURSIVE vlp_a_b_inner AS (
         t0.OriginState as start_OriginState,
         t0.DestState as end_DestState
     FROM default.flights AS t0
-    WHERE hop_count <= 2
+    WHERE 1 <= 2
     UNION ALL
     SELECT
         vp.start_id as start_id,

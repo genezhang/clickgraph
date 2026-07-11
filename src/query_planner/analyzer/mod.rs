@@ -65,6 +65,7 @@ use crate::{
             cte_reference_populator::CteReferencePopulator,
             cte_schema_resolver::CteSchemaResolver,
             duplicate_scans_removing::DuplicateScansRemoving,
+            errors::AnalyzerError,
             filter_tagging::FilterTagging,
             graph_join_inference::GraphJoinInference,
             graph_traversal_planning::GraphTRaversalPlanning,
@@ -286,6 +287,11 @@ pub fn initial_analyzing(
         current_graph_schema,
     ) {
         Ok(transformed_plan) => transformed_plan.get_plan(),
+        // UnsupportedPattern is FATAL by contract (see its doc comment):
+        // continuing with the original (untransformed) plan would render
+        // silently wrong SQL — e.g. two independent VLPs conflated onto one
+        // CTE alias (#544). Fail the query loudly instead.
+        Err(e @ AnalyzerError::UnsupportedPattern { .. }) => return Err(e),
         Err(e) => {
             log::warn!(
                 "⚠️  GraphJoinInference failed: {:?}, continuing with original plan",

@@ -11,7 +11,7 @@ WITH RECURSIVE vlp_a1_a2 AS (
         t0.DestCityName as end_DestCityName,
         t0.DestState as end_DestState
     FROM test_integration.flights AS t0
-    WHERE t0.Origin = 'JFK' AND hop_count <= 2
+    WHERE t0.Origin = 'JFK' AND 1 <= 2
     UNION ALL
     SELECT
         vp.start_id as start_id,

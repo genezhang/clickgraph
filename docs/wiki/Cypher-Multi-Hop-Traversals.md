@@ -742,6 +742,38 @@ RETURN u2.name
 
 **See**: [KNOWN_ISSUES.md](../../KNOWN_ISSUES.md) for details
 
+### Multiple Variable-Length Paths in One MATCH Scope
+
+**Issue**: Only ONE recursive variable-length path is supported per MATCH scope
+(plus same-end fan-in, e.g. `(a)-[*1..2]->(x), (b)-[*1..2]->(x)`). Other
+multi-VLP configurations — chained (`(a)-[*1..2]->(b)-[*1..2]->(c)`),
+bridged by a fixed hop (`(a)-[*1..2]->(b)-[:R]->(c)-[*2..3]->(d)`), fan-out,
+or fully disjoint patterns — are rejected with a clear error (#544) instead of
+being translated, because the SQL renderer cannot yet emit multiple
+independently-aliased VLP CTEs (silently wrong results would follow).
+
+```cypher
+-- ❌ Rejected with an "Unsupported pattern (#544)" error
+MATCH (a:User)-[:FOLLOWS*1..2]->(b:User)-[:FOLLOWS*1..2]->(c:User)
+RETURN a.name, c.name
+
+-- ✅ Supported: same-end fan-in
+MATCH (a:User)-[:FOLLOWS*1..2]->(x:User), (b:User)-[:FOLLOWS*1..2]->(x:User)
+RETURN x.name
+
+-- ✅ Workaround: split into separate queries, one variable-length path each
+```
+
+**Status**: Tracked as #544; requires per-VLP CTE aliasing in the renderer.
+
+### Multi-Type Variable-Length Paths
+
+Multi-type VLPs (`[:TYPE_A|TYPE_B*1..2]`) are supported for any type-list
+order, including when the first listed type cannot chain on its own (#528,
+fixed): path validity is enumerated per hop against the schema, so
+`[:AUTHORED|FOLLOWS*1..2]` and `[:FOLLOWS|AUTHORED*1..2]` produce the same
+result set.
+
 ---
 
 ## Next Steps

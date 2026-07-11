@@ -599,9 +599,66 @@ pub fn apply_optional_marking(joins: &mut [Join], optional_aliases: &HashSet<Str
 ///
 /// When a node is accessed via a VLP CTE (e.g., `t.end_id` instead of `u2.user_id`),
 /// join conditions that reference that node must be rewritten.
-pub fn apply_vlp_rewrites(joins: &mut [Join], plan_ctx: &PlanCtx) {
+///
+/// # #544: multiple independent VLPs in one scope
+///
+/// `PlanCtx::get_vlp_join_reference` always maps a VLP endpoint onto the SAME
+/// placeholder outer-query alias (`VLP_CTE_FROM_ALIAS`, `"t"`) regardless of
+/// which variable-length-path relationship it belongs to — the render phase
+/// currently emits every VLP CTE's outer reference under that one alias (see
+/// the `TODO(multi-vlp)` note in `cte_extraction.rs`; a real fix needs the
+/// render phase to thread through the per-VLP `vlp_alias` that `PlanCtx`
+/// already tracks, which is a larger, separate change). When the joins passed
+/// here need to correlate against endpoints belonging to TWO OR MORE DISTINCT
+/// VLP relationships (e.g. a fixed hop bridging `(a)-[*1..2]->(b)-[:REL]->(c)-[*2..3]->(d)`,
+/// where `b` and `c` are endpoints of two independent VLPs), both endpoints
+/// would silently collapse onto the same `"t"` alias: one VLP's CTE becomes
+/// unreferenced and is dropped, and its endpoint gets silently conflated with
+/// the other VLP's endpoint (wrong data, no error). Detect that ambiguity here
+/// and fail loudly instead — a clear error beats silently wrong results.
+fn distinct_vlp_rel_aliases(joins: &[Join], plan_ctx: &PlanCtx) -> Vec<String> {
+    use crate::graph_catalog::expression_parser::PropertyValue;
+
+    let mut seen = std::collections::BTreeSet::new();
+    for join in joins {
+        for condition in &join.joining_on {
+            for operand in &condition.operands {
+                if let LogicalExpr::PropertyAccessExp(pa) = operand {
+                    if !matches!(pa.column, PropertyValue::Column(_)) {
+                        continue;
+                    }
+                    if let Some(vlp_info) = plan_ctx.get_vlp_endpoint(&pa.table_alias.0) {
+                        seen.insert(vlp_info.rel_alias.clone());
+                    }
+                }
+            }
+        }
+    }
+    seen.into_iter().collect()
+}
+
+pub fn apply_vlp_rewrites(joins: &mut [Join], plan_ctx: &PlanCtx) -> AnalyzerResult<()> {
     use crate::graph_catalog::expression_parser::PropertyValue;
     use crate::query_planner::logical_expr::{PropertyAccess, TableAlias};
+
+    let rel_aliases = distinct_vlp_rel_aliases(joins, plan_ctx);
+    if rel_aliases.len() > 1 {
+        return Err(AnalyzerError::UnsupportedPattern {
+            message: format!(
+                "(#544) a fixed-length hop in this MATCH must correlate against \
+                 endpoints of {} distinct variable-length-path relationships \
+                 in the same scope ({}). ClickGraph does not yet support \
+                 multiple independent variable-length paths bridged by a fixed \
+                 hop within one MATCH scope — the render phase aliases every \
+                 VLP CTE identically, which would silently drop one VLP's \
+                 results and conflate its endpoint with the other VLP's. \
+                 Workaround: split the pattern across a WITH clause so each \
+                 variable-length path is resolved in its own scope.",
+                rel_aliases.len(),
+                rel_aliases.join(", ")
+            ),
+        });
+    }
 
     for join in joins.iter_mut() {
         for condition in &mut join.joining_on {
@@ -630,6 +687,7 @@ pub fn apply_vlp_rewrites(joins: &mut [Join], plan_ctx: &PlanCtx) {
             }
         }
     }
+    Ok(())
 }
 
 // =============================================================================
