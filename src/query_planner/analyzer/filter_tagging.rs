@@ -1262,26 +1262,37 @@ impl FilterTagging {
                             // alias is already a concrete-but-wrong-scope
                             // `PropertyAccessExp`, not the `ScalarFnCall` that guard
                             // inspects — so the crash has to be prevented here instead.
-                            // Reuses the same discriminator #467/#483 already established
-                            // in `projection_tagging.rs`'s `count(DISTINCT alias)` rewrite:
-                            // multi-label AND not an UNDIRECTED GraphRel endpoint
-                            // (`graph_rel_connection_role` — that shape collapses into a
-                            // single `multi_type_vlp_joins`/`bidirectional_union` CTE
-                            // exposing one `start_id`/`end_id`, safe to resolve here). A
-                            // DIRECTED GraphRel endpoint or a bare multi-label scan both
-                            // render as raw per-label branches with no single addressable
-                            // column here, so treat the label as unresolved — falls through
-                            // to the "could not resolve id(), passing through unchanged"
-                            // path below, keeping id() as a `ScalarFnCall` so it reaches
-                            // render_plan intact for `resolve_id_function_for_group_order`
-                            // to safely fall back to the placeholder instead of crashing.
+                            // #484 round 3: mirrors `group_by_builder.rs`'s
+                            // `renders_via_raw_label_union` guard, which uses
+                            // `graph_rel_vlp_endpoint_role` (`variable_length.is_some()`
+                            // at the connection) rather than the round-2 proxy
+                            // `graph_rel_connection_role` (mere UNDIRECTED-ness). The
+                            // proxy is unsound for a polymorphic/junction-table schema
+                            // whose relationship dispatches through a discriminator
+                            // table (single relationship type, ambiguous NODE label):
+                            // e.g. `(folder:Folder)-[:CONTAINS]-(item)` or
+                            // `(u:User)-[:LIKES]-(target)` are BOTH undirected
+                            // (`graph_rel_connection_role(alias).is_some()`) yet still
+                            // clone the whole `GraphRel` per label into a raw
+                            // `UNION ALL` (no VLP CTE — `variable_length` is `None`),
+                            // the same crash this guard exists to prevent. A genuine
+                            // VLP/multi-type-VLP endpoint (`variable_length.is_some()`,
+                            // e.g. `anchored_unlabeled_expand`/`unlabeled_rel_typed`-style
+                            // patterns) is still safe to resolve here; a DIRECTED
+                            // GraphRel endpoint, an undirected junction-table endpoint,
+                            // or a bare multi-label scan are not — treat the label as
+                            // unresolved, falling through to the "could not resolve
+                            // id(), passing through unchanged" path below, keeping id()
+                            // as a `ScalarFnCall` so it reaches render_plan intact for
+                            // `resolve_id_function_for_group_order` to safely fall back
+                            // to the placeholder instead of crashing.
                             let is_unsafe_raw_union_multilabel = !table_ctx.is_relation()
                                 && table_ctx
                                     .get_labels()
                                     .map(|ls| ls.len() > 1)
                                     .unwrap_or(false)
                                 && plan
-                                    .map(|p| p.graph_rel_connection_role(alias_str).is_none())
+                                    .map(|p| p.graph_rel_vlp_endpoint_role(alias_str).is_none())
                                     .unwrap_or(true);
                             let label_opt = if is_unsafe_raw_union_multilabel {
                                 None

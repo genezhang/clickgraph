@@ -5453,6 +5453,187 @@ mod walker_drift_family_484_490_495_476_483 {
         );
     }
 
+    /// #484 round 3 (adversarial-review follow-up, BLOCKING): round 2's fix
+    /// above replaced the "no GraphRel connection" proxy with
+    /// `graph_rel_connection_role` (UNDIRECTED-ness), on the assumption that
+    /// every undirected multi-label GraphRel endpoint collapses into a single
+    /// `multi_type_vlp_joins`/`bidirectional_union` CTE (safe). That
+    /// assumption is FALSE for a polymorphic/junction-table schema whose
+    /// relationship dispatches through a discriminator column (single
+    /// relationship type, ambiguous NODE label): the whole `GraphRel` still
+    /// gets cloned once per candidate label into a raw `UNION ALL`, same as
+    /// the directed case above — `variable_length` is `None` on every clone,
+    /// there is no VLP CTE to collapse into, and `item`/`target` are only
+    /// addressable INSIDE each union branch. Both repros below are
+    /// live-verified (2026-07-10) to hard-fail with ClickHouse Code 47
+    /// UNKNOWN_IDENTIFIER on pre-round-3 code (`GROUP BY item.fs_id` /
+    /// `GROUP BY target.post_id`, referencing a table alias that only exists
+    /// inside the `__union` branch subqueries).
+    ///
+    /// The fix (`graph_rel_vlp_endpoint_role` in `logical_plan/mod.rs`,
+    /// replacing `graph_rel_connection_role` at both call sites —
+    /// `group_by_builder.rs`'s `renders_via_raw_label_union` and
+    /// `filter_tagging.rs`'s `is_unsafe_raw_union_multilabel`) checks the
+    /// ACTUAL structural marker of the safe collapse
+    /// (`variable_length.is_some()` at the connection — the same condition
+    /// `find_id_column_for_alias`'s own VLP fallback branch already uses to
+    /// resolve such an alias to `start_id`/`end_id`) instead of a proxy for
+    /// it. This is sound in both directions: it still says "unsafe" (raw
+    /// union) for the junction-table/polymorphic case here, while continuing
+    /// to say "safe" for the genuine VLP shapes locked by the test below
+    /// (`group_by_order_by_vlp_multilabel_endpoint_resolves_precisely_484`).
+    #[tokio::test]
+    async fn group_by_order_by_undirected_multilabel_junction_table_raw_union_not_hard_fail_484() {
+        // Junction-table dispatch: `ds_fs_objects.fs_type` discriminates which
+        // physical table (and join key) each row belongs to.
+        let fk_schema = load_schema("examples/data_security/data_security.yaml");
+
+        let fk_group_by_cypher =
+            "MATCH (folder:Folder)-[:CONTAINS]-(item) RETURN id(item), count(*)";
+        let fk_group_by_sql = render(&fk_schema, fk_group_by_cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            !fk_group_by_sql.contains("GROUP BY item."),
+            "#484 round 3 BLOCKING: an UNDIRECTED multi-label alias reached \
+             through a junction-table-dispatch GraphRel must not GROUP BY a \
+             table alias (item) that only exists inside the inner UNION \
+             branch subquery, not the outer __union scope:\n{fk_group_by_sql}"
+        );
+        assert!(
+            fk_group_by_sql.contains("GROUP BY `id(item)`"),
+            "expected the safe fallback: GROUP BY the outer SELECT-list \
+             alias, not an inner-scope-only column reference:\n{fk_group_by_sql}"
+        );
+
+        let fk_order_by_cypher = "MATCH (folder:Folder)-[:CONTAINS]-(item) RETURN id(item), \
+             count(*) ORDER BY id(item)";
+        let fk_order_by_sql = render(&fk_schema, fk_order_by_cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            !fk_order_by_sql.contains("GROUP BY item.")
+                && !fk_order_by_sql.contains("ORDER BY item."),
+            "#484 round 3 BLOCKING: same undirected junction-table alias, \
+             combined with ORDER BY — neither GROUP BY nor ORDER BY may \
+             reference the inner-subquery-only alias:\n{fk_order_by_sql}"
+        );
+        assert!(
+            !fk_order_by_sql.contains("__order_col"),
+            "ORDER BY id() here must not push a redundant duplicate SELECT \
+             item that corrupts GROUP BY into referencing a column that \
+             doesn't exist in the __union scope:\n{fk_order_by_sql}"
+        );
+
+        // Polymorphic single-interactions-table dispatch: `interaction_type`/
+        // `from_type`/`to_type` discriminate the join per candidate label,
+        // same raw-union hazard, different schema axis.
+        let poly_schema = load_schema(SchemaId::Polymorphic.yaml_path());
+
+        let poly_group_by_cypher = "MATCH (u:User)-[:LIKES]-(target) RETURN id(target), count(*)";
+        let poly_group_by_sql =
+            render(&poly_schema, poly_group_by_cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            !poly_group_by_sql.contains("GROUP BY target."),
+            "#484 round 3 BLOCKING: an UNDIRECTED multi-label alias reached \
+             through a polymorphic-junction-table GraphRel must not GROUP BY \
+             a table alias (target) that only exists inside the inner UNION \
+             branch subquery:\n{poly_group_by_sql}"
+        );
+        assert!(
+            poly_group_by_sql.contains("GROUP BY `id(target)`"),
+            "expected the safe fallback: GROUP BY the outer SELECT-list \
+             alias:\n{poly_group_by_sql}"
+        );
+
+        let poly_order_by_cypher = "MATCH (u:User)-[:LIKES]-(target) RETURN id(target), \
+             count(*) ORDER BY id(target)";
+        let poly_order_by_sql =
+            render(&poly_schema, poly_order_by_cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            !poly_order_by_sql.contains("GROUP BY target.")
+                && !poly_order_by_sql.contains("ORDER BY target."),
+            "#484 round 3 BLOCKING: same undirected polymorphic-junction-table \
+             alias, combined with ORDER BY:\n{poly_order_by_sql}"
+        );
+        assert!(
+            !poly_order_by_sql.contains("__order_col"),
+            "ORDER BY id() here must not corrupt GROUP BY into referencing an \
+             out-of-scope column:\n{poly_order_by_sql}"
+        );
+    }
+
+    /// #484 round 3: confirms the fix above (`graph_rel_vlp_endpoint_role`
+    /// replacing `graph_rel_connection_role`) does NOT regress the genuine
+    /// VLP-collapse shapes it must still treat as safe — these must keep
+    /// resolving `id()` PRECISELY (the real `start_id`/`end_id` CTE column),
+    /// not merely safely (the `toInt64(0)`-via-outer-alias placeholder the
+    /// junction-table/polymorphic cases above fall back to).
+    ///
+    /// `anchored_unlabeled_expand` (`MATCH (a:User)-[r]-(o) RETURN a, r, o`,
+    /// from the `BROWSER_CORPUS`) has an unlabeled, multi-edge-type
+    /// relationship `r` — this is the degenerate single-hop
+    /// `multi_type_vlp_joins` shape (`variable_length.is_some()` even without
+    /// `*` syntax), collapsing into one `vlp_multi_type_a_o` CTE that exposes
+    /// a real, label-agnostic `end_id` column for every row regardless of
+    /// which of `o`'s candidate labels (User/Post) it actually is.
+    #[tokio::test]
+    async fn group_by_order_by_vlp_multilabel_endpoint_resolves_precisely_484() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+
+        let cypher = "MATCH (a:User)-[r]-(o) RETURN id(o), count(*)";
+        let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            sql.contains("GROUP BY t.end_id"),
+            "#484 round 3: an unlabeled multi-edge-type undirected endpoint \
+             (the multi_type_vlp_joins/bidirectional_union shape) must keep \
+             resolving id() to the CTE's real end_id column, not fall back to \
+             the safe-but-imprecise outer-alias placeholder:\n{sql}"
+        );
+        assert!(
+            !sql.contains("GROUP BY `id(o)`"),
+            "must not regress into the raw-union safe fallback for a shape \
+             that genuinely collapses into a single-alias CTE:\n{sql}"
+        );
+
+        let order_cypher = "MATCH (a:User)-[r]-(o) RETURN id(o), count(*) ORDER BY id(o)";
+        let order_sql = render(&schema, order_cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            order_sql.contains("ORDER BY t.end_id"),
+            "ORDER BY must also keep the precise end_id resolution:\n{order_sql}"
+        );
+
+        // `unlabeled_rel_typed` (`MATCH (n)-[r:FOLLOWS]-(o) RETURN n, o`):
+        // `r`'s type is fixed (FOLLOWS, User->User only on this schema), so
+        // `o` is only nominally "multi-label" — BidirectionalUnion's plain
+        // (non-VLP) direction-combination split applies instead (2 raw
+        // per-direction branches, no VLP CTE: `variable_length` is `None`
+        // here too), correctly routing through the SAME raw-union guard as
+        // the junction-table cases above. It still resolves PRECISELY,
+        // though, because (unlike the junction-table cases, where each
+        // candidate label's id column genuinely differs, e.g. fs_id/user_id)
+        // FOLLOWS always lands on `o.user_id` in EVERY branch here — so the
+        // outer alias the raw-union fallback references (`id(o)`) legitimately
+        // carries a real per-row value in the SELECT list already, not the
+        // `toInt64(0)` placeholder — GROUP BY-by-alias is honest, not lossy.
+        let rel_typed_cypher = "MATCH (n)-[r:FOLLOWS]-(o) RETURN id(o), count(*)";
+        let rel_typed_sql = render(&schema, rel_typed_cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            !rel_typed_sql.contains("toInt64(0)"),
+            "#484 round 3: unlabeled_rel_typed's raw-union branches must \
+             each still project a REAL o.user_id under the id(o) alias (not \
+             the placeholder) — the single relationship type resolves the \
+             node label unambiguously in every branch:\n{rel_typed_sql}"
+        );
+        assert!(
+            rel_typed_sql.contains("o.user_id AS \"id(o)\""),
+            "expected each UNION branch to project the real id column under \
+             the id(o) alias:\n{rel_typed_sql}"
+        );
+        assert!(
+            rel_typed_sql.contains("GROUP BY `id(o)`"),
+            "the outer GROUP BY correctly references that real per-row \
+             SELECT-list alias (safe AND precise here, unlike the \
+             junction-table cases):\n{rel_typed_sql}"
+        );
+    }
+
     /// #490: `type(r)` behind a `WITH r` barrier used to hard-code the VLP
     /// alias `t` in the outer SELECT even when the relationship actually
     /// routes through a `pattern_union_r AS r` CTE (both endpoints

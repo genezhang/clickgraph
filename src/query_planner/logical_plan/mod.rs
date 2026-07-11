@@ -1780,6 +1780,82 @@ impl LogicalPlan {
         }
     }
 
+    /// #484 round 3: is `alias` a connection (`left_connection`/`right_connection`)
+    /// of a VARIABLE-LENGTH-PATH `GraphRel` (`variable_length.is_some()`) in this
+    /// plan? Returns `Some(true)` for the left/start connection, `Some(false)`
+    /// for the right/end connection.
+    ///
+    /// This is the actual POSITIVE-evidence structural marker for the one
+    /// render path that reliably collapses a multi-label node endpoint into a
+    /// single addressable alias exposing label-agnostic `start_id`/`end_id`
+    /// columns — the plain recursive VLP CTE, the `multi_type_vlp_joins`
+    /// degenerate single-hop-multi-type-relationship CTE (`bidirectional_union`
+    /// applied on top, `was_undirected: Some(true)`), or a directed VLP chain.
+    /// It mirrors, field-for-field, the condition `find_id_column_for_alias`'s
+    /// own VLP fallback branch (`render_plan/plan_builder.rs`) already uses to
+    /// resolve such an alias to `start_id`/`end_id` instead of a raw per-label
+    /// column — reusing the SAME discriminator the renderer's own resolution
+    /// depends on, rather than a proxy for it.
+    ///
+    /// Round 2 (#484) used `graph_rel_connection_role` (UNDIRECTED-ness) as
+    /// that proxy, on the assumption that every undirected multi-label
+    /// endpoint collapses into a `multi_type_vlp_joins`/`bidirectional_union`
+    /// CTE. That assumption is FALSE for a polymorphic/denormalized schema
+    /// whose relationship dispatches through a discriminator/junction table
+    /// (single relationship type, ambiguous NODE label): e.g.
+    /// `(folder:Folder)-[:CONTAINS]-(item)` on a junction-table schema, or
+    /// `(u:User)-[:LIKES]-(target)` on a polymorphic schema — both undirected,
+    /// both `graph_rel_connection_role(alias).is_some()`, yet BOTH still clone
+    /// the whole `GraphRel` subtree per candidate label into a raw
+    /// `UNION ALL` (no VLP CTE involved: `variable_length` is `None`), so
+    /// `item`/`target` are only addressable INSIDE each union branch — the
+    /// exact ClickHouse Code 47 UNKNOWN_IDENTIFIER hazard this whole `id()`
+    /// GROUP BY/ORDER BY fix family exists to prevent. Checking
+    /// `variable_length.is_some()` directly (rather than direction) correctly
+    /// says "unsafe" for these, while still saying "safe" for the genuine
+    /// VLP/multi-type-VLP shapes (e.g. `anchored_unlabeled_expand`,
+    /// `unlabeled_rel_typed`-style patterns on `social_benchmark.yaml`) —
+    /// also correctly extending coverage to DIRECTED VLP endpoints
+    /// (`find_id_column_for_alias`'s VLP fallback doesn't check direction
+    /// either), which the old undirected-only proxy always treated as unsafe.
+    pub fn graph_rel_vlp_endpoint_role(&self, alias: &str) -> Option<bool> {
+        match self {
+            LogicalPlan::GraphRel(rel) => {
+                if rel.variable_length.is_some() {
+                    if rel.left_connection == alias {
+                        return Some(true);
+                    }
+                    if rel.right_connection == alias {
+                        return Some(false);
+                    }
+                }
+                rel.left
+                    .graph_rel_vlp_endpoint_role(alias)
+                    .or_else(|| rel.center.graph_rel_vlp_endpoint_role(alias))
+                    .or_else(|| rel.right.graph_rel_vlp_endpoint_role(alias))
+            }
+            LogicalPlan::GraphNode(node) => node.input.graph_rel_vlp_endpoint_role(alias),
+            LogicalPlan::Filter(f) => f.input.graph_rel_vlp_endpoint_role(alias),
+            LogicalPlan::Projection(p) => p.input.graph_rel_vlp_endpoint_role(alias),
+            LogicalPlan::GraphJoins(gj) => gj.input.graph_rel_vlp_endpoint_role(alias),
+            LogicalPlan::GroupBy(gb) => gb.input.graph_rel_vlp_endpoint_role(alias),
+            LogicalPlan::OrderBy(ob) => ob.input.graph_rel_vlp_endpoint_role(alias),
+            LogicalPlan::Skip(s) => s.input.graph_rel_vlp_endpoint_role(alias),
+            LogicalPlan::Limit(l) => l.input.graph_rel_vlp_endpoint_role(alias),
+            LogicalPlan::Cte(cte) => cte.input.graph_rel_vlp_endpoint_role(alias),
+            LogicalPlan::WithClause(wc) => wc.input.graph_rel_vlp_endpoint_role(alias),
+            LogicalPlan::CartesianProduct(cp) => cp
+                .left
+                .graph_rel_vlp_endpoint_role(alias)
+                .or_else(|| cp.right.graph_rel_vlp_endpoint_role(alias)),
+            LogicalPlan::Union(u) => u
+                .inputs
+                .iter()
+                .find_map(|i| i.graph_rel_vlp_endpoint_role(alias)),
+            _ => None,
+        }
+    }
+
     pub fn get_empty_match_plan() -> Self {
         LogicalPlan::Projection(Projection {
             input: Arc::new(LogicalPlan::Filter(Filter {

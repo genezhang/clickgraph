@@ -342,7 +342,7 @@ pub(super) fn resolve_id_function_for_group_order(
 /// alias) rather than through a single addressable CTE/table alias in the
 /// current SQL scope?
 ///
-/// Two shapes reach this function:
+/// Three shapes reach this function:
 /// - A bare multi-label `MATCH (n)` with NO GraphRel connecting it to
 ///   anything (`generate_union_for_untyped_nodes` in `type_inference.rs`
 ///   clones a whole `GraphNode` subtree per candidate label).
@@ -351,25 +351,47 @@ pub(super) fn resolve_id_function_for_group_order(
 ///   per-label cloning happens, but this time it clones the whole
 ///   `GraphRel` subtree per label (#467's target shape), so `alias` DOES
 ///   appear as a GraphRel connection — just not the safe kind (see below).
+/// - #484 round 3: a multi-label alias reached through an UNDIRECTED
+///   GraphRel whose relationship dispatches through a discriminator/
+///   junction table (single relationship type, ambiguous NODE label — e.g.
+///   `(folder:Folder)-[:CONTAINS]-(item)` on a junction-table schema,
+///   `(u:User)-[:LIKES]-(target)` on a polymorphic schema): the SAME
+///   per-label `GraphRel` cloning happens regardless of direction here,
+///   because the join condition (and often the target table) differs per
+///   label — there is no VLP CTE to collapse into. `alias` is an UNDIRECTED
+///   GraphRel connection, but NOT a VLP one.
 ///
 /// Excluded (returns `false`, i.e. safe to use the "plain path"):
 /// - Single-label nodes, and denormalized/polymorphic nodes whose per-label
 ///   `Union` is nested INSIDE a single `GraphNode.input` (one address-able
 ///   alias in the outer scope) rather than wrapping the whole subtree.
-/// - An UNDIRECTED (`Either`/`was_undirected`) GraphRel endpoint: per #483's
-///   `graph_rel_connection_role`, that shape collapses into a single
-///   `multi_type_vlp_joins`/`bidirectional_union` CTE exposing one
-///   `start_id`/`end_id` regardless of label count — a real addressable
-///   alias, not a raw union. This is the exact discriminator
-///   `projection_tagging.rs`'s `count(DISTINCT alias)` rewrite already uses
-///   to tell the two directed-vs-undirected multi-label-endpoint shapes
-///   apart (see its #483 doc comment) — reused here rather than
-///   re-derived, since a directed GraphRel connection is just as much a raw
-///   union as no connection at all.
+/// - A VARIABLE-LENGTH-PATH GraphRel endpoint (`graph_rel_vlp_endpoint_role`,
+///   i.e. `variable_length.is_some()` at the connection): that shape ALWAYS
+///   collapses into a single addressable CTE alias exposing label-agnostic
+///   `start_id`/`end_id` regardless of label count — the plain recursive VLP
+///   CTE, the degenerate single-hop `multi_type_vlp_joins` CTE
+///   (`bidirectional_union` applied on top for the undirected case, e.g.
+///   `anchored_unlabeled_expand`/`unlabeled_rel_typed`-style patterns on
+///   `social_benchmark.yaml`), or a directed VLP chain. This mirrors, field
+///   for field, the condition `find_id_column_for_alias`'s own VLP fallback
+///   branch (`render_plan/plan_builder.rs`) already uses to resolve such an
+///   alias to `start_id`/`end_id` — the actual positive evidence the
+///   renderer's own resolution depends on.
+///
+///   Round 2 (#484) used `graph_rel_connection_role` (UNDIRECTED-ness alone)
+///   as a PROXY for this, on the unsound assumption that every undirected
+///   multi-label endpoint is a VLP shape — false for the junction-table/
+///   polymorphic case above (both undirected, both
+///   `graph_rel_connection_role(alias).is_some()`, yet both still raw-union;
+///   `variable_length` is `None` for both). Checking `variable_length`
+///   directly is sound in both directions and, as a bonus, also correctly
+///   extends "safe" coverage to DIRECTED VLP endpoints, which the old
+///   undirected-only proxy always treated as unsafe.
 fn renders_via_raw_label_union(plan: &LogicalPlan, alias: &str) -> bool {
-    // Short-circuit: an UNDIRECTED GraphRel endpoint is the one GraphRel
-    // shape that renders through a real single-alias CTE, not a raw union.
-    if plan.graph_rel_connection_role(alias).is_some() {
+    // Short-circuit: a variable-length-path GraphRel endpoint is the one
+    // GraphRel shape that renders through a real single-alias CTE
+    // (label-agnostic start_id/end_id), not a raw per-label union.
+    if plan.graph_rel_vlp_endpoint_role(alias).is_some() {
         return false;
     }
     match plan {
