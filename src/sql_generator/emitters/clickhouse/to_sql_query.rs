@@ -2785,10 +2785,86 @@ fn extract_order_by_columns_for_union(order_by: &OrderByItems) -> Vec<(RenderExp
     columns
 }
 
+/// #546: resolve `id(alias)` in ORDER BY position to a real, correct
+/// ordering key when `alias` renders via a raw per-label UNION with no safe
+/// single-alias-CTE column to reference (see `group_by_builder.rs`'s
+/// `renders_via_raw_label_union` — the render-plan analogue of the same
+/// discriminator, which leaves such `id()` calls as unresolved
+/// `ScalarFnCall`s for exactly this reason).
+///
+/// Whenever `alias`'s whole-node/whole-relationship projection is present in
+/// this scope (the common case, e.g. `MATCH (n) RETURN n`), every candidate
+/// label's real id column is ALREADY projected here under
+/// `"{alias}.{id_col}"` — NULL-padded on every branch except that label's own
+/// (the same per-label NULL-pad convention the whole-node UNION machinery
+/// always builds, since the `RETURN n` projection needs each label's own
+/// properties anyway). `coalesce(...)` over those already-projected columns
+/// is therefore non-NULL exactly once per row and gives a genuine,
+/// deterministic per-row ordering key — the same multi-label-union
+/// discriminator already proven for `count(DISTINCT n)` (#467,
+/// `projection_tagging.rs`) and `select_builder.rs`'s `node_alias_id_expr`
+/// (#509).
+///
+/// Returns `None` when no candidate label's id column is projected (e.g. a
+/// bare `RETURN id(n)` with no whole-node/property projection to coalesce
+/// over) — callers must fall back to the existing, pre-#546, safe-but-lossy
+/// "drop the ORDER BY item" behavior in that narrower residual case rather
+/// than emit SQL referencing a column that was never projected.
+fn coalesce_id_order_key_for_union_alias(alias: &str, select: &SelectItems) -> Option<String> {
+    let schema = crate::server::query_context::get_current_schema_with_fallback()?;
+
+    let mut id_cols: Vec<String> = Vec::new();
+    let mut seen = HashSet::new();
+    for label in schema.expand_node_type("$any") {
+        let Ok(node_schema) = schema.node_schema(&label) else {
+            continue;
+        };
+        for id_col in node_schema.node_id.columns() {
+            let target = format!("{alias}.{id_col}");
+            if !seen.insert(target.clone()) {
+                continue;
+            }
+            let is_projected = select
+                .items
+                .iter()
+                .any(|item| item.col_alias.as_ref().is_some_and(|a| a.0 == target));
+            if is_projected {
+                id_cols.push(target);
+            }
+        }
+    }
+
+    if id_cols.is_empty() {
+        return None;
+    }
+    if id_cols.len() == 1 {
+        return Some(format!("__union.`{}`", id_cols[0]));
+    }
+    let args = id_cols
+        .iter()
+        .map(|c| format!("__union.`{c}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!("coalesce({args})"))
+}
+
 /// Add ORDER BY columns to a RenderPlan's SELECT (for UNION branches)
 /// For denormalized schemas, resolves virtual node property references
 /// (e.g., `o.code`) to actual edge table columns (e.g., `t1.dest_code`)
 /// by examining the branch's path tuple direction and schema properties.
+///
+/// #547: an undirected/bidirectional relationship's two direction
+/// combinations render into ONE `RenderPlan` whose primary SELECT/FROM is
+/// direction A and whose `union.input` holds direction B (a "Union of
+/// Union" shape when this branch is itself one arm of an outer raw-label
+/// UNION) — see `normalize_union_branches`'s `normalize_branch` helper
+/// (`plan_builder_helpers.rs`) which recurses identically for type
+/// coercion, with the same rationale: both directions project the SAME
+/// columns and must be kept in lock-step. Recursing here too ensures BOTH
+/// directions receive the SAME order-by helper columns; without it, only
+/// the primary direction gained the extra `__order_col_N` columns while the
+/// nested sibling direction did not, so the inner `UNION ALL` between them
+/// ended up with mismatched column counts (ClickHouse Code 53).
 fn add_order_by_columns_to_select(
     mut plan: RenderPlan,
     order_columns: &[(RenderExpr, String)],
@@ -2815,6 +2891,18 @@ fn add_order_by_columns_to_select(
             expression: resolved_expr,
             col_alias: Some(ColumnAlias(alias.clone())),
         });
+    }
+
+    // #547: recurse into a nested sibling UNION (bidirectional direction B)
+    // so it receives the identical set of helper columns as this (direction
+    // A) branch.
+    if let Some(mut union) = plan.union.0.take() {
+        union.input = union
+            .input
+            .into_iter()
+            .map(|branch| add_order_by_columns_to_select(branch, order_columns))
+            .collect();
+        plan.union.0 = Some(union);
     }
 
     plan
@@ -4437,17 +4525,15 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                 order_by_columns.len()
             );
 
-            // Add to the first branch (which is the base plan)
+            // #547: `add_order_by_columns_to_select` recurses into
+            // `modified_plan.union.0.input` itself (and any further-nested
+            // sibling unions within each branch), so this single call already
+            // covers the base branch AND every arm — a separate explicit loop
+            // over `union.input` here would double-apply the helper columns
+            // to every top-level arm (each arm would gain the columns once
+            // via this call's recursion and again via the loop), producing
+            // duplicate `__order_col_N` columns / an outer-scope alias clash.
             modified_plan = add_order_by_columns_to_select(modified_plan, &order_by_columns);
-
-            // Add to remaining branches
-            if let Some(union) = &mut modified_plan.union.0 {
-                union.input = union
-                    .input
-                    .iter()
-                    .map(|branch| add_order_by_columns_to_select(branch.clone(), &order_by_columns))
-                    .collect();
-            }
         }
 
         // Use the modified plan for SQL generation
@@ -4856,21 +4942,25 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                 sql.push('\n');
             } else if !plan.order_by.0.is_empty() && !order_by_columns.is_empty() {
                 sql.push_str("ORDER BY ");
-                let order_clauses: Vec<String> = plan
-                    .order_by
-                    .0
+                // #547 (index-alignment companion bug): `order_by_columns`
+                // only holds the SURVIVING items — `extract_order_by_columns_for_union`
+                // drops unresolved raw-union `id()`/`elementId()`/pseudo-property
+                // items via `continue`, so its length is often SHORTER than
+                // `plan.order_by.0` and its entries no longer sit at the same
+                // position as their source item. Each surviving entry's
+                // `__order_col_{N}` alias still encodes its ORIGINAL index in
+                // `plan.order_by.0`, though — recover the source item via that
+                // encoded index instead of a naive parallel
+                // `plan.order_by.0.iter().enumerate()` walk (the previous
+                // approach), which — whenever an EARLIER item was dropped —
+                // paired a LATER surviving column with an EARLIER item's
+                // direction and silently dropped the later item's own ORDER
+                // BY key entirely.
+                let order_clauses: Vec<String> = order_by_columns
                     .iter()
-                    .enumerate()
-                    .filter_map(|(idx, item)| {
-                        if idx >= order_by_columns.len() {
-                            log::debug!(
-                                "ORDER BY column index {} exceeds available columns ({}), skipping",
-                                idx,
-                                order_by_columns.len()
-                            );
-                            return None;
-                        }
-                        let col_alias = &order_by_columns[idx].1;
+                    .filter_map(|(_, col_alias)| {
+                        let idx: usize = col_alias.strip_prefix("__order_col_")?.parse().ok()?;
+                        let item = plan.order_by.0.get(idx)?;
                         let order_str = match item.order {
                             OrderByOrder::Asc => "ASC",
                             OrderByOrder::Desc => "DESC",
@@ -4881,8 +4971,70 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                 sql.push_str(&order_clauses.join(", "));
                 sql.push('\n');
             } else if order_by_columns.is_empty() && !plan.order_by.0.is_empty() {
-                // ORDER BY was removed due to unsupported id() function
-                log::info!("  ORDER BY removed (contains unsupported id() in UNION context)");
+                // #546: every ORDER BY item was dropped as an unresolved
+                // raw-union `id()`/`elementId()`/pseudo-property reference —
+                // silently proceeding with NO ordering at all is a semantic
+                // deviation from the requested query (rows come back
+                // unordered with no error). Before giving up entirely, try to
+                // salvage a REAL, correct ordering key for any `id(alias)`
+                // item: whenever the alias's whole-node projection is present
+                // (the common case, e.g. `RETURN n`), every candidate label's
+                // real id column is already projected in this outer `__union`
+                // scope under `"{alias}.{id_col}"` (NULL-padded on every
+                // other label's branch by the existing whole-node-union
+                // machinery), so `coalesce(...)` over those columns is a
+                // genuine, deterministic per-row ordering key — the same
+                // multi-label-union discriminator #467's `count(DISTINCT n)`
+                // rewrite and `select_builder.rs`'s `node_alias_id_expr`
+                // (#509) already rely on for this exact axis.
+                let resolved: Vec<String> = plan
+                    .order_by
+                    .0
+                    .iter()
+                    .filter_map(|item| {
+                        let RenderExpr::ScalarFnCall(f) = &item.expression else {
+                            return None;
+                        };
+                        if !f.name.eq_ignore_ascii_case("id") || f.args.len() != 1 {
+                            // `elementId()` and other unresolved shapes have no
+                            // established resolution here — leave them dropped,
+                            // matching prior (pre-#546) behavior.
+                            return None;
+                        }
+                        let alias = match &f.args[0] {
+                            RenderExpr::TableAlias(a) => a.0.clone(),
+                            RenderExpr::PropertyAccessExp(p) if p.column.raw() == "*" => {
+                                p.table_alias.0.clone()
+                            }
+                            _ => return None,
+                        };
+                        let key = coalesce_id_order_key_for_union_alias(&alias, &plan.select)?;
+                        let order_str = match item.order {
+                            OrderByOrder::Asc => "ASC",
+                            OrderByOrder::Desc => "DESC",
+                        };
+                        Some(format!("{key} {order_str}"))
+                    })
+                    .collect();
+                if resolved.is_empty() {
+                    // No salvageable ordering key (e.g. a bare `RETURN id(n)`
+                    // with no whole-node/property projection to coalesce
+                    // over) — fall back to the prior, safe-but-lossy
+                    // behavior: drop the ORDER BY clause rather than emit
+                    // invalid SQL referencing a column that isn't projected.
+                    log::warn!(
+                        "  ORDER BY removed (contains unresolved id()/elementId() in UNION context with no salvageable ordering key — #546)"
+                    );
+                } else {
+                    log::info!(
+                        "  ORDER BY resolved via coalesce over per-label id columns (#546): {} of {} item(s)",
+                        resolved.len(),
+                        plan.order_by.0.len()
+                    );
+                    sql.push_str("ORDER BY ");
+                    sql.push_str(&resolved.join(", "));
+                    sql.push('\n');
+                }
             } else {
                 sql.push_str(&plan.order_by.to_sql());
             }
@@ -7397,6 +7549,114 @@ impl ToSql for OrderByOrder {
 mod tests {
     use super::*;
     use crate::render_plan::render_expr::{Literal, RenderExpr};
+
+    /// #547: `add_order_by_columns_to_select` must recurse into a nested
+    /// sibling UNION (an undirected/bidirectional relationship's direction-B
+    /// branch, held in `plan.union.0.input`, exactly the shape
+    /// `normalize_union_branches`'s `normalize_branch` helper
+    /// (`plan_builder_helpers.rs`) already recurses into for type coercion)
+    /// so BOTH directions receive the SAME order-by helper columns. Before
+    /// the fix, only the primary (direction A) branch's `select.items`
+    /// gained the extra `__order_col_N` columns while the nested direction-B
+    /// branch's did not — an inner `UNION ALL` between direction A and
+    /// direction B with mismatched column counts (ClickHouse Code 53).
+    #[test]
+    fn test_547_add_order_by_columns_recurses_into_nested_union_branch() {
+        use crate::render_plan::render_expr::ColumnAlias;
+        use crate::render_plan::{
+            ArrayJoinItem, CteItems, FilterItems, FromTableItem, GroupByExpressions, JoinItems,
+            LimitItem, OrderByItems, SelectItem, SelectItems, SkipItem, Union, UnionItems,
+            UnionType,
+        };
+
+        fn item(alias: &str) -> SelectItem {
+            SelectItem {
+                expression: RenderExpr::TableAlias(TableAlias(format!("r.{alias}"))),
+                col_alias: Some(ColumnAlias(alias.to_string())),
+            }
+        }
+        fn base(items: Vec<SelectItem>, union: UnionItems) -> RenderPlan {
+            RenderPlan {
+                ctes: CteItems(vec![]),
+                select: SelectItems {
+                    items,
+                    distinct: false,
+                },
+                from: FromTableItem(None),
+                joins: JoinItems(vec![]),
+                array_join: ArrayJoinItem(vec![]),
+                filters: FilterItems(None),
+                group_by: GroupByExpressions(vec![]),
+                having_clause: None,
+                order_by: OrderByItems(vec![]),
+                skip: SkipItem(None),
+                limit: LimitItem(None),
+                union,
+                fixed_path_info: None,
+                is_multi_label_scan: false,
+                variable_registry: None,
+            }
+        }
+
+        // Direction B (nested sibling) — same RETURN columns as direction A.
+        let direction_b = base(vec![item("entity")], UnionItems(None));
+        // Direction A (primary) carrying direction B in its own `union` field,
+        // exactly as a bidirectional expansion renders — and this whole thing
+        // is itself one arm of an outer per-relationship-type raw UNION (not
+        // modeled here since the recursion under test is internal to a single
+        // branch's own `add_order_by_columns_to_select` call).
+        let direction_a = base(
+            vec![item("entity")],
+            UnionItems(Some(Union {
+                input: vec![direction_b],
+                union_type: UnionType::All,
+                is_cypher_union: false,
+            })),
+        );
+
+        let order_columns = vec![(
+            RenderExpr::TableAlias(TableAlias("1".to_string())),
+            "__order_col_0".to_string(),
+        )];
+        let out = add_order_by_columns_to_select(direction_a, &order_columns);
+
+        assert!(
+            out.select
+                .items
+                .iter()
+                .any(|i| i.col_alias.as_ref().is_some_and(|a| a.0 == "__order_col_0")),
+            "primary direction must gain the order-by helper column: {:?}",
+            out.select.items
+        );
+
+        let nested = out
+            .union
+            .0
+            .as_ref()
+            .expect("nested union must survive")
+            .input
+            .first()
+            .expect("nested branch must survive");
+        assert!(
+            nested
+                .select
+                .items
+                .iter()
+                .any(|i| i.col_alias.as_ref().is_some_and(|a| a.0 == "__order_col_0")),
+            "#547: nested sibling direction must ALSO gain the order-by helper \
+             column — otherwise the inner UNION ALL between the two directions \
+             has mismatched column counts (ClickHouse Code 53): {:?}",
+            nested.select.items
+        );
+        // Both branches must end up with the SAME item count — the direct
+        // symptom of the arity-mismatch bug this regression guards against.
+        assert_eq!(
+            out.select.items.len(),
+            nested.select.items.len(),
+            "primary and nested direction branches must have matching column \
+             counts after order-by column injection"
+        );
+    }
 
     /// Regression test: MapLiteral values must be wrapped in toString() for ClickHouse
     /// type compatibility. Without this, mixed-type maps like {name:'nodes', data:count(*)}
