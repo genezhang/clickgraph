@@ -87,31 +87,15 @@ fn extract_label_from_plan(plan: &LogicalPlan, alias: &str) -> Option<String> {
 /// `t` (`FROM vlp_multi_type_a_b AS t`). Mirrors the render-side dispatch in
 /// `select_builder::has_pattern_combinations_for_alias` — the two MUST agree,
 /// or `type(r)` rewrites reference an unbound alias (#468).
+/// #490: delegates to the single canonical walk (`LogicalPlan::rel_alias_uses_pattern_union`,
+/// `query_planner/logical_plan/mod.rs`) shared with `select_builder.rs`'s
+/// `has_pattern_combinations_for_alias` — this function used to hand-roll its
+/// own traversal, which had drifted from its sibling (no `WithClause` arm,
+/// skipped `GraphRel.center`), causing `type(r)` after a `WITH r` barrier to
+/// fall back to the wrong CTE alias and emit unbound SQL. See the doc comment
+/// on the canonical method for the full history.
 fn rel_uses_pattern_union(plan: &LogicalPlan, rel_alias: &str) -> bool {
-    match plan {
-        LogicalPlan::GraphRel(gr) if gr.alias == rel_alias => gr.pattern_combinations.is_some(),
-        LogicalPlan::GraphRel(gr) => {
-            rel_uses_pattern_union(&gr.left, rel_alias)
-                || rel_uses_pattern_union(&gr.right, rel_alias)
-        }
-        LogicalPlan::GraphNode(node) => rel_uses_pattern_union(&node.input, rel_alias),
-        LogicalPlan::Projection(proj) => rel_uses_pattern_union(&proj.input, rel_alias),
-        LogicalPlan::Filter(filter) => rel_uses_pattern_union(&filter.input, rel_alias),
-        LogicalPlan::GraphJoins(joins) => rel_uses_pattern_union(&joins.input, rel_alias),
-        LogicalPlan::GroupBy(gb) => rel_uses_pattern_union(&gb.input, rel_alias),
-        LogicalPlan::OrderBy(order_by) => rel_uses_pattern_union(&order_by.input, rel_alias),
-        LogicalPlan::Limit(limit) => rel_uses_pattern_union(&limit.input, rel_alias),
-        LogicalPlan::Skip(skip) => rel_uses_pattern_union(&skip.input, rel_alias),
-        LogicalPlan::CartesianProduct(cp) => {
-            rel_uses_pattern_union(&cp.left, rel_alias)
-                || rel_uses_pattern_union(&cp.right, rel_alias)
-        }
-        LogicalPlan::Union(u) => u
-            .inputs
-            .iter()
-            .any(|branch| rel_uses_pattern_union(branch, rel_alias)),
-        _ => false,
-    }
+    plan.rel_alias_uses_pattern_union(rel_alias)
 }
 
 /// #494: is `node_alias` the endpoint of a GraphRel with more than one
@@ -1506,6 +1490,79 @@ impl ProjectionTagging {
                                         }
                                     })?],
                                 };
+
+                                // #483: a multi-label alias that is a GraphRel
+                                // *endpoint* (e.g. `(a:User)-[r]-(o)` with `o`
+                                // unlabeled) is NOT a bare per-label ViewScan
+                                // UNION — at render time it routes through a
+                                // `multi_type_vlp_joins`/`bidirectional_union`
+                                // CTE (single-hop, not `pattern_combinations` —
+                                // that's the separate `pattern_union` route,
+                                // checked first and excluded here), which
+                                // exposes exactly ONE `start_id`/`end_id` (+
+                                // `start_type`/`end_type` discriminator)
+                                // column regardless of label count — there are
+                                // no separate `post_id`/`user_id` physical
+                                // columns to build a per-label tuple from. The
+                                // #467 tuple below assumed a raw per-label
+                                // UNION scan (`MATCH (n)`, no relationship) and
+                                // silently collapsed both tuple members onto
+                                // the same `end_id`/`start_id` CTE column when
+                                // applied here instead (`count(DISTINCT
+                                // tuple(t.end_id, t.end_id))` — the duplicate
+                                // member bug). Use the CTE's own
+                                // (type, id) discriminator pair instead.
+                                if labels.len() > 1
+                                    && input_plan
+                                        .map(|p| !p.rel_alias_uses_pattern_union(t_alias))
+                                        .unwrap_or(true)
+                                {
+                                    if let Some(is_left) = input_plan
+                                        .and_then(|p| p.graph_rel_connection_role(t_alias))
+                                    {
+                                        let (type_col, id_col) = if is_left {
+                                            ("type", "start_id")
+                                        } else {
+                                            ("type", "end_id")
+                                        };
+                                        let access = |col: &str| {
+                                            LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                                table_alias: TableAlias(t_alias.to_string()),
+                                                column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                    col.to_string(),
+                                                ),
+                                            })
+                                        };
+                                        let identity_expr = if is_distinct {
+                                            LogicalExpr::ScalarFnCall(ScalarFnCall {
+                                                name: "tuple".to_string(),
+                                                args: vec![access(type_col), access(id_col)],
+                                            })
+                                        } else {
+                                            // count(o): a single id column is
+                                            // enough (no cross-label merge
+                                            // risk for a plain, non-DISTINCT
+                                            // NULL-sensitive count).
+                                            access(id_col)
+                                        };
+                                        let arg = if is_distinct {
+                                            LogicalExpr::OperatorApplicationExp(
+                                                OperatorApplication {
+                                                    operator: Operator::Distinct,
+                                                    operands: vec![identity_expr],
+                                                },
+                                            )
+                                        } else {
+                                            identity_expr
+                                        };
+                                        item.expression =
+                                            LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                                name: aggregate_fn_call.name.clone(),
+                                                args: vec![arg],
+                                            });
+                                        return Ok(());
+                                    }
+                                }
 
                                 // First id column for every candidate label, de-duplicated by column name
                                 // while preserving order.

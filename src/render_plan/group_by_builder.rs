@@ -24,7 +24,7 @@
 //! on the ID. This significantly improves query performance.
 
 use crate::graph_catalog::expression_parser::PropertyValue;
-use crate::query_planner::logical_expr::Direction;
+use crate::query_planner::logical_expr::{Direction, LogicalExpr};
 use crate::query_planner::logical_plan::{GroupBy, LogicalPlan};
 use std::collections::HashSet;
 
@@ -136,6 +136,19 @@ fn process_group_by_expressions(group_by: &GroupBy) -> GroupByBuilderResult<Vec<
             }
         }
 
+        // Case 1b (#484): id()/elementId() scalar call - route through the same
+        // pattern_union-aware / schema-driven ID resolution the SELECT path uses
+        // (`select_builder.rs` Case 5), instead of falling through to Case 3's
+        // generic conversion, which hits the function-registry `toInt64(0)`
+        // placeholder mapping. That placeholder is fine in SELECT position
+        // (Bolt/result-transformer compute the real id from element_id
+        // metadata there) but is fatal in GROUP BY: every row hashes to the
+        // same constant key and all groups silently collapse into one.
+        if let Some(resolved) = resolve_id_function_for_group_order(&group_by.input, expr) {
+            result.push(resolved);
+            continue;
+        }
+
         // Case 2: PropertyAccessExp with wildcard "*" - expand to ID column only
         if let crate::query_planner::logical_expr::LogicalExpr::PropertyAccessExp(prop_access) =
             expr
@@ -190,6 +203,274 @@ fn process_group_by_expressions(group_by: &GroupBy) -> GroupByBuilderResult<Vec<
 /// ALL of them must call this helper so composite ids behave identically on
 /// both sides of a WITH barrier; the eventual Phase-2 dedup should collapse
 /// the `plan_builder_utils.rs` copies onto this module.
+/// Resolve `id(alias)` / `elementId(alias)` scalar-function calls in GROUP BY /
+/// ORDER BY position to the underlying ID column expression (#484).
+///
+/// Without this, GROUP BY/ORDER BY over `id()`/`elementId()` fall through to the
+/// generic function-registry placeholder mapping (`id` -> `toInt64(0)`, see
+/// `sql_generator/emitters/clickhouse/function_registry.rs`), which is a
+/// harmless placeholder in SELECT position (the Bolt layer / result
+/// transformer compute the real id from element_id metadata there) but is a
+/// SILENT WRONG RESULTS bug in GROUP BY (every row hashes to the same
+/// constant key, so all groups collapse into one) and a no-op in ORDER BY.
+///
+/// Mirrors the pattern_union-aware resolution `select_builder.rs` Case 5
+/// already applies to SELECT items:
+/// 1. Pattern-union endpoint (#466/#468 deferred-UNION `pattern_combinations`):
+///    use the CTE's label-agnostic `start_id`/`end_id` columns via
+///    `pattern_union_endpoint_role` — a single label's id column is NULL on
+///    every other label's branch, which would silently drop/miscount rows.
+/// 2. Plain path: resolve the id column the same way the established
+///    `handle_table_alias_group_by` GROUP BY optimization does —
+///    `find_id_column_for_alias` (walks the plan to the ViewScan's
+///    schema-derived `id_column`) plus `get_properties_with_table_alias` for
+///    denormalized edge-embedded node resolution.
+///
+/// Returns `None` when `expr` isn't an `id()`/`elementId()` call over a bare
+/// alias (or `alias.*`), or when resolution fails — callers should fall back
+/// to their existing generic conversion path unchanged.
+pub(super) fn resolve_id_function_for_group_order(
+    input: &LogicalPlan,
+    expr: &LogicalExpr,
+) -> Option<RenderExpr> {
+    let LogicalExpr::ScalarFnCall(fn_call) = expr else {
+        return None;
+    };
+    if !(fn_call.name.eq_ignore_ascii_case("id") || fn_call.name.eq_ignore_ascii_case("elementid"))
+        || fn_call.args.len() != 1
+    {
+        return None;
+    }
+    let is_element_id = fn_call.name.eq_ignore_ascii_case("elementid");
+    let alias = match &fn_call.args[0] {
+        LogicalExpr::TableAlias(a) => a.0.clone(),
+        LogicalExpr::PropertyAccessExp(p) if p.column.raw() == "*" => p.table_alias.0.clone(),
+        _ => return None,
+    };
+
+    // Pattern-union endpoint: use the CTE's label-agnostic start_id/end_id,
+    // exactly as select_builder.rs Case 5 does for SELECT items.
+    if let Some((rel_alias, is_left)) = input.pattern_union_endpoint_role(&alias) {
+        let (id_col, type_col) = if is_left {
+            ("start_id", "start_type")
+        } else {
+            ("end_id", "end_type")
+        };
+        return Some(if is_element_id {
+            RenderExpr::Raw(format!(
+                "concat({rel_alias}.{type_col}, ':', {rel_alias}.{id_col}, '-')"
+            ))
+        } else {
+            RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(rel_alias),
+                column: PropertyValue::Column(id_col.to_string()),
+            })
+        });
+    }
+
+    if is_element_id {
+        // Non-endpoint elementId(): no established GROUP BY/ORDER BY
+        // resolution pre-existed here either (fell into the same placeholder
+        // as id()). Keep scope narrow to the pattern_union fix and leave
+        // plain elementId() untouched, matching select_builder's Case 5
+        // scoping (see its "Non-endpoint elementId()" comment).
+        return None;
+    }
+
+    // #484 review follow-up (BLOCKING finding): a multi-label alias that
+    // renders via a RAW per-label `UNION ALL` (one full branch per candidate
+    // label, collapsed under an outer `__union`/top-level `Union` alias —
+    // whether reached bare, `MATCH (n) RETURN id(n), count(*)`, or through a
+    // DIRECTED GraphRel chain, `MATCH (a)-[:REL]->(item) RETURN id(item),
+    // count(*)`) must NOT go through the "plain path" below.
+    // `find_id_column_for_alias` always returns the FIRST candidate label's
+    // id column (e.g. `post_id`/`fs_id`), which is only valid for a
+    // single-label node or a GraphRel endpoint that renders through a real
+    // addressable CTE/table alias in the CURRENT scope (a
+    // `multi_type_vlp_joins`/`bidirectional_union` CTE or a `pattern_union_*`
+    // CTE) — for a raw per-label union, `GROUP BY alias.post_id` in the OUTER
+    // query references a table alias that only exists INSIDE the union
+    // branches, not in the outer scope (ClickHouse Code 47
+    // UNKNOWN_IDENTIFIER).
+    //
+    // The distinguishing signal is NOT "has a GraphRel connection at all" —
+    // an earlier version of this guard used exactly that (`no GraphRel
+    // connection at all` == unsafe) and missed the directed-chain case above,
+    // because a directed GraphRel connection is just as much a raw union as
+    // no connection at all; only an UNDIRECTED (`Either`/`was_undirected`)
+    // GraphRel endpoint collapses into the single-alias
+    // `multi_type_vlp_joins`/`bidirectional_union` CTE. Reuse #483's
+    // `graph_rel_connection_role` discriminator (already used by
+    // `projection_tagging.rs`'s `count(DISTINCT alias)` rewrite for this
+    // exact axis) instead of re-deriving it: `Some(_)` means the safe,
+    // single-alias-CTE shape; `None` means either no connection or a
+    // DIRECTED connection, both of which need the raw-union check below.
+    // (The `pattern_union_*` CTE shape is already excluded earlier via the
+    // `pattern_union_endpoint_role` check above, before this function runs.)
+    //
+    // A correct fix needs the multi-label discriminator (`tuple`/`coalesce`
+    // over each label's id column, à la #467's `count(DISTINCT n)`) to be
+    // introduced early enough that `PropertyRequirementsAnalyzer` projects
+    // the per-label columns into each UNION branch under the
+    // `alias.<col>`-quoted-alias convention #467's aggregate rewrite relies
+    // on — that convention is wired specifically into the aggregate-wrapper
+    // render path, not a general mechanism a bare GROUP BY/ORDER BY key can
+    // reuse without materially more plumbing than fits this fix. Until that
+    // follow-up lands, leave this shape on the PRE-existing
+    // (wrong-but-non-fatal) `toInt64(0)` placeholder rather than regressing
+    // it into a hard runtime failure: bail out here so the fallthrough
+    // generic-conversion path (Case 3 in both call sites) takes over, exactly
+    // as it did before this whole `id()` resolution existed.
+    if renders_via_raw_label_union(input, &alias) {
+        return None;
+    }
+
+    // Plain path: same resolution as `handle_table_alias_group_by`.
+    let id_col = input.find_id_column_for_alias(&alias).ok()?;
+    let table_alias_to_use = match input.get_properties_with_table_alias(&alias) {
+        Ok((props, Some(actual_alias))) if !props.is_empty() => actual_alias,
+        _ => alias.clone(),
+    };
+    Some(RenderExpr::PropertyAccessExp(PropertyAccess {
+        table_alias: TableAlias(table_alias_to_use),
+        column: PropertyValue::Column(id_col),
+    }))
+}
+
+/// Does `alias` render via a RAW per-label `UNION ALL` (multiple physical
+/// per-label branches collapsed under one outer `__union`/top-level `Union`
+/// alias) rather than through a single addressable CTE/table alias in the
+/// current SQL scope?
+///
+/// Three shapes reach this function:
+/// - A bare multi-label `MATCH (n)` with NO GraphRel connecting it to
+///   anything (`generate_union_for_untyped_nodes` in `type_inference.rs`
+///   clones a whole `GraphNode` subtree per candidate label).
+/// - A multi-label alias reached through a DIRECTED GraphRel chain (e.g.
+///   `(folder)-[:CONTAINS]->(item)` with `item` unlabeled): the same
+///   per-label cloning happens, but this time it clones the whole
+///   `GraphRel` subtree per label (#467's target shape), so `alias` DOES
+///   appear as a GraphRel connection — just not the safe kind (see below).
+/// - #484 round 3: a multi-label alias reached through an UNDIRECTED
+///   GraphRel whose relationship dispatches through a discriminator/
+///   junction table (single relationship type, ambiguous NODE label — e.g.
+///   `(folder:Folder)-[:CONTAINS]-(item)` on a junction-table schema,
+///   `(u:User)-[:LIKES]-(target)` on a polymorphic schema): the SAME
+///   per-label `GraphRel` cloning happens regardless of direction here,
+///   because the join condition (and often the target table) differs per
+///   label — there is no VLP CTE to collapse into. `alias` is an UNDIRECTED
+///   GraphRel connection, but NOT a VLP one.
+///
+/// Excluded (returns `false`, i.e. safe to use the "plain path"):
+/// - Single-label nodes, and denormalized/polymorphic nodes whose per-label
+///   `Union` is nested INSIDE a single `GraphNode.input` (one address-able
+///   alias in the outer scope) rather than wrapping the whole subtree.
+/// - A VARIABLE-LENGTH-PATH GraphRel endpoint (`graph_rel_vlp_endpoint_role`,
+///   i.e. `variable_length.is_some()` at the connection): that shape ALWAYS
+///   collapses into a single addressable CTE alias exposing label-agnostic
+///   `start_id`/`end_id` regardless of label count — the plain recursive VLP
+///   CTE, the degenerate single-hop `multi_type_vlp_joins` CTE
+///   (`bidirectional_union` applied on top for the undirected case, e.g.
+///   `anchored_unlabeled_expand`/`unlabeled_rel_typed`-style patterns on
+///   `social_benchmark.yaml`), or a directed VLP chain. This mirrors, field
+///   for field, the condition `find_id_column_for_alias`'s own VLP fallback
+///   branch (`render_plan/plan_builder.rs`) already uses to resolve such an
+///   alias to `start_id`/`end_id` — the actual positive evidence the
+///   renderer's own resolution depends on.
+///
+///   Round 2 (#484) used `graph_rel_connection_role` (UNDIRECTED-ness alone)
+///   as a PROXY for this, on the unsound assumption that every undirected
+///   multi-label endpoint is a VLP shape — false for the junction-table/
+///   polymorphic case above (both undirected, both
+///   `graph_rel_connection_role(alias).is_some()`, yet both still raw-union;
+///   `variable_length` is `None` for both). Checking `variable_length`
+///   directly is sound in both directions and, as a bonus, also correctly
+///   extends "safe" coverage to DIRECTED VLP endpoints, which the old
+///   undirected-only proxy always treated as unsafe.
+fn renders_via_raw_label_union(plan: &LogicalPlan, alias: &str) -> bool {
+    // Short-circuit: a variable-length-path GraphRel endpoint is the one
+    // GraphRel shape that renders through a real single-alias CTE
+    // (label-agnostic start_id/end_id), not a raw per-label union.
+    if plan.graph_rel_vlp_endpoint_role(alias).is_some() {
+        return false;
+    }
+    match plan {
+        // A bare multi-label `MATCH (n)` surfaces as a TOP-LEVEL
+        // `LogicalPlan::Union` wrapping full per-label branches — one
+        // GraphNode per candidate label, all sharing `alias`
+        // (`generate_union_for_untyped_nodes` in type_inference.rs clones
+        // the whole subtree per label combination) — NOT a Union nested
+        // inside a single GraphNode.input (that nested shape is the
+        // denormalized/polymorphic pattern, a different, already-safe case
+        // `find_id_column_for_alias` handles directly). Detect it by
+        // counting how many branches resolve `alias` to a GraphNode.
+        LogicalPlan::Union(u) => {
+            let matching_branches = u
+                .inputs
+                .iter()
+                .filter(|i| plan_contains_graphnode_alias(i, alias))
+                .count();
+            matching_branches > 1
+                || u.inputs
+                    .iter()
+                    .any(|i| renders_via_raw_label_union(i, alias))
+        }
+        LogicalPlan::GraphNode(node) => renders_via_raw_label_union(&node.input, alias),
+        LogicalPlan::GraphRel(rel) => {
+            renders_via_raw_label_union(&rel.left, alias)
+                || renders_via_raw_label_union(&rel.center, alias)
+                || renders_via_raw_label_union(&rel.right, alias)
+        }
+        LogicalPlan::Filter(f) => renders_via_raw_label_union(&f.input, alias),
+        LogicalPlan::Projection(p) => renders_via_raw_label_union(&p.input, alias),
+        LogicalPlan::GraphJoins(gj) => renders_via_raw_label_union(&gj.input, alias),
+        LogicalPlan::GroupBy(gb) => renders_via_raw_label_union(&gb.input, alias),
+        LogicalPlan::OrderBy(ob) => renders_via_raw_label_union(&ob.input, alias),
+        LogicalPlan::Skip(s) => renders_via_raw_label_union(&s.input, alias),
+        LogicalPlan::Limit(l) => renders_via_raw_label_union(&l.input, alias),
+        LogicalPlan::Cte(cte) => renders_via_raw_label_union(&cte.input, alias),
+        LogicalPlan::WithClause(wc) => renders_via_raw_label_union(&wc.input, alias),
+        LogicalPlan::CartesianProduct(cp) => {
+            renders_via_raw_label_union(&cp.left, alias)
+                || renders_via_raw_label_union(&cp.right, alias)
+        }
+        _ => false,
+    }
+}
+
+/// Does this subtree resolve `alias` to a `GraphNode` at all (used to count
+/// how many Union branches represent the same aliased node under a
+/// different label)?
+fn plan_contains_graphnode_alias(plan: &LogicalPlan, alias: &str) -> bool {
+    match plan {
+        LogicalPlan::GraphNode(node) if node.alias == alias => true,
+        LogicalPlan::GraphNode(node) => plan_contains_graphnode_alias(&node.input, alias),
+        LogicalPlan::GraphRel(rel) => {
+            plan_contains_graphnode_alias(&rel.left, alias)
+                || plan_contains_graphnode_alias(&rel.center, alias)
+                || plan_contains_graphnode_alias(&rel.right, alias)
+        }
+        LogicalPlan::Filter(f) => plan_contains_graphnode_alias(&f.input, alias),
+        LogicalPlan::Projection(p) => plan_contains_graphnode_alias(&p.input, alias),
+        LogicalPlan::GraphJoins(gj) => plan_contains_graphnode_alias(&gj.input, alias),
+        LogicalPlan::GroupBy(gb) => plan_contains_graphnode_alias(&gb.input, alias),
+        LogicalPlan::OrderBy(ob) => plan_contains_graphnode_alias(&ob.input, alias),
+        LogicalPlan::Skip(s) => plan_contains_graphnode_alias(&s.input, alias),
+        LogicalPlan::Limit(l) => plan_contains_graphnode_alias(&l.input, alias),
+        LogicalPlan::Cte(cte) => plan_contains_graphnode_alias(&cte.input, alias),
+        LogicalPlan::WithClause(wc) => plan_contains_graphnode_alias(&wc.input, alias),
+        LogicalPlan::CartesianProduct(cp) => {
+            plan_contains_graphnode_alias(&cp.left, alias)
+                || plan_contains_graphnode_alias(&cp.right, alias)
+        }
+        LogicalPlan::Union(u) => u
+            .inputs
+            .iter()
+            .any(|i| plan_contains_graphnode_alias(i, alias)),
+        _ => false,
+    }
+}
+
 pub(super) fn composite_id_group_by_columns(
     input: &LogicalPlan,
     alias: &str,

@@ -294,6 +294,20 @@ pub fn remap_alias_in_expr(
 /// WHERE references unbound identifiers and the query fails at execution
 /// (issue #482). Aliases without a denormalized registration (standard
 /// schemas, CTE-exposed aliases) pass through unchanged.
+///
+/// #495: this is a hand-rolled recursive walk (not the `ExpressionVisitor`
+/// trait in `logical_expr/visitors.rs` — that trait is read-only/collector-
+/// style and has no tree-rebuilding "transform" mode, so it isn't a clean
+/// fit for a rewrite that must return a new `LogicalExpr`; adopting it here
+/// would mean adding transform support to the visitor first, well beyond
+/// this fix's scope). Every variant that can nest a `PropertyAccessExp` must
+/// be recursed into or the remap silently misses it, leaving an unbound
+/// cypher alias in the rendered SQL (UNKNOWN_IDENTIFIER at execution) for
+/// `IN`-list conjuncts (`List`), `CASE`-based correlations (`Case`), the
+/// legacy `Operator` predicate variant (built directly by e.g.
+/// `where_clause.rs`/`unwind_property_rewriter.rs`, distinct from
+/// `OperatorApplicationExp`), and aggregate wrappers (`AggregateFnCall`,
+/// e.g. `count(srcip1.ip)`).
 pub fn remap_denormalized_aliases_in_expr(
     expr: LogicalExpr,
     plan_ctx: &crate::query_planner::plan_ctx::PlanCtx,
@@ -325,6 +339,22 @@ pub fn remap_denormalized_aliases_in_expr(
                 operands,
             })
         }
+        // Legacy Operator variant — structurally identical to
+        // OperatorApplicationExp and built directly by some predicate sites
+        // (e.g. where_clause.rs, unwind_property_rewriter.rs). Missing this
+        // arm means `WHERE srcip1.ip = srcip2.ip` built via this variant
+        // passed through the old catch-all unchanged (#495).
+        LogicalExpr::Operator(op_app) => {
+            let operands: Vec<LogicalExpr> = op_app
+                .operands
+                .into_iter()
+                .map(|operand| remap_denormalized_aliases_in_expr(operand, plan_ctx))
+                .collect();
+            LogicalExpr::Operator(OperatorApplication {
+                operator: op_app.operator,
+                operands,
+            })
+        }
         LogicalExpr::ScalarFnCall(mut fn_call) => {
             fn_call.args = fn_call
                 .args
@@ -332,6 +362,45 @@ pub fn remap_denormalized_aliases_in_expr(
                 .map(|arg| remap_denormalized_aliases_in_expr(arg, plan_ctx))
                 .collect();
             LogicalExpr::ScalarFnCall(fn_call)
+        }
+        // Aggregate wrapper (#495): e.g. count(srcip1.ip), collect(srcip1.ip).
+        LogicalExpr::AggregateFnCall(mut agg_call) => {
+            agg_call.args = agg_call
+                .args
+                .into_iter()
+                .map(|arg| remap_denormalized_aliases_in_expr(arg, plan_ctx))
+                .collect();
+            LogicalExpr::AggregateFnCall(agg_call)
+        }
+        // IN-list literal (#495): e.g. `s1.ip IN [s2.ip, s3.ip]` — each list
+        // member can itself be a denormalized PropertyAccessExp.
+        LogicalExpr::List(items) => LogicalExpr::List(
+            items
+                .into_iter()
+                .map(|item| remap_denormalized_aliases_in_expr(item, plan_ctx))
+                .collect(),
+        ),
+        // CASE expression (#495): the subject (simple CASE), every WHEN/THEN
+        // pair, and the ELSE branch can all reference denormalized aliases.
+        LogicalExpr::Case(case) => {
+            LogicalExpr::Case(crate::query_planner::logical_expr::LogicalCase {
+                expr: case
+                    .expr
+                    .map(|e| Box::new(remap_denormalized_aliases_in_expr(*e, plan_ctx))),
+                when_then: case
+                    .when_then
+                    .into_iter()
+                    .map(|(when, then)| {
+                        (
+                            remap_denormalized_aliases_in_expr(when, plan_ctx),
+                            remap_denormalized_aliases_in_expr(then, plan_ctx),
+                        )
+                    })
+                    .collect(),
+                else_expr: case
+                    .else_expr
+                    .map(|e| Box::new(remap_denormalized_aliases_in_expr(*e, plan_ctx))),
+            })
         }
         // Other expression types pass through unchanged
         other => other,
