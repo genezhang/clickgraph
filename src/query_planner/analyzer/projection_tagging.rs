@@ -1162,6 +1162,51 @@ impl ProjectionTagging {
                                     // For UNION queries, analyze() has already set table_ctx to the branch-specific label
                                     if let Some(labels) = table_ctx.get_labels() {
                                         if !labels.is_empty() {
+                                            // #527: a genuinely polymorphic node backed by a
+                                            // SINGLE shared physical table (schema
+                                            // `label_column`/`label_value`, e.g. Folder/File
+                                            // both mapping to `ds_fs_objects`, distinguished
+                                            // by `fs_type`) reached WITHOUT a VLP CTE at all
+                                            // (e.g. an unlabeled `MATCH (n)` whose only
+                                            // candidate labels resolve to the IDENTICAL
+                                            // table+columns, so type-inference/dedup collapses
+                                            // the would-be per-label UNION into a single scan
+                                            // with no per-branch `WHERE fs_type = 'X'` filter)
+                                            // must read the ACTUAL per-row value of that
+                                            // discriminator column, not a static label list —
+                                            // #494 fixed this same bug class for the VLP-CTE
+                                            // sibling shape (`node_is_multi_type_rel_endpoint`
+                                            // above); this is the non-VLP gap. Safe even when
+                                            // NOT actually ambiguous (a real per-branch UNION,
+                                            // or an explicitly labeled `f:Folder` match): a
+                                            // per-row read of `label_column` returns the
+                                            // IDENTICAL value the static literal would in
+                                            // those cases too, since a schema-filtered branch
+                                            // already guarantees every row's discriminator
+                                            // equals that label.
+                                            if let Some(label_column) =
+                                                labels.first().and_then(|l| {
+                                                    graph_schema
+                                                        .node_schema(l)
+                                                        .ok()
+                                                        .and_then(|ns| ns.label_column.clone())
+                                                })
+                                            {
+                                                log::info!(
+                                                    "🎯 labels({}) is a single-table polymorphic node (label_column={}) - reading per-row discriminator",
+                                                    alias, label_column
+                                                );
+                                                item.expression = LogicalExpr::List(vec![
+                                                    LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                                        table_alias: TableAlias(alias.to_string()),
+                                                        column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                            label_column,
+                                                        ),
+                                                    }),
+                                                ]);
+                                                return Ok(());
+                                            }
+
                                             log::debug!(
                                                 "📊 labels({}) using labels from table_ctx: {:?} (is_cte={}, len={})",
                                                 alias, labels, table_ctx.is_cte_reference(), labels.len()
@@ -1218,6 +1263,28 @@ impl ProjectionTagging {
                                     // For UNION queries, analyze() has already set table_ctx to the branch-specific label
                                     if let Some(labels) = table_ctx.get_labels() {
                                         if let Some(first_label) = labels.first() {
+                                            // #527: same single-table polymorphic gap as
+                                            // labels() above — read the per-row discriminator
+                                            // column instead of a static literal when the
+                                            // resolved label's schema declares `label_column`.
+                                            if let Some(label_column) = graph_schema
+                                                .node_schema(first_label)
+                                                .ok()
+                                                .and_then(|ns| ns.label_column.clone())
+                                            {
+                                                log::info!(
+                                                    "🎯 label({}) is a single-table polymorphic node (label_column={}) - reading per-row discriminator",
+                                                    alias, label_column
+                                                );
+                                                item.expression = LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                                    table_alias: TableAlias(alias.to_string()),
+                                                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                        label_column,
+                                                    ),
+                                                });
+                                                return Ok(());
+                                            }
+
                                             log::debug!(
                                                 "📊 label({}) using first label from table_ctx: {} (is_cte={}, len={})",
                                                 alias, first_label, table_ctx.is_cte_reference(), labels.len()
@@ -1290,6 +1357,35 @@ impl ProjectionTagging {
             // For now I am not tagging Aggregate fns, but I will tag later for aggregate pushdown when I implement the aggregate push down optimization
             // For now if there is a tableAlias in agg fn args and fn name is Count then convert the table alias to node Id
             LogicalExpr::AggregateFnCall(aggregate_fn_call) => {
+                // #539: `id(alias)`/`elementId(alias)` identifies the SAME row as
+                // bare `alias` does for counting purposes (id() is just the node's
+                // identity), so `count(id(x))`/`count(DISTINCT id(x))` must route
+                // through the exact same per-label id-column
+                // tuple/coalesce/edge-id logic below as bare `count(x)`/
+                // `count(DISTINCT x)` already does. Without this, `id(x)`-wrapped
+                // aggregate args fall through untouched (this loop does not
+                // recurse into non-alias args), leaving the raw `id()` ScalarFnCall
+                // in place; the SQL generator then falls back to the generic
+                // function-registry placeholder (`id` -> `toInt64(0)`), silently
+                // collapsing `count(DISTINCT id(x))` to 1 regardless of how many
+                // distinct nodes actually exist — live-verified even for a
+                // single-label node (`count(DISTINCT id(o))` over
+                // `social_benchmark.yaml`'s FOLLOWS: `toInt64(0)` placeholder vs.
+                // ground truth `count(DISTINCT r.followed_id) = 5`).
+                fn alias_from_id_call(expr: &LogicalExpr) -> Option<&str> {
+                    if let LogicalExpr::ScalarFnCall(ScalarFnCall { name, args }) = expr {
+                        if (name.eq_ignore_ascii_case("id")
+                            || name.eq_ignore_ascii_case("elementid"))
+                            && args.len() == 1
+                        {
+                            if let LogicalExpr::TableAlias(TableAlias(t_alias)) = &args[0] {
+                                return Some(t_alias.as_str());
+                            }
+                        }
+                    }
+                    None
+                }
+
                 for arg in &aggregate_fn_call.args {
                     // Handle COUNT(a) or COUNT(DISTINCT a)
                     // Track whether DISTINCT was used in the original expression
@@ -1297,6 +1393,8 @@ impl ProjectionTagging {
                         LogicalExpr::TableAlias(TableAlias(t_alias)) => {
                             (Some(t_alias.as_str()), false)
                         }
+                        // #539: count(id(x)) / count(elementId(x))
+                        _ if alias_from_id_call(arg).is_some() => (alias_from_id_call(arg), false),
                         LogicalExpr::OperatorApplicationExp(OperatorApplication {
                             operator,
                             operands,
@@ -1304,6 +1402,9 @@ impl ProjectionTagging {
                             // Handle DISTINCT a inside COUNT(DISTINCT a)
                             if let LogicalExpr::TableAlias(TableAlias(t_alias)) = &operands[0] {
                                 (Some(t_alias.as_str()), true)
+                            } else if let Some(t_alias) = alias_from_id_call(&operands[0]) {
+                                // #539: count(DISTINCT id(x)) / count(DISTINCT elementId(x))
+                                (Some(t_alias), true)
                             } else {
                                 (None, false)
                             }
@@ -1352,6 +1453,74 @@ impl ProjectionTagging {
                                 })?;
 
                             if table_ctx.is_relation() {
+                                // #526: a relationship alias bound via the `pattern_union`
+                                // CTE (both endpoints unlabeled/multi-type, e.g. `MATCH
+                                // (n)-[r]-(o) RETURN count(r)`) is NOT backed by any single
+                                // relationship type's schema — `table_ctx.get_label_opt()`
+                                // below would (incorrectly) return just the FIRST candidate
+                                // type (e.g. `AUTHORED`), and its `edge_id`/`from_id` columns
+                                // (e.g. `user_id`) don't exist on the `pattern_union_*` CTE's
+                                // actual output shape (`start_type`/`start_id`/`end_type`/
+                                // `end_id`/`path_relationships`/...), causing a ClickHouse Code
+                                // 47 UNKNOWN_IDENTIFIER at runtime (`count(r.user_id)`). Route
+                                // through the CTE's own label-agnostic columns instead —
+                                // mirroring the NODE-alias pattern_union handling just above
+                                // (which already checks `rel_alias_uses_pattern_union` before
+                                // falling to per-label schema resolution).
+                                if input_plan
+                                    .is_some_and(|p| p.rel_alias_uses_pattern_union(t_alias))
+                                {
+                                    let access = |col: &str| {
+                                        LogicalExpr::PropertyAccessExp(PropertyAccess {
+                                            table_alias: TableAlias(t_alias.to_string()),
+                                            column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                                col.to_string(),
+                                            ),
+                                        })
+                                    };
+                                    let count_arg = if is_distinct {
+                                        // Full row identity: start/end are label-agnostic
+                                        // string ids that can collide across label spaces
+                                        // (e.g. User "5" vs Post "5"), so pair each with its
+                                        // type discriminator; `path_relationships[1]` (the
+                                        // single relationship type/direction for this
+                                        // single-hop CTE branch) distinguishes otherwise-
+                                        // identical (start, end) pairs reached via a
+                                        // different relationship type.
+                                        let path_rel_first = LogicalExpr::ArraySubscript {
+                                            array: Box::new(access("path_relationships")),
+                                            index: Box::new(LogicalExpr::Literal(
+                                                crate::query_planner::logical_expr::Literal::Integer(0),
+                                            )),
+                                        };
+                                        LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                                            operator: Operator::Distinct,
+                                            operands: vec![LogicalExpr::ScalarFnCall(
+                                                ScalarFnCall {
+                                                    name: "tuple".to_string(),
+                                                    args: vec![
+                                                        access("start_type"),
+                                                        access("start_id"),
+                                                        access("end_type"),
+                                                        access("end_id"),
+                                                        path_rel_first,
+                                                    ],
+                                                },
+                                            )],
+                                        })
+                                    } else {
+                                        // NULL-sensitive single-column count, matching the
+                                        // non-pattern_union branch's style below.
+                                        access("start_id")
+                                    };
+                                    item.expression =
+                                        LogicalExpr::AggregateFnCall(AggregateFnCall {
+                                            name: aggregate_fn_call.name.clone(),
+                                            args: vec![count_arg],
+                                        });
+                                    continue;
+                                }
+
                                 // For relationships:
                                 // - count(r) -> count(<first edge_id column>) NULL-sensitive:
                                 //   under OPTIONAL MATCH a LEFT JOIN miss leaves the edge's own
@@ -1512,13 +1681,42 @@ impl ProjectionTagging {
                                 // tuple(t.end_id, t.end_id))` — the duplicate
                                 // member bug). Use the CTE's own
                                 // (type, id) discriminator pair instead.
+                                //
+                                // #541: this used to key off `graph_rel_connection_role`
+                                // (mere UNDIRECTED-ness of the GraphRel connection), the
+                                // same round-2 #484 proxy later found unsound at its
+                                // OTHER call sites (`group_by_builder.rs`,
+                                // `filter_tagging.rs`) — false for a polymorphic/
+                                // junction-table schema whose relationship dispatches
+                                // through a discriminator/junction table (single
+                                // relationship type, ambiguous NODE label): e.g.
+                                // `(folder:Folder)-[:CONTAINS]-(item)` on a
+                                // junction-table schema is undirected
+                                // (`graph_rel_connection_role(alias).is_some()`) yet
+                                // still clones the whole `GraphRel` per candidate label
+                                // into a raw `UNION ALL` (no VLP/`multi_type_vlp_joins`
+                                // CTE — `variable_length` is `None`), so `item` is only
+                                // addressable INSIDE each union branch, not via a
+                                // label-agnostic `end_id` column — taking this early
+                                // return crashed ClickHouse Code 47 (`item.end_id`
+                                // doesn't exist). Use the round-3, proven-sound
+                                // `graph_rel_vlp_endpoint_role` (`variable_length.is_some()`)
+                                // discriminator instead — the same one
+                                // `find_id_column_for_alias`'s own VLP fallback trusts.
+                                // When it returns `None` (raw union, incl. the
+                                // junction-table case above), this whole block is
+                                // skipped and control falls through to the "first id
+                                // column for every candidate label" logic below, which
+                                // already builds the correct per-label
+                                // coalesce/tuple over the union's real physical id
+                                // columns.
                                 if labels.len() > 1
                                     && input_plan
                                         .map(|p| !p.rel_alias_uses_pattern_union(t_alias))
                                         .unwrap_or(true)
                                 {
                                     if let Some(is_left) = input_plan
-                                        .and_then(|p| p.graph_rel_connection_role(t_alias))
+                                        .and_then(|p| p.graph_rel_vlp_endpoint_role(t_alias))
                                     {
                                         let (type_col, id_col) = if is_left {
                                             ("type", "start_id")
