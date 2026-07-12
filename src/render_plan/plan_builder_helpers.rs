@@ -4555,10 +4555,10 @@ pub(super) fn get_polymorphic_edge_filter_for_join(
 /// ledger, just a vanished WHERE clause).
 ///
 /// Computed structurally (physical table identity), exactly mirroring the
-/// render-time `connects_via_rel` check's spirit — not a schema-pattern flag
-/// (`is_denormalized`/`is_fk_edge`) branch (CLAUDE.md rule 7): a genuinely
-/// separate edge table can never equal either node's own table, while every
-/// "node IS edge" shape's defining trait IS that identity.
+/// render-time `connects_via_rel` check's spirit — not a raw schema-pattern
+/// classification flag branch (CLAUDE.md rule 7): a genuinely separate edge
+/// table can never equal either node's own table, while every "node IS the
+/// edge" shape's defining trait IS that identity.
 fn optional_node_shares_table_with_edge(gr: &crate::query_planner::logical_plan::GraphRel) -> bool {
     fn source_tables(plan: &LogicalPlan, out: &mut HashSet<String>) {
         match plan {
@@ -4667,35 +4667,34 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
                 // prevent. Drop those conjuncts here, before the rewrite, using
                 // their PRE-rewrite alias (still the anchor's own, e.g. `a`).
                 let pred_owned;
-                let pred: &LogicalExpr = if let Some(anchor_is_left) =
-                    optional_denorm_union_anchor_is_left(gr)
-                {
-                    let anchor_alias = if anchor_is_left {
-                        &gr.left_connection
+                let pred: &LogicalExpr =
+                    if let Some(anchor_is_left) = optional_denorm_union_anchor_is_left(gr) {
+                        let anchor_alias = if anchor_is_left {
+                            &gr.left_connection
+                        } else {
+                            &gr.right_connection
+                        };
+                        let remaining: Vec<LogicalExpr> = split_and_predicates_logical(pred)
+                            .into_iter()
+                            .filter(|p| !references_only_alias_logical(p, anchor_alias))
+                            .collect();
+                        match combine_predicates_with_and_logical(remaining) {
+                            Some(combined) => {
+                                pred_owned = combined;
+                                &pred_owned
+                            }
+                            None => {
+                                // Every conjunct was anchor-only and already covered
+                                // by the CTE — nothing left to add for this GraphRel.
+                                predicates.extend(collect_graphrel_predicates(&gr.left));
+                                predicates.extend(collect_graphrel_predicates(&gr.center));
+                                predicates.extend(collect_graphrel_predicates(&gr.right));
+                                return predicates;
+                            }
+                        }
                     } else {
-                        &gr.right_connection
+                        pred
                     };
-                    let remaining: Vec<LogicalExpr> = split_and_predicates_logical(pred)
-                        .into_iter()
-                        .filter(|p| !references_only_alias_logical(p, anchor_alias))
-                        .collect();
-                    match combine_predicates_with_and_logical(remaining) {
-                        Some(combined) => {
-                            pred_owned = combined;
-                            &pred_owned
-                        }
-                        None => {
-                            // Every conjunct was anchor-only and already covered
-                            // by the CTE — nothing left to add for this GraphRel.
-                            predicates.extend(collect_graphrel_predicates(&gr.left));
-                            predicates.extend(collect_graphrel_predicates(&gr.center));
-                            predicates.extend(collect_graphrel_predicates(&gr.right));
-                            return predicates;
-                        }
-                    }
-                } else {
-                    pred
-                };
 
                 // #519: a WHERE-clause predicate is already property-mapped by
                 // the time it's folded into `gr.where_predicate` (an earlier
@@ -4742,8 +4741,7 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
                         // here so `fold_optional_edge_node_join_with_predicate`
                         // (#479/#552) can find and fold it — see
                         // `optional_node_shares_table_with_edge`'s doc comment.
-                        let optional_only_is_recoverable =
-                            optional_node_shares_table_with_edge(gr);
+                        let optional_only_is_recoverable = optional_node_shares_table_with_edge(gr);
                         let all_preds = split_and_predicates_logical(&pred);
                         for p in all_preds {
                             let refs_only_rel = references_only_alias_logical(&p, &gr.alias);
