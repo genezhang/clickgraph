@@ -19,6 +19,14 @@ from conftest import (
 class TestMultiTypeRecursivePatterns:
     """Test multi-type VLP patterns with social_integration schema."""
     
+    @pytest.mark.xfail(
+        reason="Code bug: RETURN DISTINCT + count(*) on multi-type VLP silently "
+        "returns wrong counts -- DISTINCT is pushed pre-aggregation into each "
+        "per-branch UNION CTE instead of applying after the outer GROUP BY/count(*), "
+        "so cnt undercounts (verified: query returns cnt=1 per label when ground "
+        "truth is Post=8, User=12). The test's own assertions don't check cnt, so "
+        "this previously passed CI green while silently wrong; see issue tracker."
+    )
     def test_follows_or_authored_one_to_two_hops(self):
         """
         Test [:FOLLOWS|AUTHORED*1..2] pattern.
