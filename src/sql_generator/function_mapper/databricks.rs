@@ -211,6 +211,14 @@ impl FunctionMapper for DatabricksFunctionMapper {
         // exactly; `try_cast` yields NULL (never an error) on non-integers.
         format!("try_cast({} AS DECIMAL(38,0))", expr)
     }
+
+    fn id_order_key_nulls_clause(&self) -> &'static str {
+        // Spark/Databricks defaults to NULLS FIRST for ASC (ANSI SQL) —
+        // opposite of ClickHouse's always-NULLS-LAST default. Force LAST
+        // explicitly so a union mixing numeric and non-numeric ids agrees
+        // with the ClickHouse-verified ordering (#556).
+        " NULLS LAST"
+    }
 }
 
 #[cfg(test)]

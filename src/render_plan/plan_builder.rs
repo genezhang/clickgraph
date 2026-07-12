@@ -545,6 +545,46 @@ fn render_expr_items_have_aggregate(items: &[SelectItem]) -> bool {
     items.iter().any(|item| has_agg(&item.expression))
 }
 
+/// #563: is this denormalized `ViewScan`'s `id_column` still a RAW Cypher
+/// property name (e.g. `"code"`) rather than an already-resolved PHYSICAL
+/// column (e.g. `"origin_code"`)?
+///
+/// Most denormalized `ViewScan`s resolve `id_column` correctly:
+/// `try_generate_view_scan`'s single-table case (`match_clause/view_scan.rs`)
+/// looks the id property up in the schema's per-role maps before setting it.
+/// But `type_inference.rs`'s "infer a single label for an originally-
+/// UNLABELED `GraphNode`" path (used for a denormalized connection-only node
+/// sitting BETWEEN two edges, e.g. `b` in `(a)-[:T]->(b)-[:T]->(c)` with no
+/// `:Label` on `b`) builds its `ViewScan` by hand and sets `id_column`
+/// straight from the schema's declared id property name — never mapped
+/// through those per-role maps — while STILL populating them (so the scan
+/// "looks" fully resolved). Pre-#563, `find_id_column_for_alias` trusted
+/// this blindly, producing a `GROUP BY t2.code` that ClickHouse rejects
+/// (`code` is a Cypher property name, never a real column on the
+/// denormalized table — `origin_code`/`dest_code` are).
+///
+/// A resolved physical column is always a VALUE in [`edge_side_node_properties`]'s
+/// maps, never a KEY (schema authors don't name physical columns identically
+/// to their own Cypher property names in this codebase's fixtures/tests) —
+/// so `id_column` appearing as a KEY is the reliable positive signal that
+/// it's still unresolved. When true, the caller should refuse to trust it
+/// and fall through to `Err`, letting the existing
+/// `resolve_single_id_denorm_column` fallback chain (#551/#560/#561) — which
+/// resolves correctly via `get_properties_with_table_alias` — take over
+/// instead.
+///
+/// Routes through the `graph_catalog::pattern_schema` dispatch points
+/// (CLAUDE.md rule 7) rather than reading the scan's raw denorm fields
+/// directly.
+fn denorm_id_column_is_unresolved(scan: &crate::query_planner::logical_plan::ViewScan) -> bool {
+    use crate::graph_catalog::pattern_schema::{edge_side_node_properties, scan_denormalized_flag};
+    if !scan_denormalized_flag(scan) {
+        return false;
+    }
+    edge_side_node_properties(scan, true).is_some_and(|m| m.contains_key(&scan.id_column))
+        || edge_side_node_properties(scan, false).is_some_and(|m| m.contains_key(&scan.id_column))
+}
+
 /// # Arguments
 /// * `has_aggregation` - If true, wraps non-ID columns with anyLast() for efficient aggregation
 /// * `plan_ctx` - Optional PlanCtx for accessing PropertyRequirements (property pruning optimization)
@@ -559,7 +599,9 @@ impl RenderPlanBuilder for LogicalPlan {
                 // Their id_column is a meaningless default and shouldn't be used for GROUP BY.
                 // See `generate_cte_base_name()` in src/utils/cte_naming.rs for the "with_" naming convention.
                 if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
-                    if !scan.source_table.starts_with("with_") {
+                    if !scan.source_table.starts_with("with_")
+                        && !denorm_id_column_is_unresolved(scan)
+                    {
                         return Ok(scan.id_column.clone());
                     }
                 } else if let LogicalPlan::Union(union_plan) = node.input.as_ref() {
@@ -567,7 +609,9 @@ impl RenderPlanBuilder for LogicalPlan {
                     // All ViewScans should have the same id_column, so use the first one
                     if let Some(first_input) = union_plan.inputs.first() {
                         if let LogicalPlan::ViewScan(scan) = first_input.as_ref() {
-                            return Ok(scan.id_column.clone());
+                            if !denorm_id_column_is_unresolved(scan) {
+                                return Ok(scan.id_column.clone());
+                            }
                         }
                     }
                 }

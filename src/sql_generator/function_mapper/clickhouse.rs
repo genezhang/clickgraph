@@ -117,6 +117,12 @@ impl FunctionMapper for ClickhouseFunctionMapper {
     fn try_parse_int128(&self, expr: &str) -> String {
         format!("toInt128OrNull({})", expr)
     }
+
+    fn id_order_key_nulls_clause(&self) -> &'static str {
+        // No-op for CH — NULL already sorts last for both ASC and DESC by
+        // default — but explicit for parity with Databricks (#556).
+        " NULLS LAST"
+    }
 }
 
 #[cfg(test)]

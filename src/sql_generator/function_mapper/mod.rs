@@ -180,6 +180,23 @@ pub(crate) trait FunctionMapper: Send + Sync {
     /// the #546 typed `ORDER BY id()` union key so numeric ids order
     /// numerically even after the union branches' string normalization.
     fn try_parse_int128(&self, expr: &str) -> String;
+
+    /// Explicit `NULLS ...` suffix (including its leading space) for the
+    /// #546 typed `ORDER BY id()` union salvage key
+    /// (`typed_id_order_key_expr`). That key is a
+    /// `tuple(try_parse_int128(toString(id)), toString(id))`: branches whose
+    /// id column is non-numeric always produce a NULL first tuple element,
+    /// so the dialects' NULL-ordering DEFAULTS decide where those rows land
+    /// relative to numeric-id branches. CH sorts NULL last for BOTH `ASC`
+    /// and `DESC` (verified live); Spark/Databricks defaults to ANSI
+    /// (`NULLS FIRST` for `ASC`, `NULLS LAST` for `DESC`) — so an
+    /// unqualified `ASC` would put non-numeric-id rows at OPPOSITE ends
+    /// under the two dialects. Making the suffix explicit and identical
+    /// (`NULLS LAST`) regardless of direction pins both dialects to CH's
+    /// behavior (a no-op for CH, since that's already its default).
+    /// Narrow to this one salvage-key shape, not a general NULLS FIRST/LAST
+    /// normalization pass — see #556.
+    fn id_order_key_nulls_clause(&self) -> &'static str;
 }
 
 /// Returns the function mapper for the active SQL dialect, read from the

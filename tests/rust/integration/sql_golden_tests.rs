@@ -1063,6 +1063,24 @@ const DENORM_CORPUS: &[(&str, &str)] = &[
         "union_agg_per_arm",
         "MATCH (a:Airport) RETURN count(a) AS c UNION ALL MATCH ()-[f:FLIGHT]->() RETURN count(f) AS c",
     ),
+    // #555: ORDER BY on a role-ambiguous denorm property that is NOT itself
+    // projected in SELECT. `state` maps to a DIFFERENT physical column on
+    // the from-role (origin_state) vs to-role (dest_state) branch, so
+    // filter_tagging's #471 ambiguity guard leaves it unmapped — this must
+    // still resolve to each branch's OWN role-correct column instead of
+    // UNKNOWN_IDENTIFIER on the raw, never-projected `n.state`.
+    (
+        "order_by_unprojected_ambiguous_prop",
+        "MATCH (n:Airport) RETURN n.city ORDER BY n.state",
+    ),
+    // #563: whole-node non-WITH GROUP BY over an UNLABELED denorm chain node
+    // `b` sitting between two edges — must resolve to `b`'s real physical
+    // identity column (origin_code), never the raw unmapped `code` property
+    // name (which crashes ClickHouse with UNKNOWN_IDENTIFIER).
+    (
+        "unlabeled_whole_node_group_by_no_with",
+        "MATCH (a:Airport)-[:FLIGHT]->(b)-[:FLIGHT]->(c:Airport) RETURN b, count(*) AS n",
+    ),
 ];
 
 /// Composite-node-ID variation (`schemas/test/composite_node_ids.yaml`, extracted
@@ -8334,6 +8352,71 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
             assert_eq!(sql, again, "#471: nondeterministic render");
         }
     }
+
+    /// #555 (disclosed trade-off of #471, now resolved): `MATCH (n:Airport)
+    /// RETURN n.city ORDER BY n.state` — ordering by a role-ambiguous denorm
+    /// property that is NOT itself projected in SELECT. #471's ambiguity
+    /// guard correctly leaves `n.state` unmapped (same as this test's #471
+    /// sibling above), but `to_sql_query.rs`'s "only case handled" fallback
+    /// — reuse an existing SELECT item's alias-mapped expression — has
+    /// nothing to reuse here (`state` was never requested), so the raw,
+    /// physically-nonexistent `n.state` reached ClickHouse directly:
+    /// `UNKNOWN_IDENTIFIER 'n.state'` (verified pre-fix, live, against
+    /// `db_denormalized` — the query WITHOUT `ORDER BY` executes fine).
+    ///
+    /// Fixed by extending `add_order_by_columns_to_select`'s standalone
+    /// (no-path-context) branch: when the existing-SELECT-alias match finds
+    /// nothing, fall back to reading THIS branch's own already role-resolved
+    /// `ViewScan.property_mapping` directly (`resolve_standalone_denorm_order_by_expr`
+    /// / `union_branch_own_property_column`) — the exact same per-branch
+    /// source `property_expansion` draws SELECT's own denorm columns from.
+    /// Each UNION branch now projects its OWN role-correct physical column
+    /// (`origin_state` on the from-role branch, `dest_state` on the to-role
+    /// branch) as its `__order_col_N` helper, mirroring the #546 typed
+    /// `id()` salvage key's "resolve per branch, never guess once" shape.
+    ///
+    /// Live-verified against `db_denormalized` (2026-07-11): the fixed SQL
+    /// executes and returns cities ordered by state ascending (Phoenix/AZ,
+    /// Los Angeles+San Francisco/CA, Denver/CO, Atlanta/GA, Chicago/IL,
+    /// New York/NY) — previously `Code: 47 UNKNOWN_IDENTIFIER`.
+    #[tokio::test]
+    async fn denorm_order_by_unprojected_ambiguous_prop_resolves_per_branch_555() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (n:Airport) RETURN n.city ORDER BY n.state",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        assert!(
+            sql.contains(r#"n.origin_state AS "__order_col_0""#)
+                && sql.contains(r#"n.dest_state AS "__order_col_0""#),
+            "#555: each branch must project ITS OWN role-correct physical \
+             column as the order helper — from-role branch on origin_state, \
+             to-role branch on dest_state:\n{sql}"
+        );
+        assert!(
+            !sql.contains(r#"n.state AS "__order_col_0""#),
+            "#555: must never emit the raw, physically-nonexistent `n.state` \
+             (the pre-fix UNKNOWN_IDENTIFIER shape):\n{sql}"
+        );
+        assert!(
+            sql.contains("ORDER BY __union.`__order_col_0` ASC"),
+            "#555: outer query must order by the per-branch helper column:\n{sql}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = render(
+                &schema,
+                "MATCH (n:Airport) RETURN n.city ORDER BY n.state",
+                SqlDialect::ClickHouse,
+            )
+            .await;
+            assert_eq!(sql, again, "#555: nondeterministic render");
+        }
+    }
 }
 
 /// #524/#528/#538/#525: a batch of VLP CTE definition/binding bugs surfaced by
@@ -9697,6 +9780,68 @@ mod group_by_identity_family_560_561 {
              refactor:\n{sql}"
         );
     }
+
+    /// #563: the TRUE unlabeled sibling of #561's LABELED
+    /// `labeled_whole_node_group_by_no_with_resolves_identity_561` above —
+    /// same query shape, `b` has NO `:Label`. This used to hard-crash
+    /// ClickHouse with `Code: 47 UNKNOWN_IDENTIFIER 't2.code'` (verified
+    /// pre-fix, live, against `db_denormalized`) even though #561 had
+    /// already fixed the labeled twin.
+    ///
+    /// Root cause (distinct from #561's own fix, confirmed by #561's
+    /// reviewer): `find_id_column_for_alias` (`render_plan/plan_builder.rs`)
+    /// returned `Ok("code")` — not `Err` — for this shape, so the #551/#560/
+    /// #561 fallback chain (which only engages on `Err`) never triggered.
+    /// The `Ok` came from a GENUINE `GraphNode` that DOES exist for the
+    /// unlabeled alias (synthesized by `type_inference.rs`'s "infer a single
+    /// label from context" path, `LogicalPlan::GraphNode` case) whose
+    /// `ViewScan.id_column` was set straight from the schema's raw Cypher
+    /// `node_id` property name, never mapped through `from_node_properties`/
+    /// `to_node_properties` like `try_generate_view_scan`'s single-table case
+    /// does for a genuinely LABELED node.
+    ///
+    /// Fixed by `denorm_id_column_is_unresolved` (`plan_builder.rs`):
+    /// `find_id_column_for_alias`'s SUCCESS path now refuses to trust
+    /// `scan.id_column` when it is itself a KEY in the scan's own
+    /// `from_node_properties`/`to_node_properties` (the reliable signal that
+    /// it's still a raw property name, never a real physical column — a
+    /// resolved column is always a VALUE there, never a key) — falling
+    /// through to `Err` so the existing, already-correct fallback chain
+    /// resolves it via `get_properties_with_table_alias` instead.
+    ///
+    /// Live-verified against `db_denormalized` (2026-07-11): the fixed SQL
+    /// executes and returns 5 rows keyed by airport identity (LAX=6, ORD=2,
+    /// ATL=1, JFK=1, DEN=1) — previously `Code: 47 UNKNOWN_IDENTIFIER`.
+    #[tokio::test]
+    async fn unlabeled_whole_node_group_by_no_with_resolves_identity_563() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let cypher = "MATCH (a:Airport)-[:FLIGHT]->(b)-[:FLIGHT]->(c:Airport) \
+                      RETURN b, count(*) AS n";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        let group_by_re = regex::Regex::new(r#"GROUP BY t\d+\.origin_code\b"#).unwrap();
+        assert!(
+            group_by_re.is_match(&sql),
+            "#563 regressed: whole-node non-WITH GROUP BY over an UNLABELED \
+             denorm chain node must reference the node's real identity \
+             column (origin_code), never a dangling unmapped placeholder:\n{sql}"
+        );
+        assert!(
+            !sql.contains("GROUP BY t0.code")
+                && !sql.contains("GROUP BY t1.code")
+                && !sql.contains("GROUP BY t2.code")
+                && !sql.contains("GROUP BY t0.id")
+                && !sql.contains("GROUP BY t1.id")
+                && !sql.contains("GROUP BY t2.id"),
+            "#563 regressed: GROUP BY must never reference the unmapped raw \
+             property name or the literal \"id\" sentinel:\n{sql}"
+        );
+
+        for _ in 0..5 {
+            let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(sql, again, "#563: nondeterministic render");
+        }
+    }
 }
 
 /// Regression tests for the #546/#547 ORDER BY id() family — milder siblings
@@ -9900,7 +10045,11 @@ mod order_by_id_union_family_546_547 {
         )
         .await;
         assert!(
-            sql.contains("ORDER BY __union.`__order_col_0` ASC, __union.`__order_col_1` ASC"),
+            // #556: the id(n) salvage key now carries an explicit NULLS LAST
+            // (dialect-agreement fix) between the two ORDER BY items.
+            sql.contains(
+                "ORDER BY __union.`__order_col_0` ASC NULLS LAST, __union.`__order_col_1` ASC"
+            ),
             "#546/finding 3: BOTH the salvaged id(n) key (__order_col_0) and \
              the surviving literal (__order_col_1) must appear, in query \
              order:\n{sql}"
