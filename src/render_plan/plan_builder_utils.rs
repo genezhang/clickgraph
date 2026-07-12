@@ -2967,6 +2967,149 @@ mod tests {
             "Non-PropertyAccess expressions should fall back to CTE alias column name"
         );
     }
+
+    /// Build a minimal `GraphRel` with `left_connection`/`right_connection`
+    /// set to `left`/`right` and relationship type `rel_type` — the shape
+    /// `find_denorm_connection_node_label` traverses to. Children are all
+    /// `LogicalPlan::Empty`; only the connection metadata matters for this
+    /// function.
+    fn minimal_connection_rel(left: &str, right: &str, rel_type: &str) -> LogicalPlan {
+        LogicalPlan::GraphRel(GraphRel {
+            left: Arc::new(LogicalPlan::Empty),
+            center: Arc::new(LogicalPlan::Empty),
+            right: Arc::new(LogicalPlan::Empty),
+            alias: "r".to_string(),
+            direction: Direction::Outgoing,
+            left_connection: left.to_string(),
+            right_connection: right.to_string(),
+            is_rel_anchor: false,
+            variable_length: None,
+            shortest_path_mode: None,
+            path_variable: None,
+            where_predicate: None,
+            labels: Some(vec![rel_type.to_string()]),
+            is_optional: None,
+            anchor_connection: None,
+            cte_references: std::collections::HashMap::new(),
+            pattern_combinations: None,
+            was_undirected: None,
+        })
+    }
+
+    /// #562 (hardening, non-blocking finding from #551's adversarial
+    /// review): `find_denorm_connection_node_label` must NOT silently pick
+    /// the FIRST candidate label when a relationship TYPE is registered
+    /// against multiple node-label pairs with DIFFERING id-property shapes
+    /// — blindly trusting the first would resolve the WRONG id property
+    /// name whenever the "losing" pair's node is the one actually being
+    /// grouped. No real fixture in this repo reaches this today (the
+    /// analyzer's multi-type VLP routing, #538, already intercepts genuine
+    /// ambiguity upstream of this function — see #551's PR discussion), so
+    /// this test constructs the ambiguous schema directly and calls the
+    /// function without going through the full analyzer pipeline.
+    #[test]
+    fn find_denorm_connection_node_label_refuses_ambiguous_multi_registration_562() {
+        use crate::graph_catalog::config::GraphSchemaConfig;
+
+        let yaml = r#"
+name: ambiguous_multi_reg_562
+graph_schema:
+  nodes:
+    - label: WidgetA
+      database: db_ambiguous
+      table: widget_a
+      node_id: widget_a_id
+      property_mappings: {}
+    - label: WidgetB
+      database: db_ambiguous
+      table: widget_b
+      node_id: widget_b_id
+      property_mappings: {}
+  edges:
+    - type: AMBIGUOUS_LINK
+      database: db_ambiguous
+      table: link_a
+      from_id: from_id
+      to_id: to_id
+      from_node: WidgetA
+      to_node: WidgetA
+    - type: AMBIGUOUS_LINK
+      database: db_ambiguous
+      table: link_b
+      from_id: from_id
+      to_id: to_id
+      from_node: WidgetB
+      to_node: WidgetB
+"#;
+        let schema = GraphSchemaConfig::from_yaml_str(yaml)
+            .expect("parse synthetic #562 schema")
+            .to_graph_schema()
+            .expect("build synthetic #562 GraphSchema");
+
+        // `b` is the right_connection of an AMBIGUOUS_LINK GraphRel — the
+        // unlabeled denorm-chain-node shape `find_denorm_connection_node_label`
+        // exists to resolve. `AMBIGUOUS_LINK` resolves to TWO candidate
+        // to_node labels (WidgetA: `widget_a_id`, WidgetB: `widget_b_id`) —
+        // differing id-property names, so the function must refuse to guess.
+        let plan = minimal_connection_rel("a", "b", "AMBIGUOUS_LINK");
+        assert_eq!(
+            find_denorm_connection_node_label(&plan, "b", &schema),
+            None,
+            "ambiguous multi-registration with differing id shapes must not silently resolve a label"
+        );
+    }
+
+    /// Regression guard for #562: a relationship type registered against
+    /// TWO node-label pairs that happen to share the SAME id-property shape
+    /// is NOT ambiguous in the way #562 guards against — the function must
+    /// still resolve a label normally (not over-trigger the new guard).
+    #[test]
+    fn find_denorm_connection_node_label_resolves_multi_registration_with_same_id_shape_562() {
+        use crate::graph_catalog::config::GraphSchemaConfig;
+
+        let yaml = r#"
+name: same_shape_multi_reg_562
+graph_schema:
+  nodes:
+    - label: WidgetA
+      database: db_ambiguous
+      table: widget_a
+      node_id: widget_id
+      property_mappings: {}
+    - label: WidgetC
+      database: db_ambiguous
+      table: widget_c
+      node_id: widget_id
+      property_mappings: {}
+  edges:
+    - type: SAME_SHAPE_LINK
+      database: db_ambiguous
+      table: link_a
+      from_id: from_id
+      to_id: to_id
+      from_node: WidgetA
+      to_node: WidgetA
+    - type: SAME_SHAPE_LINK
+      database: db_ambiguous
+      table: link_c
+      from_id: from_id
+      to_id: to_id
+      from_node: WidgetC
+      to_node: WidgetC
+"#;
+        let schema = GraphSchemaConfig::from_yaml_str(yaml)
+            .expect("parse synthetic #562 schema")
+            .to_graph_schema()
+            .expect("build synthetic #562 GraphSchema");
+
+        let plan = minimal_connection_rel("a", "b", "SAME_SHAPE_LINK");
+        let resolved = find_denorm_connection_node_label(&plan, "b", &schema);
+        assert!(
+            resolved == Some("WidgetA".to_string()) || resolved == Some("WidgetC".to_string()),
+            "same id-property shape across registrations must still resolve a label (got {:?})",
+            resolved
+        );
+    }
 }
 pub fn extract_group_by(plan: &LogicalPlan) -> RenderPlanBuilderResult<Vec<RenderExpr>> {
     use crate::graph_catalog::expression_parser::PropertyValue;
@@ -6048,7 +6191,7 @@ pub(crate) fn expand_table_alias_to_select_items(
 /// `get_properties_with_table_alias` (`properties_builder.rs`) already
 /// relies on the identical invariant for this exact shape (BidirectionalUnion
 /// normalizes Incoming edges to preserve it).
-fn find_denorm_connection_node_label(
+pub(super) fn find_denorm_connection_node_label(
     plan: &LogicalPlan,
     alias: &str,
     schema: &GraphSchema,
@@ -6085,12 +6228,147 @@ fn find_denorm_connection_node_label(
     let rel_type = rel_type_label.split("::").next().unwrap_or(rel_type_label);
     let is_left = rel.left_connection == alias;
 
-    schema
+    let candidate_labels: Vec<&String> = schema
         .get_all_rel_schemas_for_type(rel_type)
         .into_iter()
         .map(|rs| if is_left { &rs.from_node } else { &rs.to_node })
-        .find(|label| schema.node_schema_opt(label).is_some())
-        .cloned()
+        .filter(|label| schema.node_schema_opt(label).is_some())
+        .collect();
+
+    // #562 (hardening, non-blocking finding from #551's adversarial review):
+    // `get_all_rel_schemas_for_type` can legitimately return MULTIPLE
+    // registrations of the same relationship TYPE against different
+    // node-label pairs (e.g. one edge type registered for both
+    // Message->Person and Post->Person, with differing id-property names
+    // per pair). Blindly taking the FIRST candidate (the pre-#562 behavior)
+    // would silently trust whichever registration happened to be inserted
+    // first — sound only by coincidence. Compare the candidates' identity
+    // shape (`node_id.columns()`, composite-safe — never calls the
+    // single-column-only `.column()`, which panics on a composite id) and
+    // refuse to guess if they disagree: return `None`, which makes every
+    // caller fall through to its OWN pre-existing fallback unchanged (the
+    // same "fail closed, not silently wrong" precedent as #544's multi-VLP
+    // rejection). Single-registration and identical-shape multi-registration
+    // types are completely unaffected — this only changes behavior for
+    // genuinely ambiguous schemas, which no fixture in this repo currently
+    // has (the analyzer's multi-type VLP routing, #538, already intercepts
+    // real ambiguity upstream of this function today).
+    let mut id_shapes: Vec<Vec<&str>> = candidate_labels
+        .iter()
+        .filter_map(|label| schema.node_schema_opt(label))
+        .map(|ns| ns.node_id.columns())
+        .collect();
+    id_shapes.dedup();
+    if id_shapes.len() > 1 {
+        log::warn!(
+            "⚠️ find_denorm_connection_node_label: relationship type '{}' resolves to {} candidate node label(s) with DIFFERING id-property shapes {:?} for alias '{}' — refusing to silently pick one (#562)",
+            rel_type,
+            candidate_labels.len(),
+            id_shapes,
+            alias
+        );
+        return None;
+    }
+
+    candidate_labels.first().map(|s| (*s).clone())
+}
+
+/// #551/#560/#561: resolve a single (non-composite) id property for `alias`
+/// to its physical column and actual table alias, for a denormalized chain
+/// node whose `GraphNode` either doesn't exist at all (fully unlabeled
+/// connection-only node — see `find_denorm_connection_node_label`'s doc
+/// comment) or exists but has no directly-attached `ViewScan`
+/// `find_id_column_for_alias` can read (labeled, but denormalized: the
+/// physical scan lives on the edge, not the node).
+///
+/// This is the single-id counterpart of `group_by_builder::
+/// composite_id_group_by_columns`, and — per the same sharing principle —
+/// is the ONE place this identity-resolution fallback lives. It is called
+/// from both the WITH→CTE render path (`expand_table_alias_to_group_by_id_only`,
+/// below — #551's original fix site) and the non-WITH implicit GROUP BY path
+/// (`group_by_builder::handle_table_alias_group_by` /
+/// `handle_wildcard_group_by`, #561's fix site), instead of each carrying its
+/// own copy.
+///
+/// Resolves the label via the same two-step lookup #551 established — the
+/// recursive real-`GraphNode` lookup (`cte_extraction::
+/// get_node_label_for_alias`), falling back to `find_denorm_connection_node_label`
+/// for the fully-unlabeled shape — then maps the label's `node_id` PROPERTY
+/// name to its physical column via `get_properties_with_table_alias`.
+/// Returns `None` (leaving the caller's own pre-existing fallback behavior
+/// unchanged) for composite ids (handled separately by
+/// `composite_id_group_by_columns`), VLP/CTE-backed aliases, or when any
+/// resolution step fails.
+pub(super) fn resolve_single_id_denorm_column(
+    plan: &LogicalPlan,
+    alias: &str,
+    schema: &GraphSchema,
+) -> Option<(String, String)> {
+    let label = super::cte_extraction::get_node_label_for_alias(alias, plan)
+        .or_else(|| find_denorm_connection_node_label(plan, alias, schema))?;
+    let node_schema = schema.node_schema_opt(&label)?;
+    if node_schema.node_id.is_composite() {
+        return None;
+    }
+    let id_prop = node_schema.node_id.column();
+    let (properties, actual_table_alias) = plan.get_properties_with_table_alias(alias).ok()?;
+    let (_, col_name) = properties.iter().find(|(name, _)| name == id_prop)?;
+    let table_alias_to_use = actual_table_alias.unwrap_or_else(|| alias.to_string());
+    Some((col_name.clone(), table_alias_to_use))
+}
+
+/// #550/#560/#561: resolve composite-id GROUP BY columns for `alias` to
+/// their PHYSICAL columns — mapping through `get_properties_with_table_alias`
+/// for a denormalized composite-id node, where the raw `node_id.columns()`
+/// property names (e.g. `code`, `state`) are NOT themselves physical column
+/// names (e.g. `origin_code`, `origin_state`) — plus the actual table alias
+/// to qualify them with (e.g. the edge alias, not the Cypher node alias).
+///
+/// Originally #550's fix, inline in `expand_table_alias_to_group_by_id_only`
+/// (the WITH→CTE path) only. While fixing #561 (the non-WITH sibling of
+/// #551/#560), the non-WITH path's `handle_table_alias_group_by`/
+/// `handle_wildcard_group_by` (`group_by_builder.rs`) were found to call
+/// `composite_id_group_by_columns` directly and push the RAW property names
+/// straight into `GROUP BY` with no mapping step at all — a real,
+/// independently-reachable bug for a LABELED denormalized composite-id node
+/// grouped via its whole-node alias with no WITH clause (`RETURN b,
+/// count(*)` over `AirportComposite`): pre-fix this rendered `GROUP BY
+/// t0.code, t0.state`, a hard ClickHouse `UNKNOWN_IDENTIFIER` (neither
+/// `code` nor `state` is a real column — `origin_code`/`origin_state` are).
+/// Extracted here so BOTH paths share the identical mapping logic.
+///
+/// Returns `None` when `alias` is not a composite-id node (delegates the gate
+/// to `composite_id_group_by_columns`). Property-mapping resolution failure
+/// is non-fatal: falls back to the raw `node_id.columns()` names and `alias`
+/// itself unchanged — reproducing #550's original, pre-denormalization-aware
+/// behavior for a STANDARD composite-id node, where the raw property names
+/// already ARE the physical column names.
+pub(super) fn resolve_composite_id_group_by_columns(
+    plan: &LogicalPlan,
+    alias: &str,
+) -> Option<(Vec<String>, String)> {
+    let id_columns = super::group_by_builder::composite_id_group_by_columns(plan, alias)?;
+    let (resolved_columns, group_alias) = match plan.get_properties_with_table_alias(alias) {
+        Ok((props, actual_table_alias)) if !props.is_empty() => {
+            let prop_map: HashMap<&str, &str> = props
+                .iter()
+                .map(|(name, col)| (name.as_str(), col.as_str()))
+                .collect();
+            (
+                id_columns
+                    .iter()
+                    .map(|c| {
+                        prop_map
+                            .get(c.as_str())
+                            .map_or(c.clone(), |m| m.to_string())
+                    })
+                    .collect(),
+                actual_table_alias.unwrap_or_else(|| alias.to_string()),
+            )
+        }
+        _ => (id_columns.clone(), alias.to_string()),
+    };
+    Some((resolved_columns, group_alias))
 }
 
 pub(crate) fn expand_table_alias_to_group_by_id_only(
@@ -6246,54 +6524,21 @@ pub(crate) fn expand_table_alias_to_group_by_id_only(
     // composite-aware label fallback further down, silently merging distinct
     // nodes that share the first component. Same expansion as the sites in
     // group_by_builder.rs (see the §1.4 triplication note on
-    // `composite_id_group_by_columns`).
-    if let Some(id_columns) = super::group_by_builder::composite_id_group_by_columns(plan, alias) {
+    // `composite_id_group_by_columns`). #550's physical-column mapping (the
+    // schema's `node_id.columns()` are CYPHER property names, not necessarily
+    // physical columns for a denormalized composite-id node) now lives in the
+    // shared `resolve_composite_id_group_by_columns` helper — see its doc
+    // comment — so this path and the non-WITH `group_by_builder.rs` paths
+    // cannot drift.
+    if let Some((resolved_columns, group_alias)) =
+        resolve_composite_id_group_by_columns(plan, alias)
+    {
         log::debug!(
             "🔧 expand_table_alias_to_group_by_id_only: Using {} composite ID columns {:?} for alias '{}'",
-            id_columns.len(),
-            id_columns,
+            resolved_columns.len(),
+            resolved_columns,
             alias
         );
-        // #550: the schema's `node_id.columns()` are CYPHER PROPERTY names,
-        // and `alias` is the Cypher pattern alias — neither is necessarily a
-        // physical column/table in the CTE body being rendered. For a
-        // composite-id node that is ALSO denormalized (its properties live on
-        // the edge table under role-specific names), qualifying the raw
-        // property names with the Cypher alias emitted a dangling
-        // `GROUP BY b.code, b.state` (no table `b` in scope, no `code`/`state`
-        // columns anywhere — ClickHouse Code 47 UNKNOWN_IDENTIFIER). Resolve
-        // each id property through the plan's own property resolution
-        // (`get_properties_with_table_alias` — the same call the
-        // single-column denorm fallback below and `group_by_builder.rs`'s
-        // `table_alias_to_use` resolution already rely on; it dispatches per
-        // schema pattern internally): it yields the role-specific physical
-        // column (e.g. `code` → `origin_code`) and the actual table alias to
-        // qualify with (e.g. the edge alias `t2`). For standard composite-id
-        // nodes it returns identity property mappings and no alias override,
-        // reproducing the pre-#550 output byte-for-byte (#457's shape); if
-        // resolution fails or returns nothing, fall back to the pre-#550
-        // behavior unchanged.
-        let (resolved_columns, group_alias): (Vec<String>, String) =
-            match plan.get_properties_with_table_alias(alias) {
-                Ok((props, actual_table_alias)) if !props.is_empty() => {
-                    let prop_map: HashMap<&str, &str> = props
-                        .iter()
-                        .map(|(name, col)| (name.as_str(), col.as_str()))
-                        .collect();
-                    (
-                        id_columns
-                            .iter()
-                            .map(|c| {
-                                prop_map
-                                    .get(c.as_str())
-                                    .map_or(c.clone(), |m| m.to_string())
-                            })
-                            .collect(),
-                        actual_table_alias.unwrap_or_else(|| alias.to_string()),
-                    )
-                }
-                _ => (id_columns.clone(), alias.to_string()),
-            };
         let mut result = Vec::new();
         super::group_by_builder::push_composite_id_group_by(
             &mut result,
@@ -6384,31 +6629,25 @@ pub(crate) fn expand_table_alias_to_group_by_id_only(
     // makes; the composite fix above uses it identically). If label or
     // property resolution fails at any point, fall through unchanged to
     // Fallback 2's pre-#551 behavior.
-    let label_551 = super::cte_extraction::get_node_label_for_alias(alias, plan)
-        .or_else(|| find_denorm_connection_node_label(plan, alias, schema));
-    if let Some(label) = label_551 {
-        if let Some(node_schema) = schema.node_schema_opt(&label) {
-            if !node_schema.node_id.is_composite() {
-                let id_prop = node_schema.node_id.column();
-                if let Ok((properties, actual_table_alias)) =
-                    plan.get_properties_with_table_alias(alias)
-                {
-                    if let Some((_, col_name)) = properties.iter().find(|(name, _)| name == id_prop)
-                    {
-                        let table_alias_to_use =
-                            actual_table_alias.unwrap_or_else(|| alias.to_string());
-                        log::debug!(
-                            "🔧 expand_table_alias_to_group_by_id_only: Resolved single id property '{}' -> physical column '{}' on alias '{}' via schema label '{}' (#551)",
-                            id_prop, col_name, table_alias_to_use, label
-                        );
-                        return vec![RenderExpr::PropertyAccessExp(PropertyAccess {
-                            table_alias: TableAlias(table_alias_to_use),
-                            column: PropertyValue::Column(col_name.clone()),
-                        })];
-                    }
-                }
-            }
-        }
+    //
+    // #561: this label-then-property resolution is now the SHARED
+    // `resolve_single_id_denorm_column` helper (see its doc comment) rather
+    // than an inline copy — the non-WITH implicit GROUP BY path
+    // (`group_by_builder::handle_table_alias_group_by`/
+    // `handle_wildcard_group_by`) needs the exact same fallback for its own
+    // "whole node `b` in GROUP BY, no WITH" shape, and duplicating it a
+    // second time was the explicit thing to avoid (#551 review).
+    if let Some((col_name, table_alias_to_use)) =
+        resolve_single_id_denorm_column(plan, alias, schema)
+    {
+        log::debug!(
+            "🔧 expand_table_alias_to_group_by_id_only: Resolved single id property -> physical column '{}' on alias '{}' (#551/#561)",
+            col_name, table_alias_to_use
+        );
+        return vec![RenderExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: TableAlias(table_alias_to_use),
+            column: PropertyValue::Column(col_name),
+        })];
     }
 
     // Fallback 2: try to get properties and use first one (usually the ID)
