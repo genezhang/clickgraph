@@ -4526,6 +4526,75 @@ pub(super) fn get_polymorphic_edge_filter_for_join(
     combine_render_exprs_with_and(filters)
 }
 
+/// #554: does the "optional" side of `gr` (the newly-introduced node, as
+/// opposed to the pre-existing anchor) share its physical table with the
+/// relationship's own scan (`gr.center`)?
+///
+/// This is the SAME structural question `apply_optional_node_pre_filters`
+/// (join_builder.rs, the #474 mechanism) answers at render time via its
+/// `connects_via_rel` check on the already-built JOIN's ON clause: true for
+/// the "node IS the edge" shapes (FK-edge / denormalized, where the node's
+/// own LEFT JOIN connects DIRECTLY to the anchor and #474 safely folds an
+/// optional-node predicate into that JOIN's `pre_filter`); false for the
+/// "traditional" separate-edge-table shape (standard / composite-key),
+/// where the optional node instead joins THROUGH a distinct, unfiltered
+/// edge LEFT JOIN — #474 deliberately declines that shape (folding only the
+/// node subquery there would resurrect the edge row as a spurious
+/// NULL-extended duplicate; see #474's own report) and leaves it to
+/// `fold_optional_edge_node_join_with_predicate` (the #479/#552 family in
+/// plan_optimizer.rs), which needs the predicate to survive in the render
+/// plan's outer `filters` to find and fold it.
+///
+/// `collect_graphrel_predicates` below must agree with `apply_optional_node_
+/// pre_filters` on which of these two mechanisms will actually claim a given
+/// "references only the optional node" predicate — otherwise BOTH decline
+/// (each independently assuming the other already handled it, or will), and
+/// the predicate is silently dropped entirely (#554: `MATCH (a:User)
+/// OPTIONAL MATCH (b:User)<-[:FOLLOWS]-(a) WHERE b.country='US'` rendered
+/// with NO filter applied at all — 0 dropped rows on either mechanism's
+/// ledger, just a vanished WHERE clause).
+///
+/// Computed structurally (physical table identity), exactly mirroring the
+/// render-time `connects_via_rel` check's spirit — not a raw schema-pattern
+/// classification flag branch (CLAUDE.md rule 7): a genuinely separate edge
+/// table can never equal either node's own table, while every "node IS the
+/// edge" shape's defining trait IS that identity.
+fn optional_node_shares_table_with_edge(gr: &crate::query_planner::logical_plan::GraphRel) -> bool {
+    fn source_tables(plan: &LogicalPlan, out: &mut HashSet<String>) {
+        match plan {
+            LogicalPlan::ViewScan(vs) => {
+                out.insert(vs.source_table.clone());
+            }
+            LogicalPlan::GraphNode(gn) => source_tables(&gn.input, out),
+            LogicalPlan::Union(u) => {
+                for input in &u.inputs {
+                    source_tables(input, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut edge_tables = HashSet::new();
+    source_tables(&gr.center, &mut edge_tables);
+    if edge_tables.is_empty() {
+        // Center isn't a plain ViewScan (e.g. a VLP CTE) — can't determine
+        // structurally; conservatively assume NOT shared, so the predicate
+        // stays in the outer filters (matches prior "keep" behavior).
+        return false;
+    }
+
+    let optional_side = if gr.anchor_connection.as_deref() == Some(gr.left_connection.as_str()) {
+        &gr.right
+    } else {
+        &gr.left
+    };
+    let mut node_tables = HashSet::new();
+    source_tables(optional_side, &mut node_tables);
+
+    !node_tables.is_disjoint(&edge_tables)
+}
+
 /// Collect all WHERE predicates from GraphRel nodes in the plan tree.
 /// For optional patterns, filters out predicates that reference ONLY optional aliases
 /// (those are moved to pre_filter for correct LEFT JOIN semantics).
@@ -4564,6 +4633,69 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
             if let Some(ref pred) = gr.where_predicate {
                 let is_optional = gr.is_optional.unwrap_or(false);
 
+                // #553: an OPTIONAL MATCH whose anchor is a denormalized
+                // "standalone scan" — the `__denorm_scan_{alias}` CTE built by
+                // `materialize_standalone_denorm_scans` (type_inference.rs) —
+                // ALREADY embeds every predicate that references ONLY the
+                // anchor's own alias into that CTE, per-branch (its "Filter
+                // over a materialized Union: push Filter INTO each branch"
+                // handling). This is a SEPARATE mechanism from the generic
+                // anchor/optional split below (which needs `gr.anchor_connection`
+                // to be `Some`, and — deliberately, see `determine_optional_anchor`
+                // in match_clause/helpers.rs — that stays `None` for the common
+                // left-anchor/outgoing shape, falling into the "keep everything"
+                // conservative branch a few lines down).
+                //
+                // For a NON-denormalized anchor, conservatively keeping an
+                // anchor-only conjunct here is harmless: `apply_property_mapping`
+                // maps it straight back onto the anchor's own (never-nullable)
+                // table alias, so it's a no-op duplicate of what the plain
+                // ViewScan-level filter already applies.
+                //
+                // For a denormalized anchor it's NOT harmless: the anchor has no
+                // real physical table/columns of its own (its property mapping
+                // is empty — every property is exposed only via the connected
+                // edge's own role-specific node-property mapping), so resolving
+                // the conjunct's column here falls through to the edge's
+                // role-based mapping, re-targeting the predicate onto the
+                // RELATIONSHIP alias (e.g. `a.code` -> `r.origin_code`). That
+                // alias IS nullable (it's the LEFT-JOINed side of the OPTIONAL
+                // MATCH), so evaluating a duplicate, already-satisfied anchor
+                // constraint against it in the outer WHERE incorrectly drops the
+                // NULL-extended row for every anchor with zero matches — the
+                // exact OPTIONAL MATCH semantics violation this pass exists to
+                // prevent. Drop those conjuncts here, before the rewrite, using
+                // their PRE-rewrite alias (still the anchor's own, e.g. `a`).
+                let pred_owned;
+                let pred: &LogicalExpr =
+                    if let Some(anchor_is_left) = optional_denorm_union_anchor_is_left(gr) {
+                        let anchor_alias = if anchor_is_left {
+                            &gr.left_connection
+                        } else {
+                            &gr.right_connection
+                        };
+                        let remaining: Vec<LogicalExpr> = split_and_predicates_logical(pred)
+                            .into_iter()
+                            .filter(|p| !references_only_alias_logical(p, anchor_alias))
+                            .collect();
+                        match combine_predicates_with_and_logical(remaining) {
+                            Some(combined) => {
+                                pred_owned = combined;
+                                &pred_owned
+                            }
+                            None => {
+                                // Every conjunct was anchor-only and already covered
+                                // by the CTE — nothing left to add for this GraphRel.
+                                predicates.extend(collect_graphrel_predicates(&gr.left));
+                                predicates.extend(collect_graphrel_predicates(&gr.center));
+                                predicates.extend(collect_graphrel_predicates(&gr.right));
+                                return predicates;
+                            }
+                        }
+                    } else {
+                        pred
+                    };
+
                 // #519: a WHERE-clause predicate is already property-mapped by
                 // the time it's folded into `gr.where_predicate` (an earlier
                 // analyzer/optimizer stage rewrites it in place), but an
@@ -4600,10 +4732,21 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
                     };
 
                     if let (Some(_anchor), Some(optional)) = (anchor_alias, optional_alias) {
+                        // #554: only DROP an optional-node-only conjunct here when
+                        // `apply_optional_node_pre_filters` (#474, join_builder.rs)
+                        // will actually claim it — i.e. the optional node's own
+                        // JOIN connects directly to the anchor (node-IS-edge
+                        // shapes). For the traditional separate-edge shape, #474
+                        // declines (by design) and the predicate must survive
+                        // here so `fold_optional_edge_node_join_with_predicate`
+                        // (#479/#552) can find and fold it — see
+                        // `optional_node_shares_table_with_edge`'s doc comment.
+                        let optional_only_is_recoverable = optional_node_shares_table_with_edge(gr);
                         let all_preds = split_and_predicates_logical(&pred);
                         for p in all_preds {
                             let refs_only_rel = references_only_alias_logical(&p, &gr.alias);
-                            let refs_only_optional = references_only_alias_logical(&p, optional);
+                            let refs_only_optional = references_only_alias_logical(&p, optional)
+                                && optional_only_is_recoverable;
 
                             // Keep if it references anchor or multiple aliases
                             // Filter out if it references ONLY rel or ONLY optional node

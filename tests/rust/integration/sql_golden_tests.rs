@@ -2553,13 +2553,81 @@ async fn social_479_plain_optional_where_combined_subquery_preserves_null_extens
         sql.contains("JOIN social.users_bench AS v ON v.user_id ="),
         "#479 regressed: expected the combined subquery's inner node JOIN:\n{sql}"
     );
+    // #552: qualified with the LOCAL subquery alias `v.` — not stripped bare
+    // (a bare `city` would be unambiguous here, but the general rule must
+    // qualify regardless, since some collisions are NOT benign; see the
+    // dedicated #552 regression test below).
     assert!(
-        sql.contains("WHERE city = 'London'"),
+        sql.contains("WHERE v.city = 'London'"),
         "#479 regressed: expected the predicate inside the combined subquery:\n{sql}"
     );
     assert!(
         sql.contains(".__cg_combined_anchor_key = u.user_id"),
         "#479 regressed: expected the combined JOIN gated on the anchor key:\n{sql}"
+    );
+}
+
+/// FIXED (#554): an `Incoming`-direction end-bound OPTIONAL MATCH (anchor on
+/// the RIGHT connection, e.g. `MATCH (a) OPTIONAL MATCH (b)<-[:R]-(a) WHERE
+/// b.prop = X`) rendered with NO WHERE filter applied at ALL — not
+/// misplaced, just silently absent.
+///
+/// Root cause: `collect_graphrel_predicates` (plan_builder_helpers.rs) drops
+/// any conjunct referencing ONLY the optional node's alias, trusting
+/// `apply_optional_node_pre_filters` (#474, join_builder.rs) to re-attach it
+/// as a JOIN `pre_filter` — but that mechanism's own safety gate
+/// deliberately declines for the traditional separate-edge shape (folding
+/// only the node subquery there would resurrect the edge row as a spurious
+/// NULL-extended duplicate). For a separate-edge OPTIONAL MATCH neither
+/// mechanism claims the predicate, so it's silently lost. This only
+/// surfaces when `GraphRel.anchor_connection` is `Some` (the
+/// Incoming-anchor-on-right override, `determine_optional_anchor`); the
+/// common Outgoing/left-anchor shape leaves `anchor_connection` `None` by
+/// design and hits the "keep everything" conservative branch instead, so
+/// Outgoing was never affected — this is why the bug is direction-specific.
+///
+/// Fixed by only excluding an optional-only conjunct when the optional
+/// node's own table is structurally shared with the relationship's scan
+/// (`optional_node_shares_table_with_edge`) — exactly when #474 will claim
+/// it — otherwise keeping it so `fold_optional_edge_node_join_with_predicate`
+/// (#479/#552) can find and fold it, matching Outgoing's existing behavior.
+///
+/// Live-verified (2026-07-11, social benchmark, 8 users): this Incoming SQL
+/// now renders byte-identically (module alias numbering) to the Outgoing
+/// form above and returns the same 8-row result set with correct NULL
+/// extension for the two users (Grace Hopper, Hank Pym) with no qualifying
+/// `country = 'USA'` follow — pre-fix it returned all 8 rows UNFILTERED
+/// (the WHERE was silently absent, not just misplaced).
+#[tokio::test]
+async fn social_554_incoming_direction_optional_where_not_dropped() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (a:User) OPTIONAL MATCH (b:User)<-[:FOLLOWS]-(a) \
+                  WHERE b.city = 'London' RETURN a.name, b.name";
+    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+
+    // The WHERE must survive SOMEWHERE — either folded into the combined
+    // subquery (matching Outgoing) or, at minimum, present in the outer
+    // WHERE. The bug was TOTAL disappearance, not misplacement.
+    assert!(
+        sql.contains("city"),
+        "#554 regressed: WHERE clause dropped entirely for the Incoming \
+         end-bound OPTIONAL MATCH shape:\n{sql}"
+    );
+    // Matching Outgoing's existing (#479/#552) correct behavior: folded into
+    // the combined LEFT JOIN subquery, qualified with the node's own local
+    // alias, gated on the anchor key — NOT a bare post-join outer WHERE.
+    assert!(
+        sql.contains("WHERE b.city = 'London'"),
+        "#554 regressed: expected the predicate folded into the combined \
+         subquery (qualified with the node's local alias `b.`), matching \
+         the Outgoing-direction shape:\n{sql}"
+    );
+    assert!(
+        !sql.lines()
+            .any(|l| l.trim_start().starts_with("WHERE b.city")),
+        "#554 regressed: predicate is in a bare outer WHERE post-LEFT-JOIN \
+         (drops NULL-extended anchors), not folded into the combined \
+         subquery:\n{sql}"
     );
 }
 
@@ -2626,6 +2694,69 @@ async fn denorm_479_plain_optional_where_drops_null_extended_rows_known_broken()
     );
 }
 
+/// FIXED (#553): zero-match ANCHOR with an inline-map predicate on a
+/// denormalized schema returned 0 rows instead of one NULL-extended row.
+///
+/// `MATCH (a:Airport {code:'PHX'}) OPTIONAL MATCH (a)-[r:FLIGHT]->
+/// (b:Airport)` — PHX has zero outgoing FLIGHT edges in the committed
+/// `db_denormalized` fixture. Root cause: the anchor's inline-map predicate
+/// is independently (a) folded correctly into the `__denorm_scan_a` CTE
+/// (`materialize_standalone_denorm_scans`, type_inference.rs — each UNION
+/// branch gets its own role-mapped copy: `WHERE a.origin_code = 'PHX'` /
+/// `WHERE a.dest_code = 'PHX'`), AND (b) left behind whole in
+/// `GraphRel.where_predicate`, which `collect_graphrel_predicates`
+/// (plan_builder_helpers.rs) then property-map-resolves through the
+/// connected relationship's role (a denormalized node has no
+/// `property_mapping` of its own) — landing on `r.origin_code`, the
+/// LEFT-JOINed (nullable) alias. That produced a redundant, WRONG outer
+/// `WHERE r.origin_code = 'PHX'`: correct when the anchor has >=1 matching
+/// edge (coincidentally passed pre-existing test coverage), but for a
+/// zero-match anchor the LEFT JOIN NULL-extends `r`, so `NULL = 'PHX'`
+/// fails the bare WHERE and drops the row entirely — violating OPTIONAL
+/// MATCH semantics.
+///
+/// Fixed by dropping conjuncts that reference ONLY the anchor's own alias
+/// from `GraphRel.where_predicate` before the outer-WHERE rewrite, when the
+/// anchor is a denormalized standalone-scan CTE (they're already correctly
+/// embedded in the CTE by `materialize_standalone_denorm_scans`).
+///
+/// Live-verified (2026-07-11, db_denormalized): PHX has 0 outgoing FLIGHT
+/// rows (`origin_code = 'PHX'` count 0) and appears once as a dest-only
+/// airport (DEN -> PHX). Pre-fix SQL (`WHERE r.origin_code = 'PHX'` after
+/// the LEFT JOIN) returns 0 rows against live ClickHouse; post-fix SQL (no
+/// outer WHERE — the CTE already filters to just PHX) returns exactly 1 row
+/// `{a.code: "PHX", b.code: NULL}`, matching OPTIONAL MATCH ground truth.
+/// A non-zero-match anchor (DEN, which has an outgoing flight to PHX)
+/// returns `{a.code: "DEN", b.code: "PHX"}` both before and after the fix —
+/// unaffected, confirming the fix only removes the SPURIOUS zero-match-only
+/// filtering, not the join itself.
+#[tokio::test]
+async fn denorm_553_zero_match_anchor_inline_map_preserves_null_extended_row() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+    let cypher = "MATCH (a:Airport {code:'PHX'}) OPTIONAL MATCH (a)-[r:FLIGHT]->(b:Airport) \
+                  RETURN a.code, b.code";
+    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+
+    // No outer WHERE re-applying the anchor's own predicate against the
+    // nullable relationship alias `r` — it's already embedded in the CTE.
+    // (The CTE's OWN inner `WHERE a.origin_code = 'PHX'` / `WHERE
+    // a.dest_code = 'PHX'` lines are fine and expected — checked below —
+    // this only guards against a bare TOP-LEVEL `WHERE r....` line.)
+    assert!(
+        !sql.lines().any(|l| l.trim_start().starts_with("WHERE r.")),
+        "#553 regressed: anchor predicate is back in a bare outer WHERE \
+         against the nullable relationship alias — drops the zero-match \
+         anchor's NULL-extended row:\n{sql}"
+    );
+    // The CTE itself must still carry the anchor's filter (both origin and
+    // dest role branches), so the anchor scan itself is correctly narrowed.
+    assert!(
+        sql.contains("WHERE a.origin_code = 'PHX'") && sql.contains("WHERE a.dest_code = 'PHX'"),
+        "#553 regressed: expected the anchor's inline-map predicate inside \
+         the __denorm_scan CTE (both origin/dest role branches):\n{sql}"
+    );
+}
+
 /// FIXED (#533, was the third #479 gap): composite-key OPTIONAL MATCH
 /// WHERE-on-optional-node. `composite_node_ids.yaml` (Account identified by
 /// the TWO-column key `[bank_id, account_number]`) renders the classic
@@ -2673,10 +2804,11 @@ async fn composite_479_optional_where_folds_into_combined_join_533() {
         "#533 regressed: expected the combined subquery's inner composite-key \
          node JOIN:\n{sql}"
     );
+    // #552: qualified with the LOCAL subquery alias `a.`, not stripped bare.
     assert!(
-        sql.contains("WHERE balance > 10000"),
-        "#533 regressed: expected the (alias-stripped) predicate inside the \
-         combined subquery:\n{sql}"
+        sql.contains("WHERE a.balance > 10000"),
+        "#533/#552 regressed: expected the alias-qualified predicate inside \
+         the combined subquery:\n{sql}"
     );
     assert!(
         sql.contains(".__cg_combined_anchor_key = c.customer_id"),
@@ -2724,10 +2856,54 @@ async fn composite_479_optional_where_folds_fully_composite_keys_533() {
         "#533 (fully-composite) regressed: expected the combined JOIN gated \
          on both anchor key columns:\n{sql}"
     );
+    // #552: qualified with the LOCAL subquery alias `b.`, not stripped bare.
     assert!(
-        sql.contains("WHERE balance > 10000"),
-        "#533 (fully-composite) regressed: expected the predicate inside the \
-         combined subquery:\n{sql}"
+        sql.contains("WHERE b.balance > 10000"),
+        "#533/#552 (fully-composite) regressed: expected the alias-qualified \
+         predicate inside the combined subquery:\n{sql}"
+    );
+}
+
+/// #552: `fold_optional_edge_node_join_with_predicate`'s combined LEFT JOIN
+/// subquery has TWO tables in scope (the edge and the node), so a WHERE
+/// predicate rendered without its table-alias qualifier is ambiguous
+/// whenever the two tables share a column name — ClickHouse silently binds
+/// the unqualified reference to whichever table it resolves first. On
+/// `composite_node_ids.yaml`, `account_ownership` (the OWNS edge table) and
+/// `accounts` (the Account node table) BOTH have a `bank_id` column: the
+/// pre-fix SQL was `... FROM db_composite_id.account_ownership AS t1 JOIN
+/// db_composite_id.accounts AS a ON a.bank_id = t1.bank_id AND ... WHERE
+/// bank_id = 'CHASE'` — bare `bank_id`, ambiguous between `t1` and `a`.
+/// Today this specific collision is coincidentally benign (it's the
+/// equality-joined key column itself, so both sides hold the same value
+/// after the JOIN), but the SAME rendering mechanism would silently bind to
+/// the wrong table for any NON-equality-joined colliding column — a live
+/// silent-wrong-results trap. Fixed by qualifying with the node's own local
+/// alias (`a.bank_id`), which is genuinely in scope inside the subquery.
+///
+/// Live-verified (2026-07-11, db_composite_id): pre-fix and post-fix SQL
+/// both happen to return the same rows here (coincidental benign collision),
+/// but the post-fix SQL is unambiguous by construction rather than by luck.
+#[tokio::test]
+async fn composite_552_combined_subquery_predicate_qualified_not_ambiguous() {
+    let schema = load_schema(SchemaId::CompositeId.yaml_path());
+    let cypher = "MATCH (c:Customer) OPTIONAL MATCH (c)-[:OWNS]->(a:Account) \
+                  WHERE a.bank_id = 'CHASE' RETURN c.name, a.account_number";
+    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+
+    // The predicate must be qualified with the node's own local alias `a.` —
+    // not a bare column, which is ambiguous against the edge alias `t1`
+    // (both `account_ownership` and `accounts` have a `bank_id` column).
+    assert!(
+        sql.contains("WHERE a.bank_id = 'CHASE'"),
+        "#552 regressed: predicate must be qualified with the node's local \
+         alias inside the combined subquery (bare `bank_id` is ambiguous \
+         against the edge table's own `bank_id` column):\n{sql}"
+    );
+    assert!(
+        !sql.contains("WHERE bank_id = 'CHASE'"),
+        "#552 regressed: predicate is back to an unqualified bare column, \
+         ambiguous between the edge and node tables:\n{sql}"
     );
 }
 
@@ -2793,13 +2969,16 @@ async fn array_property_477_pre_filter_preserves_array_membership_in() {
                   WHERE 'a' IN o.tags RETURN a.name, o.id";
     let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
 
+    // #552: qualified with the LOCAL subquery alias `o.`, not stripped bare.
     assert!(
-        sql.contains("has(tags, 'a')"),
-        "#477 (array-membership) regressed: expected `has(tags, 'a')` inside \
-         the combined LEFT JOIN subquery, got:\n{sql}"
+        sql.contains("has(o.tags, 'a')"),
+        "#477/#552 (array-membership) regressed: expected `has(o.tags, 'a')` \
+         inside the combined LEFT JOIN subquery, got:\n{sql}"
     );
     assert!(
-        !sql.contains("'a' IN tags") && !sql.contains("'a' in tags"),
+        !sql.contains("'a' IN tags")
+            && !sql.contains("'a' in tags")
+            && !sql.contains("'a' IN o.tags"),
         "#477 (array-membership) regressed: predicate degraded to a bare \
          scalar IN, which ClickHouse rejects:\n{sql}"
     );
