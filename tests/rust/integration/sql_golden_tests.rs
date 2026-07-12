@@ -7606,6 +7606,20 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
     /// San Francisco=2 — summing to the same 32, confirming no rows were lost,
     /// only mis-grouped pre-fix) — byte-identical to the pre-#465-branch `main`
     /// baseline's output for the same query.
+    ///
+    /// UPDATED for #551: the outer `GROUP BY` used to reference the exported
+    /// `origin_city` column — city was the only column this UNION branch
+    /// exported at the time, and it happened to be usable as a (coincidental,
+    /// non-identity) grouping key only because this fixture's cities are 1:1
+    /// with airport codes. #551 fixed `expand_table_alias_to_group_by_id_only`
+    /// to resolve the node's REAL identity column (`origin_code`) instead of
+    /// whatever property happened to be exported/first — the UNION branches
+    /// now additionally export `origin_code` and the outer `GROUP BY`
+    /// references that instead. Row-level output for THIS fixture is
+    /// unchanged (verified via `cg query`, same 6 rows/counts as above)
+    /// because city and code are 1:1 here; the SQL shape assertion below is
+    /// updated to match the new (identity-correct, and now portable to
+    /// fixtures where city is NOT 1:1 with code) column.
     #[tokio::test]
     async fn denorm_with_aggregate_group_by_middle_node_no_null_collapse_465_blocking() {
         let schema = load_schema(SchemaId::Denormalized.yaml_path());
@@ -7640,11 +7654,14 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
              UNION must export the real `origin_city` column (not NULL), \
              found {export_count} exports:\n{sql}"
         );
-        let group_by_re = regex::Regex::new(r#"GROUP BY `?t\d+\.origin_city`?"#).unwrap();
+        // #551: GROUP BY must reference the node's actual identity column
+        // (origin_code), not a coincidentally-exported display property
+        // (origin_city) — see the doc comment UPDATE note above.
+        let group_by_re = regex::Regex::new(r#"GROUP BY `?t\d+\.origin_code`?"#).unwrap();
         assert!(
             group_by_re.is_match(&sql),
-            "465-blocking: outer GROUP BY must reference the exported real \
-             column:\n{sql}"
+            "465-blocking/#551: outer GROUP BY must reference the node's \
+             identity column (origin_code), not origin_city:\n{sql}"
         );
 
         // Determinism.
@@ -9125,18 +9142,16 @@ mod with_aggregate_denorm_mixed_sources_family_549_550 {
     /// shape — the CTE exports no carrier column); post-fix it executes and
     /// returns 4 rows.
     ///
-    /// CAVEAT (adversarial review, 2026-07-11): 4 rows is NOT correct
-    /// grouping — true node-identity grouping (by `origin_code`) is 5 rows
-    /// (LAX=6, ORD=2, JFK=1, ATL=1, DEN=1). The 4-row result reflects a
-    /// PRE-EXISTING, independent bug: single-id denorm nodes fall through
+    /// CAVEAT (adversarial review, 2026-07-11): at the time this test was
+    /// written, this query returned 4 rows, NOT correct node-identity
+    /// grouping (5 rows: LAX=6, ORD=2, JFK=1, ATL=1, DEN=1) — a PRE-EXISTING,
+    /// independent bug where single-id denorm nodes fell through
     /// `expand_table_alias_to_group_by_id_only`'s "Fallback 2: use first
-    /// property" (plan_builder_utils.rs ~6290), so the CTE groups by
-    /// `t2.carrier` instead of node identity, silently merging
-    /// Atlanta/Delta with LAX's Delta flights and Los Angeles/American
-    /// with JFK's. That bug exists identically on main (byte-identical
-    /// GROUP BY pre/post this branch) and is tracked as its own issue;
-    /// this test only locks the (genuinely fixed) property-EXPORT shape,
-    /// not the grouping.
+    /// property" (plan_builder_utils.rs), grouping by `t2.carrier` instead of
+    /// node identity. That bug is now FIXED by #551 (see
+    /// `single_id_denorm_with_aggregate_family_551` below) — this test only
+    /// ever locked the property-EXPORT shape, not the grouping, so it is
+    /// unaffected by and does not re-assert the #551 fix.
     #[tokio::test]
     async fn property_mappings_column_survives_with_aggregate_barrier_549() {
         let schema = load_schema(MIXED_SOURCES_SCHEMA);
@@ -9284,6 +9299,184 @@ mod with_aggregate_denorm_mixed_sources_family_549_550 {
             sql.contains("GROUP BY a.bank_id, a.account_number"),
             "#550 guard: standard composite-id GROUP BY must keep the \
              pre-#550 alias + identity-column form:\n{sql}"
+        );
+    }
+}
+
+/// Regression tests for #551: a single-id denormalized node behind a
+/// WITH-aggregate barrier used to GROUP BY the FIRST PROPERTY returned by
+/// `get_properties_with_table_alias` (alphabetically sorted by Cypher
+/// property name) instead of the node's actual identity column — silently
+/// wrong grouping, not a crash, since every candidate column is a real
+/// physical column on the edge table.
+///
+/// Found during adversarial review of fix/549-with-aggregate-denorm-edge-cases
+/// (merged 5559ab2e); PRE-EXISTING on `main` (byte-identical GROUP BY
+/// before/after that branch). #550 (same branch) had already implemented the
+/// analogous identity-resolution treatment for the COMPOSITE-id path via
+/// `get_properties_with_table_alias`, but gated it on
+/// `node_schema.node_id.is_composite()`, leaving the (far more common)
+/// single-id path on the old "Fallback 2: use first property" behavior.
+///
+/// Root cause (two layers):
+/// 1. `expand_table_alias_to_group_by_id_only`'s single-id resolution chain
+///    (`find_id_column_for_alias`, then the non-recursive
+///    `find_label_for_alias`) never reaches a denormalized node's true
+///    identity when that node sits BETWEEN two edges in a chain
+///    (`(a)-[:T]->(b)-[:T]->(c)`): `b` has no `ViewScan`/`GraphNode` of its
+///    own — its properties come straight off the edge `ViewScan`'s
+///    role-specific property maps — so both lookups fail and execution
+///    fell all the way to "Fallback 2: use first property".
+/// 2. Even the RECURSIVE label lookup the #550 composite guard uses
+///    (`cte_extraction::get_node_label_for_alias`) only matches actual
+///    `GraphNode`s, so it ALSO misses this shape for an UNLABELED chain node
+///    (`(b)` with no explicit `:Label` — the shape of #551's own repro,
+///    where type inference never synthesizes a `GraphNode` for `b` at all).
+///
+/// Fix: `find_denorm_connection_node_label` (new helper,
+/// `plan_builder_utils.rs`) resolves the label for a `GraphRel`
+/// `left_connection`/`right_connection` with no backing `GraphNode`, by
+/// reading the relationship TYPE off `GraphRel.labels` and looking up that
+/// type's `from_node`/`to_node` in the schema catalog (`left_connection` is
+/// always the FROM side, `right_connection` always the TO side — the same
+/// invariant `get_properties_with_table_alias` already relies on for this
+/// shape). `expand_table_alias_to_group_by_id_only` tries the existing
+/// recursive `GraphNode` lookup FIRST (covers a labeled chain node), then
+/// falls back to this new connection-based lookup (covers the unlabeled
+/// case); either way, once a label resolves, the (non-composite) id
+/// property name is mapped to its role-specific physical column via
+/// `get_properties_with_table_alias` — mirroring #550's treatment exactly,
+/// just for the single-id path. Resolution failure at any step falls
+/// through unchanged to the pre-#551 "first property" fallback.
+///
+/// Live-verified (2026-07-11, db_denormalized, ClickHouse via `cg query`):
+/// pre-fix the issue's exact (unlabeled) repro returns 4 rows (Los
+/// Angeles/American=5, Chicago/United=2, Atlanta/Delta=3, Denver/Southwest=1
+/// — Atlanta/Delta silently absorbed LAX's Delta flights, Los
+/// Angeles/American absorbed JFK's); post-fix it returns 5 rows matching
+/// true node-identity grouping (Los Angeles/American=6, Chicago/United=2,
+/// New York/American=1, Atlanta/Delta=1, Denver/Southwest=1).
+mod single_id_denorm_with_aggregate_family_551 {
+    use super::*;
+
+    const MIXED_SOURCES_SCHEMA: &str = "schemas/dev/flights_denorm_mixed_sources.yaml";
+
+    /// #551 (issue's own repro shape): UNLABELED single-id denorm chain node
+    /// `b` sitting between two edges. No `GraphNode` exists anywhere in the
+    /// plan for `b` — this is the shape the `find_denorm_connection_node_label`
+    /// connection-based fallback specifically covers (the recursive
+    /// `GraphNode`-based lookup used by the LABELED sibling test below misses
+    /// it entirely).
+    #[tokio::test]
+    async fn unlabeled_single_id_denorm_group_by_resolves_identity_551() {
+        let schema = load_schema(MIXED_SOURCES_SCHEMA);
+        let cypher = "MATCH (a)-[:CARRIER_FLIGHT]->(b)-[:CARRIER_FLIGHT]->(c) \
+                      WITH b, count(*) AS n RETURN b.city, b.carrier, n";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        let group_by_re = regex::Regex::new(r#"GROUP BY t\d+\.origin_code\b"#).unwrap();
+        assert!(
+            group_by_re.is_match(&sql),
+            "#551 regressed: GROUP BY must reference the node's identity \
+             column (origin_code) on the edge alias, not the first property \
+             returned by property resolution:\n{sql}"
+        );
+        // Never the old silently-wrong "first property" fallback.
+        assert!(
+            !sql.contains("GROUP BY t1.carrier") && !sql.contains("GROUP BY t2.carrier"),
+            "#551 regressed: GROUP BY references `carrier` (an arbitrary \
+             non-identity property) instead of the node's identity column:\n{sql}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(sql, again, "#551: nondeterministic render");
+        }
+    }
+
+    /// #551 sibling shape: same query, but `b` is explicitly LABELED
+    /// (`(b:AirportWithCarrier)`), so type inference DOES synthesize a
+    /// `GraphNode` for it and the recursive `GraphNode`-based label lookup
+    /// (`cte_extraction::get_node_label_for_alias`) resolves it directly,
+    /// without needing the connection-based fallback. Both paths must land
+    /// on the same correct identity column.
+    #[tokio::test]
+    async fn labeled_single_id_denorm_group_by_resolves_identity_551() {
+        let schema = load_schema(MIXED_SOURCES_SCHEMA);
+        let cypher = "MATCH (a:AirportWithCarrier)-[:CARRIER_FLIGHT]->(b:AirportWithCarrier)\
+                      -[:CARRIER_FLIGHT]->(c:AirportWithCarrier) \
+                      WITH b, count(*) AS n RETURN b.city, b.carrier, n";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        let group_by_re = regex::Regex::new(r#"GROUP BY t\d+\.origin_code\b"#).unwrap();
+        assert!(
+            group_by_re.is_match(&sql),
+            "#551 regressed (labeled variant): GROUP BY must reference the \
+             node's identity column (origin_code):\n{sql}"
+        );
+    }
+
+    /// #551 on the REAL `flights_denormalized.yaml` schema (not the
+    /// synthetic mixed-sources fixture): before the fix this rendered
+    /// `GROUP BY t2.origin_city`, which happened to look "correct" only
+    /// because the fixture's cities are 1:1 with airport codes — a
+    /// coincidence, not a guarantee. Post-fix it must reference the actual
+    /// declared identity property (`code` -> `origin_code`).
+    #[tokio::test]
+    async fn real_denorm_schema_group_by_resolves_identity_not_city_551() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let cypher = "MATCH (a:Airport)-[:FLIGHT]->(b:Airport)-[:FLIGHT]->(c:Airport) \
+                      WITH b, count(*) AS n RETURN b.city, n";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        let group_by_re = regex::Regex::new(r#"GROUP BY t\d+\.origin_code\b"#).unwrap();
+        assert!(
+            group_by_re.is_match(&sql),
+            "#551 regressed: real denorm schema must GROUP BY the declared \
+             node_id property (origin_code), never a coincidentally-1:1 \
+             display property like origin_city:\n{sql}"
+        );
+    }
+
+    /// #551 guard: a STANDARD (non-denormalized) single-id node reached
+    /// through a multi-hop chain must render byte-identically to before the
+    /// fix — it already resolves through `find_id_column_for_alias`
+    /// (THIRD, ahead of the new #551 fallback) via its own real
+    /// `ViewScan`/`GraphNode`, so the new connection-based label resolution
+    /// must never even be reached.
+    #[tokio::test]
+    async fn standard_schema_multi_hop_group_by_unchanged_551() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let cypher = "MATCH (a:User)-[:FOLLOWS]->(b)-[:FOLLOWS]->(c) \
+                      WITH b, count(*) AS n RETURN b.name, n";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        assert!(
+            sql.contains("GROUP BY b.user_id"),
+            "#551 guard: standard-schema multi-hop GROUP BY must keep the \
+             pre-#551 alias + real id-column form:\n{sql}"
+        );
+    }
+
+    /// #551 guard: the fix must not disturb the #550 composite-id path — a
+    /// LABELED composite-id denorm chain node must still emit both identity
+    /// columns via the SECOND (composite) check, never fall into the new
+    /// single-id resolution added by this fix.
+    #[tokio::test]
+    async fn composite_id_denorm_unaffected_by_551_guard() {
+        let schema = load_schema(MIXED_SOURCES_SCHEMA);
+        let cypher = "MATCH (a:AirportComposite)-[:COMPOSITE_FLIGHT]->(b:AirportComposite)\
+                      -[:COMPOSITE_FLIGHT]->(c:AirportComposite) \
+                      WITH b, count(*) AS n RETURN b.city, n";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        let group_by_re =
+            regex::Regex::new(r#"GROUP BY t\d+\.origin_code, t\d+\.origin_state"#).unwrap();
+        assert!(
+            group_by_re.is_match(&sql),
+            "#551 guard: #550's composite-id GROUP BY resolution must be \
+             unaffected:\n{sql}"
         );
     }
 }
