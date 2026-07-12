@@ -8257,54 +8257,102 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
         }
     }
 
-    /// #529 shape 1 — KNOWN BROKEN, investigated further (R2) but STILL NOT
-    /// fixed here (distinct mechanism from shape 2 above; the exact
-    /// mutation site remains unpinned despite two investigation rounds).
-    /// `MATCH (a:IP)-[r:ACCESSED]-(b:IP) WITH a, count(r) AS c RETURN a.ip,
-    /// c` (a PLAIN, non-optional undirected self-edge feeding a
-    /// `WITH`-aggregate) generates a malformed CTE column alias containing
-    /// an embedded, doubled double-quote inside a backtick identifier:
-    /// `` `r."id.orig_h"` `` — ClickHouse parses the backticks as ONE
-    /// identifier literally named `r."id.orig_h"` (quote characters
+    /// #529 shape 1 — KNOWN BROKEN, investigated further (R3) but STILL NOT
+    /// fixed here — the exact mutation site IS now conclusively pinned (a
+    /// gdb-verified live trace, not static reading), but implementing that
+    /// fix uncovered TWO ADDITIONAL, deeper bugs in this exact shape that
+    /// would turn the current LOUD failure into a SILENT wrong result if the
+    /// alias fix shipped alone — ground-rule-1 territory, so the whole thing
+    /// stays deferred as a package. `MATCH (a:IP)-[r:ACCESSED]-(b:IP) WITH a,
+    /// count(r) AS c RETURN a.ip, c` (a PLAIN, non-optional undirected
+    /// self-edge feeding a `WITH`-aggregate) generates a malformed CTE column
+    /// alias containing an embedded, doubled double-quote inside a backtick
+    /// identifier: `` `r."id.orig_h"` `` — ClickHouse parses the backticks as
+    /// ONE identifier literally named `r."id.orig_h"` (quote characters
     /// included), which doesn't exist — UNKNOWN_IDENTIFIER.
     ///
     /// This does NOT go through the OPTIONAL-denorm-CTE-anchor machinery
     /// (`find_inner_optional_denorm_graphrel` /
     /// `denorm_scan_cte_anchor_id_property`, shape 2's fix site) at all — no
-    /// `OPTIONAL` keyword, no anchor CTE.
+    /// `OPTIONAL` keyword, no anchor CTE. R2's `normalize_union_branches`
+    /// lead (`plan_builder_helpers.rs`) was a dead end — a look-alike
+    /// mechanism, not the source (see below).
     ///
-    /// R2 progress (still not conclusive): the malformed name is NOT
-    /// invented at NULL-padding time — `plan_builder_helpers.rs`'s
-    /// `normalize_union_branches` (which pads a UNION branch missing a
-    /// column with `NULL AS <alias>`, explaining why BOTH inner-union
-    /// branches show `NULL AS "r.""id.orig_h"""` in the render, not just
-    /// one) only ever REPLAYS a `col_alias` string that some earlier branch
-    /// already carried into its `all_aliases` collection
-    /// (`union_plans.iter().flat_map(|plan| plan.select.items...col_alias)`) —
-    /// it never constructs a new name itself. So the malformed name
-    /// `r."id.orig_h"` (with literal embedded quote characters) must
-    /// originate as a GENUINE `col_alias` on some OTHER, not-directly-shown
-    /// branch/expression upstream of this normalization step, most likely
-    /// wherever the WITH-clause CTE builder decides what column name should
-    /// represent the bare relationship variable `r`'s identity for the inner
-    /// per-role union (since IP is denormalized over `conn_log`, an
-    /// undirected self-edge needs a from/to-role split even outside the
-    /// OPTIONAL-anchor path) — a plausible culprit remains
-    /// `quote_qualified_col` (or an equivalent value-reference quoting
-    /// helper, builds `alias."col"` for VALUE-reference purposes) being
-    /// reused to construct a column ALIAS (which must be a bare identifier,
-    /// not a quoted qualified reference) at some call site within
-    /// `plan_builder_utils.rs`'s ~19K lines, but that exact site is still
-    /// not conclusively pinned. Needs dedicated follow-up with the
-    /// `normalize_union_branches` finding above as a starting point (trace
-    /// backward from `all_aliases` to find which branch/expression first
-    /// carries the malformed `col_alias`, rather than forward from
-    /// NULL-padding).
+    /// R3 (this round) pinned the ACTUAL site with `gdb`, breaking on
+    /// `ClickhouseFunctionMapper::quote_alias` while running this test:
+    /// `src/sql_generator/emitters/clickhouse/to_sql_query.rs`'s
+    /// `build_union_inner_select` mints the malformed alias at its "add
+    /// aggregate argument columns" loop — `col_sql` (a dialect-rendered
+    /// VALUE-expression string, e.g. `r."id.orig_h"` — `PropertyValue::to_sql`
+    /// correctly double-quotes just the physical-column part when it embeds
+    /// a dot, like Zeek's `id.orig_h`) is reused AS an alias by feeding it
+    /// straight into `quote_alias(col_sql)`, which escapes the embedded `"`
+    /// by DOUBLING it and wraps the whole thing in an outer quote pair —
+    /// producing the literal malformed text. The same raw `col_sql` is
+    /// ALSO reused as a bare-identifier lookup key in three sibling spots
+    /// (`agg_arg_col_valid_for_branch`'s `col_sql.rsplit('.').next()`
+    /// physical-column extraction, `build_outer_aggregate_select`'s raw
+    /// `format!("`{}}`", col_ref)` backtick-wrap of the outer aggregate
+    /// reference, and `build_aliased_group_by`'s analogous GROUP BY case) —
+    /// all of which mis-parse `r."id.orig_h"` (e.g. `rsplit('.').next()`
+    /// yields `orig_h"`, a trailing stray quote) because the physical column
+    /// name itself contains a dot.
     ///
-    /// Live-confirmed: loud failure (UNKNOWN_IDENTIFIER), not silent wrong
-    /// results — lower urgency than #504's silent-wrong symptom; #508/#530/
-    /// #543/#471/#529-shape-2 are all fixed in this stream (R1 fixed #508/
-    /// shape-2; R2 fixed #543/#530/#471).
+    /// A minimal, isolated fix for JUST the alias-construction bug (a
+    /// `split_agg_arg_col`/`agg_arg_alias_key` pair of pure functions that
+    /// correctly separate `alias` from a possibly-`"`-quoted physical column,
+    /// used at all four sites above) was implemented and verified to produce
+    /// syntactically valid SQL. But applying it surfaced TWO further,
+    /// previously-unreachable-behind-the-crash bugs in this exact shape:
+    ///
+    /// 1. `table_valid_columns`'s #476 NULL-padding validity check only ever
+    ///    consulted `NodeSchema::all_valid_physical_columns()` — for a
+    ///    relationship-owned column referenced by a bare aggregate argument
+    ///    on `r` (here, `r`'s own edge_id, `uid`), the anchor's NODE schema
+    ///    (`IP`) simply doesn't know about it, so `agg_arg_col_valid_for_branch`
+    ///    always returned false and BOTH UNION branches got `NULL AS "r.uid"`
+    ///    — `count(r)` would render as valid SQL but ALWAYS return 0,
+    ///    regardless of actual row count. (A `RelationshipSchema::
+    ///    all_valid_physical_columns` companion accessor + folding its
+    ///    results into `table_valid_columns` fixes this specific gap and was
+    ///    also implemented and verified.)
+    /// 2. Deeper and NOT fixed: even with both of the above in place, the
+    ///    rendered SQL's two UNION ALL branches are BYTE-IDENTICAL — both
+    ///    project `r."id.orig_h"` for `a`'s identity; neither ever projects
+    ///    `r."id.resp_h"`. For an UNDIRECTED self-edge this must alternate
+    ///    (exactly as the already-fixed, already-tested OPTIONAL sibling
+    ///    shape's `__denorm_scan_a` CTE does: one branch per role). Live
+    ///    execution against the zeek fixture with both of the above fixes
+    ///    applied returns 3 rows (`192.168.1.10`, `93.184.216.34`,
+    ///    `192.168.1.20`, each `c=2`) instead of the true 5 distinct IPs
+    ///    (ground truth via raw SQL: `{10.0.0.99: 1, 142.250.80.46: 1,
+    ///    192.168.1.10: 1, 192.168.1.20: 1, 93.184.216.34: 2}`) — silently
+    ///    dropping 2 IPs entirely and double-counting the other 3. Confirmed
+    ///    PRE-EXISTING (not introduced by the alias/validity fixes above) by
+    ///    diffing against the unfixed build's SQL, which shows the same
+    ///    duplicate (non-alternating) branch shape underneath its NULL
+    ///    padding. Root cause not investigated further within this round's
+    ///    budget — likely in whatever builds the inner per-role UNION for a
+    ///    bare relationship-variable aggregate on a self-referencing coupled
+    ///    edge outside the OPTIONAL-anchor-CTE path (`bidirectional_union.rs`
+    ///    or its `WITH`-aggregate CTE-building caller) — genuinely separate,
+    ///    un-pinned planner-level work.
+    ///
+    /// Given #2 is a SILENT wrong-result bug (missing rows + inflated
+    /// counts) reachable only once #1's NULL-padding gap and the alias crash
+    /// are both fixed, shipping only the alias fix (or the alias+validity
+    /// fixes together) would trade today's LOUD failure for a WORSE, silent
+    /// one — explicitly the class of change ground rule 1 forbids. All three
+    /// fixes therefore stay deferred as one package; the alias-construction
+    /// and validity-gating fixes are fully designed and gdb/live-verified in
+    /// isolation (this comment preserves that work for the next round) but
+    /// were reverted rather than landed partially.
+    ///
+    /// Live-confirmed: loud failure (UNKNOWN_IDENTIFIER) today, not silent
+    /// wrong results — lower urgency than #504's silent-wrong symptom, but
+    /// the investigation above shows a NAIVE fix would flip that ordering;
+    /// #508/#530/#543/#471/#529-shape-2 are all fixed in this stream (R1
+    /// fixed #508/shape-2; R2 fixed #543/#530/#471).
     #[tokio::test]
     async fn undirected_plain_with_aggregate_malformed_cte_alias_known_broken_529_shape1() {
         let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
