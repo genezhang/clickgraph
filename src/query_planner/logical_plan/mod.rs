@@ -2056,6 +2056,153 @@ impl LogicalPlan {
 }
 
 impl LogicalPlan {
+    /// Return references to all direct `LogicalPlan` children of this node.
+    ///
+    /// This is the single, exhaustive child-enumeration API for `LogicalPlan`.
+    /// It is derived directly from the struct definitions: every field typed
+    /// `Arc<LogicalPlan>`, `Option<Arc<LogicalPlan>>`, or `Vec<Arc<LogicalPlan>>`
+    /// is a child. The `match` has NO catch-all arm, so adding a new variant is a
+    /// compile error until it is handled here.
+    ///
+    /// Notes on non-obvious cases:
+    /// - `ViewScan` is **not** a leaf — it carries an optional `input` child
+    ///   (`ViewScan.input: Option<Arc<LogicalPlan>>`). The `Display` helper
+    ///   `fmt_with_tree` incorrectly treats it as a leaf; this method does not.
+    /// - `GraphNode` has exactly one child (`input`); there is no `self_plan`
+    ///   field (the commented-out reference in `fmt_with_tree` is stale).
+    /// - `GraphJoins.joins` hold `Arc<GraphRel>` values (a struct, not a
+    ///   `LogicalPlan`), so they are not plan-tree children — only `input` is.
+    /// - `Empty` and `PageRank` are true leaves.
+    pub fn children(&self) -> Vec<&LogicalPlan> {
+        match self {
+            LogicalPlan::Empty => vec![],
+            LogicalPlan::PageRank(_) => vec![],
+            LogicalPlan::ViewScan(vs) => vs.input.as_deref().into_iter().collect(),
+            LogicalPlan::GraphNode(n) => vec![&n.input],
+            LogicalPlan::GraphRel(r) => vec![&r.left, &r.center, &r.right],
+            LogicalPlan::Filter(x) => vec![&x.input],
+            LogicalPlan::Projection(x) => vec![&x.input],
+            LogicalPlan::GroupBy(x) => vec![&x.input],
+            LogicalPlan::OrderBy(x) => vec![&x.input],
+            LogicalPlan::Skip(x) => vec![&x.input],
+            LogicalPlan::Limit(x) => vec![&x.input],
+            LogicalPlan::Cte(x) => vec![&x.input],
+            LogicalPlan::GraphJoins(x) => vec![&x.input],
+            LogicalPlan::Union(u) => u.inputs.iter().map(|c| c.as_ref()).collect(),
+            LogicalPlan::Unwind(x) => vec![&x.input],
+            LogicalPlan::CartesianProduct(cp) => vec![&cp.left, &cp.right],
+            LogicalPlan::WithClause(w) => vec![&w.input],
+            LogicalPlan::Create(c) => vec![&c.input],
+            LogicalPlan::SetProperties(sp) => vec![&sp.input],
+            LogicalPlan::Delete(d) => vec![&d.input],
+            LogicalPlan::Remove(r) => vec![&r.input],
+        }
+    }
+
+    /// Apply `f` to each direct `LogicalPlan` child, in child order.
+    ///
+    /// Convenience wrapper over [`LogicalPlan::children`]. Because the child set
+    /// is exhaustive, callers no longer need per-variant match arms just to recurse.
+    pub fn for_each_child(&self, mut f: impl FnMut(&LogicalPlan)) {
+        for child in self.children() {
+            f(child);
+        }
+    }
+
+    /// Rebuild this node, replacing each direct child with `f(child)`.
+    ///
+    /// All non-child fields are preserved exactly (via struct-update from a clone),
+    /// so future non-child fields are carried through automatically. Child
+    /// sub-plans are re-wrapped into the `Arc` / `Option<Arc>` / `Vec<Arc>` shape
+    /// each struct requires. Leaves (`Empty`, `PageRank`, and a childless
+    /// `ViewScan`) return an equivalent clone.
+    pub fn map_children(&self, mut f: impl FnMut(&LogicalPlan) -> LogicalPlan) -> LogicalPlan {
+        match self {
+            LogicalPlan::Empty => LogicalPlan::Empty,
+            LogicalPlan::PageRank(_) => self.clone(),
+            LogicalPlan::ViewScan(vs) => {
+                let mut new_vs = (**vs).clone();
+                new_vs.input = vs.input.as_deref().map(|c| Arc::new(f(c)));
+                LogicalPlan::ViewScan(Arc::new(new_vs))
+            }
+            LogicalPlan::GraphNode(n) => LogicalPlan::GraphNode(GraphNode {
+                input: Arc::new(f(&n.input)),
+                ..n.clone()
+            }),
+            LogicalPlan::GraphRel(r) => LogicalPlan::GraphRel(GraphRel {
+                left: Arc::new(f(&r.left)),
+                center: Arc::new(f(&r.center)),
+                right: Arc::new(f(&r.right)),
+                ..r.clone()
+            }),
+            LogicalPlan::Filter(x) => LogicalPlan::Filter(Filter {
+                input: Arc::new(f(&x.input)),
+                ..x.clone()
+            }),
+            LogicalPlan::Projection(x) => LogicalPlan::Projection(Projection {
+                input: Arc::new(f(&x.input)),
+                ..x.clone()
+            }),
+            LogicalPlan::GroupBy(x) => LogicalPlan::GroupBy(GroupBy {
+                input: Arc::new(f(&x.input)),
+                ..x.clone()
+            }),
+            LogicalPlan::OrderBy(x) => LogicalPlan::OrderBy(OrderBy {
+                input: Arc::new(f(&x.input)),
+                ..x.clone()
+            }),
+            LogicalPlan::Skip(x) => LogicalPlan::Skip(Skip {
+                input: Arc::new(f(&x.input)),
+                ..x.clone()
+            }),
+            LogicalPlan::Limit(x) => LogicalPlan::Limit(Limit {
+                input: Arc::new(f(&x.input)),
+                ..x.clone()
+            }),
+            LogicalPlan::Cte(x) => LogicalPlan::Cte(Cte {
+                input: Arc::new(f(&x.input)),
+                ..x.clone()
+            }),
+            LogicalPlan::GraphJoins(x) => LogicalPlan::GraphJoins(GraphJoins {
+                input: Arc::new(f(&x.input)),
+                ..x.clone()
+            }),
+            LogicalPlan::Union(u) => LogicalPlan::Union(Union {
+                inputs: u.inputs.iter().map(|c| Arc::new(f(c))).collect(),
+                ..u.clone()
+            }),
+            LogicalPlan::Unwind(x) => LogicalPlan::Unwind(Unwind {
+                input: Arc::new(f(&x.input)),
+                ..x.clone()
+            }),
+            LogicalPlan::CartesianProduct(cp) => LogicalPlan::CartesianProduct(CartesianProduct {
+                left: Arc::new(f(&cp.left)),
+                right: Arc::new(f(&cp.right)),
+                ..cp.clone()
+            }),
+            LogicalPlan::WithClause(w) => LogicalPlan::WithClause(WithClause {
+                input: Arc::new(f(&w.input)),
+                ..w.clone()
+            }),
+            LogicalPlan::Create(c) => LogicalPlan::Create(Create {
+                input: Arc::new(f(&c.input)),
+                ..c.clone()
+            }),
+            LogicalPlan::SetProperties(sp) => LogicalPlan::SetProperties(SetProperties {
+                input: Arc::new(f(&sp.input)),
+                ..sp.clone()
+            }),
+            LogicalPlan::Delete(d) => LogicalPlan::Delete(Delete {
+                input: Arc::new(f(&d.input)),
+                ..d.clone()
+            }),
+            LogicalPlan::Remove(r) => LogicalPlan::Remove(Remove {
+                input: Arc::new(f(&r.input)),
+                ..r.clone()
+            }),
+        }
+    }
+
     fn fmt_with_tree(
         &self,
         f: &mut fmt::Formatter<'_>,
@@ -2246,6 +2393,296 @@ mod tests {
         Column, Literal, LogicalExpr, Operator, OperatorApplication, PropertyAccess, TableAlias,
     };
     // use crate::open_cypher_parser::ast;
+
+    /// `map_children(identity)` must reproduce the input exactly — same variant,
+    /// same non-child fields, same children (including count/order) — for every
+    /// `LogicalPlan` variant. `map_children` has no production caller, so this is
+    /// the only thing exercising it; without this test a per-variant rebuild bug
+    /// (wrong field preserved, children swapped, wrong Arc/Option/Vec wrapping)
+    /// would compile and pass every existing golden/unit test silently.
+    ///
+    /// Also cross-checks that `for_each_child` visits exactly `children().len()`
+    /// nodes, keeping all three APIs (`children`, `for_each_child`, `map_children`)
+    /// honest about the same child set.
+    fn assert_map_children_identity(plan: &LogicalPlan) {
+        let mapped = plan.map_children(|c| c.clone());
+        assert_eq!(
+            &mapped,
+            plan,
+            "map_children(identity) must reproduce the original plan for variant {:?}",
+            std::mem::discriminant(plan)
+        );
+
+        let mut visited = 0usize;
+        plan.for_each_child(|_| visited += 1);
+        assert_eq!(
+            visited,
+            plan.children().len(),
+            "for_each_child call count must match children().len() for variant {:?}",
+            std::mem::discriminant(plan)
+        );
+    }
+
+    #[test]
+    fn test_map_children_identity_all_variants() {
+        let leaf: Arc<LogicalPlan> = Arc::new(LogicalPlan::Empty);
+
+        // --- Empty (leaf) ---
+        assert_map_children_identity(&LogicalPlan::Empty);
+
+        // --- PageRank (leaf, no LogicalPlan-typed field) ---
+        assert_map_children_identity(&LogicalPlan::PageRank(PageRank {
+            graph_name: Some("g".to_string()),
+            iterations: 10,
+            damping_factor: 0.85,
+            node_labels: Some(vec!["Person".to_string()]),
+            relationship_types: None,
+        }));
+
+        // --- ViewScan WITHOUT input (leaf) ---
+        let vs_leaf = ViewScan::new(
+            "people".to_string(),
+            None,
+            HashMap::new(),
+            "id".to_string(),
+            vec!["id".to_string()],
+            vec![],
+        );
+        assert_map_children_identity(&LogicalPlan::ViewScan(Arc::new(vs_leaf)));
+
+        // --- ViewScan WITH input (one child) ---
+        let mut vs_with_input = ViewScan::new(
+            "people".to_string(),
+            None,
+            HashMap::new(),
+            "id".to_string(),
+            vec!["id".to_string()],
+            vec![],
+        );
+        vs_with_input.input = Some(leaf.clone());
+        assert_map_children_identity(&LogicalPlan::ViewScan(Arc::new(vs_with_input)));
+
+        // --- GraphNode (one child) ---
+        let node_a = LogicalPlan::GraphNode(GraphNode {
+            input: leaf.clone(),
+            alias: "a".to_string(),
+            label: Some("Person".to_string()),
+            is_denormalized: false,
+            projected_columns: None,
+            node_types: None,
+        });
+        assert_map_children_identity(&node_a);
+
+        let node_b = LogicalPlan::GraphNode(GraphNode {
+            input: leaf.clone(),
+            alias: "b".to_string(),
+            label: Some("Post".to_string()),
+            is_denormalized: false,
+            projected_columns: None,
+            node_types: None,
+        });
+
+        // --- GraphRel with DISTINCT left/center/right, to catch any
+        //     mis-wiring (e.g. center written into left's slot) ---
+        let graph_rel = LogicalPlan::GraphRel(GraphRel {
+            left: Arc::new(node_a.clone()),
+            center: leaf.clone(),
+            right: Arc::new(node_b.clone()),
+            alias: "r".to_string(),
+            direction: Direction::Outgoing,
+            left_connection: "a".to_string(),
+            right_connection: "b".to_string(),
+            is_rel_anchor: false,
+            variable_length: None,
+            shortest_path_mode: None,
+            path_variable: None,
+            where_predicate: Some(LogicalExpr::Literal(Literal::Boolean(true))),
+            labels: Some(vec!["FOLLOWS".to_string()]),
+            is_optional: Some(true),
+            anchor_connection: Some("a".to_string()),
+            cte_references: HashMap::from([("b".to_string(), "with_b_cte".to_string())]),
+            pattern_combinations: None,
+            was_undirected: Some(false),
+        });
+        // Sanity: left/center/right really are distinct values, otherwise a
+        // swap bug in map_children could go undetected by equality alone.
+        if let LogicalPlan::GraphRel(gr) = &graph_rel {
+            assert_ne!(gr.left.as_ref(), gr.center.as_ref());
+            assert_ne!(gr.center.as_ref(), gr.right.as_ref());
+            assert_ne!(gr.left.as_ref(), gr.right.as_ref());
+        }
+        assert_map_children_identity(&graph_rel);
+
+        // --- Filter (one child) ---
+        assert_map_children_identity(&LogicalPlan::Filter(Filter {
+            input: leaf.clone(),
+            predicate: LogicalExpr::Literal(Literal::Boolean(true)),
+        }));
+
+        // --- Projection (one child) ---
+        assert_map_children_identity(&LogicalPlan::Projection(Projection {
+            input: leaf.clone(),
+            items: vec![ProjectionItem {
+                expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias("a".to_string()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                        "name".to_string(),
+                    ),
+                }),
+                col_alias: None,
+            }],
+            distinct: true,
+            pattern_comprehensions: vec![],
+        }));
+
+        // --- GroupBy (one child) ---
+        assert_map_children_identity(&LogicalPlan::GroupBy(GroupBy {
+            input: leaf.clone(),
+            expressions: vec![LogicalExpr::Literal(Literal::Boolean(true))],
+            having_clause: Some(LogicalExpr::Literal(Literal::Boolean(false))),
+            is_materialization_boundary: true,
+            exposed_alias: Some("g".to_string()),
+        }));
+
+        // --- OrderBy (one child) ---
+        assert_map_children_identity(&LogicalPlan::OrderBy(OrderBy {
+            input: leaf.clone(),
+            items: vec![OrderByItem {
+                expression: LogicalExpr::Literal(Literal::Boolean(true)),
+                order: OrderByOrder::Desc,
+            }],
+        }));
+
+        // --- Skip / Limit (one child) ---
+        assert_map_children_identity(&LogicalPlan::Skip(Skip {
+            input: leaf.clone(),
+            count: 5,
+        }));
+        assert_map_children_identity(&LogicalPlan::Limit(Limit {
+            input: leaf.clone(),
+            count: 10,
+        }));
+
+        // --- Cte (one child) ---
+        assert_map_children_identity(&LogicalPlan::Cte(Cte {
+            input: leaf.clone(),
+            name: "with_a_cte_1".to_string(),
+        }));
+
+        // --- GraphJoins (one child; joins/aux fields must survive untouched) ---
+        assert_map_children_identity(&LogicalPlan::GraphJoins(GraphJoins {
+            input: leaf.clone(),
+            joins: vec![Join {
+                table_name: "Person".to_string(),
+                table_alias: "a".to_string(),
+                joining_on: vec![],
+                join_type: JoinType::Inner,
+                pre_filter: None,
+                from_id_column: Some("id".to_string()),
+                to_id_column: None,
+                graph_rel: None,
+            }],
+            optional_aliases: std::collections::HashSet::from(["a".to_string()]),
+            anchor_table: Some("Person".to_string()),
+            cte_references: HashMap::from([("a".to_string(), "with_a_cte_1".to_string())]),
+            correlation_predicates: vec![LogicalExpr::Literal(Literal::Boolean(true))],
+        }));
+
+        // --- Union with THREE distinct inputs (order must be preserved) ---
+        let node_c = LogicalPlan::GraphNode(GraphNode {
+            input: leaf.clone(),
+            alias: "c".to_string(),
+            label: Some("Comment".to_string()),
+            is_denormalized: false,
+            projected_columns: None,
+            node_types: None,
+        });
+        let union_plan = LogicalPlan::Union(Union {
+            inputs: vec![
+                Arc::new(node_a.clone()),
+                Arc::new(node_b.clone()),
+                Arc::new(node_c.clone()),
+            ],
+            union_type: UnionType::Distinct,
+            is_cypher_union: true,
+        });
+        if let LogicalPlan::Union(u) = &union_plan {
+            assert_eq!(u.inputs.len(), 3);
+            assert_ne!(u.inputs[0], u.inputs[1]);
+            assert_ne!(u.inputs[1], u.inputs[2]);
+        }
+        assert_map_children_identity(&union_plan);
+
+        // --- Unwind (one child) ---
+        assert_map_children_identity(&LogicalPlan::Unwind(Unwind {
+            input: leaf.clone(),
+            expression: LogicalExpr::Literal(Literal::Boolean(true)),
+            alias: "x".to_string(),
+            label: Some("Person".to_string()),
+            tuple_properties: Some(vec![("name".to_string(), 0)]),
+        }));
+
+        // --- CartesianProduct with DISTINCT left/right ---
+        let cartesian = LogicalPlan::CartesianProduct(CartesianProduct {
+            left: Arc::new(node_a.clone()),
+            right: Arc::new(node_b.clone()),
+            is_optional: true,
+            join_condition: Some(LogicalExpr::Literal(Literal::Boolean(true))),
+        });
+        if let LogicalPlan::CartesianProduct(cp) = &cartesian {
+            assert_ne!(cp.left.as_ref(), cp.right.as_ref());
+        }
+        assert_map_children_identity(&cartesian);
+
+        // --- WithClause (one child) ---
+        let with_clause = WithClause::new(
+            leaf.clone(),
+            vec![ProjectionItem {
+                expression: LogicalExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias("a".to_string()),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                        "name".to_string(),
+                    ),
+                }),
+                col_alias: None,
+            }],
+        )
+        .expect("valid WithClause items")
+        .with_distinct(true);
+        assert_map_children_identity(&LogicalPlan::WithClause(with_clause));
+
+        // --- Create (one child, write op) ---
+        assert_map_children_identity(&LogicalPlan::Create(Create {
+            input: leaf.clone(),
+            patterns: vec![],
+        }));
+
+        // --- SetProperties (one child, write op) ---
+        assert_map_children_identity(&LogicalPlan::SetProperties(SetProperties {
+            input: leaf.clone(),
+            items: vec![SetItem {
+                target_alias: "n".to_string(),
+                property: "age".to_string(),
+                value: LogicalExpr::Literal(Literal::Boolean(true)),
+            }],
+        }));
+
+        // --- Delete (one child, write op) ---
+        assert_map_children_identity(&LogicalPlan::Delete(Delete {
+            input: leaf.clone(),
+            targets: vec!["n".to_string()],
+            detach: true,
+        }));
+
+        // --- Remove (one child, write op) ---
+        assert_map_children_identity(&LogicalPlan::Remove(Remove {
+            input: leaf.clone(),
+            items: vec![RemoveItem {
+                target_alias: "n".to_string(),
+                property: "age".to_string(),
+            }],
+        }));
+    }
 
     #[test]
     fn test_filter_rebuild_or_clone_with_transformation() {
