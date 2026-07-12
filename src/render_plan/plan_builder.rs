@@ -1342,6 +1342,132 @@ impl RenderPlanBuilder for LogicalPlan {
                         &gr.right_connection
                     };
 
+                    // #575: the UNDIRECTED (BidirectionalUnion-split) shape of this
+                    // pattern — `MATCH (a) OPTIONAL MATCH (a)-[:R]-(b) WHERE
+                    // a.city = 'Chicago'` — silently dropped the anchor-only WHERE
+                    // conjunct entirely. Root cause: `FilterTagging::analyze_union_branch`
+                    // (filter_tagging.rs) deliberately does NOT extract a WHERE
+                    // predicate into `plan_ctx`'s shared per-alias filter map when
+                    // processing a Union branch (needed to avoid cross-branch
+                    // contamination for genuine per-label type-union splits, where
+                    // the SAME alias resolves to a DIFFERENT table per branch) — it
+                    // keeps the Filter node in the tree instead, to be picked up
+                    // later by `FilterIntoGraphRel` folding it into `gr.where_
+                    // predicate` (which DOES happen correctly, per-branch, already
+                    // role-resolved to e.g. `a.origin_city` / `a.dest_city`). But
+                    // `FilterIntoGraphRel`'s OWN mechanism for seeding the anchor's
+                    // standalone-scan Union branches' `ViewScan.view_filter` (which
+                    // is what the directed shape's CTE ultimately renders WHERE from,
+                    // via `anchor_plan.to_render_plan` below) reads that SAME shared
+                    // `plan_ctx` filter map — left empty by the Union-branch skip
+                    // above. Both the "already in the CTE" assumption in
+                    // `collect_graphrel_predicates` (which deliberately drops this
+                    // same anchor-only conjunct from the outer WHERE, see its own
+                    // doc) and this CTE-building path end up expecting the OTHER to
+                    // have embedded it — the exact #554 "both decline" silent-drop
+                    // failure mode, just via a different pair of mechanisms.
+                    //
+                    // Fix: recover the anchor-only conjunct(s) directly from `gr.
+                    // where_predicate` (reliable for both the directed and the
+                    // undirected/split shape) and, for any Union branch whose
+                    // ViewScan doesn't already carry a `view_filter` (i.e. the
+                    // directed shape's existing plan_ctx-fed mechanism never ran or
+                    // found nothing there), inject it — re-targeted to THAT branch's
+                    // own role via the same #566 role-aware rewrite (reverse through
+                    // whichever role the predicate already committed to, forward
+                    // through this branch's role). Never touches a branch that
+                    // already has a `view_filter`, so the already-working directed
+                    // shape's rendering is byte-for-byte unchanged.
+                    let anchor_alias_for_predicate: String =
+                        if let LogicalPlan::Union(u) = anchor_plan {
+                            u.inputs
+                                .first()
+                                .and_then(|i| match i.as_ref() {
+                                    LogicalPlan::GraphNode(gn) => Some(gn.alias.clone()),
+                                    _ => None,
+                                })
+                                .unwrap_or_else(|| anchor_connection_fallback.clone())
+                        } else {
+                            anchor_connection_fallback.clone()
+                        };
+                    let mut anchor_plan_owned: Option<LogicalPlan> = None;
+                    if let LogicalPlan::Union(union) = anchor_plan {
+                        let anchor_only_conjuncts: Vec<LogicalExpr> = gr
+                            .where_predicate
+                            .as_ref()
+                            .map(split_and_predicates_logical)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .filter(|p| {
+                                references_only_alias_logical(p, &anchor_alias_for_predicate)
+                            })
+                            .collect();
+                        let any_branch_missing_filter = union.inputs.iter().any(|input| {
+                            matches!(
+                                input.as_ref(),
+                                LogicalPlan::GraphNode(gn)
+                                    if matches!(gn.input.as_ref(), LogicalPlan::ViewScan(vs) if vs.view_filter.is_none())
+                            )
+                        });
+                        if any_branch_missing_filter {
+                            if let Some(combined) =
+                                combine_predicates_with_and_logical(anchor_only_conjuncts)
+                            {
+                                let reverse_lookup = union
+                                    .inputs
+                                    .first()
+                                    .and_then(|i| match i.as_ref() {
+                                        LogicalPlan::GraphNode(gn) => gn.label.as_ref(),
+                                        _ => None,
+                                    })
+                                    .and_then(|label| schema.node_schema_opt(label))
+                                    .map(|ns| {
+                                        crate::query_planner::logical_expr::expression_rewriter::denorm_role_reverse_lookup(ns)
+                                    });
+                                let new_inputs: Vec<Arc<LogicalPlan>> = union
+                                    .inputs
+                                    .iter()
+                                    .map(|input| {
+                                        if let LogicalPlan::GraphNode(gn) = input.as_ref() {
+                                            if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                                                if vs.view_filter.is_none() {
+                                                    let remapped = crate::query_planner::logical_expr::expression_rewriter::rewrite_expression_with_concrete_property_map_role_aware(
+                                                        &combined,
+                                                        &anchor_alias_for_predicate,
+                                                        &vs.property_mapping,
+                                                        reverse_lookup.as_ref(),
+                                                    );
+                                                    let mut new_vs = (**vs).clone();
+                                                    new_vs.view_filter = Some(remapped);
+                                                    let new_gn = crate::query_planner::logical_plan::GraphNode {
+                                                        input: Arc::new(LogicalPlan::ViewScan(Arc::new(new_vs))),
+                                                        ..gn.clone()
+                                                    };
+                                                    return Arc::new(LogicalPlan::GraphNode(new_gn));
+                                                }
+                                            }
+                                        }
+                                        input.clone()
+                                    })
+                                    .collect();
+                                log::info!(
+                                    "🎯 #575: injected anchor-only WHERE conjunct into {} denorm-scan Union branch(es) for alias '{}' (undirected OPTIONAL MATCH gap)",
+                                    new_inputs.len(),
+                                    anchor_alias_for_predicate
+                                );
+                                anchor_plan_owned = Some(LogicalPlan::Union(
+                                    crate::query_planner::logical_plan::Union {
+                                        inputs: new_inputs,
+                                        union_type: union.union_type.clone(),
+                                        is_cypher_union: union.is_cypher_union,
+                                    },
+                                ));
+                            }
+                        }
+                    }
+                    let anchor_plan: &LogicalPlan =
+                        anchor_plan_owned.as_ref().unwrap_or(anchor_plan);
+
                     // 1. Render the Union as a CTE
                     let anchor_render = anchor_plan.to_render_plan(schema)?;
                     // Capture the columns the denorm-scan CTE actually exposes (its
