@@ -15,15 +15,16 @@ INNER JOIN test_integration.user_follows_test r2 ON u2.user_id = r2.follower_id
 INNER JOIN test_integration.users_test u3 ON r2.followed_id = u3.user_id
 WHERE (u_1.user_id = 1)
 )
-SELECT `node_type` AS `node_type`, count(*) AS `cnt` FROM (
 SELECT DISTINCT 
+      `node_type` AS `node_type`, count(*) AS `cnt` FROM (
+SELECT 
       t.end_type AS `node_type`,
       t.end_type AS `t.end_type`
 FROM vlp_multi_type_u_x AS t
 INNER JOIN test_integration.vlp_multi_type_u_x AS t0 ON t0.from_node_id = t.start_id
 WHERE t.start_id = 1
 UNION ALL 
-SELECT DISTINCT 
+SELECT 
       t.end_type AS `node_type`,
       t.end_type AS `t.end_type`
 FROM vlp_multi_type_u_x_2 AS t

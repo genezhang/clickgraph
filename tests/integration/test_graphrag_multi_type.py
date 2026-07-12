@@ -19,27 +19,31 @@ from conftest import (
 class TestMultiTypeRecursivePatterns:
     """Test multi-type VLP patterns with social_integration schema."""
     
-    @pytest.mark.xfail(
-        reason="Code bug: RETURN DISTINCT + count(*) on multi-type VLP silently "
-        "returns wrong counts -- DISTINCT is pushed pre-aggregation into each "
-        "per-branch UNION CTE instead of applying after the outer GROUP BY/count(*), "
-        "so cnt undercounts (verified: query returns cnt=1 per label when ground "
-        "truth is Post=8, User=12). The test's own assertions don't check cnt, so "
-        "this previously passed CI green while silently wrong; see issue tracker."
-    )
     def test_follows_or_authored_one_to_two_hops(self):
         """
         Test [:FOLLOWS|AUTHORED*1..2] pattern.
-        
+
         FOLLOWS: User->User (recursive - can chain)
         AUTHORED: User->Post (non-recursive - stops at Post)
-        
+
         Expected paths:
         - 1-hop FOLLOWS: user -> followed_user
         - 1-hop AUTHORED: user -> post
         - 2-hop FOLLOWS->FOLLOWS: user -> user -> user
         - 2-hop FOLLOWS->AUTHORED: user -> user -> post
         - 2-hop AUTHORED->X: None (Post has no outgoing edges)
+
+        #571 regression: `RETURN DISTINCT ... count(*)` on a multi-type VLP
+        UNION-CTE previously pushed DISTINCT INTO each per-branch UNION CTE
+        select (de-duplicating raw rows) BEFORE the outer GROUP BY/count(*)
+        ran, instead of applying dedup to the aggregated OUTPUT rows as Cypher
+        semantics require. That silently undercounted (cnt=1 per label)
+        while the test's own assertions never checked `cnt`, so it passed
+        CI green. Ground truth (Post=8, User=12) was verified two ways:
+        this same query WITHOUT DISTINCT (see test below), and manual SQL
+        aggregation against the raw `users_test`/`user_follows_test`/
+        `posts_test` tables. Assert the exact counts here so a regression
+        can't silently slip back in.
         """
         response = execute_cypher(
             """
@@ -50,17 +54,50 @@ class TestMultiTypeRecursivePatterns:
             """,
             schema_name="social_integration"
         )
-        
+
         assert_query_success(response)
         results = response["results"]
-        
+
         # Should get both User and Post nodes
         assert len(results) >= 2, "Expected at least User and Post results"
-        
+
         # Check we got both node types
         node_types = [r["node_type"] if isinstance(r, dict) else r[0] for r in results]
         assert "User" in node_types, "Should find User nodes via FOLLOWS"
         assert "Post" in node_types, "Should find Post nodes via AUTHORED"
+
+        # #571: DISTINCT + count(*) must dedup OUTPUT rows, not raw rows fed
+        # into the aggregate. Ground truth verified against social_integration
+        # fixture data: Post=8, User=12.
+        counts = {r["node_type"]: r["cnt"] for r in results}
+        assert counts == {"Post": 8, "User": 12}, (
+            f"DISTINCT + count(*) on multi-type VLP returned wrong counts: {counts} "
+            "(expected Post=8, User=12 -- see #571)"
+        )
+
+        # A `RETURN DISTINCT label, count(*)` implicitly groups by `label`
+        # (the non-aggregate item), so the aggregate is already one row per
+        # label -- DISTINCT must be a pure no-op on top of it. Confirm the
+        # non-DISTINCT form of the same query returns identical counts (the
+        # #571 bug diverged: DISTINCT undercounted to cnt=1 per label while
+        # the non-DISTINCT form counted correctly).
+        response_no_distinct = execute_cypher(
+            """
+            MATCH (u:User)-[:FOLLOWS|AUTHORED*1..2]->(x)
+            WHERE u.user_id = 1
+            RETURN labels(x)[1] as node_type, count(*) as cnt
+            ORDER BY node_type
+            """,
+            schema_name="social_integration"
+        )
+        assert_query_success(response_no_distinct)
+        counts_no_distinct = {
+            r["node_type"]: r["cnt"] for r in response_no_distinct["results"]
+        }
+        assert counts == counts_no_distinct, (
+            f"DISTINCT counts {counts} diverge from non-DISTINCT counts "
+            f"{counts_no_distinct} -- DISTINCT must not change aggregate results here"
+        )
     
     def test_multi_type_with_sql_only(self):
         """Verify SQL generation shows UNION ALL for multiple types."""

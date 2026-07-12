@@ -3707,11 +3707,18 @@ fn build_union_inner_select(
         return ("SELECT 1 AS __dummy\n".to_string(), vec![]);
     }
 
-    let mut sql = if select.distinct {
-        "SELECT DISTINCT \n".to_string()
-    } else {
-        "SELECT \n".to_string()
-    };
+    // #571: this SELECT builds the RAW, pre-aggregation rows that feed the
+    // outer GROUP BY/aggregate over the `__union` derived table — it is only
+    // ever called from aggregation-union rendering paths (see doc comment
+    // above). `select.distinct` reflects the OUTER Cypher `RETURN DISTINCT`,
+    // which is output-row dedup semantics that must apply AFTER aggregation,
+    // never to the raw per-branch rows an aggregate consumes. Pushing
+    // `SELECT DISTINCT` in here de-duplicates rows BEFORE `count(*)` runs,
+    // silently undercounting (e.g. `RETURN DISTINCT label, count(*)`
+    // collapsing every row sharing a label into one before counting). The
+    // outer aggregate's own DISTINCT handling lives in
+    // `build_outer_aggregate_select`.
+    let mut sql = "SELECT \n".to_string();
 
     let total_items = non_agg_items.len() + agg_arg_cols.len();
     let mut idx = 0;
@@ -3897,7 +3904,20 @@ fn build_outer_aggregate_select(
             }
         })
         .collect();
-    items.join(", ")
+    // #571: `select.distinct` (outer Cypher `RETURN DISTINCT`) belongs HERE,
+    // on the final aggregated projection — not pushed into the per-branch
+    // pre-aggregation SELECTs built by `build_union_inner_select`. In
+    // practice this is a no-op alongside GROUP BY (the implicit grouping key
+    // is exactly the non-aggregate SELECT items, so GROUP BY already yields
+    // one row per distinct key), but keeping it here mirrors the correct,
+    // already-verified non-UNION aggregate-VLP rendering and guards against
+    // any future case where that 1:1 correspondence doesn't hold.
+    let distinct_prefix = if select.distinct {
+        "DISTINCT \n      "
+    } else {
+        ""
+    };
+    format!("{}{}", distinct_prefix, items.join(", "))
 }
 
 /// Build GROUP BY clause with aliased column references for UNION subqueries.
