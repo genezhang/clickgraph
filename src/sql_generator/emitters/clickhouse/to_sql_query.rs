@@ -3470,9 +3470,9 @@ fn collect_nested_aggregate_args(expr: &RenderExpr, agg_arg_cols: &mut Vec<Strin
 /// authoritative table names rather than a raw string embedded ad hoc in
 /// render/SQL-gen code.
 ///
-/// Returns `None` when no schema, or no node schema with a matching table
-/// name, can be found — callers must then fall back to the pre-#476
-/// unconditional behavior rather than silently NULLing everything.
+/// Returns `None` when no schema, or no node/relationship schema with a
+/// matching table name, can be found — callers must then fall back to the
+/// pre-#476 unconditional behavior rather than silently NULLing everything.
 ///
 /// Blocking review finding (post-#476/#520): this used to only look at
 /// `property_mappings`, missing the from/to-side node property maps — the
@@ -3486,13 +3486,66 @@ fn collect_nested_aggregate_args(expr: &RenderExpr, agg_arg_cols: &mut Vec<Strin
 /// `NodeSchema::all_valid_physical_columns()`, the canonical three-source
 /// accessor (mirrors `has_cypher_property`/property-resolution logic)
 /// instead of reading `property_mappings` alone.
-fn table_valid_columns(from: &FromTableItem) -> Option<HashSet<String>> {
-    let view_ref = from.0.as_ref()?;
+///
+/// #577: the branch's relationship table is frequently NOT the anchor
+/// `from` table at all — for a STANDARD (non-coupled) schema's self-edge or
+/// undirected relationship, each UNION branch's `from` is always a NODE
+/// table (e.g. `users_bench AS a` / `AS b`) and the relationship's own
+/// table (`user_follows_bench`) is only ever reached via a JOIN. The
+/// FROM-only check below could never see it, so a bare aggregate argument
+/// on the relationship variable (`count(r)` normalized to
+/// `r.<edge id column>`) was deemed invalid on EVERY branch and NULL-padded
+/// out everywhere, silently forcing `count(r)` to 0 regardless of the true
+/// edge count. `joins` supplies every table this branch also reaches via
+/// JOIN so their columns (via the same `all_valid_physical_columns`
+/// accessor used for #529's coupled-table case) are folded in too — but
+/// ONLY once the anchor `from` itself is confirmed to be a real,
+/// schema-known physical table (see the gate below); otherwise an unrelated
+/// JOINed physical table can make the function falsely "confident" about a
+/// `from` it never actually recognized at all.
+///
+/// R1 regression finding: a VLP UNION branch's `from` is a SYNTHETIC CTE
+/// name (e.g. `vlp_u1_u2`), which never matches any node/relationship
+/// schema table — pre-#577 this correctly fell through to `None` (bail out,
+/// don't touch anything). A naive from-OR-joins union check breaks this:
+/// when such a branch also JOINs an ordinary physical table downstream
+/// (e.g. `posts_test` for a trailing hop), that JOIN alone would flip
+/// `found` to `true` and produce a validity set built ENTIRELY from the
+/// unrelated joined table's columns — which never contains the VLP CTE's
+/// own synthetic columns (`start_id`/`end_id`), so the CTE's genuinely
+/// valid output column (`t.end_id`) gets wrongly NULL-padded. Gating on the
+/// anchor `from` matching first preserves the original bail-out for
+/// non-physical (CTE) anchors while still fixing #577's real case, where
+/// the anchor `from` IS a real node table and the relationship is a sibling
+/// JOIN.
+fn table_valid_columns(from: &FromTableItem, joins: &JoinItems) -> Option<HashSet<String>> {
     let schema = crate::server::query_context::get_current_schema_with_fallback()?;
+    let view_ref = from.0.as_ref()?;
+
+    let from_is_schema_known = schema
+        .all_node_schemas()
+        .values()
+        .any(|n| n.full_table_name() == view_ref.name)
+        || schema
+            .get_relationships_schemas()
+            .values()
+            .any(|r| r.full_table_name() == view_ref.name);
+    if !from_is_schema_known {
+        return None;
+    }
+
+    let mut table_names: Vec<&str> = vec![view_ref.name.as_str()];
+    for join in &joins.0 {
+        table_names.push(join.table_name.as_str());
+    }
+
     let mut cols: HashSet<String> = HashSet::new();
     let mut found = false;
     for node_schema in schema.all_node_schemas().values() {
-        if node_schema.full_table_name() == view_ref.name {
+        if table_names
+            .iter()
+            .any(|name| *name == node_schema.full_table_name())
+        {
             found = true;
             cols.extend(node_schema.node_id.columns().iter().map(|c| c.to_string()));
             cols.extend(node_schema.all_valid_physical_columns());
@@ -3505,9 +3558,13 @@ fn table_valid_columns(from: &FromTableItem) -> Option<HashSet<String>> {
     // the node schema above has no idea it exists, so without this the
     // validity check always returns false and NULL-pads it out of every
     // UNION branch (silently forcing `count(r)` to 0 regardless of the true
-    // row count). Fold in every relationship schema whose table matches too.
+    // row count). Fold in every relationship schema whose table matches too
+    // (#577: now checked against the JOIN tables as well as `from`).
     for rel_schema in schema.get_relationships_schemas().values() {
-        if rel_schema.full_table_name() == view_ref.name {
+        if table_names
+            .iter()
+            .any(|name| *name == rel_schema.full_table_name())
+        {
             found = true;
             cols.extend(rel_schema.all_valid_physical_columns());
         }
@@ -5156,7 +5213,7 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                             // Recompute per-branch when we can identify the branch's
                             // own ViewScan; otherwise fall back to the shared string
                             // (unchanged behavior for branches we can't introspect).
-                            match table_valid_columns(&union_branch.from) {
+                            match table_valid_columns(&union_branch.from, &union_branch.joins) {
                                 Some(valid_cols) => {
                                     let (branch_inner_sql, _) = build_union_inner_select(
                                         &plan.select,
@@ -5918,16 +5975,17 @@ impl ToSql for Cte {
                             // whole-node count's per-label id columns, #467) may name columns
                             // that only exist on SOME branches' tables. Recompute per branch,
                             // NULL-padding columns absent from that branch's own ViewScan.
-                            let branch_inner_select = |from: &FromTableItem| -> String {
-                                let valid_cols = table_valid_columns(from);
-                                build_union_inner_select(
-                                    &plan.select,
-                                    drop_path_metadata,
-                                    valid_cols.as_ref(),
-                                    &plan.group_by.0,
-                                )
-                                .0
-                            };
+                            let branch_inner_select =
+                                |from: &FromTableItem, joins: &JoinItems| -> String {
+                                    let valid_cols = table_valid_columns(from, joins);
+                                    build_union_inner_select(
+                                        &plan.select,
+                                        drop_path_metadata,
+                                        valid_cols.as_ref(),
+                                        &plan.group_by.0,
+                                    )
+                                    .0
+                                };
                             let (_, agg_arg_cols) = build_union_inner_select(
                                 &plan.select,
                                 drop_path_metadata,
@@ -5946,7 +6004,7 @@ impl ToSql for Cte {
                             let array_join_sql = plan.array_join.to_sql();
 
                             // First branch with non-aggregate inner SELECT
-                            cte_body.push_str(&branch_inner_select(&plan.from));
+                            cte_body.push_str(&branch_inner_select(&plan.from, &plan.joins));
                             cte_body.push_str(&plan.from.to_sql());
                             cte_body.push_str(&plan.joins.to_sql());
                             cte_body.push_str(&array_join_sql);
@@ -5959,7 +6017,10 @@ impl ToSql for Cte {
                                 };
                                 for branch in &union.input {
                                     cte_body.push_str(union_type_str);
-                                    cte_body.push_str(&branch_inner_select(&branch.from));
+                                    cte_body.push_str(&branch_inner_select(
+                                        &branch.from,
+                                        &branch.joins,
+                                    ));
                                     cte_body.push_str(&branch.from.to_sql());
                                     cte_body.push_str(&branch.joins.to_sql());
                                     if branch.array_join.0.is_empty() {
