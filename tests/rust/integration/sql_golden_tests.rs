@@ -3946,6 +3946,79 @@ async fn denorm_optional_where_preserved_both_directions_506_followup() {
     }
 }
 
+/// FIXED (#575): the UNDIRECTED variant of the #566/#533 denorm OPTIONAL
+/// MATCH anchor-WHERE family — `MATCH (a:Airport) OPTIONAL MATCH
+/// (a)-[:FLIGHT]-(b:Airport) WHERE a.city = 'Chicago'` — silently dropped the
+/// `a.city = 'Chicago'` anchor predicate ENTIRELY (no error, no WHERE
+/// anywhere in the generated SQL), returning every anchor row unfiltered
+/// (live-verified: 18 rows instead of the 3 correct Chicago-anchor rows).
+/// The directed forms (`-[:FLIGHT]->`, `<-[:FLIGHT]-`) were already correct
+/// (#566/#533).
+///
+/// Root cause: `BidirectionalUnion` splits an undirected OPTIONAL MATCH into
+/// a `Union` of two direction-permutation `GraphRel` branches BEFORE
+/// `FilterTagging` runs. `FilterTagging::analyze_union_branch` deliberately
+/// does NOT extract a WHERE predicate into `plan_ctx`'s shared per-alias
+/// filter map when processing a Union branch (needed to avoid cross-branch
+/// contamination for genuine per-label type-union splits) — it leaves the
+/// `Filter` node in the tree instead, later folded correctly (and
+/// per-branch-role-resolved) into `GraphRel.where_predicate` by
+/// `FilterIntoGraphRel`. But `FilterIntoGraphRel`'s OWN separate mechanism
+/// for seeding the anchor's standalone-scan Union branches'
+/// `ViewScan.view_filter` — what the CTE-building code in `plan_builder.rs`
+/// actually renders the CTE's WHERE from — reads that SAME shared
+/// `plan_ctx` filter map, left empty by the Union-branch skip. Meanwhile
+/// `collect_graphrel_predicates` deliberately drops this same anchor-only
+/// conjunct from the outer WHERE, assuming the CTE already has it (#533) —
+/// the exact #554 "both mechanisms decline, assuming the other handles it"
+/// silent-drop shape, just via a different pair of mechanisms than #554
+/// itself. Fixed in `plan_builder.rs`'s OPTIONAL-denorm-Union CTE-building
+/// path by recovering the anchor-only conjunct(s) directly from
+/// `GraphRel.where_predicate` (reliable for both directed and
+/// undirected/split shapes) and injecting them into any Union branch whose
+/// `ViewScan` doesn't already carry a `view_filter`, re-targeted to that
+/// branch's own role via the same #566 role-aware rewrite. Never touches an
+/// already-populated `view_filter`, so the directed shapes' rendering is
+/// unchanged (see `denorm_optional_where_preserved_both_directions_506_followup`
+/// and `sql_golden_snapshots`, both still green).
+#[tokio::test]
+async fn undirected_optional_anchor_where_not_dropped_575() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+
+    let cypher = "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]-(b:Airport) WHERE a.city = 'Chicago' RETURN a.code, b.code";
+
+    let first = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+    for _ in 0..5 {
+        let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#575: render is nondeterministic:\nFIRST:\n{first}\nAGAIN:\n{again}"
+        );
+    }
+
+    // The anchor-only predicate must survive, remapped through BOTH physical
+    // roles of the anchor's own denormalized standalone-scan Union (origin
+    // AND dest) — a bare `WHERE a.city = ...` can never appear (that column
+    // doesn't exist on the physical table), so its presence in EITHER
+    // role-mapped form is the only correct outcome, and #575's bug was that
+    // NEITHER appeared anywhere in the SQL at all.
+    assert!(
+        first.contains("origin_city = 'Chicago'"),
+        "#575: anchor predicate missing from the origin-role branch of the \
+         __denorm_scan_a CTE:\n{first}"
+    );
+    assert!(
+        first.contains("dest_city = 'Chicago'"),
+        "#575: anchor predicate missing from the dest-role branch of the \
+         __denorm_scan_a CTE:\n{first}"
+    );
+    assert!(
+        !first.contains("WHERE a.city"),
+        "#575: predicate must be resolved to a physical column, not left as \
+         the raw (nonexistent) `a.city`:\n{first}"
+    );
+}
+
 /// FIXED (#533): the denormalized `__denorm_scan` CTE + LEFT JOIN OPTIONAL
 /// MATCH shape's OWN (non-anchor) optional-node predicate now folds into the
 /// edge JOIN's `pre_filter` — `LEFT JOIN (SELECT * FROM ... WHERE ...) AS r
