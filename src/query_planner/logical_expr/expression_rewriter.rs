@@ -635,6 +635,131 @@ pub fn remap_predicate_for_denorm_union_branch(
     predicate.clone()
 }
 
+/// #566: build a reverse lookup (physical DB column -> Cypher property name)
+/// spanning BOTH the `from`- and `to`-role property maps of a denormalized
+/// node's schema.
+///
+/// Used to "undo" a predicate column that was already committed to ONE
+/// role's physical column (e.g. `origin_city`) by an EARLIER, edge-role-aware
+/// resolution — `FilterTagging`'s `find_owning_edge_for_node` path, which
+/// fires whenever the referenced alias is ALSO an endpoint of a relationship
+/// pattern elsewhere in the query (the common case for an anchor bound by an
+/// earlier plain `MATCH` and then referenced again in a later `OPTIONAL
+/// MATCH` edge, e.g. `MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b)
+/// WHERE a.city = 'Chicago'`). That resolution commits to ONE role (the
+/// role `a` happens to play on the specific edge it's ALSO connected to) —
+/// correct for the ordinary "join straight through the edge" rendering, but
+/// wrong once `a` is instead rendered as a role-agnostic standalone-scan
+/// Union (spanning EVERY role the label can appear in) for the special
+/// OPTIONAL denormalized CTE + LEFT JOIN path (`optional_denorm_union_anchor_is_left`,
+/// `plan_builder.rs`): every branch of that Union needs the predicate
+/// resolved through its OWN role, not the one role FilterTagging happened to
+/// pick first.
+///
+/// Where two roles map the SAME Cypher property to the SAME physical column
+/// name (a coincidence for some schemas), the `from` role's entry wins
+/// (arbitrary but deterministic — `entry().or_insert` keeps the first
+/// insertion).
+pub fn denorm_role_reverse_lookup(
+    node_schema: &crate::graph_catalog::graph_schema::NodeSchema,
+) -> std::collections::HashMap<String, PropertyValue> {
+    let mut reverse = std::collections::HashMap::new();
+    for props in [
+        node_schema.from_properties.as_ref(),
+        node_schema.to_properties.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        for (cypher_name, physical_col) in props {
+            reverse
+                .entry(physical_col.clone())
+                .or_insert_with(|| PropertyValue::Column(cypher_name.clone()));
+        }
+    }
+    reverse
+}
+
+/// #566: like `rewrite_expression_with_concrete_property_map`, but resilient to a
+/// predicate whose column has ALREADY been resolved to a role-committed physical
+/// column (see `denorm_role_reverse_lookup`'s doc) rather than the raw Cypher
+/// property name #530's original helper expects.
+///
+/// Splits `expr` into its top-level AND conjuncts and resolves each independently
+/// (a multi-condition WHERE can legitimately mix a conjunct FilterTagging left raw
+/// — e.g. one it couldn't resolve at all — with one it role-committed). For each
+/// conjunct: try the direct raw-Cypher-name mapping first (#530's exact behavior,
+/// so the inline-map case — already raw — is completely unaffected); if that's a
+/// no-op, recover the raw Cypher name via `reverse_lookup` and retry the forward
+/// mapping through it. Falls back to the conjunct unchanged if neither succeeds.
+pub fn rewrite_expression_with_concrete_property_map_role_aware(
+    expr: &LogicalExpr,
+    target_alias: &str,
+    mapping: &std::collections::HashMap<String, PropertyValue>,
+    reverse_lookup: Option<&std::collections::HashMap<String, PropertyValue>>,
+) -> LogicalExpr {
+    fn split_and(expr: &LogicalExpr, out: &mut Vec<LogicalExpr>) {
+        if let LogicalExpr::OperatorApplicationExp(op) = expr {
+            if op.operator == super::Operator::And {
+                for operand in &op.operands {
+                    split_and(operand, out);
+                }
+                return;
+            }
+        }
+        out.push(expr.clone());
+    }
+    fn combine_and(mut conjuncts: Vec<LogicalExpr>) -> LogicalExpr {
+        match conjuncts.len() {
+            0 => unreachable!("split_and always produces at least one conjunct"),
+            1 => conjuncts.remove(0),
+            _ => conjuncts
+                .into_iter()
+                .reduce(|acc, next| {
+                    LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                        operator: super::Operator::And,
+                        operands: vec![acc, next],
+                    })
+                })
+                .expect("reduce over a non-empty Vec always returns Some"),
+        }
+    }
+
+    let mut conjuncts = Vec::new();
+    split_and(expr, &mut conjuncts);
+
+    let resolved = conjuncts
+        .into_iter()
+        .map(|conjunct| {
+            let direct =
+                rewrite_expression_with_concrete_property_map(&conjunct, target_alias, mapping);
+            if direct != conjunct {
+                return direct;
+            }
+            // Direct raw-Cypher-name lookup was a no-op — the conjunct's column
+            // may already be a role-committed physical column (#566). Recover
+            // the raw Cypher name via the reverse lookup, then retry forward.
+            if let Some(reverse_lookup) = reverse_lookup {
+                let normalized = rewrite_expression_with_concrete_property_map(
+                    &conjunct,
+                    target_alias,
+                    reverse_lookup,
+                );
+                if normalized != conjunct {
+                    return rewrite_expression_with_concrete_property_map(
+                        &normalized,
+                        target_alias,
+                        mapping,
+                    );
+                }
+            }
+            conjunct
+        })
+        .collect();
+
+    combine_and(resolved)
+}
+
 /// Rewrite all expressions in a list of ProjectionItems.
 ///
 /// This is a convenience function for WITH/RETURN clause processing.

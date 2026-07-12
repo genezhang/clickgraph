@@ -182,6 +182,38 @@ fn retain_filters_for_scan(
     alias: &str,
     view_scan: &crate::query_planner::logical_plan::ViewScan,
 ) -> Vec<LogicalExpr> {
+    retain_filters_for_scan_with_extra_known(
+        filters,
+        alias,
+        view_scan,
+        &std::collections::HashSet::new(),
+    )
+}
+
+/// Like `retain_filters_for_scan`, but treats every column in `extra_known`
+/// as additionally "known" to this scan.
+///
+/// #566: needed for a denormalized standalone-scan Union's OWN branches —
+/// e.g. Airport's origin/dest role split over `flights_denorm`. A predicate
+/// on such an alias can arrive ALREADY resolved to one role's physical
+/// columns (e.g. `origin_city`/`origin_state`, both from the SAME role) by
+/// `FilterTagging`'s edge-role-aware resolution — a multi-conjunct predicate
+/// like this then references TWO distinct columns, tripping the ≥2-columns
+/// per-label-merge heuristic below even though both columns come from the
+/// SAME (single) role, not a genuine cross-label merge. Without `extra_known`
+/// covering every role's columns (not just THIS branch's own), the OTHER
+/// role's branch sees both columns as "foreign" and drops the predicate
+/// entirely instead of letting `rewrite_expression_with_concrete_property_map_role_aware`
+/// remap it. Passing the full from/to role column set as `extra_known`
+/// (see `denorm_role_reverse_lookup`'s keys) fixes this while leaving the
+/// genuine cross-label-merge guard (a real foreign column, belonging to
+/// neither this alias's role nor any other role of the SAME label) intact.
+fn retain_filters_for_scan_with_extra_known(
+    filters: &[LogicalExpr],
+    alias: &str,
+    view_scan: &crate::query_planner::logical_plan::ViewScan,
+    extra_known: &std::collections::HashSet<String>,
+) -> Vec<LogicalExpr> {
     // Distinct columns this alias is filtered on across all its predicates.
     let mut all_cols = std::collections::HashSet::new();
     for f in filters {
@@ -192,7 +224,8 @@ fn retain_filters_for_scan(
         return filters.to_vec();
     }
 
-    let known = scan_known_columns(view_scan);
+    let mut known = scan_known_columns(view_scan);
+    known.extend(extra_known.iter().cloned());
     filters
         .iter()
         .filter(|f| {
@@ -455,15 +488,40 @@ impl OptimizerPass for FilterIntoGraphRel {
                 // CRITICAL FIX: Inject filters for THIS SPECIFIC ALIAS only
                 // Check if the child is a ViewScan and if we have filters for this GraphNode's alias
                 if let LogicalPlan::ViewScan(view_scan) = graph_node.input.as_ref() {
+                    // #566: computed up front (needed both for the column guard
+                    // below and for the role-aware remap further down) — the
+                    // node schema's combined from/to reverse lookup (physical
+                    // column -> Cypher property name), when this scan is a
+                    // denormalized standalone-scan Union branch.
+                    let denorm_reverse_lookup =
+                        if crate::graph_catalog::pattern_schema::scan_denormalized_flag(view_scan) {
+                            graph_node
+                            .label
+                            .as_ref()
+                            .and_then(|label| plan_ctx.schema().node_schema_opt(label))
+                            .map(crate::query_planner::logical_expr::expression_rewriter::denorm_role_reverse_lookup)
+                        } else {
+                            None
+                        };
+                    // Every physical column any role of this label maps to —
+                    // see `retain_filters_for_scan_with_extra_known`'s doc for
+                    // why the column guard needs these treated as "known" too.
+                    let denorm_all_role_columns: std::collections::HashSet<String> =
+                        denorm_reverse_lookup
+                            .as_ref()
+                            .map(|m| m.keys().cloned().collect())
+                            .unwrap_or_default();
+
                     // Get filters for THIS specific alias only
                     if let Some(table_ctx) = plan_ctx.get_mut_table_ctx_opt(&graph_node.alias) {
                         // Drop predicates that reference columns this scan's label does
                         // not have (cross-branch contamination via shared PlanCtx when a
                         // UNION splits one anchor variable into per-label branches).
-                        let filters = retain_filters_for_scan(
+                        let filters = retain_filters_for_scan_with_extra_known(
                             table_ctx.get_filters(),
                             &graph_node.alias,
                             view_scan,
+                            &denorm_all_role_columns,
                         );
                         log::info!(
                             "FilterIntoGraphRel: Found table_ctx for alias '{}', filters.len() = {}",
@@ -503,12 +561,33 @@ impl OptimizerPass for FilterIntoGraphRel {
                             // `origin_code`/`dest_code` — UNKNOWN_IDENTIFIER. Remap
                             // through THIS branch's own `property_mapping` before
                             // injecting; a no-op for non-denormalized scans.
+                            //
+                            // #566: `table_ctx.get_filters()` does NOT always hold the
+                            // raw Cypher name, though — when this alias is ALSO an
+                            // endpoint of a relationship pattern elsewhere in the query
+                            // (e.g. the anchor of `MATCH (a:Airport) OPTIONAL MATCH
+                            // (a)-[:FLIGHT]->(b) WHERE a.city = 'Chicago'`),
+                            // `FilterTagging` resolves the predicate through that
+                            // edge's OWN role (`find_owning_edge_for_node`) BEFORE it
+                            // ever reaches here — committing to ONE role's physical
+                            // column (e.g. `origin_city`) regardless of which role
+                            // THIS branch represents. #530's raw-name lookup then
+                            // silently no-ops on every branch whose role doesn't match
+                            // the one FilterTagging picked, leaving an identical (and,
+                            // for every OTHER branch, wrong) predicate in every branch.
+                            // `rewrite_expression_with_concrete_property_map_role_aware`
+                            // falls back to recovering the raw Cypher name via the
+                            // node schema's combined from/to reverse lookup whenever
+                            // the direct attempt is a no-op — a no-op itself for the
+                            // already-raw inline-map case, so #530's behavior is
+                            // unchanged there.
                             let combined_predicate = combined_predicate.map(|predicate| {
                                 if crate::graph_catalog::pattern_schema::scan_denormalized_flag(view_scan) {
-                                    crate::query_planner::logical_expr::expression_rewriter::rewrite_expression_with_concrete_property_map(
+                                    crate::query_planner::logical_expr::expression_rewriter::rewrite_expression_with_concrete_property_map_role_aware(
                                         &predicate,
                                         &graph_node.alias,
                                         &view_scan.property_mapping,
+                                        denorm_reverse_lookup.as_ref(),
                                     )
                                 } else {
                                     predicate

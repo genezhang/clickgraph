@@ -1708,12 +1708,60 @@ impl RenderPlanBuilder for LogicalPlan {
                         }
                     };
 
+                    // #533: the OPTIONAL node's OWN (non-anchor) predicate — a
+                    // conjunct of `gr.where_predicate` referencing ONLY the edge
+                    // alias (this shape's node properties are embedded IN the
+                    // edge row, so a `b.city = 'Chicago'`-style conjunct is
+                    // ALREADY property-mapped by this point to reference
+                    // `gr.alias`, e.g. `t1.dest_city`, exactly like the FK-edge
+                    // "node IS edge" shape #474 (`apply_optional_node_pre_
+                    // filters`, join_builder.rs) already handles for the
+                    // NORMAL (non-CTE-fronted) JOIN-building path. This CTE +
+                    // manually-built-JOIN path never goes through that generic
+                    // machinery at all, so without this it fell through to a
+                    // bare outer WHERE post-LEFT-JOIN — dropping every
+                    // NULL-extended (non-matching) anchor row, the exact
+                    // OPTIONAL MATCH semantics violation #474/#479's whole
+                    // family exists to prevent. Fold it into THIS join's
+                    // `pre_filter` instead (renders as `LEFT JOIN (SELECT *
+                    // FROM edge_table WHERE ...) AS edge_alias ON ...`,
+                    // filtering the right side of the LEFT JOIN before the
+                    // join — preserves NULL-extension for anchors with no
+                    // qualifying edge row). `collect_graphrel_predicates`
+                    // (plan_builder_helpers.rs) drops the SAME conjuncts from
+                    // the outer WHERE for this shape so it's embedded exactly
+                    // once — see its own `is_optional_denorm_union_graphrel`
+                    // handling.
+                    // The predicate's own alias is STILL the Cypher pattern
+                    // alias of the optional node (e.g. `b`) at this point —
+                    // only its COLUMN has been role-mapped (`city` ->
+                    // `dest_city`) by the earlier property-mapping pass, not
+                    // its table alias — so extract by that alias, then
+                    // rewrite it to `edge_alias` (the physical table this
+                    // pre_filter subquery actually scans; `b` itself has no
+                    // scan of its own to reference).
+                    let optional_alias = if anchor_is_left {
+                        &gr.right_connection
+                    } else {
+                        &gr.left_connection
+                    };
+                    let (mut edge_pre_filter, _remaining) =
+                        super::plan_builder_helpers::extract_predicates_for_alias_logical(
+                            &gr.where_predicate,
+                            optional_alias,
+                        );
+                    if let Some(ref mut pf) = edge_pre_filter {
+                        let mut alias_map = std::collections::HashMap::new();
+                        alias_map.insert(optional_alias.clone(), edge_alias.clone());
+                        super::expression_utils::rewrite_aliases(pf, &alias_map);
+                    }
+
                     let edge_join = Join {
                         join_type: JoinType::Left,
                         table_name: edge_table,
                         table_alias: edge_alias.clone(),
                         joining_on: vec![join_condition],
-                        pre_filter: None,
+                        pre_filter: edge_pre_filter,
                         // Set from_id_column to prevent the optimizer from removing
                         // this LEFT JOIN as "unreferenced" (count(r) → count(*) loses
                         // the alias reference, but the join is essential for OPTIONAL
