@@ -3082,7 +3082,24 @@ fn add_order_by_columns_to_select(
             // Try to resolve by matching against existing SELECT items:
             // if SELECT already has `n."id.orig_h" AS "n.ip_address"` and
             // ORDER BY is `n.ip_address`, reuse the mapped expression.
-            resolve_order_by_from_existing_select(expr, &plan.select)
+            match resolve_order_by_from_existing_select_opt(expr, &plan.select) {
+                Some(mapped) => mapped,
+                // #555: the property isn't already projected, so the
+                // existing-SELECT match above found nothing. If `expr` is
+                // still in its RAW, unmapped Cypher form (`n.state`, not
+                // `n.origin_state`) that means `filter_tagging`'s OrderBy
+                // ambiguity guard (#471) deliberately skipped mapping it —
+                // it's a standalone denormalized node property that
+                // resolves to a DIFFERENT physical column per from/to role,
+                // so no single mapping could be chosen up front. Resolve it
+                // HERE, per branch, from THIS branch's own already
+                // role-resolved `ViewScan.property_mapping` — the exact
+                // same source `property_expansion` draws SELECT's per-branch
+                // columns from — instead of leaving the raw Cypher property
+                // name to hit UNKNOWN_IDENTIFIER.
+                None => resolve_standalone_denorm_order_by_expr(expr, &plan)
+                    .unwrap_or_else(|| expr.clone()),
+            }
         };
 
         plan.select.items.push(SelectItem {
@@ -3109,8 +3126,14 @@ fn add_order_by_columns_to_select(
 /// Resolve ORDER BY expression by finding a matching SELECT item.
 /// For standalone UNION scans (no path context), if ORDER BY references
 /// `n.ip_address` and SELECT already has `n."id.orig_h" AS "n.ip_address"`,
-/// reuse the mapped expression `n."id.orig_h"`.
-fn resolve_order_by_from_existing_select(expr: &RenderExpr, select: &SelectItems) -> RenderExpr {
+/// reuse the mapped expression `n."id.orig_h"`. Returns `None` when no
+/// matching SELECT item exists, so callers can fall back to a different
+/// resolution strategy instead of silently keeping the raw expression
+/// (#555).
+fn resolve_order_by_from_existing_select_opt(
+    expr: &RenderExpr,
+    select: &SelectItems,
+) -> Option<RenderExpr> {
     if let RenderExpr::PropertyAccessExp(pa) = expr {
         let target_alias = format!("{}.{}", pa.table_alias.0, pa.column.raw());
         // Look for a SELECT item whose output alias matches this property access
@@ -3124,12 +3147,78 @@ fn resolve_order_by_from_existing_select(expr: &RenderExpr, select: &SelectItems
                         pa.column.raw(),
                         col_alias.0
                     );
-                    return item.expression.clone();
+                    return Some(item.expression.clone());
                 }
             }
         }
     }
-    expr.clone()
+    None
+}
+
+/// #555: this branch's OWN resolved physical column for `alias.property`,
+/// read directly from its `ViewScan.property_mapping` — mirrors
+/// `union_branch_own_id_column`'s FROM-bound-scan lookup, but for an
+/// arbitrary property instead of the id column. Only applies to
+/// denormalized scans: `property_mapping` there is already role-resolved per
+/// branch (built from that branch's own per-role property maps, see
+/// `try_generate_view_scan`) — exactly the same per-branch source
+/// `property_expansion` draws SELECT's columns from.
+///
+/// Routes the denormalized-flag check through `graph_catalog::pattern_schema`
+/// (CLAUDE.md rule 7) rather than reading the scan's raw field directly.
+fn union_branch_own_property_column(
+    branch: &RenderPlan,
+    alias: &str,
+    property: &str,
+) -> Option<String> {
+    use crate::graph_catalog::expression_parser::PropertyValue;
+    use crate::graph_catalog::pattern_schema::scan_denormalized_flag;
+
+    let from = branch.from.0.as_ref()?;
+    if from.alias.as_deref() != Some(alias) {
+        return None;
+    }
+    let LogicalPlan::ViewScan(vs) = from.source.as_ref() else {
+        return None;
+    };
+    if !scan_denormalized_flag(vs) {
+        return None;
+    }
+    match vs.property_mapping.get(property) {
+        Some(PropertyValue::Column(col)) => Some(col.clone()),
+        _ => None,
+    }
+}
+
+/// #555: resolve a role-ambiguous denormalized property that
+/// `filter_tagging`'s OrderBy ambiguity guard (#471,
+/// `order_by_property_is_ambiguous_denorm_standalone`) deliberately left in
+/// its raw, unmapped Cypher form (`n.state`, not e.g. `n.origin_state`)
+/// because no single from/to mapping could be chosen up front. When the
+/// column also isn't already projected in SELECT (the only case
+/// `resolve_order_by_from_existing_select_opt` handles), fall back to THIS
+/// branch's own per-role resolution via [`union_branch_own_property_column`]
+/// — same spirit as the #546 typed id salvage key: each branch projects its
+/// OWN role-correct column instead of one arbitrarily guessed up front.
+/// Returns `None` (leave `expr` as-is, matching pre-#555 behavior) for
+/// non-`PropertyAccessExp` expressions and for any branch that isn't a
+/// denormalized single-alias scan (e.g. a genuinely unresolvable property —
+/// no regression over the documented pre-#555 UNKNOWN_IDENTIFIER, which is
+/// still preferable to silently ordering by the wrong column).
+fn resolve_standalone_denorm_order_by_expr(
+    expr: &RenderExpr,
+    plan: &RenderPlan,
+) -> Option<RenderExpr> {
+    let RenderExpr::PropertyAccessExp(pa) = expr else {
+        return None;
+    };
+    let alias = &pa.table_alias.0;
+    let property = pa.column.raw();
+    let col = union_branch_own_property_column(plan, alias, property)?;
+    Some(RenderExpr::PropertyAccessExp(PropertyAccess {
+        table_alias: TableAlias(alias.clone()),
+        column: crate::graph_catalog::expression_parser::PropertyValue::Column(col),
+    }))
 }
 
 /// Path context extracted from a branch's SELECT items
@@ -5175,7 +5264,21 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                             OrderByOrder::Asc => "ASC",
                             OrderByOrder::Desc => "DESC",
                         };
-                        Some(format!("__union.`{}` {}", col_alias, order_str))
+                        // #556: the #546 typed `id()` union salvage key mixes
+                        // numeric and non-numeric ids behind a NULL-able
+                        // tuple component — pin the NULL-ordering explicitly
+                        // so ClickHouse and Databricks agree (dialects
+                        // disagree on the ASC/DESC NULL-ordering default).
+                        let nulls_clause = if id_order_item_alias(&item.expression).is_some() {
+                            crate::sql_generator::function_mapper::current_function_mapper()
+                                .id_order_key_nulls_clause()
+                        } else {
+                            ""
+                        };
+                        Some(format!(
+                            "__union.`{}` {}{}",
+                            col_alias, order_str, nulls_clause
+                        ))
                     })
                     .collect();
                 sql.push_str(&order_clauses.join(", "));

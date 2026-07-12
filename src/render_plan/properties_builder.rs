@@ -123,35 +123,44 @@ impl PropertiesBuilder for LogicalPlan {
                     }
                     return Ok((properties, None));
                 } else if let LogicalPlan::Union(union_plan) = node.input.as_ref() {
-                    // For denormalized polymorphic nodes, the input is a UNION of ViewScans
-                    // Each ViewScan has either from_node_properties or to_node_properties
-                    // Use the first available ViewScan to get the property list
+                    // For denormalized polymorphic nodes, the input is a UNION of
+                    // ViewScans, each with its own per-role property map (see
+                    // `graph_catalog::pattern_schema::edge_side_node_properties`).
+                    //
+                    // #564: iterate ALL branches (first match wins), not just the FIRST —
+                    // mirroring `cte_extraction::get_node_label_for_alias`'s identical
+                    // Union case (same "first-match across all branches" shape, with the
+                    // same documented caveat). Both helpers rest on the same implicit
+                    // assumption — "every UNION branch shares the same alias schema" —
+                    // true for every real fixture today (multi-table label, denormalized
+                    // from/to dimension, and polymorphic UNIONs all carry the SAME
+                    // properties for a given alias across branches), so this is a
+                    // consistency/hardening fix, not a behavior change for any existing
+                    // shape: it only matters if a future branch's FIRST ViewScan happens
+                    // to expose fewer properties (e.g. an empty `WHERE false` placeholder
+                    // arm) than a later branch — previously that starved the caller of
+                    // real properties entirely; now it falls through to a branch that
+                    // actually has them.
                     log::debug!(
                         "get_properties_with_table_alias: GraphNode '{}' has Union with {} inputs",
                         alias,
                         union_plan.inputs.len()
                     );
-                    if let Some(first_input) = union_plan.inputs.first() {
-                        if let LogicalPlan::ViewScan(scan) = first_input.as_ref() {
-                            log::debug!("get_properties_with_table_alias: First UNION input is ViewScan, is_denormalized={}, from_node_properties={:?}, to_node_properties={:?}",
-                                scan.is_denormalized,
-                                scan.from_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()),
-                                scan.to_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()));
-
-                            // Try from_node_properties first
-                            if let Some(from_props) = &scan.from_node_properties {
-                                let properties = extract_sorted_properties(from_props);
-                                if !properties.is_empty() {
-                                    log::debug!("get_properties_with_table_alias: Returning {} from_node_properties from UNION for '{}'", properties.len(), alias);
-                                    return Ok((properties, None));
-                                }
-                            }
-                            // Then try to_node_properties
-                            if let Some(to_props) = &scan.to_node_properties {
-                                let properties = extract_sorted_properties(to_props);
-                                if !properties.is_empty() {
-                                    log::debug!("get_properties_with_table_alias: Returning {} to_node_properties from UNION for '{}'", properties.len(), alias);
-                                    return Ok((properties, None));
+                    for branch_input in &union_plan.inputs {
+                        if let LogicalPlan::ViewScan(scan) = branch_input.as_ref() {
+                            // Try the from-role map first, then the to-role map.
+                            for is_from_side in [true, false] {
+                                if let Some(role_props) =
+                                    crate::graph_catalog::pattern_schema::edge_side_node_properties(
+                                        scan,
+                                        is_from_side,
+                                    )
+                                {
+                                    let properties = extract_sorted_properties(role_props);
+                                    if !properties.is_empty() {
+                                        log::debug!("get_properties_with_table_alias: Returning {} role-specific properties from UNION for '{}' (from_side={})", properties.len(), alias, is_from_side);
+                                        return Ok((properties, None));
+                                    }
                                 }
                             }
                             // Fallback to property_mapping
@@ -476,5 +485,81 @@ impl PropertiesBuilder for LogicalPlan {
         }
 
         Ok((properties, initial_table_alias))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::query_planner::logical_plan::{GraphNode, Union, UnionType, ViewScan};
+    use std::sync::Arc;
+
+    fn empty_view_scan(source_table: &str) -> ViewScan {
+        ViewScan::new(
+            source_table.to_string(),
+            None,
+            std::collections::HashMap::new(),
+            "id".to_string(),
+            vec![],
+            vec![],
+        )
+    }
+
+    /// #564 hardening: `get_properties_with_table_alias`'s `Union` case must
+    /// find properties on a LATER branch when the FIRST branch's `ViewScan`
+    /// has none — mirroring `cte_extraction::get_node_label_for_alias`'s
+    /// identical "search every branch" Union case. Before this fix, the code
+    /// only ever inspected `union_plan.inputs.first()`; a first branch with
+    /// no properties (e.g. an empty placeholder arm) would starve the caller
+    /// of properties a later branch legitimately has, even though no real
+    /// fixture in the corpus currently produces this exact shape (a
+    /// documented, not-currently-observed asymmetry — see #564).
+    #[test]
+    fn union_branch_property_lookup_checks_all_branches_not_just_first_564() {
+        // First branch: no denormalized properties at all (simulates an
+        // empty/placeholder arm).
+        let first_branch = empty_view_scan("db.empty_arm");
+
+        // Second branch: real denormalized from_node_properties.
+        let mut from_props = std::collections::HashMap::new();
+        from_props.insert(
+            "code".to_string(),
+            crate::graph_catalog::expression_parser::PropertyValue::Column(
+                "origin_code".to_string(),
+            ),
+        );
+        let mut second_branch = empty_view_scan("db.real_arm");
+        second_branch.is_denormalized = true;
+        second_branch.from_node_properties = Some(from_props);
+
+        let union_plan = LogicalPlan::Union(Union {
+            inputs: vec![
+                Arc::new(LogicalPlan::ViewScan(Arc::new(first_branch))),
+                Arc::new(LogicalPlan::ViewScan(Arc::new(second_branch))),
+            ],
+            union_type: UnionType::All,
+            is_cypher_union: false,
+        });
+
+        let graph_node = LogicalPlan::GraphNode(GraphNode {
+            input: Arc::new(union_plan),
+            alias: "n".to_string(),
+            label: Some("Airport".to_string()),
+            is_denormalized: true,
+            projected_columns: None,
+            node_types: None,
+        });
+
+        let (properties, table_alias) = graph_node
+            .get_properties_with_table_alias("n")
+            .expect("lookup should succeed");
+
+        assert_eq!(
+            properties,
+            vec![("code".to_string(), "origin_code".to_string())],
+            "#564: must find the SECOND branch's properties when the first \
+             branch has none, instead of stopping at the first branch"
+        );
+        assert_eq!(table_alias, None);
     }
 }

@@ -52,7 +52,7 @@ schema	from_node_properties	src/render_plan/group_by_builder.rs	1
 schema	from_node_properties	src/render_plan/plan_builder.rs	3
 schema	from_node_properties	src/render_plan/plan_builder_helpers.rs	7
 schema	from_node_properties	src/render_plan/plan_builder_utils.rs	14
-schema	from_node_properties	src/render_plan/properties_builder.rs	20
+schema	from_node_properties	src/render_plan/properties_builder.rs	16
 schema	from_node_properties	src/render_plan/select_builder.rs	2
 schema	from_node_properties	src/server/bolt_protocol/result_transformer.rs	3
 schema	from_node_properties	src/sql_generator/emitters/clickhouse/json_builder.rs	1
@@ -163,7 +163,7 @@ schema	to_node_properties	src/render_plan/group_by_builder.rs	1
 schema	to_node_properties	src/render_plan/plan_builder.rs	1
 schema	to_node_properties	src/render_plan/plan_builder_helpers.rs	7
 schema	to_node_properties	src/render_plan/plan_builder_utils.rs	10
-schema	to_node_properties	src/render_plan/properties_builder.rs	17
+schema	to_node_properties	src/render_plan/properties_builder.rs	11
 schema	to_node_properties	src/render_plan/select_builder.rs	3
 schema	to_node_properties	src/server/bolt_protocol/result_transformer.rs	3
 schema	to_node_properties	src/sql_generator/emitters/clickhouse/json_builder.rs	1
