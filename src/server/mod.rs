@@ -80,6 +80,14 @@ pub static GLOBAL_SCHEMA_CONFIGS: OnceCell<
     RwLock<HashMap<String, crate::graph_catalog::config::GraphSchemaConfig>>,
 > = OnceCell::const_new();
 
+// Content hash of the most recently registered YAML for each schema name,
+// keyed the same as GLOBAL_SCHEMAS/GLOBAL_SCHEMA_CONFIGS. Used only to detect
+// (and warn on) re-registering an existing schema name with DIFFERENT content
+// — see `graph_catalog::load_schema_from_content` (#463). Re-registering with
+// identical content (idempotent reload) stays silent.
+pub static GLOBAL_SCHEMA_CONTENT_HASHES: OnceCell<RwLock<HashMap<String, u64>>> =
+    OnceCell::const_new();
+
 // Query cache for SQL templates
 pub static GLOBAL_QUERY_CACHE: OnceCell<query_cache::QueryCache> = OnceCell::const_new();
 

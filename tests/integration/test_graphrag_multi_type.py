@@ -19,7 +19,6 @@ from conftest import (
 class TestMultiTypeRecursivePatterns:
     """Test multi-type VLP patterns with social_integration schema."""
     
-    @pytest.mark.xfail(reason="Code bug: multi-type VLP generates invalid SQL or crashes server")
     def test_follows_or_authored_one_to_two_hops(self):
         """
         Test [:FOLLOWS|AUTHORED*1..2] pattern.
@@ -90,7 +89,6 @@ class TestMultiTypeRecursivePatterns:
         # Should NOT be recursive for multi-type VLP
         assert "WITH RECURSIVE" not in sql, "Multi-type VLP should NOT use recursive CTE (uses UNION ALL instead)"
     
-    @pytest.mark.xfail(reason="Code bug: multi-type VLP generates invalid SQL or crashes server")
     def test_multi_type_exact_paths(self):
         """Test specific path results from multi-type VLP."""
         response = execute_cypher(
@@ -134,7 +132,6 @@ class TestMultiTypeRecursivePatterns:
 class TestMultiTypeWithPathFunctions:
     """Test path functions with multi-type patterns."""
     
-    @pytest.mark.xfail(reason="Code bug: multi-type VLP generates invalid SQL or crashes server")
     def test_length_with_multi_type(self):
         """Test length(path) works with multi-type VLP."""
         response = execute_cypher(
@@ -155,7 +152,6 @@ class TestMultiTypeWithPathFunctions:
         assert 1 in lengths, "Should have 1-hop paths"
         assert 2 in lengths, "Should have 2-hop paths"
     
-    @pytest.mark.xfail(reason="Code bug: multi-type VLP generates invalid SQL or crashes server")
     def test_relationships_with_multi_type(self):
         """Test relationships(path) returns correct types."""
         response = execute_cypher(
@@ -238,7 +234,6 @@ class TestMultiTypePerformance:
     """Test multi-type patterns with larger result sets."""
     
     @pytest.mark.slow
-    @pytest.mark.xfail(reason="Code bug: multi-type VLP generates invalid SQL or crashes server")
     def test_multi_type_all_users(self):
         """Test multi-type VLP across all users (no WHERE filter)."""
         response = execute_cypher(
@@ -443,7 +438,6 @@ class TestMultiTypePropertyExtraction:
             assert "user_count" in result
             assert result["user_count"] > 0
     
-    @pytest.mark.xfail(reason="Code bug: multi-type VLP generates invalid SQL or crashes server")
     def test_multi_type_vlp_different_properties(self):
         """
         Test multi-type VLP where different node types have different properties.
