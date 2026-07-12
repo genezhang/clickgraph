@@ -58,6 +58,7 @@ schema	from_node_properties	src/sql_generator/emitters/clickhouse/multi_type_vlp
 schema	from_node_properties	src/sql_generator/emitters/clickhouse/to_sql_query.rs	3
 schema	is_denormalized	src/procedures/apoc_meta_schema.rs	1
 schema	is_denormalized	src/query_planner/analyzer/bidirectional_union.rs	3
+schema	is_denormalized	src/query_planner/analyzer/cte_reference_populator.rs	1
 schema	is_denormalized	src/query_planner/analyzer/duplicate_scans_removing.rs	1
 schema	is_denormalized	src/query_planner/analyzer/filter_tagging.rs	4
 schema	is_denormalized	src/query_planner/analyzer/graph_join/inference.rs	1
@@ -67,7 +68,7 @@ schema	is_denormalized	src/query_planner/analyzer/multi_type_vlp_expansion.rs	4
 schema	is_denormalized	src/query_planner/analyzer/projected_columns_resolver.rs	5
 schema	is_denormalized	src/query_planner/analyzer/projection_tagging.rs	1
 schema	is_denormalized	src/query_planner/analyzer/type_inference.rs	22
-schema	is_denormalized	src/query_planner/analyzer/union_distribution.rs	6
+schema	is_denormalized	src/query_planner/analyzer/union_distribution.rs	7
 schema	is_denormalized	src/query_planner/analyzer/variable_resolver.rs	2
 schema	is_denormalized	src/query_planner/analyzer/view_resolver.rs	1
 schema	is_denormalized	src/query_planner/logical_expr/ast_conversion.rs	3

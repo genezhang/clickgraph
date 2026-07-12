@@ -25,7 +25,7 @@ use std::sync::Arc;
 use crate::graph_catalog::GraphSchema;
 use crate::query_planner::analyzer::analyzer_pass::{AnalyzerPass, AnalyzerResult};
 use crate::query_planner::logical_plan::{
-    CartesianProduct, Filter, GraphNode, GraphRel, GroupBy, LogicalPlan, Projection, Union,
+    CartesianProduct, Filter, GraphNode, GraphRel, LogicalPlan, Union,
 };
 use crate::query_planner::plan_ctx::PlanCtx;
 use crate::query_planner::transformed::Transformed;
@@ -52,12 +52,29 @@ impl AnalyzerPass for UnionDistribution {
 
 /// Check if a plan tree has a Union buried inside GraphRel/CartesianProduct chains
 /// (i.e., NOT already at a suitable level like directly under GroupBy/Projection).
+///
+/// The "is there a union ANYWHERE below this GraphRel/CartesianProduct connection"
+/// check used to be a second, hand-maintained walker (`has_any_union`) that covered
+/// a different — and narrower — set of variants than this function's own wrapper-node
+/// recursion (e.g. it had no `WithClause`/`Projection`/`GroupBy`/`OrderBy`/`Skip`/
+/// `Limit`/`Unwind` arms). Two walkers doing the same "does a union exist in this
+/// subtree" job with different coverage is exactly the kind of drift that silently
+/// stops this pass from firing when a Union is buried behind an unvisited wrapper.
+/// Delegating to `LogicalPlan::has_union_anywhere()` (the single already-exhaustive,
+/// unconditional "any union below here" query used elsewhere in the codebase)
+/// removes the duplicate definition entirely, so the two questions ("is a union here
+/// at all" vs "is it buried at an unsuitable level") can no longer disagree on
+/// coverage — only on the deliberate "already at a suitable level" exclusions below.
 fn has_buried_union(plan: &LogicalPlan) -> bool {
     match plan {
         // Union inside these data-processing nodes means it needs hoisting
-        LogicalPlan::CartesianProduct(cp) => has_any_union(&cp.left) || has_any_union(&cp.right),
+        LogicalPlan::CartesianProduct(cp) => {
+            cp.left.has_union_anywhere() || cp.right.has_union_anywhere()
+        }
         LogicalPlan::GraphRel(gr) => {
-            has_any_union(&gr.left) || has_any_union(&gr.center) || has_any_union(&gr.right)
+            gr.left.has_union_anywhere()
+                || gr.center.has_union_anywhere()
+                || gr.right.has_union_anywhere()
         }
         // Recurse through wrapper nodes
         LogicalPlan::Projection(p) => has_buried_union(&p.input),
@@ -69,20 +86,12 @@ fn has_buried_union(plan: &LogicalPlan) -> bool {
         LogicalPlan::GraphNode(gn) => has_buried_union(&gn.input),
         LogicalPlan::WithClause(wc) => has_buried_union(&wc.input),
         LogicalPlan::Unwind(u) => has_buried_union(&u.input),
-        _ => false,
-    }
-}
-
-/// Check if a plan tree contains any Union node.
-fn has_any_union(plan: &LogicalPlan) -> bool {
-    match plan {
-        LogicalPlan::Union(_) => true,
-        LogicalPlan::CartesianProduct(cp) => has_any_union(&cp.left) || has_any_union(&cp.right),
-        LogicalPlan::GraphRel(gr) => {
-            has_any_union(&gr.left) || has_any_union(&gr.right) || has_any_union(&gr.center)
-        }
-        LogicalPlan::GraphNode(gn) => has_any_union(&gn.input),
-        LogicalPlan::Filter(f) => has_any_union(&f.input),
+        LogicalPlan::Cte(c) => has_buried_union(&c.input),
+        // A Union at this level isn't itself "buried" (it IS already at a
+        // suitable level for whatever wraps it), but each of ITS OWN branches
+        // may independently contain a buried union further down (e.g. a
+        // UNION arm whose own body is `WITH ... MATCH (a)-[:R]-(b)<-...-(c)`).
+        LogicalPlan::Union(u) => u.inputs.iter().any(|b| has_buried_union(b)),
         _ => false,
     }
 }
@@ -349,53 +358,143 @@ fn distribute_union_impl(plan: &LogicalPlan, depth: usize) -> LogicalPlan {
             })
         }
 
-        // Wrapper nodes: recurse but do NOT distribute over Union
-        // (GroupBy/Projection aggregation must apply to the combined result)
-        LogicalPlan::Projection(p) => LogicalPlan::Projection(Projection {
-            input: Arc::new(distribute_union_impl(&p.input, depth + 1)),
-            items: p.items.clone(),
-            distinct: p.distinct,
-            pattern_comprehensions: p.pattern_comprehensions.clone(),
-        }),
-        LogicalPlan::GroupBy(gb) => LogicalPlan::GroupBy(GroupBy {
-            input: Arc::new(distribute_union_impl(&gb.input, depth + 1)),
-            expressions: gb.expressions.clone(),
-            having_clause: gb.having_clause.clone(),
-            is_materialization_boundary: gb.is_materialization_boundary,
-            exposed_alias: gb.exposed_alias.clone(),
-        }),
-        LogicalPlan::OrderBy(o) => {
-            LogicalPlan::OrderBy(crate::query_planner::logical_plan::OrderBy {
-                input: Arc::new(distribute_union_impl(&o.input, depth + 1)),
-                items: o.items.clone(),
-            })
-        }
-        LogicalPlan::Limit(l) => LogicalPlan::Limit(crate::query_planner::logical_plan::Limit {
-            input: Arc::new(distribute_union_impl(&l.input, depth + 1)),
-            count: l.count,
-        }),
-        LogicalPlan::Skip(s) => LogicalPlan::Skip(crate::query_planner::logical_plan::Skip {
-            input: Arc::new(distribute_union_impl(&s.input, depth + 1)),
-            count: s.count,
-        }),
-        LogicalPlan::Unwind(u) => LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
-            input: Arc::new(distribute_union_impl(&u.input, depth + 1)),
-            expression: u.expression.clone(),
-            alias: u.alias.clone(),
-            label: u.label.clone(),
-            tuple_properties: u.tuple_properties.clone(),
-        }),
+        // All other nodes (Projection, GroupBy, OrderBy, Limit, Skip, Unwind,
+        // WithClause, Cte, Union, leaves, ...): no Union-distribution logic
+        // applies AT this node itself (GroupBy/Projection aggregation must
+        // apply to the combined result, not be pushed into each branch), but
+        // any buried Union further down their children must still be found
+        // and distributed. Uses the exhaustive `LogicalPlan::map_children()`
+        // API to recurse into every child uniformly instead of a hand-picked
+        // list of wrapper arms — a prior hand-picked list here was exactly
+        // the kind of drift BUG1/BUG2 in this same walker-inventory pass
+        // flagged (variants silently skipped instead of descended into).
+        // Leaves (Empty, PageRank, a childless ViewScan, ...) round-trip to
+        // an equivalent clone via `map_children`, matching the old
+        // `other => other.clone()` catch-all exactly.
+        other => other.map_children(|child| distribute_union_impl(child, depth + 1)),
+    }
+}
 
-        // WithClause: recurse into input to distribute any buried Unions
-        LogicalPlan::WithClause(wc) => {
-            let new_input = distribute_union_impl(&wc.input, depth + 1);
-            LogicalPlan::WithClause(crate::query_planner::logical_plan::WithClause {
-                input: Arc::new(new_input),
-                ..wc.clone()
-            })
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::query_planner::logical_expr::Direction;
+    use crate::query_planner::logical_plan::{GraphNode, ProjectionItem, WithClause};
 
-        // Leaf/other nodes: no transformation needed
-        other => other.clone(),
+    fn leaf_node(alias: &str) -> Arc<LogicalPlan> {
+        Arc::new(LogicalPlan::GraphNode(GraphNode {
+            input: Arc::new(LogicalPlan::Empty),
+            alias: alias.to_string(),
+            label: None,
+            is_denormalized: false,
+            projected_columns: None,
+            node_types: None,
+        }))
+    }
+
+    fn union_of(branches: Vec<Arc<LogicalPlan>>) -> Arc<LogicalPlan> {
+        Arc::new(LogicalPlan::Union(Union {
+            inputs: branches,
+            union_type: crate::query_planner::logical_plan::UnionType::All,
+            is_cypher_union: false,
+        }))
+    }
+
+    fn graph_rel(alias: &str, left: Arc<LogicalPlan>, right: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
+        Arc::new(LogicalPlan::GraphRel(GraphRel {
+            left,
+            center: Arc::new(LogicalPlan::Empty),
+            right,
+            alias: alias.to_string(),
+            direction: Direction::Outgoing,
+            left_connection: "p".to_string(),
+            right_connection: "x".to_string(),
+            is_rel_anchor: false,
+            variable_length: None,
+            shortest_path_mode: None,
+            path_variable: None,
+            where_predicate: None,
+            labels: None,
+            is_optional: None,
+            anchor_connection: None,
+            cte_references: Default::default(),
+            pattern_combinations: None,
+            was_undirected: None,
+        }))
+    }
+
+    /// Regression for BUG2: the old `has_any_union` helper (used internally by
+    /// `has_buried_union` to check a GraphRel/CartesianProduct connection's
+    /// subtree) had no `WithClause` arm, unlike `has_buried_union` itself.
+    /// A GraphRel whose immediate left child is a WithClause wrapping a
+    /// buried Union (`GraphRel(left=WithClause(input=Union(...)), ...)`) —
+    /// the natural shape for `WITH ... MATCH (a)-[:R]-(b)` chains — was
+    /// silently invisible to the pass: `has_buried_union` would return
+    /// `false` and `distribute_union` would never run for that Union.
+    ///
+    /// Fixed by removing the duplicate `has_any_union` walker entirely and
+    /// delegating to the already-exhaustive `LogicalPlan::has_union_anywhere()`.
+    #[test]
+    fn union_buried_two_hops_below_with_clause_is_detected() {
+        let buried_union = union_of(vec![leaf_node("b_fwd"), leaf_node("b_rev")]);
+        let with_clause = Arc::new(LogicalPlan::WithClause(WithClause {
+            input: buried_union,
+            items: vec![ProjectionItem {
+                expression: crate::query_planner::logical_expr::LogicalExpr::TableAlias(
+                    crate::query_planner::logical_expr::TableAlias("p".to_string()),
+                ),
+                col_alias: None,
+            }],
+            distinct: false,
+            order_by: None,
+            skip: None,
+            limit: None,
+            where_clause: None,
+            exported_aliases: vec!["p".to_string()],
+            cte_name: Some("with_p_cte_0".to_string()),
+            cte_references: Default::default(),
+            pattern_comprehensions: Vec::new(),
+        }));
+
+        let rel = graph_rel("t1", with_clause, leaf_node("x"));
+
+        assert!(
+            has_buried_union(&rel),
+            "a Union nested inside a GraphRel's WithClause child must be \
+             detected as buried — this is the exact live-repro shape for \
+             `WITH ... MATCH (a)-[:R]-(b)`"
+        );
+    }
+
+    /// Regression for BUG2's `has_buried_union` gap: a Union at the TOP of
+    /// the checked subtree previously had no wrapper arm, so a buried union
+    /// nested inside one of ITS OWN branches (e.g. a UNION arm whose body is
+    /// itself `WITH ... MATCH (a)-[:R]-(b)-...`) was never found.
+    #[test]
+    fn union_branch_containing_its_own_buried_union_is_detected() {
+        let inner_buried = union_of(vec![leaf_node("b_fwd"), leaf_node("b_rev")]);
+        let branch_with_buried_union = graph_rel("t1", inner_buried, leaf_node("x"));
+        let clean_branch = leaf_node("y");
+
+        let top_union = LogicalPlan::Union(Union {
+            inputs: vec![branch_with_buried_union, clean_branch],
+            union_type: crate::query_planner::logical_plan::UnionType::All,
+            is_cypher_union: true,
+        });
+
+        assert!(
+            has_buried_union(&top_union),
+            "a buried union nested inside one UNION branch must be detected \
+             even though the top-level node is itself a Union"
+        );
+    }
+
+    #[test]
+    fn no_union_anywhere_is_not_buried() {
+        let rel = graph_rel("t1", leaf_node("p"), leaf_node("x"));
+        assert!(
+            !has_buried_union(&rel),
+            "a plan with no Union anywhere must never be reported as buried"
+        );
     }
 }
