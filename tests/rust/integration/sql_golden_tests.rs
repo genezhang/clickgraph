@@ -9481,6 +9481,224 @@ mod single_id_denorm_with_aggregate_family_551 {
     }
 }
 
+/// Regression tests for #560 (composite-id counterpart of #551) and #561
+/// (the non-WITH implicit-GROUP-BY sibling of #551/#560), plus #562
+/// (dormant hardening of the `find_denorm_connection_node_label` helper
+/// #551 introduced — see `plan_builder_utils::tests::
+/// find_denorm_connection_node_label_refuses_ambiguous_multi_registration_562`
+/// for #562's own dedicated unit tests, since no real fixture reaches that
+/// guard through full query rendering).
+///
+/// #560 root cause: `group_by_builder::composite_id_group_by_columns`
+/// (shared by both the WITH→CTE path, `expand_table_alias_to_group_by_id_only`,
+/// and the non-WITH path, `handle_table_alias_group_by`/
+/// `handle_wildcard_group_by`) gated purely on `cte_extraction::
+/// get_node_label_for_alias` — the same RECURSIVE-but-`GraphNode`-only
+/// lookup #551 showed misses a fully UNLABELED denormalized chain node
+/// (type inference never synthesizes a `GraphNode` for it at all). #551's
+/// own commit explicitly flagged this as a known, unfixed gap on the
+/// composite-id side. Fix: `composite_id_group_by_columns` now falls back
+/// to `find_denorm_connection_node_label` (#551's connection-based lookup)
+/// exactly like the single-id path already did — one shared helper, so both
+/// id shapes get the same coverage.
+///
+/// #561 root cause: `extract_group_by`'s free-standing `GroupBy` arm in
+/// `plan_builder_utils.rs` (the location the issue named) is DEAD CODE —
+/// every real caller (`plan_builder.rs`) goes through the `GroupByBuilder`
+/// TRAIT implementation in `group_by_builder.rs` instead (confirmed by
+/// exhaustive call-site search: `mod plan_builder_utils` is private and
+/// nothing calls the free function outside its own recursion/unit tests).
+/// The issue's LITERAL repro (`RETURN b.city, count(*) AS n`, no WITH) is
+/// consequently NOT a bug: `b.city` is a scalar PROPERTY projection, which
+/// the live code correctly passes through as a direct property-value GROUP
+/// BY key (`process_group_by_expressions`'s "Case 3", untouched by any
+/// identity-optimization logic) — matching both real Cypher aggregation
+/// semantics and this repo's own established precedent (`group_two_keys`:
+/// `RETURN u.country, u.city, count(u)` groups by the VALUES, not node
+/// identity; live-verified via ClickHouse: grouping this exact repro by
+/// `origin_code` instead, as the issue requested, would incorrectly split
+/// two same-city, different-code airports into separate output rows sharing
+/// a displayed city — see `scalar_property_only_group_by_no_with_groups_by_value_not_identity`
+/// below). The GENUINE non-WITH sibling of #551/#560 is the WHOLE-NODE shape
+/// (`RETURN b, count(*)`, no WITH) — `handle_table_alias_group_by`/
+/// `handle_wildcard_group_by` (`group_by_builder.rs`) hit the exact same
+/// `find_id_column_for_alias`-misses-a-denorm-chain-node gap #551 fixed for
+/// the WITH path, but had no fallback: it fell to a literal `"id"` sentinel
+/// column that downstream rendered as the dangling unmapped raw property
+/// name (`code`, never `origin_code`) — a hard ClickHouse `Code: 47
+/// UNKNOWN_IDENTIFIER`, not merely a wrong value. Fix: both functions now
+/// call the SAME new shared helper (`plan_builder_utils::
+/// resolve_single_id_denorm_column`) #551's own fix logic was refactored
+/// into, so the WITH and non-WITH paths cannot drift a third time (per the
+/// #551 review's explicit ask).
+///
+/// Live-verified (2026-07-11, db_denormalized, ClickHouse via `cg query`):
+/// - #560 (`WITH b, count(*) AS n RETURN b.city, n` over `COMPOSITE_FLIGHT`,
+///   unlabeled `b`): pre-fix `GROUP BY t2.origin_city` (5 rows, coincidentally
+///   "correct" only because city is 1:1 with code+state in this fixture);
+///   post-fix `GROUP BY t2.origin_code, t2.origin_state`, same 5 rows,
+///   cross-checked against a hand-written raw SQL self-join
+///   (LAX=6, ORD=2, ATL=1, DEN=1, JFK=1).
+/// - #561 (`RETURN b, count(*) AS n`, no WITH, labeled `b:Airport`): pre-fix
+///   `cg query` FAILS with `Code: 47. DB::Exception: Identifier 't2.code'
+///   cannot be resolved from table with name t2` (hard error, every run);
+///   post-fix returns 5 rows (LAX=6, ORD=2, ATL=1, DEN=1, JFK=1), matching
+///   a hand-written raw SQL cross-check on `origin_code`.
+///
+/// Found but NOT fixed (pre-existing, separate root cause, out of scope):
+/// the UNLABELED variant of #561's whole-node shape (`RETURN b, count(*)`
+/// where `b` has no `:Label`) still fails identically on live ClickHouse.
+/// There, `find_id_column_for_alias` does NOT return `Err` (which is the
+/// condition this fix's new fallback checks) — it returns `Ok("code")`,
+/// the UNMAPPED raw Cypher property name, because for this specific
+/// unlabeled-connection shape a `GraphNode` gets synthesized with a
+/// directly-attached `ViewScan` whose `id_column` was itself populated with
+/// the raw property name instead of the role-mapped physical column. That
+/// is a bug in `find_id_column_for_alias`'s/type-inference's OWN success
+/// path (wrong value, not a missing fallback), a different mechanism than
+/// #551/#560/#561's shared "resolution fails, falls through to the wrong
+/// generic default" shape, and is NOT exercised by any of #560/#561/#562's
+/// own repros — filing as a follow-up rather than fixing here to keep this
+/// change's blast radius to the three named issues.
+mod group_by_identity_family_560_561 {
+    use super::*;
+
+    const MIXED_SOURCES_SCHEMA: &str = "schemas/dev/flights_denorm_mixed_sources.yaml";
+
+    /// #560 (issue's own repro shape): UNLABELED composite-id denorm chain
+    /// node `b` sitting between two `COMPOSITE_FLIGHT` edges, behind a WITH
+    /// barrier. Must emit BOTH composite identity columns, never collapse to
+    /// the single non-identity `origin_city` display property.
+    #[tokio::test]
+    async fn unlabeled_composite_id_denorm_group_by_resolves_identity_560() {
+        let schema = load_schema(MIXED_SOURCES_SCHEMA);
+        let cypher = "MATCH (a)-[:COMPOSITE_FLIGHT]->(b)-[:COMPOSITE_FLIGHT]->(c) \
+                      WITH b, count(*) AS n RETURN b.city, n";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        let group_by_re =
+            regex::Regex::new(r#"GROUP BY t\d+\.origin_code, t\d+\.origin_state"#).unwrap();
+        assert!(
+            group_by_re.is_match(&sql),
+            "#560 regressed: GROUP BY must reference BOTH composite identity \
+             columns (origin_code, origin_state), not the first property \
+             (origin_city):\n{sql}"
+        );
+        assert!(
+            !sql.contains("GROUP BY t1.origin_city") && !sql.contains("GROUP BY t2.origin_city"),
+            "#560 regressed: GROUP BY must never collapse to the single \
+             non-identity origin_city column:\n{sql}"
+        );
+
+        for _ in 0..5 {
+            let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(sql, again, "#560: nondeterministic render");
+        }
+    }
+
+    /// #561 (issue's TRUE sibling shape — see the module doc comment for why
+    /// the issue's literal `.city`-property repro is not actually a bug):
+    /// LABELED denormalized chain node `b`, WHOLE-NODE GROUP BY key
+    /// (`RETURN b, count(*)` — the whole-node `b` alias, which triggers the
+    /// ID-only GROUP BY optimization), with NO WITH clause. Must resolve the
+    /// real identity column, never the dangling unmapped `code` / literal
+    /// `"id"` sentinel.
+    #[tokio::test]
+    async fn labeled_whole_node_group_by_no_with_resolves_identity_561() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let cypher = "MATCH (a:Airport)-[:FLIGHT]->(b:Airport)-[:FLIGHT]->(c:Airport) \
+                      RETURN b, count(*) AS n";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        let group_by_re = regex::Regex::new(r#"GROUP BY t\d+\.origin_code\b"#).unwrap();
+        assert!(
+            group_by_re.is_match(&sql),
+            "#561 regressed: whole-node non-WITH GROUP BY must reference the \
+             node's real identity column (origin_code), never a dangling \
+             unmapped placeholder:\n{sql}"
+        );
+        assert!(
+            !sql.contains("GROUP BY t0.code")
+                && !sql.contains("GROUP BY t1.code")
+                && !sql.contains("GROUP BY t2.code")
+                && !sql.contains("GROUP BY t0.id")
+                && !sql.contains("GROUP BY t1.id")
+                && !sql.contains("GROUP BY t2.id"),
+            "#561 regressed: GROUP BY must never reference the unmapped raw \
+             property name or the literal \"id\" sentinel:\n{sql}"
+        );
+
+        for _ in 0..5 {
+            let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+            assert_eq!(sql, again, "#561: nondeterministic render");
+        }
+    }
+
+    /// #561 guard: the composite-id whole-node, no-WITH shape must ALSO
+    /// resolve correctly, since `composite_id_group_by_columns` (shared by
+    /// both the WITH and non-WITH GROUP BY paths) now carries the #560 fix.
+    #[tokio::test]
+    async fn labeled_composite_id_whole_node_group_by_no_with_resolves_identity_561() {
+        let schema = load_schema(MIXED_SOURCES_SCHEMA);
+        let cypher = "MATCH (a:AirportComposite)-[:COMPOSITE_FLIGHT]->(b:AirportComposite)\
+                      -[:COMPOSITE_FLIGHT]->(c:AirportComposite) \
+                      RETURN b, count(*) AS n";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        let group_by_re =
+            regex::Regex::new(r#"GROUP BY t\d+\.origin_code, t\d+\.origin_state"#).unwrap();
+        assert!(
+            group_by_re.is_match(&sql),
+            "#561 guard: composite-id whole-node non-WITH GROUP BY must key \
+             on BOTH identity columns:\n{sql}"
+        );
+    }
+
+    /// #561 NON-bug guard: `RETURN b.city, count(*)` — a scalar PROPERTY
+    /// projection, NOT the whole node `b` — must remain UNCHANGED. Grouping
+    /// by the property VALUE is the correct Cypher semantics here (matches
+    /// `group_two_keys`'s established precedent). This is deliberately the
+    /// issue's ORIGINAL literal repro, locked as a "not a bug" guard: if a
+    /// future change makes this start grouping by `origin_code` instead, it
+    /// has REGRESSED correctness (two different-code, same-city airports
+    /// would wrongly render as two output rows sharing one displayed city
+    /// instead of merging into one, per real Cypher aggregation semantics).
+    #[tokio::test]
+    async fn scalar_property_only_group_by_no_with_groups_by_value_not_identity() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let cypher = "MATCH (a:Airport)-[:FLIGHT]->(b:Airport)-[:FLIGHT]->(c:Airport) \
+                      RETURN b.city, count(*) AS n";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        let group_by_re = regex::Regex::new(r#"GROUP BY t\d+\.origin_city\b"#).unwrap();
+        assert!(
+            group_by_re.is_match(&sql),
+            "a scalar b.city projection (no WITH, no whole-node b) must \
+             group by the property VALUE per Cypher semantics, not the \
+             node's identity column:\n{sql}"
+        );
+    }
+
+    /// #551 guard, re-verified with the #560/#561 fixes in place: the
+    /// single-id WITH-aggregate path must still render byte-identically —
+    /// `resolve_single_id_denorm_column` (the new shared helper both paths
+    /// now call) must reproduce #551's own fix output exactly.
+    #[tokio::test]
+    async fn single_id_with_aggregate_unaffected_by_560_561_shared_helper() {
+        let schema = load_schema(MIXED_SOURCES_SCHEMA);
+        let cypher = "MATCH (a)-[:CARRIER_FLIGHT]->(b)-[:CARRIER_FLIGHT]->(c) \
+                      WITH b, count(*) AS n RETURN b.city, b.carrier, n";
+        let sql = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+
+        let group_by_re = regex::Regex::new(r#"GROUP BY t\d+\.origin_code\b"#).unwrap();
+        assert!(
+            group_by_re.is_match(&sql),
+            "#551 must remain unaffected by the #560/#561 shared-helper \
+             refactor:\n{sql}"
+        );
+    }
+}
+
 /// Regression tests for the #546/#547 ORDER BY id() family — milder siblings
 /// of #536's GROUP BY/ORDER BY id()-resolution-when-label-unresolvable bug,
 /// found during that fix's adversarial review (both pre-existing on `main`,

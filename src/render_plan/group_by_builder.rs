@@ -556,7 +556,20 @@ pub(super) fn composite_id_group_by_columns(
     alias: &str,
 ) -> Option<Vec<String>> {
     let schema = crate::server::query_context::get_current_schema_with_fallback()?;
-    let label = super::cte_extraction::get_node_label_for_alias(alias, input)?;
+    // #560: `get_node_label_for_alias` only matches an actual `GraphNode` —
+    // it misses an UNLABELED denormalized chain node (e.g. `b` in
+    // `(a)-[:T]->(b)-[:T]->(c)` with no `:Label` on `b`), which never gets a
+    // `GraphNode` synthesized at all (type inference resolves its properties
+    // straight off the edge `ViewScan`'s role-specific property maps — see
+    // `find_denorm_connection_node_label`'s doc comment in
+    // `plan_builder_utils.rs`). This is the exact same gap #551 closed for
+    // the single-id path; the composite-id path was left on the old
+    // label-resolution behavior at the time (see #551's "Found but NOT
+    // fixed" note), silently falling through to the "first property"
+    // fallback for this shape instead of expanding to every identity column.
+    let label = super::cte_extraction::get_node_label_for_alias(alias, input).or_else(|| {
+        super::plan_builder_utils::find_denorm_connection_node_label(input, alias, &schema)
+    })?;
     let node_schema = schema.node_schema(&label).ok()?;
 
     // Only composite ids need multi-column expansion. Gated purely on the
@@ -628,36 +641,83 @@ fn handle_table_alias_group_by(
 
     // Composite-id nodes: emit EVERY identity column as a GROUP BY key so distinct
     // nodes sharing a first id component are not silently merged (issue #457).
-    if let Some(id_columns) = composite_id_group_by_columns(input, alias) {
+    //
+    // #561 finding: this must resolve through `resolve_composite_id_group_by_columns`
+    // (the shared #550 physical-column-mapping helper), NOT the raw
+    // `composite_id_group_by_columns` output directly — the raw
+    // `node_id.columns()` are CYPHER property names, which for a
+    // denormalized composite-id node (e.g. `AirportComposite`: `code`/`state`
+    // -> `origin_code`/`origin_state`) are not real physical columns.
+    // Pre-fix this path pushed the raw names straight into GROUP BY,
+    // producing a hard ClickHouse `UNKNOWN_IDENTIFIER` for `RETURN b,
+    // count(*)` (no WITH) over a denormalized composite-id node — the WITH
+    // path (`expand_table_alias_to_group_by_id_only`) already carried #550's
+    // mapping fix; this non-WITH path did not.
+    if let Some((resolved_columns, group_alias)) =
+        super::plan_builder_utils::resolve_composite_id_group_by_columns(input, alias)
+    {
         log::debug!(
             "🔧 GROUP BY optimization: Using {} composite ID columns {:?} for alias '{}'",
-            id_columns.len(),
-            id_columns,
-            table_alias_to_use
+            resolved_columns.len(),
+            resolved_columns,
+            group_alias
         );
-        push_composite_id_group_by(result, &table_alias_to_use, &id_columns);
+        push_composite_id_group_by(result, &group_alias, &resolved_columns);
         return Ok(true);
     }
 
     // Single-column id: get the ID column from the schema (via ViewScan.id_column)
-    let id_col = input.find_id_column_for_alias(alias).unwrap_or_else(|_| {
-        log::warn!(
-            "⚠️ Could not find ID column for alias '{}', using fallback",
-            alias
+    if let Ok(id_col) = input.find_id_column_for_alias(alias) {
+        log::debug!(
+            "🔧 GROUP BY optimization: Using ID column '{}' from schema instead of {} properties for alias '{}'",
+            id_col,
+            properties.len(),
+            table_alias_to_use
         );
-        "id".to_string()
-    });
 
-    log::debug!(
-        "🔧 GROUP BY optimization: Using ID column '{}' from schema instead of {} properties for alias '{}'",
-        id_col,
-        properties.len(),
-        table_alias_to_use
+        result.push(RenderExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: TableAlias(table_alias_to_use.clone()),
+            column: PropertyValue::Column(id_col),
+        }));
+        return Ok(true);
+    }
+
+    // #561: `find_id_column_for_alias` only matches a `GraphNode` with a
+    // directly-attached `ViewScan` — it misses a denormalized chain node
+    // sitting between two edges (e.g. `b` in `(a)-[:T]->(b)-[:T]->(c)`,
+    // whole node `b` grouped with no `WITH` clause), whether `b` is
+    // UNLABELED (no `GraphNode` at all) or LABELED but denormalized (its
+    // `GraphNode` has no ViewScan of its own — the physical scan lives on
+    // the edge). Before this, that case fell straight to the raw
+    // `alias`/`"id"` sentinel handling below, which — since neither `alias`
+    // nor a literal `"id"` is ever a real physical column for this shape —
+    // produced dangling/invalid SQL rather than a correct GROUP BY. This is
+    // the non-WITH sibling of #551's fix (`expand_table_alias_to_group_by_id_only`,
+    // the WITH→CTE path), sharing the SAME resolution helper
+    // (`resolve_single_id_denorm_column`) so the two paths cannot drift.
+    if let Some(schema) = crate::server::query_context::get_current_schema_with_fallback() {
+        if let Some((col_name, resolved_alias)) =
+            super::plan_builder_utils::resolve_single_id_denorm_column(input, alias, &schema)
+        {
+            log::debug!(
+                "🔧 GROUP BY optimization: Resolved single id property -> physical column '{}' on alias '{}' via denorm chain-node label resolution (#561)",
+                col_name, resolved_alias
+            );
+            result.push(RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(resolved_alias),
+                column: PropertyValue::Column(col_name),
+            }));
+            return Ok(true);
+        }
+    }
+
+    log::warn!(
+        "⚠️ Could not find ID column for alias '{}', using fallback",
+        alias
     );
-
     result.push(RenderExpr::PropertyAccessExp(PropertyAccess {
         table_alias: TableAlias(table_alias_to_use.clone()),
-        column: PropertyValue::Column(id_col),
+        column: PropertyValue::Column("id".to_string()),
     }));
 
     Ok(true)
@@ -721,40 +781,71 @@ fn handle_wildcard_group_by(
 
     // Case B: Regular node alias - use ID column(s)
     if !properties.is_empty() {
-        // Composite-id nodes: emit EVERY identity column (issue #457).
-        if let Some(id_columns) = composite_id_group_by_columns(input, &prop_access.table_alias.0) {
+        // Composite-id nodes: emit EVERY identity column (issue #457), mapped
+        // to physical columns via the shared #550/#561 helper (see the doc
+        // comment on `resolve_composite_id_group_by_columns` and the note in
+        // `handle_table_alias_group_by`).
+        if let Some((resolved_columns, group_alias)) =
+            super::plan_builder_utils::resolve_composite_id_group_by_columns(
+                input,
+                &prop_access.table_alias.0,
+            )
+        {
             log::debug!(
                 "🔧 GROUP BY optimization: Using {} composite ID columns {:?} for alias '{}'",
-                id_columns.len(),
-                id_columns,
-                table_alias_to_use
+                resolved_columns.len(),
+                resolved_columns,
+                group_alias
             );
-            push_composite_id_group_by(result, &table_alias_to_use, &id_columns);
+            push_composite_id_group_by(result, &group_alias, &resolved_columns);
             return Ok(true);
         }
 
-        let id_col = input
-            .find_id_column_for_alias(&prop_access.table_alias.0)
-            .map_err(|e| {
-                RenderBuildError::InvalidRenderPlan(format!(
-                    "Cannot find ID column for alias '{}': {}",
-                    prop_access.table_alias.0, e
-                ))
-            })?;
+        if let Ok(id_col) = input.find_id_column_for_alias(&prop_access.table_alias.0) {
+            log::debug!(
+                "🔧 GROUP BY optimization: Using ID column '{}' instead of {} properties for alias '{}'",
+                id_col,
+                properties.len(),
+                table_alias_to_use
+            );
 
-        log::debug!(
-            "🔧 GROUP BY optimization: Using ID column '{}' instead of {} properties for alias '{}'",
-            id_col,
-            properties.len(),
-            table_alias_to_use
-        );
+            result.push(RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(table_alias_to_use.clone()),
+                column: PropertyValue::Column(id_col),
+            }));
 
-        result.push(RenderExpr::PropertyAccessExp(PropertyAccess {
-            table_alias: TableAlias(table_alias_to_use.clone()),
-            column: PropertyValue::Column(id_col),
-        }));
+            return Ok(true);
+        }
 
-        return Ok(true);
+        // #561: same denorm chain-node identity fallback as
+        // `handle_table_alias_group_by` (see its doc comment) — covers
+        // `RETURN b.*, count(*)` (no WITH) over an unlabeled/labeled
+        // denormalized chain node that `find_id_column_for_alias` can't
+        // reach directly.
+        if let Some(schema) = crate::server::query_context::get_current_schema_with_fallback() {
+            if let Some((col_name, resolved_alias)) =
+                super::plan_builder_utils::resolve_single_id_denorm_column(
+                    input,
+                    &prop_access.table_alias.0,
+                    &schema,
+                )
+            {
+                log::debug!(
+                    "🔧 GROUP BY optimization: Resolved single id property -> physical column '{}' on alias '{}' via denorm chain-node label resolution (#561)",
+                    col_name, resolved_alias
+                );
+                result.push(RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(resolved_alias),
+                    column: PropertyValue::Column(col_name),
+                }));
+                return Ok(true);
+            }
+        }
+
+        return Err(RenderBuildError::InvalidRenderPlan(format!(
+            "Cannot find ID column for alias '{}'",
+            prop_access.table_alias.0
+        )));
     }
 
     Ok(false) // Could not handle - let caller handle
