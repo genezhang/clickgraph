@@ -133,77 +133,15 @@ fn rewrite_plan(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
             ))
         }
 
-        LogicalPlan::Limit(l) => {
-            let new_input = rewrite_plan(l.input.clone());
-            Arc::new(LogicalPlan::Limit(
-                crate::query_planner::logical_plan::Limit {
-                    input: new_input,
-                    count: l.count,
-                },
-            ))
-        }
-
-        LogicalPlan::Skip(s) => Arc::new(LogicalPlan::Skip(
-            crate::query_planner::logical_plan::Skip {
-                input: rewrite_plan(s.input.clone()),
-                count: s.count,
-            },
-        )),
-
-        LogicalPlan::WithClause(wc) => {
-            let mut new_wc = wc.clone();
-            new_wc.input = rewrite_plan(wc.input.clone());
-            Arc::new(LogicalPlan::WithClause(new_wc))
-        }
-
-        LogicalPlan::GraphNode(gn) => {
-            let mut new_gn = gn.clone();
-            new_gn.input = rewrite_plan(gn.input.clone());
-            Arc::new(LogicalPlan::GraphNode(new_gn))
-        }
-
         LogicalPlan::GraphRel(gr) => {
+            // NOTE: only `left`/`right` are walked here — `center` (the
+            // relationship's own scan) is intentionally left untouched,
+            // matching the pre-existing (pre-migration) behavior exactly.
             let mut new_gr = gr.clone();
             new_gr.left = rewrite_plan(gr.left.clone());
             new_gr.right = rewrite_plan(gr.right.clone());
             Arc::new(LogicalPlan::GraphRel(new_gr))
         }
-
-        LogicalPlan::GraphJoins(gj) => {
-            let mut new_gj = gj.clone();
-            new_gj.input = rewrite_plan(gj.input.clone());
-            Arc::new(LogicalPlan::GraphJoins(new_gj))
-        }
-
-        LogicalPlan::Cte(cte) => {
-            let mut new_cte = cte.clone();
-            new_cte.input = rewrite_plan(cte.input.clone());
-            // Note: CTEs are independent scopes, their definitions are not rewritten here
-            Arc::new(LogicalPlan::Cte(new_cte))
-        }
-
-        LogicalPlan::Union(u) => {
-            let new_inputs = u
-                .inputs
-                .iter()
-                .map(|input| rewrite_plan(input.clone()))
-                .collect();
-
-            Arc::new(LogicalPlan::Union(
-                crate::query_planner::logical_plan::Union {
-                    inputs: new_inputs,
-                    ..u.clone()
-                },
-            ))
-        }
-
-        LogicalPlan::CartesianProduct(cp) => Arc::new(LogicalPlan::CartesianProduct(
-            crate::query_planner::logical_plan::CartesianProduct {
-                left: rewrite_plan(cp.left.clone()),
-                right: rewrite_plan(cp.right.clone()),
-                ..cp.clone()
-            },
-        )),
 
         // Base cases - no children to rewrite
         LogicalPlan::ViewScan(_) | LogicalPlan::Empty | LogicalPlan::PageRank(_) => plan.clone(),
@@ -213,6 +151,15 @@ fn rewrite_plan(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
         | LogicalPlan::SetProperties(_)
         | LogicalPlan::Delete(_)
         | LogicalPlan::Remove(_) => plan.clone(),
+
+        // Everything else (Unwind, Limit, Skip, WithClause, GraphNode, GraphJoins,
+        // Cte, Union, CartesianProduct) is pure structural recursion — walk direct
+        // children via the exhaustive `LogicalPlan::map_children` API instead of a
+        // hand-rolled per-variant rebuild.
+        _ => Arc::new(
+            plan.as_ref()
+                .map_children(|c| rewrite_plan(Arc::new(c.clone())).as_ref().clone()),
+        ),
     }
 }
 

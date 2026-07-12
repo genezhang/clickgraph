@@ -2668,6 +2668,93 @@ mod tests {
         );
     }
 
+    /// Minimal empty schema — `should_use_join_expansion` (which
+    /// `has_multi_type_vlp` delegates to for the `GraphRel` case) never reads
+    /// `schema`, so an empty one is sufficient for these traversal tests.
+    fn empty_schema_for_vlp_test() -> crate::graph_catalog::graph_schema::GraphSchema {
+        use crate::graph_catalog::config::GraphSchemaConfig;
+        let yaml = r#"
+name: empty_vlp_test_schema
+graph_schema:
+  nodes:
+    - label: Dummy
+      database: db_vlp_test
+      table: dummy
+      node_id: id
+      property_mappings: {}
+  edges: []
+"#;
+        GraphSchemaConfig::from_yaml_str(yaml)
+            .expect("parse empty test schema")
+            .to_graph_schema()
+            .expect("build empty test GraphSchema")
+    }
+
+    /// A multi-type VLP GraphRel: variable-length with more than one
+    /// relationship type in `labels`, which `should_use_join_expansion`
+    /// ("Case 2: Multiple relationship types ALWAYS require UNION ALL CTE")
+    /// treats as requiring JOIN expansion. `left`/`right` are left as `Empty`
+    /// — deliberately avoiding a `GraphNode` literal here so this fixture
+    /// doesn't add a new occurrence of a schema-pattern-axis token tracked by
+    /// `cargo test --test ratchet` in this file.
+    fn multi_type_vlp_graph_rel() -> LogicalPlan {
+        use crate::query_planner::logical_expr::Direction;
+        use crate::query_planner::logical_plan::{GraphRel, VariableLengthSpec};
+        LogicalPlan::GraphRel(GraphRel {
+            left: Arc::new(LogicalPlan::Empty),
+            center: Arc::new(LogicalPlan::Empty),
+            right: Arc::new(LogicalPlan::Empty),
+            alias: "r".to_string(),
+            direction: Direction::Outgoing,
+            left_connection: "a".to_string(),
+            right_connection: "b".to_string(),
+            is_rel_anchor: false,
+            variable_length: Some(VariableLengthSpec::default()),
+            shortest_path_mode: None,
+            path_variable: None,
+            where_predicate: None,
+            labels: Some(vec!["KNOWS".to_string(), "FOLLOWS".to_string()]),
+            is_optional: None,
+            anchor_connection: None,
+            cte_references: std::collections::HashMap::new(),
+            pattern_combinations: None,
+            was_undirected: None,
+        })
+    }
+
+    /// Sanity check: `has_multi_type_vlp` detects a multi-type VLP `GraphRel`
+    /// directly at the plan root.
+    #[test]
+    fn has_multi_type_vlp_detects_direct_graph_rel() {
+        let schema = empty_schema_for_vlp_test();
+        assert!(has_multi_type_vlp(&multi_type_vlp_graph_rel(), &schema));
+    }
+
+    /// Regression (Phase 1 Slice 2, gap-fix #4): before migrating to the
+    /// exhaustive `LogicalPlan::children()` traversal, `has_multi_type_vlp`'s
+    /// catch-all (`_ => false`) silently skipped `Union` (and `GraphNode`,
+    /// `WithClause`, `Cte`, `CartesianProduct`, `Unwind`) subtrees, so a
+    /// multi-type VLP nested under a `Union` branch was invisible to this
+    /// check. Verify the fixed version finds it.
+    #[test]
+    fn has_multi_type_vlp_detects_graph_rel_nested_under_union() {
+        use crate::query_planner::logical_plan::{Union, UnionType};
+
+        let schema = empty_schema_for_vlp_test();
+        let union_plan = LogicalPlan::Union(Union {
+            inputs: vec![
+                Arc::new(LogicalPlan::Empty),
+                Arc::new(multi_type_vlp_graph_rel()),
+            ],
+            union_type: UnionType::All,
+            is_cypher_union: false,
+        });
+        assert!(
+            has_multi_type_vlp(&union_plan, &schema),
+            "has_multi_type_vlp must see a multi-type VLP nested inside a Union branch"
+        );
+    }
+
     /// `emit_array_count_call` outside a task-local scope defaults to
     /// ClickHouse — matching the pre-Phase-1.1 hardcoded behavior.
     #[test]
@@ -4098,14 +4185,14 @@ pub fn has_multi_type_vlp(
                 false
             }
         }
-        LogicalPlan::Projection(proj) => has_multi_type_vlp(&proj.input, schema),
-        LogicalPlan::Filter(filter) => has_multi_type_vlp(&filter.input, schema),
-        LogicalPlan::GroupBy(gb) => has_multi_type_vlp(&gb.input, schema),
-        LogicalPlan::OrderBy(order) => has_multi_type_vlp(&order.input, schema),
-        LogicalPlan::Limit(limit) => has_multi_type_vlp(&limit.input, schema),
-        LogicalPlan::Skip(skip) => has_multi_type_vlp(&skip.input, schema),
-        LogicalPlan::GraphJoins(joins) => has_multi_type_vlp(&joins.input, schema),
-        _ => false,
+        // Everything else — recurse into every direct child via the exhaustive
+        // `LogicalPlan::children` API (covers GraphNode, Union, WithClause, Cte,
+        // CartesianProduct, Unwind, etc. that the previous hand-rolled catch-all
+        // silently skipped).
+        _ => plan
+            .children()
+            .iter()
+            .any(|c| has_multi_type_vlp(c, schema)),
     }
 }
 
@@ -4135,10 +4222,14 @@ pub fn count_with_cte_refs(plan: &LogicalPlan) -> Vec<(usize, Vec<String>)> {
             results.extend(count_with_cte_refs(&wc.input));
             results
         }
-        LogicalPlan::Projection(p) => count_with_cte_refs(&p.input),
-        LogicalPlan::Limit(l) => count_with_cte_refs(&l.input),
-        LogicalPlan::GraphJoins(gj) => count_with_cte_refs(&gj.input),
-        _ => vec![],
+        // Everything else — recurse into every direct child via the exhaustive
+        // `LogicalPlan::children` API so no subtree (e.g. GraphNode, Filter,
+        // Union, Cte, GraphRel) is silently skipped.
+        _ => plan
+            .children()
+            .iter()
+            .flat_map(|c| count_with_cte_refs(c))
+            .collect(),
     }
 }
 

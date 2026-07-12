@@ -68,36 +68,12 @@ fn is_scoping_only_with(wc: &WithClause) -> bool {
 
 /// Check if a plan subtree contains any WithClause node.
 fn contains_with_clause(plan: &LogicalPlan) -> bool {
-    match plan {
-        LogicalPlan::WithClause(_) => true,
-        LogicalPlan::GraphRel(gr) => {
-            contains_with_clause(&gr.left)
-                || contains_with_clause(&gr.center)
-                || contains_with_clause(&gr.right)
-        }
-        LogicalPlan::CartesianProduct(cp) => {
-            contains_with_clause(&cp.left) || contains_with_clause(&cp.right)
-        }
-        LogicalPlan::Filter(f) => contains_with_clause(&f.input),
-        LogicalPlan::Projection(p) => contains_with_clause(&p.input),
-        LogicalPlan::GraphJoins(gj) => contains_with_clause(&gj.input),
-        LogicalPlan::GroupBy(gb) => contains_with_clause(&gb.input),
-        LogicalPlan::OrderBy(ob) => contains_with_clause(&ob.input),
-        LogicalPlan::Limit(lim) => contains_with_clause(&lim.input),
-        LogicalPlan::Skip(s) => contains_with_clause(&s.input),
-        LogicalPlan::Unwind(uw) => contains_with_clause(&uw.input),
-        LogicalPlan::Union(u) => u.inputs.iter().any(|i| contains_with_clause(i)),
-        LogicalPlan::Cte(c) => contains_with_clause(&c.input),
-        LogicalPlan::GraphNode(gn) => contains_with_clause(&gn.input),
-        // Leaf nodes — no children to recurse into
-        LogicalPlan::Empty | LogicalPlan::ViewScan(_) | LogicalPlan::PageRank(_) => false,
-
-        // Write variants — recurse into preceding read pipeline.
-        LogicalPlan::Create(c) => contains_with_clause(&c.input),
-        LogicalPlan::SetProperties(sp) => contains_with_clause(&sp.input),
-        LogicalPlan::Delete(d) => contains_with_clause(&d.input),
-        LogicalPlan::Remove(r) => contains_with_clause(&r.input),
+    if matches!(plan, LogicalPlan::WithClause(_)) {
+        return true;
     }
+    plan.children()
+        .iter()
+        .any(|child| contains_with_clause(child))
 }
 
 /// Recursively collapse scoping-only WITH clauses in the plan tree.
@@ -295,8 +271,19 @@ fn collapse_recursive(plan: &LogicalPlan) -> LogicalPlan {
                 correlation_predicates: gj.correlation_predicates.clone(),
             })
         }
-        // Leaf nodes — return unchanged
-        other => other.clone(),
+        // Write variants — left untouched (byte-identical to the pre-migration
+        // `other => other.clone()` catch-all, which never recursed into these).
+        // `Create.input` IS reachable and can hold a scoping-only WithClause
+        // (e.g. `MATCH (a),(b) WITH a,b CREATE (a)-[:REL]->(b)`); recursing here
+        // would collapse it and diverge from main. Mirrors the identical
+        // exclusion in `unwind_property_rewriter::rewrite_plan`.
+        LogicalPlan::Create(_)
+        | LogicalPlan::SetProperties(_)
+        | LogicalPlan::Delete(_)
+        | LogicalPlan::Remove(_) => plan.clone(),
+        // Everything else — structural passthrough, recurse into direct children
+        // via the exhaustive `LogicalPlan::children`/`map_children` API.
+        other => other.map_children(collapse_recursive),
     }
 }
 
@@ -608,5 +595,50 @@ mod tests {
             matches!(&*result, LogicalPlan::Empty),
             "Outer WITH should collapse when input has no nested WithClause"
         );
+    }
+
+    /// Regression (Phase 1 Slice 2 review): `collapse_recursive` must NOT
+    /// recurse into write-op variants' inputs. `Create.input` IS reachable and
+    /// can hold a scoping-only WithClause (e.g.
+    /// `MATCH (a),(b) WITH a,b CREATE (a)-[:REL]->(b)`). The pre-migration
+    /// catch-all (`other => other.clone()`) left write-op subtrees untouched;
+    /// the `map_children`-based default would have collapsed this WithClause to
+    /// Empty, diverging from main. This test pins the byte-identical behavior:
+    /// the WithClause under a Create must survive.
+    #[test]
+    fn test_collapse_does_not_recurse_into_write_op_input() {
+        use crate::query_planner::logical_plan::Create;
+
+        // Scoping-only WithClause (2 items, no modifiers) — WOULD be collapsed
+        // if it appeared in a read pipeline.
+        let scoping_with = WithClause {
+            exported_aliases: vec!["a".to_string(), "b".to_string()],
+            ..make_with(
+                vec![table_alias_item("a"), table_alias_item("b")],
+                false,
+                false,
+                false,
+                false,
+                false,
+            )
+        };
+
+        let plan = Arc::new(LogicalPlan::Create(Create {
+            input: Arc::new(LogicalPlan::WithClause(scoping_with)),
+            patterns: vec![],
+        }));
+
+        let result = collapse_scoping_only_withs(plan);
+
+        // The Create wrapper is preserved, and crucially its `.input` is STILL
+        // a WithClause (NOT collapsed to Empty) — matching main's behavior.
+        match &*result {
+            LogicalPlan::Create(c) => assert!(
+                matches!(&*c.input, LogicalPlan::WithClause(_)),
+                "scoping-only WithClause under Create.input must NOT be collapsed \
+                 (collapse must not recurse into write-op inputs)"
+            ),
+            other => panic!("expected Create at root, got {:?}", other),
+        }
     }
 }

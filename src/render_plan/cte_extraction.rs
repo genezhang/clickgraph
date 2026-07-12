@@ -6244,49 +6244,35 @@ pub fn plan_uses_relationships_fn(plan: &LogicalPlan, path_var: &str) -> bool {
     }
 
     fn plan_has_relationships(plan: &LogicalPlan, path_var: &str) -> bool {
-        match plan {
-            LogicalPlan::Projection(p) => {
-                p.items
-                    .iter()
-                    .any(|item| expr_uses_relationships(&item.expression, path_var))
-                    || plan_has_relationships(&p.input, path_var)
-            }
-            LogicalPlan::Filter(f) => {
-                expr_uses_relationships(&f.predicate, path_var)
-                    || plan_has_relationships(&f.input, path_var)
-            }
-            LogicalPlan::WithClause(wc) => {
-                wc.items
-                    .iter()
-                    .any(|item| expr_uses_relationships(&item.expression, path_var))
-                    || plan_has_relationships(&wc.input, path_var)
-            }
-            LogicalPlan::OrderBy(ob) => {
-                ob.items
-                    .iter()
-                    .any(|item| expr_uses_relationships(&item.expression, path_var))
-                    || plan_has_relationships(&ob.input, path_var)
-            }
-            LogicalPlan::GraphRel(gr) => {
-                gr.where_predicate
-                    .as_ref()
-                    .is_some_and(|p| expr_uses_relationships(p, path_var))
-                    || plan_has_relationships(&gr.left, path_var)
-                    || plan_has_relationships(&gr.center, path_var)
-                    || plan_has_relationships(&gr.right, path_var)
-            }
-            LogicalPlan::GraphNode(n) => plan_has_relationships(&n.input, path_var),
-            LogicalPlan::GroupBy(gb) => plan_has_relationships(&gb.input, path_var),
-            LogicalPlan::Limit(l) => plan_has_relationships(&l.input, path_var),
-            LogicalPlan::Skip(s) => plan_has_relationships(&s.input, path_var),
-            LogicalPlan::CartesianProduct(cp) => {
-                plan_has_relationships(&cp.left, path_var)
-                    || plan_has_relationships(&cp.right, path_var)
-            }
-            LogicalPlan::Union(u) => u.inputs.iter().any(|i| plan_has_relationships(i, path_var)),
-            LogicalPlan::GraphJoins(gj) => plan_has_relationships(&gj.input, path_var),
+        // Node-local check: does this node's own expressions reference
+        // `relationships(path_var)`?
+        let own_hit = match plan {
+            LogicalPlan::Projection(p) => p
+                .items
+                .iter()
+                .any(|item| expr_uses_relationships(&item.expression, path_var)),
+            LogicalPlan::Filter(f) => expr_uses_relationships(&f.predicate, path_var),
+            LogicalPlan::WithClause(wc) => wc
+                .items
+                .iter()
+                .any(|item| expr_uses_relationships(&item.expression, path_var)),
+            LogicalPlan::OrderBy(ob) => ob
+                .items
+                .iter()
+                .any(|item| expr_uses_relationships(&item.expression, path_var)),
+            LogicalPlan::GraphRel(gr) => gr
+                .where_predicate
+                .as_ref()
+                .is_some_and(|p| expr_uses_relationships(p, path_var)),
             _ => false,
-        }
+        };
+        // Recurse into every direct child via the exhaustive `LogicalPlan::children`
+        // API so no subtree (e.g. Cte, Unwind, GraphNode-under-Cte) is silently skipped.
+        own_hit
+            || plan
+                .children()
+                .iter()
+                .any(|c| plan_has_relationships(c, path_var))
     }
 
     plan_has_relationships(plan, path_var)
@@ -6327,47 +6313,31 @@ pub fn plan_uses_nodes_fn(plan: &LogicalPlan, path_var: &str) -> bool {
     }
 
     fn plan_has_nodes(plan: &LogicalPlan, path_var: &str) -> bool {
-        match plan {
-            LogicalPlan::Projection(p) => {
-                p.items
-                    .iter()
-                    .any(|item| expr_uses_nodes(&item.expression, path_var))
-                    || plan_has_nodes(&p.input, path_var)
-            }
-            LogicalPlan::Filter(f) => {
-                expr_uses_nodes(&f.predicate, path_var) || plan_has_nodes(&f.input, path_var)
-            }
-            LogicalPlan::WithClause(wc) => {
-                wc.items
-                    .iter()
-                    .any(|item| expr_uses_nodes(&item.expression, path_var))
-                    || plan_has_nodes(&wc.input, path_var)
-            }
-            LogicalPlan::OrderBy(ob) => {
-                ob.items
-                    .iter()
-                    .any(|item| expr_uses_nodes(&item.expression, path_var))
-                    || plan_has_nodes(&ob.input, path_var)
-            }
-            LogicalPlan::GraphRel(gr) => {
-                gr.where_predicate
-                    .as_ref()
-                    .is_some_and(|p| expr_uses_nodes(p, path_var))
-                    || plan_has_nodes(&gr.left, path_var)
-                    || plan_has_nodes(&gr.center, path_var)
-                    || plan_has_nodes(&gr.right, path_var)
-            }
-            LogicalPlan::GraphNode(n) => plan_has_nodes(&n.input, path_var),
-            LogicalPlan::GroupBy(gb) => plan_has_nodes(&gb.input, path_var),
-            LogicalPlan::Limit(l) => plan_has_nodes(&l.input, path_var),
-            LogicalPlan::Skip(s) => plan_has_nodes(&s.input, path_var),
-            LogicalPlan::CartesianProduct(cp) => {
-                plan_has_nodes(&cp.left, path_var) || plan_has_nodes(&cp.right, path_var)
-            }
-            LogicalPlan::Union(u) => u.inputs.iter().any(|i| plan_has_nodes(i, path_var)),
-            LogicalPlan::GraphJoins(gj) => plan_has_nodes(&gj.input, path_var),
+        // Node-local check: does this node's own expressions reference
+        // `nodes(path_var)`?
+        let own_hit = match plan {
+            LogicalPlan::Projection(p) => p
+                .items
+                .iter()
+                .any(|item| expr_uses_nodes(&item.expression, path_var)),
+            LogicalPlan::Filter(f) => expr_uses_nodes(&f.predicate, path_var),
+            LogicalPlan::WithClause(wc) => wc
+                .items
+                .iter()
+                .any(|item| expr_uses_nodes(&item.expression, path_var)),
+            LogicalPlan::OrderBy(ob) => ob
+                .items
+                .iter()
+                .any(|item| expr_uses_nodes(&item.expression, path_var)),
+            LogicalPlan::GraphRel(gr) => gr
+                .where_predicate
+                .as_ref()
+                .is_some_and(|p| expr_uses_nodes(p, path_var)),
             _ => false,
-        }
+        };
+        // Recurse into every direct child via the exhaustive `LogicalPlan::children`
+        // API so no subtree (e.g. Cte, Unwind, GraphNode-under-Cte) is silently skipped.
+        own_hit || plan.children().iter().any(|c| plan_has_nodes(c, path_var))
     }
 
     plan_has_nodes(plan, path_var)
@@ -6434,47 +6404,31 @@ pub fn plan_uses_bare_path_variable(plan: &LogicalPlan, path_var: &str) -> bool 
     }
 
     fn plan_has_bare(plan: &LogicalPlan, path_var: &str) -> bool {
-        match plan {
-            LogicalPlan::Projection(p) => {
-                p.items
-                    .iter()
-                    .any(|item| expr_uses_bare(&item.expression, path_var))
-                    || plan_has_bare(&p.input, path_var)
-            }
-            LogicalPlan::Filter(f) => {
-                expr_uses_bare(&f.predicate, path_var) || plan_has_bare(&f.input, path_var)
-            }
-            LogicalPlan::WithClause(wc) => {
-                wc.items
-                    .iter()
-                    .any(|item| expr_uses_bare(&item.expression, path_var))
-                    || plan_has_bare(&wc.input, path_var)
-            }
-            LogicalPlan::OrderBy(ob) => {
-                ob.items
-                    .iter()
-                    .any(|item| expr_uses_bare(&item.expression, path_var))
-                    || plan_has_bare(&ob.input, path_var)
-            }
-            LogicalPlan::GraphRel(gr) => {
-                gr.where_predicate
-                    .as_ref()
-                    .is_some_and(|p| expr_uses_bare(p, path_var))
-                    || plan_has_bare(&gr.left, path_var)
-                    || plan_has_bare(&gr.center, path_var)
-                    || plan_has_bare(&gr.right, path_var)
-            }
-            LogicalPlan::GraphNode(n) => plan_has_bare(&n.input, path_var),
-            LogicalPlan::GroupBy(gb) => plan_has_bare(&gb.input, path_var),
-            LogicalPlan::Limit(l) => plan_has_bare(&l.input, path_var),
-            LogicalPlan::Skip(s) => plan_has_bare(&s.input, path_var),
-            LogicalPlan::CartesianProduct(cp) => {
-                plan_has_bare(&cp.left, path_var) || plan_has_bare(&cp.right, path_var)
-            }
-            LogicalPlan::Union(u) => u.inputs.iter().any(|i| plan_has_bare(i, path_var)),
-            LogicalPlan::GraphJoins(gj) => plan_has_bare(&gj.input, path_var),
+        // Node-local check: does this node's own expressions reference the
+        // path variable bare (outside a safe function)?
+        let own_hit = match plan {
+            LogicalPlan::Projection(p) => p
+                .items
+                .iter()
+                .any(|item| expr_uses_bare(&item.expression, path_var)),
+            LogicalPlan::Filter(f) => expr_uses_bare(&f.predicate, path_var),
+            LogicalPlan::WithClause(wc) => wc
+                .items
+                .iter()
+                .any(|item| expr_uses_bare(&item.expression, path_var)),
+            LogicalPlan::OrderBy(ob) => ob
+                .items
+                .iter()
+                .any(|item| expr_uses_bare(&item.expression, path_var)),
+            LogicalPlan::GraphRel(gr) => gr
+                .where_predicate
+                .as_ref()
+                .is_some_and(|p| expr_uses_bare(p, path_var)),
             _ => false,
-        }
+        };
+        // Recurse into every direct child via the exhaustive `LogicalPlan::children`
+        // API so no subtree (e.g. Cte, Unwind, GraphNode-under-Cte) is silently skipped.
+        own_hit || plan.children().iter().any(|c| plan_has_bare(c, path_var))
     }
 
     plan_has_bare(plan, path_var)
@@ -6509,48 +6463,29 @@ pub fn plan_references_alias_properties(plan: &LogicalPlan, alias: &str) -> bool
     }
 
     fn plan_refs(plan: &LogicalPlan, alias: &str) -> bool {
-        match plan {
-            // Output-bearing nodes — check their items
-            LogicalPlan::Projection(p) => {
-                p.items
-                    .iter()
-                    .any(|item| expr_refs_alias(&item.expression, alias))
-                    || plan_refs(&p.input, alias)
-            }
-            LogicalPlan::WithClause(wc) => {
-                wc.items
-                    .iter()
-                    .any(|item| expr_refs_alias(&item.expression, alias))
-                    || plan_refs(&wc.input, alias)
-            }
-            LogicalPlan::OrderBy(ob) => {
-                ob.items
-                    .iter()
-                    .any(|item| expr_refs_alias(&item.expression, alias))
-                    || plan_refs(&ob.input, alias)
-            }
-            LogicalPlan::GroupBy(gb) => {
-                gb.expressions.iter().any(|e| expr_refs_alias(e, alias))
-                    || plan_refs(&gb.input, alias)
-            }
-            // Filter/WHERE — skip (properties in filters become CTE parameters)
-            LogicalPlan::Filter(f) => plan_refs(&f.input, alias),
-            // Structural nodes — recurse only
-            LogicalPlan::GraphRel(gr) => {
-                plan_refs(&gr.left, alias)
-                    || plan_refs(&gr.center, alias)
-                    || plan_refs(&gr.right, alias)
-            }
-            LogicalPlan::GraphNode(n) => plan_refs(&n.input, alias),
-            LogicalPlan::Limit(l) => plan_refs(&l.input, alias),
-            LogicalPlan::Skip(s) => plan_refs(&s.input, alias),
-            LogicalPlan::CartesianProduct(cp) => {
-                plan_refs(&cp.left, alias) || plan_refs(&cp.right, alias)
-            }
-            LogicalPlan::Union(u) => u.inputs.iter().any(|i| plan_refs(i, alias)),
-            LogicalPlan::GraphJoins(gj) => plan_refs(&gj.input, alias),
+        // Node-local check: does this output-bearing node's own expressions
+        // reference `alias`? Filter/WHERE predicates are deliberately excluded
+        // (properties in filters become CTE parameters) — recursion into their
+        // `input` still happens below via `children()`.
+        let own_hit = match plan {
+            LogicalPlan::Projection(p) => p
+                .items
+                .iter()
+                .any(|item| expr_refs_alias(&item.expression, alias)),
+            LogicalPlan::WithClause(wc) => wc
+                .items
+                .iter()
+                .any(|item| expr_refs_alias(&item.expression, alias)),
+            LogicalPlan::OrderBy(ob) => ob
+                .items
+                .iter()
+                .any(|item| expr_refs_alias(&item.expression, alias)),
+            LogicalPlan::GroupBy(gb) => gb.expressions.iter().any(|e| expr_refs_alias(e, alias)),
             _ => false,
-        }
+        };
+        // Recurse into every direct child via the exhaustive `LogicalPlan::children`
+        // API so no subtree (e.g. Cte, Unwind, GraphNode-under-Cte) is silently skipped.
+        own_hit || plan.children().iter().any(|c| plan_refs(c, alias))
     }
 
     plan_refs(plan, alias)
@@ -7995,6 +7930,97 @@ mod tests {
     use super::*;
     use crate::query_planner::logical_expr::{Literal, LogicalExpr};
     use std::sync::Arc;
+
+    /// Wrap `inner` in a `Cte` node — the shape the Phase 1 Slice 2 gap-fix
+    /// (item #6) adds coverage for: `plan_has_relationships`/`plan_has_nodes`/
+    /// `plan_has_bare`/`plan_refs` previously had no `Cte` arm in their
+    /// hand-rolled matches, so a `Cte`-wrapped subtree was invisible to them.
+    fn wrap_in_cte(inner: LogicalPlan) -> LogicalPlan {
+        LogicalPlan::Cte(crate::query_planner::logical_plan::Cte {
+            input: Arc::new(inner),
+            name: "test_cte".to_string(),
+        })
+    }
+
+    fn projection_with_item(expr: LogicalExpr) -> LogicalPlan {
+        LogicalPlan::Projection(crate::query_planner::logical_plan::Projection {
+            input: Arc::new(LogicalPlan::Empty),
+            items: vec![crate::query_planner::logical_plan::ProjectionItem {
+                expression: expr,
+                col_alias: None,
+            }],
+            distinct: false,
+            pattern_comprehensions: vec![],
+        })
+    }
+
+    /// Regression (Phase 1 Slice 2, gap-fix #6): `plan_uses_relationships_fn`
+    /// must see a `relationships(p)` call nested inside a `Cte` node — the
+    /// pre-migration hand-rolled match had no `Cte` arm and silently returned
+    /// `false` for anything wrapped in one.
+    #[test]
+    fn plan_uses_relationships_fn_sees_through_cte_wrapper() {
+        let call = LogicalExpr::ScalarFnCall(crate::query_planner::logical_expr::ScalarFnCall {
+            name: "relationships".to_string(),
+            args: vec![LogicalExpr::TableAlias(
+                crate::query_planner::logical_expr::TableAlias("p".to_string()),
+            )],
+        });
+        let plan = wrap_in_cte(projection_with_item(call));
+        assert!(
+            plan_uses_relationships_fn(&plan, "p"),
+            "relationships(p) nested under a Cte must be detected"
+        );
+    }
+
+    /// Regression (Phase 1 Slice 2, gap-fix #6): same as above for
+    /// `plan_uses_nodes_fn` with a `nodes(p)` call.
+    #[test]
+    fn plan_uses_nodes_fn_sees_through_cte_wrapper() {
+        let call = LogicalExpr::ScalarFnCall(crate::query_planner::logical_expr::ScalarFnCall {
+            name: "nodes".to_string(),
+            args: vec![LogicalExpr::TableAlias(
+                crate::query_planner::logical_expr::TableAlias("p".to_string()),
+            )],
+        });
+        let plan = wrap_in_cte(projection_with_item(call));
+        assert!(
+            plan_uses_nodes_fn(&plan, "p"),
+            "nodes(p) nested under a Cte must be detected"
+        );
+    }
+
+    /// Regression (Phase 1 Slice 2, gap-fix #6): same as above for
+    /// `plan_uses_bare_path_variable` with a bare `p` reference.
+    #[test]
+    fn plan_uses_bare_path_variable_sees_through_cte_wrapper() {
+        let bare = LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(
+            "p".to_string(),
+        ));
+        let plan = wrap_in_cte(projection_with_item(bare));
+        assert!(
+            plan_uses_bare_path_variable(&plan, "p"),
+            "bare path variable `p` nested under a Cte must be detected"
+        );
+    }
+
+    /// Regression (Phase 1 Slice 2, gap-fix #6): same as above for
+    /// `plan_references_alias_properties` with an `a.name`-style property access.
+    #[test]
+    fn plan_references_alias_properties_sees_through_cte_wrapper() {
+        let prop_access =
+            LogicalExpr::PropertyAccessExp(crate::query_planner::logical_expr::PropertyAccess {
+                table_alias: crate::query_planner::logical_expr::TableAlias("a".to_string()),
+                column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                    "name".to_string(),
+                ),
+            });
+        let plan = wrap_in_cte(projection_with_item(prop_access));
+        assert!(
+            plan_references_alias_properties(&plan, "a"),
+            "a.name nested under a Cte must be detected"
+        );
+    }
 
     /// Regression: extract_node_labels should return None for unlabeled nodes.
     #[test]
