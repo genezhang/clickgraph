@@ -2553,8 +2553,12 @@ async fn social_479_plain_optional_where_combined_subquery_preserves_null_extens
         sql.contains("JOIN social.users_bench AS v ON v.user_id ="),
         "#479 regressed: expected the combined subquery's inner node JOIN:\n{sql}"
     );
+    // #552: qualified with the LOCAL subquery alias `v.` — not stripped bare
+    // (a bare `city` would be unambiguous here, but the general rule must
+    // qualify regardless, since some collisions are NOT benign; see the
+    // dedicated #552 regression test below).
     assert!(
-        sql.contains("WHERE city = 'London'"),
+        sql.contains("WHERE v.city = 'London'"),
         "#479 regressed: expected the predicate inside the combined subquery:\n{sql}"
     );
     assert!(
@@ -2673,10 +2677,11 @@ async fn composite_479_optional_where_folds_into_combined_join_533() {
         "#533 regressed: expected the combined subquery's inner composite-key \
          node JOIN:\n{sql}"
     );
+    // #552: qualified with the LOCAL subquery alias `a.`, not stripped bare.
     assert!(
-        sql.contains("WHERE balance > 10000"),
-        "#533 regressed: expected the (alias-stripped) predicate inside the \
-         combined subquery:\n{sql}"
+        sql.contains("WHERE a.balance > 10000"),
+        "#533/#552 regressed: expected the alias-qualified predicate inside \
+         the combined subquery:\n{sql}"
     );
     assert!(
         sql.contains(".__cg_combined_anchor_key = c.customer_id"),
@@ -2724,10 +2729,11 @@ async fn composite_479_optional_where_folds_fully_composite_keys_533() {
         "#533 (fully-composite) regressed: expected the combined JOIN gated \
          on both anchor key columns:\n{sql}"
     );
+    // #552: qualified with the LOCAL subquery alias `b.`, not stripped bare.
     assert!(
-        sql.contains("WHERE balance > 10000"),
-        "#533 (fully-composite) regressed: expected the predicate inside the \
-         combined subquery:\n{sql}"
+        sql.contains("WHERE b.balance > 10000"),
+        "#533/#552 (fully-composite) regressed: expected the alias-qualified \
+         predicate inside the combined subquery:\n{sql}"
     );
 }
 
@@ -2793,13 +2799,16 @@ async fn array_property_477_pre_filter_preserves_array_membership_in() {
                   WHERE 'a' IN o.tags RETURN a.name, o.id";
     let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
 
+    // #552: qualified with the LOCAL subquery alias `o.`, not stripped bare.
     assert!(
-        sql.contains("has(tags, 'a')"),
-        "#477 (array-membership) regressed: expected `has(tags, 'a')` inside \
-         the combined LEFT JOIN subquery, got:\n{sql}"
+        sql.contains("has(o.tags, 'a')"),
+        "#477/#552 (array-membership) regressed: expected `has(o.tags, 'a')` \
+         inside the combined LEFT JOIN subquery, got:\n{sql}"
     );
     assert!(
-        !sql.contains("'a' IN tags") && !sql.contains("'a' in tags"),
+        !sql.contains("'a' IN tags")
+            && !sql.contains("'a' in tags")
+            && !sql.contains("'a' IN o.tags"),
         "#477 (array-membership) regressed: predicate degraded to a bare \
          scalar IN, which ClickHouse rejects:\n{sql}"
     );

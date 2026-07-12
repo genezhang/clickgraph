@@ -1590,12 +1590,28 @@ fn fold_optional_edge_node_join_with_predicate(plan: &mut RenderPlan) {
             let node_table = plan.joins.0[node_join_idx].table_name.clone();
             let edge_table = plan.joins.0[edge_join_idx].table_name.clone();
 
-            // Build the combined subquery text. `to_sql_without_table_alias`
-            // strips the node alias (there's no such alias in scope until the
-            // subquery's own JOIN establishes it under the LOCAL alias
-            // `node_alias`, so re-qualify with that local alias rather than
-            // stripping it bare). ALL conjuncts referencing only this alias
-            // are combined with AND — see the comment above `groups` for why
+            // Build the combined subquery text. Every conjunct in this group
+            // references EXACTLY the `node_alias` (that's the grouping
+            // invariant above), and `node_alias` IS in scope inside the
+            // subquery — it's the local alias the subquery's own inner JOIN
+            // establishes (`JOIN {node_table} AS {node_alias}`). So render
+            // the predicate with the ORDINARY alias-qualified `to_sql()`,
+            // NOT `to_sql_without_table_alias()`.
+            //
+            // #552: using `to_sql_without_table_alias()` here stripped the
+            // qualifier down to a bare column, e.g. `WHERE bank_id = 'CHASE'`
+            // inside `FROM account_ownership AS t1 JOIN accounts AS a` —
+            // both tables can carry a same-named column (e.g. a composite
+            // edge/node key column), and ClickHouse silently binds an
+            // unqualified reference to whichever table it resolves first,
+            // NOT necessarily `node_alias`. Today every reachable collision
+            // happens to be an equality-joined key column (so both sides
+            // hold the same value and the ambiguity is coincidentally
+            // benign), but that's fragile — any non-equality-joined
+            // colliding column would silently bind to the wrong table.
+            // Qualifying with `node_alias` explicitly removes the ambiguity
+            // entirely. ALL conjuncts referencing only this alias are
+            // combined with AND — see the comment above `groups` for why
             // folding only a subset would be unsafe.
             //
             // #533: one synthetic anchor-key column is exported per
@@ -1620,7 +1636,7 @@ fn fold_optional_edge_node_join_with_predicate(plan: &mut RenderPlan) {
             .expect(
                 "member_indices is non-empty by construction (groups only holds non-empty Vecs)",
             );
-            let stripped_predicate = combined_predicate.to_sql_without_table_alias();
+            let qualified_predicate = combined_predicate.to_sql();
             let synthetic_key_exports = anchor_key_pairs
                 .iter()
                 .enumerate()
@@ -1643,7 +1659,7 @@ fn fold_optional_edge_node_join_with_predicate(plan: &mut RenderPlan) {
                 "(SELECT {synthetic_key_exports}, {node_alias}.* \
                  FROM {edge_table} AS {edge_alias} \
                  JOIN {node_table} AS {node_alias} ON {inner_join_on} \
-                 WHERE {stripped_predicate})"
+                 WHERE {qualified_predicate})"
             );
 
             let combined_join = Join {
