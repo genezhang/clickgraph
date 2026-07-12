@@ -366,10 +366,64 @@ impl<'a> TryFrom<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery
                 if connected_patterns.is_empty() {
                     Arc::new(LogicalPlan::Empty)
                 } else {
+                    // GUARDRAIL (#574): the EXISTS-subquery conversion below only
+                    // builds a single-hop, single-type `GraphRel`. Anything wider
+                    // than that shape — a multi-hop chain, an OR'd relationship
+                    // type list (`[:A|B]`), or a variable-length spec (`*1..2`) —
+                    // would otherwise be SILENTLY narrowed to "first hop, first
+                    // type, single edge" (ground rule 1 violation: dropped
+                    // semantics without any signal). Until EXISTS { ... } routes
+                    // through the same pattern-conversion pipeline as a top-level
+                    // MATCH (which is what would be required to honor these
+                    // shapes), reject loudly instead of guessing.
+                    if connected_patterns.len() > 1 {
+                        return Err(errors::LogicalExprError::UnsupportedExpression(format!(
+                            "(#574) this EXISTS {{ ... }} pattern has a {}-hop \
+                             relationship chain. ClickGraph does not yet convert \
+                             multi-hop EXISTS patterns through the full MATCH \
+                             pipeline, so only the first hop would be checked — \
+                             silently dropping the remaining hops and returning \
+                             wrong results. Workaround: express the extra hops as \
+                             a separate correlated MATCH/WHERE, or restructure the \
+                             query so the whole pattern is a top-level MATCH.",
+                            connected_patterns.len()
+                        )));
+                    }
                     let cp = &connected_patterns[0];
+                    let rel = &cp.relationship;
+                    if let Some(labels) = rel.labels.as_ref() {
+                        if labels.len() > 1 {
+                            return Err(errors::LogicalExprError::UnsupportedExpression(format!(
+                                "(#574) this EXISTS {{ ... }} pattern has multiple \
+                                 OR'd relationship types ([:{}]). ClickGraph does \
+                                 not yet convert multi-type EXISTS patterns through \
+                                 the full MATCH pipeline, so only the first type \
+                                 would be checked — silently narrowing the relationship \
+                                 set and returning wrong results. Workaround: express \
+                                 this as a top-level MATCH with a WHERE EXISTS-free \
+                                 filter, or as multiple OR'd EXISTS {{ }} blocks, one \
+                                 per relationship type.",
+                                labels.join("|")
+                            )));
+                        }
+                    }
+                    if rel.variable_length.is_some() {
+                        return Err(errors::LogicalExprError::UnsupportedExpression(
+                            "(#574) this EXISTS { ... } pattern has a \
+                             variable-length relationship (e.g. *1..2). \
+                             ClickGraph does not yet convert variable-length \
+                             EXISTS patterns through the full MATCH pipeline, so \
+                             the hop bound would be silently dropped and only a \
+                             single fixed hop checked — returning wrong results. \
+                             Workaround: restructure the query so the \
+                             variable-length pattern is a top-level MATCH \
+                             (e.g. `MATCH (a)-[*1..2]->(b) WHERE ...`) instead of \
+                             an EXISTS { } subquery."
+                                .to_string(),
+                        ));
+                    }
                     let start = cp.start_node.borrow();
                     let end = cp.end_node.borrow();
-                    let rel = &cp.relationship;
 
                     let start_node = LogicalPlan::GraphNode(GraphNode {
                         input: Arc::new(LogicalPlan::Empty),

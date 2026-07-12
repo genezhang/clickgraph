@@ -5197,6 +5197,68 @@ async fn pattern_union_unresolvable_where_conjuncts_error_cleanly() {
     }
 }
 
+/// #574: `EXISTS { ... }` conversion (`ast_conversion.rs`'s
+/// `TryFrom<ast::ExistsSubquery>`) hand-rolls a single-hop, single-type
+/// `GraphRel` and previously hardcoded `variable_length: None` while only
+/// ever reading `connected_patterns[0]` — so a multi-type OR'd relationship
+/// list (`[:FOLLOWS|AUTHORED|LIKED]`), a variable-length spec (`*1..2`), or a
+/// multi-hop chain (`()-[:A]->()-[:B]->()`) inside `EXISTS { }` were all
+/// SILENTLY narrowed to "first hop, first type, fixed length" — returning
+/// wrong results with no signal (ground rule 1 violation). Until EXISTS
+/// routes through the same pattern-conversion pipeline as a top-level MATCH,
+/// these shapes must be rejected loudly instead of silently narrowed.
+///
+/// The plain single-hop, single-type EXISTS shape that the current code
+/// handles correctly must keep working (last case below).
+#[tokio::test]
+async fn exists_subquery_unsupported_shapes_error_cleanly() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let unsupported = [
+        // Multi-type OR'd relationship list + variable-length (the exact
+        // issue #574 repro).
+        "MATCH (a:User) WHERE EXISTS { (a)-[:FOLLOWS|AUTHORED|LIKED*1..2]->(b) } RETURN a.name",
+        // Variable-length only.
+        "MATCH (a:User) WHERE EXISTS { (a)-[:FOLLOWS*1..2]->(b) } RETURN a.name",
+        // Multi-type OR'd relationship list only.
+        "MATCH (a:User) WHERE EXISTS { (a)-[:FOLLOWS|AUTHORED]->(b) } RETURN a.name",
+        // Multi-hop chain.
+        "MATCH (a:User) WHERE EXISTS { (a)-[:FOLLOWS]->()-[:AUTHORED]->(b) } RETURN a.name",
+    ];
+    for cypher in unsupported {
+        let result = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+        match result {
+            Err(msg) => assert!(
+                msg.contains("#574") && msg.contains("Unsupported expression"),
+                "[{cypher}] must fail with a clean, attributable (#574) \
+                 Unsupported expression error, got: {msg}"
+            ),
+            Ok(sql) => panic!(
+                "[{cypher}] must error cleanly instead of silently narrowing the \
+                 EXISTS pattern to a single-hop, single-type check; rendered:\n{sql}"
+            ),
+        }
+    }
+
+    // Regression guard: the plain single-hop, single-type shape must still
+    // render exactly as before — checking FOLLOWS only, one hop.
+    let sql = render(
+        &schema,
+        "MATCH (a:User) WHERE EXISTS { (a)-[:FOLLOWS]->(b) } RETURN a.name",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("EXISTS (SELECT 1 FROM social.user_follows_bench"),
+        "plain single-hop EXISTS {{ (a)-[:FOLLOWS]->(b) }} must still render \
+         a correlated EXISTS over user_follows_bench:\n{sql}"
+    );
+    assert!(
+        !sql.to_uppercase().contains("AUTHORED") && !sql.to_uppercase().contains("LIKED"),
+        "plain single-type EXISTS must not reference unrelated relationship \
+         tables:\n{sql}"
+    );
+}
+
 /// #466 round 4 (adversarial-review blocking finding): `id(alias)` on a
 /// `pattern_union` endpoint must resolve LABEL-AGNOSTICALLY to the CTE's
 /// start_id/end_id — never to ONE label's id column.
