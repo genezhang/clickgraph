@@ -184,6 +184,84 @@ impl NodeSchema {
         cols
     }
 
+    /// #529: does this node's physical IDENTITY genuinely depend on which
+    /// role (from/to) it plays in a given relationship direction? True only
+    /// for a denormalized/embedded node (`is_denormalized`) whose
+    /// `from_properties`/`to_properties` disagree on the physical column for
+    /// at least one Cypher property (e.g. Zeek's `IP` node: `ip` maps to
+    /// `id.orig_h` from-side, `id.resp_h` to-side). A denormalized node whose
+    /// from/to maps happen to agree on every property (or a non-denormalized
+    /// node, which has no role-specific maps at all) returns `false` — its
+    /// identity is the same real physical column regardless of role, so
+    /// treating it as role-dependent would be a false positive.
+    ///
+    /// Canonical schema-catalog accessor (axis-dispatch rule, CLAUDE.md §7)
+    /// for callers that need to distinguish "role genuinely matters" from a
+    /// raw `is_denormalized` flag check, which alone conflates the two
+    /// cases above. Introduced for `table_has_role_dependent_denorm_identity`
+    /// (`render_plan/plan_builder_utils.rs`), the #529 shape-1 loud guard.
+    pub fn has_role_dependent_identity(&self) -> bool {
+        self.is_denormalized
+            && match (&self.from_properties, &self.to_properties) {
+                (Some(from_p), Some(to_p)) => from_p
+                    .iter()
+                    .any(|(k, v)| to_p.get(k).is_some_and(|to_v| to_v != v)),
+                _ => false,
+            }
+    }
+
+    /// #529: the SPECIFIC Cypher property names whose physical column
+    /// genuinely differs between this node's from-role and to-role mapping
+    /// (e.g. Zeek's `IP` node: `{"ip"}`, since `ip` maps to `id.orig_h`
+    /// from-side vs. `id.resp_h` to-side — but NOT e.g. a relationship's own
+    /// property like `uid`, which isn't in either map at all and is the same
+    /// physical column regardless of role). Empty whenever
+    /// `has_role_dependent_identity()` is false.
+    ///
+    /// Companion to `has_role_dependent_identity`: that answers "is ANY
+    /// property on this node role-dependent" (yes/no), this answers "WHICH
+    /// ones" — needed by callers that must avoid flagging a reference to a
+    /// DIFFERENT, role-INDEPENDENT property that merely happens to share a
+    /// table with a role-dependent node (e.g. a relationship's own edge_id
+    /// column, resolved via a different alias but the same physical table in
+    /// a coupled/embedded schema).
+    pub fn role_dependent_property_names(&self) -> HashSet<String> {
+        match (&self.from_properties, &self.to_properties) {
+            (Some(from_p), Some(to_p)) => from_p
+                .iter()
+                .filter(|(k, v)| to_p.get(*k).is_some_and(|to_v| to_v != *v))
+                .map(|(k, _)| k.clone())
+                .collect(),
+            _ => HashSet::new(),
+        }
+    }
+
+    /// #529: `role_dependent_property_names()` widened to also include the
+    /// PHYSICAL from/to column names themselves (`id.orig_h`/`id.resp_h` for
+    /// Zeek's `IP` node), not just the Cypher property name (`ip`).
+    ///
+    /// A reference to this node's identity is sometimes already resolved to
+    /// a physical column by the time a caller inspects it — e.g. a bare
+    /// WITH-carried alias whose identity is embedded on a relationship's own
+    /// table resolves straight to `r."id.orig_h"` (`find_id_column_for_alias`
+    /// / `PropertyValue`-level resolution), never passing back through the
+    /// Cypher property name `ip` at all. Checking Cypher names alone would
+    /// miss that reference entirely. Use this widened set when the caller
+    /// can't be sure which form (Cypher property or physical column) a given
+    /// reference has already been resolved to.
+    pub fn role_dependent_identifiers(&self) -> HashSet<String> {
+        let mut out = self.role_dependent_property_names();
+        if let (Some(from_p), Some(to_p)) = (&self.from_properties, &self.to_properties) {
+            for (k, from_v) in from_p {
+                if to_p.get(k).is_some_and(|to_v| to_v != from_v) {
+                    out.insert(from_v.clone());
+                    out.insert(to_p[k].clone());
+                }
+            }
+        }
+        out
+    }
+
     /// #549: merge this node's role-specific denormalized property map
     /// (`from_properties`/`to_properties`) with any ADDITIONAL properties
     /// declared in `property_mappings` that aren't already covered by the
@@ -482,6 +560,40 @@ impl RelationshipSchema {
                 v
             })
             .unwrap_or_default()
+    }
+
+    /// #529: physical DB columns valid for THIS relationship's own row —
+    /// the relationship-owned companion to `NodeSchema::all_valid_physical_columns`.
+    /// Covers `property_mappings`, the edge's own identity column(s)
+    /// (`edge_id`, falling back to `from_id`/`to_id`), and any denormalized
+    /// from/to-side node property columns embedded on the same physical row
+    /// (`from_node_properties`/`to_node_properties`).
+    ///
+    /// Used by `table_valid_columns` (#476/#529) so a bare aggregate argument
+    /// on the relationship variable itself (e.g. `count(r)` normalized to
+    /// `r.<edge id column>`) isn't incorrectly NULL-padded out of every UNION
+    /// branch just because the anchor NODE schema alone doesn't know about a
+    /// column that actually belongs to the relationship's own row (coupled/
+    /// embedded-edge schemas, where node and relationship share one table).
+    pub fn all_valid_physical_columns(&self) -> HashSet<String> {
+        let mut cols: HashSet<String> = HashSet::new();
+        for value in self.property_mappings.values() {
+            if let PropertyValue::Column(col) = value {
+                cols.insert(col.clone());
+            }
+        }
+        if let Some(ref edge_id) = self.edge_id {
+            cols.extend(edge_id.columns().iter().map(|c| c.to_string()));
+        }
+        cols.extend(self.from_id.columns().iter().map(|c| c.to_string()));
+        cols.extend(self.to_id.columns().iter().map(|c| c.to_string()));
+        if let Some(ref from_props) = self.from_node_properties {
+            cols.extend(from_props.values().cloned());
+        }
+        if let Some(ref to_props) = self.to_node_properties {
+            cols.extend(to_props.values().cloned());
+        }
+        cols
     }
 }
 

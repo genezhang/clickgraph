@@ -1889,14 +1889,71 @@ impl LogicalPlan {
         })
     }
 
+    /// #461: does this subtree contain any `GraphRel` that is NOT marked
+    /// optional (`is_optional != Some(true)`)? Used by `is_optional_pattern`
+    /// to verify a GraphRel's nested left/right branches are ALSO fully
+    /// optional, not just the outermost one — see that function's doc
+    /// comment for why this matters. Unlike `is_optional_pattern` (which
+    /// treats a GraphRel-free leaf as "not optional", since it's asking "IS
+    /// this an optional pattern"), a GraphRel-free leaf here is vacuously
+    /// fine — there is nothing REQUIRED to report — so plain node/edge-free
+    /// leaves return `false` (no required GraphRel found), preserving the
+    /// simple single-hop `OPTIONAL MATCH` case's existing behavior.
+    fn has_required_graph_rel(&self) -> bool {
+        match self {
+            LogicalPlan::GraphRel(rel) => {
+                !rel.is_optional.unwrap_or(false)
+                    || rel.left.has_required_graph_rel()
+                    || rel.right.has_required_graph_rel()
+            }
+            LogicalPlan::GraphJoins(joins) => joins.input.has_required_graph_rel(),
+            LogicalPlan::GraphNode(node) => node.input.has_required_graph_rel(),
+            LogicalPlan::Filter(filter) => filter.input.has_required_graph_rel(),
+            LogicalPlan::Projection(proj) => proj.input.has_required_graph_rel(),
+            LogicalPlan::GroupBy(gb) => gb.input.has_required_graph_rel(),
+            LogicalPlan::OrderBy(ob) => ob.input.has_required_graph_rel(),
+            LogicalPlan::Skip(skip) => skip.input.has_required_graph_rel(),
+            LogicalPlan::Limit(limit) => limit.input.has_required_graph_rel(),
+            LogicalPlan::Cte(cte) => cte.input.has_required_graph_rel(),
+            LogicalPlan::Unwind(u) => u.input.has_required_graph_rel(),
+            LogicalPlan::CartesianProduct(cp) => {
+                cp.left.has_required_graph_rel() || cp.right.has_required_graph_rel()
+            }
+            LogicalPlan::Union(u) => u.inputs.iter().any(|i| i.has_required_graph_rel()),
+            LogicalPlan::WithClause(wc) => wc.input.has_required_graph_rel(),
+            _ => false,
+        }
+    }
+
     /// Check if this plan represents an optional pattern (from OPTIONAL MATCH).
     /// Returns true if the plan contains a GraphRel or GraphJoins marked as optional.
     /// This is used to determine proper anchor selection when combining required and
     /// optional patterns via CartesianProduct.
     pub fn is_optional_pattern(&self) -> bool {
         match self {
-            // GraphRel with is_optional=Some(true) is an optional pattern
-            LogicalPlan::GraphRel(rel) => rel.is_optional.unwrap_or(false),
+            // GraphRel with is_optional=Some(true) is an optional pattern —
+            // but ONLY if its nested left/right branches are ALSO fully
+            // optional, not just the outermost GraphRel (#461). A MIXED
+            // required+optional post-WITH segment (e.g. `MATCH (o)-[...]->(c)
+            // OPTIONAL MATCH (o2)-[...]->(c)`) is analyzer-encoded as a
+            // nested/chained GraphRel — the (optional) `o2` pattern
+            // outermost, wrapping the (required) `o` pattern in its `right`
+            // branch — so checking ONLY `rel.is_optional` on the outermost
+            // node wrongly reported "purely optional" for a pattern that is
+            // only PARTLY optional. That false positive armed
+            // `build_chained_with_match_cte_plan`'s single-branch
+            // "OPTIONAL restructure" (`post_with_optional_restructure`),
+            // which blindly demotes EVERY join to LEFT and collapses onto a
+            // single optional-side FROM table, dropping the required `o`
+            // join entirely and emitting a dangling `o.customer_id`
+            // reference — invalid SQL. Mirrors `CartesianProduct`'s arm
+            // below, which already correctly requires BOTH sides optional;
+            // this makes `GraphRel` consistent with it.
+            LogicalPlan::GraphRel(rel) => {
+                rel.is_optional.unwrap_or(false)
+                    && !rel.left.has_required_graph_rel()
+                    && !rel.right.has_required_graph_rel()
+            }
             // GraphJoins can have optional=true from the underlying GraphRel
             LogicalPlan::GraphJoins(joins) => joins.input.is_optional_pattern(),
             // Recursively check through wrapper nodes

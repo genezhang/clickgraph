@@ -2448,32 +2448,83 @@ async fn fk_edge_478_two_optional_matches_no_phantom_edge_joins() {
     );
 }
 
-/// KNOWN BROKEN — deferred. Originally suspected to share #478's root cause
-/// (both are "two 1-hop patterns sharing one anchor" mis-encoded as a chained
-/// `GraphRel`), but verified NOT the case: the #478 fix (three symmetric
-/// FK-edge-collapse guards in `extract_joins`'s nested-GraphRel handling —
-/// see the doc comment above `fk_edge_478_two_optional_matches_no_phantom_edge_joins`)
-/// leaves this exact test byte-identical (still failing this same
-/// characterization, confirmed by re-running it after the #478 fix landed).
-/// This shape's `GraphJoins.joins` (the analyzer-precomputed join list) is
-/// itself already fully correct — it has distinct, correct entries for both
-/// `o` (Inner) and `o2` — so the bug is NOT in `extract_joins`/`join_builder.rs`
-/// at all; it must be in a different post-WITH-specific code path
-/// (`build_chained_with_match_cte_plan`'s segment handling, per the original
-/// #461 filing) that fails to consume `GraphJoins.joins` correctly for a
-/// segment mixing a required and an optional pattern on the same anchor.
-/// Genuinely separate, deeper planner-level work — deferred per the original
-/// filing's own assessment.
+/// KNOWN BROKEN — deferred. R4 investigation fixed ONE of the three
+/// previously-documented downstream symptom bugs, found and precisely pinned
+/// a FOURTH (deeper) cause, and ATTEMPTED but had to REVERT a fix for a
+/// second — recorded below since the revert itself is a meaningful, tested
+/// negative result for the next round.
 ///
-/// Shape 1 — mixed required + optional in one post-WITH segment: a REQUIRED
-/// match (`o`) sharing a post-WITH segment with an OPTIONAL match (`o2`), both
-/// anchored on the WITH-carried `c`, drops the required pattern's own JOIN
-/// entirely and emits a malformed ON condition referencing an alias (`o`) that
-/// appears in no FROM/JOIN — invalid SQL.
+/// FIXED this round (verified safe in isolation — full `cargo test` shows no
+/// regressions): `is_optional_pattern()`'s `GraphRel` arm
+/// (`query_planner/logical_plan/mod.rs`) only inspected the OUTERMOST
+/// `GraphRel`'s own `is_optional` flag, never recursing into nested
+/// left/right branches — so a MIXED required+optional chain
+/// (analyzer-encoded as `GraphRel{left: o2 (optional, outermost), right:
+/// GraphRel{left: o (required), right: c}}`) was wrongly reported as "purely
+/// optional", arming `build_chained_with_match_cte_plan`'s single-branch
+/// `post_with_optional_restructure` — which blindly demotes every JOIN to
+/// LEFT and collapses onto one optional-side FROM table. Fixed via a new
+/// `has_required_graph_rel` helper + making the `GraphRel` arm require BOTH
+/// nested branches contain no required `GraphRel`, mirroring
+/// `CartesianProduct`'s arm (which already correctly required both sides
+/// optional). This alone does not fix shape 1's repro (the two other
+/// mechanisms below still corrupt it), but is independently correct and
+/// kept.
 ///
-/// Live (db_fk_edge): current SQL is captured verbatim as a characterization
-/// lock (documents the bug; ClickHouse would reject this SQL with an unknown
-/// identifier error — not run live here since it cannot execute).
+/// ATTEMPTED AND REVERTED: `prune_joins_covered_by_cte`'s fixed-point
+/// expansion (`render_plan/plan_builder_utils.rs`) treats "my only neighbor
+/// is CTE-exported" as sufficient to mark a join removable. For shape 1
+/// (`exported_aliases={c}`), both `o`'s and `o2`'s joins have their ONLY
+/// neighbor be `c` (seeded removable), so this check sweeps BOTH out of the
+/// final query even though neither was ever inside the CTE (only `c` was) —
+/// silently discarding the query's own required/optional JOINs entirely.
+/// Tightening this to require 2+ neighbors (reasoning: a genuine
+/// chain-internal link, the documented `[a→b]` case, is always sandwiched
+/// between 2+ removable neighbors; a single fresh join hanging off one
+/// anchor is not) DID fix this over-pruning for the star/branch shape here —
+/// but broke the single-OPTIONAL-pattern case this same loop is ALSO
+/// load-bearing for (`fk_edge_post_with_optional_where_{460,462,472,473}`,
+/// `with_cte_join_key_is_correlated_not_cartesian_451`): e.g. `WITH c
+/// OPTIONAL MATCH (o)-[:PLACED_BY]->(c) ...` has a SINGLE post-WITH join
+/// (`o`) with exactly ONE neighbor (`c`) that genuinely MUST be pruned here
+/// — `post_with_optional_restructure` (#453) independently rebuilds that
+/// exact JOIN from `render_plan.from`/correlation predicates and expects
+/// `prune_joins_covered_by_cte` to have already removed the raw `o` join
+/// entry; leaving it in place broke that restructure (`InvalidRenderPlan`
+/// "no join key could be resolved" on 5 previously-passing tests, confirmed
+/// live via `cargo test --test integration`). Reverted. The real fix needs
+/// to distinguish "a single fresh join hanging off the anchor" (prune it —
+/// #453 rebuilds it) from "MULTIPLE sibling fresh joins hanging off the SAME
+/// anchor" (don't prune any of them — shape 1's actual bug), not a blanket
+/// neighbor-count threshold — e.g. only applying the 2+-neighbor
+/// requirement when 2+ DISTINCT non-removable joins would otherwise all
+/// collapse onto the exact same single anchor. Not re-attempted this round
+/// given the remaining time budget; flagging the precise distinguishing
+/// condition for whoever picks this up next.
+///
+/// A FOURTH, deeper cause (not in the original 3-bug characterization) was
+/// also found by live `eprintln` tracing the actual `LogicalPlan` reaching
+/// `to_render_plan_with_ctx`: `current_plan` for this segment is genuinely
+/// `GraphJoins(Projection(GraphRel(Outgoing){left: Node(o2), right:
+/// GraphRel(Outgoing){left: Node(o), right: Node(c, ViewScan("with_c_cte_0"))}}))`
+/// — confirming the "star mis-encoded as a nested/chained GraphRel"
+/// diagnosis exactly. `extract_joins`'s FK-edge nested-GraphRel collapse
+/// logic (`join_builder.rs`, the same code #478 already patched with three
+/// symmetric guards for the OPTIONAL+OPTIONAL sibling shape) needs a FOURTH
+/// guard for this REQUIRED+OPTIONAL mixed case — not attempted, risks
+/// regressing #478's own passing tests without dedicated verification.
+///
+/// Net effect on the characterized SQL this round: unchanged in kind
+/// (still a dangling `o.customer_id` reference in `o2`'s combined ON
+/// condition, with `o` appearing in no FROM/JOIN), though the exact SQL text
+/// shifted slightly (now `o2` alone drives FROM, with a single combined
+/// `INNER JOIN with_c_cte_0 AS c ON o.customer_id = ... AND o2.customer_id =
+/// ...` folding both correlations into one join) as a side effect of the
+/// `is_optional_pattern` fix changing which code path renders it.
+///
+/// Live (db_fk_edge): current SQL captured verbatim as a characterization
+/// lock (ClickHouse would reject this SQL with an unknown identifier error
+/// for `o` — not run live here since it cannot execute).
 #[tokio::test]
 async fn fk_edge_461_mixed_required_optional_post_with_malformed_sql_known_broken() {
     let schema = load_schema(SchemaId::FkEdge.yaml_path());
@@ -2483,9 +2534,10 @@ async fn fk_edge_461_mixed_required_optional_post_with_malformed_sql_known_broke
     let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
 
     // Characterization lock: `o` never appears as its own FROM/JOIN alias, yet
-    // the ON condition references `o.customer_id` — a dangling alias. If this
-    // starts failing because `o` now HAS its own join, that is progress —
-    // verify against live row counts before replacing this test.
+    // an ON condition references `o.customer_id` — a dangling alias. If this
+    // starts failing because `o` now HAS its own join (or the query renders
+    // differently), that is progress — verify against live row counts before
+    // replacing this test.
     let o_has_own_join = sql.contains("AS o ON") || sql.contains("AS o \n");
     assert!(
         !o_has_own_join,
@@ -7815,106 +7867,81 @@ mod vlp_fixed_path_family_496_497_498_499_501 {
         }
     }
 
-    /// Blocking finding (adversarial review of #465/#476/#520): `table_valid_columns`
-    /// (the #476/#520 UNION branch NULL-padding helper, `to_sql_query.rs`) only
-    /// consulted `property_mappings` when computing which physical columns are
-    /// valid for a branch's own table — it never consulted `from_properties`/
-    /// `to_properties`, the documented denormalized pattern where a node's real
-    /// columns live there instead of (or in addition to) `property_mappings`
-    /// (`schemas/dev/flights_denormalized.yaml`'s `Airport` node has EMPTY
-    /// `property_mappings`, with `code`/`city`/`state` entirely resolved via
-    /// `from_node_properties`/`to_node_properties`).
+    /// #465/#476/#520 fixed the NULL-padding half of this shape (see history
+    /// below); #529 R5 (adversarial review of the #529 shape-1 loud guard)
+    /// found the query is STILL silently wrong for a different reason, and
+    /// this now trips the same #529 guard as the rest of that family.
     ///
-    /// On the buggy commit, this made EVERY branch of a 2-hop undirected
-    /// direction-permutation UNION NULL-pad `b.city` (`t2.origin_city`) because
-    /// `table_valid_columns` never saw `origin_city`/`dest_city` as valid columns
-    /// for the `Airport` table — collapsing all distinct cities into a single
-    /// `b.city = NULL` row whose count summed every group together (silently
-    /// wrong results, not a loud failure).
+    /// History: `table_valid_columns` (the #476/#520 UNION branch
+    /// NULL-padding helper, `to_sql_query.rs`) only consulted
+    /// `property_mappings` when computing which physical columns are valid
+    /// for a branch's own table — never `from_properties`/`to_properties`,
+    /// the documented denormalized pattern where a node's real columns live
+    /// there instead (`schemas/dev/flights_denormalized.yaml`'s `Airport`
+    /// node has EMPTY `property_mappings`, with `code`/`city`/`state`
+    /// entirely resolved via `from_node_properties`/`to_node_properties`).
+    /// This made every branch of the 2-hop undirected direction-permutation
+    /// UNION NULL-pad `b.city`, collapsing all distinct cities into one
+    /// `NULL` row. Fixed by routing `table_valid_columns` through
+    /// `NodeSchema::all_valid_physical_columns()`. #551 additionally fixed
+    /// the outer `GROUP BY` to reference the node's real identity column
+    /// (`origin_code`) instead of a coincidentally-exported display property.
     ///
-    /// Fixed by routing `table_valid_columns` through
-    /// `NodeSchema::all_valid_physical_columns()`, the canonical three-source
-    /// accessor (`property_mappings` + `from_properties` + `to_properties`,
-    /// mirroring `has_cypher_property`) instead of reading `property_mappings`
-    /// alone.
-    ///
-    /// Live-verified (2026-07-11, db_denormalized, ClickHouse) via `cg query`:
-    /// pre-fix this query returned a single collapsed row (`b.city = NULL`,
-    /// `n = 32`); post-fix it returns 6 distinct, correctly-grouped rows
-    /// (New York=5, Chicago=3, Atlanta=5, Denver=1, Los Angeles=16,
-    /// San Francisco=2 — summing to the same 32, confirming no rows were lost,
-    /// only mis-grouped pre-fix) — byte-identical to the pre-#465-branch `main`
-    /// baseline's output for the same query.
-    ///
-    /// UPDATED for #551: the outer `GROUP BY` used to reference the exported
-    /// `origin_city` column — city was the only column this UNION branch
-    /// exported at the time, and it happened to be usable as a (coincidental,
-    /// non-identity) grouping key only because this fixture's cities are 1:1
-    /// with airport codes. #551 fixed `expand_table_alias_to_group_by_id_only`
-    /// to resolve the node's REAL identity column (`origin_code`) instead of
-    /// whatever property happened to be exported/first — the UNION branches
-    /// now additionally export `origin_code` and the outer `GROUP BY`
-    /// references that instead. Row-level output for THIS fixture is
-    /// unchanged (verified via `cg query`, same 6 rows/counts as above)
-    /// because city and code are 1:1 here; the SQL shape assertion below is
-    /// updated to match the new (identity-correct, and now portable to
-    /// fixtures where city is NOT 1:1 with code) column.
+    /// R5 finding (this round, prompted by adversarially re-verifying the
+    /// #529 shape-1 guard rather than trusting this test's own "verified
+    /// correct" claim): independently hand-computed ground truth from the
+    /// live `db_denormalized` fixture proves the ABOVE fixes did NOT make
+    /// this query correct — `SFO` appears in EXACTLY ONE flight row
+    /// (`SFO->ORD`, graph degree 1), so ZERO valid 2-hop chains
+    /// `(a)-[:FLIGHT]-(b)-[:FLIGHT]-(c)` can pass through it (both hops of
+    /// the pattern would need to touch `SFO`, but only one edge does) — yet
+    /// this query's live execution returns `San Francisco=2`, an impossible
+    /// result. Root cause: the 4-way direction-permutation UNION's JOIN
+    /// condition legitimately varies per branch (`t2.origin_code =
+    /// t1.dest_code` vs. `t2.dest_code = t1.dest_code` etc. — correctly
+    /// selecting which `t2` rows join), but the SELECTed/grouped column for
+    /// `b` is ALWAYS `t2.origin_code`, even in the two branches whose JOIN
+    /// tied `t2.dest_code` instead — the shared node in THOSE matches is
+    /// actually `t2`'s DEST side, not its origin side, so grouping by
+    /// `t2.origin_code` silently reports the wrong node identity. This is
+    /// the exact "#529 shape 1 bug 3" mechanism (SELECT never alternates
+    /// role with the branch) one join-hop removed from the WITH-clause
+    /// anchor — this test's own prior "verified correct, 6 distinct rows"
+    /// claim was mistaken (not independently re-derived from the raw
+    /// fixture data at the time). Now correctly caught by the #529 shape-1
+    /// loud guard (`table_role_dependent_property_names` /
+    /// `render_plan/plan_builder_utils.rs`), widened in this round to check
+    /// every alias reachable through a JOIN, not just the WITH clause's own
+    /// FROM anchor.
     #[tokio::test]
-    async fn denorm_with_aggregate_group_by_middle_node_no_null_collapse_465_blocking() {
+    async fn denorm_with_aggregate_group_by_middle_node_via_join_known_broken_529() {
         let schema = load_schema(SchemaId::Denormalized.yaml_path());
-        let sql = normalize(
-            &render(
-                &schema,
-                "MATCH (a:Airport)-[:FLIGHT]-(b:Airport)-[:FLIGHT]-(c:Airport) \
-                 WITH b, count(*) AS n RETURN b.city, n",
-                SqlDialect::ClickHouse,
-            )
-            .await,
-        );
+        let cypher = "MATCH (a:Airport)-[:FLIGHT]-(b:Airport)-[:FLIGHT]-(c:Airport) \
+                      WITH b, count(*) AS n RETURN b.city, n";
 
-        // Assert on the physical column name only, not the specific `tN` alias
-        // assigned to it — `normalize()` canonicalizes alias *numbering*
-        // relative to first appearance within THIS query's own text, but the
-        // canonical digit chosen depends on how many aliases the shared
-        // test-process alias counter had already consumed before this test
-        // ran, not just this query's structure.
-        let null_pad_re = regex::Regex::new(r#"NULL AS "t\d+\.origin_city""#).unwrap();
-        assert!(
-            !null_pad_re.is_match(&sql),
-            "465-blocking: b.city must not be NULL-padded — Airport's real \
-             columns live in from_node_properties/to_node_properties, which \
-             table_valid_columns must now consult:\n{sql}"
-        );
-        let export_re = regex::Regex::new(r#"t\d+\.origin_city AS "t\d+\.origin_city""#).unwrap();
-        let export_count = export_re.find_iter(&sql).count();
-        assert!(
-            export_count >= 4,
-            "465-blocking: every branch of the 4-way direction-permutation \
-             UNION must export the real `origin_city` column (not NULL), \
-             found {export_count} exports:\n{sql}"
-        );
-        // #551: GROUP BY must reference the node's actual identity column
-        // (origin_code), not a coincidentally-exported display property
-        // (origin_city) — see the doc comment UPDATE note above.
-        let group_by_re = regex::Regex::new(r#"GROUP BY `?t\d+\.origin_code`?"#).unwrap();
-        assert!(
-            group_by_re.is_match(&sql),
-            "465-blocking/#551: outer GROUP BY must reference the node's \
-             identity column (origin_code), not origin_city:\n{sql}"
-        );
-
-        // Determinism.
-        for _ in 0..5 {
-            let again = normalize(
-                &render(
-                    &schema,
-                    "MATCH (a:Airport)-[:FLIGHT]-(b:Airport)-[:FLIGHT]-(c:Airport) \
-                     WITH b, count(*) AS n RETURN b.city, n",
-                    SqlDialect::ClickHouse,
-                )
-                .await,
+        let err = try_render(&schema, cypher, SqlDialect::ClickHouse)
+            .await
+            .expect_err(
+                "465/#529: this query now renders successfully — if the #529 \
+                 shape-1 role-alternation bug was genuinely fixed (not just \
+                 guarded), live-verify against the raw flights_denorm fixture \
+                 (SFO has graph degree 1 — zero valid 2-hop chains should pass \
+                 through it) before replacing this test with a regression test.",
             );
-            assert_eq!(sql, again, "465-blocking: nondeterministic render");
+        assert!(
+            err.contains("not yet supported") && err.contains("529"),
+            "465/#529: expected the #529 shape-1 loud guard error, got a \
+             different error:\n{err}"
+        );
+
+        // Determinism (even the loud-guard path must be deterministic).
+        for _ in 0..5 {
+            let again = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+            assert!(
+                again.is_err(),
+                "465/#529: nondeterministic guard — sometimes rendered \
+                 successfully, sometimes errored"
+            );
         }
     }
 }
@@ -8317,19 +8344,132 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
         }
     }
 
-    /// #529 shape 1 — KNOWN BROKEN, investigated further (R3) but STILL NOT
-    /// fixed here — the exact mutation site IS now conclusively pinned (a
-    /// gdb-verified live trace, not static reading), but implementing that
-    /// fix uncovered TWO ADDITIONAL, deeper bugs in this exact shape that
-    /// would turn the current LOUD failure into a SILENT wrong result if the
-    /// alias fix shipped alone — ground-rule-1 territory, so the whole thing
-    /// stays deferred as a package. `MATCH (a:IP)-[r:ACCESSED]-(b:IP) WITH a,
-    /// count(r) AS c RETURN a.ip, c` (a PLAIN, non-optional undirected
-    /// self-edge feeding a `WITH`-aggregate) generates a malformed CTE column
-    /// alias containing an embedded, doubled double-quote inside a backtick
-    /// identifier: `` `r."id.orig_h"` `` — ClickHouse parses the backticks as
-    /// ONE identifier literally named `r."id.orig_h"` (quote characters
-    /// included), which doesn't exist — UNKNOWN_IDENTIFIER.
+    /// #529 shape 1 — R4/R5: bugs 1+2 of the 3-bug package FIXED; bug 3
+    /// deliberately left unfixed but now fails LOUDLY (a clean
+    /// `RenderBuildError::UnsupportedFeature`) instead of silently returning
+    /// wrong data. Full history below for context on what changed and why.
+    ///
+    /// CORRECTION (R5, adversarial review): earlier text here (and this
+    /// round's own CHANGELOG entry) described pre-fix `main` as producing a
+    /// "loud crash"/`UNKNOWN_IDENTIFIER` for this exact query. That was
+    /// WRONG — live-verified (R5): the malformed alias below is used
+    /// CONSISTENTLY as both its own definition and every reference to it, so
+    /// ClickHouse parses it as one (oddly-named but valid) identifier and
+    /// EXECUTES the query successfully, returning a single silently-wrong
+    /// `(NULL, 0)` row (bug 2's NULL-padding gap collapses both UNION
+    /// branches to `NULL` before bug 1's malformed alias ever matters at
+    /// execution time — confirmed by running pre-fix `main`'s exact captured
+    /// SQL directly against ClickHouse: `SELECT \N  0`, no error). Pre-fix
+    /// `main` was ALREADY silently wrong for this query, not loudly broken —
+    /// bugs 1+2 change the SHAPE of the wrongness (a single collapsed
+    /// `NULL`/`0` row -> a plausible-looking, fully-formed but still-wrong
+    /// multi-row table, per bug 3), which is exactly why bug 3's loud guard
+    /// is necessary rather than optional polish.
+    ///
+    /// Original bug 1 (alias construction, FIXED): `MATCH (a:IP)-[r:ACCESSED]-
+    /// (b:IP) WITH a, count(r) AS c RETURN a.ip, c` (a PLAIN, non-optional
+    /// undirected self-edge feeding a `WITH`-aggregate) used to generate a
+    /// malformed CTE column alias containing an embedded, doubled
+    /// double-quote inside a backtick identifier: `` `r."id.orig_h"` `` — a
+    /// syntactically-valid-but-bizarre identifier name, not a parse error
+    /// (see correction above). Root cause: `build_union_inner_select`
+    /// (`src/sql_generator/emitters/clickhouse/to_sql_query.rs`) reused a
+    /// dialect-rendered VALUE expression (`r."id.orig_h"`, `PropertyValue::
+    /// to_sql`'s correct double-quoting of a physical column that itself
+    /// embeds a `.`, e.g. Zeek's `id.orig_h`) as a bare column ALIAS by
+    /// feeding it straight into `quote_alias()`, which re-escaped the
+    /// embedded `"` by doubling it. Fixed via a `split_agg_arg_col`/
+    /// `agg_arg_alias_key` pair of pure functions (locate the quoted-suffix
+    /// physical column by its outermost matching `"..."` pair rather than a
+    /// naive `rsplit('.')`, which mis-splits INSIDE the quoted identifier)
+    /// used consistently at all four sites that previously mis-parsed this
+    /// same value-expression text: the alias-construction site itself,
+    /// `agg_arg_col_valid_for_branch`'s physical-column extraction,
+    /// `build_outer_aggregate_select`'s outer aggregate backtick-reference,
+    /// and `build_aliased_group_by`'s analogous GROUP BY case.
+    ///
+    /// Original bug 2 (NULL-padding validity gap, FIXED): `table_valid_columns`
+    /// (the #476 NULL-padding validity check) only ever consulted
+    /// `NodeSchema::all_valid_physical_columns()` — a bare aggregate argument
+    /// on the relationship variable itself (`count(r)`, normalized to `r`'s
+    /// own edge_id, `uid`) named a column only the RELATIONSHIP schema knows
+    /// about, so the check always returned false and BOTH UNION branches got
+    /// `NULL AS "r.uid"` — `count(r)` rendered as valid SQL but ALWAYS
+    /// returned 0, regardless of the true row count. Fixed via a new
+    /// `RelationshipSchema::all_valid_physical_columns` companion accessor
+    /// (`graph_catalog/graph_schema.rs`, covering `property_mappings`,
+    /// `edge_id`/`from_id`/`to_id`, and `from_node_properties`/
+    /// `to_node_properties`), folded into `table_valid_columns` alongside
+    /// the existing node-schema check.
+    ///
+    /// Bug 3 (role alternation — STILL NOT FIXED, now loudly guarded): even
+    /// with bugs 1+2 fixed, the rendered SQL's two UNION ALL branches were
+    /// BYTE-IDENTICAL — both project `r."id.orig_h"` for `a`'s identity;
+    /// neither ever projects `r."id.resp_h"`. For an UNDIRECTED self-edge
+    /// this must alternate (exactly as the already-fixed, already-tested
+    /// OPTIONAL sibling shape's `__denorm_scan_a` CTE does: one branch per
+    /// role) — live execution with only bugs 1+2 fixed confirmed silently
+    /// wrong results (rows belonging to the un-selected role dropped
+    /// entirely; rows appearing in both roles double-counted).
+    ///
+    /// R4 root-cause (deeper than any prior round reached): traced through
+    /// TWO independent, compounding causes, both upstream of SQL generation:
+    /// (a) `bidirectional_union.rs`'s `apply_direction_combination_inner`
+    /// builds a per-branch `column_swaps` map specifically to correct
+    /// Incoming-direction denormalized node references, but only ever
+    /// applies it to `LogicalPlan::Projection` items — its `LogicalPlan::
+    /// WithClause` arm (and `transform_bidirectional`'s own `WithClause`
+    /// arm) never threads it through `with_clause.items`, so a bare
+    /// WITH-aggregate's pass-through/aggregate columns never get the
+    /// correction. (b) Deeper still: even if that were wired up,
+    /// `find_id_column_for_alias` (`render_plan/plan_builder.rs`) resolves a
+    /// node's identity via the SAME static `NodeSchema::node_id` field
+    /// regardless of which role (from/to) the node plays in a given
+    /// direction branch — for a coupled/embedded table this is architecturally
+    /// wrong (the physical identity column genuinely differs by role), and
+    /// no per-branch override path reaches it from a WITH clause today. Fully
+    /// correcting this needs either (a) threading `column_swaps`-equivalent
+    /// role correction through `WithClause` items too, or (b) making
+    /// `find_id_column_for_alias` (and the WITH-projection attachment in
+    /// `build_chained_with_match_cte_plan`, which currently attaches ONE
+    /// shared `SelectItems` to `rendered.select` and reuses it verbatim for
+    /// EVERY UNION branch — confirmed harmless for the common case where a
+    /// node's identity is role-INDEPENDENT, e.g. a normalized self-edge via a
+    /// separate node table — role-aware for the coupled/embedded case
+    /// specifically. Genuinely planner-level, cross-cutting work — not
+    /// attempted this round.
+    ///
+    /// Guarded instead: `table_role_dependent_property_names`/
+    /// `collect_property_accesses` and their call site in
+    /// `build_chained_with_match_cte_plan` (`render_plan/
+    /// plan_builder_utils.rs`) detect the exact precondition for this unfixed
+    /// case — a multi-branch UNION whose WITH projection references a
+    /// SPECIFIC property that is itself role-dependent (differs between
+    /// from/to role) through ANY alias in scope, whether that alias is the
+    /// FROM anchor or reached through a JOIN — and raise
+    /// `RenderBuildError::UnsupportedFeature` instead of silently returning
+    /// corrupted data.
+    ///
+    /// R5 (adversarial review) note: an EARLIER version of this guard was
+    /// scoped to "no branch has any JOIN at all", reasoning that a multi-hop
+    /// pattern's JOIN CONDITION (not its SELECT list) usually encodes role.
+    /// That was live-verified WRONG — a 2-hop undirected chain grouping by
+    /// the first hop's own anchor has a JOIN too (for the second hop), so it
+    /// slipped through and silently corrupted results (see
+    /// `undirected_two_hop_chain_grouped_by_anchor_known_broken_529_shape1`).
+    /// Widened to check every alias in scope, which ALSO caught
+    /// `denorm_with_aggregate_group_by_middle_node_no_null_collapse_465_blocking`
+    /// (believed safe/fixed at the time) as ITSELF silently wrong — see
+    /// `denorm_with_aggregate_group_by_middle_node_via_join_known_broken_529`.
+    /// The widened guard checks the SPECIFIC property being accessed (not
+    /// just "does this alias's table back a role-dependent node"), verified
+    /// via `undirected_optional_with_aggregate_unaffected_by_529_guard_widening`
+    /// not to false-positive on the already-fixed shape-2 OPTIONAL case
+    /// below, where relationship alias `r` shares its physical table with
+    /// the role-dependent `IP` node but only ever accesses `r`'s own
+    /// role-independent `uid`.
+    ///
+    /// --- prior-round history (kept for context) ---
     ///
     /// This does NOT go through the OPTIONAL-denorm-CTE-anchor machinery
     /// (`find_inner_optional_denorm_graphrel` /
@@ -8338,99 +8478,237 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
     /// lead (`plan_builder_helpers.rs`) was a dead end — a look-alike
     /// mechanism, not the source (see below).
     ///
-    /// R3 (this round) pinned the ACTUAL site with `gdb`, breaking on
-    /// `ClickhouseFunctionMapper::quote_alias` while running this test:
-    /// `src/sql_generator/emitters/clickhouse/to_sql_query.rs`'s
-    /// `build_union_inner_select` mints the malformed alias at its "add
-    /// aggregate argument columns" loop — `col_sql` (a dialect-rendered
-    /// VALUE-expression string, e.g. `r."id.orig_h"` — `PropertyValue::to_sql`
-    /// correctly double-quotes just the physical-column part when it embeds
-    /// a dot, like Zeek's `id.orig_h`) is reused AS an alias by feeding it
-    /// straight into `quote_alias(col_sql)`, which escapes the embedded `"`
-    /// by DOUBLING it and wraps the whole thing in an outer quote pair —
-    /// producing the literal malformed text. The same raw `col_sql` is
-    /// ALSO reused as a bare-identifier lookup key in three sibling spots
-    /// (`agg_arg_col_valid_for_branch`'s `col_sql.rsplit('.').next()`
-    /// physical-column extraction, `build_outer_aggregate_select`'s raw
-    /// `format!("`{}}`", col_ref)` backtick-wrap of the outer aggregate
-    /// reference, and `build_aliased_group_by`'s analogous GROUP BY case) —
-    /// all of which mis-parse `r."id.orig_h"` (e.g. `rsplit('.').next()`
-    /// yields `orig_h"`, a trailing stray quote) because the physical column
-    /// name itself contains a dot.
-    ///
-    /// A minimal, isolated fix for JUST the alias-construction bug (a
-    /// `split_agg_arg_col`/`agg_arg_alias_key` pair of pure functions that
-    /// correctly separate `alias` from a possibly-`"`-quoted physical column,
-    /// used at all four sites above) was implemented and verified to produce
-    /// syntactically valid SQL. But applying it surfaced TWO further,
-    /// previously-unreachable-behind-the-crash bugs in this exact shape:
-    ///
-    /// 1. `table_valid_columns`'s #476 NULL-padding validity check only ever
-    ///    consulted `NodeSchema::all_valid_physical_columns()` — for a
-    ///    relationship-owned column referenced by a bare aggregate argument
-    ///    on `r` (here, `r`'s own edge_id, `uid`), the anchor's NODE schema
-    ///    (`IP`) simply doesn't know about it, so `agg_arg_col_valid_for_branch`
-    ///    always returned false and BOTH UNION branches got `NULL AS "r.uid"`
-    ///    — `count(r)` would render as valid SQL but ALWAYS return 0,
-    ///    regardless of actual row count. (A `RelationshipSchema::
-    ///    all_valid_physical_columns` companion accessor + folding its
-    ///    results into `table_valid_columns` fixes this specific gap and was
-    ///    also implemented and verified.)
-    /// 2. Deeper and NOT fixed: even with both of the above in place, the
-    ///    rendered SQL's two UNION ALL branches are BYTE-IDENTICAL — both
-    ///    project `r."id.orig_h"` for `a`'s identity; neither ever projects
-    ///    `r."id.resp_h"`. For an UNDIRECTED self-edge this must alternate
-    ///    (exactly as the already-fixed, already-tested OPTIONAL sibling
-    ///    shape's `__denorm_scan_a` CTE does: one branch per role). Live
-    ///    execution against the zeek fixture with both of the above fixes
-    ///    applied returns 3 rows (`192.168.1.10`, `93.184.216.34`,
-    ///    `192.168.1.20`, each `c=2`) instead of the true 5 distinct IPs
-    ///    (ground truth via raw SQL: `{10.0.0.99: 1, 142.250.80.46: 1,
-    ///    192.168.1.10: 1, 192.168.1.20: 1, 93.184.216.34: 2}`) — silently
-    ///    dropping 2 IPs entirely and double-counting the other 3. Confirmed
-    ///    PRE-EXISTING (not introduced by the alias/validity fixes above) by
-    ///    diffing against the unfixed build's SQL, which shows the same
-    ///    duplicate (non-alternating) branch shape underneath its NULL
-    ///    padding. Root cause not investigated further within this round's
-    ///    budget — likely in whatever builds the inner per-role UNION for a
-    ///    bare relationship-variable aggregate on a self-referencing coupled
-    ///    edge outside the OPTIONAL-anchor-CTE path (`bidirectional_union.rs`
-    ///    or its `WITH`-aggregate CTE-building caller) — genuinely separate,
-    ///    un-pinned planner-level work.
-    ///
-    /// Given #2 is a SILENT wrong-result bug (missing rows + inflated
-    /// counts) reachable only once #1's NULL-padding gap and the alias crash
-    /// are both fixed, shipping only the alias fix (or the alias+validity
-    /// fixes together) would trade today's LOUD failure for a WORSE, silent
-    /// one — explicitly the class of change ground rule 1 forbids. All three
-    /// fixes therefore stay deferred as one package; the alias-construction
-    /// and validity-gating fixes are fully designed and gdb/live-verified in
-    /// isolation (this comment preserves that work for the next round) but
-    /// were reverted rather than landed partially.
-    ///
-    /// Live-confirmed: loud failure (UNKNOWN_IDENTIFIER) today, not silent
-    /// wrong results — lower urgency than #504's silent-wrong symptom, but
-    /// the investigation above shows a NAIVE fix would flip that ordering;
-    /// #508/#530/#543/#471/#529-shape-2 are all fixed in this stream (R1
-    /// fixed #508/shape-2; R2 fixed #543/#530/#471).
+    /// R3 pinned the exact alias-construction mutation site with `gdb`
+    /// (`build_union_inner_select`'s "add aggregate argument columns" loop)
+    /// but deferred landing it after discovering it would unmask bugs 2 and 3
+    /// above. #508/#530/#543/#471/#529-shape-2 are all fixed in this stream
+    /// (R1 fixed #508/shape-2; R2 fixed #543/#530/#471).
     #[tokio::test]
-    async fn undirected_plain_with_aggregate_malformed_cte_alias_known_broken_529_shape1() {
+    async fn undirected_plain_with_aggregate_bug1_2_fixed_bug3_loudly_guarded_529_shape1() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+        let repro = "MATCH (a:IP)-[r:ACCESSED]-(b:IP) WITH a, count(r) AS c RETURN a.ip, c";
+
+        // Bug 3 (role alternation) is unfixed — must fail LOUDLY via a clean
+        // Rust-level error, not silently return corrupted data and not crash
+        // with a malformed-SQL ClickHouse parse error (the pre-R4 behavior).
+        let err = try_render(&schema, repro, SqlDialect::ClickHouse)
+            .await
+            .expect_err(
+                "#529 shape 1: bug 3 (role alternation) is still unfixed — this \
+                 must still fail, just LOUDLY via a clean render error, not \
+                 silently succeed with wrong data. If this now succeeds, bug 3 \
+                 was actually fixed — replace this with a real regression test \
+                 that live-verifies row-level correctness (see the doc comment \
+                 above for the exact mechanism that would need to change).",
+            );
+        assert!(
+            err.contains("not yet supported") && err.contains("529"),
+            "#529 shape 1: expected the dedicated #529-shape-1 loud guard \
+             error, got a different error — investigate before assuming bug 3 \
+             is still the cause:\n{err}"
+        );
+
+        // Determinism (even the loud-guard path must be deterministic).
+        for _ in 0..5 {
+            let again = try_render(&schema, repro, SqlDialect::ClickHouse).await;
+            assert!(
+                again.is_err(),
+                "#529 shape 1: nondeterministic guard — sometimes rendered \
+                 successfully, sometimes errored"
+            );
+        }
+    }
+
+    /// #529 shape 1 regression (bugs 1+2 FIXED): the DIRECTED form of the
+    /// same pattern (`-[r:ACCESSED]->` instead of `-[r:ACCESSED]-`) has only
+    /// ONE direction, so it never enters the multi-branch UNION bug 3's loud
+    /// guard targets — this must render and execute correctly, proving bugs 1
+    /// (malformed alias) and 2 (NULL-padding gap for relationship-owned
+    /// columns) are genuinely fixed, not just guarded away.
+    ///
+    /// Live-verified against the zeek fixture (`zeek.conn_log`, `cg query`):
+    /// returns exactly 3 rows, `count(r)` grouped by `a`'s `id.orig_h`,
+    /// matching independently-computed ground truth from the raw table data
+    /// (each row's `count` equals the number of `conn_log` rows with that
+    /// `id.orig_h` as the ORIGIN — directed, so no role alternation is
+    /// needed here at all).
+    #[tokio::test]
+    async fn undirected_plain_with_aggregate_directed_variant_regression_529_shape1() {
         let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
         let sql = normalize(
             &render(
                 &schema,
-                "MATCH (a:IP)-[r:ACCESSED]-(b:IP) WITH a, count(r) AS c RETURN a.ip, c",
+                "MATCH (a:IP)-[r:ACCESSED]->(b:IP) WITH a, count(r) AS c RETURN a.ip, c",
                 SqlDialect::ClickHouse,
             )
             .await,
         );
 
+        // No malformed embedded-quote alias (bug 1) and no unconditional
+        // NULL-padding of `r`'s own edge_id column (bug 2) — both columns
+        // render as real references.
         assert!(
-            sql.contains(r#"r."id.orig_h""#),
-            "#529 shape 1 KNOWN BROKEN characterization stale — the \
-             malformed embedded-quote alias is gone; if this is a genuine \
-             fix, live-verify the query actually executes before replacing \
-             this test with a regression test:\n{sql}"
+            !sql.contains(r#"AS "r.""#),
+            "#529 shape 1 bug 1 regression — malformed doubled-quote alias \
+             reappeared:\n{sql}"
+        );
+        assert!(
+            !sql.contains(r#"NULL AS "r."#),
+            "#529 shape 1 bug 2 regression — r's own edge_id column is being \
+             NULL-padded again (count(r) would always return 0):\n{sql}"
+        );
+        assert!(
+            sql.contains(r#"r."id.orig_h""#) && sql.contains("r.uid"),
+            "#529 shape 1: expected a's identity (r.\"id.orig_h\") and r's own \
+             edge_id (r.uid) to both be real column references:\n{sql}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(
+                &render(
+                    &schema,
+                    "MATCH (a:IP)-[r:ACCESSED]->(b:IP) WITH a, count(r) AS c RETURN a.ip, c",
+                    SqlDialect::ClickHouse,
+                )
+                .await,
+            );
+            assert_eq!(
+                sql, again,
+                "#529 shape 1 directed variant: nondeterministic render"
+            );
+        }
+    }
+
+    /// #529 shape 1, R5 (adversarial review finding, now fixed): the guard's
+    /// FIRST scoping (v1: "no branch has any JOIN") missed a 2-hop undirected
+    /// CHAIN grouping by the first hop's own anchor — `(a)-[r:ACCESSED]-
+    /// (x:IP)-[r2:ACCESSED]-(c:IP) WITH a, count(r) AS n ...` has a JOIN (for
+    /// the second hop), so v1 let it through even though `a`'s own identity
+    /// (via `r`, the FROM anchor) never alternates role, same as the
+    /// single-hop shape. Live-verified pre-fix (adversarial review): silently
+    /// dropped 2 of 5 groups and corrupted every remaining count on both
+    /// `zeek_merged_test.yaml` and `flights_denormalized.yaml`. The v3 guard
+    /// (property-name-aware, checks every alias reachable via FROM or any
+    /// JOIN, not just hop count or join presence) now catches this — locks
+    /// BOTH the anchor-grouped form (this test) and, via
+    /// `denorm_with_aggregate_group_by_middle_node_via_join_known_broken_529`,
+    /// the "group by a node reached through a JOIN" form the adversarial
+    /// review's re-verification additionally uncovered.
+    #[tokio::test]
+    async fn undirected_two_hop_chain_grouped_by_anchor_known_broken_529_shape1() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+        let cypher = "MATCH (a:IP)-[r:ACCESSED]-(x:IP)-[r2:ACCESSED]-(c:IP) \
+                      WITH a, count(r) AS n RETURN a.ip, n";
+
+        let err = try_render(&schema, cypher, SqlDialect::ClickHouse)
+            .await
+            .expect_err(
+                "#529 shape 1 (2-hop chain by anchor): this query now renders \
+                 successfully — if bug 3 (role alternation) was genuinely \
+                 fixed, live-verify row-level counts against hand-enumerated \
+                 ground truth from the raw conn_log fixture before replacing \
+                 this test with a regression test.",
+            );
+        assert!(
+            err.contains("not yet supported") && err.contains("529"),
+            "#529 shape 1 (2-hop chain by anchor): expected the #529 shape-1 \
+             loud guard error, got a different error:\n{err}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+            assert!(
+                again.is_err(),
+                "#529 shape 1 (2-hop chain by anchor): nondeterministic guard"
+            );
+        }
+    }
+
+    /// #529 shape 1, R6 (adversarial review finding, now fixed): the guard's
+    /// property-access collector (`collect_property_accesses`,
+    /// `render_plan/plan_builder_utils.rs`) hand-rolled a PARTIAL `match`
+    /// over `RenderExpr` (only `PropertyAccessExp`/`OperatorApplicationExp`/
+    /// `AggregateFnCall`/`ScalarFnCall`/`Case`'s `when_then`+`else_expr`),
+    /// silently dropping everything else via a `_ => {}` catch-all —
+    /// including `List`, so a role-dependent property reached through a
+    /// LIST LITERAL in the WITH projection (rather than a bare select item)
+    /// slipped past the guard entirely. Live-verified pre-fix (adversarial
+    /// review): `WITH count(r) AS c, [a.ip] AS tags RETURN c, tags` rendered
+    /// and EXECUTED with no guard firing, both UNION branches emitting
+    /// byte-identical non-alternating SQL — the same corruption signature as
+    /// the bare-select-item shapes above (2 of 5 IPs dropped, wrong counts),
+    /// just reached through the list literal instead.
+    ///
+    /// Fixed by making `collect_property_accesses`'s match EXHAUSTIVE over
+    /// every `RenderExpr` variant (no `_` catch-all — a future variant
+    /// addition is now a compile error here, not a silent gap) — see that
+    /// function's own doc comment for the full variant-by-variant audit and
+    /// `collect_property_accesses_tests` (same file) for direct per-variant
+    /// unit coverage (`List`, `MapLiteral`, `ArraySubscript`/`ArraySlicing`,
+    /// simple-CASE's `expr` scrutinee, `ReduceExpr`, `InSubquery`).
+    #[tokio::test]
+    async fn undirected_with_aggregate_role_property_inside_list_literal_known_broken_529_shape1() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+        let cypher =
+            "MATCH (a:IP)-[r:ACCESSED]-(b:IP) WITH count(r) AS c, [a.ip] AS tags RETURN c, tags";
+
+        let err = try_render(&schema, cypher, SqlDialect::ClickHouse)
+            .await
+            .expect_err(
+                "#529 shape 1 (role property inside a list literal): this query \
+                 now renders successfully — if this is a genuine fix (not \
+                 another guard-scoping gap), live-verify row-level counts \
+                 against hand-enumerated ground truth from the raw conn_log \
+                 fixture before replacing this test with a regression test.",
+            );
+        assert!(
+            err.contains("not yet supported") && err.contains("529"),
+            "#529 shape 1 (role property inside a list literal): expected the \
+             #529 shape-1 loud guard error, got a different error:\n{err}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+            assert!(
+                again.is_err(),
+                "#529 shape 1 (role property inside a list literal): \
+                 nondeterministic guard"
+            );
+        }
+    }
+
+    /// #529 shape 2 (FIXED, regression guard against the R5 guard-widening):
+    /// the already-fixed OPTIONAL+undirected+WITH-aggregate shape
+    /// (`MATCH (a:IP) OPTIONAL MATCH (a)-[r:ACCESSED]-(b:IP) WITH a,
+    /// count(r) AS c ...`) resolves `a` through the `__denorm_scan_a` anchor
+    /// CTE (a synthetic table name, not a role-dependent schema table) and
+    /// `count(r)` through `r`'s own role-INDEPENDENT edge_id (`uid`) — it
+    /// must NOT trip the #529 shape-1 guard. An earlier draft of the R5
+    /// guard widening (checking "does this alias's TABLE back a
+    /// role-dependent node" instead of "does this SPECIFIC PROPERTY resolve
+    /// to a role-dependent column") was too coarse and flagged `r.uid`
+    /// merely because `r` and the role-dependent `IP` node happen to share
+    /// the same physical `conn_log` table — caught by this exact test before
+    /// landing.
+    #[tokio::test]
+    async fn undirected_optional_with_aggregate_unaffected_by_529_guard_widening() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+        let sql = normalize(
+            &render(
+                &schema,
+                "MATCH (a:IP) OPTIONAL MATCH (a)-[r:ACCESSED]-(b:IP) \
+                 WITH a, count(r) AS c RETURN a.ip, c",
+                SqlDialect::ClickHouse,
+            )
+            .await,
+        );
+        assert!(
+            sql.contains("__denorm_scan_a"),
+            "#529 shape 2 regressed by the R5 guard widening — expected the \
+             already-fixed anchor-CTE shape to still render:\n{sql}"
         );
     }
 
