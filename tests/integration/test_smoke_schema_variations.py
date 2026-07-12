@@ -19,13 +19,15 @@ Data is loaded by (see .github/workflows/ci.yml "Setup test data" step):
 We load our OWN copy of each schema under a `smoke_*`-prefixed name (module
 fixture below), the same self-contained pattern
 test_graphrag_schema_variations.py uses, rather than reusing the bare
-"fk_edge"/"polymorphic"/"composite_id" names: conftest.py's autouse
-`load_all_test_schemas` fixture registers its OWN (different!) definitions
-under those exact names (e.g. "fk_edge" -> schemas/examples/orders_customers_fk.yaml,
-pointing at test_integration.orders_fk, not db_fk_edge; "polymorphic" ->
-schemas/examples/social_polymorphic.yaml, pointing at brahmand.interactions,
-not db_polymorphic). Depending on fixture/import order to win that race would
-be fragile; loading under our own name sidesteps it entirely.
+"fk_edge"/"polymorphic"/"composite_id" names registered by conftest.py's
+autouse `load_all_test_schemas` fixture. As of #463, conftest.py's bare
+"fk_edge"/"polymorphic" registrations were repointed at the schemas/dev/*.yaml
+variants that DO target db_fk_edge/db_polymorphic (previously they pointed at
+schemas/examples/*.yaml variants targeting test_integration/brahmand instead —
+a different database than these setup scripts populate). We still load our
+own module-scoped copy here rather than depending on fixture/import order
+across test modules, which would be fragile regardless of whether the two
+registrations happen to agree.
 """
 
 import os

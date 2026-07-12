@@ -17,7 +17,49 @@ pub enum SchemaSource {
     Database,
 }
 
-use super::{models::GraphCatalog, GLOBAL_SCHEMAS, GLOBAL_SCHEMA_CONFIG, GLOBAL_SCHEMA_CONFIGS};
+use super::{
+    models::GraphCatalog, GLOBAL_SCHEMAS, GLOBAL_SCHEMA_CONFIG, GLOBAL_SCHEMA_CONFIGS,
+    GLOBAL_SCHEMA_CONTENT_HASHES,
+};
+
+/// Deterministic (within-process) hash of schema YAML content, used only to
+/// detect re-registration of an existing schema name with different content.
+/// Not a security primitive — `DefaultHasher` is fine here.
+fn hash_schema_content(content: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    content.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Warn (but don't block) when `schema_name` is being (re-)registered with
+/// content that differs from what's currently registered under that name.
+/// Last-writer-wins is intentional — `/schemas/load` is used for legitimate
+/// hot-reload of a schema's definition — but a collision with genuinely
+/// different content usually means two unrelated callers/tests picked the
+/// same schema name by accident, which is worth surfacing (#463). Idempotent
+/// re-registration of the SAME content stays silent.
+async fn warn_on_schema_content_collision(schema_name: &str, yaml_content: &str) {
+    let new_hash = hash_schema_content(yaml_content);
+    let hashes_lock = GLOBAL_SCHEMA_CONTENT_HASHES
+        .get_or_init(|| async { RwLock::new(HashMap::new()) })
+        .await;
+    let mut hashes_guard = hashes_lock.write().await;
+    if let Some(&existing_hash) = hashes_guard.get(schema_name) {
+        if existing_hash != new_hash {
+            log::warn!(
+                "Schema '{}' is being re-registered with DIFFERENT content than the \
+                 currently-registered version. This will silently repoint every \
+                 subsequent query against '{}' to the new definition. If this is \
+                 intentional (hot-reload), ignore this warning; if two unrelated \
+                 callers picked the same schema name by accident, rename one of them.",
+                schema_name,
+                schema_name
+            );
+        }
+    }
+    hashes_guard.insert(schema_name.to_string(), new_hash);
+}
 
 /// Pre-register all labels from a schema with the ID encoding registry.
 /// This enables id() decoding to work on first query without requiring
@@ -638,6 +680,9 @@ pub async fn load_schema_from_content(
                     log::warn!("    Skipping validation - some queries may fail at runtime");
                 }
             }
+
+            // Warn (not block) if this name was already registered with different content.
+            warn_on_schema_content_collision(schema_name, yaml_content).await;
 
             // Add to multi-schema storage
             let schemas_lock = GLOBAL_SCHEMAS

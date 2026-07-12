@@ -335,8 +335,17 @@ def load_all_test_schemas():
 
         # Schema variation test schemas (sql_only mode — no data needed)
         ("standard", "schemas/test/social_integration.yaml"),  # reuse social_integration YAML
-        ("fk_edge", "schemas/examples/orders_customers_fk.yaml"),
-        ("polymorphic", "schemas/examples/social_polymorphic.yaml"),  # alias for social_polymorphic
+        # NOTE (#463): these two previously pointed at schemas/examples/*.yaml
+        # variants targeting test_integration/brahmand — DIFFERENT databases
+        # than db_fk_edge/db_polymorphic, which scripts/setup/setup_fk_edge_data.sh
+        # and setup_polymorphic_data.sh actually populate. Repointed to the
+        # schemas/dev/*.yaml variants (same shape/property-mappings as the old
+        # ones, just correct database) so the bare names line up with the data
+        # the CI/dev setup scripts create. sql_only tests are unaffected either
+        # way (no execution); this only matters for any future execution-mode
+        # test against these bare names.
+        ("fk_edge", "schemas/dev/orders_customers_fk.yaml"),
+        ("polymorphic", "schemas/dev/social_polymorphic.yaml"),
         ("composite_id", "schemas/examples/composite_node_id_test.yaml"),
         ("zeek_merged_test", "schemas/examples/zeek_merged.yaml"),
 
