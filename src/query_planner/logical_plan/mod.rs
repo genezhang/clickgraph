@@ -2548,4 +2548,92 @@ mod tests {
         assert_eq!(rebuilt.cte_references.get("x"), Some(&"cte_x".to_string()));
         assert!(rebuilt.pattern_comprehensions.is_empty());
     }
+
+    /// Minimal `GraphRel` builder for `is_optional_pattern()` characterization —
+    /// only `is_optional` varies between call sites, every other field is an
+    /// arbitrary but structurally-valid placeholder.
+    fn minimal_graph_rel(alias: &str, is_optional: Option<bool>) -> LogicalPlan {
+        LogicalPlan::GraphRel(GraphRel {
+            left: Arc::new(LogicalPlan::Empty),
+            center: Arc::new(LogicalPlan::Empty),
+            right: Arc::new(LogicalPlan::Empty),
+            alias: alias.to_string(),
+            direction: crate::query_planner::logical_expr::Direction::Outgoing,
+            left_connection: "l".to_string(),
+            right_connection: "r".to_string(),
+            is_rel_anchor: false,
+            variable_length: None,
+            shortest_path_mode: None,
+            path_variable: None,
+            where_predicate: None,
+            labels: None,
+            is_optional,
+            anchor_connection: None,
+            cte_references: std::collections::HashMap::new(),
+            pattern_combinations: None,
+            was_undirected: None,
+        })
+    }
+
+    /// #461 (defensive, theoretical/unproven reachability): `is_optional_pattern()`'s
+    /// `CartesianProduct` arm is documented as "check if both sides are
+    /// optional — if either side is required, the overall pattern isn't
+    /// purely optional", but the implementation is
+    /// `cp.left.is_optional_pattern() && (cp.is_optional || cp.right.is_optional_pattern())`.
+    /// For an INVERTED shape — `left` purely optional, `right` a REQUIRED
+    /// (non-optional) pattern, but the `CartesianProduct` node itself carries
+    /// `is_optional: true` — this returns `true` (treats the whole thing as
+    /// "purely optional") even though `right` is required, contradicting the
+    /// doc comment. No known live Cypher query reaches this exact combination
+    /// today (every `CartesianProduct` construction site that sets
+    /// `is_optional: true` was, at investigation time, paired with a `right`
+    /// that itself is/contains the OPTIONAL MATCH being attached — this
+    /// inversion was not proven reachable from any parser/planner path, only
+    /// noted as a latent mismatch between the code and its own doc comment).
+    /// Locked here as a cheap characterization so a future change to
+    /// `CartesianProduct` construction that DOES make this shape reachable
+    /// gets a test failure prompting re-review of this formula, rather than
+    /// silently inheriting the mismatch. Not fixed: the three call sites
+    /// (`traversal.rs`'s anchor-selection at lines ~849/1727/1916) all
+    /// currently rely on today's exact formula for already-working shapes,
+    /// and tightening it without a reachable failing repro to verify against
+    /// risks trading a theoretical issue for a live regression.
+    #[test]
+    fn is_optional_pattern_cartesian_product_inverted_shape_known_gap_461() {
+        let left = Arc::new(minimal_graph_rel("opt_rel", Some(true)));
+        let right = Arc::new(minimal_graph_rel("req_rel", Some(false)));
+        let cp = LogicalPlan::CartesianProduct(CartesianProduct {
+            left,
+            right,
+            is_optional: true,
+            join_condition: None,
+        });
+
+        // Sanity: the pieces mean what we think before combining them.
+        assert!(
+            LogicalPlan::GraphRel(match &cp {
+                LogicalPlan::CartesianProduct(inner) => match inner.left.as_ref() {
+                    LogicalPlan::GraphRel(r) => r.clone(),
+                    _ => unreachable!(),
+                },
+                _ => unreachable!(),
+            })
+            .is_optional_pattern(),
+            "left must itself be purely optional for this characterization to be meaningful"
+        );
+
+        // Current (documented-as-known-gap) behavior: returns true even though
+        // `right` is a required pattern, because `cp.is_optional` short-circuits
+        // the right-hand optionality check. If this assertion starts failing,
+        // the formula was tightened (or the construction changed) — verify no
+        // live anchor-selection regression before updating this test.
+        assert!(
+            cp.is_optional_pattern(),
+            "#461 known-gap characterization stale: CartesianProduct{{left: \
+             optional, right: required, is_optional: true}} no longer reports \
+             purely-optional — if this is an intentional fix, verify the three \
+             traversal.rs anchor-selection call sites still work before \
+             replacing this test"
+        );
+    }
 }
