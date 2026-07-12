@@ -1054,6 +1054,22 @@ const DENORM_CORPUS: &[(&str, &str)] = &[
         "vlp_recursive",
         "MATCH (a:Airport)-[:FLIGHT*1..2]->(b:Airport) RETURN b.code",
     ),
+    // #569: a fixed hop immediately followed by a VLP hop, where the VLP's
+    // OWN start endpoint (`a`) is ALSO the fixed hop's end endpoint — the
+    // SINGLE-TABLE denorm sibling of #559's multi-table-label repro (#559
+    // itself was about a node label mapped to MULTIPLE physical tables;
+    // `Airport` here is always the same `flights_denorm` table, so this
+    // exercises the same "VLP start endpoint resolves its OWN role, not the
+    // fixed hop's" fix on the OTHER axis — a single denormalized table with
+    // separate from-side/to-side column mappings). Confirmed correct: not a
+    // bug, just previously untested. Live-verified against
+    // `db_denormalized.flights_denorm` (8 seeded flights): 19 rows, matching
+    // hand-enumeration of every (x, a, b) combination over the 8 edges.
+    (
+        "fixed_hop_then_vlp_hop_559",
+        "MATCH (x:Airport)-[:FLIGHT]->(a:Airport)-[:FLIGHT*1..2]->(b:Airport) \
+         RETURN x.code, a.code, b.code",
+    ),
     // #487: Cypher UNION whose first arm aggregates over the denormalized
     // virtual-node from/to union. count(a) must hoist over the arm's OWN
     // internal union (origin_code/dest_code, correctly mapped — NOT unmapped
@@ -10887,6 +10903,55 @@ mod vlp_multi_table_label_family_557_558_559 {
             !sql.contains("vlp_multi_type_"),
             "single-type, both-endpoints-labeled VLP must not route through \
              the multi-type CTE machinery at all: {sql}"
+        );
+    }
+
+    /// #569: regression coverage for #559's shape on a SINGLE-TABLE
+    /// denormalized schema — this was NOT a bug (#559 already fixes it
+    /// correctly there too), just untested. `#559` itself repros on a node
+    /// label mapped to MULTIPLE physical tables (zeek's `IP`); this locks the
+    /// OTHER axis — `Airport` on `schemas/dev/flights_denormalized.yaml` is a
+    /// SINGLE physical table (`flights_denorm`) with separate from-side
+    /// (`origin_*`) / to-side (`dest_*`) column mappings, and `a` is both the
+    /// fixed hop's end endpoint (to-role) AND the VLP's own start endpoint
+    /// (from-role) — the same "VLP start endpoint must resolve its OWN role"
+    /// shape #559 fixed, on a denorm-role axis instead of a multi-table-label
+    /// axis. Confirmed correct live against `db_denormalized.flights_denorm`
+    /// (8 seeded flights): 19 rows, matching hand-enumeration of every
+    /// (x, a, b) combination over the 8 edges (also locked byte-for-byte as
+    /// the `fixed_hop_then_vlp_hop_559` golden in `DENORM_CORPUS`).
+    #[tokio::test]
+    async fn fixed_hop_then_vlp_hop_denormalized_single_table_559_regression_569() {
+        let schema = load_schema(SchemaId::Denormalized.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (x:Airport)-[:FLIGHT]->(a:Airport)-[:FLIGHT*1..2]->(b:Airport) \
+             RETURN x.code, a.code, b.code",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        // The VLP CTE must export `a`'s OWN (from-role) property column —
+        // never resolve it via the fixed hop's (to-role) mapping, a column
+        // the CTE never actually exports (#559's exact failure mode).
+        assert!(
+            sql.contains(r#""origin_code" as "start_origin_code""#),
+            "#569: the VLP CTE must export `a`'s own FROM-role property \
+             column (origin_code), not fall back to the fixed hop's TO-role \
+             mapping (dest_code): {sql}"
+        );
+        assert!(
+            sql.contains(r#"t.start_origin_code AS "a.code""#),
+            "#569: the outer SELECT must project `a.code` from the CTE's \
+             correctly-resolved FROM-role column: {sql}"
+        );
+        // The leading fixed hop's JOIN must stay correlated to the VLP CTE's
+        // start endpoint (#524 regression guard, same as #559's own test).
+        assert!(
+            !sql.contains("ON 1 = 1"),
+            "#569 (adjacent #524 regression check): the leading fixed hop's \
+             JOIN must stay correlated to the VLP CTE's start endpoint, not \
+             degrade to an unconditional join: {sql}"
         );
     }
 }
