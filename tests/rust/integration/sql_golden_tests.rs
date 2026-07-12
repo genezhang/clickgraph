@@ -2649,68 +2649,11 @@ async fn social_554_incoming_direction_optional_where_not_dropped() {
     );
 }
 
-/// KNOWN BROKEN — deferred. #479's OWN filing also names the denormalized
-/// `__denorm_scan` variant as affected, and it is — but via a DIFFERENT
-/// rendering path than the one just fixed above (`fold_optional_edge_node_
-/// join_with_predicate` in `plan_optimizer.rs`), so it is NOT covered by that
-/// fix and needs separate, dedicated investigation.
-///
-/// `MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b:Airport) WHERE
-/// b.city = 'Chicago' RETURN a.code, b.code` (denormalized `flights_denorm`
-/// schema — Airport node properties are embedded directly in the FLIGHT edge
-/// table, no separate Airport table) renders through a `__denorm_scan_a` CTE
-/// + a SINGLE LEFT JOIN (`LEFT JOIN db_denormalized.flights_denorm AS t1 ON
-/// a.code = t1.origin_code`) — i.e. this is the SINGLE-join shape #474's
-/// `apply_optional_node_pre_filters` (`join_builder.rs`) is designed to
-/// recover into a `pre_filter` subquery (exactly like the FK-edge case that
-/// mechanism already fixes) — yet it still leaves `t1.dest_city = 'Chicago'`
-/// in a bare outer WHERE, meaning `apply_optional_node_pre_filters` is either
-/// not reached for the `__denorm_scan` CTE path, or its match conditions
-/// (looking for a plain node JOIN by alias) don't recognize this CTE-fronted
-/// shape. Needs tracing through the `__denorm_scan` CTE construction path
-/// (likely `cte_extraction.rs` / denormalized-specific handling in
-/// `join_builder.rs`) to find where the single-join dedup and predicate
-/// relocation diverge from the plain FK-edge case — separate, dedicated
-/// investigation, not a small extension of the fix above.
-///
-/// Live (db_denormalized): `MATCH (a:Airport)` alone returns 7 distinct
-/// airports (`UNION DISTINCT` of `origin_code`/`dest_code`) —
-/// ATL/DEN/JFK/LAX/ORD/PHX/SFO. PHX is dest-only (never an origin in the
-/// fixture data) but is still a legitimate `Airport` node and must appear as
-/// its own NULL-extended row; it is easy to miss by checking only `SELECT
-/// DISTINCT origin_code` (6 rows) — an earlier draft of this comment did
-/// exactly that and under-counted. Ground truth for the OPTIONAL MATCH WHERE
-/// query is 7 rows (LAX and SFO have a Chicago-bound flight; the other 5,
-/// including PHX, are NULL-extended). Current behavior returns only 2 rows
-/// (LAX, SFO) — drops the 5 NULL-extended airports, the same disease as
-/// #479's main case.
-#[tokio::test]
-async fn denorm_479_plain_optional_where_drops_null_extended_rows_known_broken() {
-    let schema = load_schema(SchemaId::Denormalized.yaml_path());
-    let cypher = "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b:Airport) \
-                  WHERE b.city = 'Chicago' RETURN a.code, b.code";
-    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
-
-    // Characterization lock: predicate still sits in a bare outer WHERE
-    // (post-join), which drops NULL-extended no-match airports. If this
-    // starts failing because the WHERE is gone, that is progress — verify
-    // against live ground truth (7 rows on the committed db_denormalized
-    // fixture, including dest-only PHX) before replacing this test.
-    // Match `WHERE t<N>.dest_city` rather than a literal `t1` — the
-    // auto-generated relationship alias's numeric suffix varies with the
-    // global alias counter's position across the test binary.
-    let has_bare_outer_where = sql.lines().any(|l| {
-        let l = l.trim_start();
-        l.starts_with("WHERE t") && l.contains(".dest_city")
-    });
-    assert!(
-        has_bare_outer_where,
-        "#479 (denormalized) KNOWN BROKEN characterization stale — predicate \
-         no longer in a bare outer WHERE; if this is a genuine fix (verify \
-         live: must return 7 rows including dest-only PHX, not 2), replace \
-         this test with a regression test:\n{sql}"
-    );
-}
+// FIXED (#533): was KNOWN BROKEN — the denormalized `__denorm_scan` variant
+// of #479/#552's OPTIONAL-node predicate placement is now covered. See
+// `denorm_optional_node_predicate_folds_into_pre_filter_533` below (near
+// `denorm_optional_where_preserved_both_directions_506_followup`) for the
+// live-verified regression test and root-cause writeup.
 
 /// FIXED (#553): zero-match ANCHOR with an inline-map predicate on a
 /// denormalized schema returned 0 rows instead of one NULL-extended row.
@@ -3867,30 +3810,47 @@ async fn denorm_chained_optional_preserves_anchor_scan_505() {
 ///    direction never hit this because its `anchor_connection` is always
 ///    `None` (CLAUDE.md rule 4), which happens to route through the
 ///    "no anchor determined — keep all predicates" fallback instead.
+///
+/// #533 UPDATE: the single-hop cases (both directions) now fold the
+/// optional-node predicate into the edge JOIN's `pre_filter` — `LEFT JOIN
+/// (SELECT * FROM ... WHERE dest_state = 'CA') AS r ON ...` — instead of a
+/// bare post-join outer WHERE, fixing the NULL-extended-row-dropping bug
+/// `denorm_479_..._known_broken` characterized (now replaced by
+/// `denorm_optional_node_predicate_folds_into_pre_filter_533`). The
+/// pre_filter subquery has only ONE table in scope, so the column is
+/// unqualified (no `r.`/`t1.` prefix) — expectations updated accordingly.
+/// The chained-double-OPTIONAL case's SECOND hop is a genuinely different
+/// shape (its anchor `b` is itself a LEFT-JOINed row from the first hop, not
+/// a `__denorm_scan` CTE) that #533 does not touch — still a bare outer
+/// WHERE, unchanged.
 #[tokio::test]
 async fn denorm_optional_where_preserved_both_directions_506_followup() {
     let schema = load_schema(SchemaId::Denormalized.yaml_path());
 
-    // (cypher, the WHERE condition that must survive, a context tag)
+    // (cypher, the WHERE condition that must survive, whether it must NOT be
+    // a bare post-join outer WHERE (folded into pre_filter instead), a tag)
     let cases = [
         (
             "MATCH (a:Airport) OPTIONAL MATCH (a)-[r:FLIGHT]->(b:Airport) WHERE b.state = 'CA' RETURN a.code, b.code",
-            "r.dest_state = 'CA'",
+            "dest_state = 'CA'",
+            true,
             "outgoing, single hop",
         ),
         (
             "MATCH (a:Airport) OPTIONAL MATCH (a)<-[r:FLIGHT]-(b:Airport) WHERE b.state = 'CA' RETURN a.code, b.code",
-            "r.origin_state = 'CA'",
+            "origin_state = 'CA'",
+            true,
             "incoming, single hop",
         ),
         (
             "MATCH (a:Airport) OPTIONAL MATCH (a)<-[:FLIGHT]-(b:Airport) OPTIONAL MATCH (b)<-[:FLIGHT]-(c:Airport) WHERE c.state = 'CA' RETURN a.code, b.code, c.code",
             "t1.origin_state = 'CA'",
+            false,
             "incoming, chained double-OPTIONAL (#505 shape)",
         ),
     ];
 
-    for (cypher, want_where, tag) in cases {
+    for (cypher, want_where, folds_into_pre_filter, tag) in cases {
         let first = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
         for _ in 0..5 {
             let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
@@ -3907,7 +3867,73 @@ async fn denorm_optional_where_preserved_both_directions_506_followup() {
             first.contains(want_where),
             "#506-followup [{tag}]: expected WHERE condition `{want_where}`, got:\n{first}"
         );
+        let has_bare_outer_where = first
+            .lines()
+            .any(|l| l.trim_start().starts_with("WHERE") && l.contains(want_where));
+        assert_eq!(
+            has_bare_outer_where, !folds_into_pre_filter,
+            "#506-followup/#533 [{tag}]: expected folds_into_pre_filter={folds_into_pre_filter} \
+             but bare-outer-WHERE presence was {has_bare_outer_where}:\n{first}"
+        );
     }
+}
+
+/// FIXED (#533): the denormalized `__denorm_scan` CTE + LEFT JOIN OPTIONAL
+/// MATCH shape's OWN (non-anchor) optional-node predicate now folds into the
+/// edge JOIN's `pre_filter` — `LEFT JOIN (SELECT * FROM ... WHERE ...) AS r
+/// ON ...` — instead of a bare post-join outer WHERE, which silently dropped
+/// every NULL-extended (no-match) anchor row. Replaces the
+/// `denorm_479_plain_optional_where_drops_null_extended_rows_known_broken`
+/// characterization test — same repro, no longer broken.
+///
+/// Root cause: this shape's manually-built LEFT JOIN (`plan_builder.rs`'s
+/// "OPTIONAL denormalized Union" branch) never goes through the generic
+/// JOIN-building code `apply_optional_node_pre_filters` (#474,
+/// join_builder.rs) lives in, so nothing folded the optional-node-only
+/// predicate into a `pre_filter` for this shape specifically — it fell
+/// through to a bare outer WHERE, evaluating false (not "keep, NULL-extend")
+/// against every non-matching anchor's NULL-extended row. Fixed by
+/// extracting the optional node's own conjunct from `gr.where_predicate`
+/// (still carrying its original Cypher alias, e.g. `b`, at this point — only
+/// its COLUMN has been role-mapped so far) and rewriting that alias onto the
+/// edge JOIN's own alias before installing it as `pre_filter`;
+/// `collect_graphrel_predicates` (plan_builder_helpers.rs) drops the SAME
+/// conjunct from the outer WHERE so it is embedded exactly once.
+///
+/// Live-verified (2026-07-11, `db_denormalized`): `MATCH (a:Airport)
+/// OPTIONAL MATCH (a)-[:FLIGHT]->(b:Airport) WHERE b.city = 'Chicago' RETURN
+/// a.code, b.code` returns exactly 7 rows — LAX->ORD and SFO->ORD (the two
+/// Chicago-bound flights) plus 5 NULL-extended airports (ATL, DEN, JFK, ORD,
+/// PHX — including dest-only PHX, which a naive `SELECT DISTINCT
+/// origin_code` ground-truth check would miss). Was 2 rows pre-fix (dropped
+/// all 5 NULL-extended rows).
+#[tokio::test]
+async fn denorm_optional_node_predicate_folds_into_pre_filter_533() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+    let cypher = "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b:Airport) \
+                  WHERE b.city = 'Chicago' RETURN a.code, b.code";
+    let first = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+    for _ in 0..5 {
+        let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#533: render is nondeterministic:\nFIRST:\n{first}\nAGAIN:\n{again}"
+        );
+    }
+
+    assert!(
+        first.contains("WHERE dest_city = 'Chicago'"),
+        "#533: expected the predicate folded into the edge JOIN's pre_filter \
+         subquery (unqualified column — only one table in scope there), \
+         got:\n{first}"
+    );
+    assert!(
+        !first
+            .lines()
+            .any(|l| l.trim_start().starts_with("WHERE") && l.contains("dest_city")),
+        "#533 regressed: predicate is back in a bare outer WHERE post-LEFT-JOIN \
+         (drops NULL-extended anchors instead of folding into pre_filter):\n{first}"
+    );
 }
 
 /// #475 regression: on the coupled cross-table denorm `zeek_merged_test`
