@@ -6028,6 +6028,71 @@ pub(crate) fn expand_table_alias_to_select_items(
     );
     Vec::new()
 }
+
+/// #551: resolve the node LABEL for `alias` when it is a `GraphRel`
+/// `left_connection`/`right_connection` with NO backing `GraphNode` anywhere
+/// in the plan — the shape for a fully denormalized "virtual" node sitting
+/// between two edges in an UNLABELED chain (e.g. `b` in
+/// `(a)-[:T]->(b)-[:T]->(c)` with no explicit `:Label` on `b`: type
+/// inference resolves its properties straight off the edge `ViewScan`'s
+/// role-specific property maps, without ever synthesizing a `GraphNode` for
+/// it — see `properties_builder.rs`'s `GraphRel` arm). `cte_extraction::
+/// get_node_label_for_alias` only matches actual `GraphNode`s and returns
+/// `None` for this shape.
+///
+/// Resolves via the relationship's OWN schema definition instead: finds the
+/// `GraphRel` whose connection is `alias`, reads the relationship TYPE off
+/// `GraphRel.labels`, and looks up that type's `from_node`/`to_node` label in
+/// the schema catalog. `left_connection` is always the FROM side and
+/// `right_connection` always the TO side —
+/// `get_properties_with_table_alias` (`properties_builder.rs`) already
+/// relies on the identical invariant for this exact shape (BidirectionalUnion
+/// normalizes Incoming edges to preserve it).
+fn find_denorm_connection_node_label(
+    plan: &LogicalPlan,
+    alias: &str,
+    schema: &GraphSchema,
+) -> Option<String> {
+    fn find_rel<'a>(plan: &'a LogicalPlan, alias: &str) -> Option<&'a GraphRel> {
+        match plan {
+            LogicalPlan::GraphRel(rel) => {
+                if rel.left_connection == alias || rel.right_connection == alias {
+                    return Some(rel);
+                }
+                find_rel(&rel.left, alias)
+                    .or_else(|| find_rel(&rel.center, alias))
+                    .or_else(|| find_rel(&rel.right, alias))
+            }
+            LogicalPlan::GraphNode(n) => find_rel(&n.input, alias),
+            LogicalPlan::Filter(f) => find_rel(&f.input, alias),
+            LogicalPlan::Projection(p) => find_rel(&p.input, alias),
+            LogicalPlan::GraphJoins(g) => find_rel(&g.input, alias),
+            LogicalPlan::OrderBy(o) => find_rel(&o.input, alias),
+            LogicalPlan::Skip(s) => find_rel(&s.input, alias),
+            LogicalPlan::Limit(l) => find_rel(&l.input, alias),
+            LogicalPlan::GroupBy(gb) => find_rel(&gb.input, alias),
+            LogicalPlan::Cte(c) => find_rel(&c.input, alias),
+            LogicalPlan::Union(u) => u.inputs.iter().find_map(|i| find_rel(i, alias)),
+            _ => None,
+        }
+    }
+
+    let rel = find_rel(plan, alias)?;
+    let rel_type_label = rel.labels.as_ref()?.first()?;
+    // Labels may be a plain type ("CARRIER_FLIGHT") or a composite
+    // "TYPE::FromNode::ToNode" form (see `get_relationship_type_for_alias`'s
+    // doc comment) — only the leading TYPE component is needed here.
+    let rel_type = rel_type_label.split("::").next().unwrap_or(rel_type_label);
+    let is_left = rel.left_connection == alias;
+
+    schema
+        .get_all_rel_schemas_for_type(rel_type)
+        .into_iter()
+        .map(|rs| if is_left { &rs.from_node } else { &rs.to_node })
+        .find(|label| schema.node_schema_opt(label).is_some())
+        .cloned()
+}
+
 pub(crate) fn expand_table_alias_to_group_by_id_only(
     alias: &str,
     plan: &LogicalPlan,
@@ -6280,6 +6345,70 @@ pub(crate) fn expand_table_alias_to_group_by_id_only(
             "⚠️ expand_table_alias_to_group_by_id_only: Could not find label for alias '{}'",
             alias
         );
+    }
+
+    // #551: before falling back to "first property" (Fallback 2 below — which
+    // silently groups by whatever property happens to sort first in
+    // `get_properties_with_table_alias`'s map, NOT necessarily the node's
+    // identity), try to resolve the alias's REAL identity property through the
+    // schema catalog first. This is the single-id counterpart to #550's
+    // composite-id fix above (SECOND): a single-id DENORMALIZED node reached
+    // deep inside a GraphRel chain (e.g. `b` in `(a)-[]->(b)-[]->(c)`, which
+    // never gets its own ViewScan/GraphNode reachable by THIRD's
+    // `find_id_column_for_alias`, and is never a DIRECT child of
+    // Filter/Cte/Projection so Fallback 1's non-recursive `find_label_for_alias`
+    // also misses it) falls through both THIRD and Fallback 1 untouched and
+    // lands here with no identity resolved.
+    //
+    // First try the same RECURSIVE label lookup the composite guard already
+    // relies on (`cte_extraction::get_node_label_for_alias`, which — unlike
+    // `find_label_for_alias` — walks into `GraphRel.left/center/right`); this
+    // covers a LABELED denorm chain node (`(b:AirportWithCarrier)`), which
+    // gets a real `GraphNode` even though it has no ViewScan of its own.
+    //
+    // For an UNLABELED denorm chain node (`(b)` with no `:Label` — the
+    // shape in #551's own repro), type inference resolves `b`'s properties
+    // straight off the edge ViewScan's role-specific property maps (see
+    // `properties_builder.rs`) WITHOUT ever synthesizing a `GraphNode` for
+    // it, so `get_node_label_for_alias` misses it too.
+    // `find_denorm_connection_node_label` below covers that shape:
+    // it finds the `GraphRel` whose connection is `alias` and resolves the
+    // node's label from the relationship's OWN schema definition
+    // (`from_node`/`to_node`) instead of from a `GraphNode` that doesn't
+    // exist.
+    //
+    // Either way, once a label is found — for a non-composite id only;
+    // composite is already fully handled above — resolve its single id
+    // PROPERTY name to the role-specific physical column and actual table
+    // alias via `get_properties_with_table_alias` (same call Fallback 2
+    // makes; the composite fix above uses it identically). If label or
+    // property resolution fails at any point, fall through unchanged to
+    // Fallback 2's pre-#551 behavior.
+    let label_551 = super::cte_extraction::get_node_label_for_alias(alias, plan)
+        .or_else(|| find_denorm_connection_node_label(plan, alias, schema));
+    if let Some(label) = label_551 {
+        if let Some(node_schema) = schema.node_schema_opt(&label) {
+            if !node_schema.node_id.is_composite() {
+                let id_prop = node_schema.node_id.column();
+                if let Ok((properties, actual_table_alias)) =
+                    plan.get_properties_with_table_alias(alias)
+                {
+                    if let Some((_, col_name)) = properties.iter().find(|(name, _)| name == id_prop)
+                    {
+                        let table_alias_to_use =
+                            actual_table_alias.unwrap_or_else(|| alias.to_string());
+                        log::debug!(
+                            "🔧 expand_table_alias_to_group_by_id_only: Resolved single id property '{}' -> physical column '{}' on alias '{}' via schema label '{}' (#551)",
+                            id_prop, col_name, table_alias_to_use, label
+                        );
+                        return vec![RenderExpr::PropertyAccessExp(PropertyAccess {
+                            table_alias: TableAlias(table_alias_to_use),
+                            column: PropertyValue::Column(col_name.clone()),
+                        })];
+                    }
+                }
+            }
+        }
     }
 
     // Fallback 2: try to get properties and use first one (usually the ID)
