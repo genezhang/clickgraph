@@ -41,9 +41,6 @@ mod.rs                   ← Entry points: evaluate_read_query(), evaluate_read_
     │   table_ctx.rs (333)  Per-alias metadata: labels, properties, CTE references
     │   builder.rs (289)    PlanCtx constructors
     │
-    ├─ translator/       ← Graph→SQL property resolution boundary
-    │   property_resolver.rs  Unified property mapping (standard/denormalized/polymorphic)
-    │
     ├─ logical_expr/     ← Expression IR between AST and SQL
     │   mod.rs (944)        LogicalExpr enum: Literal, Column, Operator, PropertyAccess, etc.
     │   ast_conversion.rs   AST Expression → LogicalExpr conversion
@@ -161,7 +158,6 @@ mod.rs                   ← Entry points: evaluate_read_query(), evaluate_read_
 | `VariableRegistry` | `typed_variable.rs` | Variable name → type mapping |
 | `JoinContext` | `join_context.rs` | JOIN state during traversal |
 | `Transformed<T>` | `transformed.rs` | Yes(T)/No(T) for pass results |
-| `PropertyResolver` | `translator/property_resolver.rs` | Graph property → SQL column |
 
 ### LogicalPlan Variants
 
@@ -293,7 +289,6 @@ trait OptimizerPass {
 | `plan_ctx/mod.rs` | 1,673 | PlanCtx struct + scope chain logic |
 | `plan_ctx/table_ctx.rs` | 333 | TableCtx: per-alias metadata |
 | `plan_ctx/builder.rs` | 289 | PlanCtx constructors |
-| `translator/property_resolver.rs` | 765 | Unified property resolution |
 | `ast_transform/mod.rs` | 943 | id() function rewriting with type validation |
 | `ast_transform/id_function.rs` | 577 | IdFunctionTransformer: SchemaType-validated ID decoding |
 | `logical_expr/mod.rs` | 944 | LogicalExpr enum definitions |
