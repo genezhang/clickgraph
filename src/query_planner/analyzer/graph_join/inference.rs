@@ -3125,7 +3125,8 @@ impl GraphJoinInference {
             })?;
 
         // Register the PatternSchemaContext in PlanCtx for property resolution
-        // (Phase 1A-2: Enable property_resolver.rs to access schema strategies)
+        // (Phase 1A-2: Enable downstream property mapping, e.g. filter_tagging.rs
+        // and logical_expr/expression_rewriter.rs, to access schema strategies)
         plan_ctx.register_pattern_context(rel_alias.to_string(), ctx.clone());
 
         // Check if node properties are actually used in the query

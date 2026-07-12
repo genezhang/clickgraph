@@ -113,7 +113,12 @@ class TestMultiTypeRecursivePatterns:
         # At 1-hop: should get immediate followers + authored posts
         assert len(response["results"]) >= 1
     
-    @pytest.mark.xfail(reason="Code bug: multi-type VLP generates invalid SQL or crashes server")
+    @pytest.mark.xfail(
+        reason="Code bug: exactly-N-hop (*2) multi-type VLP self-joins the per-hop CTE "
+        "against itself but the second reference is incorrectly database-qualified "
+        "(e.g. 'test_integration.vlp_multi_type_u_x'), so ClickHouse raises "
+        "'Unknown table expression identifier' (UNKNOWN_TABLE) at execution time"
+    )
     def test_multi_type_two_hops_only(self):
         """Test *2 (exactly 2 hops) with multiple types."""
         response = execute_cypher(
@@ -485,11 +490,15 @@ class TestMultiTypePropertyExtraction:
             # Posts don't have name property, should be empty/null
             assert result["x.name"] == "" or result["x.name"] is None
     
-    @pytest.mark.xfail(reason="Code bug: multi-type VLP generates invalid SQL or crashes server")
     def test_json_extraction_sql_generation(self):
-        """Verify SQL uses JSON_VALUE() for multi-type VLP, direct access for single-type."""
+        """Verify SQL uses JSONExtractString() for multi-type VLP, direct column access for single-type.
+
+        Note: the generator uses ClickHouse-native JSONExtractString(col, 'key'), not the
+        SQL-standard JSON_VALUE(col, '$.key') syntax -- both are valid JSON extraction, this
+        just documents the actual (ClickHouse-dialect) function used.
+        """
         import requests
-        
+
         # Single-type VLP should use direct column access
         response = requests.post(
             "http://localhost:7475/query",
@@ -504,17 +513,20 @@ class TestMultiTypePropertyExtraction:
                 "sql_only": True
             }
         )
-        
+
         assert response.status_code == 200
         result = response.json()
         sql = result.get("sql", "") or result.get("generated_sql", "")
-        
-        # Single-type VLP should use direct column access (NOT JSON_VALUE)
-        assert "x.full_name" in sql, "Should use direct column access for single-type VLP"
-        assert "x.email_address" in sql, "Should use direct column access for single-type VLP"
+
+        # Single-type VLP should use direct column access (NOT JSON extraction) -- the
+        # recursive CTE selects the mapped DB columns directly (full_name, email_address)
+        # and the outer SELECT references them via the CTE's end_name/end_email aliases.
+        assert "end_node.full_name as end_name" in sql, "Should use direct column access for single-type VLP"
+        assert "end_node.email_address as end_email" in sql, "Should use direct column access for single-type VLP"
         assert "JSON_VALUE" not in sql, "Should NOT use JSON_VALUE for single-type VLP"
-        
-        # Multi-type VLP SHOULD use JSON_VALUE
+        assert "JSONExtractString" not in sql, "Should NOT use JSON extraction for single-type VLP"
+
+        # Multi-type VLP SHOULD use JSON extraction (properties vary per end-node type)
         response_multi = requests.post(
             "http://localhost:7475/query",
             json={
@@ -528,21 +540,20 @@ class TestMultiTypePropertyExtraction:
                 "sql_only": True
             }
         )
-        
+
         assert response_multi.status_code == 200
         result_multi = response_multi.json()
         sql_multi = result_multi.get("sql", "") or result_multi.get("generated_sql", "")
-        
-        # Multi-type VLP should use JSON_VALUE for property extraction
-        assert "JSON_VALUE" in sql_multi, "Should use JSON_VALUE for multi-type VLP"
+
+        # Multi-type VLP should use JSONExtractString for property extraction
+        assert "JSONExtractString" in sql_multi, "Should use JSONExtractString for multi-type VLP"
         assert "end_properties" in sql_multi, "Should extract from end_properties JSON column"
-        assert "'$.name'" in sql_multi or "'$.content'" in sql_multi, "Should use JSON path for properties"
+        assert "'name'" in sql_multi or "'content'" in sql_multi, "Should use JSON key for properties"
     
-    @pytest.mark.xfail(reason="Code bug: multi-type VLP generates invalid SQL or crashes server")
     def test_cte_columns_direct_access(self):
         """Verify properties use direct column access for single-type VLP."""
         import requests
-        
+
         response = requests.post(
             "http://localhost:7475/query",
             json={
@@ -556,15 +567,17 @@ class TestMultiTypePropertyExtraction:
                 "sql_only": True
             }
         )
-        
+
         assert response.status_code == 200
         result = response.json()
         sql = result.get("sql", "") or result.get("generated_sql", "")
-        
-        # Single-type VLP should use direct column access (NOT JSON)
-        assert "x.full_name" in sql, "x.name should use direct column access for single-type VLP"
-        assert "x.city" in sql, "x.city should use direct column access for single-type VLP"
+
+        # Single-type VLP should use direct column access (NOT JSON) -- the recursive CTE
+        # selects the mapped DB columns directly (full_name, city) via end_name/end_city.
+        assert "end_node.full_name as end_name" in sql, "x.name should use direct column access for single-type VLP"
+        assert "end_node.city as end_city" in sql, "x.city should use direct column access for single-type VLP"
         assert "JSON_VALUE" not in sql, "Should NOT use JSON extraction for single-type VLP"
+        assert "JSONExtractString" not in sql, "Should NOT use JSON extraction for single-type VLP"
 
 
 if __name__ == "__main__":

@@ -100,30 +100,6 @@ async fn test_clickhouse_connection(client: Client) -> Result<(), String> {
         .map_err(|e| format!("ClickHouse connection test failed: {}", e))
 }
 
-/// Load schema and config from YAML file
-async fn load_schema_and_config_from_yaml(
-    config_path: &str,
-    clickhouse_client: Option<&Client>,
-) -> Result<(GraphSchema, GraphSchemaConfig), String> {
-    let config = GraphSchemaConfig::from_yaml_file(config_path)
-        .map_err(|e| format!("Failed to load YAML config: {}", e))?;
-
-    let schema = if let Some(client) = clickhouse_client {
-        // Use auto-discovery and engine detection when client is available
-        config
-            .to_graph_schema_with_client(client)
-            .await
-            .map_err(|e| format!("Failed to create schema with auto-discovery: {}", e))?
-    } else {
-        // Fallback to manual mode without client
-        config
-            .to_graph_schema()
-            .map_err(|e| format!("Failed to create schema from config: {}", e))?
-    };
-
-    Ok((schema, config))
-}
-
 /// Load schema and config from YAML content string
 async fn load_schema_and_config_from_yaml_content(
     yaml_content: &str,
@@ -568,74 +544,6 @@ pub async fn list_available_schemas() -> Vec<String> {
         schemas.keys().cloned().collect()
     } else {
         Vec::new()
-    }
-}
-
-pub async fn load_schema_by_name(
-    schema_name: &str,
-    config_path: &str,
-    clickhouse_client: Option<Client>,
-    validate_schema: bool,
-) -> Result<(), String> {
-    println!(
-        "Loading schema '{}' from config: {}",
-        schema_name, config_path
-    );
-
-    match load_schema_and_config_from_yaml(config_path, None).await {
-        Ok((schema, config)) => {
-            println!(
-                "✓ Successfully loaded schema '{}' from YAML config",
-                schema_name
-            );
-
-            // Validate schema against ClickHouse if requested
-            if validate_schema {
-                if let Some(client) = clickhouse_client.as_ref() {
-                    println!(
-                        "  Validating schema '{}' against ClickHouse...",
-                        schema_name
-                    );
-                    match config
-                        .validate_schema(&mut crate::graph_catalog::SchemaValidator::new(
-                            client.clone(),
-                        ))
-                        .await
-                    {
-                        Ok(_) => println!("  ✓ Schema validation passed"),
-                        Err(e) => {
-                            log::warn!("  ✗ Schema validation failed: {}", e);
-                            return Err(format!("Schema validation failed: {}", e));
-                        }
-                    }
-                } else {
-                    log::warn!(
-                        "  ⚠ Schema validation requested but no ClickHouse client available"
-                    );
-                    log::warn!("    Skipping validation - some queries may fail at runtime");
-                }
-            }
-
-            // Add to multi-schema storage
-            let schemas_lock = GLOBAL_SCHEMAS
-                .get()
-                .ok_or("Global schemas not initialized")?;
-            let mut schemas_guard = schemas_lock.write().await;
-            schemas_guard.insert(schema_name.to_string(), schema.clone());
-
-            let configs_lock = GLOBAL_SCHEMA_CONFIGS
-                .get()
-                .ok_or("Global view configs not initialized")?;
-            let mut configs_guard = configs_lock.write().await;
-            configs_guard.insert(schema_name.to_string(), config);
-
-            println!(
-                "✓ Schema '{}' loaded successfully and registered in GLOBAL_SCHEMAS",
-                schema_name
-            );
-            Ok(())
-        }
-        Err(e) => Err(format!("Failed to load schema '{}': {}", schema_name, e)),
     }
 }
 
