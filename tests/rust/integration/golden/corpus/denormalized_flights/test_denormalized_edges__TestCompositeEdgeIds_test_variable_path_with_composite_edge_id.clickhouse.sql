@@ -6,7 +6,7 @@ WITH RECURSIVE vlp_origin_dest AS (
         [f.Origin] as path_edges,
         [f.Origin, f.Dest] as path_nodes,
         [] as path_relationships,
-        f.Dest as end_Dest
+        f."Dest" as "end_Dest"
     FROM test_integration.flights AS f
     WHERE f.Origin = 'LAX' AND 1 <= 3
     UNION ALL
@@ -17,7 +17,7 @@ WITH RECURSIVE vlp_origin_dest AS (
         arrayConcat(vp.path_edges, [next.Origin]),
         arrayConcat(vp.path_nodes, [next.Dest]),
         [] as path_relationships,
-        next.Dest as end_Dest
+        next."Dest" as "end_Dest"
     FROM vlp_origin_dest vp
     JOIN test_integration.flights next ON next.Origin = vp.end_id
     WHERE vp.hop_count < 3 AND NOT has(vp.path_nodes, next.Dest)

@@ -2870,6 +2870,36 @@ impl GraphJoinInference {
                     plan_ctx.register_vlp_endpoint(alias.clone(), info.clone());
                 }
 
+                // #559: A required VLP's pattern never reaches the ordinary
+                // `register_pattern_context` call below (line ~3099) because
+                // this branch returns early — VLP relationships skip regular
+                // JOIN generation entirely (they're handled by CTE generation
+                // instead). Without a registered PatternSchemaContext,
+                // `PlanCtx::get_node_strategy(alias, None)` falls back to
+                // `denormalized_node_edges` (populated only by *fixed-hop*
+                // JOIN generation) or a sorted scan of `pattern_contexts` —
+                // neither of which ever sees this VLP's own From/To roles.
+                // For a denormalized node that is BOTH a fixed-hop endpoint
+                // AND a VLP endpoint (e.g. `(x)-[:R]->(a)-[:R*1..2]->(b)`),
+                // that means `a`'s role is resolved using the FIXED hop
+                // (x→a, where a is the TO node) even when the property access
+                // being resolved is driven by the VLP's OWN pattern (a→b,
+                // where a is the FROM node) — silently picking the wrong
+                // physical column (e.g. zeek's `id.resp_h` instead of
+                // `id.orig_h`) for multi-table-label denormalized nodes.
+                // Registering the VLP's own PatternSchemaContext here (same
+                // computation the non-VLP path uses just below, so multi-
+                // table-label node-schema resolution via composite keys is
+                // shared, not duplicated) lets `get_node_strategy` find the
+                // VLP's correct From/To role for its own endpoints.
+                if plan_ctx.get_pattern_context(&graph_rel.alias).is_none() {
+                    if let Some(ctx) =
+                        self.compute_pattern_context(graph_rel, plan_ctx, graph_schema, None, None)
+                    {
+                        plan_ctx.register_pattern_context(graph_rel.alias.clone(), ctx);
+                    }
+                }
+
                 log::info!(
                     "🔧 infer_graph_join: SKIP due to VLP for rel='{}', join_ctx: {}",
                     graph_rel.alias,

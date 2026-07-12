@@ -6,7 +6,7 @@ WITH RECURSIVE vlp_origin_dest AS (
         array(f.Origin) as path_edges,
         array(f.Origin, f.Dest) as path_nodes,
         array() as path_relationships,
-        f.DestCityName as end_DestCityName
+        f.`DestCityName` as `end_DestCityName`
     FROM test_integration.flights AS f
     WHERE f.OriginCityName = 'Los Angeles' AND 1 <= 2
     UNION ALL
@@ -17,7 +17,7 @@ WITH RECURSIVE vlp_origin_dest AS (
         concat(vp.path_edges, array(next.Origin)),
         concat(vp.path_nodes, array(next.Dest)),
         array() as path_relationships,
-        next.DestCityName as end_DestCityName
+        next.`DestCityName` as `end_DestCityName`
     FROM vlp_origin_dest vp
     JOIN test_integration.flights next ON next.Origin = vp.end_id
     WHERE vp.hop_count < 2 AND NOT array_contains(vp.path_nodes, next.Dest)

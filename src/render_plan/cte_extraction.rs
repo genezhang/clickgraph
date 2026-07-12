@@ -33,6 +33,73 @@ use super::{Cte, CteContent, Join, JoinType};
 
 pub type RenderPlanBuilderResult<T> = Result<T, super::errors::RenderBuildError>;
 
+/// Merge `new_cte` into `existing` by name, mirroring the collision-handling
+/// rules `plan_builder.rs`'s per-branch UNION assembly already uses (kept in
+/// sync intentionally — see #557):
+/// - No existing CTE with this name → push as-is.
+/// - Existing is an empty VLP placeholder (`WHERE 0 = 1`) and the new one
+///   isn't → replace it (a real branch superseding a pruned/empty one).
+/// - The new one is empty and the existing one isn't → keep the existing,
+///   drop the new (mirrors the same "don't overwrite a real CTE with an
+///   empty placeholder" rule, the other direction).
+/// - Same name, identical SQL → true duplicate (e.g. the same VLP CTE
+///   legitimately shared by multiple UNION branches); skip.
+/// - Same name, DIFFERENT SQL → this is #557's case: a Union of per-candidate-
+///   end-label branches (`generate_union_for_untyped_nodes`/`clone_plan_with_labels`)
+///   each independently compute the SAME formulaic CTE name
+///   (`vlp_multi_type_{start}_{end}` — the formula only depends on the
+///   Cypher aliases, not the per-branch end-label restriction), but generate
+///   DIFFERENT CTE bodies (one scoped to each candidate end label). Rename
+///   the new one with a numeric suffix so both survive — `extract_union`/
+///   `extract_union_with_ctx` (`plan_builder.rs`) already computes this exact
+///   same renamed reference independently (same algorithm, same input order)
+///   for the branch's FROM clause, so the two stay consistent without needing
+///   to thread the rename back through here.
+///
+/// Returns `Some((old_name, new_name))` when a rename occurred, for callers
+/// that also need to fix up a FROM/JOIN reference to the renamed CTE.
+pub(crate) fn merge_cte_deduping_by_name_content(
+    existing: &mut Vec<Cte>,
+    new_cte: Cte,
+) -> Option<(String, String)> {
+    let Some(existing_idx) = existing.iter().position(|e| e.cte_name == new_cte.cte_name) else {
+        existing.push(new_cte);
+        return None;
+    };
+
+    let is_empty_placeholder = |content: &CteContent| matches!(content, CteContent::RawSql(s) if s.contains("WHERE 0 = 1"));
+    let existing_is_empty = is_empty_placeholder(&existing[existing_idx].content);
+    let new_is_empty = is_empty_placeholder(&new_cte.content);
+
+    if existing_is_empty && !new_is_empty {
+        existing[existing_idx] = new_cte;
+        return None;
+    }
+    if new_is_empty {
+        return None;
+    }
+
+    let same_content = match (&existing[existing_idx].content, &new_cte.content) {
+        (CteContent::RawSql(a), CteContent::RawSql(b)) => a == b,
+        _ => false,
+    };
+    if same_content {
+        return None;
+    }
+
+    let base_name = new_cte.cte_name.clone();
+    let mut suffix = 2;
+    let mut new_name = format!("{}_{}", base_name, suffix);
+    while existing.iter().any(|e| e.cte_name == new_name) {
+        suffix += 1;
+        new_name = format!("{}_{}", base_name, suffix);
+    }
+    let mut renamed_cte = new_cte;
+    renamed_cte.cte_name = new_name.clone();
+    existing.push(renamed_cte);
+    Some((base_name, new_name))
+}
+
 // ============================================================================
 // Pattern Schema Context Recreation for CTE Generation
 // ============================================================================
@@ -5384,15 +5451,35 @@ pub fn extract_ctes_with_context(
             )])
         }
         LogicalPlan::Union(union) => {
+            // #557: don't just concatenate every branch's CTEs — a Union of
+            // per-candidate-end-label branches (unlabeled VLP end node, e.g.
+            // `MATCH (a:User)-[:T1|T2*1..2]->(b) RETURN count(*)`) has each
+            // branch independently compute the SAME formulaic multi-type VLP
+            // CTE name (the formula only depends on the Cypher start/end
+            // aliases, unchanged across branches) while generating DIFFERENT
+            // CTE bodies (each scoped to its own candidate end label).
+            // Concatenating verbatim left two same-named-but-different CTEs
+            // in the list; downstream name-keyed dedup silently kept only
+            // one, while the branch's own FROM reference (computed
+            // independently and correctly by `extract_union`/
+            // `extract_union_with_ctx` in plan_builder.rs, using the same
+            // rename-on-collision rule) pointed at a `_2`-suffixed CTE that
+            // was never actually added to this list — `Code: 60. Unknown
+            // table expression identifier`. Route same-name collisions
+            // through the shared merge/rename helper instead, so this list
+            // and the branch's FROM reference agree.
             let mut ctes = vec![];
             for input_plan in union.inputs.iter() {
-                ctes.append(&mut extract_ctes_with_context(
+                let branch_ctes = extract_ctes_with_context(
                     input_plan,
                     last_node_alias,
                     context,
                     schema,
                     plan_ctx,
-                )?);
+                )?;
+                for cte in branch_ctes {
+                    merge_cte_deduping_by_name_content(&mut ctes, cte);
+                }
             }
             Ok(ctes)
         }

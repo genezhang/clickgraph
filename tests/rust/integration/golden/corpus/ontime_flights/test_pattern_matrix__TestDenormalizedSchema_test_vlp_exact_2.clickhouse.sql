@@ -6,8 +6,8 @@ WITH RECURSIVE vlp_a_b_inner AS (
         [t0.Origin] as path_edges,
         [t0.Origin, t0.Dest] as path_nodes,
         [] as path_relationships,
-        t0.OriginState as start_OriginState,
-        t0.DestState as end_DestState
+        t0."OriginState" as "start_OriginState",
+        t0."DestState" as "end_DestState"
     FROM default.flights AS t0
     WHERE 1 <= 2
     UNION ALL
@@ -18,8 +18,8 @@ WITH RECURSIVE vlp_a_b_inner AS (
         arrayConcat(vp.path_edges, [next.Origin]),
         arrayConcat(vp.path_nodes, [next.Dest]),
         [] as path_relationships,
-        vp.start_OriginState as start_OriginState,
-        next.DestState as end_DestState
+        vp."start_OriginState" as "start_OriginState",
+        next."DestState" as "end_DestState"
     FROM vlp_a_b_inner vp
     JOIN default.flights next ON next.Origin = vp.end_id
     WHERE vp.hop_count < 2 AND NOT has(vp.path_nodes, next.Dest)

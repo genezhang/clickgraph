@@ -886,18 +886,23 @@ fn collect_alias_refs_in_expr(
 
 /// Extract property column aliases (start_X, end_X) from VLP SQL.
 /// Returns only non-core property columns that are candidates for pruning.
+///
+/// Handles both bare (`as start_XXX`) and dialect-quoted (`as "start_XXX"` /
+/// `` as `start_XXX` ``) alias forms — #558 made `DenormalizedCteStrategy`
+/// always quote VLP CTE property aliases through `FunctionMapper::quote_alias`
+/// (a physical column's own dot would otherwise collide with the alias
+/// grammar), so this raw-text scan must strip the quotes to keep recognizing
+/// them, or every denormalized VLP CTE's property columns silently stop being
+/// prunable (dead but harmless columns linger — not a correctness bug, but a
+/// real regression of this optimization pass).
 fn extract_property_columns_from_vlp_sql(sql: &str) -> HashSet<String> {
     let mut columns = HashSet::new();
-    // Scan for " as start_XXX" or " as end_XXX" patterns
+    // Scan for `as start_XXX`, `as end_XXX`, or their quoted equivalents.
     let as_pat = " as ";
     let mut pos = 0;
     while let Some(idx) = sql[pos..].find(as_pat) {
         let start = pos + idx + as_pat.len();
-        let end = sql[start..]
-            .find(|c: char| !c.is_alphanumeric() && c != '_')
-            .map(|i| start + i)
-            .unwrap_or(sql.len());
-        let alias = &sql[start..end];
+        let (alias, next_pos) = extract_alias_at(sql, start);
         if (alias.starts_with("start_") || alias.starts_with("end_"))
             && !is_vlp_core_column(alias)
             && alias.len() > 6
@@ -905,9 +910,36 @@ fn extract_property_columns_from_vlp_sql(sql: &str) -> HashSet<String> {
         {
             columns.insert(alias.to_string());
         }
-        pos = end;
+        pos = next_pos;
     }
     columns
+}
+
+/// Extract the identifier starting at byte offset `start` in `sql`: a bare
+/// `[A-Za-z0-9_]+` run, or — if `start` is a quote character (`"` or `` ` ``,
+/// the two identifier-quoting styles `FunctionMapper::quote_alias` emits for
+/// ClickHouse/Spark respectively) — the content between it and the matching
+/// closing quote. Returns the identifier text (unquoted) and the byte offset
+/// just past it in `sql`.
+fn extract_alias_at(sql: &str, start: usize) -> (&str, usize) {
+    let bytes = sql.as_bytes();
+    if start < sql.len() && (bytes[start] == b'"' || bytes[start] == b'`') {
+        let quote = bytes[start] as char;
+        // Generated CTE-column aliases never contain the quote character
+        // themselves, so a plain find for the closing quote is safe.
+        return match sql[start + 1..].find(quote) {
+            Some(rel_end) => {
+                let content_end = start + 1 + rel_end;
+                (&sql[start + 1..content_end], content_end + 1)
+            }
+            None => (&sql[start..start], sql.len()), // malformed — bail conservatively
+        };
+    }
+    let end = sql[start..]
+        .find(|c: char| !c.is_alphanumeric() && c != '_')
+        .map(|i| start + i)
+        .unwrap_or(sql.len());
+    (&sql[start..end], end)
 }
 
 /// Find all aliases used to reference a VLP CTE in a plan.
@@ -1369,14 +1401,24 @@ fn prune_columns_in_select_block(block: &str, unused: &HashSet<String>) -> Strin
 }
 
 /// Check if a column definition text defines a specific alias.
+///
+/// Checks both the bare form (`... as alias_name`) and the dialect-quoted
+/// forms `DenormalizedCteStrategy` emits since #558 (`... as "alias_name"` /
+/// `` ... as `alias_name` `` — see `extract_property_columns_from_vlp_sql`'s
+/// doc comment for why quoting is now unconditional there).
 fn column_defines_alias(col_trimmed: &str, alias: &str) -> bool {
-    // Pattern: "... as alias_name" at end of definition
-    let as_pat = format!(" as {}", alias);
-    if col_trimmed.ends_with(&as_pat) {
+    // Pattern: "... as alias_name" at end of definition (bare or quoted).
+    if col_trimmed.ends_with(&format!(" as {}", alias))
+        || col_trimmed.ends_with(&format!(" as \"{}\"", alias))
+        || col_trimmed.ends_with(&format!(" as `{}`", alias))
+    {
         return true;
     }
-    // Carry-forward without explicit alias: "vp.alias_name" (standalone)
+    // Carry-forward without explicit alias: "vp.alias_name" (standalone),
+    // bare or quoted.
     col_trimmed == format!("vp.{}", alias)
+        || col_trimmed == format!("vp.\"{}\"", alias)
+        || col_trimmed == format!("vp.`{}`", alias)
 }
 
 // ─── Join Optimizations ──────────────────────────────────────────────────────

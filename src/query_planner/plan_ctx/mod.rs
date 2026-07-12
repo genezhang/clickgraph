@@ -1153,6 +1153,25 @@ impl PlanCtx {
             }
         }
 
+        // #559: A VLP endpoint's table alias is ALWAYS bound through the VLP
+        // CTE at render time (VLPExprRewriter / select_builder / from_builder
+        // all resolve VLP endpoints via VLP_CTE_FROM_ALIAS = "t"), never
+        // through a fixed-hop's table — even when the same alias is ALSO a
+        // fixed-hop endpoint elsewhere in the query (e.g. `(x)-[:R]->(a)-[:R*1..2]->(b)`,
+        // where `a` is both the fixed hop's TO node and the VLP's own FROM
+        // node). `denormalized_node_edges` (checked below) only ever records
+        // fixed-hop registrations — VLP relationships skip regular JOIN
+        // generation entirely — so for a VLP endpoint it would silently
+        // return the FIXED hop's (wrong) role. Check the VLP's own pattern
+        // context first whenever this alias is a registered VLP endpoint.
+        if let Some(vlp_info) = self.vlp_endpoints.get(node_alias) {
+            if let Some(ctx) = self.get_pattern_context(&vlp_info.rel_alias) {
+                if let Some(strategy) = ctx.get_node_strategy(node_alias) {
+                    return Some(strategy);
+                }
+            }
+        }
+
         // No edge context given. Prefer the node's OWNING edge as recorded by
         // register_denormalized_aliases (the last pattern in plan order that
         // embeds this node). The render phase binds the node's table alias

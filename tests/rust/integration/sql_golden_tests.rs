@@ -10561,28 +10561,45 @@ mod vlp_family_remnants_544_545_528_525 {
     /// (multi-hop rows show different start/end timestamps).
     ///
     /// Two ADJACENT (loud, NOT silent) zeek bugs were found while trying to
-    /// reproduce — both distinct from #545's same-logical-name axis, left
-    /// unfixed here and documented for follow-up filing:
+    /// reproduce — both distinct from #545's same-logical-name axis, and
+    /// since fixed (filed as #558 and #559; both verified live against
+    /// ClickHouse):
     ///
-    /// 1. Tuple-field (dotted) physical columns, e.g. IP's `ip:
-    ///    "id.orig_h"`, are embedded UNQUOTED into the denorm VLP CTE's
+    /// 1. (#558) Tuple-field (dotted) physical columns, e.g. IP's `ip:
+    ///    "id.orig_h"`, were embedded UNQUOTED into the denorm VLP CTE's
     ///    column aliases (`t1.id.orig_h as start_id.orig_h`) — ClickHouse
     ///    Code 62 SYNTAX_ERROR on execution for ANY query touching such a
     ///    property through a denorm VLP CTE. Root:
-    ///    `DenormalizedCteStrategy`'s `cte_column_name = format!("{}{}",
-    ///    prefix, prop.column_name)` (`cte_manager/mod.rs`, ~line 1412) and
-    ///    the matching `add_property_selections` emission — a dotted DB
-    ///    column needs identifier quoting (and a dot-free alias) there.
-    /// 2. A leading fixed hop into a VLP start endpoint whose label maps to
-    ///    MULTIPLE tables with per-role property mappings
+    ///    `DenormalizedCteStrategy`'s `add_property_selections` /
+    ///    `add_recursive_property_selections` (`cte_manager/mod.rs`) built
+    ///    the alias text via raw `format!`. Fixed by quoting both the read
+    ///    reference and the alias through the dialect-dispatched
+    ///    `FunctionMapper::quote_alias` (the same helper the outer query's
+    ///    `quote_qualified_col` already used), so a physical column's own
+    ///    dots no longer collide with the CTE-column-naming grammar.
+    /// 2. (#559) A leading fixed hop into a VLP start endpoint whose label
+    ///    maps to MULTIPLE tables with per-role property mappings
     ///    (`(x:IP)-[:ACCESSED]->(a:IP)-[:ACCESSED*1..2]->(b:IP)` on
-    ///    `schemas/dev/zeek_merged_test.yaml`) resolves `a.ip` in the outer
+    ///    `schemas/dev/zeek_merged_test.yaml`) resolved `a.ip` in the outer
     ///    SELECT via the TO-role mapping (`id.resp_h` → nonexistent
-    ///    `t."start_id.resp_h"`) while the CTE exports the FROM-role column
+    ///    `t."start_id.resp_h"`) while the CTE exported the FROM-role column
     ///    (`start_id.orig_h`) — ClickHouse Code 47 UNKNOWN_IDENTIFIER
-    ///    (behind the Code 62 above). The leading hop's JOIN itself is
-    ///    correctly correlated (`t1."id.resp_h" = t.start_id`) — #524's fix
-    ///    holds; only the projection's role choice is wrong.
+    ///    (behind the Code 62 above). The leading hop's JOIN itself was
+    ///    already correctly correlated (`t1."id.resp_h" = t.start_id`) —
+    ///    #524's fix held; only the projection's role choice was wrong.
+    ///    Root: a VLP relationship skips ordinary JOIN inference entirely
+    ///    (handled by CTE generation instead), so it never registered its
+    ///    own `PatternSchemaContext` — `PlanCtx::get_node_strategy` fell
+    ///    back to the alias's OTHER (fixed-hop) registration, resolving the
+    ///    node's role from the wrong edge. Fixed by registering the VLP's
+    ///    own pattern context even on the JOIN-skip path
+    ///    (`graph_join/inference.rs`) and having `get_node_strategy` prefer
+    ///    a registered VLP endpoint's own role over the fixed-hop fallback
+    ///    (`plan_ctx/mod.rs`) — see `tests/rust/integration/sql_golden_tests.rs`'s
+    ///    `vlp_multi_table_label_family_557_558_559` module for dedicated
+    ///    regression coverage of both, plus #557 (a third, related bug in
+    ///    the same area: multi-type VLP CTE generation for an unlabeled end
+    ///    node).
     #[tokio::test]
     async fn same_logical_property_both_vlp_endpoints_projects_both_distinctly_545() {
         // Deliberate collision schema: `seen: ts` on BOTH from/to role maps.
@@ -10596,8 +10613,10 @@ mod vlp_family_remnants_544_545_528_525 {
         // NOTE: the edge-table alias number (t1/t654/…) comes from a
         // process-wide counter and is not per-test deterministic — match on
         // the column expression only.
+        // #558: the alias (and, since `ts` needs no escaping either way, the
+        // read reference too) is quoted through `FunctionMapper::quote_alias`.
         assert!(
-            sql.contains(".ts as start_ts") && sql.contains(".ts as end_ts"),
+            sql.contains(r#"."ts" as "start_ts""#) && sql.contains(r#"."ts" as "end_ts""#),
             "#545: BOTH endpoints' same-logical-name property must be \
              exported under distinct start_/end_ CTE columns: {sql}"
         );
@@ -10609,7 +10628,8 @@ mod vlp_family_remnants_544_545_528_525 {
         // The recursive term must thread the start side and advance the end
         // side — NOT collapse them onto one expression.
         assert!(
-            sql.contains("vp.start_ts as start_ts") && sql.contains("next.ts as end_ts"),
+            sql.contains(r#"vp."start_ts" as "start_ts""#)
+                && sql.contains(r#"next."ts" as "end_ts""#),
             "#545: recursive case must keep the two sides independent: {sql}"
         );
 
@@ -10629,9 +10649,218 @@ mod vlp_family_remnants_544_545_528_525 {
         assert!(
             sql2.contains("start_id.orig_h") && sql2.contains("end_id.resp_h"),
             "#545: each side must resolve to its own role's physical column \
-             (NOTE: these dotted aliases are themselves a live Code 62 \
-             syntax bug — adjacent finding #1 in this test's doc comment — \
-             but the column-export logic under test here is correct): {sql2}"
+             (these dotted CTE column names are now properly quoted — #558 — \
+             so this is valid ClickHouse SQL, not just correct column-export \
+             logic): {sql2}"
+        );
+    }
+}
+
+/// Regression tests for the #557/#558/#559 VLP CTE structural family — three
+/// related bugs surfaced together (fixing #558 partially unblocked #559; the
+/// third, #557, is a separate CTE-count-mismatch bug in the same area).
+mod vlp_multi_table_label_family_557_558_559 {
+    use super::*;
+
+    /// #558: `DenormalizedCteStrategy`'s VLP CTE property-column naming used
+    /// to embed a raw dotted physical column name straight into an output
+    /// alias (`t2.id.orig_h as start_id.orig_h`) — invalid ClickHouse syntax
+    /// (Code 62) whenever the underlying column name itself contains a dot
+    /// (a Tuple/Nested-style column, e.g. zeek's `id.orig_h`/`id.resp_h`).
+    /// Fixed by quoting both the read reference and the alias through
+    /// `FunctionMapper::quote_alias`. Confirmed live against ClickHouse
+    /// 25.8.12 (docker `clickhouse-dev`) — the pre-fix SQL fails with
+    /// `Code: 62. DB::Exception: Syntax error`, the fixed SQL executes and
+    /// returns correct multi-hop path rows.
+    #[tokio::test]
+    async fn denorm_vlp_dotted_property_alias_is_quoted_not_raw_558() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+        let sql = render(
+            &schema,
+            "MATCH (a:IP)-[:ACCESSED*1..2]->(b:IP) RETURN a.ip, b.ip",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        // The invalid pre-fix shape: a bare (unquoted) dotted alias.
+        assert!(
+            !sql.contains("as start_id.orig_h") && !sql.contains("as end_id.resp_h"),
+            "#558: a dotted physical column must never be embedded raw into \
+             an unquoted output alias (ClickHouse Code 62): {sql}"
+        );
+        // The fixed shape: quoted alias, defined AND referenced consistently
+        // (base case, recursive case, and the outer SELECT all agree).
+        assert!(
+            sql.contains(r#"as "start_id.orig_h""#) && sql.contains(r#"as "end_id.resp_h""#),
+            "#558: the dotted CTE column alias must be quoted: {sql}"
+        );
+        assert!(
+            sql.contains(r#"vp."start_id.orig_h" as "start_id.orig_h""#),
+            "#558: the recursive case must carry the quoted start column \
+             forward under the same quoted name: {sql}"
+        );
+        assert!(
+            sql.contains(r#"t."start_id.orig_h" AS "a.ip""#)
+                && sql.contains(r#"t."end_id.resp_h" AS "b.ip""#),
+            "#558: the outer SELECT must reference the quoted CTE columns: {sql}"
+        );
+    }
+
+    /// #559: a VLP start endpoint that is ALSO a fixed-hop endpoint
+    /// (`(x)-[:ACCESSED]->(a)-[:ACCESSED*1..2]->(b)`) on a denormalized node
+    /// label mapped to MULTIPLE physical tables (zeek's `IP`: dns_log AND
+    /// conn_log) used to resolve `a`'s property via the FIXED hop's role
+    /// (`a` as TO-node of `x->a`, i.e. the `id.resp_h` mapping) instead of
+    /// the VLP's OWN role (`a` as FROM-node of `a->b`, i.e. `id.orig_h`) —
+    /// producing an outer SELECT reference to a CTE column
+    /// (`t."start_id.resp_h"`) that was never actually exported by the CTE
+    /// (only `end_id.resp_h` was), ClickHouse Code 47 UNKNOWN_IDENTIFIER.
+    /// Root: a VLP relationship skips ordinary JOIN inference (handled by
+    /// CTE generation instead), so it never registered its own
+    /// `PatternSchemaContext` — `PlanCtx::get_node_strategy` fell back to
+    /// the alias's OTHER (fixed-hop) registration. Fixed by registering the
+    /// VLP's own pattern context even on the JOIN-skip path and having
+    /// `get_node_strategy` prefer a registered VLP endpoint's own role.
+    /// Confirmed live against ClickHouse: pre-fix SQL fails Code 47 (or
+    /// Code 62 before #558 was fixed too — #559 was found "behind" #558);
+    /// fixed SQL executes and returns the single correct 2-hop chain
+    /// (`192.168.1.10, 93.184.216.34, 10.0.0.99`) over seeded conn_log rows.
+    #[tokio::test]
+    async fn vlp_start_endpoint_multi_table_label_resolves_own_role_559() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+        let sql = render(
+            &schema,
+            "MATCH (x:IP)-[:ACCESSED]->(a:IP)-[:ACCESSED*1..2]->(b:IP) \
+             RETURN x.ip, a.ip, b.ip",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        // The invalid pre-fix shape: outer SELECT references a CTE column
+        // under the WRONG (TO-)role name, which the CTE never exports.
+        assert!(
+            !sql.contains(r#"t."start_id.resp_h""#),
+            "#559: `a`'s property must not be resolved via the fixed hop's \
+             TO-role mapping (a column the CTE never exports): {sql}"
+        );
+        // The fixed shape: the CTE exports a's own (FROM-role) property
+        // column, and the outer SELECT references exactly that column.
+        assert!(
+            sql.contains(r#"as "start_id.orig_h""#),
+            "#559: the VLP CTE must export the start endpoint's OWN \
+             (FROM-role) property column: {sql}"
+        );
+        assert!(
+            sql.contains(r#"t."start_id.orig_h" AS "a.ip""#),
+            "#559: the outer SELECT must project `a.ip` from the CTE's \
+             correctly-resolved FROM-role column: {sql}"
+        );
+        // The leading fixed hop's JOIN must stay correlated (#524's fix
+        // holds) — never regress to an unconditional `ON 1 = 1` join.
+        assert!(
+            !sql.contains("ON 1 = 1"),
+            "#559 (adjacent #524 regression check): the leading fixed hop's \
+             JOIN must stay correlated to the VLP CTE's start endpoint, not \
+             degrade to an unconditional join: {sql}"
+        );
+    }
+
+    /// #557: a multi-type VLP with an UNLABELED end node
+    /// (`(a:User)-[:FOLLOWS|AUTHORED|LIKED*1..2]->(b)`) builds an outer
+    /// UNION with one branch per candidate end label (`b`: User or Post —
+    /// `FOLLOWS` ends in User, `AUTHORED`/`LIKED` end in Post) — but each
+    /// candidate-label branch independently computes the SAME formulaic
+    /// multi-type VLP CTE name (`vlp_multi_type_{start}_{end}` — the
+    /// formula only depends on the Cypher aliases, unchanged across
+    /// branches), generating DIFFERENT CTE bodies (each scoped to its own
+    /// end label) under a colliding name. The render pipeline's two
+    /// independent CTE-name computations (the Union-branch FROM builder,
+    /// which correctly renames the second collision to `_2`; and the raw
+    /// `extract_ctes_with_context` walker, which used to just concatenate
+    /// same-named CTEs and let a downstream name-keyed dedup silently drop
+    /// one) disagreed — the outer UNION referenced a `vlp_multi_type_a_b_2`
+    /// CTE that was never actually defined in the `WITH` clause,
+    /// ClickHouse `Code: 60. Unknown table expression identifier`. Fixed by
+    /// routing both computations through the same collision-rename rule
+    /// (`merge_cte_deduping_by_name_content` in `cte_extraction.rs`).
+    #[tokio::test]
+    async fn unlabeled_end_node_multi_type_vlp_defines_every_referenced_cte_557() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS|AUTHORED|LIKED*1..2]->(b) RETURN count(*)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+
+        // Every `FROM <name> AS t` / `FROM <name> AS t\n) AS __union` branch
+        // reference in the outer query must have a matching `<name> AS (`
+        // CTE definition in the WITH clause — no dangling reference.
+        let from_re_ctes: Vec<&str> = sql
+            .match_indices("FROM vlp_multi_type_")
+            .map(|(idx, _)| {
+                let rest = &sql[idx + "FROM ".len()..];
+                let end = rest
+                    .find(|c: char| !c.is_alphanumeric() && c != '_')
+                    .unwrap_or(rest.len());
+                &rest[..end]
+            })
+            .collect();
+        assert!(
+            !from_re_ctes.is_empty(),
+            "#557: expected at least one vlp_multi_type_* FROM reference: {sql}"
+        );
+        for cte_name in &from_re_ctes {
+            assert!(
+                sql.contains(&format!("{} AS (", cte_name)),
+                "#557: outer query references CTE '{}' that is never \
+                 defined in the WITH clause: {sql}",
+                cte_name
+            );
+        }
+
+        // Specifically: this query's `b` has two candidate end labels
+        // (User via FOLLOWS, Post via AUTHORED/LIKED) — expect exactly the
+        // base CTE plus one renamed sibling, both defined.
+        assert!(
+            sql.contains("vlp_multi_type_a_b AS (") && sql.contains("vlp_multi_type_a_b_2 AS ("),
+            "#557: expected both the base and the renamed second CTE for \
+             the two candidate end labels: {sql}"
+        );
+
+        // The User-ending branches (FOLLOWS alone, FOLLOWS+FOLLOWS) must be
+        // present SOMEWHERE across the two CTEs — not silently dropped.
+        assert!(
+            sql.contains("'User' AS end_type"),
+            "#557: the User-ending path combinations (FOLLOWS alone, \
+             FOLLOWS+FOLLOWS) must not be dropped: {sql}"
+        );
+        assert!(
+            sql.contains("'Post' AS end_type"),
+            "#557: the Post-ending path combinations (AUTHORED, LIKED, \
+             FOLLOWS+AUTHORED, FOLLOWS+LIKED) must not be dropped: {sql}"
+        );
+    }
+
+    /// #557 (guard must NOT over-fire): a single-type VLP with BOTH
+    /// endpoints explicitly labeled has no candidate-end-label branching at
+    /// all — must render its ordinary single `vlp_a_b` CTE, never a
+    /// `vlp_multi_type_*` name nor a spurious `_2` sibling.
+    #[tokio::test]
+    async fn single_type_vlp_unaffected_by_557_fix() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let sql = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) RETURN count(*)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("vlp_a_b AS ("),
+            "single-type VLP must still render its ordinary CTE: {sql}"
+        );
+        assert!(
+            !sql.contains("vlp_multi_type_"),
+            "single-type, both-endpoints-labeled VLP must not route through \
+             the multi-type CTE machinery at all: {sql}"
         );
     }
 }
