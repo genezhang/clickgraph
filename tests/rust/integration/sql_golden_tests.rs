@@ -11233,3 +11233,62 @@ mod vlp_multi_table_label_family_557_558_559 {
         );
     }
 }
+
+/// #577: STANDARD-schema self-edge/undirected relationship-aggregate
+/// NULL-padding — a smaller, more isolated cousin of #529 bug 2. #529 bug 2
+/// fixed the COUPLED/denormalized case (node and relationship share one
+/// physical table) by folding `RelationshipSchema::all_valid_physical_columns`
+/// into `table_valid_columns`'s per-branch column-validity set. But that fix
+/// only ever inspected the UNION branch's `from` table. On a STANDARD
+/// (non-coupled) schema the relationship's own table (`user_follows_bench`)
+/// is NEVER a branch's `from` — the branch's `from` is always a NODE table
+/// (`users_bench AS a` / `AS b`); the relationship table is only ever
+/// reached via a JOIN. So `table_valid_columns` never saw it, deemed `r`'s
+/// own edge_id column (`follower_id`) invalid on EVERY branch, and
+/// NULL-padded `count(r)` down to 0 for every group — silently, regardless
+/// of the true edge count (ground rule 1). Fixed by having
+/// `table_valid_columns` also inspect the branch's `joins` (`JoinItems`),
+/// not just its `from`, when building the column-validity set.
+///
+/// Confirmed live against ClickHouse (`social` benchmark DB, `cg query`):
+/// pre-fix returned `count = 0` for every one of the 7 grouped users;
+/// fixed SQL returns the true per-user FOLLOWS-degree counts (Alice
+/// Johnson: 7, Bob Smith: 4, Charlie Brown: 3, Diana Prince: 2, Eve Adams: 2,
+/// Frank Miller: 1, Grace Hopper: 1 — summing to 20, i.e. 2x the 10 seeded
+/// FOLLOWS edges, matching independent verification since an undirected
+/// match counts each edge from both endpoints).
+mod self_edge_standard_schema_count_family_577 {
+    use super::*;
+
+    #[tokio::test]
+    async fn undirected_self_edge_count_r_not_null_padded_on_standard_schema_577() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+        let repro = "MATCH (a:User)-[r:FOLLOWS]-(b:User) WITH a, count(r) AS c \
+                     RETURN a.name, c";
+        let sql = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+
+        // The pre-#577 bug: r's own edge-id column NULL-padded on EVERY
+        // UNION branch (both directions), so count(r) always returns 0.
+        assert!(
+            !sql.contains(r#"NULL AS "r.follower_id""#),
+            "#577 regression — r's own edge_id column (follower_id) is being \
+             NULL-padded again on the self-edge UNION branches (count(r) \
+             would always return 0 regardless of the true edge count):\n{sql}"
+        );
+        // Fixed shape: BOTH UNION branches (a-follows-b and b-follows-a)
+        // project the real joined column, not a NULL placeholder.
+        let real_projections = sql.matches(r#"r.follower_id AS "r.follower_id""#).count();
+        assert_eq!(
+            real_projections, 2,
+            "#577: both self-edge UNION branches must project r's real \
+             follower_id column (joined via the relationship table), not \
+             NULL-pad it:\n{sql}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = normalize(&render(&schema, repro, SqlDialect::ClickHouse).await);
+            assert_eq!(sql, again, "#577: nondeterministic render");
+        }
+    }
+}
