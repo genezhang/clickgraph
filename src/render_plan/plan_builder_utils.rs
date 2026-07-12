@@ -4152,37 +4152,17 @@ fn has_with_clause_in_tree_impl(plan: &LogicalPlan, depth: usize) -> bool {
         log::warn!("has_with_clause_in_tree: depth limit {} exceeded", depth);
         return false;
     }
-    match plan {
-        LogicalPlan::WithClause(_) => true,
-        LogicalPlan::ViewScan(vs) => vs
-            .input
-            .as_ref()
-            .is_some_and(|p| has_with_clause_in_tree_impl(p, depth + 1)),
-        LogicalPlan::GraphNode(gn) => has_with_clause_in_tree_impl(&gn.input, depth + 1),
-        LogicalPlan::GraphRel(gr) => {
-            has_with_clause_in_tree_impl(&gr.left, depth + 1)
-                || has_with_clause_in_tree_impl(&gr.center, depth + 1)
-                || has_with_clause_in_tree_impl(&gr.right, depth + 1)
-        }
-        LogicalPlan::Filter(f) => has_with_clause_in_tree_impl(&f.input, depth + 1),
-        LogicalPlan::Projection(p) => has_with_clause_in_tree_impl(&p.input, depth + 1),
-        LogicalPlan::GroupBy(g) => has_with_clause_in_tree_impl(&g.input, depth + 1),
-        LogicalPlan::OrderBy(o) => has_with_clause_in_tree_impl(&o.input, depth + 1),
-        LogicalPlan::Skip(s) => has_with_clause_in_tree_impl(&s.input, depth + 1),
-        LogicalPlan::Limit(l) => has_with_clause_in_tree_impl(&l.input, depth + 1),
-        LogicalPlan::Cte(c) => has_with_clause_in_tree_impl(&c.input, depth + 1),
-        LogicalPlan::GraphJoins(gj) => has_with_clause_in_tree_impl(&gj.input, depth + 1),
-        LogicalPlan::Union(u) => u
-            .inputs
-            .iter()
-            .any(|p| has_with_clause_in_tree_impl(p, depth + 1)),
-        LogicalPlan::Unwind(u) => has_with_clause_in_tree_impl(&u.input, depth + 1),
-        LogicalPlan::CartesianProduct(cp) => {
-            has_with_clause_in_tree_impl(&cp.left, depth + 1)
-                || has_with_clause_in_tree_impl(&cp.right, depth + 1)
-        }
-        _ => false,
+    // A WithClause node is itself a hit; otherwise recurse into every direct
+    // child via the exhaustive `LogicalPlan::children` API (single source of
+    // truth for plan-tree structure). This traverses ALL child-bearing variants
+    // — including write-op inputs (Create/SetProperties/Delete/Remove) that the
+    // previous hand-rolled `_ => false` arm silently skipped.
+    if matches!(plan, LogicalPlan::WithClause(_)) {
+        return true;
     }
+    plan.children()
+        .iter()
+        .any(|child| has_with_clause_in_tree_impl(child, depth + 1))
 }
 
 /// Check if plan has WITH+aggregation pattern (GroupBy inside GraphRel.right)
@@ -4714,37 +4694,21 @@ fn plan_contains_with_clause_impl(plan: &LogicalPlan, depth: usize) -> bool {
         log::warn!("plan_contains_with_clause: depth limit {} exceeded", depth);
         return false;
     }
-    match plan {
-        LogicalPlan::WithClause(_) => true,
-        LogicalPlan::Projection(proj) => plan_contains_with_clause_impl(&proj.input, depth + 1),
-        LogicalPlan::Filter(filter) => plan_contains_with_clause_impl(&filter.input, depth + 1),
-        LogicalPlan::GroupBy(group_by) => {
-            plan_contains_with_clause_impl(&group_by.input, depth + 1)
-        }
-        LogicalPlan::GraphJoins(graph_joins) => {
-            plan_contains_with_clause_impl(&graph_joins.input, depth + 1)
-        }
-        LogicalPlan::Limit(limit) => plan_contains_with_clause_impl(&limit.input, depth + 1),
-        LogicalPlan::OrderBy(order_by) => {
-            plan_contains_with_clause_impl(&order_by.input, depth + 1)
-        }
-        LogicalPlan::Skip(skip) => plan_contains_with_clause_impl(&skip.input, depth + 1),
-        LogicalPlan::GraphRel(graph_rel) => {
-            plan_contains_with_clause_impl(&graph_rel.left, depth + 1)
-                || plan_contains_with_clause_impl(&graph_rel.right, depth + 1)
-        }
-        LogicalPlan::Union(union) => union
-            .inputs
-            .iter()
-            .any(|input| plan_contains_with_clause_impl(input, depth + 1)),
-        LogicalPlan::GraphNode(node) => plan_contains_with_clause_impl(&node.input, depth + 1),
-        LogicalPlan::Unwind(unwind) => plan_contains_with_clause_impl(&unwind.input, depth + 1),
-        LogicalPlan::CartesianProduct(cp) => {
-            plan_contains_with_clause_impl(&cp.left, depth + 1)
-                || plan_contains_with_clause_impl(&cp.right, depth + 1)
-        }
-        _ => false,
+    // A WithClause node is itself a hit; otherwise recurse into every direct
+    // child via the exhaustive `LogicalPlan::children` API.
+    //
+    // DRIFT FIX (CLAUDE.md rule 5): the previous hand-rolled match had drifted
+    // narrower than `has_with_clause_in_tree` — it checked only GraphRel.left/
+    // .right (NOT .center), and had no arm for Cte or ViewScan.input (both fell
+    // through `_ => false`). Routing through `children()` makes this function
+    // byte-for-byte agree with `has_with_clause_in_tree` again, and additionally
+    // covers write-op inputs.
+    if matches!(plan, LogicalPlan::WithClause(_)) {
+        return true;
     }
+    plan.children()
+        .iter()
+        .any(|child| plan_contains_with_clause_impl(child, depth + 1))
 }
 
 /// Collect all table aliases referenced in render expressions
@@ -15399,25 +15363,6 @@ pub(crate) fn find_all_with_clauses_grouped(
                     find_all_with_clauses_impl(&graph_rel.right, results, depth + 1);
                 }
             }
-            LogicalPlan::Projection(proj) => {
-                find_all_with_clauses_impl(&proj.input, results, depth + 1);
-            }
-            LogicalPlan::Filter(filter) => {
-                find_all_with_clauses_impl(&filter.input, results, depth + 1)
-            }
-            LogicalPlan::GroupBy(group_by) => {
-                find_all_with_clauses_impl(&group_by.input, results, depth + 1)
-            }
-            LogicalPlan::GraphJoins(graph_joins) => {
-                find_all_with_clauses_impl(&graph_joins.input, results, depth + 1)
-            }
-            LogicalPlan::Limit(limit) => {
-                find_all_with_clauses_impl(&limit.input, results, depth + 1)
-            }
-            LogicalPlan::OrderBy(order_by) => {
-                find_all_with_clauses_impl(&order_by.input, results, depth + 1)
-            }
-            LogicalPlan::Skip(skip) => find_all_with_clauses_impl(&skip.input, results, depth + 1),
             LogicalPlan::Union(union) => {
                 // For Union (bidirectional patterns), check if WITH clauses exist inside.
                 // If so, the entire Union should be treated as a single WITH-bearing structure,
@@ -15470,24 +15415,18 @@ pub(crate) fn find_all_with_clauses_grouped(
                     }
                 }
             }
-            LogicalPlan::CartesianProduct(cp) => {
-                // CartesianProduct is used for WITH...MATCH patterns where aliases don't overlap
-                // Check both sides for WITH clauses
-                log::info!(
-                    "🔍 find_all_with_clauses_impl: Checking CartesianProduct left and right"
-                );
-                find_all_with_clauses_impl(&cp.left, results, depth + 1);
-                find_all_with_clauses_impl(&cp.right, results, depth + 1);
+            // All other variants carry no special WITH-collection logic — they
+            // simply recurse into every direct child. Route through the
+            // exhaustive `children()` API so the traversal can never drift out
+            // of sync with the plan structure (covers Projection, Filter,
+            // GroupBy, GraphJoins, Limit, OrderBy, Skip, CartesianProduct,
+            // ViewScan.input, GraphNode, Cte, Unwind, and write-op inputs;
+            // leaves are a no-op). WithClause / GraphRel / Union are handled
+            // above because they compute WITH keys / dedup, so they never reach
+            // this arm.
+            other => {
+                other.for_each_child(|child| find_all_with_clauses_impl(child, results, depth + 1))
             }
-            LogicalPlan::ViewScan(vs) => {
-                if let Some(input) = &vs.input {
-                    find_all_with_clauses_impl(input, results, depth + 1);
-                }
-            }
-            LogicalPlan::GraphNode(gn) => find_all_with_clauses_impl(&gn.input, results, depth + 1),
-            LogicalPlan::Cte(c) => find_all_with_clauses_impl(&c.input, results, depth + 1),
-            LogicalPlan::Unwind(u) => find_all_with_clauses_impl(&u.input, results, depth + 1),
-            _ => {}
         }
     }
 
@@ -16180,6 +16119,26 @@ pub(crate) fn prune_joins_covered_by_cte(
 /// 2. Identifies CTE-backed joins and uses position-aware pruning
 ///    (see `prune_joins_covered_by_cte` for details)
 /// 3. Replaces the WITH clause with a CTE reference
+///
+/// TRAVERSAL NOTE (CLAUDE.md rule 5): unlike the four detection/collection
+/// walkers, this transform does NOT route through `LogicalPlan::map_children`.
+/// That is deliberate, not drift:
+///   - `map_children`'s signature is infallible (`FnMut(&LogicalPlan) ->
+///     LogicalPlan`), whereas every recursive step here is fallible
+///     (`RenderPlanBuilderResult<_>` via `?`). Adapting one to the other would
+///     require panicking or smuggling errors — both worse than an explicit match.
+///   - Almost every arm carries per-variant transform logic that a generic
+///     child-map cannot express: WithClause performs the actual replacement,
+///     GraphRel gates each branch on `plan_contains_with_clause`/`needs_processing`
+///     and rebuilds with reset `cte_references`/`pattern_combinations`, Projection
+///     remaps PropertyAccess to CTE columns, GraphJoins prunes pre-WITH joins,
+///     GraphNode swaps matching nodes for CTE refs, and Union enforces #517
+///     per-arm scope isolation. A blind `map_children` would preserve fields these
+///     arms intentionally reset, silently changing query semantics.
+///
+/// The gating predicates it calls (`plan_contains_with_clause`,
+/// `needs_processing`) ARE now backed by `children()`, so this function still
+/// benefits from the unified traversal at its decision points.
 pub(crate) fn replace_with_clause_with_cte_reference_v2(
     plan: &LogicalPlan,
     with_alias: &str,
@@ -16734,26 +16693,30 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                     return false;
                 }
                 let result = match plan {
+                    // A GraphNode is the structural target: this branch needs
+                    // processing iff its alias matches. Terminal by design — we
+                    // do NOT descend into node.input here (that narrowing is
+                    // intentional and preserved).
                     LogicalPlan::GraphNode(node) => node.alias == with_alias,
-                    LogicalPlan::WithClause(wc) => {
-                        needs_processing(&wc.input, with_alias, depth + 1)
-                    }
-                    LogicalPlan::GraphRel(rel) => {
-                        needs_processing(&rel.left, with_alias, depth + 1)
-                            || needs_processing(&rel.right, with_alias, depth + 1)
-                    }
-                    LogicalPlan::Projection(proj) => {
-                        needs_processing(&proj.input, with_alias, depth + 1)
-                    }
-                    LogicalPlan::GraphJoins(gj) => {
-                        needs_processing(&gj.input, with_alias, depth + 1)
-                    }
-                    LogicalPlan::Filter(f) => needs_processing(&f.input, with_alias, depth + 1),
-                    LogicalPlan::Unwind(u) => needs_processing(&u.input, with_alias, depth + 1),
-                    LogicalPlan::CartesianProduct(cp) => {
-                        needs_processing(&cp.left, with_alias, depth + 1)
-                            || needs_processing(&cp.right, with_alias, depth + 1)
-                    }
+                    // Structural-wrapper variants: recurse into every direct
+                    // child looking for the target alias. Routed through the
+                    // exhaustive `children()` API instead of hand-listing each
+                    // child (this also makes nested GraphRel.center reachable,
+                    // which the caller clones verbatim, so the extra coverage is
+                    // behavior-neutral).
+                    LogicalPlan::WithClause(_)
+                    | LogicalPlan::GraphRel(_)
+                    | LogicalPlan::Projection(_)
+                    | LogicalPlan::GraphJoins(_)
+                    | LogicalPlan::Filter(_)
+                    | LogicalPlan::Unwind(_)
+                    | LogicalPlan::CartesianProduct(_) => plan
+                        .children()
+                        .iter()
+                        .any(|child| needs_processing(child, with_alias, depth + 1)),
+                    // Any other variant: fall back to WITH-containment (the
+                    // original semantics — alias-matching does not descend
+                    // through these node types).
                     _ => plan_contains_with_clause(plan),
                 };
                 log::debug!(
