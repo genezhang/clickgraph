@@ -9890,52 +9890,129 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 // and inflating counts for rows appearing in
                                 // both. Fail loudly here instead.
                                 //
-                                // Scoped to branches with NO JOIN (a bare
-                                // single-hop self-referencing scan, e.g.
-                                // `FROM conn_log AS r` with no JOIN at all): a
-                                // multi-hop pattern (e.g. `(a)-[:FLIGHT]-(b)-
-                                // [:FLIGHT]-(c)`) legitimately shares the SAME
-                                // projected column text across its direction
-                                // branches too, but there the per-branch JOIN
-                                // CONDITION (not the SELECT list) is what
-                                // encodes which role the node plays — verified
-                                // via `denorm_with_aggregate_group_by_middle_
-                                // node_no_null_collapse_465_blocking`, whose
-                                // 4 direction-permutation branches all project
-                                // `t2.origin_code`/`t2.origin_city` but differ
-                                // in their JOIN's `ON` clause instead
-                                // (`t2.origin_code = t1.dest_code` vs.
-                                // `t2.origin_code = t1.origin_code` etc.),
-                                // live-verified to return correct, distinct
-                                // per-city counts. Excluding any branch with a
-                                // JOIN keeps this guard scoped to the case it
-                                // actually diagnosed.
+                                // Scoping history (R5, post-adversarial-review):
+                                // v1 fired only when NO branch had ANY join —
+                                // reasoning that a multi-hop pattern's per-branch
+                                // JOIN CONDITION (not its SELECT list) encodes
+                                // role. Live-verified WRONG: a 2-hop UNDIRECTED
+                                // CHAIN grouping by the first hop's own anchor
+                                // (`(a)-[r:ACCESSED]-(x)-[r2:ACCESSED]-(c) WITH a,
+                                // count(r) AS n ...`) has joins too (for the
+                                // second hop), so v1 let it through — silently
+                                // dropped 2 of 5 groups and corrupted every
+                                // remaining count on both `zeek_merged_test.yaml`
+                                // and `flights_denormalized.yaml`.
+                                //
+                                // v2 tightened to "does the WITH projection
+                                // reference the FROM ANCHOR's own alias" —
+                                // reasoning that a JOINED alias (reached through a
+                                // JOIN condition that varies per branch) is safe,
+                                // only the bare anchor (no join to disambiguate
+                                // it) is not. This fixed the v1 gap, but a DEEPER
+                                // re-verification (prompted by re-checking the
+                                // "safe" `denorm_with_aggregate_group_by_middle_
+                                // node_no_null_collapse_465_blocking` case that
+                                // motivated v1's exemption) found v2's premise
+                                // itself false: `MATCH (a:Airport)-[:FLIGHT]-
+                                // (b:Airport)-[:FLIGHT]-(c:Airport) WITH b,
+                                // count(*) AS n ...` groups by `b` — reached
+                                // through JOIN `t2`, never the anchor `t1` — yet
+                                // live execution returns `San Francisco=2` for an
+                                // airport (`SFO`) that appears in exactly ONE
+                                // flight row (graph degree 1), which makes ZERO
+                                // valid 2-hop chains through it — an impossible
+                                // result, proving corruption. Root cause: the
+                                // JOIN condition varies per branch (`t2.origin_code
+                                // = t1.dest_code` vs. `t2.dest_code = t1.dest_code`
+                                // etc.), but the SELECTed column for `b` is
+                                // ALWAYS `t2.origin_code`, even in branches whose
+                                // join tied `t2.dest_code` — the exact same
+                                // "SELECT never alternates with the join role"
+                                // bug, just one join-hop removed from the anchor.
+                                // So `denorm_with_aggregate_group_by_middle_node_
+                                // no_null_collapse_465_blocking`'s prior "verified
+                                // correct" claim was itself wrong (or verified
+                                // against different fixture data) — it is NOT a
+                                // safe exemption and is now guarded too (moved to
+                                // `..._known_broken_529` in this round).
+                                //
+                                // v3 (current): fire whenever the WITH projection
+                                // references a SPECIFIC property that is itself
+                                // role-dependent (per `NodeSchema::
+                                // role_dependent_property_names` — the Cypher
+                                // property names whose physical column genuinely
+                                // differs between from/to role, e.g. Zeek IP's
+                                // `ip`) on ANY alias in scope — FROM anchor OR any
+                                // JOINed alias — not just the anchor. Checking the
+                                // PROPERTY, not just "alias's table is
+                                // role-dependent", matters: shape 2's already-
+                                // fixed `MATCH (a:IP) OPTIONAL MATCH (a)-[r:
+                                // ACCESSED]-(b:IP) WITH a, count(r) AS c ...`
+                                // resolves `count(r)` to `r.uid` — `r` (the
+                                // relationship alias) happens to share its
+                                // physical table with the role-dependent `IP`
+                                // node, but `uid` itself is the edge's own,
+                                // role-INDEPENDENT identity (not a key in
+                                // `from_properties`/`to_properties` at all) — a
+                                // naive "any reference to a role-dependent
+                                // TABLE" check (an earlier draft of this v3) was
+                                // a false positive here, caught by this exact
+                                // regression test. No known-safe exemption
+                                // remains within this codebase today; if one is
+                                // found later it needs its own live, degree-based
+                                // ground-truth verification (not just "the
+                                // numbers look plausible") before being carved
+                                // out again.
                                 if let Some(ref union) = rendered.union.0 {
-                                    let any_branch_has_join =
-                                        union.input.iter().any(|b| !b.joins.0.is_empty());
-                                    if !union.input.is_empty()
-                                        && rendered.joins.0.is_empty()
-                                        && !any_branch_has_join
-                                    {
-                                        if let Some(table) =
-                                            rendered.from.0.as_ref().map(|v| v.name.as_str())
-                                        {
-                                            if table_has_role_dependent_denorm_identity(
-                                                schema, table,
-                                            ) {
-                                                return Err(RenderBuildError::UnsupportedFeature(format!(
-                                                    "Undirected self-referencing relationship over \
-                                                     denormalized/embedded node table '{table}' is not \
-                                                     yet supported for WITH-aggregate queries (#529 \
-                                                     shape 1): the per-role UNION branches would \
-                                                     project the identical embedded identity column \
-                                                     instead of alternating from/to roles, silently \
-                                                     dropping and double-counting rows. Rewrite the \
-                                                     query with an explicit direction (e.g. `-[r]->` \
-                                                     instead of `-[r]-`) to work around this, or track \
-                                                     https://github.com/genezhang/clickgraph/issues/529."
-                                                )));
+                                    if !union.input.is_empty() {
+                                        let mut alias_to_table: std::collections::HashMap<
+                                            &str,
+                                            &str,
+                                        > = std::collections::HashMap::new();
+                                        if let Some(ref from_ref) = rendered.from.0 {
+                                            if let Some(ref alias) = from_ref.alias {
+                                                alias_to_table
+                                                    .insert(alias.as_str(), from_ref.name.as_str());
                                             }
+                                        }
+                                        for join in &rendered.joins.0 {
+                                            alias_to_table.insert(
+                                                join.table_alias.as_str(),
+                                                join.table_name.as_str(),
+                                            );
+                                        }
+
+                                        let mut accesses: Vec<(&str, &str)> = Vec::new();
+                                        for item in &rendered.select.items {
+                                            collect_property_accesses(
+                                                &item.expression,
+                                                &mut accesses,
+                                            );
+                                        }
+
+                                        let corrupt_alias_referenced =
+                                            accesses.iter().any(|(alias, property)| {
+                                                alias_to_table.get(alias).is_some_and(|table| {
+                                                    table_role_dependent_property_names(
+                                                        schema, table,
+                                                    )
+                                                    .contains(*property)
+                                                })
+                                            });
+                                        if corrupt_alias_referenced {
+                                            return Err(RenderBuildError::UnsupportedFeature(
+                                                "Undirected self-referencing relationship over a \
+                                                 denormalized/embedded node table is not yet \
+                                                 supported for WITH-aggregate queries (#529 shape \
+                                                 1): the per-role UNION branches would project the \
+                                                 identical embedded identity column instead of \
+                                                 alternating from/to roles, silently dropping and \
+                                                 double-counting rows. Rewrite the query with an \
+                                                 explicit direction (e.g. `-[r]->` instead of \
+                                                 `-[r]-`) to work around this, or track \
+                                                 https://github.com/genezhang/clickgraph/issues/529."
+                                                    .to_string(),
+                                            ));
                                         }
                                     }
                                 }
@@ -14236,22 +14313,76 @@ pub(crate) fn build_chained_with_match_cte_plan(
 /// `count`s `{10.0.0.99: 1, 142.250.80.46: 1, 192.168.1.10: 1,
 /// 192.168.1.20: 1, 93.184.216.34: 2}`).
 ///
-/// Detects the schema-level precondition for this unfixed case: does `table`
-/// back a node whose identity genuinely depends on role (a denormalized/
-/// embedded node whose from/to-role physical columns DIFFER for the same
-/// Cypher property — see `NodeSchema::has_role_dependent_identity`, the
-/// canonical schema-catalog accessor this routes through)? A NORMALIZED
+/// Detects the schema-level precondition for this unfixed case: the set of
+/// Cypher property names that are role-dependent (their physical column
+/// genuinely differs between from/to role — see `NodeSchema::
+/// role_dependent_property_names`, the canonical schema-catalog accessor
+/// this routes through) for any node backed by `table`. A NORMALIZED
 /// self-referencing edge (e.g. `(p:Person)-[:KNOWS]-(p2:Person)` via a
 /// separate node table) is deliberately UNAFFECTED and must not trigger
 /// this: its identity column is the same real physical ID regardless of
 /// role, so sharing one SELECT across UNION branches there is correct, not
-/// a bug — the accessor returns `false` immediately for a normal node
+/// a bug — the accessor returns an empty set immediately for a normal node
 /// schema.
-fn table_has_role_dependent_denorm_identity(schema: &GraphSchema, table: &str) -> bool {
+///
+/// Checking PROPERTY NAMES (not just "does this table back a role-dependent
+/// node at all") matters: in a coupled/embedded schema, a relationship alias
+/// (e.g. `r`) and a node alias (e.g. `a`) can share the exact same physical
+/// table, but the relationship's OWN properties (e.g. `r`'s edge_id `uid`)
+/// are role-INDEPENDENT even though the table also backs a role-dependent
+/// node — flagging any reference to that TABLE regardless of which property
+/// is accessed was an earlier draft's false positive, caught by
+/// `undirected_optional_with_aggregate_coupled_anchor_group_by_529`.
+fn table_role_dependent_property_names(
+    schema: &GraphSchema,
+    table: &str,
+) -> std::collections::HashSet<String> {
     schema
         .all_node_schemas()
         .values()
-        .any(|ns| ns.full_table_name() == table && ns.has_role_dependent_identity())
+        .filter(|ns| ns.full_table_name() == table)
+        .flat_map(|ns| ns.role_dependent_identifiers())
+        .collect()
+}
+
+/// #529: recursively collect `(table_alias, property_name)` pairs from every
+/// `PropertyAccessExp` reachable within `expr` — used by the #529 shape-1
+/// loud guard to check exactly which properties (not just which aliases) a
+/// WITH projection references, since alias-level checking alone conflates
+/// a role-dependent node's properties with a same-table relationship's own,
+/// role-independent ones (see `table_role_dependent_property_names`'s doc
+/// comment).
+fn collect_property_accesses<'a>(expr: &'a RenderExpr, out: &mut Vec<(&'a str, &'a str)>) {
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) => {
+            out.push((pa.table_alias.0.as_str(), pa.column.raw()));
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in &op.operands {
+                collect_property_accesses(operand, out);
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in &agg.args {
+                collect_property_accesses(arg, out);
+            }
+        }
+        RenderExpr::ScalarFnCall(f) => {
+            for arg in &f.args {
+                collect_property_accesses(arg, out);
+            }
+        }
+        RenderExpr::Case(c) => {
+            for (when, then) in &c.when_then {
+                collect_property_accesses(when, out);
+                collect_property_accesses(then, out);
+            }
+            if let Some(else_expr) = &c.else_expr {
+                collect_property_accesses(else_expr, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 pub(crate) fn build_with_aggregation_match_cte_plan(

@@ -210,6 +210,58 @@ impl NodeSchema {
             }
     }
 
+    /// #529: the SPECIFIC Cypher property names whose physical column
+    /// genuinely differs between this node's from-role and to-role mapping
+    /// (e.g. Zeek's `IP` node: `{"ip"}`, since `ip` maps to `id.orig_h`
+    /// from-side vs. `id.resp_h` to-side — but NOT e.g. a relationship's own
+    /// property like `uid`, which isn't in either map at all and is the same
+    /// physical column regardless of role). Empty whenever
+    /// `has_role_dependent_identity()` is false.
+    ///
+    /// Companion to `has_role_dependent_identity`: that answers "is ANY
+    /// property on this node role-dependent" (yes/no), this answers "WHICH
+    /// ones" — needed by callers that must avoid flagging a reference to a
+    /// DIFFERENT, role-INDEPENDENT property that merely happens to share a
+    /// table with a role-dependent node (e.g. a relationship's own edge_id
+    /// column, resolved via a different alias but the same physical table in
+    /// a coupled/embedded schema).
+    pub fn role_dependent_property_names(&self) -> HashSet<String> {
+        match (&self.from_properties, &self.to_properties) {
+            (Some(from_p), Some(to_p)) => from_p
+                .iter()
+                .filter(|(k, v)| to_p.get(*k).is_some_and(|to_v| to_v != *v))
+                .map(|(k, _)| k.clone())
+                .collect(),
+            _ => HashSet::new(),
+        }
+    }
+
+    /// #529: `role_dependent_property_names()` widened to also include the
+    /// PHYSICAL from/to column names themselves (`id.orig_h`/`id.resp_h` for
+    /// Zeek's `IP` node), not just the Cypher property name (`ip`).
+    ///
+    /// A reference to this node's identity is sometimes already resolved to
+    /// a physical column by the time a caller inspects it — e.g. a bare
+    /// WITH-carried alias whose identity is embedded on a relationship's own
+    /// table resolves straight to `r."id.orig_h"` (`find_id_column_for_alias`
+    /// / `PropertyValue`-level resolution), never passing back through the
+    /// Cypher property name `ip` at all. Checking Cypher names alone would
+    /// miss that reference entirely. Use this widened set when the caller
+    /// can't be sure which form (Cypher property or physical column) a given
+    /// reference has already been resolved to.
+    pub fn role_dependent_identifiers(&self) -> HashSet<String> {
+        let mut out = self.role_dependent_property_names();
+        if let (Some(from_p), Some(to_p)) = (&self.from_properties, &self.to_properties) {
+            for (k, from_v) in from_p {
+                if to_p.get(k).is_some_and(|to_v| to_v != from_v) {
+                    out.insert(from_v.clone());
+                    out.insert(to_p[k].clone());
+                }
+            }
+        }
+        out
+    }
+
     /// #549: merge this node's role-specific denormalized property map
     /// (`from_properties`/`to_properties`) with any ADDITIONAL properties
     /// declared in `property_mappings` that aren't already covered by the
