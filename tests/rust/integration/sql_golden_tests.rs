@@ -8584,6 +8584,60 @@ mod coupled_anchor_optional_family_504_508_529_530_471 {
         }
     }
 
+    /// #529 shape 1, R6 (adversarial review finding, now fixed): the guard's
+    /// property-access collector (`collect_property_accesses`,
+    /// `render_plan/plan_builder_utils.rs`) hand-rolled a PARTIAL `match`
+    /// over `RenderExpr` (only `PropertyAccessExp`/`OperatorApplicationExp`/
+    /// `AggregateFnCall`/`ScalarFnCall`/`Case`'s `when_then`+`else_expr`),
+    /// silently dropping everything else via a `_ => {}` catch-all —
+    /// including `List`, so a role-dependent property reached through a
+    /// LIST LITERAL in the WITH projection (rather than a bare select item)
+    /// slipped past the guard entirely. Live-verified pre-fix (adversarial
+    /// review): `WITH count(r) AS c, [a.ip] AS tags RETURN c, tags` rendered
+    /// and EXECUTED with no guard firing, both UNION branches emitting
+    /// byte-identical non-alternating SQL — the same corruption signature as
+    /// the bare-select-item shapes above (2 of 5 IPs dropped, wrong counts),
+    /// just reached through the list literal instead.
+    ///
+    /// Fixed by making `collect_property_accesses`'s match EXHAUSTIVE over
+    /// every `RenderExpr` variant (no `_` catch-all — a future variant
+    /// addition is now a compile error here, not a silent gap) — see that
+    /// function's own doc comment for the full variant-by-variant audit and
+    /// `collect_property_accesses_tests` (same file) for direct per-variant
+    /// unit coverage (`List`, `MapLiteral`, `ArraySubscript`/`ArraySlicing`,
+    /// simple-CASE's `expr` scrutinee, `ReduceExpr`, `InSubquery`).
+    #[tokio::test]
+    async fn undirected_with_aggregate_role_property_inside_list_literal_known_broken_529_shape1() {
+        let schema = load_schema("schemas/dev/zeek_merged_test.yaml");
+        let cypher =
+            "MATCH (a:IP)-[r:ACCESSED]-(b:IP) WITH count(r) AS c, [a.ip] AS tags RETURN c, tags";
+
+        let err = try_render(&schema, cypher, SqlDialect::ClickHouse)
+            .await
+            .expect_err(
+                "#529 shape 1 (role property inside a list literal): this query \
+                 now renders successfully — if this is a genuine fix (not \
+                 another guard-scoping gap), live-verify row-level counts \
+                 against hand-enumerated ground truth from the raw conn_log \
+                 fixture before replacing this test with a regression test.",
+            );
+        assert!(
+            err.contains("not yet supported") && err.contains("529"),
+            "#529 shape 1 (role property inside a list literal): expected the \
+             #529 shape-1 loud guard error, got a different error:\n{err}"
+        );
+
+        // Determinism.
+        for _ in 0..5 {
+            let again = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+            assert!(
+                again.is_err(),
+                "#529 shape 1 (role property inside a list literal): \
+                 nondeterministic guard"
+            );
+        }
+    }
+
     /// #529 shape 2 (FIXED, regression guard against the R5 guard-widening):
     /// the already-fixed OPTIONAL+undirected+WITH-aggregate shape
     /// (`MATCH (a:IP) OPTIONAL MATCH (a)-[r:ACCESSED]-(b:IP) WITH a,
