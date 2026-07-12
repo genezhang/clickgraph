@@ -6,8 +6,8 @@ WITH RECURSIVE vlp_a_b AS (
         [t0.Origin] as path_edges,
         [t0.Origin, t0.Dest] as path_nodes,
         [] as path_relationships,
-        t0.OriginCityName as start_OriginCityName,
-        t0.DestCityName as end_DestCityName
+        t0."OriginCityName" as "start_OriginCityName",
+        t0."DestCityName" as "end_DestCityName"
     FROM default.flights AS t0
     WHERE 1 <= 3
     UNION ALL
@@ -18,8 +18,8 @@ WITH RECURSIVE vlp_a_b AS (
         arrayConcat(vp.path_edges, [next.Origin]),
         arrayConcat(vp.path_nodes, [next.Dest]),
         [] as path_relationships,
-        vp.start_OriginCityName as start_OriginCityName,
-        next.DestCityName as end_DestCityName
+        vp."start_OriginCityName" as "start_OriginCityName",
+        next."DestCityName" as "end_DestCityName"
     FROM vlp_a_b vp
     JOIN default.flights next ON next.Origin = vp.end_id
     WHERE vp.hop_count < 3 AND NOT has(vp.path_nodes, next.Dest)

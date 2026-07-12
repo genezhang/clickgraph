@@ -1899,6 +1899,7 @@ impl DenormalizedCteStrategy {
         select_items: &mut Vec<String>,
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
+        let mapper = crate::sql_generator::function_mapper::current_function_mapper();
         for prop in properties {
             log::warn!(
                 "🔍 VLP Property: alias=\'{}\', cypher_alias=\'{}\', column=\'{}\'",
@@ -1917,9 +1918,23 @@ impl DenormalizedCteStrategy {
             // Map logical property to physical column in edge table
             let physical_col = self.map_denormalized_property(&prop.column_name, is_from_node)?;
 
+            // #558: `physical_col` may itself contain a literal dot (e.g.
+            // zeek's Tuple/Nested-style `id.orig_h`). ClickHouse accepts the
+            // unquoted dotted form on READ (`t.id.orig_h`, a compound
+            // identifier), but the same text is invalid when it appears as
+            // an output alias (`AS start_id.orig_h` is a syntax error,
+            // ClickHouse Code 62 — aliases don't get the compound-identifier
+            // grammar). Quote both sides through the dialect-dispatched
+            // `FunctionMapper::quote_alias` (same helper `quote_qualified_col`
+            // uses for the outer-query reference to this very column, so the
+            // CTE-defined name and the reference to it agree byte-for-byte).
+            let quoted_read_col = mapper.quote_alias(&physical_col);
+            let cte_col_name = format!("{}{}", prefix, physical_col);
+            let quoted_alias = mapper.quote_alias(&cte_col_name);
+
             let sql = format!(
-                "{}.{} as {}{}",
-                self.pattern_ctx.rel_alias, physical_col, prefix, physical_col
+                "{}.{} as {}",
+                self.pattern_ctx.rel_alias, quoted_read_col, quoted_alias
             );
             select_items.push(sql);
         }
@@ -1932,23 +1947,30 @@ impl DenormalizedCteStrategy {
         select_items: &mut Vec<String>,
         properties: &[NodeProperty],
     ) -> Result<(), CteError> {
+        let mapper = crate::sql_generator::function_mapper::current_function_mapper();
         for prop in properties {
             // Determine if this property belongs to start (from) or end (to) node
             let is_from_node = prop.cypher_alias == self.pattern_ctx.left_node_alias;
-            let _prefix = if is_from_node { "start_" } else { "end_" };
+            let prefix = if is_from_node { "start_" } else { "end_" };
 
             // Map logical property to physical column in edge table
             let physical_col = self.map_denormalized_property(&prop.column_name, is_from_node)?;
+            let cte_col_name = format!("{}{}", prefix, physical_col);
+            let quoted_alias = mapper.quote_alias(&cte_col_name);
 
             if is_from_node {
-                // Start node property comes from previous iteration (already has prefix)
-                select_items.push(format!(
-                    "vp.start_{} as start_{}",
-                    physical_col, physical_col
-                ));
+                // Start node property comes from previous iteration (already
+                // has prefix) — `vp` is the recursive CTE's own alias, so its
+                // column really is named `start_<physical_col>` (dot and
+                // all); quote both the reference and the re-asserted alias.
+                select_items.push(format!("vp.{} as {}", quoted_alias, quoted_alias));
             } else {
-                // End node property comes from the new edge being joined
-                select_items.push(format!("next.{} as end_{}", physical_col, physical_col));
+                // End node property comes from the new edge being joined —
+                // `next` is the real physical table, so quote the read side
+                // like the base case does, and quote the alias for the same
+                // Code-62 reason.
+                let quoted_read_col = mapper.quote_alias(&physical_col);
+                select_items.push(format!("next.{} as {}", quoted_read_col, quoted_alias));
             }
         }
         Ok(())

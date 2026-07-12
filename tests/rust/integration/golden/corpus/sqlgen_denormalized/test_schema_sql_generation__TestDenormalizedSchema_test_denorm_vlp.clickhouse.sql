@@ -6,7 +6,7 @@ WITH RECURSIVE vlp_a_b AS (
         [t0.origin_code] as path_edges,
         [t0.origin_code, t0.dest_code] as path_nodes,
         [] as path_relationships,
-        t0.dest_city as end_dest_city
+        t0."dest_city" as "end_dest_city"
     FROM db_denormalized.flights_denorm AS t0
     WHERE t0.origin_city = 'Seattle' AND 1 <= 2
     UNION ALL
@@ -17,7 +17,7 @@ WITH RECURSIVE vlp_a_b AS (
         arrayConcat(vp.path_edges, [next.origin_code]),
         arrayConcat(vp.path_nodes, [next.dest_code]),
         [] as path_relationships,
-        next.dest_city as end_dest_city
+        next."dest_city" as "end_dest_city"
     FROM vlp_a_b vp
     JOIN db_denormalized.flights_denorm next ON next.origin_code = vp.end_id
     WHERE vp.hop_count < 2 AND NOT has(vp.path_nodes, next.dest_code)

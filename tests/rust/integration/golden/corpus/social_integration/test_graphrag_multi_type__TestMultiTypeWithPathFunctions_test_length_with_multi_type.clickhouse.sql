@@ -10,6 +10,21 @@ INNER JOIN test_integration.user_follows_test r1 ON u_1.user_id = r1.follower_id
 INNER JOIN test_integration.users_test u2 ON r1.followed_id = u2.user_id
 INNER JOIN test_integration.posts_test p3 ON u2.user_id = p3.author_id
 WHERE (u_1.user_id = 1)
+), 
+vlp_multi_type_u_x_2 AS (
+SELECT 'User' AS end_type, u2.user_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u2.age AS age, u2.city AS city, u2.country AS country, u2.email_address AS email, u2.is_active AS is_active, u2.full_name AS name, u2.registration_date AS registration_date, u2.user_id AS user_id) AS end_properties, u2.age AS end_age, u2.city AS end_city, u2.country AS end_country, u2.email_address AS end_email, u2.is_active AS end_is_active, u2.full_name AS end_name, u2.registration_date AS end_registration_date, u2.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', u_1.age, u_1.city, u_1.country, u_1.email_address, u_1.is_active, u_1.full_name, u_1.registration_date, u_1.user_id) AS start_properties, u_1.age AS start_age, u_1.city AS start_city, u_1.country AS start_country, u_1.email_address AS start_email, u_1.is_active AS start_is_active, u_1.full_name AS start_name, u_1.registration_date AS start_registration_date, u_1.user_id AS start_user_id, 1 AS hop_count, ['FOLLOWS'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.follow_date)] AS rel_properties, [toString(u_1.user_id), toString(u2.user_id)] AS path_nodes
+FROM test_integration.users_test u_1
+INNER JOIN test_integration.user_follows_test r1 ON u_1.user_id = r1.follower_id
+INNER JOIN test_integration.users_test u2 ON r1.followed_id = u2.user_id
+WHERE (u_1.user_id = 1)
+UNION ALL
+SELECT 'User' AS end_type, u3.user_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, formatRowNoNewline('JSONEachRow', u3.age AS age, u3.city AS city, u3.country AS country, u3.email_address AS email, u3.is_active AS is_active, u3.full_name AS name, u3.registration_date AS registration_date, u3.user_id AS user_id) AS end_properties, u3.age AS end_age, u3.city AS end_city, u3.country AS end_country, u3.email_address AS end_email, u3.is_active AS end_is_active, u3.full_name AS end_name, u3.registration_date AS end_registration_date, u3.user_id AS end_user_id, formatRowNoNewline('JSONEachRow', u_1.age, u_1.city, u_1.country, u_1.email_address, u_1.is_active, u_1.full_name, u_1.registration_date, u_1.user_id) AS start_properties, u_1.age AS start_age, u_1.city AS start_city, u_1.country AS start_country, u_1.email_address AS start_email, u_1.is_active AS start_is_active, u_1.full_name AS start_name, u_1.registration_date AS start_registration_date, u_1.user_id AS start_user_id, 2 AS hop_count, ['FOLLOWS', 'FOLLOWS'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.follow_date), formatRowNoNewline('JSONEachRow', r2.follow_date)] AS rel_properties, [toString(u_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
+FROM test_integration.users_test u_1
+INNER JOIN test_integration.user_follows_test r1 ON u_1.user_id = r1.follower_id
+INNER JOIN test_integration.users_test u2 ON r1.followed_id = u2.user_id
+INNER JOIN test_integration.user_follows_test r2 ON u2.user_id = r2.follower_id
+INNER JOIN test_integration.users_test u3 ON r2.followed_id = u3.user_id
+WHERE (u_1.user_id = 1)
 )
 SELECT `path_length` AS "path_length", count(*) AS "cnt" FROM (
 SELECT 
@@ -18,29 +33,6 @@ SELECT
 FROM vlp_multi_type_u_x AS t
 UNION ALL 
 SELECT 
-      tuple('fixed_path', 'u', 'x', 't0') AS "p",
-      formatRowNoNewline('JSONEachRow', u.age AS _s_age, u.city AS _s_city, u.country AS _s_country, u.email_address AS _s_email, u.is_active AS _s_is_active, u.full_name AS _s_name, u.registration_date AS _s_registration_date, u.user_id AS _s_user_id) AS "_start_properties",
-      formatRowNoNewline('JSONEachRow', x.age AS _e_age, x.city AS _e_city, x.country AS _e_country, x.email_address AS _e_email, x.is_active AS _e_is_active, x.full_name AS _e_name, x.registration_date AS _e_registration_date, x.user_id AS _e_user_id) AS "_end_properties",
-      '{}' AS "_rel_properties",
-      'FOLLOWS' AS "__rel_type__",
-      'User' AS "__start_label__",
-      'User' AS "__end_label__",
-      u.age AS "age",
-      u.city AS "city",
-      u.country AS "country",
-      u.email_address AS "email",
-      u.is_active AS "is_active",
-      u.full_name AS "name",
-      u.registration_date AS "registration_date",
-      u.user_id AS "user_id",
-      x.age AS "age_2",
-      x.city AS "city_2",
-      x.country AS "country_2",
-      x.email_address AS "email_2",
-      x.is_active AS "is_active_2",
-      x.full_name AS "name_2",
-      x.registration_date AS "registration_date_2",
-      x.user_id AS "user_id_2",
       t.hop_count AS "path_length",
       t.hop_count AS "t.hop_count"
 FROM vlp_multi_type_u_x_2 AS t

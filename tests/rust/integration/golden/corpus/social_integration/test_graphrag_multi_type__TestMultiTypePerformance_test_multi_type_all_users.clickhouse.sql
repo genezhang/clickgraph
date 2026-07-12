@@ -8,24 +8,24 @@ FROM test_integration.users_test u_1
 INNER JOIN test_integration.user_follows_test r1 ON u_1.user_id = r1.follower_id
 INNER JOIN test_integration.users_test u2 ON r1.followed_id = u2.user_id
 INNER JOIN test_integration.posts_test p3 ON u2.user_id = p3.author_id
+), 
+vlp_multi_type_u_x_2 AS (
+SELECT 'User' AS end_type, u2.user_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, 1 AS hop_count, ['FOLLOWS'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.follow_date)] AS rel_properties, [toString(u_1.user_id), toString(u2.user_id)] AS path_nodes
+FROM test_integration.users_test u_1
+INNER JOIN test_integration.user_follows_test r1 ON u_1.user_id = r1.follower_id
+INNER JOIN test_integration.users_test u2 ON r1.followed_id = u2.user_id
+UNION ALL
+SELECT 'User' AS end_type, u3.user_id AS end_id, u_1.user_id AS start_id, 'User' AS start_type, 2 AS hop_count, ['FOLLOWS', 'FOLLOWS'] AS path_relationships, [formatRowNoNewline('JSONEachRow', r1.follow_date), formatRowNoNewline('JSONEachRow', r2.follow_date)] AS rel_properties, [toString(u_1.user_id), toString(u2.user_id), toString(u3.user_id)] AS path_nodes
+FROM test_integration.users_test u_1
+INNER JOIN test_integration.user_follows_test r1 ON u_1.user_id = r1.follower_id
+INNER JOIN test_integration.users_test u2 ON r1.followed_id = u2.user_id
+INNER JOIN test_integration.user_follows_test r2 ON u2.user_id = r2.follower_id
+INNER JOIN test_integration.users_test u3 ON r2.followed_id = u3.user_id
 )
 SELECT count(*) AS "total_paths" FROM (
 SELECT 1 AS __dummy
 FROM vlp_multi_type_u_x AS t
 UNION ALL 
-SELECT 
-      toString(t.age) AS "age",
-      NULL AS "author_id",
-      toString(t.city) AS "city",
-      NULL AS "content",
-      toString(t.country) AS "country",
-      NULL AS "created_at",
-      toString(t.email_address) AS "email",
-      toString(t.is_active) AS "is_active",
-      toString(t.full_name) AS "name",
-      NULL AS "post_id",
-      toString(t.registration_date) AS "registration_date",
-      NULL AS "title",
-      toString(t.user_id) AS "user_id"
+SELECT 1 AS __dummy
 FROM vlp_multi_type_u_x_2 AS t
 ) AS __union

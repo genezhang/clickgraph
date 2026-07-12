@@ -6,7 +6,7 @@ WITH RECURSIVE vlp_a_dest AS (
         [t0.Origin] as path_edges,
         [t0.Origin, t0.Dest] as path_nodes,
         ['FLIGHT'] as path_relationships,
-        t0.Dest as end_Dest
+        t0."Dest" as "end_Dest"
     FROM default.flights AS t0
     WHERE t0.Origin = 'JFK' AND 1 <= 2
     UNION ALL
@@ -17,7 +17,7 @@ WITH RECURSIVE vlp_a_dest AS (
         arrayConcat(vp.path_edges, [next.Origin]),
         arrayConcat(vp.path_nodes, [next.Dest]),
         arrayConcat(vp.path_relationships, ['FLIGHT']) as path_relationships,
-        next.Dest as end_Dest
+        next."Dest" as "end_Dest"
     FROM vlp_a_dest vp
     JOIN default.flights next ON next.Origin = vp.end_id
     WHERE vp.hop_count < 2 AND NOT has(vp.path_nodes, next.Dest)
