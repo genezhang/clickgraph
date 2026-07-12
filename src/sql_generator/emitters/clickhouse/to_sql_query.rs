@@ -2,6 +2,7 @@ use crate::{
     query_planner::join_context::{VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN},
     query_planner::logical_plan::LogicalPlan,
     render_plan::{
+        cte_extraction::merge_cte_deduping_by_name_content,
         render_expr::{
             self, AggregateFnCall, Column, ColumnAlias, InSubquery, Literal, Operator,
             OperatorApplication, PropertyAccess, ReduceExpr, RenderCase, RenderExpr, ScalarFnCall,
@@ -4479,6 +4480,17 @@ fn swap_vlp_start_end(sql: &str) -> String {
 
 /// Recursively collect all CTE definitions from a RenderPlan tree,
 /// removing them from their nested locations (union branches, CTE content, etc.).
+///
+/// Same-named CTEs are merged through `merge_cte_deduping_by_name_content`
+/// rather than pushed verbatim (see #567): a Union of per-candidate-end-label
+/// branches (unlabeled multi-type VLP end node) can have independent branches
+/// each compute the SAME formulaic CTE name while generating DIFFERENT CTE
+/// bodies (each scoped to its own candidate end label). This mirrors the fix
+/// #557 already applied to the ctx-aware path's `extract_ctes_with_context`
+/// Union arm (`cte_extraction.rs`) — naive keep-first-by-name dedup there
+/// silently dropped a real branch's CTE, leaving the outer query referencing
+/// an undefined table. This ctx-less path (reachable via `to_render_plan`,
+/// e.g. from EXISTS subqueries in `render_expr.rs`) had the same gap.
 fn collect_nested_ctes(plan: &mut RenderPlan, collected: &mut Vec<Cte>) {
     // Take CTEs from this plan level
     let ctes = std::mem::take(&mut plan.ctes.0);
@@ -4487,7 +4499,19 @@ fn collect_nested_ctes(plan: &mut RenderPlan, collected: &mut Vec<Cte>) {
         if let CteContent::Structured(ref mut inner_plan) = cte.content {
             collect_nested_ctes(inner_plan, collected);
         }
-        collected.push(cte);
+        // A rename means this plan level's own CTE name no longer matches
+        // what's in the flat list — fix up this level's FROM reference to
+        // match (mirrors the equivalent fixup already done for the ctx-aware
+        // path in `to_render_plan_with_ctx`'s Union arm, plan_builder.rs).
+        // Unlike that path, nothing upstream of this ctx-less flatten step
+        // has already resolved the collision, so the fixup must happen here.
+        if let Some((old_name, new_name)) = merge_cte_deduping_by_name_content(collected, cte) {
+            if let Some(ref mut from_ref) = plan.from.0 {
+                if from_ref.name == old_name {
+                    from_ref.name = new_name;
+                }
+            }
+        }
     }
 
     // Recurse into union branches
@@ -4504,7 +4528,9 @@ fn collect_nested_ctes(plan: &mut RenderPlan, collected: &mut Vec<Cte>) {
 ///
 /// `collect_nested_ctes` walks depth-first: inner CTEs (dependencies) are collected
 /// before the outer CTEs that reference them. This naturally produces the correct
-/// dependency order — no additional sorting needed.
+/// dependency order — no additional sorting needed. Same-name collisions are
+/// already resolved (merged or renamed) during collection, so no separate
+/// name-keyed dedup pass is needed here.
 fn flatten_all_ctes(plan: &mut RenderPlan) {
     let mut collected = Vec::new();
     collect_nested_ctes(plan, &mut collected);
@@ -4512,10 +4538,6 @@ fn flatten_all_ctes(plan: &mut RenderPlan) {
     if collected.is_empty() {
         return;
     }
-
-    // Deduplicate by name (keep first occurrence — the dependency-order one)
-    let mut seen = std::collections::HashSet::new();
-    collected.retain(|cte| seen.insert(cte.cte_name.clone()));
 
     plan.ctes.0 = collected;
 }
@@ -7925,6 +7947,136 @@ mod tests {
             nested.select.items.len(),
             "primary and nested direction branches must have matching column \
              counts after order-by column injection"
+        );
+    }
+
+    /// #567: `flatten_all_ctes`/`collect_nested_ctes` — the CTX-LESS render
+    /// path's final CTE-flattening step (reached e.g. via EXISTS subqueries,
+    /// `render_expr.rs:51`, and other `to_render_plan(` callers that never
+    /// touch `to_render_plan_with_ctx`) — has the same CTE-name-collision gap
+    /// #557 already fixed on the ctx-AWARE path (`extract_ctes_with_context`'s
+    /// Union arm, `cte_extraction.rs`): naively concatenating every Union
+    /// branch's CTEs and then deduping by keep-first-name silently DROPS a
+    /// real branch's CTE body whenever two branches independently compute the
+    /// SAME formulaic CTE name (e.g. a multi-type VLP's per-candidate-end-
+    /// label branches) but generate DIFFERENT CTE SQL. This directly
+    /// exercises `flatten_all_ctes` (via its private helper
+    /// `collect_nested_ctes`) with a synthetic two-branch Union shaped
+    /// exactly like that collision, without needing a full end-to-end query
+    /// repro (attempted but not found reachable through any live query path
+    /// — see PR discussion / commit message for what was tried).
+    #[test]
+    fn test_567_flatten_all_ctes_renames_colliding_union_branch_cte_and_fixes_up_from() {
+        use crate::render_plan::render_expr::ColumnAlias;
+        use crate::render_plan::{
+            ArrayJoinItem, CteContent, CteItems, FilterItems, FromTableItem, GroupByExpressions,
+            JoinItems, LimitItem, OrderByItems, SelectItem, SelectItems, SkipItem, Union,
+            UnionItems, UnionType, ViewTableRef,
+        };
+        use std::sync::Arc;
+
+        fn cte_ref(name: &str) -> ViewTableRef {
+            ViewTableRef {
+                source: Arc::new(LogicalPlan::Empty),
+                name: name.to_string(),
+                alias: Some("t".to_string()),
+                use_final: false,
+            }
+        }
+
+        fn branch(cte_name: &str, cte_sql: &str) -> RenderPlan {
+            RenderPlan {
+                ctes: CteItems(vec![Cte::new(
+                    cte_name.to_string(),
+                    CteContent::RawSql(cte_sql.to_string()),
+                    false,
+                )]),
+                select: SelectItems {
+                    items: vec![SelectItem {
+                        expression: RenderExpr::Literal(Literal::Integer(1)),
+                        col_alias: Some(ColumnAlias("__dummy".to_string())),
+                    }],
+                    distinct: false,
+                },
+                from: FromTableItem(Some(cte_ref(cte_name))),
+                joins: JoinItems(vec![]),
+                array_join: ArrayJoinItem(vec![]),
+                filters: FilterItems(None),
+                group_by: GroupByExpressions(vec![]),
+                having_clause: None,
+                order_by: OrderByItems(vec![]),
+                skip: SkipItem(None),
+                limit: LimitItem(None),
+                union: UnionItems(None),
+                fixed_path_info: None,
+                is_multi_label_scan: false,
+                variable_registry: None,
+            }
+        }
+
+        // Branch 0 (becomes the base plan) and branch 1 (a nested union
+        // sibling) each independently compute the SAME CTE name
+        // ("vlp_multi_type_a_b" — the real-world formulaic name for this
+        // exact collision, see #557) but with DIFFERENT CTE bodies, exactly
+        // like two candidate-end-label branches of an unlabeled multi-type
+        // VLP end node.
+        let mut base_plan = branch(
+            "vlp_multi_type_a_b",
+            "SELECT 'User' AS end_type FROM branch_0",
+        );
+        let branch_1 = branch(
+            "vlp_multi_type_a_b",
+            "SELECT 'Post' AS end_type FROM branch_1",
+        );
+        base_plan.union = UnionItems(Some(Union {
+            input: vec![branch_1],
+            union_type: UnionType::All,
+            is_cypher_union: false,
+        }));
+
+        flatten_all_ctes(&mut base_plan);
+
+        // Both CTE bodies must survive — the DIFFERENT-content collision
+        // must be resolved by renaming, never by silently dropping one.
+        assert_eq!(
+            base_plan.ctes.0.len(),
+            2,
+            "#567: both colliding-but-different CTE bodies must survive \
+             flattening, not be silently deduped away: {:?}",
+            base_plan.ctes.0
+        );
+        assert_eq!(base_plan.ctes.0[0].cte_name, "vlp_multi_type_a_b");
+        assert_eq!(base_plan.ctes.0[1].cte_name, "vlp_multi_type_a_b_2");
+
+        // The renamed branch's own FROM reference must be updated to match
+        // — otherwise the branch's SELECT still reads `FROM vlp_multi_type_a_b`
+        // while the WITH clause only defines `vlp_multi_type_a_b_2` for that
+        // branch's content (a dangling reference, ClickHouse "Unknown table
+        // expression identifier").
+        let renamed_branch_from = base_plan
+            .union
+            .0
+            .as_ref()
+            .expect("union branch must survive flattening")
+            .input
+            .first()
+            .expect("union branch must survive flattening")
+            .from
+            .0
+            .as_ref()
+            .expect("branch FROM must survive")
+            .name
+            .clone();
+        assert_eq!(
+            renamed_branch_from, "vlp_multi_type_a_b_2",
+            "#567: the renamed branch's own FROM reference must be updated \
+             to match its renamed CTE — otherwise it dangles"
+        );
+
+        // The base (non-renamed) branch's FROM reference must stay untouched.
+        assert_eq!(
+            base_plan.from.0.as_ref().unwrap().name,
+            "vlp_multi_type_a_b"
         );
     }
 
