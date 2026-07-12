@@ -68,36 +68,12 @@ fn is_scoping_only_with(wc: &WithClause) -> bool {
 
 /// Check if a plan subtree contains any WithClause node.
 fn contains_with_clause(plan: &LogicalPlan) -> bool {
-    match plan {
-        LogicalPlan::WithClause(_) => true,
-        LogicalPlan::GraphRel(gr) => {
-            contains_with_clause(&gr.left)
-                || contains_with_clause(&gr.center)
-                || contains_with_clause(&gr.right)
-        }
-        LogicalPlan::CartesianProduct(cp) => {
-            contains_with_clause(&cp.left) || contains_with_clause(&cp.right)
-        }
-        LogicalPlan::Filter(f) => contains_with_clause(&f.input),
-        LogicalPlan::Projection(p) => contains_with_clause(&p.input),
-        LogicalPlan::GraphJoins(gj) => contains_with_clause(&gj.input),
-        LogicalPlan::GroupBy(gb) => contains_with_clause(&gb.input),
-        LogicalPlan::OrderBy(ob) => contains_with_clause(&ob.input),
-        LogicalPlan::Limit(lim) => contains_with_clause(&lim.input),
-        LogicalPlan::Skip(s) => contains_with_clause(&s.input),
-        LogicalPlan::Unwind(uw) => contains_with_clause(&uw.input),
-        LogicalPlan::Union(u) => u.inputs.iter().any(|i| contains_with_clause(i)),
-        LogicalPlan::Cte(c) => contains_with_clause(&c.input),
-        LogicalPlan::GraphNode(gn) => contains_with_clause(&gn.input),
-        // Leaf nodes — no children to recurse into
-        LogicalPlan::Empty | LogicalPlan::ViewScan(_) | LogicalPlan::PageRank(_) => false,
-
-        // Write variants — recurse into preceding read pipeline.
-        LogicalPlan::Create(c) => contains_with_clause(&c.input),
-        LogicalPlan::SetProperties(sp) => contains_with_clause(&sp.input),
-        LogicalPlan::Delete(d) => contains_with_clause(&d.input),
-        LogicalPlan::Remove(r) => contains_with_clause(&r.input),
+    if matches!(plan, LogicalPlan::WithClause(_)) {
+        return true;
     }
+    plan.children()
+        .iter()
+        .any(|child| contains_with_clause(child))
 }
 
 /// Recursively collapse scoping-only WITH clauses in the plan tree.
@@ -295,8 +271,9 @@ fn collapse_recursive(plan: &LogicalPlan) -> LogicalPlan {
                 correlation_predicates: gj.correlation_predicates.clone(),
             })
         }
-        // Leaf nodes — return unchanged
-        other => other.clone(),
+        // Everything else — structural passthrough, recurse into direct children
+        // via the exhaustive `LogicalPlan::children`/`map_children` API.
+        other => other.map_children(collapse_recursive),
     }
 }
 
