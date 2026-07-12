@@ -358,6 +358,21 @@ fn distribute_union_impl(plan: &LogicalPlan, depth: usize) -> LogicalPlan {
             })
         }
 
+        // Write variants — left untouched (byte-identical to the pre-migration
+        // `other => other.clone()` catch-all, which was a hard STOP and never
+        // recursed into these). The recursing default below would descend into
+        // their `.input` (a read pipeline that CAN hold a Union, e.g.
+        // `MATCH (a)-[:R]-(b) WITH a,b CREATE (a)-[:R2]->(b)`), silently
+        // distributing it and diverging from main. Not constructible as a live
+        // divergence today only because CREATE support is independently broken;
+        // excluded here so repairing CREATE can't arm the landmine. Mirrors the
+        // identical exclusion in `scoping_with_collapse::collapse_recursive`
+        // (commit aebd43a4).
+        LogicalPlan::Create(_)
+        | LogicalPlan::SetProperties(_)
+        | LogicalPlan::Delete(_)
+        | LogicalPlan::Remove(_) => plan.clone(),
+
         // All other nodes (Projection, GroupBy, OrderBy, Limit, Skip, Unwind,
         // WithClause, Cte, Union, leaves, ...): no Union-distribution logic
         // applies AT this node itself (GroupBy/Projection aggregation must
@@ -496,5 +511,60 @@ mod tests {
             !has_buried_union(&rel),
             "a plan with no Union anywhere must never be reported as buried"
         );
+    }
+
+    /// Regression (Phase 1 Slice2 review): `distribute_union_impl`'s migrated
+    /// default arm (`other => other.map_children(...)`) must NOT recurse into
+    /// write-op variants' inputs. The pre-migration catch-all
+    /// (`other => other.clone()`) was a hard STOP that never touched
+    /// Create/SetProperties/Delete/Remove. `Create.input` IS a reachable read
+    /// pipeline that can hold a Union (e.g.
+    /// `MATCH (a)-[:R]-(b) WITH a,b CREATE (a)-[:R2]->(b)` — the undirected
+    /// edge produces a Union under the Create's input). Under the recursing
+    /// default that Union would be distributed (the Create's subtree rewritten);
+    /// this test pins the byte-identical behavior — the write-op input is
+    /// returned untouched. Mirrors
+    /// `scoping_with_collapse::test_collapse_does_not_recurse_into_write_op_input`
+    /// (commit aebd43a4). Verified to FAIL on the pre-fix recursing default.
+    #[test]
+    fn distribute_does_not_recurse_into_write_op_input() {
+        use crate::query_planner::logical_plan::Create;
+
+        // A GraphRel whose left child is a bare Union — this IS a "buried
+        // union" shape that distribute_union_impl WOULD rewrite if it reached
+        // it (distributing the GraphRel over the Union's branches).
+        let buried = union_of(vec![leaf_node("b_fwd"), leaf_node("b_rev")]);
+        let rel_with_buried_union = graph_rel("t1", buried, leaf_node("x"));
+
+        // Sanity: confirm that same subtree, when NOT under a write op, DOES
+        // get rewritten into a top-level Union — otherwise this test proves
+        // nothing about the exclusion.
+        let distributed_bare = distribute_union_impl(&rel_with_buried_union, 0);
+        assert!(
+            matches!(distributed_bare, LogicalPlan::Union(_)),
+            "precondition: a GraphRel over a bare Union must distribute into a \
+             top-level Union — otherwise the write-op exclusion below is untested"
+        );
+
+        // Now wrap that exact subtree as a Create's input.
+        let create = LogicalPlan::Create(Create {
+            input: Arc::new(rel_with_buried_union.as_ref().clone()),
+            patterns: vec![],
+        });
+
+        let result = distribute_union_impl(&create, 0);
+
+        // The Create wrapper is preserved AND its `.input` is returned byte-for-
+        // byte unchanged (still the GraphRel-over-Union, NOT distributed).
+        match result {
+            LogicalPlan::Create(c) => assert_eq!(
+                c.input.as_ref(),
+                rel_with_buried_union.as_ref(),
+                "Create.input must be returned unchanged — distribute_union_impl \
+                 must not recurse into write-op inputs (byte-identical to the \
+                 pre-migration `other => other.clone()` hard stop)"
+            ),
+            other => panic!("expected Create wrapper to be preserved, got {other:?}"),
+        }
     }
 }
