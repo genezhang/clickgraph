@@ -9871,6 +9871,74 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                     items: select_items,
                                     distinct: with_distinct,
                                 };
+
+                                // #529 shape 1 (loud guard — NOT a fix; see
+                                // `table_has_role_dependent_denorm_identity`'s doc
+                                // comment for the full mechanism): the WITH
+                                // projection we just attached to `rendered.select`
+                                // is about to be shared, byte-for-byte, across
+                                // EVERY branch of this multi-branch UNION
+                                // (`to_sql_query.rs`'s aggregate-UNION renderer
+                                // reuses one shared `plan.select` per branch,
+                                // never each branch's own). If this table backs a
+                                // node whose identity genuinely depends on which
+                                // role (from/to) it plays — a coupled/embedded
+                                // schema, e.g. Zeek's `IP` node on `conn_log` —
+                                // every branch will silently project the SAME
+                                // column instead of alternating roles, dropping
+                                // rows that only appear in the unselected role
+                                // and inflating counts for rows appearing in
+                                // both. Fail loudly here instead.
+                                //
+                                // Scoped to branches with NO JOIN (a bare
+                                // single-hop self-referencing scan, e.g.
+                                // `FROM conn_log AS r` with no JOIN at all): a
+                                // multi-hop pattern (e.g. `(a)-[:FLIGHT]-(b)-
+                                // [:FLIGHT]-(c)`) legitimately shares the SAME
+                                // projected column text across its direction
+                                // branches too, but there the per-branch JOIN
+                                // CONDITION (not the SELECT list) is what
+                                // encodes which role the node plays — verified
+                                // via `denorm_with_aggregate_group_by_middle_
+                                // node_no_null_collapse_465_blocking`, whose
+                                // 4 direction-permutation branches all project
+                                // `t2.origin_code`/`t2.origin_city` but differ
+                                // in their JOIN's `ON` clause instead
+                                // (`t2.origin_code = t1.dest_code` vs.
+                                // `t2.origin_code = t1.origin_code` etc.),
+                                // live-verified to return correct, distinct
+                                // per-city counts. Excluding any branch with a
+                                // JOIN keeps this guard scoped to the case it
+                                // actually diagnosed.
+                                if let Some(ref union) = rendered.union.0 {
+                                    let any_branch_has_join =
+                                        union.input.iter().any(|b| !b.joins.0.is_empty());
+                                    if !union.input.is_empty()
+                                        && rendered.joins.0.is_empty()
+                                        && !any_branch_has_join
+                                    {
+                                        if let Some(table) =
+                                            rendered.from.0.as_ref().map(|v| v.name.as_str())
+                                        {
+                                            if table_has_role_dependent_denorm_identity(
+                                                schema, table,
+                                            ) {
+                                                return Err(RenderBuildError::UnsupportedFeature(format!(
+                                                    "Undirected self-referencing relationship over \
+                                                     denormalized/embedded node table '{table}' is not \
+                                                     yet supported for WITH-aggregate queries (#529 \
+                                                     shape 1): the per-role UNION branches would \
+                                                     project the identical embedded identity column \
+                                                     instead of alternating from/to roles, silently \
+                                                     dropping and double-counting rows. Rewrite the \
+                                                     query with an explicit direction (e.g. `-[r]->` \
+                                                     instead of `-[r]-`) to work around this, or track \
+                                                     https://github.com/genezhang/clickgraph/issues/529."
+                                                )));
+                                            }
+                                        }
+                                    }
+                                }
                             } // end is_denorm_union else
 
                             // FIX: When the input plan was Empty (no MATCH before WITH),
@@ -14134,6 +14202,58 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
     Ok(render_plan)
 }
+
+/// #529 shape 1, bug 3 (loud guard — NOT a fix): an undirected self-
+/// referencing edge over a DENORMALIZED/embedded node (no separate physical
+/// node table — identity is a role-dependent column embedded on the SAME
+/// row as the relationship, e.g. Zeek's `IP` node on `conn_log` via
+/// `id.orig_h`/`id.resp_h`) needs its per-role UNION branches to alternate
+/// which embedded column identifies the anchor in each branch. That
+/// alternation is NOT implemented — `find_id_column_for_alias`
+/// (`render_plan/plan_builder.rs`) resolves a node's identity via the SAME
+/// static `NodeSchema::node_id` field regardless of which role (from or to)
+/// the node plays in a given direction branch, and `bidirectional_union.rs`'s
+/// per-branch `column_swaps` map (built specifically to correct this for
+/// Incoming-direction denormalized branches) is only ever threaded through
+/// `Projection` items, never `WithClause` items — so it never reaches a bare
+/// WITH-aggregate's pass-through/aggregate columns. The live CTE builder
+/// (`build_chained_with_match_cte_plan`) compounds this: once a WITH
+/// segment's pattern renders as a `Union` of 2+ direction branches (the
+/// "non-denormalized-union" path — see its own doc comment there), it
+/// attaches the WITH's projection (`select_items`, e.g. `a`, `count(r) AS c`)
+/// ONLY to the base branch (`rendered.select`) and never to the other UNION
+/// branches — `to_sql_query.rs`'s aggregate-UNION renderer then deliberately
+/// reuses that ONE shared `plan.select` for every branch's inner SELECT
+/// (`render_union_branch_sql` shows this codebase DOES have a working
+/// per-branch-select convention elsewhere; the aggregate-UNION path just
+/// doesn't use it). So every UNION branch ends up projecting the IDENTICAL
+/// column, silently dropping rows that only ever appear in the un-selected
+/// role and inflating counts for rows appearing in both roles (live-verified
+/// against the zeek fixture:
+/// `MATCH (a:IP)-[r:ACCESSED]-(b:IP) WITH a, count(r) AS c RETURN a.ip, c`
+/// returns 3 wrong rows — missing `10.0.0.99` and `142.250.80.46` entirely,
+/// and double-counting `93.184.216.34` — vs. the true 5 distinct IPs with
+/// `count`s `{10.0.0.99: 1, 142.250.80.46: 1, 192.168.1.10: 1,
+/// 192.168.1.20: 1, 93.184.216.34: 2}`).
+///
+/// Detects the schema-level precondition for this unfixed case: does `table`
+/// back a node whose identity genuinely depends on role (a denormalized/
+/// embedded node whose from/to-role physical columns DIFFER for the same
+/// Cypher property — see `NodeSchema::has_role_dependent_identity`, the
+/// canonical schema-catalog accessor this routes through)? A NORMALIZED
+/// self-referencing edge (e.g. `(p:Person)-[:KNOWS]-(p2:Person)` via a
+/// separate node table) is deliberately UNAFFECTED and must not trigger
+/// this: its identity column is the same real physical ID regardless of
+/// role, so sharing one SELECT across UNION branches there is correct, not
+/// a bug — the accessor returns `false` immediately for a normal node
+/// schema.
+fn table_has_role_dependent_denorm_identity(schema: &GraphSchema, table: &str) -> bool {
+    schema
+        .all_node_schemas()
+        .values()
+        .any(|ns| ns.full_table_name() == table && ns.has_role_dependent_identity())
+}
+
 pub(crate) fn build_with_aggregation_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -14172,6 +14292,13 @@ pub(crate) fn build_with_aggregation_match_cte_plan(
 
     // Note: GROUP BY optimization (reducing to ID-only) is now done in extract_group_by()
     // This happens automatically during to_render_plan() call above.
+    //
+    // NOTE: this function is currently dead code (never called — the live WITH
+    // pipeline routes through `build_chained_with_match_cte_plan`, which has
+    // its own #529-shape-1 loud guard at the point it attaches WITH projection
+    // items to a multi-branch UNION). Kept in case this path becomes reachable
+    // again; add the equivalent `table_has_role_dependent_denorm_identity`
+    // guard here too if so.
 
     // Step 3.5: Post-process SELECT items to fix `*` wildcards
     // The analyzer generates PropertyAccessExp(alias, "*") for WITH alias references
@@ -15355,6 +15482,32 @@ pub(crate) fn prune_joins_covered_by_cte(
 
             // 3. Fixed-point expansion: a non-CTE join is removable if ALL its neighbors
             //    are already removable
+            //
+            //    #461 investigation note (R4): tried tightening this to require
+            //    2+ neighbors (reasoning: a join with exactly ONE neighbor that
+            //    happens to be CTE-exported isn't necessarily already inside the
+            //    CTE — it can be a fresh, post-WITH join hanging directly off a
+            //    single-alias anchor, e.g. two sibling patterns sharing anchor
+            //    `c`: `MATCH (c) WITH c MATCH (o)-[:PLACED_BY]->(c) OPTIONAL
+            //    MATCH (o2)-[:PLACED_BY]->(c) ...` swept BOTH `o` and `o2` out of
+            //    the final query even though neither was ever inside the CTE —
+            //    #461 shape 1's actual over-pruning bug). That tightening DID fix
+            //    the over-pruning for the star/branch shape above, but broke the
+            //    single-OPTIONAL-pattern case this loop is ALSO relied on for
+            //    (#453/#460/#462/#472/#473's family, e.g. `WITH c OPTIONAL MATCH
+            //    (o)-[:PLACED_BY]->(c) ...`): there, the sole post-WITH `o` join
+            //    similarly has exactly ONE neighbor (`c`) and genuinely MUST be
+            //    pruned here — `build_chained_with_match_cte_plan`'s
+            //    `post_with_optional_restructure` (#453) independently rebuilds
+            //    the optional JOIN from `render_plan.from`/correlation predicates
+            //    and expects `prune_joins_covered_by_cte` to have already removed
+            //    the raw `o` join entry; leaving it in place breaks that
+            //    restructure. Reverted — the fix needs to distinguish "single
+            //    fresh join hanging off the anchor" (prune — #453 rebuilds it)
+            //    from "MULTIPLE sibling fresh joins hanging off the same anchor"
+            //    (don't prune any of them — #461 shape 1), not a blanket
+            //    neighbor-count threshold. Deferred; see the `fk_edge_461_*`
+            //    characterization test for the current (unfixed) state.
             loop {
                 let mut changed = false;
                 for join in &gj.joins {

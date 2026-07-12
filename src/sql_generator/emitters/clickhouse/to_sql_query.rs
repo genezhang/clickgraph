@@ -3497,6 +3497,20 @@ fn table_valid_columns(from: &FromTableItem) -> Option<HashSet<String>> {
             cols.extend(node_schema.all_valid_physical_columns());
         }
     }
+    // #529: a bare aggregate argument on the relationship variable itself
+    // (e.g. `count(r)` normalized to `r.<edge id column>`) names a column
+    // that only the RELATIONSHIP schema knows about — for a coupled/
+    // embedded-edge table (node and relationship share one physical row),
+    // the node schema above has no idea it exists, so without this the
+    // validity check always returns false and NULL-pads it out of every
+    // UNION branch (silently forcing `count(r)` to 0 regardless of the true
+    // row count). Fold in every relationship schema whose table matches too.
+    for rel_schema in schema.get_relationships_schemas().values() {
+        if rel_schema.full_table_name() == view_ref.name {
+            found = true;
+            cols.extend(rel_schema.all_valid_physical_columns());
+        }
+    }
     if found {
         Some(cols)
     } else {
@@ -3504,13 +3518,59 @@ fn table_valid_columns(from: &FromTableItem) -> Option<HashSet<String>> {
     }
 }
 
-/// #476: is `col_sql` (a raw aggregate-argument column, e.g. `n.post_id` or
-/// a dotted alias-form `"n.post_id"`) one of the physical columns that
-/// actually exist on this branch's table? Compares by the unqualified
-/// (post-final-dot) column name since `col_sql` may be table-qualified.
+/// #529: split a rendered aggregate-argument column reference (`col_sql`,
+/// e.g. `n.post_id` or a self-quoting physical-column form like
+/// `r."id.orig_h"` — `PropertyValue::to_sql` double-quotes a physical column
+/// whose OWN name embeds a `.`, like Zeek's `id.orig_h`) into its
+/// table-alias part and its physical-column part, with any such quoting
+/// stripped from the physical part.
+///
+/// A naive `rsplit('.').next()` (the pre-#529 approach) splits INSIDE a
+/// quoted physical column that itself contains a dot — `r."id.orig_h"` gives
+/// `orig_h"` (wrong column, stray trailing quote) instead of `id.orig_h`.
+/// This instead locates the quoted suffix by its outermost matching `"..."`
+/// pair when present, only falling back to a plain last-`.` split when the
+/// column isn't quoted at all.
+fn split_agg_arg_col(col_sql: &str) -> (&str, String) {
+    if col_sql.ends_with('"') && col_sql.len() >= 2 {
+        if let Some(open_quote_rel) = col_sql[..col_sql.len() - 1].rfind('"') {
+            let alias_part = col_sql[..open_quote_rel].trim_end_matches('.');
+            let physical = col_sql[open_quote_rel + 1..col_sql.len() - 1].replace("\"\"", "\"");
+            return (alias_part, physical);
+        }
+    }
+    match col_sql.rfind('.') {
+        Some(pos) => (&col_sql[..pos], col_sql[pos + 1..].to_string()),
+        None => ("", col_sql.to_string()),
+    }
+}
+
+/// #529: the flat, quote-free `alias.column` key used both as the inner
+/// SELECT's `AS` alias and the outer aggregate's backtick-quoted reference
+/// for an aggregate-argument column. Passing a self-quoting value-expression
+/// string (e.g. `r."id.orig_h"`) straight into `quote_alias()` as if it were
+/// already a bare alias — the pre-#529 bug — doubles the embedded `"` and
+/// wraps the whole malformed mess in another quote pair, producing a
+/// malformed identifier. Building the key through `split_agg_arg_col` first
+/// guarantees callers only ever quote a clean, unambiguous alias.
+fn agg_arg_alias_key(col_sql: &str) -> String {
+    let (alias, physical) = split_agg_arg_col(col_sql);
+    if alias.is_empty() {
+        physical
+    } else {
+        format!("{alias}.{physical}")
+    }
+}
+
+/// #476/#529: is `col_sql` (a raw aggregate-argument column, e.g. `n.post_id`
+/// or a self-quoting physical-column form like `r."id.orig_h"`) one of the
+/// physical columns that actually exist on this branch's table? Compares by
+/// the unqualified physical-column name, extracted via `split_agg_arg_col`
+/// (NOT a naive `rsplit('.').next()`, which mis-splits a quoted physical
+/// column that itself embeds a dot).
 fn agg_arg_col_valid_for_branch(col_sql: &str, valid_columns: &HashSet<String>) -> bool {
-    let physical = col_sql.rsplit('.').next().unwrap_or(col_sql);
-    valid_columns.contains(physical)
+    let (_, physical) = split_agg_arg_col(col_sql);
+    valid_columns.contains(&physical)
 }
 
 /// Path-materialization metadata column aliases.
@@ -3685,10 +3745,10 @@ fn build_union_inner_select(
         // reference ClickHouse can't resolve.
         let branch_has_column = valid_columns_for_branch
             .is_none_or(|valid| agg_arg_col_valid_for_branch(col_sql, valid));
+        let (alias_part, property_part) = split_agg_arg_col(col_sql);
         let expr_sql = if !branch_has_column {
             "NULL".to_string()
-        } else if let Some(dot_pos) = col_sql.rfind('.') {
-            let property_part = &col_sql[dot_pos + 1..];
+        } else if !alias_part.is_empty() {
             non_agg_items
                 .iter()
                 .find(|i| i.col_alias.as_ref().is_some_and(|a| a.0 == property_part))
@@ -3700,7 +3760,8 @@ fn build_union_inner_select(
         sql.push_str(&format!(
             "      {} AS {}",
             expr_sql,
-            crate::sql_generator::function_mapper::current_function_mapper().quote_alias(col_sql)
+            crate::sql_generator::function_mapper::current_function_mapper()
+                .quote_alias(&agg_arg_alias_key(col_sql))
         ));
         idx += 1;
         if idx < total_items {
@@ -3806,12 +3867,17 @@ fn build_outer_aggregate_select(
                     }
                 }
                 // Handle agg_arg_cols: columns that aggregates reference.
-                // Items in agg_arg_cols are projected verbatim as `col_ref AS "col_ref"`
-                // by the inner SELECT, so they are always available under their own name.
-                // Just backtick-wrap them for the outer aggregate reference.
+                // Items in agg_arg_cols are projected by the inner SELECT under
+                // the CLEAN `agg_arg_alias_key` alias (#529 — matches
+                // `build_union_inner_select`'s own `AS` alias), not under their
+                // raw (possibly self-quoting) value-expression text verbatim.
+                // Match against the raw text (which is what actually appears in
+                // `agg_sql`, itself rendered via `.to_sql()`) but substitute the
+                // clean, quote-free alias key so the reference actually resolves.
                 for col_ref in agg_arg_cols {
                     if agg_sql.contains(col_ref.as_str()) {
-                        agg_sql = agg_sql.replace(col_ref, &format!("`{}`", col_ref));
+                        let alias_key = agg_arg_alias_key(col_ref);
+                        agg_sql = agg_sql.replace(col_ref, &format!("`{}`", alias_key));
                     }
                 }
                 format!(
@@ -3892,7 +3958,12 @@ fn build_aliased_group_by(group_by: &GroupByExpressions, select: &SelectItems) -
             // outer-scope table (ClickHouse Code 47 `UNKNOWN_IDENTIFIER`). An
             // unqualified bare column isn't exported this way, so it's excluded
             // (falls through to the raw fallback below, unchanged behavior).
-            sql.push_str(&format!("`{}`", expr_sql));
+            //
+            // #529: `build_union_inner_select` exports this column under the
+            // CLEAN `agg_arg_alias_key`, not the raw (possibly self-quoting)
+            // expression text — use the same key here so the GROUP BY
+            // reference actually resolves against it.
+            sql.push_str(&format!("`{}`", agg_arg_alias_key(&expr_sql)));
         } else {
             sql.push_str(&expr_sql);
         }

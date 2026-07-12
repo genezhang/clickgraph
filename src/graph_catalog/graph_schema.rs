@@ -184,6 +184,32 @@ impl NodeSchema {
         cols
     }
 
+    /// #529: does this node's physical IDENTITY genuinely depend on which
+    /// role (from/to) it plays in a given relationship direction? True only
+    /// for a denormalized/embedded node (`is_denormalized`) whose
+    /// `from_properties`/`to_properties` disagree on the physical column for
+    /// at least one Cypher property (e.g. Zeek's `IP` node: `ip` maps to
+    /// `id.orig_h` from-side, `id.resp_h` to-side). A denormalized node whose
+    /// from/to maps happen to agree on every property (or a non-denormalized
+    /// node, which has no role-specific maps at all) returns `false` — its
+    /// identity is the same real physical column regardless of role, so
+    /// treating it as role-dependent would be a false positive.
+    ///
+    /// Canonical schema-catalog accessor (axis-dispatch rule, CLAUDE.md §7)
+    /// for callers that need to distinguish "role genuinely matters" from a
+    /// raw `is_denormalized` flag check, which alone conflates the two
+    /// cases above. Introduced for `table_has_role_dependent_denorm_identity`
+    /// (`render_plan/plan_builder_utils.rs`), the #529 shape-1 loud guard.
+    pub fn has_role_dependent_identity(&self) -> bool {
+        self.is_denormalized
+            && match (&self.from_properties, &self.to_properties) {
+                (Some(from_p), Some(to_p)) => from_p
+                    .iter()
+                    .any(|(k, v)| to_p.get(k).is_some_and(|to_v| to_v != v)),
+                _ => false,
+            }
+    }
+
     /// #549: merge this node's role-specific denormalized property map
     /// (`from_properties`/`to_properties`) with any ADDITIONAL properties
     /// declared in `property_mappings` that aren't already covered by the
@@ -482,6 +508,40 @@ impl RelationshipSchema {
                 v
             })
             .unwrap_or_default()
+    }
+
+    /// #529: physical DB columns valid for THIS relationship's own row —
+    /// the relationship-owned companion to `NodeSchema::all_valid_physical_columns`.
+    /// Covers `property_mappings`, the edge's own identity column(s)
+    /// (`edge_id`, falling back to `from_id`/`to_id`), and any denormalized
+    /// from/to-side node property columns embedded on the same physical row
+    /// (`from_node_properties`/`to_node_properties`).
+    ///
+    /// Used by `table_valid_columns` (#476/#529) so a bare aggregate argument
+    /// on the relationship variable itself (e.g. `count(r)` normalized to
+    /// `r.<edge id column>`) isn't incorrectly NULL-padded out of every UNION
+    /// branch just because the anchor NODE schema alone doesn't know about a
+    /// column that actually belongs to the relationship's own row (coupled/
+    /// embedded-edge schemas, where node and relationship share one table).
+    pub fn all_valid_physical_columns(&self) -> HashSet<String> {
+        let mut cols: HashSet<String> = HashSet::new();
+        for value in self.property_mappings.values() {
+            if let PropertyValue::Column(col) = value {
+                cols.insert(col.clone());
+            }
+        }
+        if let Some(ref edge_id) = self.edge_id {
+            cols.extend(edge_id.columns().iter().map(|c| c.to_string()));
+        }
+        cols.extend(self.from_id.columns().iter().map(|c| c.to_string()));
+        cols.extend(self.to_id.columns().iter().map(|c| c.to_string()));
+        if let Some(ref from_props) = self.from_node_properties {
+            cols.extend(from_props.values().cloned());
+        }
+        if let Some(ref to_props) = self.to_node_properties {
+            cols.extend(to_props.values().cloned());
+        }
+        cols
     }
 }
 
