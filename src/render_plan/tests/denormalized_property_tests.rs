@@ -736,6 +736,7 @@ fn test_analyzer_denormalized_property_integration() {
             cte_references: std::collections::HashMap::new(),
             pattern_combinations: None,
             was_undirected: None,
+            match_clause_index: 0, // #586 (synthetic/test)
         },
     ));
 

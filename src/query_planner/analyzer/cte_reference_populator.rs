@@ -275,6 +275,7 @@ mod tests {
             cte_references: HashMap::new(),
             pattern_combinations: None,
             was_undirected: None,
+            match_clause_index: 0, // #586 (synthetic/test)
         }
     }
 

@@ -836,6 +836,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                         cte_references: std::collections::HashMap::new(),
                         pattern_combinations: Some(pattern_combinations.clone()), // ⭐ KEY: Store combinations!
                         was_undirected: None,
+                        match_clause_index: plan_ctx.current_match_clause_index(), // #586
                     };
 
                     // Preserve input plan: if there's an existing non-Empty plan
@@ -1304,6 +1305,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 cte_references: std::collections::HashMap::new(),
                 pattern_combinations: None,
                 was_undirected: None,
+                match_clause_index: plan_ctx.current_match_clause_index(), // #586
             };
 
             // Register relationship and path variable in context
@@ -1441,6 +1443,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 cte_references: std::collections::HashMap::new(),
                 pattern_combinations: None,
                 was_undirected: None,
+                match_clause_index: plan_ctx.current_match_clause_index(), // #586
             };
 
             // Register relationship and path variable in context
@@ -1697,6 +1700,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 cte_references: std::collections::HashMap::new(),
                 pattern_combinations: None,
                 was_undirected: None,
+                match_clause_index: plan_ctx.current_match_clause_index(), // #586
             };
 
             // Register relationship and path variable in context
@@ -2050,6 +2054,12 @@ pub fn evaluate_match_clause_with_optional<'a>(
         use crate::query_planner::logical_plan::where_clause::evaluate_where_clause;
         plan = evaluate_where_clause(where_clause, plan)?;
     }
+
+    // #586: advance the clause counter so the NEXT MATCH / OPTIONAL MATCH clause
+    // gets a distinct index. All GraphRels lowered above (including comma-separated
+    // patterns within this single clause) share this clause's index, which is
+    // exactly what Cypher's per-clause relationship-uniqueness rule requires.
+    plan_ctx.advance_match_clause();
 
     Ok(plan)
 }

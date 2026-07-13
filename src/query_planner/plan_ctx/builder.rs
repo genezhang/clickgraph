@@ -47,6 +47,8 @@ pub struct PlanCtxBuilder {
     alias_table_ctx_map: HashMap<String, TableCtx>,
     optional_aliases: HashSet<String>,
     cte_counter: usize,
+    /// #586: current MATCH-clause index (see PlanCtx.match_clause_index).
+    match_clause_index: usize,
     cte_columns: HashMap<String, HashMap<String, String>>,
     cte_entity_types: CteEntityTypes,
     property_requirements: Option<PropertyRequirements>,
@@ -70,6 +72,7 @@ impl PlanCtxBuilder {
             alias_table_ctx_map: HashMap::new(),
             optional_aliases: HashSet::new(),
             cte_counter: 0,
+            match_clause_index: 0,
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
             property_requirements: None,
@@ -94,6 +97,8 @@ impl PlanCtxBuilder {
             alias_table_ctx_map: HashMap::new(),
             optional_aliases: HashSet::new(),
             cte_counter: 0,
+            // #586: inherit clause counter across the WITH barrier (monotonic query-wide).
+            match_clause_index: parent.match_clause_index,
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
             property_requirements: None,
@@ -197,6 +202,7 @@ impl PlanCtxBuilder {
             parent_scope: self.parent_scope,
             is_with_scope: self.is_with_scope,
             cte_counter: self.cte_counter,
+            match_clause_index: self.match_clause_index,
             cte_columns: self.cte_columns,
             cte_entity_types: self.cte_entity_types,
             property_requirements: self.property_requirements,

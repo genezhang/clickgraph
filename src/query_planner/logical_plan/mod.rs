@@ -945,6 +945,17 @@ pub struct GraphRel {
     /// Allows downstream (CTE extraction) to know this was originally undirected
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub was_undirected: Option<bool>,
+
+    /// #586: Monotonic index of the MATCH / OPTIONAL MATCH clause that lowered
+    /// this relationship. Assigned during AST→LogicalPlan lowering from a
+    /// per-query counter in `PlanCtx` (one value per clause; comma-separated
+    /// patterns in a single clause share the same index). Relationship-
+    /// uniqueness ("a relationship cannot be traversed twice") is a PER-CLAUSE
+    /// rule in Cypher, so the uniqueness-constraint generator uses this to skip
+    /// pairs of edges that originate from different MATCH clauses. Rebuild/clone
+    /// paths MUST preserve it; synthetic/test constructions default to 0.
+    #[serde(default)]
+    pub match_clause_index: usize,
 }
 
 /// Mode for shortest path queries
@@ -1465,6 +1476,7 @@ impl GraphRel {
                 cte_references: std::collections::HashMap::new(),
                 pattern_combinations: self.pattern_combinations.clone(),
                 was_undirected: self.was_undirected,
+                match_clause_index: self.match_clause_index, // #586: preserve clause provenance
             })))
         } else {
             Transformed::No(old_plan)
@@ -2503,6 +2515,7 @@ mod tests {
             cte_references: HashMap::from([("b".to_string(), "with_b_cte".to_string())]),
             pattern_combinations: None,
             was_undirected: Some(false),
+            match_clause_index: 0, // #586 (synthetic/test)
         });
         // Sanity: left/center/right really are distinct values, otherwise a
         // swap bug in map_children could go undetected by equality alone.
@@ -2831,6 +2844,7 @@ mod tests {
             cte_references: std::collections::HashMap::new(),
             pattern_combinations: None,
             was_undirected: None,
+            match_clause_index: 0, // #586 (synthetic/test)
         };
 
         let old_plan = Arc::new(LogicalPlan::GraphRel(graph_rel.clone()));
@@ -3066,6 +3080,7 @@ mod tests {
             cte_references: std::collections::HashMap::new(),
             pattern_combinations: None,
             was_undirected: None,
+            match_clause_index: 0, // #586 (synthetic/test)
         })
     }
 

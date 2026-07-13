@@ -84,6 +84,7 @@ fn transform_bidirectional(
                         cte_references: graph_rel.cte_references.clone(),
                         pattern_combinations: graph_rel.pattern_combinations.clone(),
                         was_undirected: Some(true),
+                        match_clause_index: graph_rel.match_clause_index, // #586: preserve clause provenance
                     }));
                     return Ok(Transformed::Yes(new_graph_rel));
                 }
@@ -836,6 +837,11 @@ struct RelInfo {
     /// only ever bind the SAME physical relationship row if they scan the
     /// same table.
     source_table: Option<String>,
+    /// #586: Index of the MATCH / OPTIONAL MATCH clause this relationship was
+    /// lowered from. Cypher's relationship-uniqueness rule is per-clause, so
+    /// pairs from different clauses must NOT be guarded (they may re-bind the
+    /// same physical edge).
+    match_clause_index: usize,
 }
 
 impl RelInfo {
@@ -943,6 +949,7 @@ fn collect_relationship_info_inner(
                         edge_id_cols: anchor_id_cols,
                         rel_types,
                         source_table: Some(scan.source_table.clone()),
+                        match_clause_index: graph_rel.match_clause_index, // #586
                     });
                 } else {
                     rels.push(RelInfo {
@@ -950,6 +957,7 @@ fn collect_relationship_info_inner(
                         edge_id_cols,
                         rel_types,
                         source_table: Some(scan.source_table.clone()),
+                        match_clause_index: graph_rel.match_clause_index, // #586
                     });
                 }
             }
@@ -986,6 +994,18 @@ fn generate_relationship_uniqueness_filter(rels: &[RelInfo]) -> Option<LogicalEx
         for j in (i + 1)..rels.len() {
             let r1 = &rels[i];
             let r2 = &rels[j];
+
+            // #586: relationship uniqueness is scoped to a SINGLE MATCH clause.
+            // Two edges lowered from SEPARATE MATCH clauses (e.g.
+            // `MATCH (a)-[:R]-(b) MATCH (a)-[:R]-(b)`) impose NO cross-clause
+            // uniqueness — the later clause independently re-binds the same
+            // relationships. Emitting `NOT (t2.id = t1.id ...)` across clauses
+            // silently drops every legitimately-repeated pair. Only same-clause
+            // pairs (including comma-separated patterns within one clause) are
+            // subject to the rule.
+            if r1.match_clause_index != r2.match_clause_index {
+                continue;
+            }
 
             // #492 review: only guard pairs that could bind the SAME physical
             // relationship (same table + overlapping types). Relationships of
@@ -1439,6 +1459,7 @@ fn apply_direction_combination_inner(
                 } else {
                     graph_rel.was_undirected
                 },
+                match_clause_index: graph_rel.match_clause_index, // #586: preserve clause provenance
             }))
         }
         LogicalPlan::Projection(proj) => {
@@ -1645,6 +1666,7 @@ mod tests {
             cte_references: std::collections::HashMap::new(),
             pattern_combinations: None,
             was_undirected: None,
+            match_clause_index: 0, // #586 (synthetic/test)
         }
     }
 
@@ -1833,6 +1855,7 @@ mod tests {
             cte_references: std::collections::HashMap::new(),
             pattern_combinations: None,
             was_undirected: None,
+            match_clause_index: 0, // #586 (synthetic/test)
         }
     }
 
@@ -1928,6 +1951,7 @@ mod tests {
             cte_references: std::collections::HashMap::new(),
             pattern_combinations: None,
             was_undirected: None,
+            match_clause_index: 0, // #586 (synthetic/test)
         };
         let plan = Arc::new(LogicalPlan::GraphRel(graph_rel));
 

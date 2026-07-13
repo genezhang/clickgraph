@@ -473,6 +473,8 @@ impl<'a> TryFrom<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery
                         cte_references: std::collections::HashMap::new(),
                         pattern_combinations: None,
                         was_undirected: None,
+                        // #586: exists-subquery pattern is its own scope; clause 0 is fine.
+                        match_clause_index: 0,
                     }))
                 }
             }

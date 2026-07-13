@@ -86,6 +86,13 @@ pub struct PlanCtx {
     /// Counter for generating unique CTE names (ensures with_a_b_cte_0, with_a_b_cte_1, etc.)
     /// Incremented each time a WITH clause is processed to prevent duplicate CTE names
     pub(crate) cte_counter: usize,
+    /// #586: Index of the MATCH / OPTIONAL MATCH clause currently being lowered.
+    /// GraphRels constructed during lowering stamp this onto `GraphRel.match_clause_index`
+    /// so relationship-uniqueness constraints can be scoped per clause (Cypher's
+    /// uniqueness rule applies within a single MATCH clause, never across clauses).
+    /// Advanced once per clause via `advance_match_clause()`; inherited by WITH
+    /// child scopes so it stays monotonic query-wide.
+    pub(crate) match_clause_index: usize,
     /// Track exported columns for each CTE
     /// Map: CTE name → (graph_property → cte_column_name)
     /// Example: "with_p_cte_1" → {"firstName" → "p_firstName", "age" → "p_age"}
@@ -510,6 +517,7 @@ impl PlanCtx {
             parent_scope: None,
             is_with_scope: false,
             cte_counter: 0,
+            match_clause_index: 0,
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
             property_requirements: None,
@@ -542,6 +550,7 @@ impl PlanCtx {
             parent_scope: None,
             is_with_scope: false,
             cte_counter: 0,
+            match_clause_index: 0,
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
             property_requirements: None,
@@ -604,6 +613,7 @@ impl PlanCtx {
             parent_scope: None,
             is_with_scope: false,
             cte_counter: 0,
+            match_clause_index: 0,
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
             property_requirements: None,
@@ -646,6 +656,9 @@ impl PlanCtx {
             parent_scope: Some(Box::new(parent.clone())),
             is_with_scope,
             cte_counter: 0,
+            // #586: inherit the clause counter so it stays monotonic across the
+            // WITH barrier (subsequent MATCH clauses get a distinct clause index).
+            match_clause_index: parent.match_clause_index,
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
             property_requirements: None,
@@ -681,6 +694,7 @@ impl PlanCtx {
             parent_scope: None,
             is_with_scope: false,
             cte_counter: 0,
+            match_clause_index: 0,
             cte_columns: HashMap::new(),
             cte_entity_types: HashMap::new(),
             property_requirements: None,
@@ -697,6 +711,23 @@ impl PlanCtx {
             group_combinations: HashMap::new(),
             pattern_combinations: HashMap::new(),
         }
+    }
+
+    // ========================================================================
+    // MATCH-clause provenance (#586)
+    // ========================================================================
+
+    /// Index of the MATCH / OPTIONAL MATCH clause currently being lowered.
+    /// GraphRels created during lowering stamp this onto `GraphRel.match_clause_index`.
+    #[must_use]
+    pub fn current_match_clause_index(&self) -> usize {
+        self.match_clause_index
+    }
+
+    /// Advance to the next MATCH / OPTIONAL MATCH clause. Called once per clause
+    /// (after its patterns are lowered) so the next clause gets a distinct index.
+    pub fn advance_match_clause(&mut self) {
+        self.match_clause_index += 1;
     }
 
     // ========================================================================

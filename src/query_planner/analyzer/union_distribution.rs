@@ -435,6 +435,7 @@ mod tests {
             cte_references: Default::default(),
             pattern_combinations: None,
             was_undirected: None,
+            match_clause_index: 0, // #586 (synthetic/test)
         }))
     }
 
