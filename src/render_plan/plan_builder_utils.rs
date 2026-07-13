@@ -47,7 +47,7 @@ use crate::query_planner::join_context::{
     VlpPosition, VLP_CTE_FROM_ALIAS, VLP_END_ID_COLUMN, VLP_START_ID_COLUMN,
 };
 use crate::query_planner::logical_expr::{Direction, LogicalExpr};
-use crate::query_planner::logical_plan::{GraphNode, GraphRel, LogicalPlan};
+use crate::query_planner::logical_plan::{GraphRel, LogicalPlan};
 use crate::query_planner::plan_ctx::PlanCtx;
 use crate::render_plan::plan_builder::RenderPlanBuilder;
 use crate::sql_generator::function_mapper::current_function_mapper;
@@ -4348,104 +4348,6 @@ pub fn has_with_clause_in_graph_rel(plan: &LogicalPlan) -> bool {
     let result = check_graph_rel_right(plan);
     log::debug!("🔍 has_with_clause_in_graph_rel: Final result: {}", result);
     result
-}
-
-/// Get node ID column for alias with schema lookup
-pub fn get_node_id_column_for_alias_with_schema(
-    alias: &str,
-    plan: &LogicalPlan,
-    schema: &GraphSchema,
-) -> Option<String> {
-    // First try to find the table name for this alias
-    let table_name = find_table_for_alias(plan, alias)?;
-
-    // Look up the node schema
-    let node_schema = schema.node_schema(&table_name).ok()?;
-
-    // Return first ID column
-    Some(node_schema.node_id.id.first_column().to_string())
-}
-
-/// Find table name for a given alias by traversing the logical plan
-pub fn find_table_for_alias(plan: &LogicalPlan, target_alias: &str) -> Option<String> {
-    match plan {
-        LogicalPlan::ViewScan(_vs) => {
-            // ViewScan doesn't have alias - this shouldn't match directly
-            None
-        }
-        LogicalPlan::GraphNode(gn) => {
-            if gn.alias == target_alias {
-                if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
-                    Some(vs.source_table.clone())
-                } else {
-                    None
-                }
-            } else {
-                find_table_for_alias(&gn.input, target_alias)
-            }
-        }
-        LogicalPlan::GraphRel(gr) => find_table_for_alias(&gr.left, target_alias)
-            .or_else(|| find_table_for_alias(&gr.center, target_alias))
-            .or_else(|| find_table_for_alias(&gr.right, target_alias)),
-        LogicalPlan::Filter(f) => find_table_for_alias(&f.input, target_alias),
-        LogicalPlan::Projection(p) => find_table_for_alias(&p.input, target_alias),
-        LogicalPlan::GraphJoins(gj) => find_table_for_alias(&gj.input, target_alias),
-        LogicalPlan::Limit(l) => find_table_for_alias(&l.input, target_alias),
-        LogicalPlan::OrderBy(o) => find_table_for_alias(&o.input, target_alias),
-        LogicalPlan::Skip(s) => find_table_for_alias(&s.input, target_alias),
-        LogicalPlan::GroupBy(g) => find_table_for_alias(&g.input, target_alias),
-        LogicalPlan::Unwind(u) => find_table_for_alias(&u.input, target_alias),
-        LogicalPlan::Union(u) => u
-            .inputs
-            .iter()
-            .find_map(|p| find_table_for_alias(p, target_alias)),
-        LogicalPlan::CartesianProduct(cp) => find_table_for_alias(&cp.left, target_alias)
-            .or_else(|| find_table_for_alias(&cp.right, target_alias)),
-        _ => None,
-    }
-}
-
-/// Find the leftmost ViewScan node for polymorphic CTE FROM determination
-pub fn find_leftmost_viewscan_node(plan: &LogicalPlan) -> Option<&GraphNode> {
-    match plan {
-        LogicalPlan::GraphNode(gn) => {
-            if matches!(gn.input.as_ref(), LogicalPlan::ViewScan(_)) {
-                return Some(gn);
-            }
-            None
-        }
-        LogicalPlan::GraphRel(gr) => {
-            // Prefer left (from) node first - recurse into left branch
-            if let Some(node) = find_leftmost_viewscan_node(&gr.left) {
-                return Some(node);
-            }
-            // Check if left is a GraphNode with ViewScan
-            if let LogicalPlan::GraphNode(left_node) = gr.left.as_ref() {
-                if matches!(left_node.input.as_ref(), LogicalPlan::ViewScan(_))
-                    && !left_node.is_denormalized
-                {
-                    return Some(left_node);
-                }
-            }
-            // Then try right node
-            if let LogicalPlan::GraphNode(right_node) = gr.right.as_ref() {
-                if matches!(right_node.input.as_ref(), LogicalPlan::ViewScan(_))
-                    && !right_node.is_denormalized
-                {
-                    return Some(right_node);
-                }
-            }
-            // Recurse into right
-            find_leftmost_viewscan_node(&gr.right)
-        }
-        LogicalPlan::Filter(f) => find_leftmost_viewscan_node(&f.input),
-        LogicalPlan::Projection(p) => find_leftmost_viewscan_node(&p.input),
-        LogicalPlan::GraphJoins(gj) => find_leftmost_viewscan_node(&gj.input),
-        LogicalPlan::Limit(l) => find_leftmost_viewscan_node(&l.input),
-        LogicalPlan::OrderBy(o) => find_leftmost_viewscan_node(&o.input),
-        LogicalPlan::Skip(s) => find_leftmost_viewscan_node(&s.input),
-        _ => None,
-    }
 }
 
 /// Extract start filter for outer query in optional VLP

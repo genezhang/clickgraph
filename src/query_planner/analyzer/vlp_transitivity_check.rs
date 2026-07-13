@@ -296,7 +296,36 @@ fn subtree_has_uncapped_vlp(plan: &LogicalPlan) -> bool {
         }
         LogicalPlan::GraphNode(gn) => subtree_has_uncapped_vlp(&gn.input),
         LogicalPlan::Filter(f) => subtree_has_uncapped_vlp(&f.input),
-        _ => false,
+        // Leaves / barrier variants that do not carry a post-clamp VLP GraphRel
+        // in the positions this walker is reached from (only GraphRel.left /
+        // GraphRel.right, GraphNode.input, Filter.input, or the
+        // non-CartesianProduct `other` leftovers of
+        // count_cartesian_branches_needing_vlp_cte — and this pass runs during
+        // analysis, before Cte nodes exist and before any barrier could nest
+        // inside a comma-separated CartesianProduct branch). Enumerated
+        // explicitly rather than via `_ => false` so that adding a new
+        // LogicalPlan variant is a compile error that must be classified here:
+        // a silent `false` for a variant that *could* bury a VLP would let the
+        // #499 reject guard under-fire and emit broken SQL (the ClickHouse
+        // Code 47 / vanishing-FROM failure documented above).
+        LogicalPlan::ViewScan(_)
+        | LogicalPlan::Empty
+        | LogicalPlan::PageRank(_)
+        | LogicalPlan::Cte(_)
+        | LogicalPlan::WithClause(_)
+        | LogicalPlan::Union(_)
+        | LogicalPlan::Unwind(_)
+        | LogicalPlan::Projection(_)
+        | LogicalPlan::GroupBy(_)
+        | LogicalPlan::OrderBy(_)
+        | LogicalPlan::Limit(_)
+        | LogicalPlan::Skip(_)
+        | LogicalPlan::GraphJoins(_)
+        | LogicalPlan::CartesianProduct(_)
+        | LogicalPlan::Create(_)
+        | LogicalPlan::SetProperties(_)
+        | LogicalPlan::Delete(_)
+        | LogicalPlan::Remove(_) => false,
     }
 }
 
