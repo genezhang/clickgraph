@@ -170,6 +170,7 @@ fn collapse_recursive(plan: &LogicalPlan) -> LogicalPlan {
                 cte_references: gr.cte_references.clone(),
                 pattern_combinations: gr.pattern_combinations.clone(),
                 was_undirected: gr.was_undirected,
+                match_clause_index: gr.match_clause_index, // #586: preserve clause provenance
             })
         }
         LogicalPlan::CartesianProduct(cp) => {

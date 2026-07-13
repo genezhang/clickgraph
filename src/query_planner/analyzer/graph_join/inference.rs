@@ -276,6 +276,7 @@ impl GraphJoinInference {
                     is_shortest_path: graph_rel.shortest_path_mode.is_some(),
                     direction: graph_rel.direction.clone(),
                     is_optional: graph_rel.is_optional.unwrap_or(false),
+                    match_clause_index: graph_rel.match_clause_index, // #586
                 };
                 metadata.edges.push(edge_info);
 

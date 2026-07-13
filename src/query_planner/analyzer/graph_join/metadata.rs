@@ -64,6 +64,12 @@ pub struct PatternEdgeInfo {
     pub direction: Direction,
     /// Whether this edge is part of an OPTIONAL MATCH
     pub is_optional: bool,
+    /// #586: Index of the MATCH / OPTIONAL MATCH clause that lowered this edge
+    /// (copied from `GraphRel.match_clause_index`). Cypher's relationship-
+    /// uniqueness rule applies WITHIN a single MATCH clause only, so the
+    /// uniqueness-constraint generator uses this to skip pairs of edges that
+    /// originate from different clauses.
+    pub match_clause_index: usize,
 }
 
 /// Complete pattern graph metadata extracted from a MATCH clause.
@@ -154,6 +160,7 @@ impl PatternMetadataBuilder {
                     is_shortest_path: graph_rel.shortest_path_mode.is_some(),
                     direction: graph_rel.direction.clone(),
                     is_optional: graph_rel.is_optional.unwrap_or(false),
+                    match_clause_index: graph_rel.match_clause_index, // #586
                 };
                 metadata.edges.push(edge_info);
 

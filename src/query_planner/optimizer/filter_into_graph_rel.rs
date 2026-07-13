@@ -313,6 +313,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             cte_references: std::collections::HashMap::new(),
                             pattern_combinations: graph_rel.pattern_combinations.clone(),
                             was_undirected: graph_rel.was_undirected,
+                            match_clause_index: graph_rel.match_clause_index, // #586: preserve clause provenance
                         }));
 
                         // Rebuild projection with new GraphRel, and return without Filter wrapper
@@ -363,6 +364,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                         cte_references: std::collections::HashMap::new(),
                         pattern_combinations: graph_rel.pattern_combinations.clone(),
                         was_undirected: graph_rel.was_undirected,
+                        match_clause_index: graph_rel.match_clause_index, // #586: preserve clause provenance
                     }));
 
                     // Return the GraphRel directly, removing the Filter wrapper
@@ -1204,6 +1206,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             cte_references: std::collections::HashMap::new(),
                             pattern_combinations: graph_rel.pattern_combinations.clone(),
                             was_undirected: graph_rel.was_undirected,
+                            match_clause_index: graph_rel.match_clause_index, // #586: preserve clause provenance
                         }));
 
                         return Ok(Transformed::Yes(new_graph_rel));

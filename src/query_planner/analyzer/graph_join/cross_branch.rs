@@ -132,6 +132,22 @@ pub fn generate_relationship_uniqueness_constraints(
                 continue;
             }
 
+            // #586: Cypher's relationship-uniqueness rule ("a relationship cannot
+            // be traversed twice") is scoped to a SINGLE MATCH clause. Two edges
+            // that come from SEPARATE MATCH clauses (e.g.
+            // `MATCH (a)-[:R]->(b) MATCH (a)-[:R]->(b)`) impose NO cross-clause
+            // uniqueness — the second clause independently re-matches the same
+            // relationships, so both must be allowed to bind the same physical
+            // edge. Emitting `t2.id <> t1.id` across clauses silently zeroes out
+            // every legitimately-repeated pair (a ground-rule-1 violation). Only
+            // edges lowered from the SAME clause (same `match_clause_index`,
+            // including comma-separated patterns within one clause, e.g.
+            // `MATCH (a)-[:R]->(b), (a)-[:R]->(b)`) are subject to the rule.
+            // Discovered via #586 + live verification.
+            if edge1.match_clause_index != edge2.match_clause_index {
+                continue;
+            }
+
             // #518: the uniqueness constraint only makes sense when the two
             // edges could physically be the SAME relationship, which
             // requires sharing at least one relationship type — comparing

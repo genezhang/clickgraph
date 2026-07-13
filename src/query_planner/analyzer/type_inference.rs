@@ -607,6 +607,7 @@ impl TypeInference {
                         // in that case a single-table scan is sufficient.
                         pattern_combinations: rel.pattern_combinations.clone(),
                         was_undirected: rel.was_undirected,
+                        match_clause_index: rel.match_clause_index, // #586: preserve clause provenance
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphRel(new_rel))))
                 } else {
@@ -1848,6 +1849,7 @@ impl TypeInference {
             cte_references: rel.cte_references.clone(),
             pattern_combinations: None,
             was_undirected: rel.was_undirected,
+            match_clause_index: rel.match_clause_index, // #586: preserve clause provenance
         };
 
         Ok(Arc::new(LogicalPlan::GraphRel(typed_rel)))
@@ -2571,6 +2573,7 @@ impl TypeInference {
             cte_references: child_rel.cte_references.clone(),
             pattern_combinations: None, // No longer needed — single type
             was_undirected: child_rel.was_undirected,
+            match_clause_index: child_rel.match_clause_index, // #586: preserve clause provenance
         };
 
         Ok(Arc::new(LogicalPlan::GraphRel(new_rel)))

@@ -2719,6 +2719,7 @@ graph_schema:
             cte_references: std::collections::HashMap::new(),
             pattern_combinations: None,
             was_undirected: None,
+            match_clause_index: 0, // #586 (synthetic/test)
         })
     }
 
@@ -3080,6 +3081,7 @@ graph_schema:
             cte_references: std::collections::HashMap::new(),
             pattern_combinations: None,
             was_undirected: None,
+            match_clause_index: 0, // #586 (synthetic/test)
         })
     }
 
@@ -14971,6 +14973,7 @@ pub(crate) fn replace_group_by_with_cte_reference(
                                 cte_references: graph_rel.cte_references.clone(),
                                 pattern_combinations: None,
                                 was_undirected: graph_rel.was_undirected,
+                                match_clause_index: graph_rel.match_clause_index, // #586
                             },
                         ));
                     }
@@ -15040,6 +15043,7 @@ pub(crate) fn replace_group_by_with_cte_reference(
                                 cte_references: graph_rel.cte_references.clone(),
                                 pattern_combinations: None,
                                 was_undirected: graph_rel.was_undirected,
+                                match_clause_index: graph_rel.match_clause_index, // #586
                             },
                         ));
                     }
@@ -15069,6 +15073,7 @@ pub(crate) fn replace_group_by_with_cte_reference(
                         cte_references: graph_rel.cte_references.clone(),
                         pattern_combinations: None,
                         was_undirected: graph_rel.was_undirected,
+                        match_clause_index: graph_rel.match_clause_index, // #586
                     },
                 ))
             }
@@ -15573,6 +15578,7 @@ pub(crate) fn collapse_passthrough_with(
                 cte_references: gr.cte_references.clone(),
                 pattern_combinations: gr.pattern_combinations.clone(),
                 was_undirected: gr.was_undirected,
+                match_clause_index: gr.match_clause_index, // #586
             }))
         }
         LogicalPlan::CartesianProduct(cp) => {
@@ -16770,6 +16776,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                 cte_references: std::collections::HashMap::new(),
                 pattern_combinations: None,
                 was_undirected: graph_rel.was_undirected,
+                match_clause_index: graph_rel.match_clause_index, // #586
             }))
         }
 

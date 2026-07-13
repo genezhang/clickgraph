@@ -303,6 +303,7 @@ fn create_graph_rel(
         cte_references: std::collections::HashMap::new(),
         pattern_combinations: None,
         was_undirected: None,
+        match_clause_index: 0, // #586 (synthetic/test)
     }))
 }
 
@@ -1190,6 +1191,7 @@ fn test_no_uniqueness_constraints_for_single_relationship() {
             is_shortest_path: false,
             direction: Direction::Outgoing,
             is_optional: false,
+            match_clause_index: 0, // #586 (synthetic/test)
         }],
     };
 
@@ -1222,6 +1224,7 @@ fn test_uniqueness_constraints_for_two_relationships() {
                 is_shortest_path: false,
                 direction: Direction::Outgoing,
                 is_optional: false,
+                match_clause_index: 0, // #586 (synthetic/test)
             },
             PatternEdgeInfo {
                 alias: "r2".to_string(),
@@ -1233,6 +1236,7 @@ fn test_uniqueness_constraints_for_two_relationships() {
                 is_shortest_path: false,
                 direction: Direction::Outgoing,
                 is_optional: false,
+                match_clause_index: 0, // #586 (synthetic/test)
             },
         ],
     };
@@ -1261,6 +1265,69 @@ fn test_uniqueness_constraints_for_two_relationships() {
 }
 
 #[test]
+fn test_no_uniqueness_constraint_across_separate_match_clauses() {
+    // #586: Cypher's relationship-uniqueness rule ("a relationship cannot be
+    // traversed twice") is scoped to a SINGLE MATCH clause. Two same-type edges
+    // that come from DIFFERENT MATCH clauses (distinct match_clause_index), e.g.
+    //   MATCH (a)-[:FOLLOWS]->(b) MATCH (a)-[:FOLLOWS]->(b)
+    // must NOT be guarded — the second clause independently re-binds the same
+    // physical relationship. Emitting `t2 <> t1` across clauses silently drops
+    // every legitimately-repeated pair (the #586 silent-wrong-result bug).
+    let graph_schema = create_test_graph_schema();
+
+    let metadata = PatternGraphMetadata {
+        nodes: HashMap::new(),
+        edges: vec![
+            PatternEdgeInfo {
+                alias: "t1".to_string(),
+                rel_types: vec!["FOLLOWS".to_string()],
+                from_node: "a".to_string(),
+                to_node: "b".to_string(),
+                is_referenced: true,
+                is_vlp: false,
+                is_shortest_path: false,
+                direction: Direction::Outgoing,
+                is_optional: false,
+                match_clause_index: 0, // first MATCH clause
+            },
+            PatternEdgeInfo {
+                alias: "t2".to_string(),
+                rel_types: vec!["FOLLOWS".to_string()],
+                from_node: "a".to_string(),
+                to_node: "b".to_string(),
+                is_referenced: true,
+                is_vlp: false,
+                is_shortest_path: false,
+                direction: Direction::Outgoing,
+                is_optional: false,
+                match_clause_index: 1, // SECOND MATCH clause — different scope
+            },
+        ],
+    };
+
+    let constraints =
+        crate::query_planner::analyzer::graph_join::cross_branch::generate_relationship_uniqueness_constraints(&metadata, &graph_schema);
+
+    assert_eq!(
+        constraints.len(),
+        0,
+        "Edges from different MATCH clauses must NOT get a uniqueness constraint (#586)"
+    );
+
+    // Control: the SAME two edges within ONE clause (same index) MUST still be
+    // guarded — this is the comma-pattern case that correctly returns 0 rows.
+    let mut same_clause = metadata.clone();
+    same_clause.edges[1].match_clause_index = 0;
+    let same_clause_constraints =
+        crate::query_planner::analyzer::graph_join::cross_branch::generate_relationship_uniqueness_constraints(&same_clause, &graph_schema);
+    assert_eq!(
+        same_clause_constraints.len(),
+        1,
+        "Same-clause same-type edges MUST still get a uniqueness constraint (comma pattern)"
+    );
+}
+
+#[test]
 fn test_uniqueness_constraints_for_three_relationships() {
     // Three-hop pattern should generate 3 constraints: r1!=r2, r1!=r3, r2!=r3
     let _analyzer = GraphJoinInference::new();
@@ -1279,6 +1346,7 @@ fn test_uniqueness_constraints_for_three_relationships() {
                 is_shortest_path: false,
                 direction: Direction::Outgoing,
                 is_optional: false,
+                match_clause_index: 0, // #586 (synthetic/test)
             },
             PatternEdgeInfo {
                 alias: "r2".to_string(),
@@ -1290,6 +1358,7 @@ fn test_uniqueness_constraints_for_three_relationships() {
                 is_shortest_path: false,
                 direction: Direction::Outgoing,
                 is_optional: false,
+                match_clause_index: 0, // #586 (synthetic/test)
             },
             PatternEdgeInfo {
                 alias: "r3".to_string(),
@@ -1301,6 +1370,7 @@ fn test_uniqueness_constraints_for_three_relationships() {
                 is_shortest_path: false,
                 direction: Direction::Outgoing,
                 is_optional: false,
+                match_clause_index: 0, // #586 (synthetic/test)
             },
         ],
     };
@@ -1335,6 +1405,7 @@ fn test_skip_vlp_relationships_in_uniqueness() {
                 is_shortest_path: false,
                 direction: Direction::Outgoing,
                 is_optional: false,
+                match_clause_index: 0, // #586 (synthetic/test)
             },
             PatternEdgeInfo {
                 alias: "r2".to_string(),
@@ -1346,6 +1417,7 @@ fn test_skip_vlp_relationships_in_uniqueness() {
                 is_shortest_path: false,
                 direction: Direction::Outgoing,
                 is_optional: false,
+                match_clause_index: 0, // #586 (synthetic/test)
             },
         ],
     };
@@ -1386,6 +1458,7 @@ fn test_uniqueness_constraints_with_different_relationship_types() {
                 is_shortest_path: false,
                 direction: Direction::Outgoing,
                 is_optional: false,
+                match_clause_index: 0, // #586 (synthetic/test)
             },
             PatternEdgeInfo {
                 alias: "w1".to_string(),
@@ -1397,6 +1470,7 @@ fn test_uniqueness_constraints_with_different_relationship_types() {
                 is_shortest_path: false,
                 direction: Direction::Outgoing,
                 is_optional: false,
+                match_clause_index: 0, // #586 (synthetic/test)
             },
         ],
     };

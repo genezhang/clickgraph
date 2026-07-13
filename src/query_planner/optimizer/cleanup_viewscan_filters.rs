@@ -153,6 +153,7 @@ impl CleanupViewScanFilters {
                                 cte_references: graph_rel.cte_references.clone(),
                                 pattern_combinations: graph_rel.pattern_combinations.clone(),
                                 was_undirected: graph_rel.was_undirected,
+                                match_clause_index: graph_rel.match_clause_index, // #586: preserve clause provenance
                             },
                         )))
                     }
