@@ -729,6 +729,114 @@ fn denorm_scan_cte_anchor_names_and_id_col(
     Some((id_candidates, all_names, id_col))
 }
 
+/// #582: reverse of `denorm_scan_cte_anchor_properties` — given a PHYSICAL
+/// db-column name (e.g. `id.orig_h`) that an earlier analysis pass
+/// structurally rewrote a Cypher property to, find the Cypher property
+/// name `alias`'s `__denorm_scan_{alias}` CTE actually exposes for it.
+///
+/// Shares `denorm_scan_cte_anchor_names_and_id_col`'s anchor-detection
+/// traversal (`find_inner_optional_denorm_graphrel` +
+/// `optional_denorm_union_anchor_is_left`) but walks the ANCHOR'S OWN scan
+/// Union's `edge_side_node_properties` (both roles, same #520/B1 reasoning)
+/// directly, rather than reusing whichever edge happens to be the CURRENT
+/// GraphRel's `center` — those can disagree. A label-impossible OPTIONAL
+/// MATCH (e.g. `MATCH (a:IP) OPTIONAL MATCH (a)-[:RESOLVED_TO]->(b)` on the
+/// zeek coupled schema, where `RESOLVED_TO` connects Domain/ResolvedIP, not
+/// IP, and renders as a `1 = 0` fallback join) still builds `a`'s anchor CTE
+/// from IP's own node-property definition — a lookup keyed off the CURRENT
+/// (label-mismatched) edge's own property maps finds nothing there, leaving
+/// the physical column unresolved.
+///
+/// Returns `None` (caller leaves the column untouched) when `alias` isn't
+/// this anchor pattern, or no property's value matches `physical_col`.
+fn denorm_scan_cte_anchor_reverse_property(
+    plan: &LogicalPlan,
+    alias: &str,
+    physical_col: &str,
+) -> Option<String> {
+    if let LogicalPlan::Union(u) = plan {
+        return u.inputs.iter().find_map(|branch| {
+            denorm_scan_cte_anchor_reverse_property(branch, alias, physical_col)
+        });
+    }
+    let inner = find_inner_optional_denorm_graphrel(plan)?;
+    let LogicalPlan::GraphRel(gr) = inner else {
+        return None;
+    };
+    let anchor_is_left = optional_denorm_union_anchor_is_left(gr)?;
+    let anchor_plan: &LogicalPlan = if anchor_is_left {
+        gr.left.as_ref()
+    } else {
+        gr.right.as_ref()
+    };
+    let LogicalPlan::Union(union) = anchor_plan else {
+        return None;
+    };
+
+    // Confirm this Union's own node alias is the one we were asked about —
+    // `find_inner_optional_denorm_graphrel` searches the WHOLE plan tree
+    // (chained OPTIONAL hops, #505), so it may return a DIFFERENT hop's
+    // anchor than `alias`.
+    let node_alias = union.inputs.first().and_then(|input| {
+        if let LogicalPlan::GraphNode(gn) = input.as_ref() {
+            Some(gn.alias.clone())
+        } else {
+            None
+        }
+    })?;
+    if node_alias != alias {
+        return None;
+    }
+
+    // Collect EVERY Cypher name whose value matches `physical_col` across
+    // both roles, rather than returning on the first match found while
+    // iterating a `HashMap` (`edge_side_node_properties`'s property maps
+    // aren't insertion-ordered — per-process-random iteration order, the
+    // #480 class of nondeterminism). A node's role-specific property map
+    // can hold BOTH a genuine Cypher alias for a column (e.g. `ip ->
+    // id.orig_h`) AND a raw self-mapping entry (`id.orig_h -> id.orig_h`,
+    // present when the schema also declares the physical column name as its
+    // own Cypher property) — the CTE only ever exposes the FORMER as a real
+    // column (see `denorm_scan_cte_anchor_id_property`'s identical guard),
+    // so self-mapping candidates are excluded first and only used as a
+    // fallback if nothing else matches. Sorting the remaining candidates
+    // makes the pick fully deterministic even when the schema genuinely
+    // maps two different Cypher names to the same physical column.
+    let mut candidates: Vec<String> = Vec::new();
+    for input in &union.inputs {
+        let LogicalPlan::GraphNode(gn) = input.as_ref() else {
+            continue;
+        };
+        let LogicalPlan::ViewScan(vs) = gn.input.as_ref() else {
+            continue;
+        };
+        for props in [
+            crate::graph_catalog::pattern_schema::edge_side_node_properties(vs, true),
+            crate::graph_catalog::pattern_schema::edge_side_node_properties(vs, false),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            for (name, value) in props {
+                if value.raw() == physical_col {
+                    candidates.push(name.clone());
+                }
+            }
+        }
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+    let non_self_mapped: Vec<&String> = candidates.iter().filter(|n| *n != physical_col).collect();
+    if !non_self_mapped.is_empty() {
+        let mut sorted = non_self_mapped;
+        sorted.sort();
+        return sorted.first().map(|s| s.to_string());
+    }
+    candidates.sort();
+    candidates.into_iter().next()
+}
+
 /// Clone `plan`, clearing `anchor_connection` on every `GraphRel` node
 /// encountered.
 ///
@@ -2694,6 +2802,57 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
             }
         }
         RenderExpr::PropertyAccessExp(prop) => {
+            // #582: when `prop.table_alias` is the anchor of an OPTIONAL
+            // denorm-scan CTE + LEFT JOIN pattern (`is_denorm_scan_anchor_
+            // alias`) AND `prop.column` genuinely belongs to that anchor's
+            // `__denorm_scan_{alias}` CTE, resolve it directly against the
+            // CTE and skip the structural edge-based property mapping /
+            // `denormalized_node_edges` alias remap below entirely — those
+            // redirect to the nullable LEFT JOIN alias, which is wrong for a
+            // property the anchor's own always-present CTE already exposes.
+            //
+            // The CTE exposes every property under its plain Cypher name
+            // (its inner UNION already normalizes both from/to sides under
+            // shared names — see `plan_builder.rs`'s `__denorm_scan_{alias}`
+            // construction), so two cases both count as "belongs to the
+            // CTE": `prop.column` is ALREADY that Cypher name (untouched —
+            // covers the WHERE-predicate path, where nothing upstream
+            // rewrote it), or it's a PHYSICAL edge-table column an earlier
+            // analysis pass (`FilterTagging::apply_property_mapping`)
+            // rewrote it to, structurally, with no knowledge of this
+            // render-time-only CTE (covers the GROUP BY path) — reverse via
+            // `denorm_scan_cte_anchor_reverse_property`.
+            //
+            // If NEITHER matches, the property is NOT one the anchor CTE
+            // exposes at all — e.g. a genuinely EDGE-OWNED property
+            // requested via `anchor.prop` syntax (the CTE was deliberately
+            // built WITHOUT it, same collision the #475 guard in
+            // `plan_builder.rs` skips adding to its own SELECT/GROUP BY
+            // rewrite map for). Falling through to the existing structural
+            // mapping + alias remap is then CORRECT (matches the golden
+            // `ontime_flights` shape: `RETURN a.airport, count(r)` renders
+            // `airport` via the edge alias `r`, not the anchor CTE, both
+            // pre- and post-#582).
+            if is_denorm_scan_anchor_alias(&prop.table_alias.0, plan) {
+                let already_cte_column =
+                    denorm_scan_cte_anchor_properties(plan, &prop.table_alias.0).is_some_and(
+                        |props| props.iter().any(|(name, _)| name == prop.column.raw()),
+                    ) || denorm_scan_cte_anchor_id_property(plan, &prop.table_alias.0).as_deref()
+                        == Some(prop.column.raw());
+                if already_cte_column {
+                    return;
+                }
+                if let PropertyValue::Column(ref physical_col) = prop.column {
+                    if let Some(cypher_name) = denorm_scan_cte_anchor_reverse_property(
+                        plan,
+                        &prop.table_alias.0,
+                        physical_col,
+                    ) {
+                        prop.column = PropertyValue::Column(cypher_name);
+                        return;
+                    }
+                }
+            }
             // If the column is already an Expression (resolved by FilterTagging analyzer),
             // skip property-name re-mapping — it's already the correct ClickHouse expression.
             // Still fall through to the denormalized alias remap below (table alias may
@@ -2879,6 +3038,64 @@ pub(super) fn apply_property_mapping_to_expr(expr: &mut RenderExpr, plan: &Logic
         _ => {
             // PropertyAccess, Column, Literal, etc. don't need modification
         }
+    }
+}
+
+/// #582: true when `alias` is the render-time anchor of an OPTIONAL
+/// denorm-scan CTE + LEFT JOIN pattern (`optional_denorm_union_anchor_is_left`,
+/// consumed by `plan_builder.rs` ~1326 to build the `__denorm_scan_{alias}`
+/// CTE). That CTE is a UNION of both the edge table's from-side and to-side
+/// rows, GROUP BY the node's id column — it exists specifically so the
+/// anchor's OWN properties are always present, independent of whether the
+/// OPTIONAL edge actually matched (unlike the LEFT JOIN's edge alias, which
+/// is NULL on a miss). It exposes every property under its plain Cypher
+/// name (see the `SELECT min("city") AS "city", ...` shape built in
+/// `plan_builder.rs`), rendered against an alias literally equal to
+/// `alias` itself (`ViewTableRef { alias: Some(node_alias), .. }`).
+///
+/// `apply_property_mapping_to_expr`'s general denormalized-node handling
+/// (structural property-name mapping via the edge's ViewScan, plus the
+/// `denormalized_node_edges` registry's alias remap to the edge/join alias)
+/// is for nodes whose ONLY source is the edge table — it does not know about
+/// this special anchor CTE, and blindly redirecting the anchor's own
+/// PropertyAccess through it produces `t1.origin_city` (a column on the
+/// NULLABLE LEFT JOIN alias) instead of `a.city` (the anchor's own
+/// always-present source). That's silently wrong for any WHERE predicate
+/// that keeps the anchor's condition in the same expression tree as an
+/// optional-side condition (e.g. an OR the two can't be split across) — see
+/// #582. Callers should skip the general remap entirely for `alias` when
+/// this returns true; the anchor CTE already exposes exactly what an
+/// unmapped `alias.city_property_name` PropertyAccess needs.
+pub(super) fn is_denorm_scan_anchor_alias(alias: &str, plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::GraphRel(rel) => {
+            if let Some(anchor_is_left) = optional_denorm_union_anchor_is_left(rel) {
+                let anchor_connection = if anchor_is_left {
+                    &rel.left_connection
+                } else {
+                    &rel.right_connection
+                };
+                if anchor_connection.as_str() == alias {
+                    return true;
+                }
+            }
+            is_denorm_scan_anchor_alias(alias, &rel.left)
+                || is_denorm_scan_anchor_alias(alias, &rel.right)
+        }
+        LogicalPlan::GraphNode(node) => is_denorm_scan_anchor_alias(alias, &node.input),
+        LogicalPlan::Filter(filter) => is_denorm_scan_anchor_alias(alias, &filter.input),
+        LogicalPlan::Projection(proj) => is_denorm_scan_anchor_alias(alias, &proj.input),
+        LogicalPlan::GraphJoins(joins) => is_denorm_scan_anchor_alias(alias, &joins.input),
+        LogicalPlan::OrderBy(order_by) => is_denorm_scan_anchor_alias(alias, &order_by.input),
+        LogicalPlan::Skip(skip) => is_denorm_scan_anchor_alias(alias, &skip.input),
+        LogicalPlan::Limit(limit) => is_denorm_scan_anchor_alias(alias, &limit.input),
+        LogicalPlan::GroupBy(group_by) => is_denorm_scan_anchor_alias(alias, &group_by.input),
+        LogicalPlan::Cte(cte) => is_denorm_scan_anchor_alias(alias, &cte.input),
+        LogicalPlan::Union(union) => union
+            .inputs
+            .iter()
+            .any(|input| is_denorm_scan_anchor_alias(alias, input)),
+        _ => false,
     }
 }
 
