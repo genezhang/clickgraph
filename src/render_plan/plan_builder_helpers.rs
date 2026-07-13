@@ -2147,23 +2147,6 @@ pub(super) fn get_node_table_for_alias_with_schema(
     ))
 }
 
-/// Get node ID column for a given alias using plan context and schema
-/// This is the CORRECT way - uses plan to get label, then schema for column lookup
-pub(super) fn get_node_id_column_for_alias_with_schema(
-    alias: &str,
-    plan: &LogicalPlan,
-    schema: &crate::graph_catalog::graph_schema::GraphSchema,
-) -> Option<String> {
-    // Get the node label from the plan
-    let label = get_node_label_for_alias(alias, plan)?;
-
-    // Look up the node schema
-    let node_schema = schema.node_schema(&label).ok()?;
-
-    // Return first ID column
-    Some(node_schema.node_id.id.first_column().to_string())
-}
-
 /// Get node ID columns (for composite keys) using plan context and schema
 pub(super) fn get_node_id_columns_for_alias_with_schema(
     alias: &str,
