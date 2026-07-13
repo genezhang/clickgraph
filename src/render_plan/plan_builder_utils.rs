@@ -799,17 +799,6 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
     }
 }
 
-/// Legacy version kept for compatibility - redirects to new implementation
-pub fn rewrite_render_expr_for_vlp_with_endpoint_info_legacy(
-    _expr: &mut RenderExpr,
-    _mappings: &HashMap<String, String>,
-    _vlp_from_alias: &str,
-    _endpoint_position: &HashMap<String, &str>,
-    _old_mapping: &HashMap<(String, String), String>,
-) {
-    log::debug!("🔍 LEGACY REWRITE: This function is deprecated, use new lookup-based version");
-}
-
 pub fn extract_cte_references(plan: &LogicalPlan) -> HashMap<String, String> {
     let mut refs = HashMap::new();
 
@@ -1172,21 +1161,6 @@ fn rewrite_render_expr_for_cte_operand(
         ),
         _ => expr.clone(),
     }
-}
-
-/// Rewrite a RenderExpr to use CTE column names where applicable.
-fn rewrite_render_expr_for_cte(
-    expr: &RenderExpr,
-    cte_alias: &str,
-    cte_references: &HashMap<String, String>,
-    _cte_schemas: &crate::render_plan::CteSchemas,
-) -> RenderExpr {
-    let ctx = crate::render_plan::expression_utils::CTERewriteContext::new(
-        cte_alias.to_string(),
-        cte_alias.to_string(),
-        cte_references.clone(),
-    );
-    rewrite_render_expr_for_cte_with_context(expr, &ctx)
 }
 
 /// Rewrite render expressions using CTE context for complex JOIN scenarios
@@ -18695,31 +18669,7 @@ fn find_edge_id_column(
     is_from: bool,
     hop: &crate::query_planner::logical_plan::ConnectedPatternInfo,
 ) -> String {
-    let sorted_rels: Vec<_> = schema.get_relationships_schemas().iter().collect();
-
-    for (_, rel_schema) in &sorted_rels {
-        let table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
-        if table == db_table {
-            // Account for direction: for Incoming, the AST start is actually the schema's to
-            let effective_is_from = match hop.direction {
-                crate::query_planner::logical_expr::Direction::Incoming => !is_from,
-                _ => is_from,
-            };
-
-            return if effective_is_from {
-                rel_schema.from_id.first_column().to_string()
-            } else {
-                rel_schema.to_id.first_column().to_string()
-            };
-        }
-    }
-
-    // Fallback
-    if is_from {
-        "from_id".to_string()
-    } else {
-        "to_id".to_string()
-    }
+    find_edge_id_column_with_direction(schema, db_table, is_from, hop, &hop.direction)
 }
 
 /// Find the CTE column reference for a correlation variable.
