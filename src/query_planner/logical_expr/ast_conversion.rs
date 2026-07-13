@@ -133,6 +133,42 @@ impl<'a> TryFrom<open_cypher_parser::ast::OperatorApplication<'a>> for OperatorA
 // Function Call Conversions
 // =============================================================================
 
+/// #578: walk a raw AST path pattern looking for a variable-length hop
+/// (`*1..2`) or a multi-type OR'd relationship (`[:A|B]`) on any hop — both
+/// shapes that `size(...)`/PatternCount silently narrows today (see the
+/// GUARDRAIL comment at the size() call site). Returns a human-readable
+/// reason for the first offending hop found, or `None` if the whole pattern
+/// is safe to convert. Recurses through multi-hop chains and
+/// shortestPath()/allShortestPaths() wrappers.
+fn path_pattern_has_vlp_or_multi_type(
+    pattern: &open_cypher_parser::ast::PathPattern,
+) -> Option<String> {
+    use open_cypher_parser::ast::PathPattern as AstPathPattern;
+    match pattern {
+        AstPathPattern::Node(_) => None,
+        AstPathPattern::ShortestPath(inner) | AstPathPattern::AllShortestPaths(inner) => {
+            path_pattern_has_vlp_or_multi_type(inner)
+        }
+        AstPathPattern::ConnectedPattern(connected_patterns) => {
+            for cp in connected_patterns {
+                let rel = &cp.relationship;
+                if rel.variable_length.is_some() {
+                    return Some("has a variable-length relationship (e.g. *1..2)".to_string());
+                }
+                if let Some(labels) = rel.labels.as_ref() {
+                    if labels.len() > 1 {
+                        return Some(format!(
+                            "has multiple OR'd relationship types ([:{}])",
+                            labels.join("|")
+                        ));
+                    }
+                }
+            }
+            None
+        }
+    }
+}
+
 impl<'a> TryFrom<open_cypher_parser::ast::FunctionCall<'a>> for LogicalExpr {
     type Error = errors::LogicalExprError;
 
@@ -143,6 +179,33 @@ impl<'a> TryFrom<open_cypher_parser::ast::FunctionCall<'a>> for LogicalExpr {
         // size((n)-[:REL]->()) should become PatternCount
         if name_lower == "size" && value.args.len() == 1 {
             if let open_cypher_parser::ast::Expression::PathPattern(ref pp) = value.args[0] {
+                // GUARDRAIL (#578): `logical_expr::RelationshipPattern` (the type
+                // PatternCount's `PathPattern` bottoms out at) has NO
+                // `variable_length` field at all, so a `*1..2`-style hop bound
+                // is silently dropped at this exact conversion boundary —
+                // before render ever sees it. Multi-type OR'd relationship
+                // labels (`[:A|B]`) survive this conversion but are then
+                // silently narrowed to the FIRST type by the render-layer SQL
+                // generators (`generate_pattern_count_sql` /
+                // `generate_multi_hop_pattern_count_sql`), which only ever read
+                // `labels.first()`. Either shape means `size(...)` silently
+                // returns a count for a narrower pattern than the one written
+                // (ground rule 1 violation). Until size()/PatternCount routes
+                // through a pipeline that can carry a hop bound and enumerate
+                // every OR'd type, reject both shapes loudly instead of
+                // silently narrowing.
+                if let Some(reason) = path_pattern_has_vlp_or_multi_type(pp) {
+                    return Err(errors::LogicalExprError::UnsupportedExpression(format!(
+                        "(#578) this size(...) pattern {reason}. ClickGraph does \
+                         not yet convert this shape through a pipeline that can \
+                         carry a hop bound or enumerate every OR'd relationship \
+                         type, so the count would silently narrow to a smaller \
+                         pattern than the one written — returning wrong results. \
+                         Workaround: restructure the query to count via a \
+                         top-level MATCH + count(*)/count(DISTINCT ...) instead \
+                         of size(...)."
+                    )));
+                }
                 return Ok(LogicalExpr::PatternCount(PatternCount {
                     pattern: PathPattern::try_from(pp.clone())?,
                 }));

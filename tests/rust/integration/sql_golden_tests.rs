@@ -5394,6 +5394,73 @@ async fn shortest_path_exists_where_clause_errors_cleanly_not_silently_dropped()
     );
 }
 
+/// #578: `logical_expr::RelationshipPattern` (what `size(...)`/`PatternCount`
+/// bottoms out at) has no `variable_length` field at all, so a `*1..2`-style
+/// hop bound on a size() pattern was silently dropped at the AST->logical_expr
+/// conversion boundary; multi-type OR'd labels (`[:A|B]`) survived that
+/// conversion but were then silently narrowed to the FIRST type by the
+/// render-layer PatternCount SQL generators. Both shapes must now be
+/// rejected loudly (a clean, attributable #578 error) instead of silently
+/// narrowing size()'s count to a smaller pattern than the one written.
+///
+/// The plain single-hop/single-type and legitimate multi-hop-chain shapes
+/// that already render correctly must keep working (last two cases below).
+#[tokio::test]
+async fn size_pattern_count_vlp_and_multi_type_error_cleanly() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let unsupported = [
+        // Variable-length hop (the exact #578 repro).
+        "MATCH (a:User) RETURN size((a)-[:FOLLOWS*1..2]->()) AS n",
+        // Multi-type OR'd relationship list.
+        "MATCH (a:User) RETURN size((a)-[:FOLLOWS|LIKED]->()) AS n",
+        // Variable-length wrapped in shortestPath() — must be caught via the
+        // ShortestPath/AllShortestPaths recursion in the AST walker.
+        "MATCH (a:User) RETURN size(shortestPath((a)-[:FOLLOWS*1..3]->())) AS n",
+    ];
+    for cypher in unsupported {
+        let result = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+        match result {
+            Err(msg) => assert!(
+                msg.contains("#578") && msg.contains("Unsupported expression"),
+                "[{cypher}] must fail with a clean, attributable (#578) \
+                 Unsupported expression error, got: {msg}"
+            ),
+            Ok(sql) => panic!(
+                "[{cypher}] must error cleanly instead of silently narrowing the \
+                 size(...) pattern to a smaller shape; rendered:\n{sql}"
+            ),
+        }
+    }
+
+    // Regression guard: plain single-hop, single-type size() must still work.
+    let sql = render(
+        &schema,
+        "MATCH (a:User) RETURN size((a)-[:FOLLOWS]->()) AS n",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("user_follows_bench"),
+        "plain single-hop size() must still render a count over \
+         user_follows_bench:\n{sql}"
+    );
+
+    // Regression guard: a legitimate multi-HOP chain (each hop single-type,
+    // no VLP) is a different shape from a multi-TYPE single hop and must
+    // still render via generate_multi_hop_pattern_count_sql.
+    let sql = render(
+        &schema,
+        "MATCH (a:User) RETURN size((a)-[:FOLLOWS]->()-[:LIKED]->()) AS n",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.to_uppercase().contains("JOIN"),
+        "legitimate multi-hop size() chain must still render a joined \
+         multi-hop count:\n{sql}"
+    );
+}
+
 /// #466 round 4 (adversarial-review blocking finding): `id(alias)` on a
 /// `pattern_union` endpoint must resolve LABEL-AGNOSTICALLY to the CTE's
 /// start_id/end_id — never to ONE label's id column.
