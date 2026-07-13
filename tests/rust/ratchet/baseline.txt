@@ -22,7 +22,7 @@ schema	from_label_column	src/query_planner/write_guard.rs	1
 schema	from_label_column	src/render_plan/cte_extraction.rs	3
 schema	from_label_column	src/render_plan/cte_manager/mod.rs	6
 schema	from_label_column	src/render_plan/plan_builder_helpers.rs	9
-schema	from_label_column	src/render_plan/plan_builder_utils.rs	4
+schema	from_label_column	src/render_plan/plan_builder_utils.rs	2
 schema	from_label_column	src/server/bolt_protocol/result_transformer.rs	3
 schema	from_label_column	src/sql_generator/emitters/clickhouse/multi_type_vlp_joins.rs	2
 schema	from_label_column	src/sql_generator/emitters/clickhouse/variable_length_cte.rs	12
@@ -49,7 +49,7 @@ schema	from_node_properties	src/render_plan/from_builder.rs	5
 schema	from_node_properties	src/render_plan/group_by_builder.rs	1
 schema	from_node_properties	src/render_plan/plan_builder.rs	3
 schema	from_node_properties	src/render_plan/plan_builder_helpers.rs	7
-schema	from_node_properties	src/render_plan/plan_builder_utils.rs	14
+schema	from_node_properties	src/render_plan/plan_builder_utils.rs	6
 schema	from_node_properties	src/render_plan/properties_builder.rs	16
 schema	from_node_properties	src/render_plan/select_builder.rs	2
 schema	from_node_properties	src/server/bolt_protocol/result_transformer.rs	3
@@ -93,7 +93,7 @@ schema	is_denormalized	src/render_plan/from_builder.rs	6
 schema	is_denormalized	src/render_plan/join_builder.rs	12
 schema	is_denormalized	src/render_plan/plan_builder.rs	10
 schema	is_denormalized	src/render_plan/plan_builder_helpers.rs	11
-schema	is_denormalized	src/render_plan/plan_builder_utils.rs	21
+schema	is_denormalized	src/render_plan/plan_builder_utils.rs	9
 schema	is_denormalized	src/render_plan/properties_builder.rs	5
 schema	is_denormalized	src/render_plan/select_builder.rs	4
 schema	is_denormalized	src/sql_generator/emitters/clickhouse/to_sql_query.rs	1
@@ -130,7 +130,7 @@ schema	to_label_column	src/query_planner/write_guard.rs	1
 schema	to_label_column	src/render_plan/cte_extraction.rs	3
 schema	to_label_column	src/render_plan/cte_manager/mod.rs	8
 schema	to_label_column	src/render_plan/plan_builder_helpers.rs	9
-schema	to_label_column	src/render_plan/plan_builder_utils.rs	4
+schema	to_label_column	src/render_plan/plan_builder_utils.rs	2
 schema	to_label_column	src/server/bolt_protocol/result_transformer.rs	3
 schema	to_label_column	src/sql_generator/emitters/clickhouse/multi_type_vlp_joins.rs	2
 schema	to_label_column	src/sql_generator/emitters/clickhouse/variable_length_cte.rs	17
@@ -157,7 +157,7 @@ schema	to_node_properties	src/render_plan/from_builder.rs	5
 schema	to_node_properties	src/render_plan/group_by_builder.rs	1
 schema	to_node_properties	src/render_plan/plan_builder.rs	1
 schema	to_node_properties	src/render_plan/plan_builder_helpers.rs	7
-schema	to_node_properties	src/render_plan/plan_builder_utils.rs	10
+schema	to_node_properties	src/render_plan/plan_builder_utils.rs	2
 schema	to_node_properties	src/render_plan/properties_builder.rs	11
 schema	to_node_properties	src/render_plan/select_builder.rs	3
 schema	to_node_properties	src/server/bolt_protocol/result_transformer.rs	3
@@ -181,7 +181,7 @@ schema	type_column	src/render_plan/cte_extraction.rs	16
 schema	type_column	src/render_plan/cte_manager/mod.rs	6
 schema	type_column	src/render_plan/join_builder.rs	1
 schema	type_column	src/render_plan/plan_builder_helpers.rs	12
-schema	type_column	src/render_plan/plan_builder_utils.rs	5
+schema	type_column	src/render_plan/plan_builder_utils.rs	3
 schema	type_column	src/server/bolt_protocol/result_transformer.rs	3
 schema	type_column	src/sql_generator/emitters/clickhouse/multi_type_vlp_joins.rs	2
 schema	type_column	src/sql_generator/emitters/clickhouse/variable_length_cte.rs	13
