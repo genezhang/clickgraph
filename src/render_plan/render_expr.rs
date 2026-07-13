@@ -26,6 +26,85 @@ pub use crate::server::query_context::{
     clear_current_schema_name, get_current_schema_name, set_current_schema_name,
 };
 
+/// Resolve the correlation variable's node-id SQL reference for an EXISTS
+/// subquery's `GraphRel` branch.
+///
+/// `start_alias` is the Cypher alias of the EXISTS pattern's start node
+/// (e.g. `a` in `EXISTS { (a)-[:FOLLOWS]->(x) }`). When that alias has
+/// crossed a WITH barrier (it is a CTE-exported variable, not a fresh
+/// MATCH), the raw Cypher alias no longer names a real SQL table in the
+/// current scope — only the CTE's exposed columns do (e.g. `a_cnt` /
+/// `p1_a_user_id`). This resolves through
+/// [`crate::server::query_context::resolve_correlation_cte_column`], a
+/// narrow task-local channel published *during* WITH→CTE plan building
+/// (`build_chained_with_match_cte_plan`) specifically for this purpose — see
+/// that function's doc comment for why the general
+/// `current_variable_registry` can't be used here instead (its
+/// `VariableSource::Cte::property_mapping` is dropped to empty by
+/// `VariableRegistry::define_node`/`define_scalar` in production, a separate
+/// pre-existing gap left untouched by this fix to avoid changing resolution
+/// for every CTE-crossing property access).
+///
+/// Falls back to the direct schema-qualified reference
+/// (`node_schema.node_id.sql_tuple(start_alias)`) when the alias is NOT
+/// CTE-scoped (a fresh MATCH with no preceding WITH — the common case,
+/// unchanged from prior behavior) or when CTE-scope resolution doesn't
+/// fully succeed for every id column (safe fallback rather than emitting a
+/// half-resolved reference).
+///
+/// Composite ids: resolves EACH id column's Cypher property individually
+/// and, only if ALL resolve to the SAME CTE (same `sql_alias`), builds a
+/// tuple `(alias.col1, alias.col2)`; any partial failure falls back to
+/// `sql_tuple()` for correctness (never emits a partially-resolved tuple).
+fn resolve_correlation_id_sql(
+    start_alias: &str,
+    node_schema: &crate::graph_catalog::graph_schema::NodeSchema,
+) -> String {
+    use crate::server::query_context::resolve_correlation_cte_column;
+
+    // Map each physical id column to the Cypher property name whose schema
+    // mapping targets it (mirrors `PropertyRequirementsAnalyzer::node_id_property_name`,
+    // which does the same lookup for issue #411's generic `.id` normalization).
+    let id_columns = node_schema.node_id.columns();
+    let cypher_props: Option<Vec<&str>> = id_columns
+        .iter()
+        .map(|col| {
+            node_schema
+                .property_mappings
+                .iter()
+                .find(|(_, mapped)| mapped.raw() == *col)
+                .map(|(prop, _)| prop.as_str())
+        })
+        .collect();
+
+    if let Some(cypher_props) = cypher_props {
+        let resolved: Option<Vec<(String, String)>> = cypher_props
+            .iter()
+            .map(|prop| resolve_correlation_cte_column(start_alias, prop))
+            .collect();
+
+        if let Some(resolved) = resolved {
+            if let Some((first_sql_alias, _)) = resolved.first() {
+                if resolved.iter().all(|(a, _)| a == first_sql_alias) {
+                    let cols: Vec<String> = resolved
+                        .iter()
+                        .map(|(a, c)| format!("{}.{}", a, c))
+                        .collect();
+                    return if cols.len() == 1 {
+                        cols.into_iter().next().unwrap()
+                    } else {
+                        format!("({})", cols.join(", "))
+                    };
+                }
+            }
+        }
+    }
+
+    // Not CTE-scoped (fresh MATCH), or CTE resolution didn't fully succeed —
+    // fall back to the direct schema-qualified reference (prior behavior).
+    node_schema.node_id.sql_tuple(start_alias)
+}
+
 /// Generate SQL for an EXISTS subquery directly from the logical plan
 /// This is a simplified approach that generates basic EXISTS SQL
 fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderBuildError> {
@@ -88,7 +167,7 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
                             let node_schema = schema.node_schema_opt(label).ok_or_else(|| {
                                 RenderBuildError::NodeSchemaNotFound(label.clone())
                             })?;
-                            node_schema.node_id.sql_tuple(start_alias)
+                            resolve_correlation_id_sql(start_alias, node_schema)
                         } else {
                             // No label - infer from relationship schema
                             let node_type = &rel_schema.from_node;
@@ -96,7 +175,7 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
                                 schema.node_schema_opt(node_type).ok_or_else(|| {
                                     RenderBuildError::NodeSchemaNotFound(node_type.clone())
                                 })?;
-                            node_schema.node_id.sql_tuple(start_alias)
+                            resolve_correlation_id_sql(start_alias, node_schema)
                         }
                     } else {
                         // Not a GraphNode - error, can't infer

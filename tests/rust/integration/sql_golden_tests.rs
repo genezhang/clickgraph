@@ -5567,34 +5567,33 @@ async fn shortest_path_exists_where_clause_errors_cleanly_not_silently_dropped()
     );
 }
 
-/// Phase-1 net (pre-`generate_exists_sql` refactor audit): characterizes the
-/// CURRENT (buggy, pre-refactor) behavior of `EXISTS { pattern }` when its
-/// correlated variable was bound BEFORE a `WITH` barrier, i.e. the variable
-/// lives in a CTE by the time the EXISTS subquery is rendered.
+/// Regression test: `EXISTS { pattern }` whose correlated variable was bound
+/// BEFORE a `WITH` barrier — i.e. the variable lives in a CTE by the time the
+/// EXISTS subquery is rendered — must correlate against the variable's
+/// *actual* in-scope CTE column, not the stale pre-CTE Cypher alias.
 ///
-/// Root cause: `generate_exists_sql`'s bare-`GraphRel` branch (render_expr.rs)
-/// bakes a raw SQL string — `"... = {start_alias}.{id_col}"` — using the
-/// pattern's ORIGINAL Cypher alias (e.g. `a`) as a literal table reference,
-/// BEFORE any WITH/CTE renaming runs. `RenderExpr::ExistsSubquery` is then an
-/// opaque `{ sql: String }` that `remap_cte_names_in_expr`'s catch-all
-/// (`other => other`, plan_builder_utils.rs) skips entirely — so when `a` gets
-/// renamed to a CTE-local alias (here `a_cnt`) crossing the WITH barrier, the
-/// baked EXISTS SQL keeps referencing the stale, no-longer-in-scope `a`.
+/// Former root cause (fixed): `generate_exists_sql`'s bare-`GraphRel` branch
+/// (render_expr.rs) baked a raw SQL string — `"... = {start_alias}.{id_col}"`
+/// — using the pattern's ORIGINAL Cypher alias (e.g. `a`) as a literal table
+/// reference, with no awareness that a preceding WITH had already renamed `a`
+/// to a CTE-local alias (`a_cnt`) by the time this subquery renders. Fixed by
+/// `render_expr::resolve_correlation_id_sql`, which resolves the correlation
+/// alias's id through `resolve_correlation_cte_column` — a narrow task-local
+/// channel published by `build_chained_with_match_cte_plan` *during* WITH→CTE
+/// build (see that function's doc comment), falling back to the direct
+/// schema-qualified reference when the alias isn't CTE-scoped. A companion fix
+/// in `plan_optimizer.rs`'s CTE column pruning (`collect_columns_for_alias_in_expr`)
+/// recognizes `alias.column` references inside `RenderExpr::ExistsSubquery`/
+/// `PatternCount`'s pre-rendered SQL text, so the id column this now-correct
+/// reference depends on isn't pruned away as "unused" before it's baked.
 ///
-/// Live-verified against ClickHouse (25.8.12): running the SQL this test locks
-/// in fails with `Code: 47. DB::Exception: Unknown expression or function
-/// identifier 'a.user_id' in scope ... (UNKNOWN_IDENTIFIER)` — a loud SQL-level
-/// error, not a silent wrong-result, but still a real, currently-reachable bug
-/// for any query shaped `MATCH ... WITH a, ... WITH a WHERE EXISTS { (a)-...}`.
-///
-/// This test intentionally locks in the CURRENT (broken) SQL text as a
-/// regression-detection net for the upcoming `generate_exists_sql` deferred-
-/// stringification refactor — it does not assert correctness. When that
-/// refactor lands, this test's assertions are expected to flip (the EXISTS
-/// clause should then correlate against `a_cnt`, not `a`), and this test
-/// should be updated then, not before.
+/// Live-verified against ClickHouse (25.8.12): the pre-fix SQL failed with
+/// `Code: 47. DB::Exception: Unknown expression or function identifier
+/// 'a.user_id' in scope ... (UNKNOWN_IDENTIFIER)`; the fixed SQL below
+/// executes successfully and returns the correct rows (spot-checked against
+/// raw-table ground truth).
 #[tokio::test]
-async fn with_barrier_exists_no_where_bakes_stale_pre_cte_alias_characterization() {
+async fn with_barrier_exists_no_where_resolves_correlation_through_cte_scope() {
     let schema = load_schema(SchemaId::Standard.yaml_path());
     let sql = render(
         &schema,
@@ -5612,21 +5611,25 @@ async fn with_barrier_exists_no_where_bakes_stale_pre_cte_alias_characterization
          second CTE's FROM clause:\n{sql}"
     );
 
-    // BUG (characterized, not fixed here): the EXISTS subquery's baked SQL
-    // string still correlates against the pre-WITH alias `a`, which does not
-    // exist in this CTE's scope (only `a_cnt` does). Live-verified: executing
-    // this exact SQL against ClickHouse raises UNKNOWN_IDENTIFIER for
-    // `a.user_id`.
+    // Fixed: the EXISTS subquery correlates against the in-scope CTE alias
+    // and its actual exposed id column, not the dangling pre-WITH `a`.
     assert!(
         sql.contains(
             "EXISTS (SELECT 1 FROM social.user_follows_bench WHERE \
-             user_follows_bench.follower_id = a.user_id)"
+             user_follows_bench.follower_id = a_cnt.p1_a_user_id)"
         ),
-        "characterizing the CURRENT stale-alias bug: the EXISTS subquery must \
-         (still, today) reference the dangling pre-CTE alias `a.user_id` \
-         instead of the in-scope `a_cnt.user_id` — if this fails, the stale- \
-         alias bug this test locks in has changed and the test (and its doc \
-         comment) needs to be revisited:\n{sql}"
+        "EXISTS subquery must correlate against the in-scope CTE column \
+         `a_cnt.p1_a_user_id`, not the stale pre-CTE alias `a`:\n{sql}"
+    );
+
+    // The id column the EXISTS correlation depends on must survive CTE
+    // column pruning (it's otherwise unused downstream — only `a.name` is
+    // ultimately selected — so without the plan_optimizer.rs fix it gets
+    // silently stripped, leaving the reference above dangling).
+    assert!(
+        sql.contains(r#"a.user_id AS "p1_a_user_id""#),
+        "the first CTE must still project the id column the EXISTS \
+         correlation needs, even though nothing else references it:\n{sql}"
     );
 }
 
@@ -5640,6 +5643,10 @@ async fn with_barrier_exists_no_where_bakes_stale_pre_cte_alias_characterization
 /// no-outer-WITH sibling, confirming the outer WITH barrier does not change
 /// this particular failure mode (it fails identically with or without a
 /// preceding WITH). Locks in current behavior; not a fix.
+///
+/// Re-verified unchanged by the `generate_exists_sql` stale-CTE-alias fix
+/// (see the sibling test above): that fix only touches the bare-`GraphRel`
+/// arm, so this `Filter(GraphRel)` shape still falls into the same catch-all.
 #[tokio::test]
 async fn with_barrier_exists_with_inner_where_errors_same_as_no_with_barrier() {
     let schema = load_schema(SchemaId::Standard.yaml_path());
@@ -5663,6 +5670,31 @@ async fn with_barrier_exists_with_inner_where_errors_same_as_no_with_barrier() {
              no-WITH-barrier sibling); instead rendered:\n{sql}"
         ),
     }
+}
+
+/// Regression guard for the stale-CTE-alias fix above: a fresh MATCH with NO
+/// preceding WITH must resolve its EXISTS correlation exactly as before —
+/// `resolve_correlation_id_sql` falls back to the direct schema-qualified
+/// reference (`node_schema.node_id.sql_tuple`) whenever the correlation
+/// alias isn't CTE-scoped, so this common case is untouched by the fix.
+#[tokio::test]
+async fn exists_fresh_match_no_with_barrier_unaffected_by_cte_correlation_fix() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH (a:User) WHERE EXISTS { (a)-[:FOLLOWS]->(x) } RETURN a.name",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains(
+            "EXISTS (SELECT 1 FROM social.user_follows_bench WHERE \
+             user_follows_bench.follower_id = a.user_id)"
+        ),
+        "a fresh (non-WITH-barrier) MATCH's EXISTS correlation must still \
+         reference the direct table alias `a.user_id`, unchanged by the \
+         CTE-scope resolution fix:\n{sql}"
+    );
 }
 
 /// #578: `logical_expr::RelationshipPattern` (what `size(...)`/`PatternCount`

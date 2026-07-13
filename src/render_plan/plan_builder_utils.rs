@@ -10430,6 +10430,37 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         var_registry.define_node(alias.clone(), labels.clone(), cte_source);
                     }
                 }
+
+                // Publish this alias's CTE scope (FROM alias + Cypher-property →
+                // CTE-column mapping) to a narrow, purpose-built task-local
+                // channel for EXISTS correlation-variable resolution
+                // (`render_expr::resolve_correlation_id_sql`).
+                //
+                // NOT the same as `var_registry` above: `VariableRegistry::
+                // define_node`/`define_scalar` unconditionally construct a
+                // FRESH, EMPTY `property_mapping` for `VariableSource::Cte`
+                // (see `NodeVariable::from_cte` et al. — `set_property_mapping`
+                // is the only way to patch it in after the fact, and has no
+                // callers), so `resolve_with_current_registry` can never
+                // return a `CteColumn` for a WITH-CTE variable in production
+                // today — every property access that appears to "resolve
+                // across CTE barriers" actually does so via the separate
+                // legacy `cte_property_mappings` mechanism
+                // (`get_cte_property_from_context`, built from the final
+                // render plan much later, in `to_sql_query.rs`). Fixing
+                // `define_node`/`define_scalar` to actually carry through
+                // `property_mapping` would change resolution for every
+                // CTE-crossing property access application-wide — far
+                // outside this fix's scope (see commit message / handoff
+                // notes). This channel is written only here and read only by
+                // `generate_exists_sql`'s `GraphRel` branch, so it cannot
+                // affect any other property resolution.
+                crate::server::query_context::set_cte_scope_for_correlation(
+                    alias.clone(),
+                    extract_from_alias_from_cte_name(&cte_name).to_string(),
+                    per_alias_mapping.clone(),
+                );
+
                 log::info!(
                     "🔧 build_chained: scope_cte_variables updated for alias '{}' → CTE '{}'",
                     alias,

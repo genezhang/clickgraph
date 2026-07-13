@@ -107,6 +107,28 @@ pub struct QueryContext {
     pub current_variable_registry:
         Option<std::sync::Arc<crate::query_planner::typed_variable::VariableRegistry>>,
 
+    /// Cypher alias → (CTE FROM alias, {Cypher property → CTE column}) for a
+    /// WITH-CTE-exported variable, published *while* `build_chained_with_match_cte_plan`
+    /// is still building the plan (not only at the very end, unlike
+    /// `current_variable_registry`/`cte_property_mappings`, both of which are
+    /// populated only after the full render plan — including any pre-rendered
+    /// EXISTS SQL baked from it — already exists).
+    ///
+    /// This is a narrow, purpose-built channel for
+    /// `render_expr::generate_exists_sql`'s `GraphRel` branch: it needs to
+    /// resolve a WITH-barrier-crossing `EXISTS { ... }` pattern's correlation
+    /// variable id through the CTE scope active *at that exact point in the
+    /// build*, before the variable moves on to a later WITH clause's own CTE.
+    /// `current_variable_registry` cannot serve this purpose today —
+    /// `VariableRegistry::define_node`/`define_scalar` unconditionally
+    /// construct a fresh, empty `property_mapping` for `VariableSource::Cte`,
+    /// so it never actually carries CTE column info in production (ordinary
+    /// property access instead resolves via the separate legacy
+    /// `cte_property_mappings` path, populated later from the final render
+    /// plan). Written only in `build_chained_with_match_cte_plan`; read only
+    /// by `generate_exists_sql` — cannot affect any other resolution path.
+    pub cte_scope_for_correlation: HashMap<String, (String, HashMap<String, String>)>,
+
     /// Weight CTE config for weighted shortest path (Dijkstra).
     /// Set in build_chained_with_match_cte_plan when a weight CTE is detected.
     /// Read by VLP CTE generation to use weighted mode.
@@ -589,6 +611,39 @@ pub fn resolve_with_current_registry(
             let registry = ctx.current_variable_registry.as_ref()?;
             let schema = ctx.schema.as_ref()?;
             Some(registry.resolve(alias, property, schema))
+        })
+        .ok()
+        .flatten()
+}
+
+/// Publish a WITH-CTE-exported alias's current CTE scope (FROM alias +
+/// Cypher-property → CTE-column mapping) for EXISTS correlation-variable
+/// resolution. See the `cte_scope_for_correlation` field doc for why this
+/// exists as a separate channel from `current_variable_registry`.
+pub fn set_cte_scope_for_correlation(
+    alias: String,
+    sql_alias: String,
+    property_mapping: HashMap<String, String>,
+) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut()
+            .cte_scope_for_correlation
+            .insert(alias, (sql_alias, property_mapping));
+    });
+}
+
+/// Resolve `alias`'s CTE-scoped SQL reference for `property` (a Cypher
+/// property name), if `alias` is currently a WITH-CTE-exported variable with
+/// that property present. Returns `(sql_alias, cte_column)`, e.g.
+/// `("a_cnt", "p1_a_user_id")`. Returns `None` if `alias` isn't CTE-scoped
+/// (fresh MATCH — the common case) or the property isn't in its mapping.
+pub fn resolve_correlation_cte_column(alias: &str, property: &str) -> Option<(String, String)> {
+    QUERY_CONTEXT
+        .try_with(|ctx| {
+            let ctx = ctx.borrow();
+            let (sql_alias, mapping) = ctx.cte_scope_for_correlation.get(alias)?;
+            let column = mapping.get(property)?;
+            Some((sql_alias.clone(), column.clone()))
         })
         .ok()
         .flatten()
