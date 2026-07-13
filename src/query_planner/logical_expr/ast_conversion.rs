@@ -483,9 +483,16 @@ impl<'a> TryFrom<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery
                 }
             }
             AstPathPattern::ShortestPath(inner) | AstPathPattern::AllShortestPaths(inner) => {
+                // #579: previously hardcoded `where_clause: None` here, silently
+                // dropping the outer EXISTS's WHERE clause whenever its pattern
+                // was wrapped in shortestPath()/allShortestPaths() — the shared
+                // Filter-wrapping logic below never ran because this arm
+                // returns early via recursion. Thread the outer where_clause
+                // through so the recursive call applies it exactly as the
+                // non-shortestPath arms do.
                 let inner_exists = open_cypher_parser::ast::ExistsSubquery {
                     pattern: *inner,
-                    where_clause: None,
+                    where_clause: exists.where_clause,
                 };
                 return ExistsSubquery::try_from(inner_exists);
             }

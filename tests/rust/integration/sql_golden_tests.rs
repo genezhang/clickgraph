@@ -5332,6 +5332,68 @@ async fn exists_subquery_unsupported_shapes_error_cleanly() {
     );
 }
 
+/// #579: the `AstPathPattern::ShortestPath`/`AllShortestPaths` arm in
+/// `TryFrom<ast::ExistsSubquery>` (`ast_conversion.rs`) used to rebuild a
+/// fresh inner `ExistsSubquery` with `where_clause: None`, discarding the
+/// outer EXISTS's WHERE clause entirely and returning early — so
+/// `EXISTS { shortestPath((a)-[:FOLLOWS]->(b)) WHERE b.name = 'x' }` rendered
+/// successfully but silently dropped the `b.name = 'x'` filter (ground rule 1
+/// violation). Fixed by threading `exists.where_clause` through into the
+/// recursive call instead of discarding it.
+///
+/// The render layer's `generate_exists_sql` only supports a bare `GraphRel`
+/// subplan (or the complex WithClause/GraphJoins/CartesianProduct pipeline) —
+/// a `Filter(GraphRel)` subplan (what any EXISTS-with-WHERE produces) hits
+/// "Unsupported feature: EXISTS pattern with non-GraphRel subplan" for the
+/// PLAIN (non-shortestPath) shape too, confirmed unchanged on main. So the
+/// correct, minimal fix is that the shortestPath-wrapped shape must now fail
+/// the exact same loud, clean way as its non-shortestPath sibling — no longer
+/// silently succeeding with wrong (WHERE-less) results.
+#[tokio::test]
+async fn shortest_path_exists_where_clause_errors_cleanly_not_silently_dropped() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // The exact #579 repro (shortestPath) and its non-shortestPath sibling
+    // (already-existing, unrelated to this fix) must now fail identically —
+    // loud and clean, never silently rendering without the WHERE.
+    let must_error_not_silently_drop_where = [
+        "MATCH (a:User) WHERE EXISTS { MATCH shortestPath((a)-[:FOLLOWS]->(b:User)) \
+         WHERE b.name = 'Bob Jones' } RETURN a.name",
+        "MATCH (a:User) WHERE EXISTS { MATCH (a)-[:FOLLOWS]->(b:User) \
+         WHERE b.name = 'Bob Jones' } RETURN a.name",
+    ];
+    for cypher in must_error_not_silently_drop_where {
+        let result = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+        match result {
+            Err(msg) => assert!(
+                msg.contains("non-GraphRel subplan"),
+                "[{cypher}] must fail with the clean 'non-GraphRel subplan' \
+                 error, got: {msg}"
+            ),
+            Ok(sql) => panic!(
+                "[{cypher}] must error cleanly instead of silently dropping \
+                 the WHERE clause; rendered:\n{sql}"
+            ),
+        }
+    }
+
+    // Regression guard: shortestPath EXISTS WITHOUT a WHERE clause (the
+    // common shape) must still render exactly as before — this fix must not
+    // affect the no-WHERE case at all.
+    let sql = render(
+        &schema,
+        "MATCH (a:User) WHERE EXISTS { MATCH shortestPath((a)-[:FOLLOWS]->(b:User)) } \
+         RETURN a.name",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("EXISTS (SELECT 1 FROM social.user_follows_bench"),
+        "shortestPath EXISTS without WHERE must still render a correlated \
+         EXISTS over user_follows_bench:\n{sql}"
+    );
+}
+
 /// #466 round 4 (adversarial-review blocking finding): `id(alias)` on a
 /// `pattern_union` endpoint must resolve LABEL-AGNOSTICALLY to the CTE's
 /// start_id/end_id — never to ONE label's id column.
