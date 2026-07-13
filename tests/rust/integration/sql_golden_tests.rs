@@ -4019,6 +4019,102 @@ async fn undirected_optional_anchor_where_not_dropped_575() {
     );
 }
 
+/// FIXED (#582): an OR-mixed WHERE predicate spanning the anchor AND the
+/// OPTIONAL side (`MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]-(b:Airport)
+/// WHERE a.city = 'Phoenix' OR b.state = 'ZZ'`) silently dropped the
+/// NULL-extended anchor row that `a.city = 'Phoenix'` alone correctly keeps.
+/// Live-verified on `db_denormalized` (PHX is never itself an `origin_code`,
+/// so its only connection is via `DEN -> PHX` plus one NULL-extended row):
+/// `WHERE a.city='Phoenix'` alone returns 2 rows (`PHX|DEN`, `PHX|NULL`); with
+/// `OR b.state='ZZ'` added (an always-false disjunct on `b` — a no-op WHEN
+/// disjunction is correctly evaluated with three-valued SQL logic) the
+/// pre-fix renderer dropped to 1 row (only `PHX|DEN`), because `a.city` was
+/// resolved to `t1.origin_city` — a column on the NULLABLE LEFT JOIN alias —
+/// instead of the anchor's own always-present `__denorm_scan_a` CTE. When
+/// `t1` is NULL (the very row an OPTIONAL MATCH exists to keep), `t1.
+/// origin_city` is NULL too, so `NULL OR NULL` = NULL, and SQL's WHERE drops
+/// the row despite `a.city = 'Phoenix'` being objectively true.
+///
+/// Root cause: `a.city = 'Chicago' OR b.state = 'CA'` references BOTH
+/// aliases, so `references_only_alias_logical` correctly refuses to treat it
+/// as anchor-only — splitting an OR across a pre-filter on just one side
+/// would itself be unsound (unlike AND, which `split_and_predicates_logical`
+/// safely decomposes conjunct-by-conjunct). The predicate therefore stays as
+/// ONE unit in the general (non-injected) WHERE clause, which resolves each
+/// `PropertyAccess` via `apply_property_mapping_to_expr`
+/// (`plan_builder_helpers.rs`). That function's denormalized-node handling
+/// (structural property mapping through the CURRENT GraphRel's edge, plus
+/// the `denormalized_node_edges` registry's alias remap to the edge/join
+/// alias) has no concept of the render-time-only `__denorm_scan_{alias}`
+/// anchor CTE — a SEPARATE mechanism (`optional_denorm_union_anchor_is_left`)
+/// that exists specifically so the anchor's OWN properties stay
+/// always-present, independent of whether the OPTIONAL edge matched. Fixed
+/// by `is_denorm_scan_anchor_alias` + `denorm_scan_cte_anchor_reverse_
+/// property`: when a `PropertyAccess`'s alias is this CTE's anchor AND the
+/// property genuinely belongs to it (already the CTE's own Cypher name, or a
+/// physical column that reverse-maps to one), leave it resolved against the
+/// anchor alias directly and skip the edge-alias remap — regardless of
+/// whether the predicate is a lone conjunct, part of an AND, or (this case)
+/// part of an OR.
+#[tokio::test]
+async fn or_mixed_anchor_optional_predicate_not_dropped_582() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+
+    let cypher = "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]-(b:Airport) \
+                  WHERE a.city = 'Phoenix' OR b.state = 'ZZ' RETURN a.code, b.code";
+
+    let first = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+    for _ in 0..5 {
+        let again = normalize(&render(&schema, cypher, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#582: render is nondeterministic:\nFIRST:\n{first}\nAGAIN:\n{again}"
+        );
+    }
+
+    // The anchor's own predicate must resolve directly against the anchor
+    // alias (the `__denorm_scan_a` CTE exposes `city` under its plain Cypher
+    // name) — NOT through the nullable LEFT JOIN alias.
+    assert!(
+        first.contains("a.city = 'Phoenix'"),
+        "#582: anchor-only disjunct must resolve against the anchor's own \
+         always-present `__denorm_scan_a` CTE alias, not the LEFT JOIN's \
+         edge alias:\n{first}"
+    );
+    assert!(
+        !first.contains("origin_city = 'Phoenix'") && !first.contains("dest_city = 'Phoenix'"),
+        "#582: anchor predicate must NOT be resolved through the edge/join \
+         alias's from/to-side column (that's NULL on exactly the \
+         OPTIONAL-miss row this predicate must keep):\n{first}"
+    );
+
+    // The genuinely optional-side disjunct (`b.state`) is unaffected — it
+    // still correctly resolves through the LEFT JOIN's edge alias (NULL on
+    // an OPTIONAL-miss row is the correct semantics for `b`'s own property).
+    assert!(
+        first.contains("origin_state = 'ZZ'") || first.contains("dest_state = 'ZZ'"),
+        "#582: optional-side disjunct must still resolve through the LEFT \
+         JOIN's edge alias:\n{first}"
+    );
+
+    // Control: the already-working single anchor-only conjunct (#575, no OR)
+    // must render unaffected — still pushed into the CTE's own inner
+    // UNION branches, not left as a bare outer WHERE.
+    let single = normalize(
+        &render(
+            &schema,
+            "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]-(b:Airport) \
+             WHERE a.city = 'Phoenix' RETURN a.code, b.code",
+            SqlDialect::ClickHouse,
+        )
+        .await,
+    );
+    assert!(
+        single.contains("origin_city = 'Phoenix'") && single.contains("dest_city = 'Phoenix'"),
+        "#582: must not regress the #575 anchor-only (no OR) injection path:\n{single}"
+    );
+}
+
 /// FIXED (#533): the denormalized `__denorm_scan` CTE + LEFT JOIN OPTIONAL
 /// MATCH shape's OWN (non-anchor) optional-node predicate now folds into the
 /// edge JOIN's `pre_filter` — `LEFT JOIN (SELECT * FROM ... WHERE ...) AS r
@@ -4074,6 +4170,83 @@ async fn denorm_optional_node_predicate_folds_into_pre_filter_533() {
             .any(|l| l.trim_start().starts_with("WHERE") && l.contains("dest_city")),
         "#533 regressed: predicate is back in a bare outer WHERE post-LEFT-JOIN \
          (drops NULL-extended anchors instead of folding into pre_filter):\n{first}"
+    );
+}
+
+/// #582 review-round regression: the FIRST attempt at the #582 fix (a bare
+/// "anchor alias -> always leave PropertyAccess untouched" rule with no
+/// concept of WHICH properties the anchor's `__denorm_scan_{alias}` CTE
+/// actually exposes) introduced two NEW bugs, both caught by the full test
+/// gate rather than the primary live repro:
+///
+/// 1. GROUP BY on the coupled `zeek_dns` schema, where the OPTIONAL MATCH's
+///    relationship type doesn't even connect the anchor's label (`MATCH
+///    (a:IP) OPTIONAL MATCH (a)-[:RESOLVED_TO]->(b)` — `RESOLVED_TO` connects
+///    Domain/ResolvedIP, not IP, rendering as a `1 = 0` fallback join): the
+///    reverse lookup was keyed off the CURRENT (label-mismatched) edge's own
+///    property maps, which don't cover the anchor's label at all, so the
+///    physical column (`id.orig_h`) leaked through unresolved — invalid SQL
+///    (`GROUP BY a."id.orig_h"` against a CTE that only exposes
+///    `"ip_address"`). Fixed by resolving against the anchor's OWN scan Union
+///    (`denorm_scan_cte_anchor_reverse_property`, independent of which edge
+///    the CURRENT OPTIONAL MATCH names) instead of the current GraphRel's
+///    edge.
+/// 2. A genuinely EDGE-OWNED property requested via `anchor.prop` syntax
+///    (`ontime_flights`: `RETURN a.airport, count(r)`, where `airport` is
+///    NOT part of Airport's own from/to-node-property definition and the CTE
+///    was deliberately built without it) got incorrectly "protected" from the
+///    edge-alias remap too, producing `GROUP BY a.airport` — invalid SQL
+///    against a CTE that never had an `airport` column. Fixed by checking
+///    the property genuinely belongs to the CTE (already its Cypher name, or
+///    reverse-maps to one) before skipping the old edge-based resolution;
+///    otherwise fall through unchanged (matches the pre-#582 behavior for
+///    this shape: `GROUP BY r.airport`).
+#[tokio::test]
+async fn denorm_group_by_anchor_property_edge_mismatch_and_edge_owned_582() {
+    // Case 1: label-mismatched OPTIONAL relationship — anchor's own id
+    // property must resolve through the CTE alias, never the raw physical
+    // column.
+    let zeek_schema = load_schema("schemas/examples/zeek_dns_log.yaml");
+    let mismatched = "MATCH (a:IP) OPTIONAL MATCH (a)-[r:RESOLVED_TO]->(b) \
+                       RETURN a.ip_address, count(r) AS rel_count";
+    let first = normalize(&render(&zeek_schema, mismatched, SqlDialect::ClickHouse).await);
+    for _ in 0..5 {
+        let again = normalize(&render(&zeek_schema, mismatched, SqlDialect::ClickHouse).await);
+        assert_eq!(
+            first, again,
+            "#582: GROUP BY render is nondeterministic on a label-mismatched \
+             OPTIONAL relationship:\nFIRST:\n{first}\nAGAIN:\n{again}"
+        );
+    }
+    assert!(
+        first.contains("GROUP BY a.ip_address"),
+        "#582: anchor's own id property must GROUP BY through the CTE alias \
+         under its Cypher name, even when the OPTIONAL relationship type \
+         doesn't connect the anchor's label:\n{first}"
+    );
+    assert!(
+        !first.contains(r#"GROUP BY a."id.orig_h""#),
+        "#582: must not GROUP BY the raw physical column — invalid SQL \
+         against a CTE that only exposes `ip_address`:\n{first}"
+    );
+
+    // Case 2: genuinely edge-owned property requested via anchor syntax —
+    // must fall through to the pre-#582 edge-alias resolution unchanged.
+    let ontime_schema = load_schema("schemas/examples/ontime_denormalized.yaml");
+    let edge_owned =
+        "MATCH (a:Airport) OPTIONAL MATCH (a)-[r:FLIGHT]->(b) RETURN a.airport, count(r) AS rel_count";
+    let edge_owned_sql =
+        normalize(&render(&ontime_schema, edge_owned, SqlDialect::ClickHouse).await);
+    assert!(
+        edge_owned_sql.contains("GROUP BY r.airport"),
+        "#582: a genuinely edge-owned property (not part of the anchor's \
+         own CTE) must still GROUP BY through the edge alias, unchanged from \
+         pre-#582 behavior:\n{edge_owned_sql}"
+    );
+    assert!(
+        !edge_owned_sql.contains("GROUP BY a.airport"),
+        "#582: must not GROUP BY through the anchor CTE alias for a property \
+         the CTE never exposes — invalid SQL:\n{edge_owned_sql}"
     );
 }
 
