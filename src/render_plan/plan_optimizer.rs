@@ -1119,8 +1119,44 @@ fn collect_columns_for_alias_in_expr(
                 pos = col_end;
             }
         }
+        // ExistsSubquery/PatternCount carry pre-rendered correlated SQL text
+        // (baked at LogicalExpr→RenderExpr conversion time, e.g. a WITH-barrier-
+        // crossing `EXISTS { ... }` correlating against `a_cnt.p1_a_user_id`).
+        // That reference is opaque to structural traversal, so without this,
+        // CTE column pruning (which runs AFTER this baking) sees the id column
+        // as "unused" and strips it — leaving the correlated SQL dangling on a
+        // column that no longer exists. Extract "alias.column" occurrences so
+        // the pruner recognizes and protects them.
+        RenderExpr::ExistsSubquery(es) => {
+            extract_alias_dotted_columns(&es.sql, alias, columns);
+        }
+        RenderExpr::PatternCount(pc) => {
+            extract_alias_dotted_columns(&pc.sql, alias, columns);
+        }
         // Leaf nodes that don't contain column references
         _ => {}
+    }
+}
+
+/// Extract `alias.column` occurrences from a pre-rendered raw SQL fragment
+/// (used for `RenderExpr::ExistsSubquery`/`PatternCount`, whose embedded SQL
+/// is opaque to structural expression traversal). Unlike the VLP-specific
+/// `Raw` scan above, this has no `start_`/`end_` restriction — it protects
+/// any CTE column a correlated subquery references.
+fn extract_alias_dotted_columns(sql: &str, alias: &str, columns: &mut HashSet<String>) {
+    let prefix = format!("{}.", alias);
+    let mut pos = 0;
+    while let Some(idx) = sql[pos..].find(&prefix) {
+        let col_start = pos + idx + prefix.len();
+        let col_end = sql[col_start..]
+            .find(|c: char| !c.is_alphanumeric() && c != '_')
+            .map(|i| col_start + i)
+            .unwrap_or(sql.len());
+        let col = &sql[col_start..col_end];
+        if !col.is_empty() {
+            columns.insert(col.to_string());
+        }
+        pos = col_end.max(pos + idx + prefix.len());
     }
 }
 
