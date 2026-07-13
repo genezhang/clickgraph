@@ -12,19 +12,19 @@
 //!
 //! The January 29, 2026 investigation recorded here previously claimed "0 truly dead
 //! functions" and recommended against splitting this file. Both claims are now known
-//! to be stale: Phase 1 (2026-07-12) and Phase 2 slices 1-2 (2026-07-13) each deleted
-//! confirmed-dead functions from this file (verified by zero-callers grep across the
-//! whole workspace — `#![allow(dead_code)]` below suppresses compiler warnings, so
-//! deadness must be verified this way, not by build cleanliness). The file has also
-//! grown substantially since that investigation, not shrunk. Treat any dead/live
-//! function-count claim as needing fresh verification, not this comment.
+//! to be stale: Phase 1 (2026-07-12) and Phase 2 slices 1-3b (2026-07-13) deleted
+//! ~35 confirmed-dead functions from this file, verified by zero-callers grep across
+//! the whole workspace (a module-level `#![allow(dead_code)]` used to mask all of this
+//! from the compiler; it was removed once the sweep found zero remaining warnings —
+//! any NEW dead code introduced here from now on will show up as a normal compiler
+//! warning). The file has also grown substantially since the January investigation,
+//! not shrunk. Treat any dead/live function-count claim as needing fresh verification,
+//! not this comment.
 //!
 //! Phase 2 of the ongoing refactor plan is actively deduping and will eventually split
 //! this file along the seams identified there (vlp_rewrite, cte_rewrite,
 //! clause_extractors, plan_predicates, with_to_cte, pattern_comprehension_sql).
 //!
-
-#![allow(dead_code)]
 
 use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
@@ -2405,6 +2405,11 @@ fn rewrite_table_alias_in_render_plan(
 
 /// Check if the plan contains a multi-type VLP pattern
 /// Returns true if there's a variable-length path with multiple relationship types
+///
+/// Currently exercised only by this module's own unit tests (no production caller) —
+/// scoped `allow(dead_code)` instead of the module-level one removed in Phase 2, since
+/// `#[cfg(test)]` callers aren't visible to a non-test build of the lib target.
+#[allow(dead_code)]
 pub fn has_multi_type_vlp(
     plan: &crate::query_planner::logical_plan::LogicalPlan,
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
@@ -15344,6 +15349,11 @@ fn generate_list_comp_array_count(
 /// Databricks/Spark: `size(filter(arr, x -> pred))` — structural rewrite.
 /// Calling `FunctionMapper::array_count()` on the Databricks mapper panics;
 /// see `sql_generator::function_mapper::databricks` module docs.
+///
+/// Currently exercised only by this module's own unit tests (no production caller) —
+/// scoped `allow(dead_code)` instead of the module-level one removed in Phase 2, since
+/// `#[cfg(test)]` callers aren't visible to a non-test build of the lib target.
+#[allow(dead_code)]
 fn emit_array_count_call(lambda_var: &str, predicate: &str, array: &str) -> String {
     match crate::server::query_context::get_current_dialect() {
         crate::sql_generator::SqlDialect::Databricks => {
