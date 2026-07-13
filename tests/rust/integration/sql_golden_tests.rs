@@ -5567,6 +5567,104 @@ async fn shortest_path_exists_where_clause_errors_cleanly_not_silently_dropped()
     );
 }
 
+/// Phase-1 net (pre-`generate_exists_sql` refactor audit): characterizes the
+/// CURRENT (buggy, pre-refactor) behavior of `EXISTS { pattern }` when its
+/// correlated variable was bound BEFORE a `WITH` barrier, i.e. the variable
+/// lives in a CTE by the time the EXISTS subquery is rendered.
+///
+/// Root cause: `generate_exists_sql`'s bare-`GraphRel` branch (render_expr.rs)
+/// bakes a raw SQL string — `"... = {start_alias}.{id_col}"` — using the
+/// pattern's ORIGINAL Cypher alias (e.g. `a`) as a literal table reference,
+/// BEFORE any WITH/CTE renaming runs. `RenderExpr::ExistsSubquery` is then an
+/// opaque `{ sql: String }` that `remap_cte_names_in_expr`'s catch-all
+/// (`other => other`, plan_builder_utils.rs) skips entirely — so when `a` gets
+/// renamed to a CTE-local alias (here `a_cnt`) crossing the WITH barrier, the
+/// baked EXISTS SQL keeps referencing the stale, no-longer-in-scope `a`.
+///
+/// Live-verified against ClickHouse (25.8.12): running the SQL this test locks
+/// in fails with `Code: 47. DB::Exception: Unknown expression or function
+/// identifier 'a.user_id' in scope ... (UNKNOWN_IDENTIFIER)` — a loud SQL-level
+/// error, not a silent wrong-result, but still a real, currently-reachable bug
+/// for any query shaped `MATCH ... WITH a, ... WITH a WHERE EXISTS { (a)-...}`.
+///
+/// This test intentionally locks in the CURRENT (broken) SQL text as a
+/// regression-detection net for the upcoming `generate_exists_sql` deferred-
+/// stringification refactor — it does not assert correctness. When that
+/// refactor lands, this test's assertions are expected to flip (the EXISTS
+/// clause should then correlate against `a_cnt`, not `a`), and this test
+/// should be updated then, not before.
+#[tokio::test]
+async fn with_barrier_exists_no_where_bakes_stale_pre_cte_alias_characterization() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS]->(z) WITH a, count(z) AS cnt WHERE cnt > 0 \
+         WITH a WHERE EXISTS { (a)-[:FOLLOWS]->(x) } RETURN a.name",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+
+    // The WITH barrier renames the outer scope's alias for `a` to `a_cnt`
+    // inside the second CTE's body.
+    assert!(
+        sql.contains("FROM with_a_cnt_cte_0 AS a_cnt"),
+        "expected the first WITH's CTE to be referenced as `a_cnt` in the \
+         second CTE's FROM clause:\n{sql}"
+    );
+
+    // BUG (characterized, not fixed here): the EXISTS subquery's baked SQL
+    // string still correlates against the pre-WITH alias `a`, which does not
+    // exist in this CTE's scope (only `a_cnt` does). Live-verified: executing
+    // this exact SQL against ClickHouse raises UNKNOWN_IDENTIFIER for
+    // `a.user_id`.
+    assert!(
+        sql.contains(
+            "EXISTS (SELECT 1 FROM social.user_follows_bench WHERE \
+             user_follows_bench.follower_id = a.user_id)"
+        ),
+        "characterizing the CURRENT stale-alias bug: the EXISTS subquery must \
+         (still, today) reference the dangling pre-CTE alias `a.user_id` \
+         instead of the in-scope `a_cnt.user_id` — if this fails, the stale- \
+         alias bug this test locks in has changed and the test (and its doc \
+         comment) needs to be revisited:\n{sql}"
+    );
+}
+
+/// Sibling of the EXISTS characterization above, for the SAME WITH-barrier-
+/// crossing shape but with an inner `WHERE` clause on the EXISTS pattern —
+/// which converts the subplan from a bare `GraphRel` to `Filter(GraphRel)`.
+/// `generate_exists_sql` has no arm matching `Filter(GraphRel)` specifically
+/// (only bare `LogicalPlan::GraphRel` and the `WithClause|GraphJoins|
+/// CartesianProduct` pipeline branch), so it falls into the catch-all and
+/// errors — this is the SAME "non-GraphRel subplan" error as #579's
+/// no-outer-WITH sibling, confirming the outer WITH barrier does not change
+/// this particular failure mode (it fails identically with or without a
+/// preceding WITH). Locks in current behavior; not a fix.
+#[tokio::test]
+async fn with_barrier_exists_with_inner_where_errors_same_as_no_with_barrier() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let result = try_render(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS]->(z) WITH a, count(z) AS cnt WHERE cnt > 0 \
+         WITH a WHERE EXISTS { (a)-[:FOLLOWS]->(x) WHERE x.name = 'Bob Jones' } \
+         RETURN a.name",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    match result {
+        Err(msg) => assert!(
+            msg.contains("non-GraphRel subplan"),
+            "WITH-barrier-crossing EXISTS-with-WHERE must fail with the same \
+             clean 'non-GraphRel subplan' error as the no-WITH-barrier shape \
+             (#579), got: {msg}"
+        ),
+        Ok(sql) => panic!(
+            "expected a clean 'non-GraphRel subplan' error (matching #579's \
+             no-WITH-barrier sibling); instead rendered:\n{sql}"
+        ),
+    }
+}
+
 /// #578: `logical_expr::RelationshipPattern` (what `size(...)`/`PatternCount`
 /// bottoms out at) has no `variable_length` field at all, so a `*1..2`-style
 /// hop bound on a size() pattern was silently dropped at the AST->logical_expr
