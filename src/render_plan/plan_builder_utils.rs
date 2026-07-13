@@ -5576,6 +5576,16 @@ pub(crate) fn build_chained_with_match_cte_plan(
 ) -> RenderPlanBuilderResult<RenderPlan> {
     use super::CteContent;
 
+    // See `CteScopeGenerationGuard`/`enter_cte_scope_generation` doc: this
+    // scopes `cte_scope_for_correlation` entries (published below, per WITH
+    // alias) to THIS invocation (and its own nested recursive calls), so an
+    // independent later subplan reusing the same Cypher alias name (e.g. a
+    // sibling UNION arm or cartesian-product side with a fresh, non-CTE
+    // `MATCH (a) WHERE EXISTS {...}`) can never resolve through a stale entry
+    // left behind by this one.
+    let _cte_scope_generation_guard =
+        crate::server::query_context::CteScopeGenerationGuard::enter();
+
     log::debug!(
         "build_chained_with_match_cte_plan ENTRY: plan_ctx available: {}",
         plan_ctx.is_some()

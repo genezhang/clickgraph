@@ -49,13 +49,22 @@ pub use crate::server::query_context::{
 /// (`node_schema.node_id.sql_tuple(start_alias)`) when the alias is NOT
 /// CTE-scoped (a fresh MATCH with no preceding WITH — the common case,
 /// unchanged from prior behavior) or when CTE-scope resolution doesn't
-/// fully succeed for every id column (safe fallback rather than emitting a
-/// half-resolved reference).
+/// fully succeed for every id column.
 ///
 /// Composite ids: resolves EACH id column's Cypher property individually
 /// and, only if ALL resolve to the SAME CTE (same `sql_alias`), builds a
-/// tuple `(alias.col1, alias.col2)`; any partial failure falls back to
-/// `sql_tuple()` for correctness (never emits a partially-resolved tuple).
+/// tuple `(alias.col1, alias.col2)`. Any partial failure falls back to
+/// `sql_tuple()` instead of emitting a half-resolved tuple — but note this
+/// is NOT a "safe/working" path for composite ids, just a "no worse than
+/// before" one: `sql_tuple()`'s output for a composite id was ALREADY wrong
+/// pre-fix (a separate, pre-existing bug — `RelationshipSchema::from_id`'s
+/// `Display` impl renders a composite FK as a bare comma-joined list with no
+/// parens/table-qualification, e.g. `transfers.from_bank_id,
+/// from_account_number = (...)`, invalid SQL for ANY EXISTS over a
+/// composite-key relationship, WITH-barrier or not — confirmed via
+/// `schemas/test/composite_node_ids.yaml`). This fallback only guarantees
+/// this fix doesn't make that pre-existing breakage worse or different; it
+/// does not fix it.
 fn resolve_correlation_id_sql(
     start_alias: &str,
     node_schema: &crate::graph_catalog::graph_schema::NodeSchema,

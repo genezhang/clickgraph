@@ -107,12 +107,13 @@ pub struct QueryContext {
     pub current_variable_registry:
         Option<std::sync::Arc<crate::query_planner::typed_variable::VariableRegistry>>,
 
-    /// Cypher alias → (CTE FROM alias, {Cypher property → CTE column}) for a
-    /// WITH-CTE-exported variable, published *while* `build_chained_with_match_cte_plan`
-    /// is still building the plan (not only at the very end, unlike
-    /// `current_variable_registry`/`cte_property_mappings`, both of which are
-    /// populated only after the full render plan — including any pre-rendered
-    /// EXISTS SQL baked from it — already exists).
+    /// Cypher alias → (generation, CTE FROM alias, {Cypher property → CTE
+    /// column}) for a WITH-CTE-exported variable, published *while*
+    /// `build_chained_with_match_cte_plan` is still building the plan (not
+    /// only at the very end, unlike `current_variable_registry`/
+    /// `cte_property_mappings`, both of which are populated only after the
+    /// full render plan — including any pre-rendered EXISTS SQL baked from it
+    /// — already exists).
     ///
     /// This is a narrow, purpose-built channel for
     /// `render_expr::generate_exists_sql`'s `GraphRel` branch: it needs to
@@ -127,7 +128,26 @@ pub struct QueryContext {
     /// `cte_property_mappings` path, populated later from the final render
     /// plan). Written only in `build_chained_with_match_cte_plan`; read only
     /// by `generate_exists_sql` — cannot affect any other resolution path.
-    pub cte_scope_for_correlation: HashMap<String, (String, HashMap<String, String>)>,
+    ///
+    /// The `generation` tag (see `cte_scope_generation` /
+    /// `enter_cte_scope_generation`) is what keeps this safe across
+    /// independent subplans (UNION arms, cartesian-product sides, etc.) that
+    /// reuse the same Cypher alias name within a single query/task: a query
+    /// like `MATCH (a) WITH a, count(*) AS c ... RETURN a.name UNION MATCH
+    /// (a) WHERE EXISTS {(a)-[:LIKED]->(y)} RETURN 'x' AS name` renders each
+    /// UNION arm independently, and the second arm's fresh, non-CTE-scoped
+    /// `a` must NOT resolve through the first arm's now-stale entry for `a`
+    /// just because they share a name — see the entry point's doc for how
+    /// generation scoping prevents that without needing to enumerate every
+    /// independent-subplan boundary (UNION arms, cartesian sides, OPTIONAL
+    /// MATCH branches, ...) by hand.
+    pub cte_scope_for_correlation: HashMap<String, (u64, String, HashMap<String, String>)>,
+
+    /// Current "CTE scope generation" — see `enter_cte_scope_generation`.
+    /// `0` is the sentinel meaning "no `build_chained_with_match_cte_plan`
+    /// invocation is currently active" (i.e. we're between independent
+    /// subplans, or haven't started rendering any WITH-CTE plan yet).
+    pub cte_scope_generation: u64,
 
     /// Weight CTE config for weighted shortest path (Dijkstra).
     /// Set in build_chained_with_match_cte_plan when a weight CTE is detected.
@@ -616,32 +636,140 @@ pub fn resolve_with_current_registry(
         .flatten()
 }
 
+/// Global source of fresh, never-repeating `cte_scope_for_correlation`
+/// generation ids. Process-wide (not per-task) is fine: uniqueness across
+/// concurrently-active generations is all that's required, and using a
+/// simple atomic avoids needing per-task counter state. Starts at 1 — 0 is
+/// reserved as the "no generation active" sentinel (see
+/// `cte_scope_generation` field doc).
+static CTE_SCOPE_GENERATION_COUNTER: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+/// Enter a new CTE-scope-correlation "generation". Call at the very top of
+/// `build_chained_with_match_cte_plan`, for BOTH top-level invocations (one
+/// per independent subplan: a UNION arm, a cartesian-product side, the whole
+/// query if it has no such branching, ...) and its own recursive re-entry
+/// (nested WITH-clause bodies within the same subplan).
+///
+/// Returns the previous generation, which the caller MUST restore via
+/// `restore_cte_scope_generation` on every exit path — use a `Drop` guard,
+/// since the caller has many early `?` returns.
+///
+/// This is what makes `cte_scope_for_correlation` safe to consult across
+/// independent subplans without having to find and instrument every single
+/// boundary where one might start (UNION arms, cartesian sides, OPTIONAL
+/// MATCH branches, and whatever else might be added later): an entry is only
+/// ever considered live while the exact `build_chained_with_match_cte_plan`
+/// invocation that wrote it is still the innermost one on the stack. The
+/// moment that invocation returns (for ANY reason — its subplan finished
+/// rendering, an independent sibling subplan starts next, doesn't matter),
+/// its generation is retired: no future write can produce that generation
+/// value again (the counter is monotonic), so no future read can match it.
+///
+/// A fresh top-level entry (previous generation was the `0` sentinel — i.e.
+/// no invocation is currently active, so this can't be a nested recursive
+/// call) also garbage-collects every entry left over from previously
+/// finished generations: they can never be resolved again, so there's no
+/// reason to let the map grow across a query with many independent subplans.
+///
+/// This is a deliberate design choice, not an oversight: `cte_property_mappings`,
+/// `relationship_columns`, and `denormalized_aliases` each have a matching
+/// `clear_*` function with zero callers anywhere in the codebase (a
+/// separate, pre-existing gap — those maps are simply never cleared today).
+/// `cte_scope_for_correlation` avoids joining that same pattern by folding
+/// its cleanup into generation entry above, rather than adding another
+/// `clear_cte_scope_for_correlation()` that would need a caller to remember
+/// to invoke (and could easily end up with zero callers too).
+pub fn enter_cte_scope_generation() -> u64 {
+    let new_gen = CTE_SCOPE_GENERATION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    QUERY_CONTEXT
+        .try_with(|ctx| {
+            let mut ctx = ctx.borrow_mut();
+            let prev = ctx.cte_scope_generation;
+            if prev == 0 {
+                ctx.cte_scope_for_correlation.clear();
+            }
+            ctx.cte_scope_generation = new_gen;
+            prev
+        })
+        .unwrap_or(0)
+}
+
+/// Restore the CTE-scope-correlation generation to `prev` (the value
+/// `enter_cte_scope_generation` returned). See that function's doc.
+pub fn restore_cte_scope_generation(prev: u64) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().cte_scope_generation = prev;
+    });
+}
+
+/// RAII guard for `cte_scope_for_correlation`'s generation scoping (see
+/// `enter_cte_scope_generation`'s doc). Construct one at the start of any
+/// independent subplan's rendering — `build_chained_with_match_cte_plan`'s
+/// own entry (top-level AND its own recursive re-entry), and every place a
+/// *sibling* subplan gets rendered on its own (a UNION branch, a
+/// cartesian-product side, ...): those siblings run to completion one after
+/// another within the SAME task/query, so without an explicit fresh
+/// generation per sibling, a later one reusing an earlier one's Cypher alias
+/// name could otherwise still see that earlier sibling's now-stale
+/// `cte_scope_for_correlation` entries (the outer generation they'd both
+/// inherit by default hasn't changed just because a sibling finished).
+///
+/// Dropping the guard restores the previous generation — use it for the
+/// narrowest scope that renders just that one subplan/branch, not a whole
+/// multi-branch loop, so each sibling truly gets an independent generation.
+#[must_use]
+pub struct CteScopeGenerationGuard(u64);
+
+impl CteScopeGenerationGuard {
+    pub fn enter() -> Self {
+        Self(enter_cte_scope_generation())
+    }
+}
+
+impl Drop for CteScopeGenerationGuard {
+    fn drop(&mut self) {
+        restore_cte_scope_generation(self.0);
+    }
+}
+
 /// Publish a WITH-CTE-exported alias's current CTE scope (FROM alias +
 /// Cypher-property → CTE-column mapping) for EXISTS correlation-variable
-/// resolution. See the `cte_scope_for_correlation` field doc for why this
-/// exists as a separate channel from `current_variable_registry`.
+/// resolution, tagged with the CURRENTLY ACTIVE generation (see
+/// `enter_cte_scope_generation`). See the `cte_scope_for_correlation` field
+/// doc for why this exists as a separate channel from
+/// `current_variable_registry`, and for why the generation tag is needed.
 pub fn set_cte_scope_for_correlation(
     alias: String,
     sql_alias: String,
     property_mapping: HashMap<String, String>,
 ) {
     let _ = QUERY_CONTEXT.try_with(|ctx| {
-        ctx.borrow_mut()
-            .cte_scope_for_correlation
-            .insert(alias, (sql_alias, property_mapping));
+        let mut ctx = ctx.borrow_mut();
+        let generation = ctx.cte_scope_generation;
+        ctx.cte_scope_for_correlation
+            .insert(alias, (generation, sql_alias, property_mapping));
     });
 }
 
 /// Resolve `alias`'s CTE-scoped SQL reference for `property` (a Cypher
 /// property name), if `alias` is currently a WITH-CTE-exported variable with
-/// that property present. Returns `(sql_alias, cte_column)`, e.g.
-/// `("a_cnt", "p1_a_user_id")`. Returns `None` if `alias` isn't CTE-scoped
-/// (fresh MATCH — the common case) or the property isn't in its mapping.
+/// that property present AND the entry's generation matches the currently
+/// active one (i.e. it was published by the `build_chained_with_match_cte_plan`
+/// invocation that's still in progress right now, not by an earlier,
+/// already-finished, independent subplan that happened to reuse the same
+/// alias name — see `enter_cte_scope_generation`). Returns `(sql_alias,
+/// cte_column)`, e.g. `("a_cnt", "p1_a_user_id")`. Returns `None` if `alias`
+/// isn't CTE-scoped in the current subplan (fresh MATCH — the common case),
+/// the property isn't in its mapping, or the entry is stale.
 pub fn resolve_correlation_cte_column(alias: &str, property: &str) -> Option<(String, String)> {
     QUERY_CONTEXT
         .try_with(|ctx| {
             let ctx = ctx.borrow();
-            let (sql_alias, mapping) = ctx.cte_scope_for_correlation.get(alias)?;
+            let (generation, sql_alias, mapping) = ctx.cte_scope_for_correlation.get(alias)?;
+            if *generation != ctx.cte_scope_generation {
+                return None;
+            }
             let column = mapping.get(property)?;
             Some((sql_alias.clone(), column.clone()))
         })

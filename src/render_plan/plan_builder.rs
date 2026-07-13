@@ -3159,8 +3159,19 @@ impl RenderPlanBuilder for LogicalPlan {
                     log::info!("🔄 CartesianProduct: SWAPPING order - right (required) becomes FROM, left (optional) becomes LEFT JOIN");
                 }
 
-                // Render both sides
-                let left_render = cp.left.to_render_plan(schema)?;
+                // Render both sides. Each side gets its own fresh
+                // `cte_scope_for_correlation` generation (see
+                // `query_context::CteScopeGenerationGuard`), matching the
+                // UNION-branch isolation above: left and right are
+                // independently-scanned disconnected patterns, so an
+                // EXISTS/PatternCount correlation on one side must never
+                // resolve through a stale WITH-CTE scope left behind by the
+                // other side.
+                let left_render = {
+                    let _scope_guard =
+                        crate::server::query_context::CteScopeGenerationGuard::enter();
+                    cp.left.to_render_plan(schema)?
+                };
                 log::debug!(
                     "🔍 CartesianProduct: left rendered - filters: {:?}",
                     left_render.filters
@@ -3171,7 +3182,11 @@ impl RenderPlanBuilder for LogicalPlan {
                 // The right side needs to know about these to resolve property access expressions
                 // REMOVED: CTE registry no longer used
 
-                let right_render = cp.right.to_render_plan(schema)?;
+                let right_render = {
+                    let _scope_guard =
+                        crate::server::query_context::CteScopeGenerationGuard::enter();
+                    cp.right.to_render_plan(schema)?
+                };
                 log::debug!(
                     "🔍 CartesianProduct: right rendered - filters: {:?}",
                     right_render.filters
@@ -3529,12 +3544,26 @@ impl RenderPlanBuilder for LogicalPlan {
                           has_graph_patterns, has_path_variable, is_path_union);
 
                 // Convert first branch to get the base plan
+                //
+                // Each UNION branch is rendered in its own fresh
+                // `cte_scope_for_correlation` generation (see
+                // `query_context::CteScopeGenerationGuard`): branches are
+                // independent subplans that commonly reuse the same Cypher
+                // alias name (Cypher UNION requires identical column names
+                // across arms, which nudges authors toward identical alias
+                // names too), so an EXISTS/PatternCount correlation in a
+                // later branch must never resolve through an earlier
+                // branch's now-stale WITH-CTE scope for that same alias.
                 let first_input = &union.inputs[0];
                 log::debug!(
                     "🔀 Union branch 0 plan type: {:?}",
                     std::mem::discriminant(first_input.as_ref())
                 );
-                let mut base_plan = first_input.to_render_plan(schema)?;
+                let mut base_plan = {
+                    let _scope_guard =
+                        crate::server::query_context::CteScopeGenerationGuard::enter();
+                    first_input.to_render_plan(schema)?
+                };
 
                 // If there's only one branch, just return it
                 if union.inputs.len() == 1 {
@@ -3549,7 +3578,11 @@ impl RenderPlanBuilder for LogicalPlan {
                         idx,
                         std::mem::discriminant(input.as_ref())
                     );
-                    let branch_plan = input.to_render_plan(schema)?;
+                    let branch_plan = {
+                        let _scope_guard =
+                            crate::server::query_context::CteScopeGenerationGuard::enter();
+                        input.to_render_plan(schema)?
+                    };
                     union_branches.push(branch_plan);
                 }
 
@@ -4239,11 +4272,24 @@ impl RenderPlanBuilder for LogicalPlan {
                             ));
                         }
 
-                        // Render each branch with plan_ctx
+                        // Render each branch with plan_ctx.
+                        //
+                        // Each branch gets its own fresh `cte_scope_for_correlation`
+                        // generation (see `query_context::CteScopeGenerationGuard`):
+                        // UNION branches are independent subplans that commonly
+                        // reuse the same Cypher alias name (Cypher UNION requires
+                        // identical column names across arms, which nudges authors
+                        // toward identical alias names too), so an
+                        // EXISTS/PatternCount correlation in a later branch must
+                        // never resolve through an earlier branch's now-stale
+                        // WITH-CTE scope for that same alias.
                         let mut branch_renders = Vec::new();
                         for branch in union.inputs.iter() {
-                            let mut branch_render =
-                                branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
+                            let mut branch_render = {
+                                let _scope_guard =
+                                    crate::server::query_context::CteScopeGenerationGuard::enter();
+                                branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?
+                            };
                             if union.is_cypher_union {
                                 recover_cypher_arm_modifiers(branch, &mut branch_render)?;
                             }
@@ -5172,7 +5218,17 @@ impl RenderPlanBuilder for LogicalPlan {
                     ));
                 }
 
-                // Render each branch with plan_ctx
+                // Render each branch with plan_ctx.
+                //
+                // Each branch gets its own fresh `cte_scope_for_correlation`
+                // generation (see `query_context::CteScopeGenerationGuard`):
+                // UNION branches are independent subplans that commonly reuse
+                // the same Cypher alias name (Cypher UNION requires identical
+                // column names across arms, which nudges authors toward
+                // identical alias names too), so an EXISTS/PatternCount
+                // correlation in a later branch must never resolve through
+                // an earlier branch's now-stale WITH-CTE scope for that same
+                // alias.
                 let mut branch_renders = Vec::new();
                 for (idx, branch) in union.inputs.iter().enumerate() {
                     log::debug!(
@@ -5180,8 +5236,11 @@ impl RenderPlanBuilder for LogicalPlan {
                         idx,
                         std::mem::discriminant(branch.as_ref())
                     );
-                    let mut branch_render =
-                        branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
+                    let mut branch_render = {
+                        let _scope_guard =
+                            crate::server::query_context::CteScopeGenerationGuard::enter();
+                        branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?
+                    };
                     if union.is_cypher_union {
                         recover_cypher_arm_modifiers(branch, &mut branch_render)?;
                     }
@@ -5202,8 +5261,11 @@ impl RenderPlanBuilder for LogicalPlan {
                         .enumerate()
                         .map(|(idx, branch)| {
                             log::debug!("Converting Union branch {} to RenderPlan", idx + 1);
-                            let mut branch_render =
-                                branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?;
+                            let mut branch_render = {
+                                let _scope_guard =
+                                    crate::server::query_context::CteScopeGenerationGuard::enter();
+                                branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?
+                            };
                             if union.is_cypher_union {
                                 recover_cypher_arm_modifiers(branch, &mut branch_render)?;
                             }

@@ -5697,6 +5697,81 @@ async fn exists_fresh_match_no_with_barrier_unaffected_by_cte_correlation_fix() 
     );
 }
 
+/// Regression test (found by review of the stale-CTE-alias fix above): the
+/// `cte_scope_for_correlation` channel `resolve_correlation_id_sql` reads is
+/// task-local, so without generation scoping it stayed populated for the
+/// rest of a query after the WITH-CTE arm that wrote it finished rendering —
+/// a LATER, textually-unrelated UNION arm reusing the SAME Cypher alias name
+/// (very natural in Cypher UNION, which requires identical column names —
+/// hence often identical alias names — across arms; see #517's sibling tests
+/// just above for this project's prior history with exactly this reused-
+/// alias-across-arms shape) would then resolve ITS OWN, fresh, non-CTE-scoped
+/// EXISTS correlation through the FIRST arm's now-stale CTE column instead of
+/// its own real table.
+///
+/// Fixed by tagging every `cte_scope_for_correlation` entry with a
+/// monotonic "generation" (`query_context::enter_cte_scope_generation`),
+/// scoped via an RAII guard (`CteScopeGenerationGuard`) around every place an
+/// independent sibling subplan gets rendered (each UNION branch — in all
+/// three of `to_render_plan`'s and `to_render_plan_with_ctx`'s union-arm
+/// code paths — plus each CartesianProduct side): an entry is only trusted
+/// while the exact `build_chained_with_match_cte_plan` invocation that wrote
+/// it is still the innermost one active, so once that arm's rendering
+/// finishes, its entries can never match again, no matter what renders next.
+///
+/// Live-verified against ClickHouse (25.8.x): before this fix, the second
+/// arm below raised `Code: 47. DB::Exception: Unknown expression or function
+/// identifier 'a_c.p1_a_user_id'` (the first arm's stale CTE column,
+/// nonsensical in the second arm's plain `FROM social.users_bench AS a`
+/// scope); after the fix it executes and returns the correct row sets for
+/// both arms.
+#[tokio::test]
+async fn union_arm_exists_does_not_resolve_through_sibling_arms_stale_cte_scope() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH (a:User) WITH a, count(*) AS c WHERE c > 0 RETURN a.name AS name \
+         UNION MATCH (a:User) WHERE EXISTS { (a)-[:LIKED]->(y) } RETURN 'lit' AS name",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+
+    // First arm: WITH-CTE-scoped `a` renders as before (unaffected).
+    assert!(
+        sql.contains("FROM with_a_c_cte_0 AS a_c"),
+        "first arm's WITH must still render its own CTE as before:\n{sql}"
+    );
+
+    // Second arm: a FRESH, non-CTE-scoped `a` — its EXISTS correlation must
+    // reference ITS OWN real table alias, never the first arm's CTE column.
+    assert!(
+        sql.contains(
+            "EXISTS (SELECT 1 FROM social.post_likes_bench WHERE \
+             post_likes_bench.user_id = a.user_id)"
+        ),
+        "second UNION arm's EXISTS must correlate against its own \
+         `a.user_id` (a plain table reference — it has no preceding WITH), \
+         not the first arm's stale CTE column `a_c.p1_a_user_id`:\n{sql}"
+    );
+    assert!(
+        !sql.contains("a_c.p1_a_user_id"),
+        "the first arm's CTE column must never leak into the second arm's \
+         SQL text:\n{sql}"
+    );
+
+    // Determinism (matches the discipline of this file's other UNION tests).
+    for _ in 0..5 {
+        let again = render(
+            &schema,
+            "MATCH (a:User) WITH a, count(*) AS c WHERE c > 0 RETURN a.name AS name \
+             UNION MATCH (a:User) WHERE EXISTS { (a)-[:LIKED]->(y) } RETURN 'lit' AS name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert_eq!(sql, again, "nondeterministic render across repeated calls");
+    }
+}
+
 /// #578: `logical_expr::RelationshipPattern` (what `size(...)`/`PatternCount`
 /// bottoms out at) has no `variable_length` field at all, so a `*1..2`-style
 /// hop bound on a size() pattern was silently dropped at the AST->logical_expr
