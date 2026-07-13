@@ -8,34 +8,20 @@
 //! - Independent of LogicalPlan structure
 //! - Reusable across different builder modules
 //!
-//! # File Size Justification (10,807 lines - Accepted)
+//! # File Size — Phase 2 dedup/split in progress (see docs/design/REFACTORING_SAFETY_PLAN.md)
 //!
-//! **Investigation Date**: January 29, 2026  
-//! **Status**: ✅ Large file size accepted as reasonable
+//! The January 29, 2026 investigation recorded here previously claimed "0 truly dead
+//! functions" and recommended against splitting this file. Both claims are now known
+//! to be stale: Phase 1 (2026-07-12) and Phase 2 slices 1-2 (2026-07-13) each deleted
+//! confirmed-dead functions from this file (verified by zero-callers grep across the
+//! whole workspace — `#![allow(dead_code)]` below suppresses compiler warnings, so
+//! deadness must be verified this way, not by build cleanliness). The file has also
+//! grown substantially since that investigation, not shrunk. Treat any dead/live
+//! function-count claim as needing fresh verification, not this comment.
 //!
-//! This module resulted from splitting the original `plan_builder.rs` god module (16K+ lines)
-//! during the render_plan architecture cleanup. The split improved overall code organization:
-//!
-//! **Before**: Single 16K line file with mixed concerns
-//! **After**:
-//! - `plan_builder.rs` (1,675 lines) - Core building logic
-//! - `plan_builder_utils.rs` (10,807 lines) - 69 utility functions
-//! - `plan_builder_helpers.rs` (4,051 lines) - Helper functions
-//!
-//! **Why we keep it as one file**:
-//! 1. Functions are heavily interconnected (internal calls between utilities)
-//! 2. All serve the common purpose of SQL generation/transformation
-//! 3. Splitting would create artificial boundaries and complicate imports
-//! 4. 69 functions averaging ~150 lines each is maintainable
-//! 5. Clear naming patterns: `extract_*`, `rewrite_*`, `convert_*`
-//!
-//! **Analysis showed**:
-//! - 0 truly dead functions (all are used, despite claims of "44 dead")
-//! - ~20 low-use functions (1-2 calls) - specialized helpers
-//! - 46+ heavily-used functions (3+ calls) - core utilities
-//!
-//! Future improvements should focus on better documentation and grouping comments,
-//! not arbitrary file splits that would harm cohesion.
+//! Phase 2 of the ongoing refactor plan is actively deduping and will eventually split
+//! this file along the seams identified there (vlp_rewrite, cte_rewrite,
+//! clause_extractors, plan_predicates, with_to_cte, pattern_comprehension_sql).
 //!
 
 #![allow(dead_code)]
@@ -379,16 +365,6 @@ pub fn build_property_mapping_from_columns(
         property_mapping.len()
     );
     property_mapping
-}
-
-/// Placeholder for strip_database_prefix function
-/// Will be moved from plan_builder.rs lines 116-124
-/// Strip database prefix from table name (e.g., "db.table" -> "table")
-/// Recursively rewrite RenderExpr to use VLP table aliases
-pub fn rewrite_render_expr_for_vlp(expr: &mut RenderExpr, mappings: &HashMap<String, String>) {
-    // This function is deprecated in favor of rewrite_render_expr_for_vlp_with_from_alias
-    // which properly handles the FROM alias for VLP CTEs. Kept for backward compatibility.
-    rewrite_render_expr_for_vlp_with_from_alias(expr, mappings, "t");
 }
 
 /// Enhanced version that takes the FROM alias into account.
@@ -1158,43 +1134,6 @@ fn rewrite_render_expr_for_cte_operand(
         }
         RenderExpr::OperatorApplicationExp(inner_op) => RenderExpr::OperatorApplicationExp(
             rewrite_operator_application_for_cte_join(inner_op, cte_alias, cte_references),
-        ),
-        _ => expr.clone(),
-    }
-}
-
-/// Rewrite render expressions using CTE context for complex JOIN scenarios
-///
-/// Rewrites property accesses to use CTE alias and column naming patterns.
-/// Used when JOIN conditions need to reference columns from CTE-sourced aliases.
-fn rewrite_render_expr_for_cte_with_context(
-    expr: &RenderExpr,
-    ctx: &crate::render_plan::expression_utils::CTERewriteContext,
-) -> RenderExpr {
-    match expr {
-        RenderExpr::PropertyAccessExp(pa) => {
-            // Check if this alias is from a CTE
-            if ctx.cte_references.contains_key(&pa.table_alias.0) {
-                // Rewrite to use CTE alias and column naming
-                let cte_column = cte_column_name(&pa.table_alias.0, pa.column.raw());
-                log::debug!(
-                    "🔧 Rewriting property access: {}.{} -> {}.{}",
-                    pa.table_alias.0,
-                    pa.column.raw(),
-                    ctx.cte_name,
-                    cte_column
-                );
-                RenderExpr::PropertyAccessExp(PropertyAccess {
-                    table_alias: TableAlias(ctx.cte_name.clone()),
-                    column: PropertyValue::Column(cte_column),
-                })
-            } else {
-                // Not a CTE reference, keep as-is
-                expr.clone()
-            }
-        }
-        RenderExpr::OperatorApplicationExp(inner_op) => RenderExpr::OperatorApplicationExp(
-            rewrite_operator_application_for_cte_join(inner_op, &ctx.cte_name, &ctx.cte_references),
         ),
         _ => expr.clone(),
     }
@@ -4585,16 +4524,6 @@ pub fn extract_join_from_equality(
     None
 }
 
-/// Rewrite CTE column references to include alias prefix
-/// Converts "friend.id" → "friend.friend_id" for consistency
-pub fn rewrite_cte_column_references(expr: &mut crate::render_plan::render_expr::RenderExpr) {
-    use crate::render_plan::expression_utils::MutablePropertyColumnRewriter;
-
-    // Rewrite columns to include table alias prefix (underscore separator)
-    // E.g., user.id → user.user_id (for CTE column flattening)
-    MutablePropertyColumnRewriter::rewrite_column_with_prefix(expr, '_');
-}
-
 /// Find a GroupBy subplan with is_materialization_boundary=true
 pub fn find_group_by_subplan(plan: &LogicalPlan) -> Option<(&LogicalPlan, String)> {
     match plan {
@@ -5271,16 +5200,21 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
                         item_idx,
                         select_item.expression
                     );
-                    rewrite_render_expr_for_vlp(
+                    rewrite_render_expr_for_vlp_with_from_alias(
                         &mut select_item.expression,
                         &path_function_mappings,
+                        "t",
                     );
                 }
 
                 // Rewrite WHERE clause if present
                 if let Some(ref mut where_expr) = cte_plan.filters.0 {
                     log::debug!("      CTE: Rewriting WHERE clause (path functions only)");
-                    rewrite_render_expr_for_vlp(where_expr, &path_function_mappings);
+                    rewrite_render_expr_for_vlp_with_from_alias(
+                        where_expr,
+                        &path_function_mappings,
+                        "t",
+                    );
                 }
 
                 // Rewrite GROUP BY if present
@@ -5290,7 +5224,11 @@ pub(crate) fn rewrite_vlp_union_branch_aliases(
                 );
                 for (group_idx, group_expr) in cte_plan.group_by.0.iter_mut().enumerate() {
                     log::debug!("         GROUP BY[{}]: {:?}", group_idx, group_expr);
-                    rewrite_render_expr_for_vlp(group_expr, &path_function_mappings);
+                    rewrite_render_expr_for_vlp_with_from_alias(
+                        group_expr,
+                        &path_function_mappings,
+                        "t",
+                    );
                 }
             }
         }
@@ -6724,70 +6662,6 @@ fn rewrite_logical_expr_cte_refs(
                 })
                 .collect();
             LogicalExpr::List(new_items)
-        }
-        // Other expression types don't contain PropertyAccessExp, so clone as-is
-        _ => expr.clone(),
-    }
-}
-
-/// Helper: Rewrite RenderExpr to update PropertyAccessExp table aliases with updated CTE names
-fn rewrite_render_expr_cte_refs(
-    expr: &crate::render_plan::render_expr::RenderExpr,
-    cte_references: &std::collections::HashMap<String, String>,
-) -> crate::render_plan::render_expr::RenderExpr {
-    use crate::render_plan::render_expr::RenderExpr;
-
-    match expr {
-        RenderExpr::PropertyAccessExp(prop) => {
-            // Check if the table_alias references an old CTE name that needs updating
-            if let Some(new_cte_name) = cte_references.get(&prop.table_alias.0) {
-                log::info!(
-                    "🔧 rewrite_render_expr_cte_refs: Updating PropertyAccessExp table_alias '{}' → '{}'",
-                    prop.table_alias.0,
-                    new_cte_name
-                );
-                RenderExpr::PropertyAccessExp(crate::render_plan::render_expr::PropertyAccess {
-                    table_alias: crate::render_plan::render_expr::TableAlias(new_cte_name.clone()),
-                    column: prop.column.clone(),
-                })
-            } else {
-                expr.clone()
-            }
-        }
-        RenderExpr::OperatorApplicationExp(op) => {
-            let new_operands: Vec<_> = op
-                .operands
-                .iter()
-                .map(|operand| rewrite_render_expr_cte_refs(operand, cte_references))
-                .collect();
-            RenderExpr::OperatorApplicationExp(
-                crate::render_plan::render_expr::OperatorApplication {
-                    operator: op.operator,
-                    operands: new_operands,
-                },
-            )
-        }
-        RenderExpr::ScalarFnCall(func) => {
-            let new_args: Vec<_> = func
-                .args
-                .iter()
-                .map(|arg| rewrite_render_expr_cte_refs(arg, cte_references))
-                .collect();
-            RenderExpr::ScalarFnCall(crate::render_plan::render_expr::ScalarFnCall {
-                name: func.name.clone(),
-                args: new_args,
-            })
-        }
-        RenderExpr::AggregateFnCall(agg) => {
-            let new_args: Vec<_> = agg
-                .args
-                .iter()
-                .map(|arg| rewrite_render_expr_cte_refs(arg, cte_references))
-                .collect();
-            RenderExpr::AggregateFnCall(crate::render_plan::render_expr::AggregateFnCall {
-                name: agg.name.clone(),
-                args: new_args,
-            })
         }
         // Other expression types don't contain PropertyAccessExp, so clone as-is
         _ => expr.clone(),
