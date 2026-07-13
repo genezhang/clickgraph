@@ -473,7 +473,11 @@ impl<'a> TryFrom<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery
                         cte_references: std::collections::HashMap::new(),
                         pattern_combinations: None,
                         was_undirected: None,
-                        // #586: exists-subquery pattern is its own scope; clause 0 is fine.
+                        // #586: an EXISTS-subquery pattern renders as a scope-isolated
+                        // subquery and never shares PatternGraphMetadata with the outer
+                        // pattern's edges, so a fixed clause index 0 cannot collide with
+                        // the outer first clause. If EXISTS patterns are ever inlined into
+                        // the outer metadata, this must instead inherit the outer index.
                         match_clause_index: 0,
                     }))
                 }
