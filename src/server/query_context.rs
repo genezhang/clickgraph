@@ -178,6 +178,22 @@ pub struct QueryContext {
     /// carried-forward collection column whose type the variable registry does
     /// not track (e.g. `WITH collect(post) AS posts`).
     pub array_cte_columns: HashSet<String>,
+
+    /// #596: Cypher aliases bound in the OUTER (enclosing) query scope at the
+    /// point an `EXISTS { ... }` pattern predicate is rendered. Populated from
+    /// the outer plan's live node/relationship aliases (see
+    /// `collect_live_table_aliases`) at the top of `to_render_plan` /
+    /// `build_chained_with_match_cte_plan`, BEFORE the WHERE predicate — and
+    /// therefore any pre-rendered EXISTS SQL — is built. `generate_exists_sql`
+    /// reads it to decide, for each endpoint of a correlated `EXISTS`
+    /// relationship pattern, whether that endpoint is an outer anchor (bound
+    /// here) or a fresh existentially-quantified inner variable. This is the
+    /// only signal that distinguishes structurally-identical subplans like
+    /// `EXISTS { (b)-[:R]->(a) }` where BOTH `a,b` are outer (correlate both
+    /// endpoints) vs. only `a` is outer (correlate the right endpoint alone).
+    /// Union/merge semantics: an alias bound in ANY enclosing scope is "outer"
+    /// to a more-deeply-nested EXISTS, so entries are only ever added.
+    pub exists_outer_aliases: HashSet<String>,
 }
 
 /// Process-wide default SQL dialect for server-handled queries. Set once at
@@ -719,17 +735,29 @@ pub fn restore_cte_scope_generation(prev: u64) {
 /// narrowest scope that renders just that one subplan/branch, not a whole
 /// multi-branch loop, so each sibling truly gets an independent generation.
 #[must_use]
-pub struct CteScopeGenerationGuard(u64);
+pub struct CteScopeGenerationGuard {
+    prev_generation: u64,
+    /// #596: snapshot of `exists_outer_aliases` at guard construction, restored
+    /// on drop so each independent sibling subplan (UNION arm, cartesian side)
+    /// starts EXISTS anchor-classification from the enclosing scope's aliases
+    /// only — never accumulating a prior sibling's bound aliases.
+    prev_exists_outer_aliases: HashSet<String>,
+}
 
 impl CteScopeGenerationGuard {
     pub fn enter() -> Self {
-        Self(enter_cte_scope_generation())
+        let prev_exists_outer_aliases = snapshot_exists_outer_aliases();
+        Self {
+            prev_generation: enter_cte_scope_generation(),
+            prev_exists_outer_aliases,
+        }
     }
 }
 
 impl Drop for CteScopeGenerationGuard {
     fn drop(&mut self) {
-        restore_cte_scope_generation(self.0);
+        restore_cte_scope_generation(self.prev_generation);
+        restore_exists_outer_aliases(std::mem::take(&mut self.prev_exists_outer_aliases));
     }
 }
 
@@ -808,6 +836,68 @@ pub fn get_node_label_for_alias(alias: &str) -> Option<String> {
         })
         .ok()
         .flatten()
+}
+
+/// #596: Merge (union) a set of outer-scope-bound Cypher aliases into
+/// `exists_outer_aliases`. Called at the top of `to_render_plan` /
+/// `build_chained_with_match_cte_plan` with the current plan's live
+/// node/relationship aliases, before the WHERE predicate (and any EXISTS SQL
+/// baked from it) is rendered. Union semantics — never removes — because an
+/// alias bound in an enclosing scope stays "outer" to any deeper nested EXISTS.
+pub fn merge_exists_outer_aliases<I: IntoIterator<Item = String>>(aliases: I) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().exists_outer_aliases.extend(aliases);
+    });
+}
+
+/// #596: Is `alias` bound in the outer (enclosing) query scope? Used by
+/// `generate_exists_sql` to classify each EXISTS relationship-pattern endpoint
+/// as an outer anchor vs. a fresh inner variable.
+pub fn is_exists_outer_alias(alias: &str) -> bool {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().exists_outer_aliases.contains(alias))
+        .unwrap_or(false)
+}
+
+/// #596: Snapshot the current `exists_outer_aliases` set. Paired with
+/// [`restore_exists_outer_aliases`] by `CteScopeGenerationGuard` to isolate the
+/// set across independent sibling subplans (UNION arms, cartesian sides): merge
+/// semantics correctly propagate an enclosing scope's aliases INTO a nested
+/// EXISTS, but a *sibling* arm that binds the same alias name must NOT leak it
+/// into the next arm's EXISTS correlation (that treats a sibling's fresh inner
+/// var as a bogus outer anchor → out-of-scope column → Code 47). Same
+/// cross-subplan leak class #593/#594 fixed for `cte_scope_for_correlation`.
+pub fn snapshot_exists_outer_aliases() -> HashSet<String> {
+    QUERY_CONTEXT
+        .try_with(|ctx| ctx.borrow().exists_outer_aliases.clone())
+        .unwrap_or_default()
+}
+
+/// #596: Restore `exists_outer_aliases` to a prior snapshot (see
+/// [`snapshot_exists_outer_aliases`]).
+pub fn restore_exists_outer_aliases(snapshot: HashSet<String>) {
+    let _ = QUERY_CONTEXT.try_with(|ctx| {
+        ctx.borrow_mut().exists_outer_aliases = snapshot;
+    });
+}
+
+/// #596: Is `alias` a WITH-barrier-crossing CTE-scoped correlation variable in
+/// the current generation? Complements `is_exists_outer_alias`: after a WITH
+/// barrier the outer anchor is exported through a CTE (and skipped by
+/// `collect_live_table_aliases`, which ignores `ViewScan`), so its outer-ness
+/// is recorded here instead. Mirrors `resolve_correlation_cte_column`'s
+/// generation-guarded lookup but is property-agnostic (endpoint classification
+/// only, not id rendering).
+pub fn is_correlation_cte_alias(alias: &str) -> bool {
+    QUERY_CONTEXT
+        .try_with(|ctx| {
+            let ctx = ctx.borrow();
+            match ctx.cte_scope_for_correlation.get(alias) {
+                Some((generation, _, _)) => *generation == ctx.cte_scope_generation,
+                None => false,
+            }
+        })
+        .unwrap_or(false)
 }
 
 /// Set the alias→label mapping derived from the render plan's FROM/JOIN tables.

@@ -152,9 +152,6 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "UNKNOWN".to_string());
 
-            // Get the start node alias (the correlated variable)
-            let start_alias = &graph_rel.left_connection;
-
             // Use the active query's schema from task-local context
             let current_schema = get_current_schema();
             let schema = current_schema.as_deref();
@@ -162,44 +159,7 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
             // Look up the relationship table and columns using public accessors
             if let Some(schema) = schema {
                 if let Some(rel_schema) = schema.get_relationships_schema_opt(&rel_type) {
-                    // CRITICAL FIX: Use fully qualified table name (database.table) for EXISTS
-                    // This fixes "Unknown table expression" errors when table name alone isn't enough
-                    let qualified_table =
-                        format!("{}.{}", rel_schema.database, rel_schema.table_name);
-                    let from_col = &rel_schema.from_id; // from_id is the FK column
-
-                    // Get the start node's ID column from its label
-                    let start_id_sql = if let LogicalPlan::GraphNode(start_node) =
-                        graph_rel.left.as_ref()
-                    {
-                        if let Some(label) = &start_node.label {
-                            let node_schema = schema.node_schema_opt(label).ok_or_else(|| {
-                                RenderBuildError::NodeSchemaNotFound(label.clone())
-                            })?;
-                            resolve_correlation_id_sql(start_alias, node_schema)
-                        } else {
-                            // No label - infer from relationship schema
-                            let node_type = &rel_schema.from_node;
-                            let node_schema =
-                                schema.node_schema_opt(node_type).ok_or_else(|| {
-                                    RenderBuildError::NodeSchemaNotFound(node_type.clone())
-                                })?;
-                            resolve_correlation_id_sql(start_alias, node_schema)
-                        }
-                    } else {
-                        // Not a GraphNode - error, can't infer
-                        return Err(RenderBuildError::InvalidRenderPlan(
-                            "EXISTS pattern left side is not a GraphNode".to_string(),
-                        ));
-                    };
-
-                    // Generate the EXISTS SQL
-                    // EXISTS (SELECT 1 FROM database.edge_table WHERE edge_table.from_id = outer.node_id)
-                    // Note: Use unqualified table_name in WHERE clause column reference
-                    return Ok(format!(
-                        "SELECT 1 FROM {} WHERE {}.{} = {}",
-                        qualified_table, rel_schema.table_name, from_col, start_id_sql
-                    ));
+                    return generate_exists_graph_rel_sql(graph_rel, rel_schema, schema);
                 }
             }
 
@@ -215,6 +175,143 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
             Err(RenderBuildError::UnsupportedFeature(
                 "EXISTS pattern with non-GraphRel subplan".to_string(),
             ))
+        }
+    }
+}
+
+/// Generate the correlated `SELECT 1 FROM edge WHERE ...` body for a single-hop
+/// `EXISTS { (x)-[:R]-(y) }` pattern predicate (#596).
+///
+/// Correctness hinges on two facts the old code ignored:
+///
+/// 1. **EXISTS subplans are NOT normalized** to `left = source / right = target`
+///    (unlike the `GraphRel` struct doc's general claim). `left_connection` is
+///    the *syntactic-left* alias and `direction` records the arrow, so which
+///    endpoint feeds `from_id` vs `to_id` MUST be derived from `direction`:
+///    Outgoing → left=source/right=target; Incoming → left=target/right=source.
+///
+/// 2. **Which endpoint(s) are the outer correlation anchor** is not structural —
+///    `EXISTS { (b)-[:R]->(a) }` is identical whether only `a` is outer (correlate
+///    the target alone) or both `a,b` are outer (correlate both). We classify each
+///    endpoint via [`is_exists_outer_alias`] (fresh-MATCH live outer aliases,
+///    published at `to_render_plan` entry) OR [`is_correlation_cte_alias`]
+///    (WITH-barrier-exported correlation variable). Every outer-bound endpoint
+///    gets an equality to its correct edge column; a fresh inner endpoint gets
+///    none (it is existentially quantified inside the subquery).
+fn generate_exists_graph_rel_sql(
+    graph_rel: &crate::query_planner::logical_plan::GraphRel,
+    rel_schema: &crate::graph_catalog::graph_schema::RelationshipSchema,
+    schema: &crate::graph_catalog::graph_schema::GraphSchema,
+) -> Result<String, RenderBuildError> {
+    use crate::server::query_context::{is_correlation_cte_alias, is_exists_outer_alias};
+
+    let qualified_table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
+    let table_name = &rel_schema.table_name;
+    let from_col = &rel_schema.from_id;
+    let to_col = &rel_schema.to_id;
+
+    let left_conn = &graph_rel.left_connection;
+    let right_conn = &graph_rel.right_connection;
+    let left_node = graph_rel.left.as_ref();
+    let right_node = graph_rel.right.as_ref();
+
+    // Resolve an endpoint's node-id SQL. Uses the pattern node's explicit label
+    // when present; otherwise infers the node type from the relationship-schema
+    // role (source ⇒ `from_node`, target ⇒ `to_node`). `resolve_correlation_id_sql`
+    // preserves the existing WITH-barrier CTE-column correlation path.
+    let endpoint_id_sql = |alias: &str,
+                           pattern_node: &LogicalPlan,
+                           is_source: bool|
+     -> Result<String, RenderBuildError> {
+        let label: Option<String> = match pattern_node {
+            LogicalPlan::GraphNode(n) => n.label.clone(),
+            _ => None,
+        };
+        let node_type = match label {
+            Some(l) => l,
+            None if is_source => rel_schema.from_node.clone(),
+            None => rel_schema.to_node.clone(),
+        };
+        let node_schema = schema
+            .node_schema_opt(&node_type)
+            .ok_or_else(|| RenderBuildError::NodeSchemaNotFound(node_type.clone()))?;
+        Ok(resolve_correlation_id_sql(alias, node_schema))
+    };
+
+    // An endpoint alias is an OUTER anchor iff bound in the enclosing scope
+    // (fresh-MATCH live alias) or exported across a WITH barrier (CTE-scoped).
+    let is_outer = |alias: &str| is_exists_outer_alias(alias) || is_correlation_cte_alias(alias);
+
+    match graph_rel.direction {
+        Direction::Outgoing | Direction::Incoming => {
+            let outgoing = matches!(graph_rel.direction, Direction::Outgoing);
+            // (source, target) endpoints per arrow direction.
+            let (src_conn, src_node, tgt_conn, tgt_node) = if outgoing {
+                (left_conn, left_node, right_conn, right_node)
+            } else {
+                (right_conn, right_node, left_conn, left_node)
+            };
+
+            let mut conds: Vec<String> = Vec::new();
+            if is_outer(src_conn) {
+                let id = endpoint_id_sql(src_conn, src_node, true)?;
+                conds.push(format!("{}.{} = {}", table_name, from_col, id));
+            }
+            if is_outer(tgt_conn) {
+                let id = endpoint_id_sql(tgt_conn, tgt_node, false)?;
+                conds.push(format!("{}.{} = {}", table_name, to_col, id));
+            }
+
+            if conds.is_empty() {
+                // Neither endpoint detected as outer-bound: fall back to the
+                // common case (syntactic-left alias is the anchor) but STILL
+                // direction-aware, so Bug 1's reverse direction is fixed even
+                // without anchor detection. Both-bound / right-anchor rely on
+                // detection above.
+                let id = endpoint_id_sql(left_conn, left_node, outgoing)?;
+                let col = if outgoing { from_col } else { to_col };
+                conds.push(format!("{}.{} = {}", table_name, col, id));
+            }
+
+            Ok(format!(
+                "SELECT 1 FROM {} WHERE {}",
+                qualified_table,
+                conds.join(" AND ")
+            ))
+        }
+        Direction::Either => {
+            // Undirected: an anchor may match on EITHER edge column (OR),
+            // mirroring generate_pattern_count_sql's undirected convention.
+            let left_outer = is_outer(left_conn);
+            let right_outer = is_outer(right_conn);
+
+            if left_outer && right_outer {
+                // Both endpoints bound: the edge may run in either direction.
+                let l_from = endpoint_id_sql(left_conn, left_node, true)?;
+                let l_to = endpoint_id_sql(left_conn, left_node, false)?;
+                let r_from = endpoint_id_sql(right_conn, right_node, true)?;
+                let r_to = endpoint_id_sql(right_conn, right_node, false)?;
+                Ok(format!(
+                    "SELECT 1 FROM {} WHERE ({}.{} = {} AND {}.{} = {}) OR ({}.{} = {} AND {}.{} = {})",
+                    qualified_table,
+                    table_name, from_col, l_from, table_name, to_col, r_to,
+                    table_name, from_col, r_from, table_name, to_col, l_to
+                ))
+            } else {
+                // One endpoint is the anchor (or, as a fallback, the syntactic
+                // left); it may sit on either end of the edge.
+                let (anchor_conn, anchor_node) = if right_outer && !left_outer {
+                    (right_conn, right_node)
+                } else {
+                    (left_conn, left_node)
+                };
+                let a_from = endpoint_id_sql(anchor_conn, anchor_node, true)?;
+                let a_to = endpoint_id_sql(anchor_conn, anchor_node, false)?;
+                Ok(format!(
+                    "SELECT 1 FROM {} WHERE {}.{} = {} OR {}.{} = {}",
+                    qualified_table, table_name, from_col, a_from, table_name, to_col, a_to
+                ))
+            }
         }
     }
 }
