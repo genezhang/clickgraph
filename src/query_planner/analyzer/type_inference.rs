@@ -3122,7 +3122,9 @@ impl TypeInference {
                             // Mark the node as denormalized so render-phase code
                             // (e.g. build_vlp_context / detect_vlp_schema_type) can
                             // pick the right strategy for exact-hop VLP.
-                            if !graph_node.is_denormalized {
+                            if !crate::graph_catalog::pattern_schema::node_denormalized_flag(
+                                graph_node,
+                            ) {
                                 return Ok(Arc::new(LogicalPlan::GraphNode(
                                     crate::query_planner::logical_plan::GraphNode {
                                         input: graph_node.input.clone(),

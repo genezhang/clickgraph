@@ -119,7 +119,7 @@ impl ProjectedColumnsResolver {
 
         // Only denormalized nodes can have a node_id absent from their projected
         // properties; normal nodes always carry their id via property_mappings.
-        if !view_scan.is_denormalized {
+        if !crate::graph_catalog::pattern_schema::scan_denormalized_flag(view_scan) {
             return Some(cols);
         }
 

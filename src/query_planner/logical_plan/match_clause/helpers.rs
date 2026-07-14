@@ -86,10 +86,10 @@ pub fn is_denormalized_scan(plan: &Arc<LogicalPlan>) -> bool {
         LogicalPlan::ViewScan(view_scan) => {
             crate::debug_print!(
                 "is_denormalized_scan: ViewScan.is_denormalized = {} for table '{}'",
-                view_scan.is_denormalized,
+                crate::graph_catalog::pattern_schema::scan_denormalized_flag(view_scan),
                 view_scan.source_table
             );
-            view_scan.is_denormalized
+            crate::graph_catalog::pattern_schema::scan_denormalized_flag(view_scan)
         }
         _ => {
             crate::debug_print!("is_denormalized_scan: Not a ViewScan, returning false");
