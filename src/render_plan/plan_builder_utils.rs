@@ -5647,6 +5647,206 @@ fn split_render_and_conjuncts(expr: RenderExpr) -> Vec<RenderExpr> {
     }
 }
 
+fn show_plan_structure(plan: &LogicalPlan, indent: usize) {
+    let prefix = "  ".repeat(indent);
+    match plan {
+        LogicalPlan::WithClause(wc) => {
+            let key = if !wc.exported_aliases.is_empty() {
+                let mut aliases = wc.exported_aliases.clone();
+                aliases.sort();
+                aliases.join("_")
+            } else {
+                "?".to_string()
+            };
+            log::debug!("{}WITH[{}]", prefix, key,);
+            show_plan_structure(&wc.input, indent + 1);
+        }
+        LogicalPlan::Projection(proj) => {
+            log::debug!("{}Proj({})", prefix, proj.items.len());
+            show_plan_structure(&proj.input, indent + 1);
+        }
+        LogicalPlan::GraphJoins(gj) => {
+            log::debug!("{}GJoins({})", prefix, gj.joins.len());
+            show_plan_structure(&gj.input, indent + 1);
+        }
+        LogicalPlan::Filter(f) => {
+            log::debug!("{}Filter", prefix);
+            show_plan_structure(&f.input, indent + 1);
+        }
+        LogicalPlan::Limit(l) => {
+            log::debug!("{}Limit({})", prefix, l.count);
+            show_plan_structure(&l.input, indent + 1);
+        }
+        LogicalPlan::ViewScan(vs) => {
+            log::debug!("{}VS('{}')", prefix, vs.source_table);
+        }
+        LogicalPlan::GraphNode(gn) => {
+            log::debug!("{}GN('{}')", prefix, gn.alias);
+        }
+        LogicalPlan::Union(u) => {
+            log::debug!("{}Union({}br)", prefix, u.inputs.len());
+            for (i, input) in u.inputs.iter().enumerate() {
+                log::debug!("{}  br{}:", prefix, i);
+                show_plan_structure(input, indent + 2);
+            }
+        }
+        LogicalPlan::GraphRel(gr) => {
+            log::debug!(
+                "{}GR({}->{}, {:?})",
+                prefix,
+                gr.left_connection,
+                gr.right_connection,
+                gr.labels.as_ref().map(|l| l.join(",")).unwrap_or_default()
+            );
+            show_plan_structure(&gr.left, indent + 1);
+            show_plan_structure(&gr.right, indent + 1);
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            log::debug!("{}CP", prefix);
+            show_plan_structure(&cp.left, indent + 1);
+            show_plan_structure(&cp.right, indent + 1);
+        }
+        LogicalPlan::GroupBy(_) => {
+            log::debug!("{}GroupBy", prefix);
+        }
+        LogicalPlan::OrderBy(ob) => {
+            log::debug!("{}OrderBy", prefix);
+            show_plan_structure(&ob.input, indent + 1);
+        }
+        LogicalPlan::Skip(s) => {
+            log::debug!("{}Skip({})", prefix, s.count);
+            show_plan_structure(&s.input, indent + 1);
+        }
+        LogicalPlan::Unwind(u) => {
+            log::debug!("{}Unwind('{}')", prefix, u.alias);
+            show_plan_structure(&u.input, indent + 1);
+        }
+        other => {
+            log::debug!("{}{:?}", prefix, std::mem::discriminant(other));
+        }
+    }
+}
+
+// Count plan tree depth to diagnose excessive iterations.
+// Deep nesting can come from any combination of plan nodes (Projection, Filter, WITH, etc.)
+fn count_plan_depth(plan: &LogicalPlan) -> usize {
+    count_plan_depth_impl(plan, 0)
+}
+
+fn count_plan_depth_impl(plan: &LogicalPlan, current: usize) -> usize {
+    if current > crate::render_plan::MAX_TRAVERSAL_DEPTH {
+        return current;
+    }
+    match plan {
+        LogicalPlan::WithClause(wc) => count_plan_depth_impl(&wc.input, current + 1),
+        LogicalPlan::Projection(p) => count_plan_depth_impl(&p.input, current + 1),
+        LogicalPlan::Filter(f) => count_plan_depth_impl(&f.input, current + 1),
+        LogicalPlan::GroupBy(gb) => count_plan_depth_impl(&gb.input, current + 1),
+        LogicalPlan::OrderBy(ob) => count_plan_depth_impl(&ob.input, current + 1),
+        LogicalPlan::Limit(lim) => count_plan_depth_impl(&lim.input, current + 1),
+        LogicalPlan::Skip(skip) => count_plan_depth_impl(&skip.input, current + 1),
+        LogicalPlan::GraphJoins(gj) => count_plan_depth_impl(&gj.input, current + 1),
+        LogicalPlan::Unwind(u) => count_plan_depth_impl(&u.input, current + 1),
+        LogicalPlan::Union(u) => u
+            .inputs
+            .iter()
+            .map(|i| count_plan_depth_impl(i, current + 1))
+            .max()
+            .unwrap_or(current + 1),
+        _ => current + 1, // Leaf nodes
+    }
+}
+
+fn show_with_structure(plan: &LogicalPlan, indent: usize) {
+    let prefix = "  ".repeat(indent);
+    match plan {
+        LogicalPlan::WithClause(wc) => {
+            let key = if !wc.exported_aliases.is_empty() {
+                let mut aliases = wc.exported_aliases.clone();
+                aliases.sort();
+                aliases.join("_")
+            } else {
+                "with_var".to_string()
+            };
+            log::debug!(
+                "{}WithClause(key='{}', cte_refs={:?})",
+                prefix,
+                key,
+                wc.cte_references
+            );
+            show_with_structure(&wc.input, indent + 1);
+        }
+        LogicalPlan::Limit(lim) => {
+            log::debug!("{}Limit({})", prefix, lim.count);
+            show_with_structure(&lim.input, indent + 1);
+        }
+        LogicalPlan::GraphJoins(gj) => {
+            log::debug!("{}GraphJoins({} joins)", prefix, gj.joins.len());
+            show_with_structure(&gj.input, indent + 1);
+        }
+        LogicalPlan::Projection(proj) => {
+            log::debug!("{}Projection({} items)", prefix, proj.items.len());
+            show_with_structure(&proj.input, indent + 1);
+        }
+        LogicalPlan::GraphNode(gn) => {
+            log::debug!("{}GraphNode(alias='{}')", prefix, gn.alias);
+        }
+        LogicalPlan::ViewScan(vs) => {
+            log::debug!("{}ViewScan(table='{}')", prefix, vs.source_table);
+        }
+        LogicalPlan::Union(u) => {
+            log::debug!("{}Union({} branches)", prefix, u.inputs.len());
+            for (i, input) in u.inputs.iter().enumerate() {
+                log::debug!("{}  Branch {}:", prefix, i);
+                show_with_structure(input, indent + 2);
+            }
+        }
+        LogicalPlan::GraphRel(gr) => {
+            log::debug!(
+                "{}GraphRel(l='{}', r='{}', dir={:?})",
+                prefix,
+                gr.left_connection,
+                gr.right_connection,
+                gr.labels.as_ref().map(|l| l.join(",")).unwrap_or_default()
+            );
+            log::debug!("{}  left:", prefix);
+            show_with_structure(&gr.left, indent + 2);
+            log::debug!("{}  right:", prefix);
+            show_with_structure(&gr.right, indent + 2);
+        }
+        LogicalPlan::Filter(f) => {
+            log::debug!("{}Filter", prefix);
+            show_with_structure(&f.input, indent + 1);
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            log::debug!("{}CartesianProduct", prefix);
+            log::debug!("{}  left:", prefix);
+            show_with_structure(&cp.left, indent + 2);
+            log::debug!("{}  right:", prefix);
+            show_with_structure(&cp.right, indent + 2);
+        }
+        LogicalPlan::GroupBy(gb) => {
+            log::debug!("{}GroupBy", prefix);
+            show_with_structure(&gb.input, indent + 1);
+        }
+        LogicalPlan::OrderBy(ob) => {
+            log::debug!("{}OrderBy", prefix);
+            show_with_structure(&ob.input, indent + 1);
+        }
+        LogicalPlan::Skip(s) => {
+            log::debug!("{}Skip({})", prefix, s.count);
+            show_with_structure(&s.input, indent + 1);
+        }
+        LogicalPlan::Unwind(u) => {
+            log::debug!("{}Unwind(alias='{}')", prefix, u.alias);
+            show_with_structure(&u.input, indent + 1);
+        }
+        other => {
+            log::debug!("{}Other({:?})", prefix, std::mem::discriminant(other));
+        }
+    }
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -5754,116 +5954,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
     // and property mappings. Updated as each CTE is built. Attached to CTEs and the final
     // RenderPlan for use by the SQL renderer.
     let mut var_registry = crate::query_planner::typed_variable::VariableRegistry::new();
-
-    fn show_plan_structure(plan: &LogicalPlan, indent: usize) {
-        let prefix = "  ".repeat(indent);
-        match plan {
-            LogicalPlan::WithClause(wc) => {
-                let key = if !wc.exported_aliases.is_empty() {
-                    let mut aliases = wc.exported_aliases.clone();
-                    aliases.sort();
-                    aliases.join("_")
-                } else {
-                    "?".to_string()
-                };
-                log::debug!("{}WITH[{}]", prefix, key,);
-                show_plan_structure(&wc.input, indent + 1);
-            }
-            LogicalPlan::Projection(proj) => {
-                log::debug!("{}Proj({})", prefix, proj.items.len());
-                show_plan_structure(&proj.input, indent + 1);
-            }
-            LogicalPlan::GraphJoins(gj) => {
-                log::debug!("{}GJoins({})", prefix, gj.joins.len());
-                show_plan_structure(&gj.input, indent + 1);
-            }
-            LogicalPlan::Filter(f) => {
-                log::debug!("{}Filter", prefix);
-                show_plan_structure(&f.input, indent + 1);
-            }
-            LogicalPlan::Limit(l) => {
-                log::debug!("{}Limit({})", prefix, l.count);
-                show_plan_structure(&l.input, indent + 1);
-            }
-            LogicalPlan::ViewScan(vs) => {
-                log::debug!("{}VS('{}')", prefix, vs.source_table);
-            }
-            LogicalPlan::GraphNode(gn) => {
-                log::debug!("{}GN('{}')", prefix, gn.alias);
-            }
-            LogicalPlan::Union(u) => {
-                log::debug!("{}Union({}br)", prefix, u.inputs.len());
-                for (i, input) in u.inputs.iter().enumerate() {
-                    log::debug!("{}  br{}:", prefix, i);
-                    show_plan_structure(input, indent + 2);
-                }
-            }
-            LogicalPlan::GraphRel(gr) => {
-                log::debug!(
-                    "{}GR({}->{}, {:?})",
-                    prefix,
-                    gr.left_connection,
-                    gr.right_connection,
-                    gr.labels.as_ref().map(|l| l.join(",")).unwrap_or_default()
-                );
-                show_plan_structure(&gr.left, indent + 1);
-                show_plan_structure(&gr.right, indent + 1);
-            }
-            LogicalPlan::CartesianProduct(cp) => {
-                log::debug!("{}CP", prefix);
-                show_plan_structure(&cp.left, indent + 1);
-                show_plan_structure(&cp.right, indent + 1);
-            }
-            LogicalPlan::GroupBy(_) => {
-                log::debug!("{}GroupBy", prefix);
-            }
-            LogicalPlan::OrderBy(ob) => {
-                log::debug!("{}OrderBy", prefix);
-                show_plan_structure(&ob.input, indent + 1);
-            }
-            LogicalPlan::Skip(s) => {
-                log::debug!("{}Skip({})", prefix, s.count);
-                show_plan_structure(&s.input, indent + 1);
-            }
-            LogicalPlan::Unwind(u) => {
-                log::debug!("{}Unwind('{}')", prefix, u.alias);
-                show_plan_structure(&u.input, indent + 1);
-            }
-            other => {
-                log::debug!("{}{:?}", prefix, std::mem::discriminant(other));
-            }
-        }
-    }
-
-    // Count plan tree depth to diagnose excessive iterations.
-    // Deep nesting can come from any combination of plan nodes (Projection, Filter, WITH, etc.)
-    fn count_plan_depth(plan: &LogicalPlan) -> usize {
-        count_plan_depth_impl(plan, 0)
-    }
-
-    fn count_plan_depth_impl(plan: &LogicalPlan, current: usize) -> usize {
-        if current > crate::render_plan::MAX_TRAVERSAL_DEPTH {
-            return current;
-        }
-        match plan {
-            LogicalPlan::WithClause(wc) => count_plan_depth_impl(&wc.input, current + 1),
-            LogicalPlan::Projection(p) => count_plan_depth_impl(&p.input, current + 1),
-            LogicalPlan::Filter(f) => count_plan_depth_impl(&f.input, current + 1),
-            LogicalPlan::GroupBy(gb) => count_plan_depth_impl(&gb.input, current + 1),
-            LogicalPlan::OrderBy(ob) => count_plan_depth_impl(&ob.input, current + 1),
-            LogicalPlan::Limit(lim) => count_plan_depth_impl(&lim.input, current + 1),
-            LogicalPlan::Skip(skip) => count_plan_depth_impl(&skip.input, current + 1),
-            LogicalPlan::GraphJoins(gj) => count_plan_depth_impl(&gj.input, current + 1),
-            LogicalPlan::Unwind(u) => count_plan_depth_impl(&u.input, current + 1),
-            LogicalPlan::Union(u) => u
-                .inputs
-                .iter()
-                .map(|i| count_plan_depth_impl(i, current + 1))
-                .max()
-                .unwrap_or(current + 1),
-            _ => current + 1, // Leaf nodes
-        }
-    }
 
     // Process WITH clauses iteratively until none remain
     while has_with_clause_in_graph_rel(&current_plan) {
@@ -10296,95 +10386,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
             log::debug!("🔧 build_chained_with_match_cte_plan: BEFORE replacement - plan discriminant: {:?}", std::mem::discriminant(&current_plan));
 
             // Debug: Show WITH structure before replacement
-            fn show_with_structure(plan: &LogicalPlan, indent: usize) {
-                let prefix = "  ".repeat(indent);
-                match plan {
-                    LogicalPlan::WithClause(wc) => {
-                        let key = if !wc.exported_aliases.is_empty() {
-                            let mut aliases = wc.exported_aliases.clone();
-                            aliases.sort();
-                            aliases.join("_")
-                        } else {
-                            "with_var".to_string()
-                        };
-                        log::debug!(
-                            "{}WithClause(key='{}', cte_refs={:?})",
-                            prefix,
-                            key,
-                            wc.cte_references
-                        );
-                        show_with_structure(&wc.input, indent + 1);
-                    }
-                    LogicalPlan::Limit(lim) => {
-                        log::debug!("{}Limit({})", prefix, lim.count);
-                        show_with_structure(&lim.input, indent + 1);
-                    }
-                    LogicalPlan::GraphJoins(gj) => {
-                        log::debug!("{}GraphJoins({} joins)", prefix, gj.joins.len());
-                        show_with_structure(&gj.input, indent + 1);
-                    }
-                    LogicalPlan::Projection(proj) => {
-                        log::debug!("{}Projection({} items)", prefix, proj.items.len());
-                        show_with_structure(&proj.input, indent + 1);
-                    }
-                    LogicalPlan::GraphNode(gn) => {
-                        log::debug!("{}GraphNode(alias='{}')", prefix, gn.alias);
-                    }
-                    LogicalPlan::ViewScan(vs) => {
-                        log::debug!("{}ViewScan(table='{}')", prefix, vs.source_table);
-                    }
-                    LogicalPlan::Union(u) => {
-                        log::debug!("{}Union({} branches)", prefix, u.inputs.len());
-                        for (i, input) in u.inputs.iter().enumerate() {
-                            log::debug!("{}  Branch {}:", prefix, i);
-                            show_with_structure(input, indent + 2);
-                        }
-                    }
-                    LogicalPlan::GraphRel(gr) => {
-                        log::debug!(
-                            "{}GraphRel(l='{}', r='{}', dir={:?})",
-                            prefix,
-                            gr.left_connection,
-                            gr.right_connection,
-                            gr.labels.as_ref().map(|l| l.join(",")).unwrap_or_default()
-                        );
-                        log::debug!("{}  left:", prefix);
-                        show_with_structure(&gr.left, indent + 2);
-                        log::debug!("{}  right:", prefix);
-                        show_with_structure(&gr.right, indent + 2);
-                    }
-                    LogicalPlan::Filter(f) => {
-                        log::debug!("{}Filter", prefix);
-                        show_with_structure(&f.input, indent + 1);
-                    }
-                    LogicalPlan::CartesianProduct(cp) => {
-                        log::debug!("{}CartesianProduct", prefix);
-                        log::debug!("{}  left:", prefix);
-                        show_with_structure(&cp.left, indent + 2);
-                        log::debug!("{}  right:", prefix);
-                        show_with_structure(&cp.right, indent + 2);
-                    }
-                    LogicalPlan::GroupBy(gb) => {
-                        log::debug!("{}GroupBy", prefix);
-                        show_with_structure(&gb.input, indent + 1);
-                    }
-                    LogicalPlan::OrderBy(ob) => {
-                        log::debug!("{}OrderBy", prefix);
-                        show_with_structure(&ob.input, indent + 1);
-                    }
-                    LogicalPlan::Skip(s) => {
-                        log::debug!("{}Skip({})", prefix, s.count);
-                        show_with_structure(&s.input, indent + 1);
-                    }
-                    LogicalPlan::Unwind(u) => {
-                        log::debug!("{}Unwind(alias='{}')", prefix, u.alias);
-                        show_with_structure(&u.input, indent + 1);
-                    }
-                    other => {
-                        log::debug!("{}Other({:?})", prefix, std::mem::discriminant(other));
-                    }
-                }
-            }
             log::debug!("🔧 PLAN STRUCTURE BEFORE REPLACEMENT:");
             show_with_structure(&current_plan, 0);
 
