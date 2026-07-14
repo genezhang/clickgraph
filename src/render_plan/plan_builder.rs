@@ -1357,6 +1357,15 @@ impl RenderPlanBuilder for LogicalPlan {
         };
         log::debug!("to_render_plan called with: {}", plan_name);
 
+        // #596: Record this plan's live (outer-scope) node/relationship aliases
+        // so `generate_exists_sql` can classify each EXISTS pattern endpoint as
+        // an outer anchor vs. a fresh inner variable. Union semantics — the EXISTS
+        // subplan lives inside a WHERE-predicate LogicalExpr, not this plan tree,
+        // so its inner aliases are correctly excluded here.
+        crate::server::query_context::merge_exists_outer_aliases(
+            super::plan_builder_utils::collect_exists_scope_aliases(self),
+        );
+
         if has_with_clause_in_graph_rel(self) {
             // #594: keep Cypher-UNION arms independent (see the ctx-aware path).
             if is_toplevel_cypher_union(self) {
@@ -3938,6 +3947,15 @@ impl RenderPlanBuilder for LogicalPlan {
             log::debug!(
                 "🔀🔀🔀 to_render_plan_with_ctx ENTRY - plan type: {:?}",
                 std::mem::discriminant(self)
+            );
+
+            // #596: Record this plan's live (outer-scope) node/relationship
+            // aliases so `generate_exists_sql` can classify each EXISTS pattern
+            // endpoint as an outer anchor vs. a fresh inner variable. The EXISTS
+            // subplan lives inside a WHERE-predicate LogicalExpr (not this plan
+            // tree), so its inner aliases are correctly excluded. Union semantics.
+            crate::server::query_context::merge_exists_outer_aliases(
+                super::plan_builder_utils::collect_exists_scope_aliases(self),
             );
 
             // CRITICAL: If the plan contains WITH clauses, use the specialized handler

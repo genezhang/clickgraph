@@ -4989,7 +4989,7 @@ pub(crate) fn update_graph_joins_cte_refs(
 /// Collect all "live" table aliases from the plan tree — aliases that appear in
 /// GraphNode or GraphRel nodes that are NOT inside a ViewScan/CTE reference.
 /// These are the aliases that actually need physical table joins.
-fn collect_live_table_aliases(plan: &LogicalPlan) -> std::collections::HashSet<String> {
+pub(crate) fn collect_live_table_aliases(plan: &LogicalPlan) -> std::collections::HashSet<String> {
     use std::collections::HashSet;
     fn collect(plan: &LogicalPlan, aliases: &mut HashSet<String>) {
         match plan {
@@ -5024,6 +5024,61 @@ fn collect_live_table_aliases(plan: &LogicalPlan) -> std::collections::HashSet<S
                 }
             }
             // ViewScan = CTE reference, NOT a physical table — don't collect
+            LogicalPlan::ViewScan(_) => {}
+            _ => {}
+        }
+    }
+    let mut aliases = HashSet::new();
+    collect(plan, &mut aliases);
+    aliases
+}
+
+/// #596: Collect the node/relationship aliases bound in the current subplan's
+/// EXISTS-correlation scope — like [`collect_live_table_aliases`] but treating a
+/// `Union` as a HARD SCOPE BOUNDARY (does NOT descend into its arms).
+///
+/// UNION arms are independent sibling subplans that each render under their own
+/// `CteScopeGenerationGuard` and merge THEIR OWN aliases as they render; pulling
+/// every arm's aliases up to the union level would make one arm's fresh inner
+/// EXISTS variable look like an outer anchor in a sibling arm that reuses the
+/// same name (the #596 cross-arm leak — Code 47). `CartesianProduct` sides, by
+/// contrast, form ONE combined scope (`MATCH (a), (b)`), so we still descend
+/// into both. Used only to populate `exists_outer_aliases` at render entry.
+pub(crate) fn collect_exists_scope_aliases(
+    plan: &LogicalPlan,
+) -> std::collections::HashSet<String> {
+    use std::collections::HashSet;
+    fn collect(plan: &LogicalPlan, aliases: &mut HashSet<String>) {
+        match plan {
+            LogicalPlan::GraphNode(n) => {
+                aliases.insert(n.alias.clone());
+                collect(&n.input, aliases);
+            }
+            LogicalPlan::GraphRel(r) => {
+                if !r.alias.is_empty() {
+                    aliases.insert(r.alias.clone());
+                }
+                collect(&r.left, aliases);
+                collect(&r.center, aliases);
+                collect(&r.right, aliases);
+            }
+            LogicalPlan::GraphJoins(gj) => collect(&gj.input, aliases),
+            LogicalPlan::Projection(p) => collect(&p.input, aliases),
+            LogicalPlan::Filter(f) => collect(&f.input, aliases),
+            LogicalPlan::OrderBy(o) => collect(&o.input, aliases),
+            LogicalPlan::Limit(l) => collect(&l.input, aliases),
+            LogicalPlan::GroupBy(g) => collect(&g.input, aliases),
+            LogicalPlan::Skip(s) => collect(&s.input, aliases),
+            LogicalPlan::Unwind(u) => collect(&u.input, aliases),
+            LogicalPlan::CartesianProduct(cp) => {
+                // Same combined scope — both sides are in scope together.
+                collect(&cp.left, aliases);
+                collect(&cp.right, aliases);
+            }
+            LogicalPlan::WithClause(wc) => collect(&wc.input, aliases),
+            // Union = independent sibling subplans; each arm merges its own
+            // aliases under its own generation guard. Do NOT descend (#596).
+            LogicalPlan::Union(_) => {}
             LogicalPlan::ViewScan(_) => {}
             _ => {}
         }

@@ -5697,6 +5697,231 @@ async fn exists_fresh_match_no_with_barrier_unaffected_by_cte_correlation_fix() 
     );
 }
 
+/// #596 (Bug 1, SILENT): the `EXISTS { (a)<-[:FOLLOWS]-(b) }` pattern's arrow
+/// points INTO `a` — so `a` is the relationship TARGET and must correlate to
+/// `followed_id`, NOT `follower_id`. The old `generate_exists_sql` was
+/// direction-blind (always `from_id = left_connection`), so this "users who
+/// ARE followed" query silently returned "users who FOLLOW" instead.
+/// Live-verified against social_benchmark: correct result is {1,2,3,4,7}.
+#[tokio::test]
+async fn exists_reverse_direction_correlates_target_column_596() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH (a:User) WHERE EXISTS { (a)<-[:FOLLOWS]-(b) } RETURN a.user_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains(
+            "EXISTS (SELECT 1 FROM social.user_follows_bench WHERE \
+             user_follows_bench.followed_id = a.user_id)"
+        ),
+        "reverse-direction EXISTS {{ (a)<-[:FOLLOWS]-(b) }} must correlate the \
+         anchor `a` (the arrow TARGET) to `followed_id`, not `follower_id`:\n{sql}"
+    );
+    // NOT EXISTS of the same shape inherits the same (now correct) body.
+    let not_sql = render(
+        &schema,
+        "MATCH (a:User) WHERE NOT EXISTS { (a)<-[:FOLLOWS]-(b) } RETURN a.user_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        not_sql.contains(
+            "NOT EXISTS (SELECT 1 FROM social.user_follows_bench WHERE \
+             user_follows_bench.followed_id = a.user_id)"
+        ),
+        "NOT EXISTS of the reverse-direction pattern must also use \
+         `followed_id`:\n{not_sql}"
+    );
+}
+
+/// #596 (Bug 2, SILENT): when BOTH endpoints of an `EXISTS` relationship
+/// pattern are outer-bound — `MATCH (a)-[:FOLLOWS]->(b) WHERE EXISTS {
+/// (b)-[:FOLLOWS]->(a) }` (mutual follows) — the correlation must pin BOTH
+/// edge columns (`follower_id = b AND followed_id = a`). The old code emitted
+/// only `follower_id = b` (checking "b follows anyone", not "b follows a"),
+/// silently over-returning. Live-verified: 6 mutual-follow rows, not 9.
+#[tokio::test]
+async fn exists_both_endpoints_bound_correlates_both_columns_596() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS]->(b:User) WHERE EXISTS { (b)-[:FOLLOWS]->(a) } \
+         RETURN a.user_id, b.user_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains(
+            "EXISTS (SELECT 1 FROM social.user_follows_bench WHERE \
+             user_follows_bench.follower_id = b.user_id AND \
+             user_follows_bench.followed_id = a.user_id)"
+        ),
+        "both-endpoints-bound EXISTS must correlate BOTH edge columns \
+         (`follower_id = b AND followed_id = a`):\n{sql}"
+    );
+}
+
+/// #596 (Bug 4, was LOUD Code 47): when the outer anchor is the RIGHT endpoint
+/// and the LEFT is a fresh inner variable — `MATCH (a:User) WHERE EXISTS {
+/// (b)-[:FOLLOWS]->(a) }` — the correlation must pin the RIGHT anchor `a` to
+/// its edge column (`followed_id = a`), not the out-of-scope fresh `b`. The old
+/// code blindly emitted `follower_id = b.user_id`, producing an unknown-identifier
+/// error at execution. Live-verified: fixed result is {1,2,3,4,7}.
+#[tokio::test]
+async fn exists_right_anchor_correlates_right_endpoint_596() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH (a:User) WHERE EXISTS { (b)-[:FOLLOWS]->(a) } RETURN a.user_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains(
+            "EXISTS (SELECT 1 FROM social.user_follows_bench WHERE \
+             user_follows_bench.followed_id = a.user_id)"
+        ),
+        "right-anchor EXISTS must correlate the RIGHT anchor `a` to \
+         `followed_id`:\n{sql}"
+    );
+    assert!(
+        !sql.contains("b.user_id"),
+        "right-anchor EXISTS must NOT reference the fresh inner (out-of-scope) \
+         `b.user_id`:\n{sql}"
+    );
+
+    // Cross-type variant: MATCH (p:Post) WHERE EXISTS { (u:User)-[:LIKED]->(p) }
+    // The anchor `p` is the RIGHT/TARGET endpoint → `post_id = p.post_id`.
+    let post_sql = render(
+        &schema,
+        "MATCH (p:Post) WHERE EXISTS { (u:User)-[:LIKED]->(p) } RETURN p.post_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        post_sql.contains(
+            "EXISTS (SELECT 1 FROM social.post_likes_bench WHERE \
+             post_likes_bench.post_id = p.post_id)"
+        ),
+        "cross-type right-anchor EXISTS must correlate the TARGET `p` to \
+         `post_id`:\n{post_sql}"
+    );
+    assert!(
+        !post_sql.contains("u.user_id"),
+        "cross-type right-anchor EXISTS must NOT reference the fresh inner \
+         `u.user_id`:\n{post_sql}"
+    );
+}
+
+/// #596: forward `EXISTS { (a)-[:FOLLOWS]->(x) }` (anchor is the LEFT/SOURCE)
+/// must STAY correlated to `follower_id` — the direction-aware rewrite must not
+/// regress the case that was already correct.
+#[tokio::test]
+async fn exists_forward_direction_still_correlates_source_column_596() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH (a:User) WHERE EXISTS { (a)-[:FOLLOWS]->(x) } RETURN a.user_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains(
+            "EXISTS (SELECT 1 FROM social.user_follows_bench WHERE \
+             user_follows_bench.follower_id = a.user_id)"
+        ),
+        "forward EXISTS {{ (a)-[:FOLLOWS]->(x) }} must still correlate the \
+         SOURCE anchor `a` to `follower_id`:\n{sql}"
+    );
+}
+
+/// #596 (cross-arm isolation regression): the `exists_outer_aliases` task-local
+/// that classifies EXISTS anchors must be scoped to the currently-rendering
+/// subplan, NOT accumulated across independent UNION arms. An earlier merge-only
+/// version leaked arm 1's bound `b` into arm 2's scope, so arm 2's
+/// `EXISTS { (u)-[:FOLLOWS]->(b) }` (where `b` is arm 2's FRESH inner var) wrongly
+/// gained an `AND followed_id = b.user_id` term correlating an out-of-scope alias
+/// → ClickHouse Code 47. This is the same cross-subplan task-local leak class
+/// #593/#594 fixed for `cte_scope_for_correlation`; here it's isolated via
+/// `CteScopeGenerationGuard` snapshot/restore + a union-boundary-aware collector.
+#[tokio::test]
+async fn exists_outer_aliases_do_not_leak_across_union_arms_596() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS]->(b) RETURN a.user_id AS id \
+         UNION \
+         MATCH (u:User) WHERE EXISTS { (u)-[:FOLLOWS]->(b) } RETURN u.user_id AS id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    // Arm 2's EXISTS correlates ONLY its own outer anchor `u` (source →
+    // follower_id); the fresh inner `b` must be existentially quantified, NOT
+    // pinned to a leaked `followed_id = b.user_id` from arm 1.
+    assert!(
+        sql.contains(
+            "EXISTS (SELECT 1 FROM social.user_follows_bench WHERE \
+             user_follows_bench.follower_id = u.user_id)"
+        ),
+        "arm 2's EXISTS must correlate only its own anchor `u`:\n{sql}"
+    );
+    assert!(
+        !sql.contains("followed_id = b.user_id"),
+        "arm 1's bound `b` must NOT leak into arm 2's EXISTS as an outer \
+         anchor (cross-arm task-local leak → Code 47):\n{sql}"
+    );
+
+    // Sibling variant: an arm binding `x` must not leak into a later arm's
+    // right-anchor EXISTS `(x:User)-[:FOLLOWS]->(m)`, which must resolve to the
+    // RIGHT anchor `m` (followed_id), never the leaked left `x`.
+    let sql2 = render(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS]->(x) RETURN a.user_id AS uid \
+         UNION \
+         MATCH (m:User) WHERE EXISTS { (x:User)-[:FOLLOWS]->(m) } RETURN m.user_id AS uid",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql2.contains(
+            "EXISTS (SELECT 1 FROM social.user_follows_bench WHERE \
+             user_follows_bench.followed_id = m.user_id)"
+        ),
+        "arm 2's right-anchor EXISTS must correlate `m` (followed_id), not the \
+         leaked sibling alias `x`:\n{sql2}"
+    );
+    assert!(
+        !sql2.contains("follower_id = x.user_id") && !sql2.contains("= x.user_id"),
+        "sibling arm's `x` must NOT leak into arm 2's EXISTS correlation:\n{sql2}"
+    );
+}
+
+/// #596: undirected `EXISTS { (a)-[:FOLLOWS]-(b) }` (single outer anchor `a`)
+/// may match the anchor on EITHER edge end, so the correlation is an OR of both
+/// columns. Live-verified: returns every user involved in any follow ({1..7}).
+#[tokio::test]
+async fn exists_undirected_correlates_either_column_596() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH (a:User) WHERE EXISTS { (a)-[:FOLLOWS]-(b) } RETURN a.user_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains(
+            "EXISTS (SELECT 1 FROM social.user_follows_bench WHERE \
+             user_follows_bench.follower_id = a.user_id OR \
+             user_follows_bench.followed_id = a.user_id)"
+        ),
+        "undirected EXISTS must correlate the anchor on EITHER edge column \
+         (OR of follower_id / followed_id):\n{sql}"
+    );
+}
+
 /// Regression test (found by review of the stale-CTE-alias fix above): the
 /// `cte_scope_for_correlation` channel `resolve_correlation_id_sql` reads is
 /// task-local, so without generation scoping it stayed populated for the
