@@ -2381,7 +2381,9 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
         }
         LogicalPlan::GraphNode(node) => {
             // Check if this is a denormalized node
-            if node.is_denormalized && node.alias == alias {
+            if crate::graph_catalog::pattern_schema::node_denormalized_flag(node)
+                && node.alias == alias
+            {
                 // For standalone denormalized nodes, check their input ViewScan
                 if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
                     if let Some(from_id) = &scan.from_id {
@@ -2467,7 +2469,7 @@ pub fn extract_ctes_with_context(
         }
         LogicalPlan::GraphNode(graph_node) => {
             // Skip CTE creation for denormalized nodes - their properties are on the relationship table
-            if graph_node.is_denormalized {
+            if crate::graph_catalog::pattern_schema::node_denormalized_flag(graph_node) {
                 log::debug!(
                     "Skipping CTE for denormalized node '{}' (properties stored on relationship table)",
                     graph_node.alias
@@ -3468,8 +3470,8 @@ pub fn extract_ctes_with_context(
                 // Denormalized VLP: both nodes are virtual (same table as relationship).
                 // Chained JOINs produce mismatched aliases (r1/r2 vs t1) and break SELECT.
                 // Always use recursive CTE for denormalized schemas.
-                let is_denormalized_vlp = matches!(graph_rel.left.as_ref(), LogicalPlan::GraphNode(n) if n.is_denormalized)
-                    && matches!(graph_rel.right.as_ref(), LogicalPlan::GraphNode(n) if n.is_denormalized);
+                let is_denormalized_vlp = matches!(graph_rel.left.as_ref(), LogicalPlan::GraphNode(n) if crate::graph_catalog::pattern_schema::node_denormalized_flag(n))
+                    && matches!(graph_rel.right.as_ref(), LogicalPlan::GraphNode(n) if crate::graph_catalog::pattern_schema::node_denormalized_flag(n));
 
                 let use_chained_join = spec.exact_hop_count().is_some()
                     && graph_rel.shortest_path_mode.is_none()
@@ -4064,22 +4066,6 @@ pub fn extract_ctes_with_context(
                         Ok(ctx) => ctx,
                         Err(e) => {
                             log::warn!("⚠️ Failed to recreate PatternSchemaContext, falling back to denormalized flag checks: {}", e);
-                            // Fallback: use old logic if context recreation fails
-                            let start_is_denormalized = match graph_rel.left.as_ref() {
-                                LogicalPlan::GraphNode(node) => node.is_denormalized,
-                                _ => false,
-                            };
-                            let end_is_denormalized = match graph_rel.right.as_ref() {
-                                LogicalPlan::GraphNode(node) => node.is_denormalized,
-                                _ => false,
-                            };
-                            let both_denormalized = start_is_denormalized && end_is_denormalized;
-                            let is_mixed = start_is_denormalized != end_is_denormalized;
-
-                            // Continue with old logic...
-                            log::debug!("CTE: Using fallback - start_denormalized={}, end_denormalized={}, both={}, mixed={}",
-                                start_is_denormalized, end_is_denormalized, both_denormalized, is_mixed);
-
                             // Create a minimal pattern for continuation
                             return Err(RenderBuildError::UnsupportedFeature(format!(
                                 "Failed to recreate PatternSchemaContext: {}. Consider updating schema configuration.", e
@@ -6044,7 +6030,9 @@ pub fn get_variable_length_aliases(plan: &LogicalPlan) -> Option<(String, String
 pub fn is_variable_length_denormalized(plan: &LogicalPlan) -> bool {
     fn check_node_denormalized(plan: &LogicalPlan) -> bool {
         match plan {
-            LogicalPlan::GraphNode(node) => node.is_denormalized,
+            LogicalPlan::GraphNode(node) => {
+                crate::graph_catalog::pattern_schema::node_denormalized_flag(node)
+            }
             _ => false,
         }
     }
@@ -6102,7 +6090,9 @@ impl VariableLengthDenormInfo {
 pub fn get_variable_length_denorm_info(plan: &LogicalPlan) -> Option<VariableLengthDenormInfo> {
     fn check_node_denormalized(plan: &LogicalPlan) -> bool {
         match plan {
-            LogicalPlan::GraphNode(node) => node.is_denormalized,
+            LogicalPlan::GraphNode(node) => {
+                crate::graph_catalog::pattern_schema::node_denormalized_flag(node)
+            }
             _ => false,
         }
     }
@@ -7044,7 +7034,9 @@ fn extract_node_table(plan: &LogicalPlan) -> Option<String> {
 /// Helper to check if a GraphNode is denormalized
 fn is_node_denormalized_from_graph_node(plan: &LogicalPlan) -> bool {
     match plan {
-        LogicalPlan::GraphNode(node) => node.is_denormalized,
+        LogicalPlan::GraphNode(node) => {
+            crate::graph_catalog::pattern_schema::node_denormalized_flag(node)
+        }
         _ => false,
     }
 }

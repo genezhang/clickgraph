@@ -336,12 +336,12 @@ pub(super) fn is_node_denormalized(plan: &LogicalPlan) -> bool {
     match plan {
         LogicalPlan::GraphNode(node) => {
             // Check the GraphNode's own is_denormalized flag first
-            if node.is_denormalized {
+            if crate::graph_catalog::pattern_schema::node_denormalized_flag(node) {
                 return true;
             }
             // Fall back to checking ViewScan input
             if let LogicalPlan::ViewScan(view_scan) = node.input.as_ref() {
-                view_scan.is_denormalized
+                crate::graph_catalog::pattern_schema::scan_denormalized_flag(view_scan)
             } else {
                 false
             }
@@ -3149,7 +3149,9 @@ fn get_denormalized_node_id_reference(alias: &str, plan: &LogicalPlan) -> Option
         }
         LogicalPlan::GraphNode(node) => {
             // Check if this is a denormalized node
-            if node.is_denormalized && node.alias == alias {
+            if crate::graph_catalog::pattern_schema::node_denormalized_flag(node)
+                && node.alias == alias
+            {
                 if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
                     if let Some(from_id) = &scan.from_id {
                         return Some((alias.to_string(), from_id.to_string()));

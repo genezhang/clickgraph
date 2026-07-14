@@ -142,11 +142,11 @@ impl FilterBuilder for LogicalPlan {
                         let is_denorm_vlp = matches!(
                             graph_rel.left.as_ref(),
                             crate::query_planner::logical_plan::LogicalPlan::GraphNode(n)
-                                if n.is_denormalized
+                                if crate::graph_catalog::pattern_schema::node_denormalized_flag(n)
                         ) && matches!(
                             graph_rel.right.as_ref(),
                             crate::query_planner::logical_plan::LogicalPlan::GraphNode(n)
-                                if n.is_denormalized
+                                if crate::graph_catalog::pattern_schema::node_denormalized_flag(n)
                         );
                         let is_fixed_length = spec.exact_hop_count().is_some()
                             && graph_rel.shortest_path_mode.is_none()

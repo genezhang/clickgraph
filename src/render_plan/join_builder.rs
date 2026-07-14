@@ -314,8 +314,8 @@ fn vlp_is_denormalized(plan: &LogicalPlan) -> bool {
         }
     }
     find_vlp(plan).is_some_and(|gr| {
-        matches!(gr.left.as_ref(), LogicalPlan::GraphNode(n) if n.is_denormalized)
-            && matches!(gr.right.as_ref(), LogicalPlan::GraphNode(n) if n.is_denormalized)
+        matches!(gr.left.as_ref(), LogicalPlan::GraphNode(n) if crate::graph_catalog::pattern_schema::node_denormalized_flag(n))
+            && matches!(gr.right.as_ref(), LogicalPlan::GraphNode(n) if crate::graph_catalog::pattern_schema::node_denormalized_flag(n))
     })
 }
 
