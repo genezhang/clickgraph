@@ -6549,25 +6549,32 @@ async fn with_clause_in_union_arm_does_not_leak_into_sibling_arm_517() {
     );
 }
 
-/// #517 (documented residual gap, NOT fully fixed): when BOTH arms reuse
-/// the EXACT SAME Cypher variable name (`u` in both, independent scopes),
-/// the FROM-clause fix above still applies correctly (no duplicate-alias
-/// self-join), but the SELECT list still exhibits a narrower residual
-/// leak — traced to `VariableScope`'s `cte_variables` map (built once,
-/// globally, for the whole rendered plan via
+/// #593 (was the documented #517 residual gap, now fixed for THIS shape — a
+/// `WITH` arm + a plain arm that reuse the EXACT SAME Cypher variable name
+/// (`u` in both, independent scopes)): the second (plain) arm's SELECT list
+/// previously still leaked —
+/// `VariableScope`'s `cte_variables` map (built once, globally, via
 /// `build_chained_with_match_cte_plan`'s `final_scope`, with no per-Union-
-/// branch scoping) still resolving the second arm's `u.user_id` against the
-/// first arm's CTE property mapping. This produces a LOUD ClickHouse
-/// "unknown identifier" error (ground rule 1 is not violated — no silently
-/// wrong rows), not the original "duplicate-alias CTE self-join". A full
-/// fix requires arm-scoped variable resolution threaded through
-/// `to_render_plan_with_ctx`, a materially larger change than the three
-/// contained fixes applied for the general case above. This test locks in
-/// the CURRENT (improved but incomplete) shape so a future fix's diff is
-/// visible, and guards against a regression back to the ORIGINAL
-/// duplicate-alias-self-join shape.
+/// branch scoping) resolved the second arm's `u.user_id` against the FIRST
+/// arm's CTE property mapping, emitting `c_u.p1_u_user_id` against a table
+/// (`social.users_bench AS u`) that has no such column — a LOUD ClickHouse
+/// "unknown identifier" (Code 47).
+///
+/// #593 threads arm-scoped variable resolution through the Cypher-UNION render
+/// (`VariableScope::scoped_to_referenced_ctes` — each arm keeps only the
+/// WITH-CTE variables whose CTE its OWN FROM/JOINs reference), applied in the
+/// per-arm branch renders, in `rewrite_render_plan_with_scope`'s branch
+/// recursion, and in the outer `rewrite_bare_variables_in_plan` /
+/// `fix_orphan_table_aliases` passes. Live-verified against ClickHouse: 8
+/// users x c=1 (first arm) + 8 x c=0 (second arm) = 16 rows.
+///
+/// NOT covered here (a SEPARATE, still-open pre-existing bug — a CTE-name
+/// collision, distinct from this alias-scope leak): when BOTH arms carry a
+/// same-shape `WITH` on the same alias, both collapse onto one shared CTE
+/// name and one arm's filter is silently dropped. That shape is byte-identical
+/// on main and this branch, so it is out of scope for #593.
 #[tokio::test]
-async fn with_clause_in_union_arm_same_alias_reused_from_clause_fixed_select_list_open_517() {
+async fn with_clause_in_union_arm_same_alias_reused_fully_fixed_593() {
     let schema = load_schema(SchemaId::Standard.yaml_path());
     let sql = render(
         &schema,
@@ -6577,17 +6584,111 @@ async fn with_clause_in_union_arm_same_alias_reused_from_clause_fixed_select_lis
     )
     .await;
 
-    // FIXED: the second arm's FROM must be a direct table scan, not a join
-    // to (or duplicate alias of) the first arm's CTE.
+    // The second arm's FROM must be a direct table scan, not a join to (or
+    // duplicate alias of) the first arm's CTE.
     assert!(
         sql.contains("FROM social.users_bench AS u"),
-        "second arm must scan users_bench directly (FROM-clause fix must \
-         hold even when both arms reuse the same alias name): {sql}"
+        "second arm must scan users_bench directly (same alias name): {sql}"
     );
     assert!(
         !sql.to_uppercase().contains("JOIN WITH_C_U_CTE"),
-        "second arm must never JOIN the first arm's CTE (the original \
-         'duplicate-alias CTE self-join' shape this issue reported): {sql}"
+        "second arm must never JOIN the first arm's CTE: {sql}"
+    );
+    // #593: the second (plain) arm's own `u.user_id` must resolve to its OWN
+    // scan column `u.user_id`, NOT the first arm's CTE column
+    // `c_u.p1_u_user_id`. The plain arm is identified by its `0 AS "c"`
+    // literal (the first/WITH arm legitimately DOES read c_u.p1_u_user_id).
+    assert!(
+        sql.contains("u.user_id AS \"u.user_id\", \n      0 AS \"c\""),
+        "second (plain) arm's u.user_id must resolve to its own scan column: {sql}"
+    );
+    assert!(
+        !sql.contains("c_u.p1_u_user_id AS \"u.user_id\", \n      0 AS \"c\""),
+        "second (plain) arm must NOT resolve u.user_id through the first arm's \
+         CTE (the #593 leak): {sql}"
+    );
+}
+
+/// #593 (the reported repro): a Cypher `UNION` whose arms reuse the same alias
+/// name, where ONE arm has a `WITH ... count(*)` barrier and the OTHER is a
+/// plain MATCH. The plain arm was silently corrupted at render time: its FROM
+/// was hijacked to the WITH arm's CTE and its projection rewritten to the
+/// CTE's column — a SILENT WRONG RESULT (worst class). Both arms must render
+/// as fully independent queries. Live-verified against ClickHouse: the whole
+/// union returns the 8 distinct users (each arm alone returns all 8).
+#[tokio::test]
+async fn union_same_alias_plain_arm_not_hijacked_by_with_arm_cte_593() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH (a:User) RETURN a.name AS name \
+         UNION \
+         MATCH (a:User) WITH a, count(*) AS c WHERE c > 0 RETURN a.name AS name",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+
+    // Arm 1 (plain) must scan the base table and project the schema-mapped
+    // column — NOT the sibling WITH arm's CTE / CTE column.
+    assert!(
+        sql.contains("a.full_name AS \"name\"\nFROM social.users_bench AS a"),
+        "arm 1 must be `SELECT a.full_name AS \"name\" FROM social.users_bench \
+         AS a` (its FROM must not be hijacked to with_a_c_cte_0, nor its \
+         projection to the CTE column p1_a_name): {sql}"
+    );
+    // Arm 2 (WITH) legitimately reads its own CTE.
+    assert!(
+        sql.contains("a_c.p1_a_name AS \"name\"\nFROM with_a_c_cte_0 AS a_c"),
+        "arm 2 (the WITH arm) must read its own CTE with_a_c_cte_0: {sql}"
+    );
+    // The plain arm must never be joined/cross-joined to the WITH arm's CTE.
+    assert!(
+        !sql.contains("FROM social.users_bench AS a\nCROSS JOIN with_a_c_cte_0")
+            && !sql.contains("FROM social.users_bench AS a\nINNER JOIN with_a_c_cte_0"),
+        "arm 1 must not be cross/inner-joined to the sibling arm's CTE: {sql}"
+    );
+}
+
+/// #593: a THREE-arm Cypher UNION (plain arm, WITH-barrier arm, plain arm)
+/// where all arms reuse alias `a`. Locks in that BOTH plain arms (the first —
+/// the base_plan/outer arm — and the third — a `union.input` arm) keep their
+/// own base-table FROM and schema-mapped projection, and are not hijacked to
+/// the middle WITH arm's CTE. (The middle arm's own `EXISTS { }` correlation
+/// after the WITH barrier is a SEPARATE, pre-existing mechanism not addressed
+/// here — see the report — so this test asserts only the per-arm FROM /
+/// projection that #593 fixes.)
+#[tokio::test]
+async fn union_three_arms_same_alias_per_arm_from_and_projection_593() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let sql = render(
+        &schema,
+        "MATCH (a:User) RETURN a.name AS name \
+         UNION \
+         MATCH (a:User) WITH a, count(*) AS c WHERE c > 0 RETURN a.name AS name \
+         UNION \
+         MATCH (a:User) WHERE EXISTS { (a)-[:FOLLOWS]->(z) } RETURN a.name AS name",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+
+    // Both plain arms must project a.full_name from the base table.
+    let plain_arm = "a.full_name AS \"name\"\nFROM social.users_bench AS a";
+    assert!(
+        sql.matches(plain_arm).count() >= 2,
+        "both plain arms (arm 1 and arm 3) must render `a.full_name AS \"name\" \
+         FROM social.users_bench AS a` — neither hijacked to the WITH arm's \
+         CTE: {sql}"
+    );
+    // The WITH arm reads its own CTE.
+    assert!(
+        sql.contains("a_c.p1_a_name AS \"name\"\nFROM with_a_c_cte_0 AS a_c"),
+        "the WITH arm must read its own CTE with_a_c_cte_0 as a_c: {sql}"
+    );
+    // No plain arm should be given the CTE column in its projection.
+    assert!(
+        !sql.contains("a.p1_a_name"),
+        "no plain arm may project the CTE column p1_a_name against its own \
+         base-table alias `a`: {sql}"
     );
 }
 
