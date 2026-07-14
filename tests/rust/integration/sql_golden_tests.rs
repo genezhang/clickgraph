@@ -12035,3 +12035,83 @@ mod self_edge_standard_schema_count_family_577 {
         }
     }
 }
+
+/// Regression for #594 (silent wrong results): a Cypher `UNION` whose arms each
+/// carry a `WITH` and reuse the SAME aggregate alias must render each arm as an
+/// independent WITH-CTE, combined by UNION only.
+///
+/// Pre-fix, `has_with_clause_in_graph_rel` routed the whole union through
+/// `build_chained_with_match_cte_plan`, whose `find_all_with_clauses_grouped`
+/// grouped the two same-key (`a`,`c`) arm WITHs and "collected from the first
+/// arm only" — emitting ONE CTE (`with_a_c_cte_0`, `HAVING c > 2`) that BOTH
+/// arms scanned. arm2's `HAVING c = 1` was silently dropped (1 row live instead
+/// of the disjoint 1 + 3 = 4).
+#[tokio::test]
+async fn union_arms_same_agg_alias_each_get_own_with_cte_594() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (a:User)-[:FOLLOWS]->(x) WITH a, count(*) AS c WHERE c > 2 RETURN a.name AS name \
+                  UNION \
+                  MATCH (a:User)-[:FOLLOWS]->(x) WITH a, count(*) AS c WHERE c = 1 RETURN a.name AS name";
+    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+
+    // BOTH arms' HAVINGs must survive — the core silent-drop bug.
+    assert!(sql.contains("HAVING c > 2"), "arm1 HAVING dropped:\n{sql}");
+    assert!(sql.contains("HAVING c = 1"), "arm2 HAVING dropped:\n{sql}");
+    // Two INDEPENDENT WITH-CTEs with DISTINCT names — arm2 must get its own.
+    assert!(sql.contains("with_a_c_cte_0"), "arm1 CTE missing:\n{sql}");
+    assert!(
+        sql.contains("with_a_c_cte_1"),
+        "arm2 got no independent CTE (arms collapsed onto one):\n{sql}"
+    );
+    // Each arm aggregates over the BASE table independently — two per-arm
+    // GROUP BYs, not one arm chained onto the other's CTE.
+    assert_eq!(
+        sql.matches("GROUP BY a.user_id").count(),
+        2,
+        "expected two independent per-arm aggregations:\n{sql}"
+    );
+    // Arms combine by UNION only — never chained, never cross-joined.
+    assert!(
+        !sql.contains("CROSS JOIN"),
+        "arms must not be cross-joined:\n{sql}"
+    );
+}
+
+/// Regression for #594 (loud variant, same root cause): a Cypher `UNION` whose
+/// arms reuse the alias `a` but bind DIFFERENT aggregate aliases (`c` vs `d`).
+///
+/// Pre-fix, `find_all_with_clauses_grouped` saw different WITH keys, recursed
+/// into both arms, and `build_chained_with_match_cte_plan` CHAINED arm2's CTE
+/// onto arm1's (`with_a_d_cte_1 AS (SELECT ... FROM with_a_c_cte_0 ...)`) and
+/// CROSS JOINed the two arms — ClickHouse Code 47. Each arm must instead scan
+/// the base table under its own CTE.
+#[tokio::test]
+async fn union_arms_differing_agg_alias_not_chained_or_crossjoined_594() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (a:User)-[:FOLLOWS]->(x) WITH a, count(*) AS c WHERE c > 2 RETURN a.name AS name \
+                  UNION \
+                  MATCH (a:User)-[:FOLLOWS]->(x) WITH a, count(*) AS d WHERE d = 1 RETURN a.name AS name";
+    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+
+    assert!(sql.contains("HAVING c > 2"), "arm1 HAVING missing:\n{sql}");
+    assert!(sql.contains("HAVING d = 1"), "arm2 HAVING missing:\n{sql}");
+    // Arms combine by UNION only.
+    assert!(
+        !sql.contains("CROSS JOIN"),
+        "arms must not be cross-joined:\n{sql}"
+    );
+    // arm1's CTE is read exactly once (by arm1's final SELECT). Pre-fix arm2's
+    // CTE body ALSO read `FROM with_a_c_cte_0` (the chain), making it appear
+    // twice.
+    assert_eq!(
+        sql.matches("FROM with_a_c_cte_0").count(),
+        1,
+        "arm1's CTE must be read once, not chained into arm2's CTE body:\n{sql}"
+    );
+    // Both arm CTE bodies aggregate the base table independently.
+    assert_eq!(
+        sql.matches("GROUP BY a.user_id").count(),
+        2,
+        "expected two independent per-arm aggregations:\n{sql}"
+    );
+}

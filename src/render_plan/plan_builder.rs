@@ -598,6 +598,180 @@ fn validate_cypher_union_column_names(
     Ok(())
 }
 
+/// #594: the CTE names an arm DEFINES through its own `WITH` clauses.
+///
+/// Distinct from `cte_names_referenced_in_branch`, which reports every CTE an
+/// arm's plan tree points at — including foreign CTEs that the analyzer leaked
+/// into the arm's `GraphJoins::cte_references` while planning a sibling arm's
+/// same-named alias. A CTE reference is legitimate for an arm only if that arm's
+/// own `WITH` produced it; anything else is cross-arm contamination.
+fn arm_defined_cte_names(plan: &LogicalPlan) -> std::collections::HashSet<String> {
+    use crate::query_planner::logical_plan::LogicalPlan as LP;
+    let mut out = std::collections::HashSet::new();
+    fn walk(plan: &LP, out: &mut std::collections::HashSet<String>) {
+        if let LP::WithClause(wc) = plan {
+            for cte in wc.cte_references.values() {
+                out.insert(cte.clone());
+            }
+        }
+        plan.for_each_child(|child| walk(child, out));
+    }
+    walk(plan, &mut out);
+    out
+}
+
+/// #594: is `plan` a bare top-level genuine Cypher `UNION`?
+///
+/// Gated so that ONLY a user-written `UNION [ALL]` at the very top takes the
+/// per-arm-independent render path below — planner-internal unions
+/// (bidirectional expansion, denormalized/polymorphic scans, VLP, per-label
+/// anchor fan-out, …) keep their existing rendering, as do any unions wrapped in
+/// an outer modifier node (those still route through the pre-existing path,
+/// unchanged from before this fix). A trailing per-arm `ORDER BY`/`SKIP`/`LIMIT`
+/// is parsed INTO the last arm, so the top node stays a bare `Union` and is
+/// still caught here.
+fn is_toplevel_cypher_union(plan: &LogicalPlan) -> bool {
+    matches!(plan, LogicalPlan::Union(u) if u.is_cypher_union)
+}
+
+/// #594: render a top-level Cypher `UNION` whose arms carry their own `WITH`.
+///
+/// Such a union must NOT flow through `build_chained_with_match_cte_plan`: that
+/// path runs `find_all_with_clauses_grouped` across ALL arms and merges
+/// same-alias `WITH`s from INDEPENDENT arms into a single chained CTE sequence.
+/// The result is silently wrong — with an identical aggregate alias (`WITH a,
+/// count(*) AS c` in both arms) only ONE CTE is emitted and both arms scan it,
+/// dropping one arm's `HAVING`; with a differing alias the second arm's CTE is
+/// chained onto the first's and the arms are cross-joined (ClickHouse Code 47).
+///
+/// Instead render EACH arm as a fully independent subplan: every arm re-enters
+/// `to_render_plan_with_ctx` (and thus its own `build_chained_with_match_cte_plan`
+/// invocation with an isolated CTE namespace), and the arms are combined by
+/// UNION only — never chained, never cross-joined. When two arms happen to
+/// produce the same CTE base name, the flat-CTE collision pass in
+/// `to_sql_query.rs` (`merge_cte_deduping_by_name_content` via
+/// `collect_nested_ctes`) renames the later one and fixes up the owning arm's
+/// FROM, so each arm keeps its own `HAVING`/filter under a unique CTE name.
+///
+/// This mirrors the independent-per-arm rendering already used for Cypher
+/// unions WITHOUT WITH arms (the `LogicalPlan::Union` handler in
+/// `to_render_plan_with_ctx`), extended to the WITH-carrying case.
+fn build_cypher_union_render(
+    plan: &LogicalPlan,
+    schema: &GraphSchema,
+    plan_ctx: Option<&PlanCtx>,
+    scope: Option<&super::variable_scope::VariableScope>,
+) -> RenderPlanBuilderResult<RenderPlan> {
+    let LogicalPlan::Union(union) = plan else {
+        return Err(RenderBuildError::InvalidRenderPlan(
+            "build_cypher_union_render called on a non-union plan".to_string(),
+        ));
+    };
+
+    if union.inputs.is_empty() {
+        return Err(RenderBuildError::InvalidRenderPlan(
+            "Union has no inputs".to_string(),
+        ));
+    }
+
+    // Render each arm as an independent subplan.
+    //
+    // Each arm gets a fresh `cte_scope_for_correlation` generation
+    // (`CteScopeGenerationGuard`) plus a scope restricted to the WITH-CTEs it
+    // actually reads (#593), so a sibling arm re-binding the same alias name
+    // can never resolve through — or chain onto — another arm's CTE.
+    let mut branch_renders = Vec::with_capacity(union.inputs.len());
+    for branch in union.inputs.iter() {
+        // #593: scope this arm to only the WITH-CTEs it actually reads.
+        let referenced = cte_names_referenced_in_branch(branch);
+        let arm_scope_holder;
+        let arm_scope = if let Some(s) = scope {
+            arm_scope_holder = s.scoped_to_referenced_ctes(&referenced);
+            Some(&arm_scope_holder)
+        } else {
+            None
+        };
+
+        // The CTEs THIS arm legitimately owns (produced by its own WITH). Any
+        // other CTE reference hanging off the arm was leaked in by the analyzer
+        // while planning a sibling arm that reused the same alias name.
+        let own_ctes = arm_defined_cte_names(branch);
+
+        // The analyzer merges every arm's variables into ONE `PlanCtx`, so an
+        // alias exported by some arm's WITH (e.g. `a` from `WITH a, count(*) AS
+        // c`) is registered `VariableSource::Cte` for the WHOLE union. A sibling
+        // arm that binds the same alias with a plain `MATCH (a:User)` would then
+        // resolve `a.name` as a (non-existent) CTE column (select_builder Case 4:
+        // `lookup_variable` → CTE pass-through) instead of mapping it through its
+        // own ViewScan (`a.name` → `a.full_name`) — ClickHouse Code 47. Cypher
+        // UNION arms are independent subqueries, so give this arm a PlanCtx whose
+        // registry re-points any leaked CTE variable (one whose CTE this arm does
+        // NOT own) back to its base-table MATCH source. The arm's leaked
+        // `GraphJoins::cte_references` are harmless once the registry no longer
+        // marks the alias CTE-sourced — the scan already resolves to the base
+        // table — so only the registry needs correcting.
+        let arm_ctx_holder;
+        let arm_ctx = if let Some(pc) = plan_ctx {
+            let mut filtered = crate::query_planner::typed_variable::VariableRegistry::new();
+            for (name, var) in pc.variables().iter() {
+                match var.cte_name() {
+                    Some(cte) if !own_ctes.contains(cte) => {
+                        // Leaked CTE variable. Re-point a node back to its base
+                        // table (so property mapping applies); drop leaked
+                        // scalars/rels/paths (an independent arm never reads a
+                        // sibling arm's projected aggregate/relationship).
+                        if let crate::query_planner::typed_variable::TypedVariable::Node(n) = var {
+                            filtered.define(
+                                name.clone(),
+                                crate::query_planner::typed_variable::TypedVariable::Node(
+                                    crate::query_planner::typed_variable::NodeVariable::from_match(
+                                        n.labels.clone(),
+                                    ),
+                                ),
+                            );
+                        }
+                    }
+                    _ => {
+                        filtered.define(name.clone(), var.clone());
+                    }
+                }
+            }
+            let mut cloned = pc.clone();
+            *cloned.variables_mut() = filtered;
+            arm_ctx_holder = cloned;
+            Some(&arm_ctx_holder)
+        } else {
+            None
+        };
+
+        let mut branch_render = {
+            let _scope_guard = crate::server::query_context::CteScopeGenerationGuard::enter();
+            branch.to_render_plan_with_ctx(schema, arm_ctx, arm_scope)?
+        };
+        recover_cypher_arm_modifiers(branch, &mut branch_render)?;
+        branch_renders.push(branch_render);
+    }
+
+    // #515: reject a Cypher UNION whose arms don't declare the same column names.
+    validate_cypher_union_column_names(&branch_renders, true)?;
+
+    // First arm is the base; remaining arms go into `union.input`. Each branch
+    // keeps its OWN `ctes` — the ctx-less flatten step lifts them to the top
+    // level and resolves any cross-arm name collisions.
+    let mut base_render = branch_renders.remove(0);
+    if !branch_renders.is_empty() {
+        let render_union_type =
+            super::UnionType::try_from(union.union_type.clone()).unwrap_or(super::UnionType::All);
+        base_render.union = UnionItems(Some(super::Union {
+            input: branch_renders,
+            union_type: render_union_type,
+            is_cypher_union: true,
+        }));
+    }
+
+    Ok(base_render)
+}
+
 /// Whether any SELECT item carries an aggregate function anywhere in its
 /// expression tree (directly, or nested inside a scalar call / operator). Used
 /// to decide whether a base+union render must consolidate all branches into
@@ -1184,6 +1358,10 @@ impl RenderPlanBuilder for LogicalPlan {
         log::debug!("to_render_plan called with: {}", plan_name);
 
         if has_with_clause_in_graph_rel(self) {
+            // #594: keep Cypher-UNION arms independent (see the ctx-aware path).
+            if is_toplevel_cypher_union(self) {
+                return build_cypher_union_render(self, schema, None, None);
+            }
             return build_chained_with_match_cte_plan(self, schema, None, None);
         }
 
@@ -3772,6 +3950,13 @@ impl RenderPlanBuilder for LogicalPlan {
             let has_with_clause = has_with_clause_in_graph_rel(self);
 
             if has_with_clause {
+                // #594: a top-level Cypher UNION whose arms carry their own WITH
+                // must render each arm independently — routing it through
+                // build_chained_with_match_cte_plan would merge/chain same-alias
+                // WITHs ACROSS arm boundaries and silently drop one arm's filter.
+                if is_toplevel_cypher_union(self) {
+                    return build_cypher_union_render(self, schema, plan_ctx, scope);
+                }
                 return build_chained_with_match_cte_plan(self, schema, plan_ctx, scope);
             }
 
