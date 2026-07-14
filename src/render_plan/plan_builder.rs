@@ -453,6 +453,77 @@ fn recover_cypher_arm_modifiers(
     Ok(())
 }
 
+/// Collect the CTE names that `plan`'s subtree actually references (#593).
+///
+/// A logical subtree references a CTE when it scans it directly
+/// (`ViewScan::source_table`), when a join targets it (`Join::table_name`),
+/// or when a node connection resolves through it (the `cte_references` maps on
+/// `GraphJoins`/`GraphRel` and `GraphJoins::anchor_table`). Used to decide,
+/// per Cypher-UNION arm, which WITH-CTE scope variables that arm is allowed to
+/// resolve through: an arm that never reads a CTE must not resolve a
+/// same-named alias through it (see `VariableScope::scoped_to_referenced_ctes`).
+fn cte_names_referenced_in_branch(plan: &LogicalPlan) -> std::collections::HashSet<String> {
+    use crate::query_planner::logical_plan::LogicalPlan as LP;
+    let mut out = std::collections::HashSet::new();
+    fn walk(plan: &LP, out: &mut std::collections::HashSet<String>) {
+        match plan {
+            LP::ViewScan(vs) => {
+                out.insert(vs.source_table.clone());
+                if let Some(input) = &vs.input {
+                    walk(input, out);
+                }
+            }
+            LP::GraphJoins(gj) => {
+                for cte in gj.cte_references.values() {
+                    out.insert(cte.clone());
+                }
+                if let Some(anchor) = &gj.anchor_table {
+                    out.insert(anchor.clone());
+                }
+                for j in &gj.joins {
+                    out.insert(j.table_name.clone());
+                }
+                walk(&gj.input, out);
+            }
+            LP::GraphRel(gr) => {
+                for cte in gr.cte_references.values() {
+                    out.insert(cte.clone());
+                }
+                walk(&gr.left, out);
+                walk(&gr.center, out);
+                walk(&gr.right, out);
+            }
+            LP::GraphNode(n) => walk(&n.input, out),
+            LP::WithClause(wc) => {
+                for cte in wc.cte_references.values() {
+                    out.insert(cte.clone());
+                }
+                walk(&wc.input, out);
+            }
+            LP::Projection(p) => walk(&p.input, out),
+            LP::Filter(f) => walk(&f.input, out),
+            LP::GroupBy(gb) => walk(&gb.input, out),
+            LP::OrderBy(ob) => walk(&ob.input, out),
+            LP::Limit(l) => walk(&l.input, out),
+            LP::Skip(s) => walk(&s.input, out),
+            LP::Unwind(u) => walk(&u.input, out),
+            LP::CartesianProduct(cp) => {
+                walk(&cp.left, out);
+                walk(&cp.right, out);
+            }
+            LP::Union(u) => {
+                for input in &u.inputs {
+                    walk(input, out);
+                }
+            }
+            LP::Cte(c) => walk(&c.input, out),
+            _ => {}
+        }
+    }
+    walk(plan, &mut out);
+    out
+}
+
 /// #515: a genuine Cypher `UNION` (`union.is_cypher_union`) combines its arms
 /// POSITIONALLY once rendered to SQL (`SELECT ... UNION [ALL] SELECT ...`),
 /// with each arm's own column order. Neo4j requires every arm to declare the
@@ -4285,10 +4356,27 @@ impl RenderPlanBuilder for LogicalPlan {
                         // WITH-CTE scope for that same alias.
                         let mut branch_renders = Vec::new();
                         for branch in union.inputs.iter() {
+                            // #593: for a Cypher UNION, give this arm a scope that
+                            // only carries the WITH-CTE variables whose CTE this arm
+                            // actually reads — so a sibling arm re-binding the same
+                            // alias name with a fresh MATCH doesn't resolve it (and
+                            // hijack its FROM/projection) through another arm's CTE.
+                            let arm_scope_holder;
+                            let arm_scope = if union.is_cypher_union {
+                                if let Some(s) = scope {
+                                    let referenced = cte_names_referenced_in_branch(branch);
+                                    arm_scope_holder = s.scoped_to_referenced_ctes(&referenced);
+                                    Some(&arm_scope_holder)
+                                } else {
+                                    scope
+                                }
+                            } else {
+                                scope
+                            };
                             let mut branch_render = {
                                 let _scope_guard =
                                     crate::server::query_context::CteScopeGenerationGuard::enter();
-                                branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?
+                                branch.to_render_plan_with_ctx(schema, plan_ctx, arm_scope)?
                             };
                             if union.is_cypher_union {
                                 recover_cypher_arm_modifiers(branch, &mut branch_render)?;
@@ -5236,10 +5324,24 @@ impl RenderPlanBuilder for LogicalPlan {
                         idx,
                         std::mem::discriminant(branch.as_ref())
                     );
+                    // #593: scope each Cypher-UNION arm to only the WITH-CTEs it
+                    // actually reads (see cte_names_referenced_in_branch).
+                    let arm_scope_holder;
+                    let arm_scope = if union.is_cypher_union {
+                        if let Some(s) = scope {
+                            let referenced = cte_names_referenced_in_branch(branch);
+                            arm_scope_holder = s.scoped_to_referenced_ctes(&referenced);
+                            Some(&arm_scope_holder)
+                        } else {
+                            scope
+                        }
+                    } else {
+                        scope
+                    };
                     let mut branch_render = {
                         let _scope_guard =
                             crate::server::query_context::CteScopeGenerationGuard::enter();
-                        branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?
+                        branch.to_render_plan_with_ctx(schema, plan_ctx, arm_scope)?
                     };
                     if union.is_cypher_union {
                         recover_cypher_arm_modifiers(branch, &mut branch_render)?;
@@ -5261,10 +5363,24 @@ impl RenderPlanBuilder for LogicalPlan {
                         .enumerate()
                         .map(|(idx, branch)| {
                             log::debug!("Converting Union branch {} to RenderPlan", idx + 1);
+                            // #593: scope each Cypher-UNION arm to only the WITH-CTEs
+                            // it actually reads (see cte_names_referenced_in_branch).
+                            let arm_scope_holder;
+                            let arm_scope = if union.is_cypher_union {
+                                if let Some(s) = scope {
+                                    let referenced = cte_names_referenced_in_branch(branch);
+                                    arm_scope_holder = s.scoped_to_referenced_ctes(&referenced);
+                                    Some(&arm_scope_holder)
+                                } else {
+                                    scope
+                                }
+                            } else {
+                                scope
+                            };
                             let mut branch_render = {
                                 let _scope_guard =
                                     crate::server::query_context::CteScopeGenerationGuard::enter();
-                                branch.to_render_plan_with_ctx(schema, plan_ctx, scope)?
+                                branch.to_render_plan_with_ctx(schema, plan_ctx, arm_scope)?
                             };
                             if union.is_cypher_union {
                                 recover_cypher_arm_modifiers(branch, &mut branch_render)?;

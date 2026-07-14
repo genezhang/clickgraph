@@ -10,6 +10,7 @@
 //! 3. Unresolved → fall through to existing logic
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use crate::graph_catalog::graph_schema::GraphSchema;
 use crate::query_planner::logical_expr::expression_rewriter::{
@@ -96,6 +97,34 @@ impl<'a> VariableScope<'a> {
             schema,
             cte_variables,
             plan,
+        }
+    }
+
+    /// Build a copy of this scope keeping only the CTE variables whose owning
+    /// CTE (`CteVariableInfo::cte_name`) is present in `keep_cte_names`.
+    ///
+    /// Used (#593) to give each arm of a Cypher-level `UNION` its own view of
+    /// the CTE scope: a sibling arm that re-binds the same Cypher alias name
+    /// with a FRESH `MATCH` (and never reads the WITH-CTE that exported it)
+    /// must NOT resolve that alias's properties through the CTE — doing so
+    /// silently rewrites the arm's `a.name` to the CTE column and hijacks its
+    /// FROM table to the CTE. An arm keeps a CTE variable only when its own
+    /// subtree actually references that CTE (so a nested WITH inside an arm,
+    /// which legitimately reads the outer CTE, is preserved).
+    ///
+    /// The schema/plan borrows are shared, so the returned scope is valid for
+    /// the same lifetime as `self`.
+    pub fn scoped_to_referenced_ctes(&self, keep_cte_names: &HashSet<String>) -> VariableScope<'a> {
+        let cte_variables = self
+            .cte_variables
+            .iter()
+            .filter(|(_alias, info)| keep_cte_names.contains(&info.cte_name))
+            .map(|(alias, info)| (alias.clone(), info.clone()))
+            .collect();
+        VariableScope {
+            schema: self.schema,
+            cte_variables,
+            plan: self.plan,
         }
     }
 
@@ -466,6 +495,25 @@ fn try_resolve_map_access(
 /// CTE-scoped variables get their table_alias rewritten to the CTE name
 /// and their column rewritten to the CTE column name.
 pub fn rewrite_render_plan_with_scope(plan: &mut RenderPlan, scope: &VariableScope) {
+    // #593: when this plan is one arm of a Cypher UNION (it carries a
+    // cypher-union `union` field), `scope` still holds EVERY arm's WITH-CTE
+    // variables. Restrict it to just the CTEs THIS arm's own FROM/JOINs
+    // reference, so a sibling arm's WITH-CTE can't capture this arm's
+    // identically named alias (e.g. rewriting a plain arm's `u.user_id` into a
+    // WITH arm's `c_u.p1_u_user_id`). `full_scope` keeps the unrestricted scope
+    // so each branch below is filtered to its OWN referenced CTEs. Non-union
+    // (and non-cypher-union) plans keep the original scope unchanged.
+    let cypher_union = matches!(&plan.union, UnionItems(Some(u)) if u.is_cypher_union);
+    let full_scope = scope;
+    let base_scope_holder;
+    let scope: &VariableScope = if cypher_union {
+        base_scope_holder =
+            full_scope.scoped_to_referenced_ctes(&referenced_ctes_of_render_plan(plan));
+        &base_scope_holder
+    } else {
+        full_scope
+    };
+
     // Rewrite SELECT items — expand bare node CTE variables into individual columns
     let mut expanded_items = Vec::new();
     for item in &plan.select.items {
@@ -544,12 +592,35 @@ pub fn rewrite_render_plan_with_scope(plan: &mut RenderPlan, scope: &VariableSco
         }
     }
 
-    // Rewrite UNION branches (e.g., bidirectional relationship expansions)
+    // Rewrite UNION branches (e.g., bidirectional relationship expansions).
+    // #593: for a Cypher UNION, filter the scope to each branch's OWN referenced
+    // CTEs (see the preamble) so one arm's WITH-CTE never leaks into a sibling.
     if let UnionItems(Some(ref mut union)) = plan.union {
+        let cyp = union.is_cypher_union;
         for branch in &mut union.input {
-            rewrite_render_plan_with_scope(branch, scope);
+            if cyp {
+                let branch_scope =
+                    full_scope.scoped_to_referenced_ctes(&referenced_ctes_of_render_plan(branch));
+                rewrite_render_plan_with_scope(branch, &branch_scope);
+            } else {
+                rewrite_render_plan_with_scope(branch, full_scope);
+            }
         }
     }
+}
+
+/// The set of CTE (or table) names a `RenderPlan`'s own FROM + JOINs reference
+/// (#593). Used to restrict a shared `VariableScope` to the CTEs a single
+/// Cypher-UNION arm actually reads.
+fn referenced_ctes_of_render_plan(plan: &RenderPlan) -> HashSet<String> {
+    let mut referenced = HashSet::new();
+    if let Some(f) = &plan.from.0 {
+        referenced.insert(f.name.clone());
+    }
+    for j in &plan.joins.0 {
+        referenced.insert(j.table_name.clone());
+    }
+    referenced
 }
 
 /// Rewrite only bare variable references (TableAlias, ColumnAlias, Column) in a RenderPlan,
