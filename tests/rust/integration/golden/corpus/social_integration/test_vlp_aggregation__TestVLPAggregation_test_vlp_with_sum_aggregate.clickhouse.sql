@@ -5,6 +5,7 @@ WITH RECURSIVE vlp_u1_u2 AS (
         1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
         [start_node.user_id, end_node.user_id] as path_nodes,
+        [rel.follow_id] as path_edges,
         end_node.full_name as end_name,
         start_node.full_name as start_name
     FROM test_integration.users_test AS start_node
@@ -18,13 +19,14 @@ WITH RECURSIVE vlp_u1_u2 AS (
         vp.hop_count + 1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
         arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
+        arrayConcat(vp.path_edges, [rel.follow_id]) as path_edges,
         end_node.full_name as end_name,
         vp.start_name as start_name
     FROM vlp_u1_u2 vp
     JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 2
-      AND NOT has(vp.path_nodes, end_node.user_id)
+      AND NOT has(vp.path_edges, rel.follow_id)
 ), 
 vlp_u2_u1 AS (
     SELECT 
@@ -33,6 +35,7 @@ vlp_u2_u1 AS (
         1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
         [start_node.user_id, end_node.user_id] as path_nodes,
+        [rel.follow_id] as path_edges,
         start_node.full_name as start_name,
         end_node.full_name as end_name
     FROM test_integration.users_test AS start_node
@@ -46,13 +49,14 @@ vlp_u2_u1 AS (
         vp.hop_count + 1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
         arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
+        arrayConcat(vp.path_edges, [rel.follow_id]) as path_edges,
         vp.start_name as start_name,
         end_node.full_name as end_name
     FROM vlp_u2_u1 vp
     JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 2
-      AND NOT has(vp.path_nodes, end_node.user_id)
+      AND NOT has(vp.path_edges, rel.follow_id)
       AND end_node.user_id = 1
 )
 SELECT `userId` AS "userId", `userName` AS "userName", sum(1) AS "postCount" FROM (

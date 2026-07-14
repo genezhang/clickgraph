@@ -5,6 +5,7 @@ WITH RECURSIVE vlp_a_b AS (
         1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
         [start_node.user_id, end_node.user_id] as path_nodes,
+        [rel.follow_id] as path_edges,
         start_node.country as start_country,
         end_node.country as end_country
     FROM test_integration.users_test AS start_node
@@ -17,13 +18,14 @@ WITH RECURSIVE vlp_a_b AS (
         vp.hop_count + 1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
         arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
+        arrayConcat(vp.path_edges, [rel.follow_id]) as path_edges,
         vp.start_country as start_country,
         end_node.country as end_country
     FROM vlp_a_b vp
     JOIN test_integration.user_follows_test AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 3
-      AND NOT has(vp.path_nodes, end_node.user_id)
+      AND NOT has(vp.path_edges, rel.follow_id)
 )
 SELECT 
       t.start_country AS "a.country", 

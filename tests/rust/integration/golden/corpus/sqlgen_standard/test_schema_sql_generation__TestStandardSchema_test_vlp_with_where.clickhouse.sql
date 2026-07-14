@@ -5,6 +5,7 @@ WITH RECURSIVE vlp_a_b AS (
         1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
         [start_node.user_id, end_node.user_id] as path_nodes,
+        [tuple(rel.follower_id, rel.followed_id)] as path_edges,
         end_node.full_name as end_name
     FROM db_standard.users AS start_node
     JOIN db_standard.user_follows AS rel ON start_node.user_id = rel.follower_id
@@ -17,12 +18,13 @@ WITH RECURSIVE vlp_a_b AS (
         vp.hop_count + 1 as hop_count,
         CAST([] AS Array(String)) as path_relationships,
         arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes,
+        arrayConcat(vp.path_edges, [tuple(rel.follower_id, rel.followed_id)]) as path_edges,
         end_node.full_name as end_name
     FROM vlp_a_b vp
     JOIN db_standard.user_follows AS rel ON vp.end_id = rel.follower_id
     JOIN db_standard.users AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 2
-      AND NOT has(vp.path_nodes, end_node.user_id)
+      AND NOT has(vp.path_edges, tuple(rel.follower_id, rel.followed_id))
 )
 SELECT 
       t.end_name AS "b.name"

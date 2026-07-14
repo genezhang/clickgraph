@@ -226,9 +226,11 @@ async fn vlp_under_clickhouse_dialect_emits_ch_spellings() {
         sql.contains("arrayConcat"),
         "expected CH spelling `arrayConcat` in VLP recursive CTE; got:\n{sql}"
     );
+    // #598 (part 2): directed range VLP cycle detection now uses edge-uniqueness
+    // via `path_edges` (CH `has`). path_nodes is still accumulated (asserted below).
     assert!(
-        sql.contains("has(vp.path_nodes"),
-        "expected CH spelling `has(vp.path_nodes, ...)` for cycle detection; got:\n{sql}"
+        sql.contains("has(vp.path_edges"),
+        "expected CH spelling `has(vp.path_edges, ...)` for edge-uniqueness cycle detection; got:\n{sql}"
     );
     assert!(
         sql.contains("CAST([] AS Array(String))"),
@@ -309,14 +311,15 @@ async fn vlp_under_databricks_dialect_emits_spark_spellings() {
         "expected Spark empty-array cast; got:\n{sql}"
     );
 
-    // has(...) → array_contains(...)
+    // has(...) → array_contains(...). #598 (part 2): the directed range VLP
+    // cycle check is now edge-uniqueness over `path_edges` (still dialect-routed).
     assert!(
-        !sql.contains("NOT has(vp.path_nodes"),
+        !sql.contains("NOT has(vp.path_edges") && !sql.contains("NOT has(vp.path_nodes"),
         "Databricks SQL still has CH `has(...)` cycle check; got:\n{sql}"
     );
     assert!(
-        sql.contains("array_contains(vp.path_nodes"),
-        "expected Spark `array_contains` for cycle detection; got:\n{sql}"
+        sql.contains("array_contains(vp.path_edges"),
+        "expected Spark `array_contains` for edge-uniqueness cycle detection; got:\n{sql}"
     );
 
     // No CH empty-array cast
