@@ -6134,6 +6134,167 @@ fn is_literal_expr(expr: &crate::query_planner::logical_expr::LogicalExpr) -> bo
     )
 }
 
+/// Owned scope state accumulated across WITH barriers while building a chained
+/// WITH/MATCH CTE plan. Bundles the two bindings that are always managed as a
+/// unit inside `build_chained_with_match_cte_plan`:
+///   - `scope_cte_variables`: alias → CTE property mapping used to build a
+///     `VariableScope` for rendering subsequent CTE bodies and the final plan.
+///   - `var_registry`: unified variable registry attached to CTEs and the final
+///     RenderPlan for use by the SQL renderer.
+///
+/// They are snapshotted together, cleared together at each WITH barrier,
+/// populated together as each CTE is built, and consumed together.
+struct WithBarrierScope {
+    scope_cte_variables: HashMap<String, super::variable_scope::CteVariableInfo>,
+    var_registry: crate::query_planner::typed_variable::VariableRegistry,
+}
+
+impl WithBarrierScope {
+    /// Fresh, empty scope (matches the original inline init of both bindings).
+    fn new() -> Self {
+        Self {
+            scope_cte_variables: HashMap::new(),
+            var_registry: crate::query_planner::typed_variable::VariableRegistry::new(),
+        }
+    }
+
+    /// Read-only access to the accumulated CTE variables.
+    fn scope_cte_variables(&self) -> &HashMap<String, super::variable_scope::CteVariableInfo> {
+        &self.scope_cte_variables
+    }
+
+    /// Mutable access to the accumulated CTE variables (for in-place patches
+    /// such as `map_keys`).
+    fn scope_cte_variables_mut(
+        &mut self,
+    ) -> &mut HashMap<String, super::variable_scope::CteVariableInfo> {
+        &mut self.scope_cte_variables
+    }
+
+    /// Whether any CTE variables are currently in scope.
+    fn is_empty(&self) -> bool {
+        self.scope_cte_variables.is_empty()
+    }
+
+    /// WITH barrier: snapshot the current body registry (pre-clear) so it can be
+    /// attached to the CTE for runtime resolution.
+    fn snapshot_body_registry(
+        &self,
+    ) -> std::sync::Arc<crate::query_planner::typed_variable::VariableRegistry> {
+        std::sync::Arc::new(self.var_registry.clone())
+    }
+
+    /// WITH barrier: clear accumulated scope so only the current CTE's exports
+    /// are visible in the next scope. Preserves the exact clear ordering.
+    fn reset(&mut self) {
+        self.scope_cte_variables.clear();
+        self.var_registry.clear();
+    }
+
+    /// Record one exported alias's property mapping into both the CTE variable
+    /// map and the unified variable registry (scalar-vs-node branch preserved).
+    fn publish_alias(
+        &mut self,
+        alias: &str,
+        cte_name: &str,
+        per_alias_mapping: &HashMap<String, String>,
+        labels: &[String],
+    ) {
+        self.scope_cte_variables.insert(
+            alias.to_string(),
+            super::variable_scope::CteVariableInfo {
+                cte_name: cte_name.to_string(),
+                property_mapping: per_alias_mapping.clone(),
+                labels: labels.to_vec(),
+                from_alias_override: None,
+                map_keys: None,
+            },
+        );
+
+        // Update unified variable registry: define/overwrite variable as CTE-sourced
+        // with its property mapping so the SQL renderer can resolve properties.
+        {
+            use crate::query_planner::typed_variable::VariableSource;
+            let cte_source = VariableSource::Cte {
+                cte_name: cte_name.to_string(),
+                property_mapping: Box::new(per_alias_mapping.clone()),
+            };
+            if labels.is_empty() {
+                // No labels → scalar variable (e.g., computed column, count, etc.)
+                self.var_registry
+                    .define_scalar(alias.to_string(), cte_source);
+            } else {
+                // Has labels → node variable (relationship labels would need
+                // more context; treating as node is correct for most WITH exports)
+                self.var_registry
+                    .define_node(alias.to_string(), labels.to_vec(), cte_source);
+            }
+        }
+    }
+
+    /// Add the COMPOSITE alias (e.g., "countWindow1_tag") to the CTE variable
+    /// map, merging ALL individual aliases' mappings plus identity entries for
+    /// scalar aliases. Preserves the original merge logic verbatim.
+    fn publish_composite(
+        &mut self,
+        with_alias: &str,
+        cte_name: &str,
+        original_exported_aliases: &[String],
+    ) {
+        let mut composite_mapping: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for alias in original_exported_aliases {
+            if let Some(info) = self.scope_cte_variables.get(alias) {
+                // Merge Cypher→CTE column mappings from this individual alias
+                composite_mapping.extend(
+                    info.property_mapping
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone())),
+                );
+                // Scalar variables (empty property_mapping) are direct column names in the CTE
+                if info.property_mapping.is_empty() {
+                    composite_mapping.insert(alias.clone(), alias.clone());
+                }
+            }
+        }
+        self.scope_cte_variables.insert(
+            with_alias.to_string(),
+            super::variable_scope::CteVariableInfo {
+                cte_name: cte_name.to_string(),
+                property_mapping: composite_mapping.clone(),
+                labels: Vec::new(),
+                from_alias_override: None,
+                map_keys: None,
+            },
+        );
+        log::info!(
+            "🔧 build_chained: Added composite alias '{}' to scope_cte_variables with {} properties",
+            with_alias,
+            composite_mapping.len()
+        );
+    }
+
+    /// Build a `VariableScope` from all accumulated CTE variables for a
+    /// rendering pass (CTE body or final plan).
+    fn build_final_scope<'a>(
+        &self,
+        schema: &'a GraphSchema,
+        plan: &'a LogicalPlan,
+    ) -> super::variable_scope::VariableScope<'a> {
+        super::variable_scope::VariableScope::with_cte_variables(
+            schema,
+            plan,
+            self.scope_cte_variables.clone(),
+        )
+    }
+
+    /// Consume the scope and return the unified variable registry for the final
+    /// attach to the outer render plan.
+    fn take_registry(self) -> crate::query_planner::typed_variable::VariableRegistry {
+        self.var_registry
+    }
+}
+
 /// Recursively check if an expression contains an aggregate function.
 /// Comprehensive variant used to decide whether a WITH projection aggregates.
 fn expr_contains_aggregate(expr: &crate::query_planner::logical_expr::LogicalExpr) -> bool {
@@ -6373,16 +6534,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
     log::debug!("🔧 build_chained_with_match_cte_plan: Starting iterative WITH processing");
 
-    // Accumulate CTE variable info for scope-aware resolution.
-    // As each WITH is processed, we record the alias → CTE property mapping.
-    // This is used to build a VariableScope for rendering subsequent CTE bodies and the final plan.
-    let mut scope_cte_variables: HashMap<String, super::variable_scope::CteVariableInfo> =
-        HashMap::new();
-
-    // Unified variable registry: tracks all visible variables with their types, sources,
-    // and property mappings. Updated as each CTE is built. Attached to CTEs and the final
-    // RenderPlan for use by the SQL renderer.
-    let mut var_registry = crate::query_planner::typed_variable::VariableRegistry::new();
+    // Accumulate CTE variable info for scope-aware resolution and the unified
+    // variable registry as one cohesive unit. As each WITH is processed, we record
+    // the alias → CTE property mapping (used to build a VariableScope for rendering
+    // subsequent CTE bodies and the final plan) and define/overwrite variables in
+    // the registry (attached to CTEs and the final RenderPlan for the SQL renderer).
+    let mut with_scope = WithBarrierScope::new();
 
     // Process WITH clauses iteratively until none remain
     while has_with_clause_in_graph_rel(&current_plan) {
@@ -6824,12 +6981,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 //
                 // Build a scope from accumulated CTE variables for this rendering pass.
                 // This ensures CTE body rendering resolves variables from prior WITHs correctly.
-                let body_scope = super::variable_scope::VariableScope::with_cte_variables(
-                    schema,
-                    plan_to_render,
-                    scope_cte_variables.clone(),
-                );
-                let body_scope_ref = if scope_cte_variables.is_empty() && scope.is_none() {
+                let body_scope = with_scope.build_final_scope(schema, plan_to_render);
+                let body_scope_ref = if with_scope.is_empty() && scope.is_none() {
                     None // No scope needed for first WITH (or when called without outer scope)
                 } else {
                     Some(&body_scope)
@@ -8398,7 +8551,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 // VLP CTEs have been hoisted into all_ctes by this point, so we can extract
                 // variable→column mappings for bare variable rewriting (e.g., `friend` → `t.end_id`).
                 let augmented_scope = {
-                    let mut vars = scope_cte_variables.clone();
+                    let mut vars = with_scope.scope_cte_variables().clone();
                     for vlp_cte in &all_ctes {
                         // Only process actual VLP CTEs (which have from_alias set).
                         // Normal WITH CTEs may have non-empty columns but no from_alias.
@@ -10336,9 +10489,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
             //
             // WITH barrier: snapshot body registry, then clear accumulated scope
             // so only current CTE's exports are visible in the next scope.
-            let body_registry = std::sync::Arc::new(var_registry.clone());
-            scope_cte_variables.clear();
-            var_registry.clear();
+            let body_registry = with_scope.snapshot_body_registry();
+            with_scope.reset();
 
             for alias in &original_exported_aliases {
                 if alias.is_empty() {
@@ -10375,34 +10527,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     .map(|l| vec![l])
                     .unwrap_or_default();
 
-                scope_cte_variables.insert(
-                    alias.clone(),
-                    super::variable_scope::CteVariableInfo {
-                        cte_name: cte_name.clone(),
-                        property_mapping: per_alias_mapping.clone(),
-                        labels: labels.clone(),
-                        from_alias_override: None,
-                        map_keys: None,
-                    },
-                );
-
-                // Update unified variable registry: define/overwrite variable as CTE-sourced
-                // with its property mapping so the SQL renderer can resolve properties.
-                {
-                    use crate::query_planner::typed_variable::VariableSource;
-                    let cte_source = VariableSource::Cte {
-                        cte_name: cte_name.clone(),
-                        property_mapping: Box::new(per_alias_mapping.clone()),
-                    };
-                    if labels.is_empty() {
-                        // No labels → scalar variable (e.g., computed column, count, etc.)
-                        var_registry.define_scalar(alias.clone(), cte_source);
-                    } else {
-                        // Has labels → node variable (relationship labels would need
-                        // more context; treating as node is correct for most WITH exports)
-                        var_registry.define_node(alias.clone(), labels.clone(), cte_source);
-                    }
-                }
+                with_scope.publish_alias(alias, &cte_name, &per_alias_mapping, &labels);
 
                 // Publish this alias's CTE scope (FROM alias + Cypher-property →
                 // CTE-column mapping) to a narrow, purpose-built task-local
@@ -10446,7 +10571,9 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             if let Some(keys) =
                                 super::variable_scope::extract_map_keys_from_expr(&item.expression)
                             {
-                                if let Some(info) = scope_cte_variables.get_mut(alias) {
+                                if let Some(info) =
+                                    with_scope.scope_cte_variables_mut().get_mut(alias)
+                                {
                                     info.map_keys = Some(keys);
                                 }
                             }
@@ -10462,37 +10589,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
             // The composite alias's property_mapping merges ALL individual aliases' mappings, plus
             // identity entries for scalar aliases (which are direct CTE column names).
             if original_exported_aliases.len() > 1 {
-                let mut composite_mapping: std::collections::HashMap<String, String> =
-                    std::collections::HashMap::new();
-                for alias in &original_exported_aliases {
-                    if let Some(info) = scope_cte_variables.get(alias) {
-                        // Merge Cypher→CTE column mappings from this individual alias
-                        composite_mapping.extend(
-                            info.property_mapping
-                                .iter()
-                                .map(|(k, v)| (k.clone(), v.clone())),
-                        );
-                        // Scalar variables (empty property_mapping) are direct column names in the CTE
-                        if info.property_mapping.is_empty() {
-                            composite_mapping.insert(alias.clone(), alias.clone());
-                        }
-                    }
-                }
-                scope_cte_variables.insert(
-                    with_alias.clone(),
-                    super::variable_scope::CteVariableInfo {
-                        cte_name: cte_name.clone(),
-                        property_mapping: composite_mapping.clone(),
-                        labels: Vec::new(),
-                        from_alias_override: None,
-                        map_keys: None,
-                    },
-                );
-                log::info!(
-                    "🔧 build_chained: Added composite alias '{}' to scope_cte_variables with {} properties",
-                    with_alias,
-                    composite_mapping.len()
-                );
+                with_scope.publish_composite(&with_alias, &cte_name, &original_exported_aliases);
             }
 
             // Attach body registry (pre-barrier snapshot) to the CTE for runtime resolution
@@ -10690,7 +10787,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
             let cte_prop_mappings: std::collections::HashMap<
                 String,
                 std::collections::HashMap<String, String>,
-            > = scope_cte_variables
+            > = with_scope
+                .scope_cte_variables()
                 .iter()
                 .map(|(alias, info)| (alias.clone(), info.property_mapping.clone()))
                 .collect();
@@ -10703,9 +10801,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
     // Scope-aware join cleanup: remove ALL pre-computed joins whose aliases are now CTE-scoped.
     // These joins are stale — they reference table-level tables from before the WITH barrier.
     // The CTE references in the plan tree will produce the correct FROM/JOIN via extract_joins().
-    if !scope_cte_variables.is_empty() {
-        let cte_aliases: std::collections::HashSet<&str> =
-            scope_cte_variables.keys().map(|s| s.as_str()).collect();
+    if !with_scope.is_empty() {
+        let cte_aliases: std::collections::HashSet<&str> = with_scope
+            .scope_cte_variables()
+            .keys()
+            .map(|s| s.as_str())
+            .collect();
         current_plan = clear_stale_joins_for_cte_aliases(&current_plan, &cte_aliases);
         log::info!(
             "🔧 build_chained: Cleared stale joins for CTE aliases: {:?}",
@@ -10715,12 +10816,8 @@ pub(crate) fn build_chained_with_match_cte_plan(
 
     // All WITH clauses have been processed, now render the final plan
     // Build scope from all accumulated CTE variables for the final rendering pass.
-    let final_scope = super::variable_scope::VariableScope::with_cte_variables(
-        schema,
-        &current_plan,
-        scope_cte_variables.clone(),
-    );
-    let final_scope_ref = if scope_cte_variables.is_empty() && scope.is_none() {
+    let final_scope = with_scope.build_final_scope(schema, &current_plan);
+    let final_scope_ref = if with_scope.is_empty() && scope.is_none() {
         None
     } else {
         Some(&final_scope)
@@ -11716,7 +11813,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
     // for any scope CTE not already in FROM/JOINs.
     //
     // Must run AFTER CTE JOINs are added (above) so JOIN conditions are rewritten too.
-    if !scope_cte_variables.is_empty() {
+    if !with_scope.is_empty() {
         if is_cypher_union_plan {
             // #593: a Cypher UNION's arms are independent queries that were
             // already fully resolved per-arm during branch rendering.
@@ -11837,7 +11934,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
     rewrite_vlp_aggregate_aliases(&mut render_plan)?;
 
     // Attach the final variable registry to the outer render plan
-    render_plan.variable_registry = Some(std::sync::Arc::new(var_registry));
+    render_plan.variable_registry = Some(std::sync::Arc::new(with_scope.take_registry()));
 
     log::info!(
         "🔧 build_chained_with_match_cte_plan: Success - final plan has {} CTEs",
