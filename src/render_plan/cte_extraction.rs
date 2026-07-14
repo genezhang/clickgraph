@@ -7729,14 +7729,20 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
     }
 }
 
-/// Generate cycle prevention filters for fixed-length paths
+/// Generate relationship-uniqueness filters for exact-bound fixed-length paths.
 ///
-/// Prevents nodes from being revisited in a path by ensuring:
-/// 1. Start node != End node
-/// 2. All intermediate relationship endpoints are unique
+/// Implements Cypher's relationship-uniqueness (trail) semantics for the
+/// Normal/Polymorphic flat self-join (edge aliases `r1..r{exact_hops}`): every
+/// hop-edge must be a DISTINCT physical edge. A path IS allowed to return to its
+/// start (e.g. `1→2→1`), so there is NO `start != end` guard.
 ///
-/// For *2: `a.user_id != c.user_id AND r1.followed_id != r2.follower_id`
-/// For *3: `a.user_id != d.user_id AND r1.followed_id != r2.follower_id AND r2.followed_id != r3.follower_id`
+/// For *2: `NOT (r1.from = r2.from AND r1.to = r2.to)`
+/// For *3: three pairwise constraints over (r1,r2), (r1,r3), (r2,r3).
+///
+/// `use_legacy_start_end_guard=true` preserves the legacy `start != end` guard
+/// for paths that do NOT use the `r1..rN` edge-table alias scheme — FkEdge
+/// (node aliases `m1..m{N-1}`) and multi-type VLP (renders as a
+/// `vlp_multi_type_*` CTE). See the composite version's TODO.
 ///
 /// # Arguments
 /// * `exact_hops` - Number of relationship hops
@@ -7746,9 +7752,12 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
 /// * `end_id_col` - ID column name for end node
 /// * `start_alias` - Alias for start node (e.g., "a")
 /// * `end_alias` - Alias for end node (e.g., "c")
+/// * `use_legacy_start_end_guard` - true for FkEdge / multi-type (preserve
+///   legacy start != end guard instead of pairwise rel-uniqueness)
 ///
 /// # Returns
-/// RenderExpr combining all cycle prevention conditions with AND
+/// RenderExpr combining all uniqueness conditions with AND
+#[allow(clippy::too_many_arguments)]
 pub fn generate_cycle_prevention_filters(
     exact_hops: u32,
     start_id_col: &str,
@@ -7757,6 +7766,7 @@ pub fn generate_cycle_prevention_filters(
     end_id_col: &str,
     start_alias: &str,
     end_alias: &str,
+    use_legacy_start_end_guard: bool,
 ) -> Option<RenderExpr> {
     // Delegate to composite version with single-column IDs
     generate_cycle_prevention_filters_composite(
@@ -7767,39 +7777,48 @@ pub fn generate_cycle_prevention_filters(
         &[end_id_col],
         start_alias,
         end_alias,
+        use_legacy_start_end_guard,
     )
 }
 
-/// Generate cycle prevention filters for fixed-length paths with composite IDs
+/// Generate relationship-uniqueness filters for exact-bound fixed-length paths
+/// (composite-ID aware).
 ///
-/// Supports both simple and composite primary keys. For composite keys, generates
-/// NOT (col1=col1 AND col2=col2 AND ...) conditions.
+/// For the Normal/Polymorphic flat self-join (edge aliases `r1..r{exact_hops}`)
+/// this enforces Cypher relationship-uniqueness: for every pair of hops i<j,
+/// `NOT (r_i.from = r_j.from AND r_i.to = r_j.to)` — the same physical edge may
+/// not be reused. Composite from/to columns are handled by widening the
+/// per-pair equality (e.g. two-column from + two-column to → four-column AND).
+/// A path may return to its start, so NO `start != end` guard is emitted, and a
+/// single hop (exact_hops < 2) yields no constraints.
 ///
 /// # Examples
 ///
-/// Simple ID: `a.user_id != c.user_id`
-///
-/// Composite ID: `NOT (a.flight_date = c.flight_date AND a.flight_num = c.flight_num)`
+/// *2 (single-col edge): `NOT (r1.follower_id = r2.follower_id AND r1.followed_id = r2.followed_id)`
 ///
 /// # Arguments
 /// * `exact_hops` - Number of relationship hops
-/// * `start_id_cols` - ID column names for start node
-/// * `to_cols` - "to" ID column names for relationships
-/// * `from_cols` - "from" ID column names for relationships
-/// * `end_id_cols` - ID column names for end node
+/// * `start_id_cols` - ID column names for start node (FkEdge legacy path only)
+/// * `to_cols` - "to" ID column names for relationship edges
+/// * `from_cols` - "from" ID column names for relationship edges
+/// * `end_id_cols` - ID column names for end node (FkEdge legacy path only)
 /// * `start_alias` - Alias for start node (e.g., "a")
 /// * `end_alias` - Alias for end node (e.g., "c")
+/// * `use_legacy_start_end_guard` - true for FkEdge / multi-type VLP (preserve
+///   legacy start != end guard instead of pairwise rel-uniqueness)
 ///
 /// # Returns
-/// RenderExpr combining all cycle prevention conditions with AND
+/// RenderExpr combining all uniqueness conditions with AND
+#[allow(clippy::too_many_arguments)]
 pub fn generate_cycle_prevention_filters_composite(
     exact_hops: u32,
     start_id_cols: &[&str],
-    _to_cols: &[&str],
-    _from_cols: &[&str],
+    to_cols: &[&str],
+    from_cols: &[&str],
     end_id_cols: &[&str],
     start_alias: &str,
     end_alias: &str,
+    use_legacy_start_end_guard: bool,
 ) -> Option<RenderExpr> {
     use super::render_expr::{
         Operator, OperatorApplication, PropertyAccess, RenderExpr, TableAlias,
@@ -7877,24 +7896,49 @@ pub fn generate_cycle_prevention_filters_composite(
         }
     };
 
-    // 1. Start node != End node (prevents returning to the starting point)
-    filters.push(generate_composite_not_equal(
-        start_alias,
-        start_id_cols,
-        end_alias,
-        end_id_cols,
-    ));
-
-    // NOTE: We previously had cycle prevention for intermediate nodes, but it was WRONG.
-    // The condition `r1.to_id != r2.from_id` blocks VALID paths because that's exactly
-    // how paths connect (r1.to_id = r2.from_id is the JOIN condition).
-    //
-    // For proper cycle prevention (no node visited twice), we would need to track all
-    // intermediate nodes and ensure they're all different from each other. This is
-    // complex for inline JOINs (easy in recursive CTEs with path arrays).
-    //
-    // For now, we only prevent returning to the start node, which is the most common
-    // cycle prevention requirement. Full cycle detection can be added later if needed.
+    if use_legacy_start_end_guard {
+        // TODO(#598-followup): FkEdge / multi-type exact-bound rel-uniqueness.
+        // These paths do NOT use the `r1..r{exact_hops}` edge-table alias scheme
+        // that the pairwise relationship-uniqueness guard below references:
+        //  - FkEdge uses node aliases `m1..m{N-1}` over a self-referencing table
+        //    (see `expand_fixed_length_joins_with_context`'s FkEdge arm).
+        //  - Multi-type VLP (labels.len() > 1) renders as a `vlp_multi_type_*`
+        //    CTE, addressed by the CTE's own `start_id`/`end_id` columns.
+        // Emitting `r{i}` aliases here would be a LOUD SQL error. Until a
+        // path-specific rule is written we PRESERVE the previous behaviour
+        // (start != end guard over the aliases those paths actually expose).
+        filters.push(generate_composite_not_equal(
+            start_alias,
+            start_id_cols,
+            end_alias,
+            end_id_cols,
+        ));
+    } else {
+        // NORMAL / POLYMORPHIC flat self-join (edge aliases r1..r{exact_hops}).
+        // Cypher relationship-uniqueness (trail semantics): every hop-edge must
+        // be a DISTINCT physical edge. A path IS allowed to return to its start
+        // (e.g. 1→2→1 is a valid 2-path with a == b), so we deliberately do NOT
+        // emit a start != end guard. For each pair of hops i<j emit
+        //   NOT (r_i.from = r_j.from AND r_i.to = r_j.to)
+        // which forbids reusing the same physical edge. This is the same rule as
+        // the fixed multi-hop path in graph_join/cross_branch.rs. A single hop
+        // (exact_hops < 2) has no pair, hence no constraint.
+        if exact_hops < 2 {
+            return None;
+        }
+        // edge_cols = from_cols ++ to_cols → generate_composite_not_equal emits
+        // NOT (r_i.from = r_j.from AND r_i.to = r_j.to) (widened for composite IDs).
+        let edge_cols: Vec<&str> = from_cols.iter().chain(to_cols.iter()).copied().collect();
+        for i in 1..exact_hops {
+            for j in (i + 1)..=exact_hops {
+                let ri = format!("r{i}");
+                let rj = format!("r{j}");
+                filters.push(generate_composite_not_equal(
+                    &ri, &edge_cols, &rj, &edge_cols,
+                ));
+            }
+        }
+    }
 
     // Combine all filters with AND
     if filters.is_empty() {
