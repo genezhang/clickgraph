@@ -6295,6 +6295,181 @@ impl WithBarrierScope {
     }
 }
 
+/// Owns the CTE-naming / dedup cluster used across WITH barriers while building a
+/// chained WITH/MATCH CTE plan. Bundles the three loop-global maps that are always
+/// managed together to "allocate a unique CTE name + record the analyzer→actual
+/// name remapping":
+///   - `sequence_numbers`: alias-key → next sequence number for generating unique
+///     CTE names (format `with_<sorted_aliases>_cte_<seq>`).
+///   - `used_names`: CTE names already emitted, to prevent duplicates.
+///   - `name_remapping`: analyzer CTE name → actual CTE name, applied to the final
+///     render plan for passthrough / collapsed WITHs.
+struct CteNameAllocator {
+    sequence_numbers: HashMap<String, usize>,
+    used_names: HashSet<String>,
+    name_remapping: HashMap<String, String>,
+}
+
+impl CteNameAllocator {
+    /// Fresh, empty allocator (matches the original inline init of all three maps).
+    fn new() -> Self {
+        Self {
+            sequence_numbers: HashMap::new(),
+            used_names: HashSet::new(),
+            name_remapping: HashMap::new(),
+        }
+    }
+
+    /// FALLBACK ONLY: generate a unique CTE name when the analyzer didn't set
+    /// `WithClause.cte_name`. Mirrors the original `.unwrap_or_else(...)` body.
+    fn next_fallback_name(
+        &mut self,
+        aliases_key: &str,
+        sorted_aliases: &[String],
+        exported_aliases: &[String],
+    ) -> String {
+        // FALLBACK ONLY: If cte_name somehow not set (shouldn't happen after fix)
+        // Generate unique CTE name using centralized utility
+        // Format: with_<sorted_aliases>_cte_<seq>
+        let seq_num = self
+            .sequence_numbers
+            .entry(aliases_key.to_string())
+            .or_insert(1);
+        let current_seq = *seq_num;
+        let name = generate_cte_name(sorted_aliases, current_seq);
+        *seq_num += 1; // Increment for next iteration
+        log::debug!("🔧 build_chained_with_match_cte_plan: FALLBACK - WithClause.cte_name was None! Generated CTE name '{}' from aliases {:?} (sequence {}). This indicates analyzer didn't set cte_name properly.",
+                   name, exported_aliases, current_seq);
+        name
+    }
+
+    /// Ensure `used_names` contains any CTEs hoisted earlier in this pass.
+    fn sync_hoisted(&mut self, all_ctes: &[Cte]) {
+        // Ensure used_cte_names contains any CTEs hoisted earlier in this pass
+        for existing in all_ctes {
+            self.used_names.insert(existing.cte_name.clone());
+        }
+    }
+
+    /// Resolve `proposed` to a name not already in `used_names`. If it collides,
+    /// generate a fresh candidate, record the remapping, and advance the sequence.
+    /// Then track the final name as used and advance the suffix-based counter.
+    fn resolve_unique_name(
+        &mut self,
+        proposed: String,
+        aliases_key: &str,
+        sorted_aliases: &[String],
+    ) -> String {
+        let mut cte_name = proposed;
+
+        // If analyzer provided a duplicate name (or hoisted CTE collided), generate a fresh one
+        if self.used_names.contains(&cte_name) {
+            log::debug!(
+                "🔧 build_chained_with_match_cte_plan: Duplicate CTE name '{}' detected, generating a unique name",
+                cte_name
+            );
+
+            let seq_entry = self
+                .sequence_numbers
+                .entry(aliases_key.to_string())
+                .or_insert(1);
+            let mut next_seq = *seq_entry;
+            let mut candidate = generate_cte_name(sorted_aliases, next_seq);
+            while self.used_names.contains(&candidate) {
+                next_seq += 1;
+                candidate = generate_cte_name(sorted_aliases, next_seq);
+            }
+
+            // Remap the analyzer's name to the generated unique name
+            self.name_remapping
+                .insert(cte_name.clone(), candidate.clone());
+
+            *seq_entry = next_seq + 1;
+            cte_name = candidate;
+        }
+
+        // Track this name as used and advance the sequence counter based on its suffix
+        self.used_names.insert(cte_name.clone());
+        if let Some(suffix) = cte_name
+            .rsplit('_')
+            .next()
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            let entry = self
+                .sequence_numbers
+                .entry(aliases_key.to_string())
+                .or_insert(suffix + 1);
+            if *entry <= suffix {
+                *entry = suffix + 1;
+            }
+        }
+
+        cte_name
+    }
+
+    /// Record remappings from analyzer CTE names that share the same base pattern as
+    /// `final_cte_name` (but a different name) to `final_cte_name`.
+    fn record_base_remapping(
+        &mut self,
+        final_cte_name: &str,
+        all_analyzer_cte_names: &HashSet<String>,
+    ) {
+        // CRITICAL: Collect CTE name remapping from analyzer's CTE names to our generated name
+        // The analyzer may have generated different CTE names (e.g., with_name_cte_2) for the same aliases.
+        // When expressions reference the analyzer's name, we need to remap them to our name.
+        //
+        // Strategy: Any analyzer CTE name with the same base alias pattern should be remapped.
+        // E.g., if we generate "with_name_cte_1", then "with_name_cte_2", "with_name_cte_3" should remap to it.
+        let cte_base = final_cte_name
+            .rsplit("_cte_")
+            .skip(1)
+            .collect::<Vec<_>>()
+            .join("_cte_");
+        log::info!(
+            "🔧 build_chained_with_match_cte_plan: CTE base pattern for '{}' is '{}'",
+            final_cte_name,
+            cte_base
+        );
+
+        for analyzer_name in all_analyzer_cte_names {
+            // Check if this analyzer name has the same base (e.g., "with_name")
+            let analyzer_base = analyzer_name
+                .rsplit("_cte_")
+                .skip(1)
+                .collect::<Vec<_>>()
+                .join("_cte_");
+            if analyzer_base == cte_base && analyzer_name.as_str() != final_cte_name {
+                log::info!(
+                    "🔧 build_chained_with_match_cte_plan: Recording CTE name remap: '{}' → '{}' (same base)",
+                    analyzer_name, final_cte_name
+                );
+                self.name_remapping
+                    .insert(analyzer_name.clone(), final_cte_name.to_string());
+            }
+        }
+    }
+
+    /// Record a single analyzer→actual name remapping (passthrough / collapsed WITH).
+    fn record_remapping(&mut self, from: String, to: String) {
+        self.name_remapping.insert(from, to);
+    }
+
+    /// Mark a CTE name as used (e.g., CTEs hoisted from a recursive call).
+    fn mark_used(&mut self, name: String) {
+        self.used_names.insert(name);
+    }
+
+    /// Whether any analyzer→actual name remappings were recorded.
+    fn has_remappings(&self) -> bool {
+        !self.name_remapping.is_empty()
+    }
+
+    /// The accumulated analyzer→actual name remapping (for the final fixup pass).
+    fn remapping(&self) -> &HashMap<String, String> {
+        &self.name_remapping
+    }
+}
+
 /// Recursively check if an expression contains an aggregate function.
 /// Comprehensive variant used to decide whether a WITH projection aggregates.
 fn expr_contains_aggregate(expr: &crate::query_planner::logical_expr::LogicalExpr) -> bool {
@@ -6494,25 +6669,15 @@ pub(crate) fn build_chained_with_match_cte_plan(
     let mut processed_cte_aliases: std::collections::HashSet<String> =
         std::collections::HashSet::new();
 
-    // Track sequence numbers for each alias to generate unique CTE names
-    // Maps alias → next sequence number (e.g., "a" → 3 means next CTE is with_a_cte_3)
-    let mut cte_sequence_numbers: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
-
-    // Track CTE names we've already emitted to prevent duplicates
-    let mut used_cte_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Track the CTE-naming / dedup cluster (sequence numbers, used names, and the
+    // analyzer→actual name remapping) as a single cohesive unit. See
+    // `CteNameAllocator` for the invariants each map upholds.
+    let mut cte_name_allocator = CteNameAllocator::new();
 
     // Track CTE references as we build them (alias → CTE name)
     // Start EMPTY and populate as each CTE is created
     // This ensures we only reference CTEs that have actually been built in previous iterations
     let mut cte_references: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-
-    // Track CTE name remapping for passthrough WITHs
-    // When analyzer generates multiple CTE names for the same alias chain (e.g., with_name_cte_1, with_name_cte_2),
-    // but we skip creating duplicate CTEs, we need to remap the phantom names to the actual name.
-    // Maps: analyzer_cte_name → actual_cte_name (e.g., "with_name_cte_2" → "with_name_cte_1")
-    let mut cte_name_remapping: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
 
     // CRITICAL: Extract correlation predicates from the ORIGINAL plan BEFORE any transformations!
@@ -6868,7 +7033,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                             "🔧 build_chained_with_match_cte_plan: Recording CTE name remap: '{}' → '{}'",
                                             analyzer_cte_name, existing_cte
                                         );
-                                        cte_name_remapping.insert(
+                                        cte_name_allocator.record_remapping(
                                             analyzer_cte_name.clone(),
                                             existing_cte.clone(),
                                         );
@@ -7100,7 +7265,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             "🔧 build_chained_with_match_cte_plan: Hoisting CTE '{}' from recursive call",
                             cte.cte_name
                         );
-                        used_cte_names.insert(cte.cte_name.clone());
+                        cte_name_allocator.mark_used(cte.cte_name.clone());
 
                         // Capture VLP CTE metadata for deterministic column lookups
                         // This replaces heuristic lookups in expand_table_alias_to_group_by_id_only
@@ -8764,7 +8929,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
             // - Incomplete: only contains CTEs that other nodes explicitly reference
             // - Inconsistent: regenerates counters instead of using analysis phase values
             // - Source of two-phase mismatch: analysis generates "with_a_b_cte_1", rendering tries "with_a_b_cte_2"
-            let mut cte_name = with_plans
+            let cte_name = with_plans
                 .first()
                 .and_then(|plan| match plan {
                     LogicalPlan::WithClause(wc) => {
@@ -8775,95 +8940,30 @@ pub(crate) fn build_chained_with_match_cte_plan(
                     _ => None,
                 })
                 .unwrap_or_else(|| {
-                    // FALLBACK ONLY: If cte_name somehow not set (shouldn't happen after fix)
-                    // Generate unique CTE name using centralized utility
-                    // Format: with_<sorted_aliases>_cte_<seq>
-                    let seq_num = cte_sequence_numbers.entry(aliases_key.clone()).or_insert(1);
-                    let current_seq = *seq_num;
-                    let name = generate_cte_name(&sorted_exported_aliases, current_seq);
-                    *seq_num += 1; // Increment for next iteration
-                    log::debug!("🔧 build_chained_with_match_cte_plan: FALLBACK - WithClause.cte_name was None! Generated CTE name '{}' from aliases {:?} (sequence {}). This indicates analyzer didn't set cte_name properly.",
-                               name, exported_aliases, current_seq);
-                    name
+                    cte_name_allocator.next_fallback_name(
+                        &aliases_key,
+                        &sorted_exported_aliases,
+                        &exported_aliases,
+                    )
                 });
 
             // Ensure used_cte_names contains any CTEs hoisted earlier in this pass
-            for existing in &all_ctes {
-                used_cte_names.insert(existing.cte_name.clone());
-            }
+            cte_name_allocator.sync_hoisted(&all_ctes);
 
-            // If analyzer provided a duplicate name (or hoisted CTE collided), generate a fresh one
-            if used_cte_names.contains(&cte_name) {
-                log::debug!(
-                    "🔧 build_chained_with_match_cte_plan: Duplicate CTE name '{}' detected, generating a unique name",
-                    cte_name
-                );
-
-                let seq_entry = cte_sequence_numbers.entry(aliases_key.clone()).or_insert(1);
-                let mut next_seq = *seq_entry;
-                let mut candidate = generate_cte_name(&sorted_exported_aliases, next_seq);
-                while used_cte_names.contains(&candidate) {
-                    next_seq += 1;
-                    candidate = generate_cte_name(&sorted_exported_aliases, next_seq);
-                }
-
-                // Remap the analyzer's name to the generated unique name
-                cte_name_remapping.insert(cte_name.clone(), candidate.clone());
-
-                *seq_entry = next_seq + 1;
-                cte_name = candidate;
-            }
-
-            // Track this name as used and advance the sequence counter based on its suffix
-            used_cte_names.insert(cte_name.clone());
-            if let Some(suffix) = cte_name
-                .rsplit('_')
-                .next()
-                .and_then(|s| s.parse::<usize>().ok())
-            {
-                let entry = cte_sequence_numbers
-                    .entry(aliases_key.clone())
-                    .or_insert(suffix + 1);
-                if *entry <= suffix {
-                    *entry = suffix + 1;
-                }
-            }
+            // Resolve to a unique name (dedup against hoisted/analyzer collisions) and
+            // advance the sequence counter based on its suffix.
+            let cte_name = cte_name_allocator.resolve_unique_name(
+                cte_name,
+                &aliases_key,
+                &sorted_exported_aliases,
+            );
 
             log::debug!("🔧 build_chained_with_match_cte_plan: Using CTE name '{}' for exported aliases {:?}",
                        cte_name, exported_aliases);
 
-            // CRITICAL: Collect CTE name remapping from analyzer's CTE names to our generated name
-            // The analyzer may have generated different CTE names (e.g., with_name_cte_2) for the same aliases.
-            // When expressions reference the analyzer's name, we need to remap them to our name.
-            //
-            // Strategy: Any analyzer CTE name with the same base alias pattern should be remapped.
-            // E.g., if we generate "with_name_cte_1", then "with_name_cte_2", "with_name_cte_3" should remap to it.
-            let cte_base = cte_name
-                .rsplit("_cte_")
-                .skip(1)
-                .collect::<Vec<_>>()
-                .join("_cte_");
-            log::info!(
-                "🔧 build_chained_with_match_cte_plan: CTE base pattern for '{}' is '{}'",
-                cte_name,
-                cte_base
-            );
-
-            for analyzer_name in &all_analyzer_cte_names {
-                // Check if this analyzer name has the same base (e.g., "with_name")
-                let analyzer_base = analyzer_name
-                    .rsplit("_cte_")
-                    .skip(1)
-                    .collect::<Vec<_>>()
-                    .join("_cte_");
-                if analyzer_base == cte_base && analyzer_name != &cte_name {
-                    log::info!(
-                        "🔧 build_chained_with_match_cte_plan: Recording CTE name remap: '{}' → '{}' (same base)",
-                        analyzer_name, cte_name
-                    );
-                    cte_name_remapping.insert(analyzer_name.clone(), cte_name.clone());
-                }
-            }
+            // CRITICAL: Collect CTE name remapping from analyzer's CTE names to our generated name.
+            // Any analyzer CTE name with the same base alias pattern is remapped to our name.
+            cte_name_allocator.record_base_remapping(&cte_name, &all_analyzer_cte_names);
 
             // Create CTE content - if multiple renders, combine with UNION ALL
             // Extract ORDER BY, SKIP, LIMIT from first rendered plan (they should all have the same modifiers)
@@ -10835,12 +10935,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
     // CRITICAL FIX: Apply CTE name remapping for passthrough WITHs
     // When WITHs are skipped, expressions may still reference the analyzer's CTE names.
     // Remap them to the actual CTE names that were created.
-    if !cte_name_remapping.is_empty() {
+    if cte_name_allocator.has_remappings() {
         log::info!(
             "🔧 build_chained_with_match_cte_plan: Applying CTE name remapping ({} entries)",
-            cte_name_remapping.len()
+            cte_name_allocator.remapping().len()
         );
-        remap_cte_names_in_render_plan(&mut render_plan, &cte_name_remapping);
+        remap_cte_names_in_render_plan(&mut render_plan, cte_name_allocator.remapping());
     }
 
     // Comprehensive CTE name fixup: the analyzer assigns CTE names with its own counter
