@@ -77,11 +77,11 @@ impl PropertiesBuilder for LogicalPlan {
                 // FALLBACK: Compute from ViewScan (for nodes without projected_columns)
                 if let LogicalPlan::ViewScan(scan) = node.input.as_ref() {
                     log::debug!("get_properties_with_table_alias: GraphNode '{}' has ViewScan, is_denormalized={}, from_node_properties={:?}, to_node_properties={:?}",
-                        alias, scan.is_denormalized,
+                        alias, crate::graph_catalog::pattern_schema::scan_denormalized_flag(scan),
                         scan.from_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()),
                         scan.to_node_properties.as_ref().map(|p| p.keys().collect::<Vec<_>>()));
                     // For denormalized nodes with properties on the ViewScan (from standalone node query)
-                    if scan.is_denormalized {
+                    if crate::graph_catalog::pattern_schema::scan_denormalized_flag(scan) {
                         if let Some(from_props) = &scan.from_node_properties {
                             let properties = extract_sorted_properties(from_props);
                             if !properties.is_empty() {

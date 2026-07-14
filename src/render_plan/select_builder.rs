@@ -2960,9 +2960,9 @@ impl LogicalPlan {
                         "🔍 Relationship '{}' center IS ViewScan, table={}, is_denormalized={}",
                         rel_alias,
                         vs.source_table,
-                        vs.is_denormalized
+                        crate::graph_catalog::pattern_schema::scan_denormalized_flag(vs)
                     );
-                    vs.is_denormalized
+                    crate::graph_catalog::pattern_schema::scan_denormalized_flag(vs)
                 } else {
                     log::trace!("🔍 Relationship '{}' center is NOT ViewScan", rel_alias);
                     false

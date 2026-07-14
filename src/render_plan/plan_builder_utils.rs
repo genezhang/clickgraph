@@ -7328,7 +7328,9 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                     LogicalPlan::Union(u) => u.inputs.iter().any(|input| {
                                         fn has_denorm_vs(p: &LogicalPlan) -> bool {
                                             match p {
-                                                LogicalPlan::ViewScan(vs) => vs.is_denormalized,
+                                                LogicalPlan::ViewScan(vs) => {
+                                                    crate::graph_catalog::pattern_schema::scan_denormalized_flag(vs)
+                                                }
                                                 LogicalPlan::GraphNode(gn) => {
                                                     has_denorm_vs(gn.input.as_ref())
                                                 }
