@@ -6134,6 +6134,49 @@ fn is_literal_expr(expr: &crate::query_planner::logical_expr::LogicalExpr) -> bo
     )
 }
 
+/// Recursively check if an expression contains an aggregate function.
+/// Comprehensive variant used to decide whether a WITH projection aggregates.
+fn expr_contains_aggregate(expr: &crate::query_planner::logical_expr::LogicalExpr) -> bool {
+    use crate::query_planner::logical_expr::LogicalExpr;
+    match expr {
+        LogicalExpr::AggregateFnCall(_) => true,
+        LogicalExpr::ScalarFnCall(f) => f.args.iter().any(expr_contains_aggregate),
+        LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
+            op.operands.iter().any(expr_contains_aggregate)
+        }
+        LogicalExpr::Case(c) => {
+            c.when_then
+                .iter()
+                .any(|(cond, val)| expr_contains_aggregate(cond) || expr_contains_aggregate(val))
+                || c.else_expr
+                    .as_ref()
+                    .is_some_and(|e| expr_contains_aggregate(e))
+        }
+        LogicalExpr::List(items) => items.iter().any(expr_contains_aggregate),
+        LogicalExpr::ArraySubscript { array, index } => {
+            expr_contains_aggregate(array) || expr_contains_aggregate(index)
+        }
+        _ => false,
+    }
+}
+
+/// Check if a LogicalExpr contains an aggregate function (recursively).
+/// Narrower variant used to exclude aggregate-bearing items from GROUP BY.
+fn group_by_contains_aggregate(expr: &crate::query_planner::logical_expr::LogicalExpr) -> bool {
+    use crate::query_planner::logical_expr::LogicalExpr;
+    match expr {
+        LogicalExpr::AggregateFnCall(_) => true,
+        LogicalExpr::OperatorApplicationExp(op) => {
+            op.operands.iter().any(group_by_contains_aggregate)
+        }
+        LogicalExpr::ScalarFnCall(f) => f.args.iter().any(group_by_contains_aggregate),
+        LogicalExpr::ArraySubscript { array, index } => {
+            group_by_contains_aggregate(array) || group_by_contains_aggregate(index)
+        }
+        _ => false,
+    }
+}
+
 fn rewrite_person_to_fk(expr: &mut RenderExpr, person_alias: &str, rel_alias: &str, fk_col: &str) {
     match expr {
         RenderExpr::PropertyAccessExp(pa) if pa.table_alias.0 == person_alias => {
@@ -7262,36 +7305,7 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 return false;
                             }
                         }
-                        /// Recursively check if an expression contains an aggregate function
-                        fn contains_aggregate(
-                            expr: &crate::query_planner::logical_expr::LogicalExpr,
-                        ) -> bool {
-                            use crate::query_planner::logical_expr::LogicalExpr;
-                            match expr {
-                                LogicalExpr::AggregateFnCall(_) => true,
-                                LogicalExpr::ScalarFnCall(f) => {
-                                    f.args.iter().any(contains_aggregate)
-                                }
-                                LogicalExpr::Operator(op)
-                                | LogicalExpr::OperatorApplicationExp(op) => {
-                                    op.operands.iter().any(contains_aggregate)
-                                }
-                                LogicalExpr::Case(c) => {
-                                    c.when_then.iter().any(|(cond, val)| {
-                                        contains_aggregate(cond) || contains_aggregate(val)
-                                    }) || c
-                                        .else_expr
-                                        .as_ref()
-                                        .is_some_and(|e| contains_aggregate(e))
-                                }
-                                LogicalExpr::List(items) => items.iter().any(contains_aggregate),
-                                LogicalExpr::ArraySubscript { array, index } => {
-                                    contains_aggregate(array) || contains_aggregate(index)
-                                }
-                                _ => false,
-                            }
-                        }
-                        contains_aggregate(&item.expression)
+                        expr_contains_aggregate(&item.expression)
                     });
 
                     let has_table_alias = items.iter().any(|item| {
@@ -7819,32 +7833,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             // 2. ANY() picks the single value in each group (safe for PK)
                             // 3. GROUP BY 1 column is much faster than GROUP BY 7 columns
                             if has_aggregation {
-                                /// Check if a LogicalExpr contains an aggregate function (recursively)
-                                fn contains_aggregate(
-                                    expr: &crate::query_planner::logical_expr::LogicalExpr,
-                                ) -> bool {
-                                    use crate::query_planner::logical_expr::LogicalExpr;
-                                    match expr {
-                                        LogicalExpr::AggregateFnCall(_) => true,
-                                        LogicalExpr::OperatorApplicationExp(op) => {
-                                            op.operands.iter().any(contains_aggregate)
-                                        }
-                                        LogicalExpr::ScalarFnCall(f) => {
-                                            f.args.iter().any(contains_aggregate)
-                                        }
-                                        LogicalExpr::ArraySubscript { array, index } => {
-                                            contains_aggregate(array) || contains_aggregate(index)
-                                        }
-                                        _ => false,
-                                    }
-                                }
-
                                 let group_by_exprs: Vec<RenderExpr> = items.iter()
                                             .filter(|item| {
                                                 // Exclude: direct aggregates, literals, and expressions containing aggregates
                                                 !matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_))
                                                 && !is_literal_expr(&item.expression)
-                                                && !contains_aggregate(&item.expression)
+                                                && !group_by_contains_aggregate(&item.expression)
                                             })
                                             .flat_map(|item| {
                                                 // For TableAlias, only GROUP BY the ID column
