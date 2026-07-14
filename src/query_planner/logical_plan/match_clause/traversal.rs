@@ -1535,7 +1535,7 @@ fn traverse_connected_pattern_with_mode<'a>(
             };
             crate::debug_print!(
                 "=== DISCONNECTED: start_graph_node created with is_denormalized={} ===",
-                start_graph_node.is_denormalized
+                crate::graph_catalog::pattern_schema::node_denormalized_flag(&start_graph_node)
             );
             register_node_in_context(
                 plan_ctx,

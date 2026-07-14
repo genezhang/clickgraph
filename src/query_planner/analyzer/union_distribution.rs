@@ -116,8 +116,8 @@ fn is_all_denormalized_nodes(union: &Union) -> bool {
     !union.inputs.is_empty()
         && union.inputs.iter().all(|input| match input.as_ref() {
             LogicalPlan::GraphNode(gn) => {
-                gn.is_denormalized
-                    || matches!(gn.input.as_ref(), LogicalPlan::ViewScan(vs) if vs.is_denormalized)
+                crate::graph_catalog::pattern_schema::node_denormalized_flag(gn)
+                    || matches!(gn.input.as_ref(), LogicalPlan::ViewScan(vs) if crate::graph_catalog::pattern_schema::scan_denormalized_flag(vs))
             }
             _ => false,
         })
