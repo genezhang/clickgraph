@@ -177,14 +177,39 @@ impl FilterBuilder for LogicalPlan {
                             return Ok(None);
                         }
                     } else {
-                        // Fixed-length VLP uses chained JOINs - extract where_predicate
-                        if let Some(ref predicate) = graph_rel.where_predicate {
-                            if let Ok(expr) = RenderExpr::try_from(predicate.clone()) {
-                                return Ok(Some(expr));
+                        // Fixed-length VLP.
+                        //
+                        // Multi-type VLP (labels.len() > 1) does NOT actually use
+                        // the flat r1..rN self-join — despite exact_hop_count being
+                        // Some it renders as a `vlp_multi_type_*` CTE, whose outer
+                        // WHERE must reference the CTE's own columns. Keep the
+                        // original early return for it: falling through would
+                        // property-map the predicate onto base-table aliases that
+                        // aren't in the outer scope and would inject a uniqueness
+                        // guard with the wrong (r{i}) aliases/columns.
+                        let is_multi_type = graph_rel
+                            .labels
+                            .as_ref()
+                            .map(|l| l.len() > 1)
+                            .unwrap_or(false);
+                        if is_multi_type {
+                            if let Some(ref predicate) = graph_rel.where_predicate {
+                                if let Ok(expr) = RenderExpr::try_from(predicate.clone()) {
+                                    return Ok(Some(expr));
+                                }
                             }
                         }
-                        // No where_predicate - check for other filters in children
-                        // Fall through to normal GraphRel processing
+                        // Single-type flat-join VLP: DO NOT early-return (issue
+                        // #598). The previous early return skipped BOTH the
+                        // relationship-uniqueness block (~269) and the
+                        // all_predicates AND-combine (~331), so a user WHERE
+                        // silently dropped the uniqueness guard entirely.
+                        // collect_graphrel_predicates (below) already collects a
+                        // single-type fixed-length VLP GraphRel's own
+                        // where_predicate, so we fall through to normal GraphRel
+                        // processing: the predicate lands in all_predicates
+                        // EXACTLY ONCE and gets AND-ed with the uniqueness guard.
+                        // Do NOT push it again here or it would be duplicated.
                     }
                 }
 
@@ -311,7 +336,31 @@ impl FilterBuilder for LogicalPlan {
 
                             let rel_to_id_str = rel_cols.to_id.to_string();
                             let rel_from_id_str = rel_cols.from_id.to_string();
-                            // Generate cycle prevention filters
+                            // The pairwise relationship-uniqueness guard references
+                            // the r1..rN edge-table aliases of the single-type flat
+                            // self-join. Two paths reach here WITHOUT those aliases
+                            // and must keep the legacy start != end guard instead:
+                            //  - FkEdge: node aliases m1..m{N-1}, self-referencing.
+                            //  - Multi-type VLP (labels.len() > 1): renders as a
+                            //    vlp_multi_type_* CTE addressed via start_id/end_id.
+                            // (Denormalized exact-bound routes to the recursive CTE
+                            // and never reaches here.)
+                            // Route the schema-pattern decision through the
+                            // schema-catalog dispatch API (detect_vlp_schema_type)
+                            // rather than a raw flag, per the axis-dispatch rule.
+                            let vlp_schema_type =
+                                crate::render_plan::cte_extraction::detect_vlp_schema_type(
+                                    graph_rel,
+                                );
+                            let is_multi_type = graph_rel
+                                .labels
+                                .as_ref()
+                                .map(|l| l.len() > 1)
+                                .unwrap_or(false);
+                            let use_legacy_start_end_guard = vlp_schema_type
+                                == crate::render_plan::cte_extraction::VlpSchemaType::FkEdge
+                                || is_multi_type;
+                            // Generate relationship-uniqueness filters
                             if let Some(cycle_filter) = crate::render_plan::cte_extraction::generate_cycle_prevention_filters(
                                 exact_hops,
                                 &start_id_col,
@@ -320,8 +369,9 @@ impl FilterBuilder for LogicalPlan {
                                 &end_id_col,
                                 &graph_rel.left_connection,
                                 &graph_rel.right_connection,
+                                use_legacy_start_end_guard,
                             ) {
-                                crate::debug_println!("DEBUG: extract_filters - Generated cycle prevention filter");
+                                crate::debug_println!("DEBUG: extract_filters - Generated relationship-uniqueness filter");
                                 all_predicates.push(cycle_filter);
                             }
                         }
