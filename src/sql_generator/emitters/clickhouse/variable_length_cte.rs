@@ -63,6 +63,17 @@ fn emit_cycle_check(id_expr: &str) -> String {
     format!("NOT {array_contains}(vp.path_nodes, {id_expr})")
 }
 
+/// Emit the recursive-CTE EDGE-uniqueness predicate: `NOT array_contains(vp.path_edges, edge_expr)`.
+///
+/// Enforces Cypher's default relationship-uniqueness (a path MAY revisit a node
+/// but must not reuse the same edge), unlike [`emit_cycle_check`] which enforces
+/// the stronger node-uniqueness. `edge_expr` is the edge-identity expression for
+/// the hop being added this step (typically from [`VariableLengthCteGenerator::build_edge_tuple_recursive`]).
+fn emit_edge_cycle_check(edge_expr: &str) -> String {
+    let array_contains = current_function_mapper().array_contains();
+    format!("NOT {array_contains}(vp.path_edges, {edge_expr})")
+}
+
 /// Emit a dialect-correct array literal. CH: `[a, b]`. Spark: `array(a, b)`.
 /// Thin shorthand over `FunctionMapper::array_literal` — VLP code builds
 /// these in many places (path_nodes, path_relationships, scalar→array
@@ -812,6 +823,41 @@ impl<'a> VariableLengthCteGenerator<'a> {
         emit_id_expr(&self.end_node_alias, &end_id_identifier)
     }
 
+    /// Whether the standard directed recursive VLP should enforce EDGE-uniqueness
+    /// (relationship-uniqueness — Cypher's default: a path MAY revisit a node but
+    /// must not reuse the same edge) via a `path_edges` array, instead of the
+    /// stronger node-uniqueness via `path_nodes`.
+    ///
+    /// Scoped (issue #598, part 2) to the standard single-type directed recursive
+    /// path. This helper is only consulted from the STANDARD arms of
+    /// `generate_base_case` and `generate_recursive_case_with_cte_name`, which are
+    /// reached only after those functions' early dispatch returns for the weighted
+    /// / denormalized / mixed / FK-edge / heterogeneous-polymorphic strategies — so
+    /// the pattern is already known to be standard here (no need to re-branch on raw
+    /// schema flags). Those other strategies keep node-uniqueness in their own
+    /// recursive generators (tracked as separate follow-ups).
+    ///
+    /// It stays `false` — keeping node-uniqueness — for:
+    /// - shortestPath (revisiting a node can never shorten a path);
+    /// - zero-hop base cases (`*0..N`, `effective_min_hops() == 0`), whose base row
+    ///   has no edges and so cannot seed the 1-hop `path_edges` literal;
+    /// - heterogeneous-polymorphic paths: `generate_base_case` reaches the standard
+    ///   base arm for these (it has no heterogeneous early-return) but
+    ///   `generate_recursive_case_with_cte_name` dispatches them to
+    ///   `generate_heterogeneous_polymorphic_recursive_case`, which does NOT project
+    ///   `path_edges`. Seeding `path_edges` only in the base would produce a
+    ///   base/recursive column mismatch (unbound-identifier, cf. #469), so this
+    ///   arm MUST agree with that recursive dispatch and stay node-unique here.
+    ///
+    /// When `true`, `path_edges` is threaded consistently through the base and
+    /// recursive arms (and carried by `SELECT *` in the min-hops `_inner` wrapper),
+    /// and the recursive cycle predicate switches to [`emit_edge_cycle_check`].
+    fn uses_edge_uniqueness(&self) -> bool {
+        self.shortest_path_mode.is_none()
+            && self.spec.effective_min_hops() >= 1
+            && !self.is_heterogeneous_polymorphic_path()
+    }
+
     /// Extract target node ID value from end_node_filters for early termination in recursive case.
     ///
     /// For shortestPath queries, once a path reaches the target node, extending it further
@@ -847,7 +893,6 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
     /// Build edge tuple expression for the base case (first hop)
     /// Returns SQL expression like: `tuple(rel.from_id, rel.to_id)` or `tuple(rel.date, rel.num, ...)`
-    #[allow(dead_code)]
     fn build_edge_tuple_base(&self) -> String {
         match &self.edge_id {
             Some(Identifier::Single(col)) => {
@@ -884,7 +929,6 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
     /// Build edge tuple expression for recursive case
     /// Returns SQL expression like: `tuple(r.from_id, r.to_id)` or `tuple(r.date, r.num, ...)`
-    #[allow(dead_code)]
     fn build_edge_tuple_recursive(&self, rel_alias: &str) -> String {
         match &self.edge_id {
             Some(Identifier::Single(col)) => {
@@ -2010,6 +2054,19 @@ impl<'a> VariableLengthCteGenerator<'a> {
             }
             select_items.push(path_nodes_selection);
 
+            // #598 (part 2): seed path_edges with this hop's edge identity so the
+            // recursive step can enforce relationship-uniqueness (Cypher default).
+            // A non-empty 1-element array literal lets ClickHouse infer
+            // Array(Tuple(...)) directly — no CAST needed. path_nodes is retained
+            // above for nodes(p); path_edges drives the cycle check. Kept for
+            // shortestPath/non-standard strategies via uses_edge_uniqueness().
+            if self.uses_edge_uniqueness() {
+                select_items.push(format!(
+                    "{} as path_edges",
+                    arr(&self.build_edge_tuple_base())
+                ));
+            }
+
             // For composite IDs, add individual ID component columns
             // This allows queries like RETURN dest.bank_id, dest.account_number
             if let Identifier::Composite(cols) = &start_id_identifier {
@@ -2290,6 +2347,17 @@ impl<'a> VariableLengthCteGenerator<'a> {
         }
         select_items.push(path_nodes_selection);
 
+        // #598 (part 2): accumulate this hop's edge identity so relationship-uniqueness
+        // (Cypher default) can be enforced below. path_nodes is still accumulated
+        // above for nodes(p). Must be projected on BOTH recursive and base arms —
+        // gated identically via uses_edge_uniqueness().
+        if self.uses_edge_uniqueness() {
+            select_items.push(format!(
+                "{ac}(vp.path_edges, {}) as path_edges",
+                arr(&self.build_edge_tuple_recursive(&self.relationship_alias))
+            ));
+        }
+
         // For composite IDs, add individual ID component columns
         // Pass through start ID components from vp, add end ID components from joined node
         if let Identifier::Composite(cols) = &end_id_identifier {
@@ -2343,19 +2411,23 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         let select_clause = select_items.join(",\n        ");
 
-        // Cycle prevention via node-uniqueness (NOT has(path_nodes, end_id)).
-        // This is stronger than Cypher's relationship-uniqueness semantics: it prevents
-        // revisiting a node even via a different relationship. This is equivalent for
-        // simple graphs (at most one edge of a given type between any node pair, which
-        // covers LDBC KNOWS, REPLY_OF, HAS_CREATOR, etc.) and for shortestPath queries
-        // (where revisiting a node can never produce a shorter path). For multigraphs
-        // with parallel edges of the same type, this could prune valid paths.
-        let end_id_for_cycle = self.build_end_node_id_expr();
+        // Cycle prevention (issue #598, part 2).
+        //
+        // Standard directed range VLP now enforces Cypher's default RELATIONSHIP-
+        // uniqueness: a path may revisit a node but must not reuse the same edge
+        // (`NOT has(path_edges, <this hop's edge>)`). Node-uniqueness wrongly dropped
+        // valid paths that revisit a node via a different edge (e.g. mutual follows 1↔2).
+        //
+        // Node-uniqueness (`NOT has(path_nodes, end_id)`) is retained for shortestPath
+        // (revisiting a node can never yield a shorter path) and for the non-standard
+        // strategies, gated via uses_edge_uniqueness().
+        let cycle_pred = if self.uses_edge_uniqueness() {
+            emit_edge_cycle_check(&self.build_edge_tuple_recursive(&self.relationship_alias))
+        } else {
+            emit_cycle_check(&self.build_end_node_id_expr())
+        };
 
-        let mut where_conditions = vec![
-            format!("vp.hop_count < {}", max_hops),
-            emit_cycle_check(&end_id_for_cycle),
-        ];
+        let mut where_conditions = vec![format!("vp.hop_count < {}", max_hops), cycle_pred];
 
         // Add polymorphic edge filter if this is a polymorphic edge table
         if let Some(poly_filter) = self.generate_polymorphic_edge_filter() {

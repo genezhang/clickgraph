@@ -6331,13 +6331,19 @@ async fn browser_type_probe_pattern_union_outer_alias_matches_from() {
 /// Regression lock for #469: `MATCH p=(a:User)-[:FOLLOWS*1..2]->(b) RETURN p`
 /// must materialize the path tuple from columns the recursive VLP CTE
 /// actually projects — `tuple(t.path_nodes, t.path_relationships,
-/// t.hop_count)`. The CTE deliberately does NOT project `path_edges`
-/// (node-uniqueness cycle detection via `path_nodes`; per-edge arrays were
-/// dropped as a memory optimization), so any `path_edges` reference is
-/// unbound (ClickHouse `Code: 47 ... Identifier 't.path_edges' cannot be
-/// resolved ... Maybe you meant: ['t.path_nodes']` — the pre-fix behavior).
-/// Live-verified fixed on the `social` fixture, including `*0..` (zero-hop
-/// rows render `[[id], [], 0]`) and undirected `*1..2`. Byte-locked by the
+/// t.hop_count)`.
+///
+/// #598 (part 2): the directed range VLP CTE now ALSO projects `path_edges`
+/// (an internal edge-tracking array for relationship-uniqueness cycle
+/// detection, referenced only as `vp.path_edges` inside the recursive arm).
+/// `path_edges` is NOT part of the path representation, so the outer `RETURN p`
+/// tuple must still consume only `path_nodes`/`path_relationships`/`hop_count`
+/// via alias `t` — and must NOT reference `t.path_edges` (which would be the
+/// #469 unbound-identifier class of bug, ClickHouse `Code: 47`). Because
+/// `path_edges` is now consistently projected through every arm (base,
+/// recursive, and the min-hops `_inner` wrapper via `SELECT *`), the recursive
+/// `vp.path_edges` reference is bound and the query executes.
+/// Live-verified fixed on the `social` fixture. Byte-locked by the
 /// `path_vlp` golden.
 #[tokio::test]
 async fn browser_vlp_path_return_uses_only_cte_defined_columns() {
@@ -6347,11 +6353,15 @@ async fn browser_vlp_path_return_uses_only_cte_defined_columns() {
     for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
         let sql = render(&schema, cypher, dialect).await;
 
-        // The path tuple must be assembled from CTE-defined columns only.
+        // The outer path tuple must NOT reference the internal edge-tracking
+        // column: `path_edges` is projected inside the CTE (as `vp.path_edges`)
+        // but is not part of the path representation, so `t.path_edges` must
+        // never appear in the outer SELECT (#469 class of unbound reference).
         assert!(
-            !sql.contains("path_edges"),
-            "RETURN p must not reference `path_edges` — the recursive VLP CTE \
-             never defines it (#469 regression) for {dialect:?}:\n{sql}"
+            !sql.contains("t.path_edges"),
+            "RETURN p path tuple must not reference `t.path_edges` — it is an \
+             internal cycle-tracking column, not part of the path (#469) for \
+             {dialect:?}:\n{sql}"
         );
         assert!(
             sql.contains("t.path_nodes")

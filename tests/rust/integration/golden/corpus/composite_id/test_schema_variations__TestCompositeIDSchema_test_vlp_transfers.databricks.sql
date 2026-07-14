@@ -5,6 +5,7 @@ WITH RECURSIVE vlp_a_dest AS (
         1 as hop_count,
         CAST(array() AS ARRAY<STRING>) as path_relationships,
         array(concat(string(start_node.bank_id), '|', string(start_node.account_number)), concat(string(end_node.bank_id), '|', string(end_node.account_number))) as path_nodes,
+        array(rel.transfer_id) as path_edges,
         end_node.bank_id as end_bank_id,
         end_node.account_number as end_account_number
     FROM db_composite_id.accounts AS start_node
@@ -18,13 +19,14 @@ WITH RECURSIVE vlp_a_dest AS (
         vp.hop_count + 1 as hop_count,
         CAST(array() AS ARRAY<STRING>) as path_relationships,
         concat(vp.path_nodes, array(concat(string(end_node.bank_id), '|', string(end_node.account_number)))) as path_nodes,
+        concat(vp.path_edges, array(rel.transfer_id)) as path_edges,
         end_node.bank_id as end_bank_id,
         end_node.account_number as end_account_number
     FROM vlp_a_dest vp
     JOIN db_composite_id.transfers AS rel ON vp.end_id = concat(string(rel.from_bank_id), '|', string(rel.from_account_number))
     JOIN db_composite_id.accounts AS end_node ON rel.to_bank_id = end_node.bank_id AND rel.to_account_number = end_node.account_number
     WHERE vp.hop_count < 2
-      AND NOT array_contains(vp.path_nodes, concat(string(end_node.bank_id), '|', string(end_node.account_number)))
+      AND NOT array_contains(vp.path_edges, rel.transfer_id)
 )
 SELECT DISTINCT 
       t.end_bank_id AS `dest.bank_id`, 

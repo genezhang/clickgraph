@@ -5,6 +5,7 @@ WITH RECURSIVE vlp_root_f AS (
         1 as hop_count,
         CAST(array() AS ARRAY<STRING>) as path_relationships,
         array(start_node.fs_id, end_node.fs_id) as path_nodes,
+        array(struct(rel.parent_id, rel.fs_id)) as path_edges,
         end_node.name as end_name,
         end_node.path as end_path
     FROM data_security.ds_fs_objects AS start_node
@@ -18,13 +19,14 @@ WITH RECURSIVE vlp_root_f AS (
         vp.hop_count + 1 as hop_count,
         CAST(array() AS ARRAY<STRING>) as path_relationships,
         concat(vp.path_nodes, array(end_node.fs_id)) as path_nodes,
+        concat(vp.path_edges, array(struct(rel.parent_id, rel.fs_id))) as path_edges,
         end_node.name as end_name,
         end_node.path as end_path
     FROM vlp_root_f vp
     JOIN data_security.ds_fs_objects AS rel ON vp.end_id = rel.parent_id
     JOIN data_security.ds_fs_objects AS end_node ON rel.fs_id = end_node.fs_id
     WHERE vp.hop_count < 5
-      AND NOT array_contains(vp.path_nodes, end_node.fs_id)
+      AND NOT array_contains(vp.path_edges, struct(rel.parent_id, rel.fs_id))
       AND rel.fs_type = 'File'
       AND end_node.sensitive_data = 1
 )

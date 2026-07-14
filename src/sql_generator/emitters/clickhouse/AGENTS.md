@@ -218,14 +218,31 @@ generate_cte() → Cte
 - `type_column.is_some()` — Polymorphic: add WHERE type_column = 'REL_TYPE'
 - `is_heterogeneous_polymorphic_path()` — Two CTEs for different intermediate types
 
-**Edge uniqueness**: Uses `path_edges` array with `NOT has()` check. Edge ID can be:
+**Cycle detection — uniqueness axis (issue #598, part 2)**:
+The **standard single-type DIRECTED range VLP** enforces Cypher's default
+RELATIONSHIP-uniqueness (a path MAY revisit a node but must not reuse the same
+edge) via a `path_edges` array with a `NOT has(vp.path_edges, <edge>)` check
+(`emit_edge_cycle_check`, gated by `uses_edge_uniqueness()` in
+`variable_length_cte.rs`). Edge identity:
 - Default: `tuple(from_id, to_id)` when no edge_id configured
-- Single: `rel.edge_id_column`
+- Single: `rel.edge_id_column` (bare, no tuple wrapper)
 - Composite: `tuple(rel.col1, rel.col2, ...)`
 
+NODE-uniqueness (`NOT has(vp.path_nodes, end_id)`, `emit_cycle_check`) is still
+used — deliberately — for **shortestPath** (revisiting a node can never shorten
+a path), **zero-hop** `*0..N` base cases (the base row has no edge to seed
+`path_edges`), and the **non-standard strategy generators** (FK-edge,
+denormalized, mixed, heterogeneous-polymorphic, weighted, and
+`multi_type_vlp_joins.rs`). Migrating those to edge-uniqueness is tracked as a
+follow-up. Edge-uniqueness keeps unbounded (`*n..`) recursion finite (each edge
+is used at most once, capped by `max_hops`).
+
 **Path tracking arrays**:
-- `path_nodes` — Array of visited node IDs (for cycle prevention)
-- `path_edges` — Array of edge tuples (for edge uniqueness)
+- `path_nodes` — Array of visited node IDs (always projected; drives `nodes(p)`
+  and node-uniqueness cycle detection where used)
+- `path_edges` — Array of edge tuples for relationship-uniqueness; projected on
+  the standard directed range VLP arms (base, recursive, and carried through the
+  min-hops `_inner` wrapper via `SELECT *`). NOT part of the `RETURN p` path tuple.
 - `path_relationships` — Array of relationship type strings
 - `hop_count` — Integer counter
 
