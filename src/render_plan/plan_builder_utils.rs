@@ -5847,6 +5847,392 @@ fn show_with_structure(plan: &LogicalPlan, indent: usize) {
     }
 }
 
+fn collect_analyzer_cte_names(plan: &LogicalPlan, names: &mut std::collections::HashSet<String>) {
+    match plan {
+        LogicalPlan::WithClause(wc) => {
+            for cte_name in wc.cte_references.values() {
+                names.insert(cte_name.clone());
+            }
+            collect_analyzer_cte_names(&wc.input, names);
+        }
+        LogicalPlan::Projection(proj) => collect_analyzer_cte_names(&proj.input, names),
+        LogicalPlan::Filter(f) => collect_analyzer_cte_names(&f.input, names),
+        LogicalPlan::GroupBy(gb) => collect_analyzer_cte_names(&gb.input, names),
+        LogicalPlan::OrderBy(ob) => collect_analyzer_cte_names(&ob.input, names),
+        LogicalPlan::Limit(lim) => collect_analyzer_cte_names(&lim.input, names),
+        LogicalPlan::Skip(skip) => collect_analyzer_cte_names(&skip.input, names),
+        LogicalPlan::Union(u) => {
+            for input in &u.inputs {
+                collect_analyzer_cte_names(input, names);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Check if a plan is a CTE reference (ViewScan or GraphNode wrapping ViewScan with table starting with "with_")
+fn is_cte_reference(plan: &LogicalPlan) -> Option<String> {
+    match plan {
+        LogicalPlan::ViewScan(vs) if vs.source_table.starts_with("with_") => {
+            Some(vs.source_table.clone())
+        }
+        LogicalPlan::GraphNode(gn) => {
+            if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                if vs.source_table.starts_with("with_") {
+                    return Some(vs.source_table.clone());
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn resolve_denormalized_property_in_expr(expr: &mut RenderExpr, plan: &LogicalPlan) {
+    match expr {
+        RenderExpr::PropertyAccessExp(prop) => {
+            if let Ok((properties, Some(edge_alias))) =
+                plan.get_properties_with_table_alias(&prop.table_alias.0)
+            {
+                {
+                    // This is a denormalized node — resolve both alias and property.
+                    // The properties list is (cypher_name, db_column) pairs
+                    // from from_node_properties or to_node_properties,
+                    // correctly distinguishing Origin* vs Dest* columns.
+                    let current_col = prop.column.raw().to_string();
+
+                    // Match by Cypher property name first (before schema rewriting),
+                    // then by DB column name (after schema rewriting).
+                    // This handles both pre- and post-rewritten expressions.
+                    let mapped_column = properties
+                                                .iter()
+                                                .find(|(prop_name, _)| *prop_name == current_col)
+                                                .map(|(_, col)| col.clone())
+                                                .or_else(|| {
+                                                    // The column may have been rewritten by schema mapping
+                                                    // to a DB column (e.g., city → OriginCityName).
+                                                    // Check if current_col matches any DB column in our
+                                                    // properties list (correct side).
+                                                    if properties.iter().any(|(_, col)| *col == current_col) {
+                                                        Some(current_col.clone())
+                                                    } else {
+                                                        // Schema mapped to wrong side's column (e.g., b.city
+                                                        // became b.OriginCityName but should be DestCityName).
+                                                        // Reverse-lookup: find the Cypher property that maps
+                                                        // to current_col using from/to_properties on the
+                                                        // node schema, then map through our properties list.
+                                                        // Scoped to the alias's node label to avoid false matches.
+                                                        use crate::query_planner::logical_expr::expression_rewriter::find_label_for_alias_in_plan;
+                                                        use crate::server::query_context::get_current_schema_with_fallback;
+                                                        let node_label = find_label_for_alias_in_plan(plan, &prop.table_alias.0);
+                                                        if let (Some(label), Some(schema)) = (node_label, get_current_schema_with_fallback()) {
+                                                            if let Some(node_schema) = schema.all_node_schemas().get(&label) {
+                                                                // Check from_properties (sorted: HashMap iteration
+                                                                // order is per-process random — #480 class)
+                                                                if let Some(from_props) = &node_schema.from_properties {
+                                                                    let mut from_props: Vec<_> = from_props.iter().collect();
+                                                                    from_props.sort_by(|a, b| a.0.cmp(b.0));
+                                                                    for (cypher_name, db_col) in from_props {
+                                                                        if *db_col == current_col {
+                                                                            if let Some((_, correct_col)) = properties
+                                                                                .iter()
+                                                                                .find(|(pn, _)| pn == cypher_name)
+                                                                            {
+                                                                                log::info!(
+                                                                                    "🔧 Denormalized cross-side fix: '{}.{}' (from '{}') → '{}.{}'",
+                                                                                    prop.table_alias.0, current_col,
+                                                                                    cypher_name, edge_alias, correct_col
+                                                                                );
+                                                                                return Some(correct_col.clone());
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                                // Check to_properties (sorted — see above)
+                                                                if let Some(to_props) = &node_schema.to_properties {
+                                                                    let mut to_props: Vec<_> = to_props.iter().collect();
+                                                                    to_props.sort_by(|a, b| a.0.cmp(b.0));
+                                                                    for (cypher_name, db_col) in to_props {
+                                                                        if *db_col == current_col {
+                                                                            if let Some((_, correct_col)) = properties
+                                                                                .iter()
+                                                                                .find(|(pn, _)| pn == cypher_name)
+                                                                            {
+                                                                                log::info!(
+                                                                                    "🔧 Denormalized cross-side fix: '{}.{}' (from '{}') → '{}.{}'",
+                                                                                    prop.table_alias.0, current_col,
+                                                                                    cypher_name, edge_alias, correct_col
+                                                                                );
+                                                                                return Some(correct_col.clone());
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        None
+                                                    }
+                                                });
+
+                    if let Some(actual_column) = mapped_column {
+                        if edge_alias != prop.table_alias.0 || actual_column != current_col {
+                            log::info!(
+                                "🔧 Denormalized property resolve in WITH: '{}.{}' → '{}.{}'",
+                                prop.table_alias.0,
+                                current_col,
+                                edge_alias,
+                                actual_column
+                            );
+                            prop.table_alias =
+                                crate::render_plan::render_expr::TableAlias(edge_alias);
+                            prop.column =
+                                crate::graph_catalog::expression_parser::PropertyValue::Column(
+                                    actual_column,
+                                );
+                        }
+                    } else if edge_alias != prop.table_alias.0 {
+                        // Property not in any mapping but alias needs rewriting
+                        log::info!(
+                            "🔧 Denormalized alias rewrite in WITH: '{}.{}' → '{}.{}'",
+                            prop.table_alias.0,
+                            current_col,
+                            edge_alias,
+                            current_col
+                        );
+                        prop.table_alias = crate::render_plan::render_expr::TableAlias(edge_alias);
+                    }
+                }
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in &mut agg.args {
+                resolve_denormalized_property_in_expr(arg, plan);
+            }
+        }
+        RenderExpr::ScalarFnCall(f) => {
+            for arg in &mut f.args {
+                resolve_denormalized_property_in_expr(arg, plan);
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in &mut op.operands {
+                resolve_denormalized_property_in_expr(operand, plan);
+            }
+        }
+        RenderExpr::Case(case) => {
+            if let Some(expr) = &mut case.expr {
+                resolve_denormalized_property_in_expr(expr, plan);
+            }
+            for (cond, then_expr) in &mut case.when_then {
+                resolve_denormalized_property_in_expr(cond, plan);
+                resolve_denormalized_property_in_expr(then_expr, plan);
+            }
+            if let Some(else_expr) = &mut case.else_expr {
+                resolve_denormalized_property_in_expr(else_expr, plan);
+            }
+        }
+        RenderExpr::List(items) => {
+            for item in items {
+                resolve_denormalized_property_in_expr(item, plan);
+            }
+        }
+        RenderExpr::MapLiteral(entries) => {
+            for (_, value) in entries {
+                resolve_denormalized_property_in_expr(value, plan);
+            }
+        }
+        RenderExpr::ArraySubscript { array, index } => {
+            resolve_denormalized_property_in_expr(array, plan);
+            resolve_denormalized_property_in_expr(index, plan);
+        }
+        RenderExpr::ArraySlicing { array, from, to } => {
+            resolve_denormalized_property_in_expr(array, plan);
+            if let Some(f) = from {
+                resolve_denormalized_property_in_expr(f, plan);
+            }
+            if let Some(t) = to {
+                resolve_denormalized_property_in_expr(t, plan);
+            }
+        }
+        RenderExpr::InSubquery(insub) => {
+            resolve_denormalized_property_in_expr(&mut insub.expr, plan);
+        }
+        RenderExpr::ReduceExpr(reduce) => {
+            resolve_denormalized_property_in_expr(&mut reduce.initial_value, plan);
+            resolve_denormalized_property_in_expr(&mut reduce.list, plan);
+            resolve_denormalized_property_in_expr(&mut reduce.expression, plan);
+        }
+        _ => {}
+    }
+}
+
+fn collect_unwind_aliases(plan: &LogicalPlan, out: &mut std::collections::HashSet<String>) {
+    match plan {
+        LogicalPlan::Unwind(u) => {
+            out.insert(u.alias.clone());
+            collect_unwind_aliases(&u.input, out);
+        }
+        LogicalPlan::Filter(f) => collect_unwind_aliases(&f.input, out),
+        LogicalPlan::Projection(p) => collect_unwind_aliases(&p.input, out),
+        LogicalPlan::OrderBy(ob) => collect_unwind_aliases(&ob.input, out),
+        LogicalPlan::Limit(lim) => collect_unwind_aliases(&lim.input, out),
+        LogicalPlan::Skip(s) => collect_unwind_aliases(&s.input, out),
+        LogicalPlan::GroupBy(gb) => collect_unwind_aliases(&gb.input, out),
+        _ => {}
+    }
+}
+
+fn plan_has_denormalized_union(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::Union(u) => u.inputs.iter().any(|input| {
+            fn has_denorm_vs(p: &LogicalPlan) -> bool {
+                match p {
+                    LogicalPlan::ViewScan(vs) => {
+                        crate::graph_catalog::pattern_schema::scan_denormalized_flag(vs)
+                    }
+                    LogicalPlan::GraphNode(gn) => has_denorm_vs(gn.input.as_ref()),
+                    LogicalPlan::Filter(f) => has_denorm_vs(f.input.as_ref()),
+                    LogicalPlan::Projection(p) => has_denorm_vs(p.input.as_ref()),
+                    _ => false,
+                }
+            }
+            has_denorm_vs(input.as_ref())
+        }),
+        LogicalPlan::Filter(f) => plan_has_denormalized_union(f.input.as_ref()),
+        LogicalPlan::GraphNode(gn) => plan_has_denormalized_union(gn.input.as_ref()),
+        LogicalPlan::Projection(p) => plan_has_denormalized_union(p.input.as_ref()),
+        _ => false,
+    }
+}
+
+fn rename_branch_aliases(select: &mut SelectItems, alias: &str) {
+    use crate::utils::cte_column_naming::cte_column_name;
+    for item in &mut select.items {
+        if let Some(ref mut col_alias) = item.col_alias {
+            if col_alias.0 == "__label__" {
+                continue;
+            }
+            let new_name = cte_column_name(alias, &col_alias.0);
+            col_alias.0 = new_name;
+        }
+    }
+    select.distinct = true;
+    // Sort by alias to ensure consistent column order across
+    // UNION branches (SQL UNION maps by position, not name)
+    select.items.sort_by(|a, b| {
+        let a_alias = a.col_alias.as_ref().map(|c| c.0.as_str()).unwrap_or("");
+        let b_alias = b.col_alias.as_ref().map(|c| c.0.as_str()).unwrap_or("");
+        a_alias.cmp(b_alias)
+    });
+}
+
+/// Check if a LogicalExpr is a constant literal (no need to GROUP BY)
+fn is_literal_expr(expr: &crate::query_planner::logical_expr::LogicalExpr) -> bool {
+    matches!(
+        expr,
+        crate::query_planner::logical_expr::LogicalExpr::Literal(_)
+    )
+}
+
+fn rewrite_person_to_fk(expr: &mut RenderExpr, person_alias: &str, rel_alias: &str, fk_col: &str) {
+    match expr {
+        RenderExpr::PropertyAccessExp(pa) if pa.table_alias.0 == person_alias => {
+            pa.table_alias = TableAlias(rel_alias.to_string());
+            pa.column = PropertyValue::Column(fk_col.to_string());
+        }
+        RenderExpr::TableAlias(ta) if ta.0 == person_alias => {
+            *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(rel_alias.to_string()),
+                column: PropertyValue::Column(fk_col.to_string()),
+            });
+        }
+        RenderExpr::ColumnAlias(ca) if ca.0 == person_alias => {
+            *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
+                table_alias: TableAlias(rel_alias.to_string()),
+                column: PropertyValue::Column(fk_col.to_string()),
+            });
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in agg.args.iter_mut() {
+                rewrite_person_to_fk(arg, person_alias, rel_alias, fk_col);
+            }
+        }
+        RenderExpr::ScalarFnCall(f) => {
+            for arg in f.args.iter_mut() {
+                rewrite_person_to_fk(arg, person_alias, rel_alias, fk_col);
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in op.operands.iter_mut() {
+                rewrite_person_to_fk(operand, person_alias, rel_alias, fk_col);
+            }
+        }
+        RenderExpr::List(items) => {
+            for item in items.iter_mut() {
+                rewrite_person_to_fk(item, person_alias, rel_alias, fk_col);
+            }
+        }
+        // The Databricks count→conditional rewrite wraps the
+        // moved predicate in `count(CASE WHEN cond THEN x END)`;
+        // descend so the person ref inside `cond` is rewritten to
+        // the FK column (CH keeps it in countIf args, walked above).
+        RenderExpr::Case(case) => {
+            if let Some(e) = case.expr.as_mut() {
+                rewrite_person_to_fk(e, person_alias, rel_alias, fk_col);
+            }
+            for (when, then) in case.when_then.iter_mut() {
+                rewrite_person_to_fk(when, person_alias, rel_alias, fk_col);
+                rewrite_person_to_fk(then, person_alias, rel_alias, fk_col);
+            }
+            if let Some(e) = case.else_expr.as_mut() {
+                rewrite_person_to_fk(e, person_alias, rel_alias, fk_col);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn plan_has_shortest_path(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::GraphRel(gr) => {
+            gr.shortest_path_mode.is_some()
+                || plan_has_shortest_path(gr.left.as_ref())
+                || plan_has_shortest_path(gr.right.as_ref())
+        }
+        LogicalPlan::WithClause(wc) => plan_has_shortest_path(wc.input.as_ref()),
+        LogicalPlan::Filter(f) => plan_has_shortest_path(f.input.as_ref()),
+        LogicalPlan::Projection(p) => plan_has_shortest_path(p.input.as_ref()),
+        LogicalPlan::GraphJoins(gj) => plan_has_shortest_path(gj.input.as_ref()),
+        LogicalPlan::GraphNode(gn) => plan_has_shortest_path(gn.input.as_ref()),
+        LogicalPlan::GroupBy(gb) => plan_has_shortest_path(gb.input.as_ref()),
+        LogicalPlan::OrderBy(ob) => plan_has_shortest_path(ob.input.as_ref()),
+        LogicalPlan::Skip(s) => plan_has_shortest_path(s.input.as_ref()),
+        LogicalPlan::Limit(l) => plan_has_shortest_path(l.input.as_ref()),
+        LogicalPlan::CartesianProduct(cp) => {
+            plan_has_shortest_path(cp.left.as_ref()) || plan_has_shortest_path(cp.right.as_ref())
+        }
+        LogicalPlan::Union(u) => u.inputs.iter().any(|i| plan_has_shortest_path(i.as_ref())),
+        _ => false,
+    }
+}
+
+fn find_unwind_aliases(plan: &LogicalPlan, out: &mut Vec<String>) {
+    match plan {
+        LogicalPlan::Unwind(u) => {
+            out.push(u.alias.clone());
+            find_unwind_aliases(&u.input, out);
+        }
+        LogicalPlan::Filter(f) => find_unwind_aliases(&f.input, out),
+        LogicalPlan::Projection(p) => find_unwind_aliases(&p.input, out),
+        LogicalPlan::OrderBy(ob) => find_unwind_aliases(&ob.input, out),
+        LogicalPlan::Limit(lim) => find_unwind_aliases(&lim.input, out),
+        LogicalPlan::Skip(s) => find_unwind_aliases(&s.input, out),
+        LogicalPlan::GroupBy(gb) => find_unwind_aliases(&gb.input, out),
+        LogicalPlan::WithClause(wc) => find_unwind_aliases(&wc.input, out),
+        _ => {}
+    }
+}
+
 pub(crate) fn build_chained_with_match_cte_plan(
     plan: &LogicalPlan,
     schema: &GraphSchema,
@@ -6019,31 +6405,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
         // CRITICAL: Collect ALL analyzer CTE names from ALL WITH clauses in the plan tree
         // This includes nested WITHs that will be collapsed later. We need to record
         // the analyzer's CTE names now so we can remap them after collapsing.
-        fn collect_analyzer_cte_names(
-            plan: &LogicalPlan,
-            names: &mut std::collections::HashSet<String>,
-        ) {
-            match plan {
-                LogicalPlan::WithClause(wc) => {
-                    for cte_name in wc.cte_references.values() {
-                        names.insert(cte_name.clone());
-                    }
-                    collect_analyzer_cte_names(&wc.input, names);
-                }
-                LogicalPlan::Projection(proj) => collect_analyzer_cte_names(&proj.input, names),
-                LogicalPlan::Filter(f) => collect_analyzer_cte_names(&f.input, names),
-                LogicalPlan::GroupBy(gb) => collect_analyzer_cte_names(&gb.input, names),
-                LogicalPlan::OrderBy(ob) => collect_analyzer_cte_names(&ob.input, names),
-                LogicalPlan::Limit(lim) => collect_analyzer_cte_names(&lim.input, names),
-                LogicalPlan::Skip(skip) => collect_analyzer_cte_names(&skip.input, names),
-                LogicalPlan::Union(u) => {
-                    for input in &u.inputs {
-                        collect_analyzer_cte_names(input, names);
-                    }
-                }
-                _ => {}
-            }
-        }
 
         let mut all_analyzer_cte_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
@@ -6219,24 +6580,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 "🔧 build_chained_with_match_cte_plan: Pre-WITH aliases to filter: {:?}",
                 pre_with_aliases
             );
-
-            /// Check if a plan is a CTE reference (ViewScan or GraphNode wrapping ViewScan with table starting with "with_")
-            fn is_cte_reference(plan: &LogicalPlan) -> Option<String> {
-                match plan {
-                    LogicalPlan::ViewScan(vs) if vs.source_table.starts_with("with_") => {
-                        Some(vs.source_table.clone())
-                    }
-                    LogicalPlan::GraphNode(gn) => {
-                        if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
-                            if vs.source_table.starts_with("with_") {
-                                return Some(vs.source_table.clone());
-                            }
-                        }
-                        None
-                    }
-                    _ => None,
-                }
-            }
 
             // Render each WITH clause plan
             let mut rendered_plans: Vec<RenderPlan> = Vec::new();
@@ -6989,195 +7332,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         // - separate alias rewriting (table aliases)
                         // Both aspects are now handled here using the plan's
                         // get_properties_with_table_alias(), which knows the from/to position.
-                        fn resolve_denormalized_property_in_expr(
-                            expr: &mut RenderExpr,
-                            plan: &LogicalPlan,
-                        ) {
-                            match expr {
-                                RenderExpr::PropertyAccessExp(prop) => {
-                                    if let Ok((properties, Some(edge_alias))) =
-                                        plan.get_properties_with_table_alias(&prop.table_alias.0)
-                                    {
-                                        {
-                                            // This is a denormalized node — resolve both alias and property.
-                                            // The properties list is (cypher_name, db_column) pairs
-                                            // from from_node_properties or to_node_properties,
-                                            // correctly distinguishing Origin* vs Dest* columns.
-                                            let current_col = prop.column.raw().to_string();
-
-                                            // Match by Cypher property name first (before schema rewriting),
-                                            // then by DB column name (after schema rewriting).
-                                            // This handles both pre- and post-rewritten expressions.
-                                            let mapped_column = properties
-                                                .iter()
-                                                .find(|(prop_name, _)| *prop_name == current_col)
-                                                .map(|(_, col)| col.clone())
-                                                .or_else(|| {
-                                                    // The column may have been rewritten by schema mapping
-                                                    // to a DB column (e.g., city → OriginCityName).
-                                                    // Check if current_col matches any DB column in our
-                                                    // properties list (correct side).
-                                                    if properties.iter().any(|(_, col)| *col == current_col) {
-                                                        Some(current_col.clone())
-                                                    } else {
-                                                        // Schema mapped to wrong side's column (e.g., b.city
-                                                        // became b.OriginCityName but should be DestCityName).
-                                                        // Reverse-lookup: find the Cypher property that maps
-                                                        // to current_col using from/to_properties on the
-                                                        // node schema, then map through our properties list.
-                                                        // Scoped to the alias's node label to avoid false matches.
-                                                        use crate::query_planner::logical_expr::expression_rewriter::find_label_for_alias_in_plan;
-                                                        use crate::server::query_context::get_current_schema_with_fallback;
-                                                        let node_label = find_label_for_alias_in_plan(plan, &prop.table_alias.0);
-                                                        if let (Some(label), Some(schema)) = (node_label, get_current_schema_with_fallback()) {
-                                                            if let Some(node_schema) = schema.all_node_schemas().get(&label) {
-                                                                // Check from_properties (sorted: HashMap iteration
-                                                                // order is per-process random — #480 class)
-                                                                if let Some(from_props) = &node_schema.from_properties {
-                                                                    let mut from_props: Vec<_> = from_props.iter().collect();
-                                                                    from_props.sort_by(|a, b| a.0.cmp(b.0));
-                                                                    for (cypher_name, db_col) in from_props {
-                                                                        if *db_col == current_col {
-                                                                            if let Some((_, correct_col)) = properties
-                                                                                .iter()
-                                                                                .find(|(pn, _)| pn == cypher_name)
-                                                                            {
-                                                                                log::info!(
-                                                                                    "🔧 Denormalized cross-side fix: '{}.{}' (from '{}') → '{}.{}'",
-                                                                                    prop.table_alias.0, current_col,
-                                                                                    cypher_name, edge_alias, correct_col
-                                                                                );
-                                                                                return Some(correct_col.clone());
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                                // Check to_properties (sorted — see above)
-                                                                if let Some(to_props) = &node_schema.to_properties {
-                                                                    let mut to_props: Vec<_> = to_props.iter().collect();
-                                                                    to_props.sort_by(|a, b| a.0.cmp(b.0));
-                                                                    for (cypher_name, db_col) in to_props {
-                                                                        if *db_col == current_col {
-                                                                            if let Some((_, correct_col)) = properties
-                                                                                .iter()
-                                                                                .find(|(pn, _)| pn == cypher_name)
-                                                                            {
-                                                                                log::info!(
-                                                                                    "🔧 Denormalized cross-side fix: '{}.{}' (from '{}') → '{}.{}'",
-                                                                                    prop.table_alias.0, current_col,
-                                                                                    cypher_name, edge_alias, correct_col
-                                                                                );
-                                                                                return Some(correct_col.clone());
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                        None
-                                                    }
-                                                });
-
-                                            if let Some(actual_column) = mapped_column {
-                                                if edge_alias != prop.table_alias.0
-                                                    || actual_column != current_col
-                                                {
-                                                    log::info!(
-                                                        "🔧 Denormalized property resolve in WITH: '{}.{}' → '{}.{}'",
-                                                        prop.table_alias.0, current_col,
-                                                        edge_alias, actual_column
-                                                    );
-                                                    prop.table_alias =
-                                                        crate::render_plan::render_expr::TableAlias(
-                                                            edge_alias,
-                                                        );
-                                                    prop.column =
-                                                        crate::graph_catalog::expression_parser::PropertyValue::Column(
-                                                            actual_column,
-                                                        );
-                                                }
-                                            } else if edge_alias != prop.table_alias.0 {
-                                                // Property not in any mapping but alias needs rewriting
-                                                log::info!(
-                                                    "🔧 Denormalized alias rewrite in WITH: '{}.{}' → '{}.{}'",
-                                                    prop.table_alias.0, current_col,
-                                                    edge_alias, current_col
-                                                );
-                                                prop.table_alias =
-                                                    crate::render_plan::render_expr::TableAlias(
-                                                        edge_alias,
-                                                    );
-                                            }
-                                        }
-                                    }
-                                }
-                                RenderExpr::AggregateFnCall(agg) => {
-                                    for arg in &mut agg.args {
-                                        resolve_denormalized_property_in_expr(arg, plan);
-                                    }
-                                }
-                                RenderExpr::ScalarFnCall(f) => {
-                                    for arg in &mut f.args {
-                                        resolve_denormalized_property_in_expr(arg, plan);
-                                    }
-                                }
-                                RenderExpr::OperatorApplicationExp(op) => {
-                                    for operand in &mut op.operands {
-                                        resolve_denormalized_property_in_expr(operand, plan);
-                                    }
-                                }
-                                RenderExpr::Case(case) => {
-                                    if let Some(expr) = &mut case.expr {
-                                        resolve_denormalized_property_in_expr(expr, plan);
-                                    }
-                                    for (cond, then_expr) in &mut case.when_then {
-                                        resolve_denormalized_property_in_expr(cond, plan);
-                                        resolve_denormalized_property_in_expr(then_expr, plan);
-                                    }
-                                    if let Some(else_expr) = &mut case.else_expr {
-                                        resolve_denormalized_property_in_expr(else_expr, plan);
-                                    }
-                                }
-                                RenderExpr::List(items) => {
-                                    for item in items {
-                                        resolve_denormalized_property_in_expr(item, plan);
-                                    }
-                                }
-                                RenderExpr::MapLiteral(entries) => {
-                                    for (_, value) in entries {
-                                        resolve_denormalized_property_in_expr(value, plan);
-                                    }
-                                }
-                                RenderExpr::ArraySubscript { array, index } => {
-                                    resolve_denormalized_property_in_expr(array, plan);
-                                    resolve_denormalized_property_in_expr(index, plan);
-                                }
-                                RenderExpr::ArraySlicing { array, from, to } => {
-                                    resolve_denormalized_property_in_expr(array, plan);
-                                    if let Some(f) = from {
-                                        resolve_denormalized_property_in_expr(f, plan);
-                                    }
-                                    if let Some(t) = to {
-                                        resolve_denormalized_property_in_expr(t, plan);
-                                    }
-                                }
-                                RenderExpr::InSubquery(insub) => {
-                                    resolve_denormalized_property_in_expr(&mut insub.expr, plan);
-                                }
-                                RenderExpr::ReduceExpr(reduce) => {
-                                    resolve_denormalized_property_in_expr(
-                                        &mut reduce.initial_value,
-                                        plan,
-                                    );
-                                    resolve_denormalized_property_in_expr(&mut reduce.list, plan);
-                                    resolve_denormalized_property_in_expr(
-                                        &mut reduce.expression,
-                                        plan,
-                                    );
-                                }
-                                _ => {}
-                            }
-                        }
 
                         // Extract ALL UNWIND aliases from plan — UNWIND aliases are simple
                         // ARRAY JOIN column references, not table aliases to expand.
@@ -7192,24 +7346,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
                         // columns and must NOT be re-emitted as bare columns. The similar
                         // `find_unwind_aliases` helper below DOES cross the barrier on purpose
                         // (for ID-column detection), so the two are not interchangeable.
-                        fn collect_unwind_aliases(
-                            plan: &LogicalPlan,
-                            out: &mut std::collections::HashSet<String>,
-                        ) {
-                            match plan {
-                                LogicalPlan::Unwind(u) => {
-                                    out.insert(u.alias.clone());
-                                    collect_unwind_aliases(&u.input, out);
-                                }
-                                LogicalPlan::Filter(f) => collect_unwind_aliases(&f.input, out),
-                                LogicalPlan::Projection(p) => collect_unwind_aliases(&p.input, out),
-                                LogicalPlan::OrderBy(ob) => collect_unwind_aliases(&ob.input, out),
-                                LogicalPlan::Limit(lim) => collect_unwind_aliases(&lim.input, out),
-                                LogicalPlan::Skip(s) => collect_unwind_aliases(&s.input, out),
-                                LogicalPlan::GroupBy(gb) => collect_unwind_aliases(&gb.input, out),
-                                _ => {}
-                            }
-                        }
                         let mut unwind_aliases = std::collections::HashSet::new();
                         collect_unwind_aliases(plan_to_render, &mut unwind_aliases);
 
@@ -7413,40 +7549,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             // correct column resolution (origin_code vs dest_code). We must NOT
                             // overwrite them with a flat projection from one branch only.
                             // Instead, rename aliases in each branch: "code" → "a_code".
-                            fn plan_has_denormalized_union(plan: &LogicalPlan) -> bool {
-                                match plan {
-                                    LogicalPlan::Union(u) => u.inputs.iter().any(|input| {
-                                        fn has_denorm_vs(p: &LogicalPlan) -> bool {
-                                            match p {
-                                                LogicalPlan::ViewScan(vs) => {
-                                                    crate::graph_catalog::pattern_schema::scan_denormalized_flag(vs)
-                                                }
-                                                LogicalPlan::GraphNode(gn) => {
-                                                    has_denorm_vs(gn.input.as_ref())
-                                                }
-                                                LogicalPlan::Filter(f) => {
-                                                    has_denorm_vs(f.input.as_ref())
-                                                }
-                                                LogicalPlan::Projection(p) => {
-                                                    has_denorm_vs(p.input.as_ref())
-                                                }
-                                                _ => false,
-                                            }
-                                        }
-                                        has_denorm_vs(input.as_ref())
-                                    }),
-                                    LogicalPlan::Filter(f) => {
-                                        plan_has_denormalized_union(f.input.as_ref())
-                                    }
-                                    LogicalPlan::GraphNode(gn) => {
-                                        plan_has_denormalized_union(gn.input.as_ref())
-                                    }
-                                    LogicalPlan::Projection(p) => {
-                                        plan_has_denormalized_union(p.input.as_ref())
-                                    }
-                                    _ => false,
-                                }
-                            }
                             let is_denorm_union = plan_has_denormalized_union(plan_to_render)
                                 && rendered.union.0.is_some();
 
@@ -7472,35 +7574,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                         _ => None,
                                     })
                                     .unwrap_or_else(|| with_alias.clone());
-
-                                fn rename_branch_aliases(select: &mut SelectItems, alias: &str) {
-                                    use crate::utils::cte_column_naming::cte_column_name;
-                                    for item in &mut select.items {
-                                        if let Some(ref mut col_alias) = item.col_alias {
-                                            if col_alias.0 == "__label__" {
-                                                continue;
-                                            }
-                                            let new_name = cte_column_name(alias, &col_alias.0);
-                                            col_alias.0 = new_name;
-                                        }
-                                    }
-                                    select.distinct = true;
-                                    // Sort by alias to ensure consistent column order across
-                                    // UNION branches (SQL UNION maps by position, not name)
-                                    select.items.sort_by(|a, b| {
-                                        let a_alias = a
-                                            .col_alias
-                                            .as_ref()
-                                            .map(|c| c.0.as_str())
-                                            .unwrap_or("");
-                                        let b_alias = b
-                                            .col_alias
-                                            .as_ref()
-                                            .map(|c| c.0.as_str())
-                                            .unwrap_or("");
-                                        a_alias.cmp(b_alias)
-                                    });
-                                }
 
                                 // Build first branch RenderPlan from the parent plan's fields
                                 let mut first_branch = RenderPlan {
@@ -7746,16 +7819,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
                             // 2. ANY() picks the single value in each group (safe for PK)
                             // 3. GROUP BY 1 column is much faster than GROUP BY 7 columns
                             if has_aggregation {
-                                /// Check if a LogicalExpr is a constant literal (no need to GROUP BY)
-                                fn is_literal_expr(
-                                    expr: &crate::query_planner::logical_expr::LogicalExpr,
-                                ) -> bool {
-                                    matches!(
-                                        expr,
-                                        crate::query_planner::logical_expr::LogicalExpr::Literal(_)
-                                    )
-                                }
-
                                 /// Check if a LogicalExpr contains an aggregate function (recursively)
                                 fn contains_aggregate(
                                     expr: &crate::query_planner::logical_expr::LogicalExpr,
@@ -9704,140 +9767,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                                         }
                                                         // Also rewrite person alias references in SELECT items
                                                         // (e.g., inside countIf args where the WHERE filter was moved)
-                                                        fn rewrite_person_to_fk(
-                                                            expr: &mut RenderExpr,
-                                                            person_alias: &str,
-                                                            rel_alias: &str,
-                                                            fk_col: &str,
-                                                        )
-                                                        {
-                                                            match expr {
-                                                            RenderExpr::PropertyAccessExp(pa)
-                                                                if pa.table_alias.0
-                                                                    == person_alias =>
-                                                            {
-                                                                pa.table_alias = TableAlias(
-                                                                    rel_alias.to_string(),
-                                                                );
-                                                                pa.column = PropertyValue::Column(
-                                                                    fk_col.to_string(),
-                                                                );
-                                                            }
-                                                            RenderExpr::TableAlias(ta)
-                                                                if ta.0 == person_alias =>
-                                                            {
-                                                                *expr = RenderExpr::PropertyAccessExp(
-                                                                    PropertyAccess {
-                                                                        table_alias: TableAlias(
-                                                                            rel_alias.to_string(),
-                                                                        ),
-                                                                        column: PropertyValue::Column(
-                                                                            fk_col.to_string(),
-                                                                        ),
-                                                                    },
-                                                                );
-                                                            }
-                                                            RenderExpr::ColumnAlias(ca)
-                                                                if ca.0 == person_alias =>
-                                                            {
-                                                                *expr = RenderExpr::PropertyAccessExp(
-                                                                    PropertyAccess {
-                                                                        table_alias: TableAlias(
-                                                                            rel_alias.to_string(),
-                                                                        ),
-                                                                        column: PropertyValue::Column(
-                                                                            fk_col.to_string(),
-                                                                        ),
-                                                                    },
-                                                                );
-                                                            }
-                                                            RenderExpr::AggregateFnCall(agg) => {
-                                                                for arg in agg.args.iter_mut() {
-                                                                    rewrite_person_to_fk(
-                                                                        arg,
-                                                                        person_alias,
-                                                                        rel_alias,
-                                                                        fk_col,
-                                                                    );
-                                                                }
-                                                            }
-                                                            RenderExpr::ScalarFnCall(f) => {
-                                                                for arg in f.args.iter_mut() {
-                                                                    rewrite_person_to_fk(
-                                                                        arg,
-                                                                        person_alias,
-                                                                        rel_alias,
-                                                                        fk_col,
-                                                                    );
-                                                                }
-                                                            }
-                                                            RenderExpr::OperatorApplicationExp(
-                                                                op,
-                                                            ) => {
-                                                                for operand in
-                                                                    op.operands.iter_mut()
-                                                                {
-                                                                    rewrite_person_to_fk(
-                                                                        operand,
-                                                                        person_alias,
-                                                                        rel_alias,
-                                                                        fk_col,
-                                                                    );
-                                                                }
-                                                            }
-                                                            RenderExpr::List(items) => {
-                                                                for item in items.iter_mut() {
-                                                                    rewrite_person_to_fk(
-                                                                        item,
-                                                                        person_alias,
-                                                                        rel_alias,
-                                                                        fk_col,
-                                                                    );
-                                                                }
-                                                            }
-                                                            // The Databricks count→conditional rewrite wraps the
-                                                            // moved predicate in `count(CASE WHEN cond THEN x END)`;
-                                                            // descend so the person ref inside `cond` is rewritten to
-                                                            // the FK column (CH keeps it in countIf args, walked above).
-                                                            RenderExpr::Case(case) => {
-                                                                if let Some(e) = case.expr.as_mut() {
-                                                                    rewrite_person_to_fk(
-                                                                        e,
-                                                                        person_alias,
-                                                                        rel_alias,
-                                                                        fk_col,
-                                                                    );
-                                                                }
-                                                                for (when, then) in
-                                                                    case.when_then.iter_mut()
-                                                                {
-                                                                    rewrite_person_to_fk(
-                                                                        when,
-                                                                        person_alias,
-                                                                        rel_alias,
-                                                                        fk_col,
-                                                                    );
-                                                                    rewrite_person_to_fk(
-                                                                        then,
-                                                                        person_alias,
-                                                                        rel_alias,
-                                                                        fk_col,
-                                                                    );
-                                                                }
-                                                                if let Some(e) =
-                                                                    case.else_expr.as_mut()
-                                                                {
-                                                                    rewrite_person_to_fk(
-                                                                        e,
-                                                                        person_alias,
-                                                                        rel_alias,
-                                                                        fk_col,
-                                                                    );
-                                                                }
-                                                            }
-                                                            _ => {}
-                                                        }
-                                                        }
                                                         for item in
                                                             with_cte_render.select.items.iter_mut()
                                                         {
@@ -10090,32 +10019,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
             // A weight CTE has exactly 3 exported aliases: source, target, weight
             // AND the query must contain a shortestPath() call downstream to avoid
             // false positives on unrelated queries that happen to use these alias names.
-            fn plan_has_shortest_path(plan: &LogicalPlan) -> bool {
-                match plan {
-                    LogicalPlan::GraphRel(gr) => {
-                        gr.shortest_path_mode.is_some()
-                            || plan_has_shortest_path(gr.left.as_ref())
-                            || plan_has_shortest_path(gr.right.as_ref())
-                    }
-                    LogicalPlan::WithClause(wc) => plan_has_shortest_path(wc.input.as_ref()),
-                    LogicalPlan::Filter(f) => plan_has_shortest_path(f.input.as_ref()),
-                    LogicalPlan::Projection(p) => plan_has_shortest_path(p.input.as_ref()),
-                    LogicalPlan::GraphJoins(gj) => plan_has_shortest_path(gj.input.as_ref()),
-                    LogicalPlan::GraphNode(gn) => plan_has_shortest_path(gn.input.as_ref()),
-                    LogicalPlan::GroupBy(gb) => plan_has_shortest_path(gb.input.as_ref()),
-                    LogicalPlan::OrderBy(ob) => plan_has_shortest_path(ob.input.as_ref()),
-                    LogicalPlan::Skip(s) => plan_has_shortest_path(s.input.as_ref()),
-                    LogicalPlan::Limit(l) => plan_has_shortest_path(l.input.as_ref()),
-                    LogicalPlan::CartesianProduct(cp) => {
-                        plan_has_shortest_path(cp.left.as_ref())
-                            || plan_has_shortest_path(cp.right.as_ref())
-                    }
-                    LogicalPlan::Union(u) => {
-                        u.inputs.iter().any(|i| plan_has_shortest_path(i.as_ref()))
-                    }
-                    _ => false,
-                }
-            }
             if original_exported_aliases.len() == 3
                 && original_exported_aliases.contains(&"source".to_string())
                 && original_exported_aliases.contains(&"target".to_string())
@@ -10255,22 +10158,6 @@ pub(crate) fn build_chained_with_match_cte_plan(
                 // Priority 3: ARRAY JOIN scalar detection.
                 // If the plan has an Unwind node producing this alias (e.g., UNWIND ... AS person),
                 // the alias IS the ID value (a scalar from ARRAY JOIN).
-                fn find_unwind_aliases(plan: &LogicalPlan, out: &mut Vec<String>) {
-                    match plan {
-                        LogicalPlan::Unwind(u) => {
-                            out.push(u.alias.clone());
-                            find_unwind_aliases(&u.input, out);
-                        }
-                        LogicalPlan::Filter(f) => find_unwind_aliases(&f.input, out),
-                        LogicalPlan::Projection(p) => find_unwind_aliases(&p.input, out),
-                        LogicalPlan::OrderBy(ob) => find_unwind_aliases(&ob.input, out),
-                        LogicalPlan::Limit(lim) => find_unwind_aliases(&lim.input, out),
-                        LogicalPlan::Skip(s) => find_unwind_aliases(&s.input, out),
-                        LogicalPlan::GroupBy(gb) => find_unwind_aliases(&gb.input, out),
-                        LogicalPlan::WithClause(wc) => find_unwind_aliases(&wc.input, out),
-                        _ => {}
-                    }
-                }
                 let mut unwind_aliases = Vec::new();
                 // Check all plans that contributed to this CTE
                 for ip in &inner_plans_for_id {
