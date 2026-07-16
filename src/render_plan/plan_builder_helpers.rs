@@ -4568,8 +4568,17 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
             // so their predicates MUST be included in the outer WHERE clause.
             if gr.variable_length.is_some() {
                 let uses_cte = if let Some(ref spec) = gr.variable_length {
-                    let is_fixed_length =
-                        spec.exact_hop_count().is_some() && gr.shortest_path_mode.is_none();
+                    // #603: a DIRECTED OPTIONAL exact VLP is rerouted to the
+                    // recursive CTE, so its predicates live INSIDE the CTE — they
+                    // must NOT be re-collected into the outer WHERE (doing so
+                    // emitted a spurious `t.end_id …` conjunct with the wrong
+                    // fallback alias → Code 47). Mirror the flat-vs-CTE decision
+                    // used everywhere else via the shared helper.
+                    let is_fixed_length = spec.exact_hop_count().is_some()
+                        && gr.shortest_path_mode.is_none()
+                        && !crate::render_plan::from_builder::optional_directed_exact_vlp_uses_cte(
+                            gr,
+                        );
                     !is_fixed_length
                 } else {
                     true

@@ -1011,8 +1011,16 @@ impl JoinBuilder for LogicalPlan {
                     if let Some(vlp_ctx) = build_vlp_context(graph_rel, schema) {
                         // Denormalized VLP uses recursive CTE (not chained JOINs).
                         // The CTE handles aliasing and hop-count filtering internally.
+                        // #603: a DIRECTED OPTIONAL fixed-length VLP also uses the
+                        // recursive CTE (the analyzer already emitted the LEFT JOIN
+                        // anchor→CTE in graph_joins.joins); expanding flat r1..rN
+                        // here would both drop that LEFT JOIN and render INNER,
+                        // silently dropping preserved anchor rows. Leave the
+                        // analyzer's joins intact. (Undirected optional exact stays
+                        // on the flat path — see optional_directed_exact_vlp_uses_cte.)
                         if vlp_ctx.is_fixed_length
                             && vlp_ctx.schema_type != VlpSchemaType::Denormalized
+                            && !super::from_builder::optional_directed_exact_vlp_uses_cte(graph_rel)
                         {
                             let exact_hops = vlp_ctx.exact_hops.unwrap_or(1);
                             if exact_hops > 1 {
@@ -1637,16 +1645,16 @@ impl JoinBuilder for LogicalPlan {
 
                     // 🔧 FIX: OPTIONAL VLP with recursive CTE - GraphJoinInference already
                     // created LEFT JOIN to VLP CTE. Don't create duplicate relationship table
-                    // join here. Only applies to CTE path (non-fixed-length), not chained
-                    // JOINs for fixed-length patterns like *2 which need expand_fixed_length_joins.
+                    // join here. #603: this also covers DIRECTED fixed-length OPTIONAL VLP,
+                    // which now routes through the recursive CTE (not the flat r1..rN chained
+                    // self-join). Undirected optional exact stays on the flat path, so it must
+                    // NOT return empty here — it falls through to flat-join generation below.
                     if graph_rel.is_optional.unwrap_or(false) {
-                        let uses_cte = if let Some(ref spec) = graph_rel.variable_length {
-                            let is_fixed = spec.exact_hop_count().is_some()
-                                && graph_rel.shortest_path_mode.is_none();
-                            !is_fixed
-                        } else {
-                            false
-                        };
+                        let is_fixed_exact = graph_rel.variable_length.as_ref().is_some_and(|s| {
+                            s.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none()
+                        });
+                        let uses_cte = (graph_rel.variable_length.is_some() && !is_fixed_exact)
+                            || super::from_builder::optional_directed_exact_vlp_uses_cte(graph_rel);
                         if uses_cte {
                             log::info!(
                                 "OPTIONAL VLP (alias={}) - GraphJoinInference already created LEFT JOIN to CTE, returning empty joins",

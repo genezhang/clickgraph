@@ -150,7 +150,11 @@ impl FilterBuilder for LogicalPlan {
                         );
                         let is_fixed_length = spec.exact_hop_count().is_some()
                             && graph_rel.shortest_path_mode.is_none()
-                            && !is_denorm_vlp;
+                            && !is_denorm_vlp
+                            // #603: directed OPTIONAL exact VLP uses recursive CTE
+                            && !crate::render_plan::from_builder::optional_directed_exact_vlp_uses_cte(
+                                graph_rel,
+                            );
                         !is_fixed_length // CTE used if NOT fixed-length
                     } else {
                         // Shortest path always uses CTE
@@ -295,8 +299,18 @@ impl FilterBuilder for LogicalPlan {
                 // Single hop (*1) can't have cycles - no need for cycle prevention
                 if let Some(spec) = &graph_rel.variable_length {
                     if let Some(exact_hops) = spec.exact_hop_count() {
-                        // Skip cycle prevention for *1 - single hop can't cycle
-                        if exact_hops >= 2 && graph_rel.shortest_path_mode.is_none() {
+                        // Skip cycle prevention for *1 - single hop can't cycle.
+                        // #603: a DIRECTED OPTIONAL exact VLP now renders as a
+                        // recursive CTE (uniqueness lives inside the CTE); the
+                        // flat-join r1..rN aliases this guard references don't
+                        // exist there, so skip it. Undirected optional exact
+                        // stays on the flat join and still needs the guard.
+                        if exact_hops >= 2
+                            && graph_rel.shortest_path_mode.is_none()
+                            && !crate::render_plan::from_builder::optional_directed_exact_vlp_uses_cte(
+                                graph_rel,
+                            )
+                        {
                             crate::debug_println!("DEBUG: extract_filters - Adding cycle prevention for fixed-length *{}", exact_hops);
 
                             // Check if this is a denormalized pattern

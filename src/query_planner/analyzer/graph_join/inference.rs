@@ -3487,10 +3487,32 @@ impl GraphJoinInference {
     ) -> Option<bool> {
         let spec = graph_rel.variable_length.as_ref()?;
 
-        let is_fixed_length =
-            spec.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none();
-
         let is_optional = graph_rel.is_optional.unwrap_or(false);
+
+        // #603: OPTIONAL fixed-length VLP (e.g. `OPTIONAL MATCH (a)-[:R*2]->(b)`)
+        // must NOT use the flat r1..rN chained self-join — that renders as INNER
+        // joins (silently dropping preserved anchor rows) and, even if flipped to
+        // LEFT, leaks spurious partial-path NULL rows. Route it through the same
+        // recursive-CTE + LEFT-JOIN-to-anchor path as range VLP, which emits only
+        // complete paths and handles relationship-uniqueness inside the CTE. So
+        // treat an optional VLP as non-fixed-length here (mark its END endpoint).
+        //
+        // Scope: DIRECTED only, matching the #598-part-2 precedent. The
+        // undirected/bidirectional recursive CTE generator has a separate
+        // pre-existing CTE-naming defect (`vlp_b_a_inner` unresolved — already
+        // loud-broken for undirected RANGE VLP on main), so rerouting undirected
+        // exact here would merely swap its silent-wrong flat join for that loud
+        // error. Leave undirected exact on the flat path; tracked under #606.
+        let is_undirected = graph_rel.direction
+            == crate::query_planner::logical_expr::Direction::Either
+            || graph_rel.was_undirected == Some(true);
+        // A DIRECTED optional exact VLP is rerouted to the recursive CTE (so it
+        // is NOT treated as fixed-length here); everything else keeps the flat
+        // fixed-length path, including undirected optional exact.
+        let reroute_directed_optional_exact = is_optional && !is_undirected;
+        let is_fixed_length = spec.exact_hop_count().is_some()
+            && graph_rel.shortest_path_mode.is_none()
+            && !reroute_directed_optional_exact;
 
         if !is_fixed_length {
             if is_optional {

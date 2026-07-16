@@ -1477,12 +1477,42 @@ impl<'a> VariableLengthCteGenerator<'a> {
             query_body.push_str(&self.generate_base_case(1));
         }
 
-        // Recursive case: Add if we need more than just the base case
-        // Skip for shortest path self-loops (zero-hop is always the answer)
-        // Skip if max_hops == Some(0) (only zero-hop allowed)
+        // Recursive case: Add if we need more than just the base case.
+        // Skip for shortest path self-loops (zero-hop is always the answer).
+        // Skip if max_hops == Some(0) (only zero-hop allowed).
+        //
+        // The base case covers exactly ONE hop count: 0 when min_hops == 0,
+        // otherwise 1 (see the base-case branch above). Recursion is required
+        // whenever the pattern must reach a hop count BEYOND that base — i.e.
+        // when max_hops exceeds the base hop count (or is unbounded).
+        //
+        // #603: for an EXACT bound like *2..2 (min == max == 2) the old
+        // `max > min_hops` test was false, so no recursive arm was emitted and
+        // the base 1-hop rows were then all filtered out by `hop_count >= 2`,
+        // yielding an empty CTE (every optional endpoint NULL). Exact-bound VLP
+        // only started reaching this recursive generator once OPTIONAL exact
+        // VLP was routed here (previously it always used the flat self-join), so
+        // comparing against the BASE hop count (1) instead of min_hops fixes it.
+        //
+        // Scope guard: this widening applies ONLY to the non-shortestPath VLP
+        // family. shortestPath has its own exact-depth handling (BFS / ROW_NUMBER
+        // over the inner CTE) and a separate pre-existing exact-depth defect
+        // (the golden for `shortestPath(*3)` emits base-only, no recursion —
+        // tracked separately). Keep the original `max > min_hops` test there so
+        // this OPTIONAL-VLP fix does not silently alter shortestPath output.
+        let recursion_threshold = if self.shortest_path_mode.is_some() {
+            min_hops
+        } else {
+            // Non-shortestPath: recurse to reach any hop beyond the base case.
+            if min_hops == 0 {
+                0
+            } else {
+                1
+            }
+        };
         let needs_recursion = !is_shortest_self_loop
             && max_hops != Some(0)
-            && (max_hops.is_none() || max_hops.unwrap() > min_hops);
+            && (max_hops.is_none() || max_hops.unwrap() > recursion_threshold);
 
         if needs_recursion {
             // Note: UNION DISTINCT is not supported in ClickHouse recursive CTEs.
