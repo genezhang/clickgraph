@@ -3476,7 +3476,13 @@ pub fn extract_ctes_with_context(
                 let use_chained_join = spec.exact_hop_count().is_some()
                     && graph_rel.shortest_path_mode.is_none()
                     && !is_multi_type // Don't use chained JOINs for multi-type VLP
-                    && !is_denormalized_vlp; // Don't use chained JOINs for denormalized VLP
+                    && !is_denormalized_vlp // Don't use chained JOINs for denormalized VLP
+                    // #603: a DIRECTED OPTIONAL exact VLP reroutes to the
+                    // recursive CTE (undirected optional exact stays chained —
+                    // see optional_directed_exact_vlp_uses_cte).
+                    && !crate::render_plan::from_builder::optional_directed_exact_vlp_uses_cte(
+                        graph_rel,
+                    );
 
                 if use_chained_join {
                     // 🚀 OPTIMIZATION: Fixed-length, non-shortest-path → NO CTE!

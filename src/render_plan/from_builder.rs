@@ -58,8 +58,43 @@ pub(super) fn is_fixed_length_vlp(graph_rel: &GraphRel) -> bool {
             graph_rel.right.as_ref(),
             LogicalPlan::GraphNode(n) if crate::graph_catalog::pattern_schema::node_denormalized_flag(n)
         );
-        spec.exact_hop_count().is_some() && graph_rel.shortest_path_mode.is_none() && !is_denorm
+        // #603: DIRECTED OPTIONAL fixed-length VLP must NOT use the flat r1..rN
+        // chained self-join — that renders INNER (silently dropping preserved
+        // anchor rows) and, even flipped to LEFT, leaks partial-path NULL rows.
+        // It routes through the recursive CTE (LEFT JOIN anchor→CTE) instead,
+        // same as range VLP. The analyzer marks its endpoint accordingly
+        // (`should_skip_for_vlp`); every render-side flat-join gate must agree,
+        // so they all consult `optional_directed_exact_vlp_uses_cte`.
+        spec.exact_hop_count().is_some()
+            && graph_rel.shortest_path_mode.is_none()
+            && !is_denorm
+            && !optional_directed_exact_vlp_uses_cte(graph_rel)
     })
+}
+
+/// #603: single source of truth for "this OPTIONAL exact-bound VLP is rerouted
+/// from the flat r1..rN self-join to the recursive CTE (LEFT JOIN anchor→CTE)."
+///
+/// True only for a DIRECTED, optional, exact-hop (`min == max`), non-shortestPath
+/// VLP. Scoped to directed because the undirected/bidirectional recursive CTE
+/// generator has a separate pre-existing CTE-naming defect (`vlp_b_a_inner`
+/// unresolved — already loud-broken for undirected RANGE VLP on `main`);
+/// rerouting undirected exact would swap its silent-wrong flat join for that
+/// loud error, so undirected exact stays on the flat path (tracked under #606).
+///
+/// Every render-side gate that distinguishes flat-join from CTE for a VLP must
+/// consult this so the FROM, JOIN, and filter builders agree (CLAUDE.md §5).
+pub(super) fn optional_directed_exact_vlp_uses_cte(graph_rel: &GraphRel) -> bool {
+    let Some(spec) = graph_rel.variable_length.as_ref() else {
+        return false;
+    };
+    let is_undirected = graph_rel.direction
+        == crate::query_planner::logical_expr::Direction::Either
+        || graph_rel.was_undirected == Some(true);
+    graph_rel.is_optional.unwrap_or(false)
+        && spec.exact_hop_count().is_some()
+        && graph_rel.shortest_path_mode.is_none()
+        && !is_undirected
 }
 
 use super::errors::RenderBuildError;
