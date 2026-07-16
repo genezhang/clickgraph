@@ -1053,8 +1053,61 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
     /// Rewrite end node filter for use in intermediate CTEs
     /// Transforms "end_node.property" references to "end_property" column names
+    /// #607: does a standard (non-shortestPath, non-denormalized) VLP apply its
+    /// end-node WHERE filter in the OUTER wrapper CTE rather than in the base /
+    /// recursive cases?
+    ///
+    /// The base/recursive `end_node` is the node reached at THIS hop — an
+    /// intermediate node on any longer path — so filtering it there silently
+    /// drops valid paths whose FINAL endpoint satisfies the predicate (#607).
+    /// A standard VLP that can produce paths beyond hop 1 (has a recursive arm,
+    /// or min_hops forces a wrapper) must therefore defer the end filter to the
+    /// wrapper, which sees the true endpoint (`end_id`/`end_*`). This mirrors the
+    /// denormalized and shortestPath families, which already wrap.
+    ///
+    /// Returns false only when there is no wrapper to carry the filter — a pure
+    /// single-hop standard VLP with no recursion (base case IS the endpoint).
+    /// (shortestPath and denormalized have their own dedicated wrapper handling
+    /// and are excluded here; their end-filter placement is unchanged.)
+    fn end_filter_applied_in_wrapper(&self) -> bool {
+        if self.end_node_filters.is_none()
+            || self.shortest_path_mode.is_some()
+            || self.is_denormalized
+        {
+            return false;
+        }
+        // Standard VLP: the outer wrapper carries the end filter whenever the
+        // VLP can reach a hop beyond the base case (recursive arm present) or a
+        // min-hop wrapper already exists. Mirrors `needs_recursion` / the
+        // `needs_inner_cte` decision in `generate_sql`.
+        let min_hops = self.spec.effective_min_hops();
+        let max_hops = self.spec.max_hops;
+        let base_hop_count = if min_hops == 0 { 0 } else { 1 };
+        let has_recursive_arm =
+            max_hops != Some(0) && (max_hops.is_none() || max_hops.unwrap() > base_hop_count);
+        has_recursive_arm || min_hops > 1
+    }
+
+    /// #607: should the end-node WHERE filter be injected in the base AND
+    /// recursive cases (rather than the outer wrapper)?
+    ///
+    /// This preserves the ORIGINAL placement for every family except the one
+    /// #607 fixes:
+    /// - shortestPath: NO (its `_to_target` wrapper applies it — unchanged).
+    /// - denormalized: YES here as before (its wrapper re-applies it too; that
+    ///   pre-existing double-application is harmless and left untouched).
+    /// - standard multi-hop-capable VLP: NO — deferred to the wrapper
+    ///   (`end_filter_applied_in_wrapper`), the actual #607 fix.
+    /// - standard pure single-hop VLP: YES — base case IS the endpoint, no
+    ///   wrapper exists to carry the filter.
+    fn end_filter_in_base_recursive_case(&self) -> bool {
+        if self.shortest_path_mode.is_some() {
+            return false;
+        }
+        !self.end_filter_applied_in_wrapper()
+    }
+
     fn rewrite_end_filter_for_cte(&self, filter: &str) -> String {
-        // Replace end_node.{id_column} with end_id (uses VLP_END_ID_COLUMN constant)
         let mut rewritten = filter.replace(
             &format!("{}.{}", self.end_node_alias, self.end_node_id_column),
             VLP_END_ID_COLUMN,
@@ -1448,11 +1501,16 @@ impl<'a> VariableLengthCteGenerator<'a> {
         // 1. Shortest path mode (which requires post-processing)
         // 2. min_hops > 1 (base case generates hop 1, but we need to filter)
         // 3. Denormalized VLP with end_node_filters (can't filter in base case, must wrap)
+        // 4. #607: standard multi-hop-capable VLP with an end_node filter — the
+        //    filter is applied on the true endpoint in the wrapper, not on the
+        //    intermediate `end_node` of each base/recursive hop.
         let denorm_needs_end_filter_wrapper = self.is_denormalized
             && self.end_node_filters.is_some()
             && self.shortest_path_mode.is_none();
-        let needs_inner_cte =
-            self.shortest_path_mode.is_some() || min_hops > 1 || denorm_needs_end_filter_wrapper;
+        let needs_inner_cte = self.shortest_path_mode.is_some()
+            || min_hops > 1
+            || denorm_needs_end_filter_wrapper
+            || self.end_filter_applied_in_wrapper();
         let recursive_cte_name = if needs_inner_cte {
             format!("{}_inner", self.cte_name)
         } else {
@@ -1656,8 +1714,26 @@ impl<'a> VariableLengthCteGenerator<'a> {
                         self.cte_name, query_body, self.cte_name, self.cte_name, rewritten_filter, min_hops_filter
                     )
                 } else {
-                    // Standard VLP: end filters already applied in base/recursive cases
-                    if min_hops > 1 {
+                    // Standard VLP.
+                    // #607: when the VLP is multi-hop-capable, the end filter was
+                    // NOT applied in the base/recursive cases (it would prune
+                    // intermediate nodes); apply it here on the true endpoint,
+                    // rewritten to the CTE's `end_id`/`end_*` output columns, and
+                    // AND-combined with the min-hop bound.
+                    if self.end_filter_applied_in_wrapper() {
+                        let rewritten_filter = self.rewrite_end_filter_for_cte(end_filters);
+                        let min_hops_clause = if min_hops > 1 {
+                            format!(" AND hop_count >= {}", min_hops)
+                        } else {
+                            String::new()
+                        };
+                        format!(
+                            "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE ({}){}\n)",
+                            self.cte_name, query_body, self.cte_name, self.cte_name, rewritten_filter, min_hops_clause
+                        )
+                    } else if min_hops > 1 {
+                        // No wrapper carries the end filter (pure single-hop): the
+                        // filter is already in the base case. Only bound min-hops.
                         format!(
                             "{}_inner AS (\n{}\n),\n{} AS (\n    SELECT * FROM {}_inner WHERE hop_count >= {}\n)",
                             self.cte_name, query_body, self.cte_name, self.cte_name, min_hops
@@ -2212,8 +2288,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
             if let Some(ref filters) = self.start_node_filters {
                 where_conditions.push(filters.clone());
             }
-            // Only add end_node_filters in base case if NOT using shortest path mode
-            if self.shortest_path_mode.is_none() {
+            // #607: apply the end-node filter in the base case ONLY for a pure
+            // single-hop standard VLP (base IS the endpoint). See
+            // `end_filter_in_base_recursive_case` — it preserves the original
+            // shortestPath exclusion and adds the multi-hop wrapper exclusion.
+            if self.end_filter_in_base_recursive_case() {
                 if let Some(ref filters) = self.end_node_filters {
                     where_conditions.push(filters.clone());
                 }
@@ -2477,8 +2556,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
         // For shortest path queries, do NOT add end_node_filters in recursive case
         // End filters are applied in the _to_target wrapper CTE after recursion completes
-        // This allows the recursion to explore all paths until the target is found
-        if self.shortest_path_mode.is_none() {
+        // This allows the recursion to explore all paths until the target is found.
+        // #607: likewise, a standard multi-hop-capable VLP applies the end filter
+        // only in its outer wrapper (the recursive-case `end_node` is an
+        // intermediate node on any longer path). See
+        // `end_filter_in_base_recursive_case`.
+        if self.end_filter_in_base_recursive_case() {
             if let Some(ref filters) = self.end_node_filters {
                 where_conditions.push(filters.clone());
             }
