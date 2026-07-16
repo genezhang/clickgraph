@@ -7963,8 +7963,20 @@ impl ToSql for OperatorApplication {
         let sql_op = op_str(self.operator);
 
         match rendered.len() {
-            0 => "".into(),                              // should not happen
-            1 => format!("{} {}", sql_op, &rendered[0]), // unary
+            0 => "".into(), // should not happen
+            1 => {
+                // Unary operators: IS NULL / IS NOT NULL are SUFFIX operators
+                // ("x IS NULL"), everything else (NOT) is prefix. Mirrors the
+                // RenderExpr::OperatorApplicationExp arm above — without this,
+                // a join ON condition carrying an IS NULL conjunct (e.g. a
+                // #597 anchor-gate fold) rendered invalid "IS NULL x" SQL.
+                match self.operator {
+                    Operator::IsNull | Operator::IsNotNull => {
+                        format!("{} {}", &rendered[0], sql_op)
+                    }
+                    _ => format!("{} {}", sql_op, &rendered[0]),
+                }
+            }
             2 => {
                 if render_expr::needs_right_parens(self.operator, &self.operands[1]) {
                     format!("{} {} ({})", &rendered[0], sql_op, &rendered[1])

@@ -60,6 +60,13 @@ pub fn evaluate_optional_match_clause<'a>(
         .filter(|a| !plan_ctx.get_optional_aliases().contains(*a))
         .cloned()
         .collect();
+    // #597: capture THIS clause's index before lowering (the counter advances
+    // at the end of evaluate_match_clause_with_optional). The tag must land
+    // only on a GraphRel THIS clause lowered — the accumulated plan also
+    // contains earlier OPTIONAL clauses' GraphRels, and tagging one of those
+    // would gate the WRONG clause's LEFT JOIN (suppressing its legitimate,
+    // un-WHERE'd matches).
+    let this_clause_index = plan_ctx.current_match_clause_index();
 
     // SIMPLE FIX: Set the optional match mode flag BEFORE processing patterns
     // This will automatically mark all new aliases as optional during planning
@@ -117,6 +124,7 @@ pub fn evaluate_optional_match_clause<'a>(
                     plan,
                     combine_with_and(anchor_only),
                     &pre_bound_mandatory,
+                    this_clause_index,
                 );
             }
         }
@@ -214,37 +222,46 @@ fn collect_expr_aliases(
 
 /// #597: set `optional_anchor_where` on the OPTIONAL GraphRel that is
 /// ADJACENT to a mandatory anchor variable (its left or right connection is a
-/// pre-bound alias), traversing the wrappers lowering may add. For a
-/// multi-hop optional pattern `(a)-[:R1]->(x)-[:R2]->(y)` the pattern nests
-/// as `GraphRel(t2){ left: GraphRel(t1){a,x}, right: y }` — the gating LEFT
-/// JOIN (and the `where_predicate` FilterIntoGraphRel later merges) belong to
-/// the anchor-adjacent `t1`, not the topmost `t2`, and the render-side
-/// `optional_anchor_gate_conjuncts` reads the tag from the GraphRel it is
-/// inspecting.
+/// pre-bound alias) AND was lowered by THIS clause (`match_clause_index ==
+/// this_clause_index`), traversing the wrappers lowering may add. The
+/// clause-index guard is essential: the accumulated plan also contains
+/// EARLIER OPTIONAL clauses' GraphRels, which are equally optional and
+/// anchor-adjacent — tagging one of those would gate the wrong clause's LEFT
+/// JOIN, suppressing its legitimate un-WHERE'd matches (e.g. `OPTIONAL MATCH
+/// (a)-->(b) OPTIONAL MATCH (b)-->(c) WHERE a.x` must gate ONLY the second
+/// clause). For a multi-hop optional pattern `(a)-[:R1]->(x)-[:R2]->(y)` the
+/// pattern nests as `GraphRel(t2){ left: GraphRel(t1){a,x}, right: y }` — the
+/// gating LEFT JOIN (and the `where_predicate` FilterIntoGraphRel later
+/// merges) belong to the anchor-adjacent `t1`, not the topmost `t2`, and the
+/// render-side `optional_anchor_gate_conjuncts` reads the tag from the
+/// GraphRel it is inspecting.
 fn tag_optional_anchor_where(
     plan: Arc<LogicalPlan>,
     anchor_where: crate::query_planner::logical_expr::LogicalExpr,
     pre_bound_mandatory: &std::collections::HashSet<String>,
+    this_clause_index: usize,
 ) -> Arc<LogicalPlan> {
     use crate::query_planner::logical_plan::{Filter, GraphRel, Projection};
     match plan.as_ref() {
         LogicalPlan::GraphRel(gr) if gr.is_optional.unwrap_or(false) => {
+            let this_clause = gr.match_clause_index == this_clause_index;
             let adjacent = pre_bound_mandatory.contains(&gr.left_connection)
                 || pre_bound_mandatory.contains(&gr.right_connection);
-            if adjacent {
+            if this_clause && adjacent {
                 Arc::new(LogicalPlan::GraphRel(GraphRel {
                     optional_anchor_where: Some(anchor_where),
                     ..gr.clone()
                 }))
             } else {
-                // Not anchor-adjacent: descend into the nested pattern legs.
-                // Only one leg can contain the anchor-adjacent GraphRel, but
+                // Not this clause's anchor-adjacent GraphRel: descend into the
+                // nested pattern legs. Only one leg can contain it, but
                 // recursing left-then-right with a found-check keeps it simple
                 // and side-effect free.
                 let new_left = tag_optional_anchor_where(
                     gr.left.clone(),
                     anchor_where.clone(),
                     pre_bound_mandatory,
+                    this_clause_index,
                 );
                 if !Arc::ptr_eq(&new_left, &gr.left) {
                     return Arc::new(LogicalPlan::GraphRel(GraphRel {
@@ -252,8 +269,12 @@ fn tag_optional_anchor_where(
                         ..gr.clone()
                     }));
                 }
-                let new_right =
-                    tag_optional_anchor_where(gr.right.clone(), anchor_where, pre_bound_mandatory);
+                let new_right = tag_optional_anchor_where(
+                    gr.right.clone(),
+                    anchor_where,
+                    pre_bound_mandatory,
+                    this_clause_index,
+                );
                 if !Arc::ptr_eq(&new_right, &gr.right) {
                     return Arc::new(LogicalPlan::GraphRel(GraphRel {
                         right: new_right,
@@ -264,13 +285,23 @@ fn tag_optional_anchor_where(
             }
         }
         LogicalPlan::Projection(p) => Arc::new(LogicalPlan::Projection(Projection {
-            input: tag_optional_anchor_where(p.input.clone(), anchor_where, pre_bound_mandatory),
+            input: tag_optional_anchor_where(
+                p.input.clone(),
+                anchor_where,
+                pre_bound_mandatory,
+                this_clause_index,
+            ),
             items: p.items.clone(),
             distinct: p.distinct,
             pattern_comprehensions: p.pattern_comprehensions.clone(),
         })),
         LogicalPlan::Filter(f) => Arc::new(LogicalPlan::Filter(Filter {
-            input: tag_optional_anchor_where(f.input.clone(), anchor_where, pre_bound_mandatory),
+            input: tag_optional_anchor_where(
+                f.input.clone(),
+                anchor_where,
+                pre_bound_mandatory,
+                this_clause_index,
+            ),
             predicate: f.predicate.clone(),
         })),
         // Unknown wrapper: leave untouched — the conjunct then simply keeps

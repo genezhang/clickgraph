@@ -4588,6 +4588,12 @@ pub(super) fn optional_anchor_gate_conjuncts(
         || gr.shortest_path_mode.is_some()
         || gr.pattern_combinations.is_some()
         || !gr.cte_references.is_empty()
+        // Undirected (BidirectionalUnion) excluded: folding the gate into the
+        // reversed arm's edge-join ON makes fold_optional_edge_node_join_with_
+        // predicate decline its combined-anchor rewrite, leaving that arm's
+        // out-of-order join layout unrepaired (Code 47). Directed only — the
+        // same scope precedent as #603.
+        || gr.was_undirected == Some(true)
         || is_optional_denorm_union_graphrel(gr)
     {
         return Vec::new();
