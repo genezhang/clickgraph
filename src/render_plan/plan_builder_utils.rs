@@ -1294,6 +1294,7 @@ graph_schema:
             pattern_combinations: None,
             was_undirected: None,
             match_clause_index: 0, // #586 (synthetic/test)
+            optional_anchor_where: None,
         })
     }
 
@@ -1656,6 +1657,7 @@ graph_schema:
             pattern_combinations: None,
             was_undirected: None,
             match_clause_index: 0, // #586 (synthetic/test)
+            optional_anchor_where: None,
         })
     }
 
@@ -12933,6 +12935,7 @@ pub(crate) fn collapse_passthrough_with(
                 pattern_combinations: gr.pattern_combinations.clone(),
                 was_undirected: gr.was_undirected,
                 match_clause_index: gr.match_clause_index, // #586
+                optional_anchor_where: gr.optional_anchor_where.clone(), // #597: preserve
             }))
         }
         LogicalPlan::CartesianProduct(cp) => {
@@ -14092,6 +14095,7 @@ pub(crate) fn replace_with_clause_with_cte_reference_v2(
                 pattern_combinations: None,
                 was_undirected: graph_rel.was_undirected,
                 match_clause_index: graph_rel.match_clause_index, // #586
+                optional_anchor_where: graph_rel.optional_anchor_where.clone(), // #597: preserve
             }))
         }
 

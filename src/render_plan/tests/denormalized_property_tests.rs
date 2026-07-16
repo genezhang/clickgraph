@@ -737,6 +737,7 @@ fn test_analyzer_denormalized_property_integration() {
             pattern_combinations: None,
             was_undirected: None,
             match_clause_index: 0, // #586 (synthetic/test)
+            optional_anchor_where: None,
         },
     ));
 

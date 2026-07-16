@@ -837,6 +837,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                         pattern_combinations: Some(pattern_combinations.clone()), // ⭐ KEY: Store combinations!
                         was_undirected: None,
                         match_clause_index: plan_ctx.current_match_clause_index(), // #586
+                        optional_anchor_where: None, // #597: set by evaluate_optional_match_clause
                     };
 
                     // Preserve input plan: if there's an existing non-Empty plan
@@ -1306,6 +1307,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 pattern_combinations: None,
                 was_undirected: None,
                 match_clause_index: plan_ctx.current_match_clause_index(), // #586
+                optional_anchor_where: None, // #597: set by evaluate_optional_match_clause
             };
 
             // Register relationship and path variable in context
@@ -1444,6 +1446,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 pattern_combinations: None,
                 was_undirected: None,
                 match_clause_index: plan_ctx.current_match_clause_index(), // #586
+                optional_anchor_where: None, // #597: set by evaluate_optional_match_clause
             };
 
             // Register relationship and path variable in context
@@ -1701,6 +1704,7 @@ fn traverse_connected_pattern_with_mode<'a>(
                 pattern_combinations: None,
                 was_undirected: None,
                 match_clause_index: plan_ctx.current_match_clause_index(), // #586
+                optional_anchor_where: None, // #597: set by evaluate_optional_match_clause
             };
 
             // Register relationship and path variable in context

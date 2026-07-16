@@ -314,6 +314,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             pattern_combinations: graph_rel.pattern_combinations.clone(),
                             was_undirected: graph_rel.was_undirected,
                             match_clause_index: graph_rel.match_clause_index, // #586: preserve clause provenance
+                            optional_anchor_where: graph_rel.optional_anchor_where.clone(), // #597: preserve
                         }));
 
                         // Rebuild projection with new GraphRel, and return without Filter wrapper
@@ -365,6 +366,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                         pattern_combinations: graph_rel.pattern_combinations.clone(),
                         was_undirected: graph_rel.was_undirected,
                         match_clause_index: graph_rel.match_clause_index, // #586: preserve clause provenance
+                        optional_anchor_where: graph_rel.optional_anchor_where.clone(), // #597: preserve
                     }));
 
                     // Return the GraphRel directly, removing the Filter wrapper
@@ -1207,6 +1209,7 @@ impl OptimizerPass for FilterIntoGraphRel {
                             pattern_combinations: graph_rel.pattern_combinations.clone(),
                             was_undirected: graph_rel.was_undirected,
                             match_clause_index: graph_rel.match_clause_index, // #586: preserve clause provenance
+                            optional_anchor_where: graph_rel.optional_anchor_where.clone(), // #597: preserve
                         }));
 
                         return Ok(Transformed::Yes(new_graph_rel));

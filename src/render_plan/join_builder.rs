@@ -124,7 +124,10 @@ fn find_graph_rel(plan: &LogicalPlan) -> Option<&crate::query_planner::logical_p
 /// default in the GraphRel path (`anchor_on_right == false`). The relationship
 /// predicate is handled correctly upstream and is deliberately left untouched.
 /// Idempotent: a predicate already present in the join's pre_filter is skipped.
-fn apply_optional_node_pre_filters(input: &LogicalPlan, joins: &mut [Join]) {
+fn apply_optional_node_pre_filters(
+    input: &LogicalPlan,
+    joins: &mut [Join],
+) -> Result<(), RenderBuildError> {
     fn collect_optional_graph_rels<'a>(
         plan: &'a LogicalPlan,
         out: &mut Vec<&'a crate::query_planner::logical_plan::GraphRel>,
@@ -185,6 +188,49 @@ fn apply_optional_node_pre_filters(input: &LogicalPlan, joins: &mut [Join]) {
             &gr.right_connection
         };
 
+        // #597: fold anchor-only conjuncts of the OPTIONAL MATCH's own WHERE
+        // into the gating LEFT JOIN's ON condition. For a LEFT JOIN a false ON
+        // just NULL-extends the anchor row instead of dropping it — exactly
+        // OPTIONAL MATCH semantics, and the #472 post-WITH precedent.
+        // `collect_graphrel_predicates` drops these same conjuncts from the
+        // outer WHERE via the SAME helper, so the two sites cannot diverge.
+        // The gating join is the pattern's anchor-adjacent LEFT JOIN: the
+        // first LEFT JOIN whose ON references the anchor alias.
+        let anchor_gate_conjuncts =
+            crate::render_plan::plan_builder_helpers::optional_anchor_gate_conjuncts(gr);
+        if !anchor_gate_conjuncts.is_empty() {
+            if let Some(gate_join) = joins.iter_mut().find(|j| {
+                j.join_type == super::JoinType::Left
+                    && j.joining_on
+                        .iter()
+                        .any(|cond| condition_references_alias(cond, anchor))
+            }) {
+                for conj in &anchor_gate_conjuncts {
+                    if let Ok(RenderExpr::OperatorApplicationExp(op)) =
+                        RenderExpr::try_from(conj.clone())
+                    {
+                        // Idempotence: skip if this exact condition is already
+                        // in the ON list.
+                        if !gate_join.joining_on.contains(&op) {
+                            gate_join.joining_on.push(op);
+                        }
+                    }
+                }
+            } else {
+                // No anchor-adjacent LEFT JOIN found (unexpected shape): the
+                // conjuncts were dropped from the outer WHERE on the promise
+                // they'd be folded here. Refuse loudly rather than silently
+                // losing the predicate (would change query semantics).
+                return Err(RenderBuildError::InvalidRenderPlan(format!(
+                    "OPTIONAL MATCH WHERE on the mandatory variable (alias '{}', \
+                     GraphRel '{}') could not be folded into a gating LEFT JOIN \
+                     ON condition; refusing to drop it or leave it in the outer \
+                     WHERE (would drop NULL-extended rows) (#597)",
+                    anchor, gr.alias
+                )));
+            }
+        }
+
         let (node_pred, _remaining) =
             extract_predicates_for_alias_logical(&gr.where_predicate, optional_node);
         let Some(pred) = node_pred else {
@@ -227,6 +273,7 @@ fn apply_optional_node_pre_filters(input: &LogicalPlan, joins: &mut [Join]) {
             None => Some(pred),
         };
     }
+    Ok(())
 }
 
 /// Collect all GraphRels with pattern_combinations from a CartesianProduct chain,
@@ -1582,7 +1629,7 @@ impl JoinBuilder for LogicalPlan {
                 // The relationship-alias predicate is already handled correctly upstream,
                 // so this pass touches only the optional node's join. It is idempotent:
                 // it skips a predicate already present in the join's pre_filter.
-                apply_optional_node_pre_filters(&graph_joins.input, &mut joins);
+                apply_optional_node_pre_filters(&graph_joins.input, &mut joins)?;
 
                 joins
             }

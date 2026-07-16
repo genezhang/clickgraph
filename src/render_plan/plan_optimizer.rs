@@ -1636,8 +1636,35 @@ fn fold_optional_edge_node_join_with_predicate(plan: &mut RenderPlan) {
                 continue;
             };
 
+            // #597: the edge join's ON may carry extra anchor-gate conditions
+            // (e.g. `a.is_active = true`, folded there by
+            // `apply_optional_node_pre_filters` for an OPTIONAL MATCH WHERE on
+            // the mandatory variable). Split them out: the equality keys drive
+            // the fold as before, and the extras are carried onto the combined
+            // join's ON (same NULL-extending placement they had on the edge
+            // join). Only conditions referencing NEITHER the edge nor the node
+            // alias qualify as carryable extras — anything else declines the
+            // fold as before (conservative).
+            let (key_conds, extra_conds): (Vec<_>, Vec<_>) = plan.joins.0[edge_join_idx]
+                .joining_on
+                .iter()
+                .cloned()
+                .partition(|cond| {
+                    let expr = RenderExpr::OperatorApplicationExp(cond.clone());
+                    references_alias(&expr, &edge_alias)
+                });
+            if extra_conds.iter().any(|cond| {
+                let expr = RenderExpr::OperatorApplicationExp(cond.clone());
+                references_alias(&expr, &node_alias)
+            }) {
+                continue;
+            }
+            let key_join = Join {
+                joining_on: key_conds,
+                ..plan.joins.0[edge_join_idx].clone()
+            };
             let Some((anchor_key_pairs, anchor_alias)) =
-                equality_join_key_columns(&plan.joins.0[edge_join_idx], &edge_alias)
+                equality_join_key_columns(&key_join, &edge_alias)
             else {
                 continue;
             };
@@ -1759,6 +1786,10 @@ fn fold_optional_edge_node_join_with_predicate(plan: &mut RenderPlan) {
                             }),
                         ],
                     })
+                    // #597: carry the edge join's anchor-gate extras (they
+                    // reference neither the edge nor the node alias, so they
+                    // survive the fold verbatim).
+                    .chain(extra_conds)
                     .collect(),
                 join_type: JoinType::Left,
                 pre_filter: None,

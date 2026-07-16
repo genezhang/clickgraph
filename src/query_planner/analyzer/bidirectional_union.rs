@@ -85,6 +85,7 @@ fn transform_bidirectional(
                         pattern_combinations: graph_rel.pattern_combinations.clone(),
                         was_undirected: Some(true),
                         match_clause_index: graph_rel.match_clause_index, // #586: preserve clause provenance
+                        optional_anchor_where: graph_rel.optional_anchor_where.clone(), // #597: preserve
                     }));
                     return Ok(Transformed::Yes(new_graph_rel));
                 }
@@ -1460,6 +1461,7 @@ fn apply_direction_combination_inner(
                     graph_rel.was_undirected
                 },
                 match_clause_index: graph_rel.match_clause_index, // #586: preserve clause provenance
+                optional_anchor_where: graph_rel.optional_anchor_where.clone(), // #597: preserve
             }))
         }
         LogicalPlan::Projection(proj) => {
@@ -1667,6 +1669,7 @@ mod tests {
             pattern_combinations: None,
             was_undirected: None,
             match_clause_index: 0, // #586 (synthetic/test)
+            optional_anchor_where: None,
         }
     }
 
@@ -1856,6 +1859,7 @@ mod tests {
             pattern_combinations: None,
             was_undirected: None,
             match_clause_index: 0, // #586 (synthetic/test)
+            optional_anchor_where: None,
         }
     }
 
@@ -1952,6 +1956,7 @@ mod tests {
             pattern_combinations: None,
             was_undirected: None,
             match_clause_index: 0, // #586 (synthetic/test)
+            optional_anchor_where: None,
         };
         let plan = Arc::new(LogicalPlan::GraphRel(graph_rel));
 

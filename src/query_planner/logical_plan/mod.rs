@@ -956,6 +956,23 @@ pub struct GraphRel {
     /// paths MUST preserve it; synthetic/test constructions default to 0.
     #[serde(default)]
     pub match_clause_index: usize,
+
+    /// #597: conjuncts of THIS OPTIONAL MATCH clause's own WHERE that
+    /// reference ONLY a mandatory (pre-bound, non-optional) anchor variable —
+    /// e.g. `a.is_active = true` in
+    /// `MATCH (a) OPTIONAL MATCH (a)-[:F]->(b) WHERE a.is_active = true`.
+    /// Set during AST→LogicalPlan lowering (`evaluate_optional_match_clause`),
+    /// the only point where "the WHERE belongs to the OPTIONAL clause" is
+    /// unambiguous — a base-MATCH WHERE on the same variable also ends up
+    /// merged into `where_predicate` by `FilterIntoGraphRel`, and the two are
+    /// indistinguishable there. Per OPTIONAL MATCH semantics these conjuncts
+    /// must gate the match (fold into the LEFT JOIN ON, NULL-extending on
+    /// failure), never filter the joined rows; render-side placement is
+    /// coordinated by `optional_anchor_gate_conjuncts`
+    /// (render_plan/plan_builder_helpers.rs). Rebuild/clone paths MUST
+    /// preserve it; synthetic/test constructions default to None.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub optional_anchor_where: Option<LogicalExpr>,
 }
 
 /// Mode for shortest path queries
@@ -1477,6 +1494,7 @@ impl GraphRel {
                 pattern_combinations: self.pattern_combinations.clone(),
                 was_undirected: self.was_undirected,
                 match_clause_index: self.match_clause_index, // #586: preserve clause provenance
+                optional_anchor_where: self.optional_anchor_where.clone(), // #597: preserve
             })))
         } else {
             Transformed::No(old_plan)
@@ -2516,6 +2534,7 @@ mod tests {
             pattern_combinations: None,
             was_undirected: Some(false),
             match_clause_index: 0, // #586 (synthetic/test)
+            optional_anchor_where: None,
         });
         // Sanity: left/center/right really are distinct values, otherwise a
         // swap bug in map_children could go undetected by equality alone.
@@ -2845,6 +2864,7 @@ mod tests {
             pattern_combinations: None,
             was_undirected: None,
             match_clause_index: 0, // #586 (synthetic/test)
+            optional_anchor_where: None,
         };
 
         let old_plan = Arc::new(LogicalPlan::GraphRel(graph_rel.clone()));
@@ -3081,6 +3101,7 @@ mod tests {
             pattern_combinations: None,
             was_undirected: None,
             match_clause_index: 0, // #586 (synthetic/test)
+            optional_anchor_where: None,
         })
     }
 

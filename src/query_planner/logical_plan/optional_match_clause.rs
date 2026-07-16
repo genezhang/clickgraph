@@ -48,6 +48,19 @@ pub fn evaluate_optional_match_clause<'a>(
         optional_match_clause.path_patterns.len()
     );
 
+    // #597: snapshot the aliases bound BEFORE this OPTIONAL MATCH clause.
+    // A WHERE conjunct referencing only these mandatory variables must gate
+    // the match (LEFT JOIN ON), never filter the joined rows — and lowering
+    // is the only stage where "this WHERE belongs to the OPTIONAL clause" is
+    // unambiguous (FilterIntoGraphRel later merges base-MATCH and
+    // OPTIONAL-clause predicates indistinguishably into `where_predicate`).
+    let pre_bound_mandatory: std::collections::HashSet<String> = plan_ctx
+        .get_alias_table_ctx_map()
+        .keys()
+        .filter(|a| !plan_ctx.get_optional_aliases().contains(*a))
+        .cloned()
+        .collect();
+
     // SIMPLE FIX: Set the optional match mode flag BEFORE processing patterns
     // This will automatically mark all new aliases as optional during planning
     plan_ctx.set_optional_match_mode(true);
@@ -82,6 +95,32 @@ pub fn evaluate_optional_match_clause<'a>(
     // If there's a WHERE clause specific to this OPTIONAL MATCH,
     // it should be applied as part of the JOIN condition, not as a final filter
     if let Some(where_clause) = &optional_match_clause.where_clause {
+        // #597: record the conjuncts that reference ONLY pre-bound mandatory
+        // variables on the OPTIONAL GraphRel itself, so the render side can
+        // fold them into the gating LEFT JOIN ON (never the outer WHERE,
+        // which would drop the NULL-extended anchor rows). The full WHERE
+        // still flows through evaluate_where_clause → FilterIntoGraphRel →
+        // `where_predicate` as before; this field only CLASSIFIES.
+        if let Ok(pred) = crate::query_planner::logical_expr::LogicalExpr::try_from(
+            where_clause.conditions.clone(),
+        ) {
+            let anchor_only: Vec<_> = split_and_conjuncts(&pred)
+                .into_iter()
+                .filter(|c| {
+                    let mut aliases = std::collections::HashSet::new();
+                    collect_expr_aliases(c, &mut aliases);
+                    !aliases.is_empty() && aliases.iter().all(|a| pre_bound_mandatory.contains(a))
+                })
+                .collect();
+            if !anchor_only.is_empty() {
+                plan = tag_optional_anchor_where(
+                    plan,
+                    combine_with_and(anchor_only),
+                    &pre_bound_mandatory,
+                );
+            }
+        }
+
         // Store the WHERE clause in the plan context for later processing
         // During SQL generation, this will become part of the LEFT JOIN ON condition
         // For now, we'll add it as a regular filter
@@ -91,6 +130,153 @@ pub fn evaluate_optional_match_clause<'a>(
     }
 
     Ok(plan)
+}
+
+/// #597: split a LogicalExpr into top-level AND conjuncts.
+fn split_and_conjuncts(
+    expr: &crate::query_planner::logical_expr::LogicalExpr,
+) -> Vec<crate::query_planner::logical_expr::LogicalExpr> {
+    use crate::query_planner::logical_expr::{LogicalExpr, Operator};
+    match expr {
+        LogicalExpr::OperatorApplicationExp(op) if matches!(op.operator, Operator::And) => {
+            op.operands.iter().flat_map(split_and_conjuncts).collect()
+        }
+        other => vec![other.clone()],
+    }
+}
+
+/// #597: recombine conjuncts with AND (single conjunct returned as-is).
+fn combine_with_and(
+    mut conjuncts: Vec<crate::query_planner::logical_expr::LogicalExpr>,
+) -> crate::query_planner::logical_expr::LogicalExpr {
+    use crate::query_planner::logical_expr::{LogicalExpr, Operator, OperatorApplication};
+    if conjuncts.len() == 1 {
+        return conjuncts.remove(0);
+    }
+    LogicalExpr::OperatorApplicationExp(OperatorApplication {
+        operator: Operator::And,
+        operands: conjuncts,
+    })
+}
+
+/// #597: collect all table aliases referenced in a LogicalExpr.
+fn collect_expr_aliases(
+    expr: &crate::query_planner::logical_expr::LogicalExpr,
+    aliases: &mut std::collections::HashSet<String>,
+) {
+    use crate::query_planner::logical_expr::LogicalExpr;
+    match expr {
+        LogicalExpr::PropertyAccessExp(prop) => {
+            aliases.insert(prop.table_alias.0.clone());
+        }
+        LogicalExpr::TableAlias(ta) => {
+            aliases.insert(ta.0.clone());
+        }
+        LogicalExpr::OperatorApplicationExp(op) => {
+            for operand in &op.operands {
+                collect_expr_aliases(operand, aliases);
+            }
+        }
+        LogicalExpr::ScalarFnCall(f) => {
+            for arg in &f.args {
+                collect_expr_aliases(arg, aliases);
+            }
+        }
+        LogicalExpr::AggregateFnCall(f) => {
+            for arg in &f.args {
+                collect_expr_aliases(arg, aliases);
+            }
+        }
+        LogicalExpr::Case(case) => {
+            if let Some(e) = &case.expr {
+                collect_expr_aliases(e, aliases);
+            }
+            for (w, t) in &case.when_then {
+                collect_expr_aliases(w, aliases);
+                collect_expr_aliases(t, aliases);
+            }
+            if let Some(e) = &case.else_expr {
+                collect_expr_aliases(e, aliases);
+            }
+        }
+        LogicalExpr::List(items) => {
+            for item in items {
+                collect_expr_aliases(item, aliases);
+            }
+        }
+        // Conservative: any variant not enumerated contributes no aliases,
+        // which can only cause a conjunct to be treated as anchor-only if it
+        // ALSO has an explicit anchor PropertyAccess — plus the render-side
+        // helper re-validates convertibility before folding.
+        _ => {}
+    }
+}
+
+/// #597: set `optional_anchor_where` on the OPTIONAL GraphRel that is
+/// ADJACENT to a mandatory anchor variable (its left or right connection is a
+/// pre-bound alias), traversing the wrappers lowering may add. For a
+/// multi-hop optional pattern `(a)-[:R1]->(x)-[:R2]->(y)` the pattern nests
+/// as `GraphRel(t2){ left: GraphRel(t1){a,x}, right: y }` — the gating LEFT
+/// JOIN (and the `where_predicate` FilterIntoGraphRel later merges) belong to
+/// the anchor-adjacent `t1`, not the topmost `t2`, and the render-side
+/// `optional_anchor_gate_conjuncts` reads the tag from the GraphRel it is
+/// inspecting.
+fn tag_optional_anchor_where(
+    plan: Arc<LogicalPlan>,
+    anchor_where: crate::query_planner::logical_expr::LogicalExpr,
+    pre_bound_mandatory: &std::collections::HashSet<String>,
+) -> Arc<LogicalPlan> {
+    use crate::query_planner::logical_plan::{Filter, GraphRel, Projection};
+    match plan.as_ref() {
+        LogicalPlan::GraphRel(gr) if gr.is_optional.unwrap_or(false) => {
+            let adjacent = pre_bound_mandatory.contains(&gr.left_connection)
+                || pre_bound_mandatory.contains(&gr.right_connection);
+            if adjacent {
+                Arc::new(LogicalPlan::GraphRel(GraphRel {
+                    optional_anchor_where: Some(anchor_where),
+                    ..gr.clone()
+                }))
+            } else {
+                // Not anchor-adjacent: descend into the nested pattern legs.
+                // Only one leg can contain the anchor-adjacent GraphRel, but
+                // recursing left-then-right with a found-check keeps it simple
+                // and side-effect free.
+                let new_left = tag_optional_anchor_where(
+                    gr.left.clone(),
+                    anchor_where.clone(),
+                    pre_bound_mandatory,
+                );
+                if !Arc::ptr_eq(&new_left, &gr.left) {
+                    return Arc::new(LogicalPlan::GraphRel(GraphRel {
+                        left: new_left,
+                        ..gr.clone()
+                    }));
+                }
+                let new_right =
+                    tag_optional_anchor_where(gr.right.clone(), anchor_where, pre_bound_mandatory);
+                if !Arc::ptr_eq(&new_right, &gr.right) {
+                    return Arc::new(LogicalPlan::GraphRel(GraphRel {
+                        right: new_right,
+                        ..gr.clone()
+                    }));
+                }
+                plan
+            }
+        }
+        LogicalPlan::Projection(p) => Arc::new(LogicalPlan::Projection(Projection {
+            input: tag_optional_anchor_where(p.input.clone(), anchor_where, pre_bound_mandatory),
+            items: p.items.clone(),
+            distinct: p.distinct,
+            pattern_comprehensions: p.pattern_comprehensions.clone(),
+        })),
+        LogicalPlan::Filter(f) => Arc::new(LogicalPlan::Filter(Filter {
+            input: tag_optional_anchor_where(f.input.clone(), anchor_where, pre_bound_mandatory),
+            predicate: f.predicate.clone(),
+        })),
+        // Unknown wrapper: leave untouched — the conjunct then simply keeps
+        // its previous (outer WHERE) placement, no predicate is lost.
+        _ => plan,
+    }
 }
 
 #[cfg(test)]
