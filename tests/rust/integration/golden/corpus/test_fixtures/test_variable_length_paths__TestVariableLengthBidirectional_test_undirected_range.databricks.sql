@@ -28,7 +28,7 @@ WITH RECURSIVE vlp_a_b AS (
     WHERE vp.hop_count < 2
       AND NOT array_contains(vp.path_edges, struct(rel.follower_id, rel.followed_id))
 ), 
-vlp_b_a AS (
+vlp_b_a_inner AS (
     SELECT 
         start_node.user_id as start_id,
         end_node.user_id as end_id,
@@ -41,7 +41,6 @@ vlp_b_a AS (
     FROM test_integration.users AS start_node
     JOIN test_integration.follows AS rel ON start_node.user_id = rel.follower_id
     JOIN test_integration.users AS end_node ON rel.followed_id = end_node.user_id
-    WHERE end_node.name = 'Bob'
     UNION ALL
     SELECT
         vp.start_id,
@@ -52,12 +51,14 @@ vlp_b_a AS (
         concat(vp.path_edges, array(struct(rel.follower_id, rel.followed_id))) as path_edges,
         vp.start_name as start_name,
         end_node.name as end_name
-    FROM vlp_b_a vp
+    FROM vlp_b_a_inner vp
     JOIN test_integration.follows AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 2
       AND NOT array_contains(vp.path_edges, struct(rel.follower_id, rel.followed_id))
-      AND end_node.name = 'Bob'
+),
+vlp_b_a AS (
+    SELECT * FROM vlp_b_a_inner WHERE (end_name = 'Bob')
 )
 SELECT `b.name` AS `b.name` FROM (
 SELECT DISTINCT 

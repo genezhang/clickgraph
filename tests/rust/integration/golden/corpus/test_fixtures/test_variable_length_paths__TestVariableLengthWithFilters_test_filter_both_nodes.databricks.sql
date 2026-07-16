@@ -1,15 +1,16 @@
-WITH RECURSIVE vlp_a_b AS (
+WITH RECURSIVE vlp_a_b_inner AS (
     SELECT 
         start_node.user_id as start_id,
         end_node.user_id as end_id,
         1 as hop_count,
         CAST(array() AS ARRAY<STRING>) as path_relationships,
         array(start_node.user_id, end_node.user_id) as path_nodes,
-        array(struct(rel.follower_id, rel.followed_id)) as path_edges
+        array(struct(rel.follower_id, rel.followed_id)) as path_edges,
+        end_node.name as end_name
     FROM test_integration.users AS start_node
     JOIN test_integration.follows AS rel ON start_node.user_id = rel.follower_id
     JOIN test_integration.users AS end_node ON rel.followed_id = end_node.user_id
-    WHERE start_node.name = 'Alice' AND end_node.name = 'Eve'
+    WHERE start_node.name = 'Alice'
     UNION ALL
     SELECT
         vp.start_id,
@@ -17,13 +18,16 @@ WITH RECURSIVE vlp_a_b AS (
         vp.hop_count + 1 as hop_count,
         CAST(array() AS ARRAY<STRING>) as path_relationships,
         concat(vp.path_nodes, array(end_node.user_id)) as path_nodes,
-        concat(vp.path_edges, array(struct(rel.follower_id, rel.followed_id))) as path_edges
-    FROM vlp_a_b vp
+        concat(vp.path_edges, array(struct(rel.follower_id, rel.followed_id))) as path_edges,
+        end_node.name as end_name
+    FROM vlp_a_b_inner vp
     JOIN test_integration.follows AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 3
       AND NOT array_contains(vp.path_edges, struct(rel.follower_id, rel.followed_id))
-      AND end_node.name = 'Eve'
+),
+vlp_a_b AS (
+    SELECT * FROM vlp_a_b_inner WHERE (end_name = 'Eve')
 )
 SELECT 
       count(*) AS `path_count`
