@@ -2062,15 +2062,25 @@ impl<'a> VariableLengthCteGenerator<'a> {
             where_conditions.push(filters.clone());
         }
 
-        // For zero-hop self-loops, the end node is the same as start node
-        // So end_node_filters should also be applied, but rewritten for start node
-        if let Some(ref filters) = self.end_node_filters {
-            // Rewrite end_node references to start_node references
-            let rewritten = filters.replace(
-                &format!("{}.", self.end_node_alias),
-                &format!("{}.", self.start_node_alias),
-            );
-            where_conditions.push(rewritten);
+        // For zero-hop self-loops, the end node is the same as start node,
+        // so end_node_filters would also apply here — BUT these rows are also
+        // the RECURSION SEED. Filtering the seed by the endpoint predicate
+        // silently drops every longer path that starts from a node failing it
+        // (#610: *0..2 WHERE b.id > 2 must still seed paths from node 1).
+        // When the outer wrapper carries the end filter (#607), it filters
+        // hop-0 rows too (end_id/end_* equal the start node at hop 0), so the
+        // base must leave the seed unfiltered. Only apply the filter here when
+        // no wrapper exists to carry it (e.g. *0..0, shortestPath, denorm —
+        // whose placement is unchanged).
+        if !self.end_filter_applied_in_wrapper() {
+            if let Some(ref filters) = self.end_node_filters {
+                // Rewrite end_node references to start_node references
+                let rewritten = filters.replace(
+                    &format!("{}.", self.end_node_alias),
+                    &format!("{}.", self.start_node_alias),
+                );
+                where_conditions.push(rewritten);
+            }
         }
 
         if !where_conditions.is_empty() {
