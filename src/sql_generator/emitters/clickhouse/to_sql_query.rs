@@ -4932,6 +4932,21 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                     UnionType::All => "UNION ALL \n",
                 };
 
+                // #609: ClickHouse's analyzer (verified on 25.8) cannot
+                // resolve a recursive CTE referenced from the SECOND (or
+                // later) arm of a BARE top-level UNION (Code 60 "Unknown
+                // table expression identifier"); per-arm wrapping does NOT
+                // help — the WHOLE union must sit one scope down. When any
+                // CTE is recursive (e.g. a VLP in a later Cypher-UNION arm),
+                // emit the union inside `SELECT * FROM ( ... )`. The wrap is
+                // semantically transparent: per-arm modifiers are already
+                // bound inside each arm by `render_cypher_union_arm`, and
+                // this branch has no union-level modifiers of its own.
+                let wrap_for_recursive_ctes = plan.ctes.0.iter().any(|c| c.is_recursive);
+                if wrap_for_recursive_ctes {
+                    sql.push_str("SELECT * FROM (\n");
+                }
+
                 let mut first = true;
                 // When the base plan still holds the first arm's fields (it was
                 // not consolidated into union.input), render it as an arm too.
@@ -4962,6 +4977,9 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
                     }
                     first = false;
                     sql.push_str(&render_cypher_union_arm(arm));
+                }
+                if wrap_for_recursive_ctes {
+                    sql.push_str("\n) AS __cypher_union");
                 }
                 return sql;
             }
@@ -5039,11 +5057,25 @@ pub fn render_plan_to_sql(mut plan: RenderPlan, _max_cte_depth: u32) -> String {
             agg_arg_cols
         );
         // Check if we need the subquery wrapper (when there's ORDER BY, LIMIT, GROUP BY, or aggregation)
+        //
+        // #609: ALSO wrap whenever any CTE is recursive. ClickHouse's
+        // analyzer (verified on 25.8) fails to resolve a recursive CTE
+        // referenced from the SECOND (or later) arm of a BARE top-level
+        // UNION — `WITH RECURSIVE v1 AS (...), v2 AS (...) SELECT ... FROM
+        // v1 UNION ALL SELECT ... FROM v2` errors with Code 60 "Unknown
+        // table expression identifier 'v2'" (whichever recursive CTE the
+        // second arm references; the first arm resolves fine). Wrapping the
+        // union in a subquery restores resolution. This is why undirected
+        // VLP (BidirectionalUnion → two recursive CTEs + top-level UNION
+        // ALL) failed EXACTLY when the query had no ORDER BY/LIMIT/aggregate
+        // (each of which already forced this wrapper).
+        let has_recursive_cte = plan.ctes.0.iter().any(|c| c.is_recursive);
         let needs_subquery = !plan.order_by.0.is_empty()
             || plan.limit.0.is_some()
             || plan.skip.0.is_some()
             || !plan.group_by.0.is_empty()
-            || has_aggregation;
+            || has_aggregation
+            || has_recursive_cte;
 
         log::debug!("UNION rendering: needs_subquery={}", needs_subquery);
 
