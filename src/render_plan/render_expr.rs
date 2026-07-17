@@ -116,7 +116,13 @@ fn resolve_correlation_id_sql(
 
 /// Generate SQL for an EXISTS subquery directly from the logical plan
 /// This is a simplified approach that generates basic EXISTS SQL
-fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderBuildError> {
+///
+/// #614: also returns the outer-scope aliases the generated SQL correlates
+/// on (empty when unknown, e.g. the full-pipeline complex-plan path), so the
+/// `RenderExpr::ExistsSubquery` can carry them structurally.
+fn generate_exists_sql(
+    exists: &LogicalExistsSubquery,
+) -> Result<(String, Vec<String>), RenderBuildError> {
     use crate::server::query_context::get_current_schema;
 
     // Try to extract pattern info from the subplan
@@ -141,7 +147,7 @@ fn generate_exists_sql(exists: &LogicalExistsSubquery) -> Result<String, RenderB
             // Generate SQL from render plan
             let sql = render_plan_to_sql(render_plan, 10); // Use default max_cte_depth
 
-            Ok(sql)
+            Ok((sql, Vec::new()))
         }
         LogicalPlan::GraphRel(graph_rel) => {
             // Get the relationship type
@@ -202,7 +208,7 @@ fn generate_exists_graph_rel_sql(
     graph_rel: &crate::query_planner::logical_plan::GraphRel,
     rel_schema: &crate::graph_catalog::graph_schema::RelationshipSchema,
     schema: &crate::graph_catalog::graph_schema::GraphSchema,
-) -> Result<String, RenderBuildError> {
+) -> Result<(String, Vec<String>), RenderBuildError> {
     use crate::server::query_context::{is_correlation_cte_alias, is_exists_outer_alias};
 
     let qualified_table = format!("{}.{}", rel_schema.database, rel_schema.table_name);
@@ -253,13 +259,16 @@ fn generate_exists_graph_rel_sql(
             };
 
             let mut conds: Vec<String> = Vec::new();
+            let mut correlated: Vec<String> = Vec::new();
             if is_outer(src_conn) {
                 let id = endpoint_id_sql(src_conn, src_node, true)?;
                 conds.push(format!("{}.{} = {}", table_name, from_col, id));
+                correlated.push(src_conn.clone());
             }
             if is_outer(tgt_conn) {
                 let id = endpoint_id_sql(tgt_conn, tgt_node, false)?;
                 conds.push(format!("{}.{} = {}", table_name, to_col, id));
+                correlated.push(tgt_conn.clone());
             }
 
             if conds.is_empty() {
@@ -271,12 +280,16 @@ fn generate_exists_graph_rel_sql(
                 let id = endpoint_id_sql(left_conn, left_node, outgoing)?;
                 let col = if outgoing { from_col } else { to_col };
                 conds.push(format!("{}.{} = {}", table_name, col, id));
+                correlated.push(left_conn.clone());
             }
 
-            Ok(format!(
-                "SELECT 1 FROM {} WHERE {}",
-                qualified_table,
-                conds.join(" AND ")
+            Ok((
+                format!(
+                    "SELECT 1 FROM {} WHERE {}",
+                    qualified_table,
+                    conds.join(" AND ")
+                ),
+                correlated,
             ))
         }
         Direction::Either => {
@@ -291,11 +304,14 @@ fn generate_exists_graph_rel_sql(
                 let l_to = endpoint_id_sql(left_conn, left_node, false)?;
                 let r_from = endpoint_id_sql(right_conn, right_node, true)?;
                 let r_to = endpoint_id_sql(right_conn, right_node, false)?;
-                Ok(format!(
-                    "SELECT 1 FROM {} WHERE ({}.{} = {} AND {}.{} = {}) OR ({}.{} = {} AND {}.{} = {})",
-                    qualified_table,
-                    table_name, from_col, l_from, table_name, to_col, r_to,
-                    table_name, from_col, r_from, table_name, to_col, l_to
+                Ok((
+                    format!(
+                        "SELECT 1 FROM {} WHERE ({}.{} = {} AND {}.{} = {}) OR ({}.{} = {} AND {}.{} = {})",
+                        qualified_table,
+                        table_name, from_col, l_from, table_name, to_col, r_to,
+                        table_name, from_col, r_from, table_name, to_col, l_to
+                    ),
+                    vec![left_conn.clone(), right_conn.clone()],
                 ))
             } else {
                 // One endpoint is the anchor (or, as a fallback, the syntactic
@@ -307,9 +323,12 @@ fn generate_exists_graph_rel_sql(
                 };
                 let a_from = endpoint_id_sql(anchor_conn, anchor_node, true)?;
                 let a_to = endpoint_id_sql(anchor_conn, anchor_node, false)?;
-                Ok(format!(
-                    "SELECT 1 FROM {} WHERE {}.{} = {} OR {}.{} = {}",
-                    qualified_table, table_name, from_col, a_from, table_name, to_col, a_to
+                Ok((
+                    format!(
+                        "SELECT 1 FROM {} WHERE {}.{} = {} OR {}.{} = {}",
+                        qualified_table, table_name, from_col, a_from, table_name, to_col, a_to
+                    ),
+                    vec![anchor_conn.clone()],
                 ))
             }
         }
@@ -517,6 +536,21 @@ fn generate_multi_hop_pattern_count_sql(
         "(SELECT COUNT(*) FROM {}{})",
         from_clause, where_clause
     ))
+}
+
+/// #614: the outer-scope correlation aliases of a `size((pattern))` count.
+/// `generate_pattern_count_sql` correlates ONLY on the pattern's start node
+/// (named end nodes are internal to the pattern — see the comment there), so
+/// that single alias is the complete set.
+fn pattern_count_correlated_aliases(pattern: &PathPattern) -> Vec<String> {
+    match pattern {
+        PathPattern::ConnectedPattern(connected_patterns) => connected_patterns
+            .first()
+            .and_then(|conn| conn.start_node.name.as_ref())
+            .map(|a| vec![a.to_string()])
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
 }
 
 /// Generate SQL for a pattern count (size() on patterns)
@@ -957,6 +991,15 @@ pub struct CteEntityRef {
 pub struct PatternCount {
     /// Pre-rendered SQL for the pattern count subquery
     pub sql: String,
+    /// #614: outer-scope aliases the correlated subquery references (the
+    /// pattern's correlation anchors — the start node for pattern counts),
+    /// recorded structurally at generation. Scanning the opaque SQL instead
+    /// also picks up table/database names, which made alias-classification
+    /// passes (e.g. the #479/#552 optional-join fold's exactly-one-alias
+    /// grouping) misclassify the expression. Empty means "unknown" —
+    /// consumers fall back to the SQL scan.
+    #[serde(default)]
+    pub correlated_aliases: Vec<String>,
 }
 
 /// Reduce expression for folding a list into a single value
@@ -981,6 +1024,12 @@ pub struct ExistsSubquery {
     /// This is generated during conversion since EXISTS patterns
     /// don't fit the normal query structure (no select items)
     pub sql: String,
+    /// #614: outer-scope aliases the correlated subquery references (the
+    /// endpoints classified outer-bound during generation, #596). Same
+    /// rationale and empty-means-unknown fallback as
+    /// [`PatternCount::correlated_aliases`].
+    #[serde(default)]
+    pub correlated_aliases: Vec<String>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -1240,8 +1289,11 @@ impl TryFrom<LogicalExpr> for RenderExpr {
             LogicalExpr::ExistsSubquery(exists) => {
                 // For EXISTS subqueries, generate SQL directly since they don't fit
                 // the normal RenderPlan structure (no select items needed)
-                let sql = generate_exists_sql(&exists)?;
-                RenderExpr::ExistsSubquery(ExistsSubquery { sql })
+                let (sql, correlated_aliases) = generate_exists_sql(&exists)?;
+                RenderExpr::ExistsSubquery(ExistsSubquery {
+                    sql,
+                    correlated_aliases,
+                })
             }
             LogicalExpr::ReduceExpr(reduce) => {
                 // Convert LogicalExpr::ReduceExpr to RenderExpr::ReduceExpr
@@ -1280,9 +1332,11 @@ impl TryFrom<LogicalExpr> for RenderExpr {
                 // Decorrelation turns the scalar subquery into a LEFT JOIN, so an
                 // outer row with zero pattern matches yields NULL rather than 0;
                 // size() must return 0 there (#599). coalesce is dialect-neutral.
+                let correlated_aliases = pattern_count_correlated_aliases(&pc.pattern);
                 let sql = generate_pattern_count_sql(&pc.pattern)?;
                 RenderExpr::PatternCount(PatternCount {
                     sql: format!("coalesce({}, 0)", sql),
+                    correlated_aliases,
                 })
             }
             LogicalExpr::Lambda(lambda) => {

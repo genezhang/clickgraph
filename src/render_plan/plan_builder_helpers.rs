@@ -369,6 +369,40 @@ pub(super) fn is_denormalized_union(plan: &LogicalPlan) -> bool {
     }
 }
 
+/// #611: true when a denormalized standalone-scan Union appears ANYWHERE in
+/// the subtree — not just as a direct child. A CHAINED optional clause over
+/// a denormalized schema (`MATCH (a) OPTIONAL MATCH (a)-[f]->(b) OPTIONAL
+/// MATCH (b)-[g]->(c) WHERE a.x`) has the `__denorm_scan` Union buried under
+/// its left leg, so `is_optional_denorm_union_graphrel` (direct children
+/// only) misses it; that render path builds joins per-fragment and swallows
+/// the fold's loud error, silently dropping the fragment's JOIN. The gate
+/// helper uses this to treat the whole denorm family as out of scope (old,
+/// main-identical outer placement — tracked residual on #615).
+pub(super) fn subtree_contains_denormalized_union(plan: &LogicalPlan) -> bool {
+    if is_denormalized_union(plan) {
+        return true;
+    }
+    match plan {
+        LogicalPlan::GraphRel(gr) => {
+            subtree_contains_denormalized_union(&gr.left)
+                || subtree_contains_denormalized_union(&gr.center)
+                || subtree_contains_denormalized_union(&gr.right)
+        }
+        LogicalPlan::GraphNode(gn) => subtree_contains_denormalized_union(&gn.input),
+        LogicalPlan::Filter(f) => subtree_contains_denormalized_union(&f.input),
+        LogicalPlan::Projection(p) => subtree_contains_denormalized_union(&p.input),
+        LogicalPlan::CartesianProduct(cp) => {
+            subtree_contains_denormalized_union(&cp.left)
+                || subtree_contains_denormalized_union(&cp.right)
+        }
+        LogicalPlan::Union(u) => u
+            .inputs
+            .iter()
+            .any(|i| subtree_contains_denormalized_union(i)),
+        _ => false,
+    }
+}
+
 /// Check if a GraphRel is an OPTIONAL denormalized pattern with a Union on
 /// either side (standalone anchor node scan). This pattern requires special
 /// CTE + LEFT JOIN rendering.
@@ -4595,6 +4629,12 @@ pub(super) fn optional_anchor_gate_conjuncts(
         // same scope precedent as #603.
         || gr.was_undirected == Some(true)
         || is_optional_denorm_union_graphrel(gr)
+        // #611: chained denorm — the Union sits DEEPER than a direct child;
+        // see `subtree_contains_denormalized_union`. Both classification
+        // sites (collect drop + join fold) go through this helper, so the
+        // whole denorm family keeps its old placement consistently.
+        || subtree_contains_denormalized_union(&gr.left)
+        || subtree_contains_denormalized_union(&gr.right)
     {
         return Vec::new();
     }
@@ -4627,6 +4667,43 @@ pub(super) fn optional_anchor_gate_conjuncts(
 /// For VLP patterns (variable_length is Some), predicates are already handled in the CTE,
 /// so they are skipped here to avoid duplication in the outer query.
 pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr> {
+    // #611: gate conjuncts are dropped against the PLAN-WIDE set of tagged
+    // optional-clause anchor gates, not just the current GraphRel's own tag.
+    // FilterIntoGraphRel pools per-alias filters onto whichever GraphRel
+    // FIRST references the alias — with multiple OPTIONAL clauses (or a
+    // chained-optional entry) the conjunct's `where_predicate` copy can land
+    // on a DIFFERENT GraphRel than the one carrying its tag, and the per-gr
+    // check then failed to drop it, leaving a row-dropping duplicate in the
+    // outer WHERE alongside the joined gate.
+    let mut plan_wide_gates = Vec::new();
+    collect_optional_anchor_gates(plan, &mut plan_wide_gates);
+    collect_graphrel_predicates_inner(plan, &plan_wide_gates)
+}
+
+/// #611: gather `optional_anchor_gate_conjuncts` from every GraphRel in the
+/// tree (same traversal as `collect_graphrel_predicates_inner`).
+fn collect_optional_anchor_gates(plan: &LogicalPlan, out: &mut Vec<LogicalExpr>) {
+    match plan {
+        LogicalPlan::GraphRel(gr) => {
+            out.extend(optional_anchor_gate_conjuncts(gr));
+            collect_optional_anchor_gates(&gr.left, out);
+            collect_optional_anchor_gates(&gr.center, out);
+            collect_optional_anchor_gates(&gr.right, out);
+        }
+        LogicalPlan::GraphNode(gn) => collect_optional_anchor_gates(&gn.input, out),
+        LogicalPlan::Filter(f) => collect_optional_anchor_gates(&f.input, out),
+        LogicalPlan::CartesianProduct(cp) => {
+            collect_optional_anchor_gates(&cp.left, out);
+            collect_optional_anchor_gates(&cp.right, out);
+        }
+        _ => {}
+    }
+}
+
+fn collect_graphrel_predicates_inner(
+    plan: &LogicalPlan,
+    plan_wide_gates: &[LogicalExpr],
+) -> Vec<RenderExpr> {
     let mut predicates = Vec::new();
     match plan {
         LogicalPlan::GraphRel(gr) => {
@@ -4656,9 +4733,15 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
                         gr.alias
                     );
                     // Still recurse into children to collect non-VLP predicates
-                    predicates.extend(collect_graphrel_predicates(&gr.left));
-                    predicates.extend(collect_graphrel_predicates(&gr.center));
-                    predicates.extend(collect_graphrel_predicates(&gr.right));
+                    predicates.extend(collect_graphrel_predicates_inner(&gr.left, plan_wide_gates));
+                    predicates.extend(collect_graphrel_predicates_inner(
+                        &gr.center,
+                        plan_wide_gates,
+                    ));
+                    predicates.extend(collect_graphrel_predicates_inner(
+                        &gr.right,
+                        plan_wide_gates,
+                    ));
                     return predicates;
                 }
                 // Fixed-length VLP: fall through to include predicates
@@ -4745,9 +4828,18 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
                             None => {
                                 // Every conjunct was anchor-only and already covered
                                 // by the CTE — nothing left to add for this GraphRel.
-                                predicates.extend(collect_graphrel_predicates(&gr.left));
-                                predicates.extend(collect_graphrel_predicates(&gr.center));
-                                predicates.extend(collect_graphrel_predicates(&gr.right));
+                                predicates.extend(collect_graphrel_predicates_inner(
+                                    &gr.left,
+                                    plan_wide_gates,
+                                ));
+                                predicates.extend(collect_graphrel_predicates_inner(
+                                    &gr.center,
+                                    plan_wide_gates,
+                                ));
+                                predicates.extend(collect_graphrel_predicates_inner(
+                                    &gr.right,
+                                    plan_wide_gates,
+                                ));
                                 return predicates;
                             }
                         }
@@ -4841,14 +4933,15 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
                     // `apply_optional_node_pre_filters` (join_builder.rs) adds
                     // them to the join via the SAME helper, so dropping them
                     // here can never lose a predicate.
-                    let anchor_gate_conjuncts = optional_anchor_gate_conjuncts(gr);
+                    // #611: consult the PLAN-WIDE gate set (see wrapper doc) —
+                    // this GraphRel may carry another clause's pooled conjunct.
                     let all_preds = split_and_predicates_logical(&pred);
                     for p in all_preds {
                         let refs_only_rel = anchor_connection_is_set
                             && references_only_alias_logical(&p, &gr.alias);
                         let refs_only_optional = references_only_alias_logical(&p, optional)
                             && optional_only_is_recoverable;
-                        let moved_to_join_on = anchor_gate_conjuncts.contains(&p);
+                        let moved_to_join_on = plan_wide_gates.contains(&p);
 
                         // Keep if it references multiple aliases.
                         // Filter out if it references ONLY rel, ONLY the
@@ -4861,19 +4954,40 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
                         }
                     }
                 } else {
-                    // Non-optional: include all predicates
+                    // Non-optional: include all predicates.
+                    //
+                    // #611 NOTE — deliberately NOT dropping plan-wide gate
+                    // conjuncts here: when the base MATCH is itself a pattern,
+                    // its GraphRel is the first to reference the shared anchor
+                    // alias, and FilterIntoGraphRel's covered-aliases dedup
+                    // leaves exactly ONE pooled copy of a conjunct that may
+                    // serve BOTH a base-MATCH WHERE (mandatory, row-dropping)
+                    // and an optional clause's gate. Dropping it here would
+                    // silently lift the base constraint — a worse wrong than
+                    // the redundant outer copy (which merely keeps the
+                    // pattern-base-carrier variant of #611 at its old,
+                    // main-identical behavior; tracked as a #611 follow-up).
                     if let Ok(render_expr) = RenderExpr::try_from(pred) {
                         predicates.push(render_expr);
                     }
                 }
             }
             // Recursively collect from children
-            predicates.extend(collect_graphrel_predicates(&gr.left));
-            predicates.extend(collect_graphrel_predicates(&gr.center));
-            predicates.extend(collect_graphrel_predicates(&gr.right));
+            predicates.extend(collect_graphrel_predicates_inner(&gr.left, plan_wide_gates));
+            predicates.extend(collect_graphrel_predicates_inner(
+                &gr.center,
+                plan_wide_gates,
+            ));
+            predicates.extend(collect_graphrel_predicates_inner(
+                &gr.right,
+                plan_wide_gates,
+            ));
         }
         LogicalPlan::GraphNode(gn) => {
-            predicates.extend(collect_graphrel_predicates(&gn.input));
+            predicates.extend(collect_graphrel_predicates_inner(
+                &gn.input,
+                plan_wide_gates,
+            ));
         }
         LogicalPlan::Filter(f) => {
             // 🔧 OPTIONAL MATCH FIX: Extract Filter predicates that wrap GraphNode
@@ -4898,11 +5012,14 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
                 predicates.push(render_expr);
             }
             // Recurse into input to collect any other predicates
-            predicates.extend(collect_graphrel_predicates(&f.input));
+            predicates.extend(collect_graphrel_predicates_inner(&f.input, plan_wide_gates));
         }
         LogicalPlan::CartesianProduct(cp) => {
-            predicates.extend(collect_graphrel_predicates(&cp.left));
-            predicates.extend(collect_graphrel_predicates(&cp.right));
+            predicates.extend(collect_graphrel_predicates_inner(&cp.left, plan_wide_gates));
+            predicates.extend(collect_graphrel_predicates_inner(
+                &cp.right,
+                plan_wide_gates,
+            ));
         }
         LogicalPlan::ViewScan(_scan) => {
             // ViewScan.view_filter should be empty after CleanupViewScanFilters optimizer
