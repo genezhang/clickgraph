@@ -1276,9 +1276,14 @@ impl TryFrom<LogicalExpr> for RenderExpr {
                 })
             }
             LogicalExpr::PatternCount(pc) => {
-                // Generate the pattern count SQL (correlated COUNT(*) subquery)
+                // Generate the pattern count SQL (correlated COUNT(*) subquery).
+                // Decorrelation turns the scalar subquery into a LEFT JOIN, so an
+                // outer row with zero pattern matches yields NULL rather than 0;
+                // size() must return 0 there (#599). coalesce is dialect-neutral.
                 let sql = generate_pattern_count_sql(&pc.pattern)?;
-                RenderExpr::PatternCount(PatternCount { sql })
+                RenderExpr::PatternCount(PatternCount {
+                    sql: format!("coalesce({}, 0)", sql),
+                })
             }
             LogicalExpr::Lambda(lambda) => {
                 // Lambda expressions are rendered directly to ClickHouse lambda syntax

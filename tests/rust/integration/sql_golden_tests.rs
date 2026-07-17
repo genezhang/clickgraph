@@ -6063,6 +6063,46 @@ async fn size_pattern_count_vlp_and_multi_type_error_cleanly() {
     );
 }
 
+/// #599: `size((pattern))` renders as a bare correlated `COUNT(*)` scalar
+/// subquery; ClickHouse decorrelates that into a LEFT JOIN, so an outer row
+/// with ZERO pattern matches yields NULL instead of 0 — silently breaking
+/// `size(...) = 0` filters, comparisons, arithmetic, and CASE branches on
+/// zero-degree nodes. Every PatternCount rendering (all three direction
+/// variants and the multi-hop chain, in RETURN and WHERE positions alike)
+/// must come out wrapped in `coalesce(..., 0)`.
+#[tokio::test]
+async fn size_pattern_count_coalesces_null_to_zero() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cases = [
+        // Outgoing, RETURN position (the #599 repro).
+        "MATCH (a:User) RETURN a.user_id, size((a)-[:FOLLOWS]->()) AS c",
+        // Incoming.
+        "MATCH (a:User) RETURN a.user_id, size((a)<-[:FOLLOWS]-()) AS c",
+        // Undirected.
+        "MATCH (a:User) RETURN a.user_id, size((a)-[:FOLLOWS]-()) AS c",
+        // Multi-hop chain (generate_multi_hop_pattern_count_sql path).
+        "MATCH (a:User) RETURN a.user_id, size((a)-[:FOLLOWS]->()-[:LIKED]->()) AS c",
+        // WHERE position — `NULL = 0` is never true, so without the wrap
+        // zero-degree nodes silently vanish from this filter.
+        "MATCH (a:User) WHERE size((a)-[:FOLLOWS]->()) = 0 RETURN a.user_id",
+        // Post-WITH barrier position.
+        "MATCH (a:User) WITH a WHERE size((a)-[:FOLLOWS]->()) = 0 RETURN a.user_id",
+    ];
+    for cypher in cases {
+        let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            sql.contains("coalesce((SELECT COUNT(*)"),
+            "[{cypher}] pattern-count subquery must be wrapped in \
+             coalesce(..., 0) so zero matches count as 0, not NULL:\n{sql}"
+        );
+        assert!(
+            !sql.contains(", (SELECT COUNT(*)") && !sql.contains("= (SELECT COUNT(*)"),
+            "[{cypher}] found an UNwrapped bare correlated COUNT(*) \
+             subquery:\n{sql}"
+        );
+    }
+}
+
 /// #466 round 4 (adversarial-review blocking finding): `id(alias)` on a
 /// `pattern_union` endpoint must resolve LABEL-AGNOSTICALLY to the CTE's
 /// start_id/end_id — never to ONE label's id column.
