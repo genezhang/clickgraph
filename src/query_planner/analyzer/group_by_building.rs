@@ -250,6 +250,17 @@ impl GroupByBuilding {
     /// The pass-through-elimination check: if `projection` is a pure alias
     /// pass-through of the WITH Projection beneath its GroupBy child, return
     /// that GroupBy child (the plan the Projection collapses to).
+    ///
+    /// Known one-level limit (review-verified unreachable): for STACKED
+    /// pass-through Projections `P2(P1(GroupBy(Projection)))` where P1's
+    /// elimination fired as a pure `Transformed::No`, the old walker would
+    /// also eliminate P2; the recompute sites here only look one child deep.
+    /// That shape requires a `GroupBy(Projection)` to exist BEFORE this pass
+    /// runs, and no analyzer stage constructs one before GroupByBuilding —
+    /// the elimination can only fire against a GroupBy freshly built in this
+    /// pass (a `Transformed::Yes` child), where the driver splices it in and
+    /// the ancestor arms see it directly. If a future pass starts emitting
+    /// pre-built `GroupBy(Projection)` shapes, revisit this.
     fn passthrough_eliminated(projection: &Projection) -> Option<&Arc<LogicalPlan>> {
         let LogicalPlan::GroupBy(group_by) = projection.input.as_ref() else {
             return None;
