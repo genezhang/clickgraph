@@ -154,129 +154,28 @@ impl OptimizerPass for ViewOptimizer {
         logical_plan: Arc<LogicalPlan>,
         plan_ctx: &mut PlanCtx,
     ) -> OptimizerResult<Transformed<Arc<LogicalPlan>>> {
-        let transformed_plan = match logical_plan.as_ref() {
-            LogicalPlan::ViewScan(view_scan) => {
-                let optimized_scan = self.optimize_view_scan(view_scan, plan_ctx)?;
-                match optimized_scan {
+        // P1.4: exhaustive bottom-up driver replaces the hand-rolled per-variant
+        // dispatch. The only real rewrite is on ViewScan (optimizing the scan in
+        // isolation); every other arm was pure recursion, which transform_up
+        // supplies for free. transform_up additionally recurses into
+        // `ViewScan.input` (a real child the old walker treated as a leaf) — a
+        // no-op divergence here since optimize_view_scan reads only the scan's
+        // own `view_filter`/property-access, never its input, and the goldens +
+        // 1,082-query corpus render byte-identical.
+        LogicalPlan::transform_up(&logical_plan, &mut |node| {
+            if let LogicalPlan::ViewScan(view_scan) = node.as_ref() {
+                Ok(match self.optimize_view_scan(view_scan, plan_ctx)? {
                     Transformed::Yes(new_scan) => {
                         Transformed::Yes(Arc::new(LogicalPlan::ViewScan(new_scan)))
                     }
-                    Transformed::No(scan) => Transformed::No(Arc::new(LogicalPlan::ViewScan(scan))),
-                }
+                    // Preserve the original Arc identity on no-op so transform_up
+                    // can keep the whole subtree unchanged.
+                    Transformed::No(_) => Transformed::No(Arc::clone(node)),
+                })
+            } else {
+                Ok(Transformed::No(Arc::clone(node)))
             }
-
-            // Recursively optimize child plans for non-ViewScan nodes
-            LogicalPlan::GraphNode(graph_node) => {
-                let child_tf = self.optimize(graph_node.input.clone(), plan_ctx)?;
-                graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
-            }
-            LogicalPlan::GraphRel(graph_rel) => {
-                let left_tf = self.optimize(graph_rel.left.clone(), plan_ctx)?;
-                let center_tf = self.optimize(graph_rel.center.clone(), plan_ctx)?;
-                let right_tf = self.optimize(graph_rel.right.clone(), plan_ctx)?;
-                graph_rel.rebuild_or_clone(left_tf, center_tf, right_tf, logical_plan.clone())
-            }
-            LogicalPlan::Filter(filter) => {
-                let child_tf = self.optimize(filter.input.clone(), plan_ctx)?;
-                filter.rebuild_or_clone(child_tf, logical_plan.clone())
-            }
-            LogicalPlan::Projection(projection) => {
-                let child_tf = self.optimize(projection.input.clone(), plan_ctx)?;
-                projection.rebuild_or_clone(child_tf, logical_plan.clone())
-            }
-            LogicalPlan::GroupBy(group_by) => {
-                let child_tf = self.optimize(group_by.input.clone(), plan_ctx)?;
-                group_by.rebuild_or_clone(child_tf, logical_plan.clone())
-            }
-            LogicalPlan::OrderBy(order_by) => {
-                let child_tf = self.optimize(order_by.input.clone(), plan_ctx)?;
-                order_by.rebuild_or_clone(child_tf, logical_plan.clone())
-            }
-            LogicalPlan::Skip(skip) => {
-                let child_tf = self.optimize(skip.input.clone(), plan_ctx)?;
-                skip.rebuild_or_clone(child_tf, logical_plan.clone())
-            }
-            LogicalPlan::Limit(limit) => {
-                let child_tf = self.optimize(limit.input.clone(), plan_ctx)?;
-                limit.rebuild_or_clone(child_tf, logical_plan.clone())
-            }
-            LogicalPlan::Union(union) => {
-                let mut inputs_tf: Vec<Transformed<Arc<LogicalPlan>>> = vec![];
-                for input_plan in union.inputs.iter() {
-                    let child_tf = self.optimize(input_plan.clone(), plan_ctx)?;
-                    inputs_tf.push(child_tf);
-                }
-                union.rebuild_or_clone(inputs_tf, logical_plan.clone())
-            }
-
-            // Base cases - no further optimization needed
-            LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
-            LogicalPlan::Cte(cte) => {
-                let child_tf = self.optimize(cte.input.clone(), plan_ctx)?;
-                cte.rebuild_or_clone(child_tf, logical_plan.clone())
-            }
-            LogicalPlan::GraphJoins(graph_joins) => {
-                let child_tf = self.optimize(graph_joins.input.clone(), plan_ctx)?;
-                graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
-            }
-            LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
-            LogicalPlan::Unwind(u) => {
-                let child_tf = self.optimize(u.input.clone(), plan_ctx)?;
-                match child_tf {
-                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
-                        crate::query_planner::logical_plan::Unwind {
-                            input: new_input,
-                            expression: u.expression.clone(),
-                            alias: u.alias.clone(),
-                            label: u.label.clone(),
-                            tuple_properties: u.tuple_properties.clone(),
-                        },
-                    ))),
-                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
-                }
-            }
-            LogicalPlan::CartesianProduct(cp) => {
-                let transformed_left = self.optimize(cp.left.clone(), plan_ctx)?;
-                let transformed_right = self.optimize(cp.right.clone(), plan_ctx)?;
-
-                if matches!(
-                    (&transformed_left, &transformed_right),
-                    (Transformed::No(_), Transformed::No(_))
-                ) {
-                    Transformed::No(logical_plan.clone())
-                } else {
-                    let new_cp = crate::query_planner::logical_plan::CartesianProduct {
-                        left: match transformed_left {
-                            Transformed::Yes(p) => p,
-                            Transformed::No(p) => p,
-                        },
-                        right: match transformed_right {
-                            Transformed::Yes(p) => p,
-                            Transformed::No(p) => p,
-                        },
-                        is_optional: cp.is_optional,
-                        join_condition: cp.join_condition.clone(),
-                    };
-                    Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(new_cp)))
-                }
-            }
-            LogicalPlan::WithClause(with_clause) => {
-                let child_tf = self.optimize(with_clause.input.clone(), plan_ctx)?;
-                match child_tf {
-                    Transformed::Yes(new_input) => Transformed::Yes(Arc::new(
-                        LogicalPlan::WithClause(with_clause.with_new_input(new_input)),
-                    )),
-                    Transformed::No(_) => Transformed::No(logical_plan.clone()),
-                }
-            }
-            // Write variants — view optimization does not apply.
-            LogicalPlan::Create(_)
-            | LogicalPlan::SetProperties(_)
-            | LogicalPlan::Delete(_)
-            | LogicalPlan::Remove(_) => Transformed::No(logical_plan.clone()),
-        };
-
-        Ok(transformed_plan)
+        })
     }
 }
 
