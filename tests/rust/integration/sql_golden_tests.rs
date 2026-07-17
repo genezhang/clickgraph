@@ -6078,11 +6078,14 @@ async fn size_pattern_count_vlp_and_multi_type_error_cleanly() {
 async fn recursive_cte_union_wrapped_in_subquery_609() {
     let schema = load_schema(SchemaId::Standard.yaml_path());
 
-    // Undirected VLP, endpoint filter, NO ORDER BY (the #609 repro).
+    // Two-arm undirected recursive CTEs + bare top-level UNION, NO ORDER BY.
+    // (#609's original repro was an undirected range VLP; #617 turned that
+    // shape into a SINGLE walk with no union, so the still-two-arm undirected
+    // shortestPath exercises the wrapper instead.)
     let sql = render(
         &schema,
-        "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User) WHERE b.user_id > 5 \
-         RETURN a.user_id, b.user_id",
+        "MATCH p = shortestPath((a:User)-[:FOLLOWS*1..3]-(b:User)) WHERE a.user_id = 1 \
+         RETURN b.user_id, length(p)",
         SqlDialect::ClickHouse,
     )
     .await;
@@ -12019,6 +12022,107 @@ mod vlp_family_remnants_544_545_528_525 {
         );
     }
 
+    /// #617: undirected single-type VLP compiles to ONE directed walk over a
+    /// doubled-edge CTE — the former two-monotone-arm Union could not
+    /// represent mixed-direction paths (a→m←b) and silently under-counted
+    /// 40-60% at >=2 hops (live-verified vs a trail-semantics oracle:
+    /// *2..2 38→64, *1..2 58→84, *2..3 92→226, *3..3 54→162).
+    #[tokio::test]
+    async fn undirected_vlp_single_doubled_edge_walk_617() {
+        let schema = load_schema(SchemaId::Standard.yaml_path());
+
+        // Range: single recursive walk over the doubled-edge CTE, trail
+        // uniqueness on ORIGINAL-orientation identity.
+        let sql = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User) RETURN count(*)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("undir_edges_a_b AS (") && sql.contains("vlp_a_b"),
+            "range undirected VLP must walk the doubled-edge CTE: {sql}"
+        );
+        assert!(
+            !sql.contains("vlp_b_a"),
+            "range undirected VLP must not emit a reverse arm: {sql}"
+        );
+        assert!(
+            sql.contains("NOT has(vp.path_edges, tuple(rel.__cg_orig_from, rel.__cg_orig_to))"),
+            "trail uniqueness must compare original-orientation identity: {sql}"
+        );
+        // Both orientations of every edge, original identity carried along.
+        assert!(
+            sql.contains("SELECT e.followed_id AS follower_id, e.follower_id AS followed_id")
+                && sql.contains("e.follower_id AS __cg_orig_from"),
+            "doubled-edge CTE must emit the reverse orientation with original identity: {sql}"
+        );
+
+        // Exact >=2 hops: flat chain over the SAME doubled-edge CTE, pairwise
+        // uniqueness on the original-identity columns.
+        let sql = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*2..2]-(b:User) RETURN a.name, b.name",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("JOIN undir_edges_a_b AS r1")
+                && sql.contains("JOIN undir_edges_a_b AS r2"),
+            "exact-bound undirected chain must hop over the doubled-edge CTE: {sql}"
+        );
+        assert!(
+            sql.contains(
+                "NOT (r1.__cg_orig_from = r2.__cg_orig_from AND r1.__cg_orig_to = r2.__cg_orig_to)"
+            ),
+            "pairwise uniqueness must compare original-orientation identity: {sql}"
+        );
+        assert_eq!(
+            sql.matches("UNION ALL").count(),
+            1, // the doubled-edge CTE's own two orientations — no query arms
+            "exact-bound undirected must be a single arm: {sql}"
+        );
+
+        // *1..1 is complete under the legacy two-arm split — unchanged.
+        let sql = render(
+            &schema,
+            "MATCH (a:User)-[:FOLLOWS*1..1]-(b:User) RETURN count(*)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("UNION ALL") && !sql.contains("undir_edges"),
+            "*1..1 undirected must stay on the two-arm path: {sql}"
+        );
+
+        // shortestPath undirected stays on the legacy two-arm split.
+        let sql = render(
+            &schema,
+            "MATCH p = shortestPath((a:User)-[:FOLLOWS*1..3]-(b:User)) \
+             WHERE a.user_id = 1 RETURN b.user_id, length(p)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("vlp_b_a") && !sql.contains("undir_edges"),
+            "undirected shortestPath must keep the two-arm split: {sql}"
+        );
+
+        // OPTIONAL undirected range: LEFT JOIN onto the single-walk CTE
+        // (was Code 47 on the two-arm plan).
+        let sql = render(
+            &schema,
+            "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS*1..2]-(b:User) \
+             RETURN a.name, count(b)",
+            SqlDialect::ClickHouse,
+        )
+        .await;
+        assert!(
+            sql.contains("LEFT JOIN vlp_") && sql.contains("undir_edges_a_b"),
+            "OPTIONAL undirected range must LEFT JOIN the single-walk CTE: {sql}"
+        );
+    }
+
     /// #544 (guard must NOT over-fire): an undirected single VLP splits into
     /// two direction-variant Union branches that REUSE the same alias pair —
     /// each branch has exactly one VLP and must not trip the per-scope count.
@@ -12032,9 +12136,21 @@ mod vlp_family_remnants_544_545_528_525 {
             SqlDialect::ClickHouse,
         )
         .await;
+        // #617: undirected single-type VLP renders as ONE doubled-edge walk
+        // (undir_edges_* + a single vlp CTE) — the former two-direction arms
+        // (vlp_u1_u2 + vlp_u2_u1) under-counted mixed-direction paths. The
+        // #544 guard must leave the chained AUTHORED continuation intact.
         assert!(
-            sql.contains("vlp_u1_u2") && sql.contains("vlp_u2_u1"),
-            "undirected VLP must still render both direction CTEs: {sql}"
+            sql.contains("vlp_u1_u2") && sql.contains("undir_edges_u1_u2"),
+            "undirected VLP must render the doubled-edge single walk: {sql}"
+        );
+        assert!(
+            !sql.contains("vlp_u2_u1"),
+            "undirected VLP must NOT render a reverse direction arm: {sql}"
+        );
+        assert!(
+            sql.contains("authored_bench"),
+            "chained AUTHORED hop must survive the #544 guard: {sql}"
         );
     }
 

@@ -74,6 +74,87 @@ fn emit_edge_cycle_check(edge_expr: &str) -> String {
     format!("NOT {array_contains}(vp.path_edges, {edge_expr})")
 }
 
+/// Original-orientation edge-identity column names projected by the
+/// doubled-edge CTE (#617). They carry the physical edge's `(from, to)`
+/// regardless of which orientation a row represents, so trail-uniqueness
+/// (`path_edges` for recursive walks, pairwise inequality for flat exact-bound
+/// chains) treats both orientations of one edge as the same relationship.
+pub const DOUBLED_EDGES_ORIG_FROM: &str = "__cg_orig_from";
+pub const DOUBLED_EDGES_ORIG_TO: &str = "__cg_orig_to";
+
+/// Name of the doubled-edge CTE for the pattern's endpoint cypher aliases
+/// (#617). Deliberately NOT `vlp_`-prefixed: several render passes
+/// special-case `vlp_`-named CTEs (column pruning, outer-alias mapping) and
+/// must treat this one as a plain table source. Shared by the recursive-walk
+/// generator and the flat exact-bound join expansion.
+pub fn undirected_doubled_edges_cte_name(start_alias: &str, end_alias: &str) -> String {
+    format!("undir_edges_{start_alias}_{end_alias}")
+}
+
+/// #617: enumerate the edge-table columns a doubled-edge CTE must project
+/// besides the (swapped) from/to id columns: physical column list, mapped
+/// property columns, and polymorphic discriminator / edge-id columns from the
+/// resolved relationship schema. Sorted + deduped (BTreeSet) for deterministic
+/// SQL; the from/to id columns themselves are excluded.
+pub fn doubled_edges_passthrough_columns(
+    schema: &crate::graph_catalog::GraphSchema,
+    rel_type: Option<&str>,
+    rel_table: &str,
+) -> Vec<String> {
+    let rel_table_name = rel_table.rsplit('.').next().unwrap_or_default();
+    let by_type = rel_type.and_then(|t| {
+        schema.get_relationships_schema_opt(t).or_else(|| {
+            let plain = t.split("::").next().unwrap_or(t);
+            schema.rel_schemas_for_type(plain).into_iter().next()
+        })
+    });
+    let by_table = || {
+        schema
+            .get_relationships_schemas()
+            .values()
+            .find(|r| r.table_name == rel_table_name)
+    };
+    by_type
+        .or_else(by_table)
+        .map(|rel_schema| rel_schema.doubled_edge_passthrough_columns())
+        .unwrap_or_default()
+}
+
+/// #617: body of a doubled-edge CTE — each physical edge emitted in both
+/// orientations under the ORIGINAL from/to column names (so joins written for
+/// the raw edge table work unchanged), plus original-identity columns (see
+/// [`DOUBLED_EDGES_ORIG_FROM`]). `passthrough_cols` are additional edge-table
+/// columns projected verbatim (property/discriminator/edge-id columns);
+/// callers must exclude the from/to columns and provide deterministic order.
+///
+/// Dialect-neutral: plain column aliases + UNION ALL only.
+pub fn build_doubled_edges_cte_body(
+    table_ref: &str,
+    from_col: &str,
+    to_col: &str,
+    passthrough_cols: &[String],
+) -> String {
+    let q = crate::clickhouse_query_generator::quote_identifier;
+    // Every column reference MUST be table-qualified: the reverse arm aliases
+    // `e.to AS from`, and an UNQUALIFIED later reference to `from` (for the
+    // identity column) resolves to that new ALIAS in ClickHouse, silently
+    // flipping the edge identity on reverse rows (breaks trail-uniqueness in
+    // both directions — verified live). `e.<col>` binds to the raw column.
+    let passthrough = passthrough_cols
+        .iter()
+        .map(|c| format!(", e.{}", q(c)))
+        .collect::<Vec<_>>()
+        .join("");
+    let (from_q, to_q) = (q(from_col), q(to_col));
+    format!(
+        "    SELECT e.{from_q}, e.{to_q}{passthrough}, e.{from_q} AS {orig_from}, e.{to_q} AS {orig_to} FROM {table_ref} AS e\n    \
+         UNION ALL\n    \
+         SELECT e.{to_q} AS {from_q}, e.{from_q} AS {to_q}{passthrough}, e.{from_q} AS {orig_from}, e.{to_q} AS {orig_to} FROM {table_ref} AS e",
+        orig_from = DOUBLED_EDGES_ORIG_FROM,
+        orig_to = DOUBLED_EDGES_ORIG_TO,
+    )
+}
+
 /// Emit a dialect-correct array literal. CH: `[a, b]`. Spark: `array(a, b)`.
 /// Thin shorthand over `FunctionMapper::array_literal` — VLP code builds
 /// these in many places (path_nodes, path_relationships, scalar→array
@@ -158,6 +239,12 @@ pub struct VariableLengthCteGenerator<'a> {
     /// True when the original edge direction is Either (undirected).
     /// BFS mode generates two UNION ALL branches for both traversal directions.
     pub is_undirected: bool,
+    /// #617: true when this undirected VLP was normalized by the analyzer to a
+    /// SINGLE directed walk over a doubled-edge set. NOT set for the arms of a
+    /// legacy two-arm split (which also carry `is_undirected`) — gating on
+    /// `is_undirected` here would turn each monotone arm into a complete
+    /// undirected walk and double-count every path.
+    pub undirected_single_walk: bool,
 }
 
 /// Configuration for weighted shortest path using a pre-computed edge weight CTE
@@ -379,6 +466,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             needs_path_relationships: true,
             use_bfs_mode: false,
             is_undirected: false,
+            undirected_single_walk: false,
         }
     }
 
@@ -454,6 +542,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             needs_path_relationships: true,
             use_bfs_mode: false,
             is_undirected: false,
+            undirected_single_walk: false,
         }
     }
 
@@ -858,6 +947,80 @@ impl<'a> VariableLengthCteGenerator<'a> {
             && !self.is_heterogeneous_polymorphic_path()
     }
 
+    /// #617: whether this VLP walks a DOUBLED-EDGE set instead of the raw edge
+    /// table. True for the single-type undirected VLP the analyzer normalized
+    /// (`was_undirected` → `is_undirected` here) on the standard/polymorphic
+    /// strategy. Each physical edge appears in both orientations in a sibling
+    /// `<cte>_edges` CTE, carrying its ORIGINAL `(from, to)` as
+    /// `__cg_orig_from`/`__cg_orig_to` so trail-uniqueness still deduplicates a
+    /// physical edge regardless of traversal orientation. The walk itself stays
+    /// the ordinary directed recursion — per-hop direction freedom comes from
+    /// the doubled rows (fixes the two-monotone-arm under-count).
+    ///
+    /// Excludes shortestPath (still on the legacy two-arm split — the reverse
+    /// arm of that split also arrives here with `is_undirected` set), BFS and
+    /// weighted modes, and every non-standard strategy (those generators keep
+    /// their legacy behavior; the analyzer scope guarantees in-scope patterns
+    /// are standard/polymorphic, so these conditions are belt-and-braces).
+    fn uses_doubled_edges(&self) -> bool {
+        // `undirected_single_walk` is derived from the ONE shared scope
+        // predicate (`undirected_vlp_single_walk_core`), which already
+        // guarantees a plain (standard/polymorphic) same-label edge table —
+        // no raw schema-flag re-checks here (axis-dispatch rule). The mode
+        // exclusions below are query-shape, not schema-pattern, axes.
+        self.undirected_single_walk
+            && self.shortest_path_mode.is_none()
+            && !self.use_bfs_mode
+            && self.weight_cte.is_none()
+            && !self.is_heterogeneous_polymorphic_path()
+    }
+
+    /// Name of the doubled-edge sibling CTE (see [`Self::uses_doubled_edges`]).
+    fn doubled_edges_cte_name(&self) -> String {
+        undirected_doubled_edges_cte_name(&self.start_cypher_alias, &self.end_cypher_alias)
+    }
+
+    /// The relation the base/recursive standard arms join for each hop:
+    /// the doubled-edge CTE when [`Self::uses_doubled_edges`], else the raw
+    /// edge table.
+    fn rel_source(&self) -> String {
+        if self.uses_doubled_edges() {
+            self.doubled_edges_cte_name()
+        } else {
+            self.format_table_name(&self.relationship_table)
+        }
+    }
+
+    /// Passthrough columns the doubled-edge CTE must project besides the
+    /// swapped from/to id columns. Delegates to the schema catalog via
+    /// [`doubled_edges_passthrough_columns`] (the generator's discriminator
+    /// and edge-id fields are themselves populated from that same schema, so
+    /// no local merge is needed).
+    fn doubled_edges_passthrough_columns(&self) -> Vec<String> {
+        doubled_edges_passthrough_columns(
+            self.schema,
+            self.relationship_types
+                .as_ref()
+                .and_then(|types| types.first().map(String::as_str)),
+            &self.relationship_table,
+        )
+    }
+
+    /// Build the doubled-edge CTE definition text (`name AS (...)`, no trailing
+    /// comma). See [`Self::uses_doubled_edges`] for semantics.
+    fn generate_doubled_edges_cte(&self) -> String {
+        format!(
+            "{} AS (\n{}\n)",
+            self.doubled_edges_cte_name(),
+            build_doubled_edges_cte_body(
+                &self.format_table_name(&self.relationship_table),
+                &self.relationship_from_column,
+                &self.relationship_to_column,
+                &self.doubled_edges_passthrough_columns(),
+            )
+        )
+    }
+
     /// Extract target node ID value from end_node_filters for early termination in recursive case.
     ///
     /// For shortestPath queries, once a path reaches the target node, extending it further
@@ -891,19 +1054,47 @@ impl<'a> VariableLengthCteGenerator<'a> {
         Some(format!("vp.end_id != {}", value_part))
     }
 
+    /// #617: on the doubled-edge walk, an edge-identity column reference must
+    /// resolve to the ORIGINAL-orientation value: the from/to id columns are
+    /// swapped in reverse-orientation rows, so referencing them directly would
+    /// give one physical edge two distinct identities (breaking
+    /// trail-uniqueness). Any other column is orientation-independent and
+    /// passes through unchanged.
+    fn edge_identity_column<'c>(&self, col: &'c str) -> &'c str {
+        if self.uses_doubled_edges() {
+            if col == self.relationship_from_column {
+                return DOUBLED_EDGES_ORIG_FROM;
+            }
+            if col == self.relationship_to_column {
+                return DOUBLED_EDGES_ORIG_TO;
+            }
+        }
+        col
+    }
+
     /// Build edge tuple expression for the base case (first hop)
     /// Returns SQL expression like: `tuple(rel.from_id, rel.to_id)` or `tuple(rel.date, rel.num, ...)`
     fn build_edge_tuple_base(&self) -> String {
         match &self.edge_id {
             Some(Identifier::Single(col)) => {
                 // Single column edge ID: just use that column
-                format!("{}.{}", self.relationship_alias, col)
+                format!(
+                    "{}.{}",
+                    self.relationship_alias,
+                    self.edge_identity_column(col)
+                )
             }
             Some(Identifier::Composite(cols)) => {
                 // Multi-column composite key: build tuple
                 let tuple_elements: Vec<String> = cols
                     .iter()
-                    .map(|col| format!("{}.{}", self.relationship_alias, col))
+                    .map(|col| {
+                        format!(
+                            "{}.{}",
+                            self.relationship_alias,
+                            self.edge_identity_column(col)
+                        )
+                    })
                     .collect();
                 format!(
                     "{}({})",
@@ -913,15 +1104,27 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 )
             }
             None => {
-                // Default: use (from_id, to_id) as edge identity
+                // Default: use (from_id, to_id) as edge identity.
+                // #617 doubled-edge walk: from/to are SWAPPED in reverse-orientation
+                // rows, so identity must come from the original-orientation columns —
+                // otherwise the same physical edge traversed the other way would look
+                // like a different relationship and trail-uniqueness would not hold.
+                let (from_c, to_c) = if self.uses_doubled_edges() {
+                    (DOUBLED_EDGES_ORIG_FROM, DOUBLED_EDGES_ORIG_TO)
+                } else {
+                    (
+                        self.relationship_from_column.as_str(),
+                        self.relationship_to_column.as_str(),
+                    )
+                };
                 format!(
                     "{}({}.{}, {}.{})",
                     crate::sql_generator::function_mapper::current_function_mapper()
                         .tuple_constructor(),
                     self.relationship_alias,
-                    self.relationship_from_column,
+                    from_c,
                     self.relationship_alias,
-                    self.relationship_to_column
+                    to_c
                 )
             }
         }
@@ -932,12 +1135,12 @@ impl<'a> VariableLengthCteGenerator<'a> {
     fn build_edge_tuple_recursive(&self, rel_alias: &str) -> String {
         match &self.edge_id {
             Some(Identifier::Single(col)) => {
-                format!("{}.{}", rel_alias, col)
+                format!("{}.{}", rel_alias, self.edge_identity_column(col))
             }
             Some(Identifier::Composite(cols)) => {
                 let tuple_elements: Vec<String> = cols
                     .iter()
-                    .map(|col| format!("{}.{}", rel_alias, col))
+                    .map(|col| format!("{}.{}", rel_alias, self.edge_identity_column(col)))
                     .collect();
                 format!(
                     "{}({})",
@@ -947,14 +1150,24 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 )
             }
             None => {
+                // #617: original-orientation identity on the doubled-edge walk
+                // (see build_edge_tuple_base).
+                let (from_c, to_c) = if self.uses_doubled_edges() {
+                    (DOUBLED_EDGES_ORIG_FROM, DOUBLED_EDGES_ORIG_TO)
+                } else {
+                    (
+                        self.relationship_from_column.as_str(),
+                        self.relationship_to_column.as_str(),
+                    )
+                };
                 format!(
                     "{}({}.{}, {}.{})",
                     crate::sql_generator::function_mapper::current_function_mapper()
                         .tuple_constructor(),
                     rel_alias,
-                    self.relationship_from_column,
+                    from_c,
                     rel_alias,
-                    self.relationship_to_column
+                    to_c
                 )
             }
         }
@@ -1760,6 +1973,17 @@ impl<'a> VariableLengthCteGenerator<'a> {
             }
         };
 
+        // #617: the doubled-edge walk needs its sibling edge CTE defined before
+        // the recursive CTE. Emit only when the body actually references it —
+        // a *0..0 pattern (zero-hop seed only, no recursive arm) never joins
+        // the edge relation.
+        if self.uses_doubled_edges() {
+            let edges_name = self.doubled_edges_cte_name();
+            if query_body.contains(&edges_name) {
+                return format!("{},\n{}", self.generate_doubled_edges_cte(), sql);
+            }
+        }
+
         sql
     }
 
@@ -2274,7 +2498,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
                 end = self.end_node_alias,
                 rel = self.relationship_alias,
                 start_table = self.format_table_name(&self.start_node_table),
-                rel_table = self.format_table_name(&self.relationship_table),
+                rel_table = self.rel_source(),
                 end_table = self.format_table_name(&self.end_node_table),
                 join_on_rel = join_on_rel,
                 join_on_end = join_on_end
@@ -2658,7 +2882,7 @@ impl<'a> VariableLengthCteGenerator<'a> {
             select = select_clause,
             end = self.end_node_alias,
             cte_name = cte_name, // Use the passed parameter instead of self.cte_name
-            rel_table = self.format_table_name(&self.relationship_table),
+            rel_table = self.rel_source(),
             rel = self.relationship_alias,
             end_table = recursive_end_table,
             join_on_rel = join_on_rel,

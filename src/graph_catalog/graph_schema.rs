@@ -511,6 +511,56 @@ pub struct RelationshipSchema {
 }
 
 impl RelationshipSchema {
+    /// True when the relationship is a plain (separate or polymorphic) edge
+    /// table: NOT an FK-edge (edge = FK column on a node table) and with no
+    /// embedded/denormalized node properties on either side. Schema-pattern
+    /// classification belongs here (axis-dispatch rule); callers outside
+    /// `graph_catalog` should use this instead of testing the raw flags.
+    pub fn is_plain_edge_table(&self) -> bool {
+        !self.is_fk_edge && self.from_node_properties.is_none() && self.to_node_properties.is_none()
+    }
+
+    /// #617: columns a doubled-edge CTE (each edge emitted in both
+    /// orientations for undirected traversal) must project besides the
+    /// swapped from/to id columns: the physical column list, mapped property
+    /// columns, polymorphic discriminator columns, and explicit edge-id
+    /// columns. Sorted + deduped for deterministic SQL; scalar from/to id
+    /// columns are excluded (they are projected — swapped — separately).
+    pub fn doubled_edge_passthrough_columns(&self) -> Vec<String> {
+        let mut cols: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        cols.extend(self.column_names.iter().cloned());
+        for pv in self.property_mappings.values() {
+            if let PropertyValue::Column(c) = pv {
+                cols.insert(c.clone());
+            }
+        }
+        for c in [
+            &self.type_column,
+            &self.from_label_column,
+            &self.to_label_column,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            cols.insert(c.clone());
+        }
+        if let Some(edge_id) = &self.edge_id {
+            match edge_id {
+                Identifier::Single(c) => {
+                    cols.insert(c.clone());
+                }
+                Identifier::Composite(cs) => cols.extend(cs.iter().cloned()),
+            }
+        }
+        if let Identifier::Single(f) = &self.from_id {
+            cols.remove(f);
+        }
+        if let Identifier::Single(t) = &self.to_id {
+            cols.remove(t);
+        }
+        cols.into_iter().collect()
+    }
+
     /// Determine if FINAL should be used for this relationship
     pub fn should_use_final(&self) -> bool {
         // 1. Check explicit override (user choice takes precedence)

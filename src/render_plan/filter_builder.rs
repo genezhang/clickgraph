@@ -348,8 +348,29 @@ impl FilterBuilder for LogicalPlan {
                                 (start, end)
                             };
 
-                            let rel_to_id_str = rel_cols.to_id.to_string();
-                            let rel_from_id_str = rel_cols.from_id.to_string();
+                            // #617: single-walk undirected exact-bound chains hop
+                            // over the doubled-edge CTE; the pairwise uniqueness
+                            // guard must compare the ORIGINAL-orientation identity
+                            // columns — comparing the (swapped) from/to columns
+                            // would treat one edge's two orientations as distinct
+                            // relationships and allow immediate backtracking.
+                            let undirected_doubled = graph_rel.was_undirected == Some(true)
+                                && crate::server::query_context::get_current_schema_with_fallback()
+                                    .map(|s| {
+                                        crate::query_planner::analyzer::bidirectional_union::undirected_vlp_single_walk_core(
+                                            graph_rel, &s,
+                                        )
+                                    })
+                                    .unwrap_or(false);
+                            let (rel_from_id_str, rel_to_id_str) = if undirected_doubled {
+                                use crate::sql_generator::emitters::clickhouse::variable_length_cte as vlc;
+                                (
+                                    vlc::DOUBLED_EDGES_ORIG_FROM.to_string(),
+                                    vlc::DOUBLED_EDGES_ORIG_TO.to_string(),
+                                )
+                            } else {
+                                (rel_cols.from_id.to_string(), rel_cols.to_id.to_string())
+                            };
                             // The pairwise relationship-uniqueness guard references
                             // the r1..rN edge-table aliases of the single-type flat
                             // self-join. Two paths reach here WITHOUT those aliases

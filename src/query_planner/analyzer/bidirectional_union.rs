@@ -17,6 +17,7 @@
 
 use std::sync::Arc;
 
+use crate::graph_catalog::config::Identifier;
 use crate::graph_catalog::expression_parser::PropertyValue;
 use crate::graph_catalog::GraphSchema;
 use crate::query_planner::analyzer::analyzer_pass::{AnalyzerPass, AnalyzerResult};
@@ -38,8 +39,128 @@ impl AnalyzerPass for BidirectionalUnion {
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
-        transform_bidirectional(&logical_plan, plan_ctx, graph_schema)
+        // #617: single-type undirected VLP hops are rewritten to a single
+        // directed walk over a doubled-edge set instead of the two-monotone-arm
+        // Union split (which cannot represent mixed-direction paths and
+        // under-counts 40-60% at >=2 hops). Normalize those hops FIRST so the
+        // split below only fires for the remaining plain undirected hops.
+        let normalized = normalize_undirected_vlp_rels(&logical_plan, graph_schema);
+        match normalized {
+            Some(plan) => {
+                let inner = transform_bidirectional(&plan, plan_ctx, graph_schema)?;
+                Ok(Transformed::Yes(match inner {
+                    Transformed::Yes(p) | Transformed::No(p) => p,
+                }))
+            }
+            None => transform_bidirectional(&logical_plan, plan_ctx, graph_schema),
+        }
     }
+}
+
+/// #617: scope predicate for the doubled-edge single-walk undirected VLP
+/// strategy. When true, the GraphRel is NOT split into two monotone-direction
+/// Union arms; instead it stays a single directed GraphRel marked
+/// `was_undirected` and the render layer walks a doubled-edge set (each edge
+/// in both orientations, carrying its original identity for trail-uniqueness).
+///
+/// In scope: single known relationship type, same-label endpoints, standard or
+/// polymorphic edge table (NOT fk-edge, NOT denormalized), scalar from/to id
+/// columns, non-shortestPath, non-deferred-union, and not exact 1-hop (`*1..1`
+/// is complete under the two-arm split — forward ∪ reverse covers one hop —
+/// so it stays on the legacy path to minimize churn).
+///
+/// Out-of-scope shapes keep the legacy two-arm behavior unchanged.
+pub(crate) fn undirected_vlp_single_walk_scope(
+    graph_rel: &GraphRel,
+    graph_schema: &GraphSchema,
+) -> bool {
+    graph_rel.direction == Direction::Either
+        && undirected_vlp_single_walk_core(graph_rel, graph_schema)
+}
+
+/// #617: direction-agnostic core of [`undirected_vlp_single_walk_scope`].
+///
+/// Shared with the RENDER layer, which re-derives the decision from
+/// `was_undirected == Some(true)` + this core (the analyzer has already
+/// normalized direction to Outgoing by then). The legacy two-arm split ALSO
+/// stamps `was_undirected` on its branches, so the flag alone cannot tell "one
+/// normalized single-walk rel" from "one monotone arm of a split" — but the
+/// core predicate can: whenever it is true the analyzer normalized instead of
+/// splitting, so a flagged rel that passes the core is never a split arm.
+pub(crate) fn undirected_vlp_single_walk_core(
+    graph_rel: &GraphRel,
+    graph_schema: &GraphSchema,
+) -> bool {
+    let Some(spec) = graph_rel.variable_length.as_ref() else {
+        return false;
+    };
+    if graph_rel.shortest_path_mode.is_some() || graph_rel.pattern_combinations.is_some() {
+        return false;
+    }
+    // *1..1 is already complete under the two-arm split; leave it alone.
+    if spec.exact_hop_count() == Some(1) {
+        return false;
+    }
+    // Exactly one known relationship type (multi-type has its own skip above).
+    // Labels at this stage may be composite schema keys ("FOLLOWS::User::User");
+    // resolve those directly, falling back to the plain-type index.
+    let Some(labels) = graph_rel.labels.as_ref() else {
+        return false;
+    };
+    let [rel_type] = labels.as_slice() else {
+        return false;
+    };
+    let rel_schema = if let Some(rs) = graph_schema.get_relationships_schema_opt(rel_type) {
+        rs
+    } else {
+        let plain_type = rel_type.split("::").next().unwrap_or(rel_type);
+        let rel_schemas = graph_schema.rel_schemas_for_type(plain_type);
+        if rel_schemas.len() != 1 {
+            return false;
+        }
+        rel_schemas[0]
+    };
+    // Standard/polymorphic separate edge table with scalar endpoint ids and
+    // same-label endpoints. FK-edge and denormalized (embedded-node) schemas
+    // keep the legacy path; so do composite from/to ids.
+    rel_schema.is_plain_edge_table()
+        && rel_schema.from_node == rel_schema.to_node
+        && matches!(rel_schema.from_id, Identifier::Single(_))
+        && matches!(rel_schema.to_id, Identifier::Single(_))
+}
+
+/// #617: rewrite every in-scope undirected VLP GraphRel (see
+/// [`undirected_vlp_single_walk_scope`]) to `direction: Outgoing` +
+/// `was_undirected: Some(true)`. Returns `None` when nothing changed.
+/// The render layer recognizes the marker on a VLP GraphRel and emits a
+/// single walk over a doubled-edge set. Mirrors the VLP multi-type /
+/// pattern_combinations skips, but as a whole-tree pre-pass so patterns
+/// mixing a VLP hop with plain undirected hops still split the plain hops.
+fn normalize_undirected_vlp_rels(
+    plan: &Arc<LogicalPlan>,
+    graph_schema: &GraphSchema,
+) -> Option<Arc<LogicalPlan>> {
+    fn walk(plan: &LogicalPlan, graph_schema: &GraphSchema, changed: &mut bool) -> LogicalPlan {
+        let mapped = plan.map_children(|child| walk(child, graph_schema, changed));
+        if let LogicalPlan::GraphRel(graph_rel) = &mapped {
+            if undirected_vlp_single_walk_scope(graph_rel, graph_schema) {
+                crate::debug_print!(
+                    "🔄 BidirectionalUnion(#617): undirected VLP '{}' → single doubled-edge walk (no Union split)",
+                    graph_rel.alias
+                );
+                *changed = true;
+                return LogicalPlan::GraphRel(GraphRel {
+                    direction: Direction::Outgoing,
+                    was_undirected: Some(true),
+                    ..graph_rel.clone()
+                });
+            }
+        }
+        mapped
+    }
+    let mut changed = false;
+    let new_plan = walk(plan, graph_schema, &mut changed);
+    changed.then(|| Arc::new(new_plan))
 }
 
 #[allow(clippy::only_used_in_recursion)] // plan_ctx threaded for analyzer-pass API symmetry

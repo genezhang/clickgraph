@@ -3257,6 +3257,7 @@ impl VariableLengthCteStrategy {
         // Lightweight BFS mode for shortestPath + length(path)-only queries
         generator.use_bfs_mode = context.use_bfs_mode;
         generator.is_undirected = context.is_undirected;
+        generator.undirected_single_walk = context.undirected_single_walk;
 
         // Generate the CTE using the comprehensive generator
         let cte = generator.generate_cte();
