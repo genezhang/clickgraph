@@ -1592,7 +1592,7 @@ fn fold_optional_edge_node_join_with_predicate(plan: &mut RenderPlan) {
             std::collections::BTreeMap::new();
         for (ci, conjunct) in conjuncts.iter().enumerate() {
             let mut aliases = HashSet::new();
-            collect_aliases_from_expr(conjunct, &mut aliases);
+            collect_correlation_aliases_from_expr(conjunct, &mut aliases);
             if aliases.len() != 1 {
                 continue;
             }
@@ -2106,67 +2106,92 @@ fn collect_referenced_aliases(plan: &RenderPlan) -> HashSet<String> {
 }
 
 /// Recursively collect all table aliases referenced in a RenderExpr.
+///
+/// Opaque pre-rendered-SQL nodes (`ExistsSubquery`/`PatternCount`) are
+/// SCANNED textually — over-broad (table/database names come back as
+/// "aliases") but safe for the protection-set use in
+/// `collect_referenced_aliases`, and it also catches CTE-alias references
+/// (post-WITH correlation SQL) that the structured field does not record.
 fn collect_aliases_from_expr(expr: &RenderExpr, aliases: &mut HashSet<String>) {
+    collect_aliases_from_expr_impl(expr, aliases, false)
+}
+
+/// #614: like [`collect_aliases_from_expr`], but opaque
+/// `ExistsSubquery`/`PatternCount` nodes contribute their structurally
+/// recorded `correlated_aliases` (falling back to the SQL scan only when
+/// that field is empty/unknown). Use where alias PRECISION matters — e.g.
+/// the #479/#552 optional-join fold's exactly-one-alias conjunct grouping,
+/// which the scan's table-name noise made decline these conjuncts, leaving
+/// them in the outer WHERE where they dropped NULL-extended rows.
+fn collect_correlation_aliases_from_expr(expr: &RenderExpr, aliases: &mut HashSet<String>) {
+    collect_aliases_from_expr_impl(expr, aliases, true)
+}
+
+fn collect_aliases_from_expr_impl(
+    expr: &RenderExpr,
+    aliases: &mut HashSet<String>,
+    structured_correlation: bool,
+) {
     match expr {
         RenderExpr::PropertyAccessExp(prop) => {
             aliases.insert(prop.table_alias.0.clone());
         }
         RenderExpr::OperatorApplicationExp(op) => {
             for operand in &op.operands {
-                collect_aliases_from_expr(operand, aliases);
+                collect_aliases_from_expr_impl(operand, aliases, structured_correlation);
             }
         }
         RenderExpr::ScalarFnCall(func) => {
             for arg in &func.args {
-                collect_aliases_from_expr(arg, aliases);
+                collect_aliases_from_expr_impl(arg, aliases, structured_correlation);
             }
         }
         RenderExpr::AggregateFnCall(agg) => {
             for arg in &agg.args {
-                collect_aliases_from_expr(arg, aliases);
+                collect_aliases_from_expr_impl(arg, aliases, structured_correlation);
             }
         }
         RenderExpr::Case(case) => {
             if let Some(ref e) = case.expr {
-                collect_aliases_from_expr(e, aliases);
+                collect_aliases_from_expr_impl(e, aliases, structured_correlation);
             }
             for (when, then) in &case.when_then {
-                collect_aliases_from_expr(when, aliases);
-                collect_aliases_from_expr(then, aliases);
+                collect_aliases_from_expr_impl(when, aliases, structured_correlation);
+                collect_aliases_from_expr_impl(then, aliases, structured_correlation);
             }
             if let Some(ref else_expr) = case.else_expr {
-                collect_aliases_from_expr(else_expr, aliases);
+                collect_aliases_from_expr_impl(else_expr, aliases, structured_correlation);
             }
         }
         RenderExpr::List(exprs) => {
             for e in exprs {
-                collect_aliases_from_expr(e, aliases);
+                collect_aliases_from_expr_impl(e, aliases, structured_correlation);
             }
         }
         RenderExpr::InSubquery(sub) => {
-            collect_aliases_from_expr(&sub.expr, aliases);
+            collect_aliases_from_expr_impl(&sub.expr, aliases, structured_correlation);
         }
         RenderExpr::ArraySubscript { array, index } => {
-            collect_aliases_from_expr(array, aliases);
-            collect_aliases_from_expr(index, aliases);
+            collect_aliases_from_expr_impl(array, aliases, structured_correlation);
+            collect_aliases_from_expr_impl(index, aliases, structured_correlation);
         }
         RenderExpr::ArraySlicing { array, from, to } => {
-            collect_aliases_from_expr(array, aliases);
+            collect_aliases_from_expr_impl(array, aliases, structured_correlation);
             if let Some(f) = from {
-                collect_aliases_from_expr(f, aliases);
+                collect_aliases_from_expr_impl(f, aliases, structured_correlation);
             }
             if let Some(t) = to {
-                collect_aliases_from_expr(t, aliases);
+                collect_aliases_from_expr_impl(t, aliases, structured_correlation);
             }
         }
         RenderExpr::ReduceExpr(reduce) => {
-            collect_aliases_from_expr(&reduce.initial_value, aliases);
-            collect_aliases_from_expr(&reduce.list, aliases);
-            collect_aliases_from_expr(&reduce.expression, aliases);
+            collect_aliases_from_expr_impl(&reduce.initial_value, aliases, structured_correlation);
+            collect_aliases_from_expr_impl(&reduce.list, aliases, structured_correlation);
+            collect_aliases_from_expr_impl(&reduce.expression, aliases, structured_correlation);
         }
         RenderExpr::MapLiteral(entries) => {
             for (_, v) in entries {
-                collect_aliases_from_expr(v, aliases);
+                collect_aliases_from_expr_impl(v, aliases, structured_correlation);
             }
         }
         RenderExpr::TableAlias(ta) => {
@@ -2176,12 +2201,20 @@ fn collect_aliases_from_expr(expr: &RenderExpr, aliases: &mut HashSet<String>) {
             aliases.insert(ca.0.clone());
         }
         RenderExpr::ExistsSubquery(es) => {
-            // Extract "alias." patterns from pre-rendered SQL
-            extract_aliases_from_sql(&es.sql, aliases);
+            if structured_correlation && !es.correlated_aliases.is_empty() {
+                aliases.extend(es.correlated_aliases.iter().cloned());
+            } else {
+                // Extract "alias." patterns from pre-rendered SQL
+                extract_aliases_from_sql(&es.sql, aliases);
+            }
         }
         RenderExpr::PatternCount(pc) => {
-            // Extract "alias." patterns from pre-rendered SQL
-            extract_aliases_from_sql(&pc.sql, aliases);
+            if structured_correlation && !pc.correlated_aliases.is_empty() {
+                aliases.extend(pc.correlated_aliases.iter().cloned());
+            } else {
+                // Extract "alias." patterns from pre-rendered SQL
+                extract_aliases_from_sql(&pc.sql, aliases);
+            }
         }
         RenderExpr::Raw(raw) => {
             extract_aliases_from_sql(raw, aliases);
@@ -3872,6 +3905,7 @@ mod tests {
         collect_aliases_from_expr(
             &RenderExpr::ExistsSubquery(render_expr::ExistsSubquery {
                 sql: "EXISTS (SELECT 1 FROM t WHERE friend.id = t.PersonId)".to_string(),
+                correlated_aliases: vec![],
             }),
             &mut aliases,
         );
@@ -3884,6 +3918,7 @@ mod tests {
         collect_aliases_from_expr(
             &RenderExpr::PatternCount(render_expr::PatternCount {
                 sql: "(SELECT COUNT(*) FROM r WHERE person.id = r.Id)".to_string(),
+                correlated_aliases: vec![],
             }),
             &mut aliases,
         );

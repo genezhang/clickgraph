@@ -174,9 +174,6 @@ fn apply_optional_node_pre_filters(
     collect_optional_graph_rels(input, &mut opt_rels);
 
     for gr in opt_rels {
-        if gr.where_predicate.is_none() {
-            continue;
-        }
         // Anchor defaults to the left connection when unset (matches join-side default).
         let anchor = gr
             .anchor_connection
@@ -194,17 +191,73 @@ fn apply_optional_node_pre_filters(
         // OPTIONAL MATCH semantics, and the #472 post-WITH precedent.
         // `collect_graphrel_predicates` drops these same conjuncts from the
         // outer WHERE via the SAME helper, so the two sites cannot diverge.
-        // The gating join is the pattern's anchor-adjacent LEFT JOIN: the
-        // first LEFT JOIN whose ON references the anchor alias.
+        //
+        // #611: this fold runs off the TAG (`optional_anchor_where`), NOT
+        // `gr.where_predicate` — with multiple OPTIONAL clauses the pooled
+        // per-alias filters land on whichever clause's GraphRel FIRST
+        // references the alias, so this GraphRel's own copy may be None while
+        // its tag still owns the gate (the old `where_predicate.is_none() →
+        // continue` above this block silently skipped the fold, and the
+        // conjunct stayed in / was dropped from the outer WHERE).
+        //
+        // #611: the gating join is located clause-precisely, in two steps.
+        //
+        // CANDIDATES: LEFT JOINs whose ON references the clause's ENTRY
+        // alias — searched on the anchor connection first, then the OTHER
+        // connection. The tagger defines the entry as the pre-clause-bound
+        // side, but normalization can put the clause's NEW variable in
+        // `anchor_connection`/`left_connection` (incoming-direction chained
+        // patterns), so a single-sided search found nothing and fail-hard'd
+        // on a shape main could run. A connection's OWN table join is never
+        // a candidate for that connection (a pre-bound entry's node join
+        // belongs to the EARLIER clause that bound it — the old finder
+        // picked exactly that join in the chained shape, gating the wrong
+        // clause).
+        //
+        // PLACEMENT: only a CLAUSE-OWNED candidate — this GraphRel's edge
+        // alias or one of its connection aliases (the collapsed node-is-edge
+        // join in FK-edge shapes carries the node alias). A candidate owned
+        // by NEITHER (e.g. a sibling clause's node join over the same
+        // FK-collapsed anchor — clause 2 there renders no join of its own at
+        // all) must NOT be gated: that silently suppresses the OTHER
+        // clause's matches. Loud error instead — the conjunct was already
+        // dropped from the outer WHERE on the promise it folds here.
         let anchor_gate_conjuncts =
             crate::render_plan::plan_builder_helpers::optional_anchor_gate_conjuncts(gr);
         if !anchor_gate_conjuncts.is_empty() {
-            if let Some(gate_join) = joins.iter_mut().find(|j| {
-                j.join_type == super::JoinType::Left
-                    && j.joining_on
-                        .iter()
-                        .any(|cond| condition_references_alias(cond, anchor))
-            }) {
+            let candidates_for = |conn: &str| -> Vec<usize> {
+                joins
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, j)| {
+                        j.join_type == super::JoinType::Left
+                            && j.table_alias != conn
+                            && j.joining_on
+                                .iter()
+                                .any(|cond| condition_references_alias(cond, conn))
+                    })
+                    .map(|(i, _)| i)
+                    .collect()
+            };
+            let other = if anchor == gr.right_connection.as_str() {
+                gr.left_connection.as_str()
+            } else {
+                gr.right_connection.as_str()
+            };
+            let mut candidates = candidates_for(anchor);
+            if candidates.is_empty() {
+                candidates = candidates_for(other);
+            }
+            let clause_owned = |i: usize| {
+                let ta = &joins[i].table_alias;
+                *ta == gr.alias || *ta == gr.left_connection || *ta == gr.right_connection
+            };
+            let gate_join_idx = candidates
+                .iter()
+                .copied()
+                .find(|&i| joins[i].table_alias == gr.alias)
+                .or_else(|| candidates.iter().copied().find(|&i| clause_owned(i)));
+            if let Some(gate_join) = gate_join_idx.map(|i| &mut joins[i]) {
                 for conj in &anchor_gate_conjuncts {
                     if let Ok(RenderExpr::OperatorApplicationExp(op)) =
                         RenderExpr::try_from(conj.clone())

@@ -60,6 +60,17 @@ pub fn evaluate_optional_match_clause<'a>(
         .filter(|a| !plan_ctx.get_optional_aliases().contains(*a))
         .cloned()
         .collect();
+    // #611: ALSO snapshot every alias bound before this clause (mandatory or
+    // optional). The gate conjunct is classified against the MANDATORY set
+    // above, but its PLACEMENT target is this clause's ENTRY GraphRel — the
+    // one whose connection to the accumulated plan forms the clause's gating
+    // LEFT JOIN. In the chained shape `OPTIONAL MATCH (a)-->(b) OPTIONAL
+    // MATCH (b)-->(c) WHERE a.x` the entry connection is `b` (optional,
+    // bound by the EARLIER clause) — requiring adjacency to a mandatory
+    // alias made the tag never land, leaving the predicate in the outer
+    // WHERE where it dropped the NULL-extended anchor rows.
+    let pre_bound_all: std::collections::HashSet<String> =
+        plan_ctx.get_alias_table_ctx_map().keys().cloned().collect();
     // #597: capture THIS clause's index before lowering (the counter advances
     // at the end of evaluate_match_clause_with_optional). The tag must land
     // only on a GraphRel THIS clause lowered — the accumulated plan also
@@ -123,7 +134,7 @@ pub fn evaluate_optional_match_clause<'a>(
                 plan = tag_optional_anchor_where(
                     plan,
                     combine_with_and(anchor_only),
-                    &pre_bound_mandatory,
+                    &pre_bound_all,
                     this_clause_index,
                 );
             }
@@ -220,33 +231,45 @@ fn collect_expr_aliases(
     }
 }
 
-/// #597: set `optional_anchor_where` on the OPTIONAL GraphRel that is
-/// ADJACENT to a mandatory anchor variable (its left or right connection is a
-/// pre-bound alias) AND was lowered by THIS clause (`match_clause_index ==
-/// this_clause_index`), traversing the wrappers lowering may add. The
-/// clause-index guard is essential: the accumulated plan also contains
+/// #597/#611: set `optional_anchor_where` on this clause's ENTRY GraphRel —
+/// the one lowered by THIS clause (`match_clause_index == this_clause_index`)
+/// whose left or right connection was already bound BEFORE the clause (by the
+/// base MATCH or any earlier OPTIONAL clause) — traversing the wrappers
+/// lowering may add. That GraphRel owns the clause's gating LEFT JOIN, which
+/// is where the render-side `optional_anchor_gate_conjuncts` consumers fold
+/// the conjuncts.
+///
+/// The clause-index guard is essential: the accumulated plan also contains
 /// EARLIER OPTIONAL clauses' GraphRels, which are equally optional and
-/// anchor-adjacent — tagging one of those would gate the wrong clause's LEFT
+/// entry-adjacent — tagging one of those would gate the wrong clause's LEFT
 /// JOIN, suppressing its legitimate un-WHERE'd matches (e.g. `OPTIONAL MATCH
 /// (a)-->(b) OPTIONAL MATCH (b)-->(c) WHERE a.x` must gate ONLY the second
-/// clause). For a multi-hop optional pattern `(a)-[:R1]->(x)-[:R2]->(y)` the
-/// pattern nests as `GraphRel(t2){ left: GraphRel(t1){a,x}, right: y }` — the
-/// gating LEFT JOIN (and the `where_predicate` FilterIntoGraphRel later
-/// merges) belong to the anchor-adjacent `t1`, not the topmost `t2`, and the
-/// render-side `optional_anchor_gate_conjuncts` reads the tag from the
-/// GraphRel it is inspecting.
+/// clause).
+///
+/// #611: adjacency is tested against ALL pre-clause-bound aliases, not just
+/// mandatory ones — in the chained shape above, the second clause's entry
+/// connection is the OPTIONAL `b`, and requiring a mandatory-adjacent
+/// GraphRel made the tag never land (the conjunct then stayed in the outer
+/// WHERE and dropped the NULL-extended anchor rows). The conjunct itself is
+/// still classified mandatory-only by the caller.
+///
+/// For a multi-hop optional pattern `(a)-[:R1]->(x)-[:R2]->(y)` the pattern
+/// nests as `GraphRel(t2){ left: GraphRel(t1){a,x}, right: y }` — the gating
+/// LEFT JOIN belongs to the entry-adjacent `t1`, not the topmost `t2`, and
+/// the descent below reaches it before any other candidate (only `t1` has a
+/// pre-clause-bound connection).
 fn tag_optional_anchor_where(
     plan: Arc<LogicalPlan>,
     anchor_where: crate::query_planner::logical_expr::LogicalExpr,
-    pre_bound_mandatory: &std::collections::HashSet<String>,
+    pre_bound: &std::collections::HashSet<String>,
     this_clause_index: usize,
 ) -> Arc<LogicalPlan> {
     use crate::query_planner::logical_plan::{Filter, GraphRel, Projection};
     match plan.as_ref() {
         LogicalPlan::GraphRel(gr) if gr.is_optional.unwrap_or(false) => {
             let this_clause = gr.match_clause_index == this_clause_index;
-            let adjacent = pre_bound_mandatory.contains(&gr.left_connection)
-                || pre_bound_mandatory.contains(&gr.right_connection);
+            let adjacent =
+                pre_bound.contains(&gr.left_connection) || pre_bound.contains(&gr.right_connection);
             if this_clause && adjacent {
                 Arc::new(LogicalPlan::GraphRel(GraphRel {
                     optional_anchor_where: Some(anchor_where),
@@ -260,7 +283,7 @@ fn tag_optional_anchor_where(
                 let new_left = tag_optional_anchor_where(
                     gr.left.clone(),
                     anchor_where.clone(),
-                    pre_bound_mandatory,
+                    pre_bound,
                     this_clause_index,
                 );
                 if !Arc::ptr_eq(&new_left, &gr.left) {
@@ -272,7 +295,7 @@ fn tag_optional_anchor_where(
                 let new_right = tag_optional_anchor_where(
                     gr.right.clone(),
                     anchor_where,
-                    pre_bound_mandatory,
+                    pre_bound,
                     this_clause_index,
                 );
                 if !Arc::ptr_eq(&new_right, &gr.right) {
@@ -288,7 +311,7 @@ fn tag_optional_anchor_where(
             input: tag_optional_anchor_where(
                 p.input.clone(),
                 anchor_where,
-                pre_bound_mandatory,
+                pre_bound,
                 this_clause_index,
             ),
             items: p.items.clone(),
@@ -299,7 +322,7 @@ fn tag_optional_anchor_where(
             input: tag_optional_anchor_where(
                 f.input.clone(),
                 anchor_where,
-                pre_bound_mandatory,
+                pre_bound,
                 this_clause_index,
             ),
             predicate: f.predicate.clone(),

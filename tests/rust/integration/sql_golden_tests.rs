@@ -6063,6 +6063,107 @@ async fn size_pattern_count_vlp_and_multi_type_error_cleanly() {
     );
 }
 
+/// #611/#614: OPTIONAL MATCH WHERE placement — gate conjuncts must never
+/// land in the outer WHERE (a bare outer predicate evaluates to false/NULL
+/// against NULL-extended anchor rows and silently drops them).
+///
+/// #611 (chained / sibling clauses): a WHERE on an OPTIONAL clause whose
+/// conjunct references only a mandatory variable folds into THAT clause's
+/// gating LEFT JOIN ON — including when the clause's entry connection is an
+/// optional variable from an earlier clause (chained), and when two sibling
+/// clauses share one anchor (each gate goes to its own clause's join).
+///
+/// #614 (opaque predicates): a WHERE conjunct on the OPTIONAL variable via
+/// `size((pattern))` or `EXISTS {}` folds into the #479/#552 combined-anchor
+/// LEFT JOIN subquery (structured `correlated_aliases` classification), same
+/// as a plain property predicate.
+#[tokio::test]
+async fn optional_where_gate_placement_611_614() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // #611 chained: gate lands on the SECOND clause's edge join.
+    let sql = render(
+        &schema,
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) \
+         OPTIONAL MATCH (b)-[:FOLLOWS]->(c:User) WHERE a.is_active = true \
+         RETURN a.user_id, b.user_id, c.user_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    // Alias numbers vary with the process-wide counter — match the join-key
+    // shape without them: the second clause's edge join keys on the FIRST
+    // clause's edge endpoint (".followed_id"), and carries the gate.
+    assert!(
+        sql.contains(".followed_id AND a.is_active = true"),
+        "#611 chained: gate must fold into the second clause's edge join ON:\n{sql}"
+    );
+    assert!(
+        !sql.contains("WHERE a.is_active"),
+        "#611 chained: gate must not remain in the outer WHERE:\n{sql}"
+    );
+
+    // #611 siblings: each clause's gate on its own edge join.
+    let sql = render(
+        &schema,
+        "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) WHERE a.is_active = true \
+         OPTIONAL MATCH (a)-[:LIKED]->(p:Post) WHERE a.country = 'US' \
+         RETURN a.user_id, b.user_id, p.post_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains(".follower_id = a.user_id AND a.is_active = true")
+            && sql.contains(".user_id = a.user_id AND a.country = 'US'"),
+        "#611 siblings: each gate must fold into its OWN clause's join ON:\n{sql}"
+    );
+    assert!(
+        !sql.contains("WHERE a."),
+        "#611 siblings: no gate may remain in the outer WHERE:\n{sql}"
+    );
+
+    // #611 guard: an identical conjunct in a pattern-shaped base MATCH stays
+    // in the outer WHERE (mandatory row-dropping semantics must survive).
+    let sql = render(
+        &schema,
+        "MATCH (a:User)-[:AUTHORED]->(z:Post) WHERE a.is_active = true \
+         OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) WHERE a.is_active = true \
+         RETURN a.user_id, z.post_id, b.user_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("WHERE a.is_active = true"),
+        "#611 guard: the base MATCH's identical conjunct must stay in the \
+         outer WHERE:\n{sql}"
+    );
+
+    // #614: PatternCount and EXISTS on the optional variable fold into the
+    // combined-anchor subquery, not the outer WHERE.
+    for (label, cypher) in [
+        (
+            "size()",
+            "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) \
+             WHERE size((b)-[:FOLLOWS]->()) > 0 RETURN a.user_id, b.user_id",
+        ),
+        (
+            "EXISTS",
+            "MATCH (a:User) OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User) \
+             WHERE EXISTS { (b)-[:FOLLOWS]->(x:User) } RETURN a.user_id, b.user_id",
+        ),
+    ] {
+        let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            sql.contains("__cg_combined_anchor_key"),
+            "#614 {label}: opaque optional-var predicate must fold into the \
+             combined-anchor LEFT JOIN subquery:\n{sql}"
+        );
+        assert!(
+            !sql.to_uppercase().contains("\nWHERE"),
+            "#614 {label}: nothing may remain in the outer WHERE:\n{sql}"
+        );
+    }
+}
+
 /// #599: `size((pattern))` renders as a bare correlated `COUNT(*)` scalar
 /// subquery; ClickHouse decorrelates that into a LEFT JOIN, so an outer row
 /// with ZERO pattern matches yields NULL instead of 0 — silently breaking
