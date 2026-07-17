@@ -72,6 +72,7 @@ vlp_b_a AS (
         FROM vlp_b_a_to_target
     ) WHERE rn = 1
 )
+SELECT `a.name` AS `a.name`, `b.name` AS `b.name` FROM (
 SELECT 
       t.start_name AS "a.name", 
       t.end_name AS "b.name"
@@ -81,3 +82,4 @@ SELECT
       t.end_name AS "a.name", 
       t.start_name AS "b.name"
 FROM vlp_b_a AS t
+) AS __union

@@ -6063,6 +6063,63 @@ async fn size_pattern_count_vlp_and_multi_type_error_cleanly() {
     );
 }
 
+/// #609: ClickHouse's analyzer (verified on 25.8) cannot resolve a recursive
+/// CTE referenced from the SECOND (or later) arm of a BARE top-level UNION —
+/// `WITH RECURSIVE v1 AS (...), v2 AS (...) SELECT ... FROM v1 UNION ALL
+/// SELECT ... FROM v2` fails with Code 60 on `v2` (arm-swap moves the error
+/// to whichever recursive CTE is second; per-arm wrapping does NOT help).
+/// Any top-level UNION emitted alongside a recursive CTE must therefore be
+/// wrapped in a subquery. Undirected VLP (BidirectionalUnion → two recursive
+/// CTEs + UNION ALL) hit this exactly when the query had no ORDER BY /
+/// LIMIT / aggregate (each of which already forced the wrapper — why the
+/// bug looked intermittent); a VLP inside a later Cypher-UNION arm hit the
+/// same wall via the per-arm render path.
+#[tokio::test]
+async fn recursive_cte_union_wrapped_in_subquery_609() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+
+    // Undirected VLP, endpoint filter, NO ORDER BY (the #609 repro).
+    let sql = render(
+        &schema,
+        "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User) WHERE b.user_id > 5 \
+         RETURN a.user_id, b.user_id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("WITH RECURSIVE"),
+        "undirected VLP must render recursive CTEs:\n{sql}"
+    );
+    let after_ctes = sql
+        .rsplit_once("\n)\n")
+        .map(|(_, tail)| tail)
+        .unwrap_or(&sql);
+    assert!(
+        !after_ctes.trim_start().starts_with("SELECT \n      t."),
+        "the top-level UNION over recursive CTEs must be wrapped in a \
+         subquery (bare top-level arms fail CH Code 60):\n{sql}"
+    );
+    assert!(
+        sql.contains("FROM (") && sql.contains(") AS __union"),
+        "expected the __union subquery wrapper:\n{sql}"
+    );
+
+    // VLP in the SECOND arm of a Cypher UNION (per-arm render path).
+    let sql = render(
+        &schema,
+        "MATCH (a:User) WHERE a.user_id = 6 RETURN a.user_id AS id \
+         UNION ALL \
+         MATCH (a:User)-[:FOLLOWS*1..2]->(b:User) WHERE a.user_id = 5 RETURN b.user_id AS id",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        sql.contains("WITH RECURSIVE") && sql.contains(") AS __cypher_union"),
+        "a Cypher UNION whose arm carries a recursive CTE must be wrapped \
+         (SELECT * FROM (...) AS __cypher_union):\n{sql}"
+    );
+}
+
 /// #611/#614: OPTIONAL MATCH WHERE placement — gate conjuncts must never
 /// land in the outer WHERE (a bare outer predicate evaluates to false/NULL
 /// against NULL-extended anchor rows and silently drops them).
