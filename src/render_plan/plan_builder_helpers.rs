@@ -5143,6 +5143,29 @@ pub(super) fn combine_optional_filters_with_and(
     combine_render_exprs_with_and(active)
 }
 
+/// Compare table aliases treating a trailing decimal suffix numerically
+/// (`t9 < t10`), so topo-sort tie-breaks don't depend on the absolute values
+/// handed out by the global alias counter (#626): plain string order flips
+/// between `t10 < t9` and `t11 < t12` depending on how many aliases earlier
+/// queries in the process allocated, making JOIN emission order flap run to
+/// run. Numeric order always follows allocation order, which is plan order.
+fn natural_alias_ord(a: &str, b: &str) -> std::cmp::Ordering {
+    fn split(s: &str) -> (&str, Option<u64>) {
+        let digit_count = s.bytes().rev().take_while(|b| b.is_ascii_digit()).count();
+        let stem_len = s.len() - digit_count;
+        match s[stem_len..].parse::<u64>() {
+            Ok(n) if digit_count > 0 => (&s[..stem_len], Some(n)),
+            _ => (s, None),
+        }
+    }
+    let (a_stem, a_num) = split(a);
+    let (b_stem, b_num) = split(b);
+    a_stem
+        .cmp(b_stem)
+        .then(a_num.cmp(&b_num))
+        .then_with(|| a.cmp(b))
+}
+
 /// Sort JOINs by dependency order to ensure referenced tables are defined before use.
 ///
 /// For example, if JOIN A references table B in its ON clause, then B must appear
@@ -5236,11 +5259,14 @@ pub fn sort_joins_by_dependency(
             .map(|(pos, _)| pos)
             .collect();
 
-        // Among ready joins, pick the one with the smallest table_alias for determinism
-        let best_pos = ready_positions
-            .iter()
-            .copied()
-            .min_by_key(|&pos| joins[remaining[pos]].table_alias.clone());
+        // Among ready joins, pick the smallest table_alias (natural numeric
+        // order, see natural_alias_ord) for determinism
+        let best_pos = ready_positions.iter().copied().min_by(|&a, &b| {
+            natural_alias_ord(
+                &joins[remaining[a]].table_alias,
+                &joins[remaining[b]].table_alias,
+            )
+        });
 
         if let Some(pos) = best_pos {
             let idx = remaining.remove(pos);
@@ -5290,9 +5316,9 @@ pub fn sort_joins_by_dependency(
                         .get(&b_idx)
                         .map(|d| d.iter().filter(|x| !available.contains(*x)).count())
                         .unwrap_or(0);
-                    a_missing
-                        .cmp(&b_missing)
-                        .then_with(|| joins[a_idx].table_alias.cmp(&joins[b_idx].table_alias))
+                    a_missing.cmp(&b_missing).then_with(|| {
+                        natural_alias_ord(&joins[a_idx].table_alias, &joins[b_idx].table_alias)
+                    })
                 })
                 .map(|(pos, _)| pos);
 
@@ -5944,6 +5970,88 @@ mod tests {
             }
             _ => panic!("Expected OperatorApplicationExp with AND"),
         }
+    }
+
+    /// #626: topo-sort tie-breaks must use NATURAL alias order (t9 < t10), not
+    /// string order (t10 < t9). Generated `t{N}` aliases carry the value of a
+    /// process-global counter, so string order made JOIN emission order depend
+    /// on how many aliases earlier queries in the process had allocated —
+    /// `partial_ref_undirected_2hop`'s Incoming-swapped branches (two edge
+    /// joins both ready off the FROM node) flapped between orderings run to
+    /// run. This fixes the exact shape: FROM b, with t9/t10 both depending
+    /// only on b, and a/c depending on t9/t10 respectively.
+    #[test]
+    fn sort_joins_tie_break_is_natural_numeric_order() {
+        fn eq_cond(l_alias: &str, l_col: &str, r_alias: &str, r_col: &str) -> OperatorApplication {
+            use crate::graph_catalog::expression_parser::PropertyValue;
+            OperatorApplication {
+                operator: Operator::Equal,
+                operands: vec![
+                    RenderExpr::PropertyAccessExp(
+                        crate::render_plan::render_expr::PropertyAccess {
+                            table_alias: TableAlias(l_alias.to_string()),
+                            column: PropertyValue::Column(l_col.to_string()),
+                        },
+                    ),
+                    RenderExpr::PropertyAccessExp(
+                        crate::render_plan::render_expr::PropertyAccess {
+                            table_alias: TableAlias(r_alias.to_string()),
+                            column: PropertyValue::Column(r_col.to_string()),
+                        },
+                    ),
+                ],
+            }
+        }
+        fn join(alias: &str, cond: OperatorApplication) -> crate::render_plan::Join {
+            crate::render_plan::Join {
+                table_name: "social.t".to_string(),
+                table_alias: alias.to_string(),
+                joining_on: vec![cond],
+                join_type: crate::render_plan::JoinType::Inner,
+                pre_filter: None,
+                from_id_column: None,
+                to_id_column: None,
+                graph_rel: None,
+            }
+        }
+        let from = crate::render_plan::FromTable {
+            table: Some(crate::render_plan::ViewTableRef {
+                source: std::sync::Arc::new(LogicalPlan::Empty),
+                name: "social.users".to_string(),
+                alias: Some("b".to_string()),
+                use_final: false,
+            }),
+            joins: vec![],
+        };
+        // Input deliberately lists t10 before t9: both are immediately ready
+        // (they only reference FROM alias b), so only the tie-break decides.
+        let joins = vec![
+            join("t10", eq_cond("t10", "follower_id", "b", "user_id")),
+            join("t9", eq_cond("t9", "follower_id", "b", "user_id")),
+            join("a", eq_cond("a", "user_id", "t9", "followed_id")),
+            join("c", eq_cond("c", "user_id", "t10", "followed_id")),
+        ];
+        let sorted = sort_joins_by_dependency(joins, Some(&from));
+        let order: Vec<&str> = sorted.iter().map(|j| j.table_alias.as_str()).collect();
+        // t9 wins the initial tie against t10 (natural order — string order
+        // would pick t10 first). Then a becomes ready and wins on stem ("a" <
+        // "t"), then t10, then c. Normalized this is the golden's
+        // t0, a, t1, c branch shape.
+        assert_eq!(order, vec!["t9", "a", "t10", "c"]);
+    }
+
+    #[test]
+    fn natural_alias_ord_orders_numeric_suffixes() {
+        use std::cmp::Ordering;
+        assert_eq!(natural_alias_ord("t9", "t10"), Ordering::Less);
+        assert_eq!(natural_alias_ord("t10", "t9"), Ordering::Greater);
+        assert_eq!(natural_alias_ord("t2", "t2"), Ordering::Equal);
+        // Different stems fall back to string order on the stem
+        assert_eq!(natural_alias_ord("a", "t9"), Ordering::Less);
+        // Non-numeric aliases: plain string order
+        assert_eq!(natural_alias_ord("alpha", "beta"), Ordering::Less);
+        // Numberless vs numbered same stem: bare stem sorts first
+        assert_eq!(natural_alias_ord("t", "t1"), Ordering::Less);
     }
 }
 
