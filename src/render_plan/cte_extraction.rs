@@ -3526,14 +3526,23 @@ pub fn extract_ctes_with_context(
                             let cte_name = vlc::undirected_doubled_edges_cte_name(
                                 &vlp_ctx.start_alias,
                                 &vlp_ctx.end_alias,
+                                &vlp_ctx.rel_table,
                             );
                             let rel_type = graph_rel
                                 .labels
                                 .as_ref()
                                 .and_then(|l| l.first())
                                 .map(String::as_str);
+                            // Body FROM honors parameterized views (review
+                            // finding: the raw view reference errors in
+                            // server mode when the schema declares params);
+                            // the NAME stays parameter-free.
+                            let body_table_ref = vlp_ctx
+                                .rel_table_parameterized
+                                .as_ref()
+                                .unwrap_or(&vlp_ctx.rel_table);
                             let body = vlc::build_doubled_edges_cte_body(
-                                &vlp_ctx.rel_table,
+                                body_table_ref,
                                 &vlp_ctx.rel_from_col,
                                 &vlp_ctx.rel_to_col,
                                 &vlc::doubled_edges_passthrough_columns(
@@ -7597,6 +7606,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
         crate::sql_generator::emitters::clickhouse::variable_length_cte::undirected_doubled_edges_cte_name(
             &ctx.start_alias,
             &ctx.end_alias,
+            &ctx.rel_table,
         )
     });
     let rel_table_ref = doubled_cte_name.as_ref().unwrap_or_else(|| {

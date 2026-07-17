@@ -1,4 +1,4 @@
-WITH RECURSIVE undir_edges_a_b AS (
+WITH RECURSIVE undir_edges_a_b_test_integration_user_follows_test AS (
     SELECT e.follower_id, e.followed_id, e.follow_date, e.follow_id, e.follower_id AS __cg_orig_from, e.followed_id AS __cg_orig_to FROM test_integration.user_follows_test AS e
     UNION ALL
     SELECT e.followed_id AS follower_id, e.follower_id AS followed_id, e.follow_date, e.follow_id, e.follower_id AS __cg_orig_from, e.followed_id AS __cg_orig_to FROM test_integration.user_follows_test AS e
@@ -19,7 +19,7 @@ vlp_a_b AS (
         CAST([] AS Array(String)) as path_relationships,
         arrayConcat(vp.path_nodes, [end_node.user_id]) as path_nodes
     FROM vlp_a_b vp
-    JOIN undir_edges_a_b AS rel ON vp.end_id = rel.follower_id
+    JOIN undir_edges_a_b_test_integration_user_follows_test AS rel ON vp.end_id = rel.follower_id
     JOIN test_integration.users_test AS end_node ON rel.followed_id = end_node.user_id
     WHERE vp.hop_count < 2
       AND NOT has(vp.path_nodes, end_node.user_id)

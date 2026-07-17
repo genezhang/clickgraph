@@ -79,16 +79,32 @@ fn emit_edge_cycle_check(edge_expr: &str) -> String {
 /// regardless of which orientation a row represents, so trail-uniqueness
 /// (`path_edges` for recursive walks, pairwise inequality for flat exact-bound
 /// chains) treats both orientations of one edge as the same relationship.
-pub const DOUBLED_EDGES_ORIG_FROM: &str = "__cg_orig_from";
-pub const DOUBLED_EDGES_ORIG_TO: &str = "__cg_orig_to";
+/// Canonically defined in the schema catalog (which rejects colliding tables).
+pub use crate::graph_catalog::graph_schema::{DOUBLED_EDGES_ORIG_FROM, DOUBLED_EDGES_ORIG_TO};
 
-/// Name of the doubled-edge CTE for the pattern's endpoint cypher aliases
-/// (#617). Deliberately NOT `vlp_`-prefixed: several render passes
+/// Name of the doubled-edge CTE for the pattern's endpoint cypher aliases +
+/// edge table (#617). Deliberately NOT `vlp_`-prefixed: several render passes
 /// special-case `vlp_`-named CTEs (column pruning, outer-alias mapping) and
 /// must treat this one as a plain table source. Shared by the recursive-walk
 /// generator and the flat exact-bound join expansion.
-pub fn undirected_doubled_edges_cte_name(start_alias: &str, end_alias: &str) -> String {
-    format!("undir_edges_{start_alias}_{end_alias}")
+///
+/// The (sanitized) edge-table suffix makes the name a pure function of the
+/// CTE's CONTENT: alias-only naming let two Cypher-UNION arms with the same
+/// endpoint aliases but DIFFERENT relationship types collide — the arm-merge
+/// rename fix-up patches only `render.from`, not `joins[].table_name`, so the
+/// second arm silently walked the first arm's edges (review finding). Same
+/// name now implies same table, hence byte-identical body, making keep-one
+/// dedup always semantics-preserving.
+pub fn undirected_doubled_edges_cte_name(
+    start_alias: &str,
+    end_alias: &str,
+    rel_table: &str,
+) -> String {
+    let table_key: String = rel_table
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    format!("undir_edges_{start_alias}_{end_alias}_{table_key}")
 }
 
 /// #617: enumerate the edge-table columns a doubled-edge CTE must project
@@ -977,7 +993,11 @@ impl<'a> VariableLengthCteGenerator<'a> {
 
     /// Name of the doubled-edge sibling CTE (see [`Self::uses_doubled_edges`]).
     fn doubled_edges_cte_name(&self) -> String {
-        undirected_doubled_edges_cte_name(&self.start_cypher_alias, &self.end_cypher_alias)
+        undirected_doubled_edges_cte_name(
+            &self.start_cypher_alias,
+            &self.end_cypher_alias,
+            &self.relationship_table,
+        )
     }
 
     /// The relation the base/recursive standard arms join for each hop:

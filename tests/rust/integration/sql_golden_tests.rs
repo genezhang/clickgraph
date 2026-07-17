@@ -12040,7 +12040,7 @@ mod vlp_family_remnants_544_545_528_525 {
         )
         .await;
         assert!(
-            sql.contains("undir_edges_a_b AS (") && sql.contains("vlp_a_b"),
+            sql.contains("undir_edges_a_b_") && sql.contains("vlp_a_b"),
             "range undirected VLP must walk the doubled-edge CTE: {sql}"
         );
         assert!(
@@ -12067,8 +12067,7 @@ mod vlp_family_remnants_544_545_528_525 {
         )
         .await;
         assert!(
-            sql.contains("JOIN undir_edges_a_b AS r1")
-                && sql.contains("JOIN undir_edges_a_b AS r2"),
+            sql.contains(" undir_edges_a_b_") && sql.contains(" AS r2"),
             "exact-bound undirected chain must hop over the doubled-edge CTE: {sql}"
         );
         assert!(
@@ -12118,7 +12117,7 @@ mod vlp_family_remnants_544_545_528_525 {
         )
         .await;
         assert!(
-            sql.contains("LEFT JOIN vlp_") && sql.contains("undir_edges_a_b"),
+            sql.contains("LEFT JOIN vlp_") && sql.contains("undir_edges_a_b_"),
             "OPTIONAL undirected range must LEFT JOIN the single-walk CTE: {sql}"
         );
     }
@@ -12141,7 +12140,7 @@ mod vlp_family_remnants_544_545_528_525 {
         // (vlp_u1_u2 + vlp_u2_u1) under-counted mixed-direction paths. The
         // #544 guard must leave the chained AUTHORED continuation intact.
         assert!(
-            sql.contains("vlp_u1_u2") && sql.contains("undir_edges_u1_u2"),
+            sql.contains("vlp_u1_u2") && sql.contains("undir_edges_u1_u2_"),
             "undirected VLP must render the doubled-edge single walk: {sql}"
         );
         assert!(

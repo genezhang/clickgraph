@@ -127,6 +127,10 @@ pub(crate) fn undirected_vlp_single_walk_core(
         && rel_schema.from_node == rel_schema.to_node
         && matches!(rel_schema.from_id, Identifier::Single(_))
         && matches!(rel_schema.to_id, Identifier::Single(_))
+        // Rejects property mappings targeting the from/to columns (a per-hop
+        // filter on such a property would read the swapped value in reverse
+        // rows) and reserved __cg_orig_* column-name collisions.
+        && rel_schema.doubled_edge_walk_compatible()
 }
 
 /// #617: rewrite every in-scope undirected VLP GraphRel (see

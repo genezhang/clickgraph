@@ -622,7 +622,7 @@ async fn unwind_over_undirected_vlp_single_walk() {
     )
     .await;
     assert!(
-        ch.contains("undir_edges_a_b AS ("),
+        ch.contains("undir_edges_a_b_"),
         "CH: undirected VLP must walk the doubled-edge CTE; got:\n{ch}"
     );
     assert!(
@@ -638,6 +638,32 @@ async fn unwind_over_undirected_vlp_single_walk() {
     assert!(
         ch.contains("tuple(rel.__cg_orig_from, rel.__cg_orig_to)"),
         "CH: path_edges identity must use __cg_orig_* columns; got:\n{ch}"
+    );
+
+    // Databricks: same single walk, UNWIND explodes exactly once, dialect
+    // spellings for tuple/array-containment.
+    let dbx = with_query_context(
+        QueryContext {
+            dialect: SqlDialect::Databricks,
+            ..QueryContext::default()
+        },
+        async { cypher_to_sql(cypher) },
+    )
+    .await;
+    assert!(
+        dbx.contains("undir_edges_a_b") && !dbx.contains("vlp_b_a"),
+        "Databricks: undirected VLP must be a single doubled-edge walk; got:\n{dbx}"
+    );
+    assert_eq!(
+        dbx.matches("LATERAL VIEW explode(array(1, 2)) AS n")
+            .count(),
+        1,
+        "Databricks: UNWIND must explode exactly once over the single walk; got:\n{dbx}"
+    );
+    assert!(
+        dbx.contains("struct(rel.__cg_orig_from, rel.__cg_orig_to)")
+            && dbx.contains("array_contains"),
+        "Databricks: identity must use struct()/array_contains spellings; got:\n{dbx}"
     );
 }
 
