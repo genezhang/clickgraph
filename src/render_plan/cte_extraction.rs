@@ -380,6 +380,7 @@ pub fn generate_vlp_cte_via_manager(
     needs_path_relationships: bool,
     use_bfs_mode: bool,
     is_undirected: bool,
+    undirected_single_walk: bool,
 ) -> Result<Cte, RenderBuildError> {
     use std::sync::Arc;
 
@@ -405,6 +406,7 @@ pub fn generate_vlp_cte_via_manager(
     context.needs_path_relationships = needs_path_relationships;
     context.use_bfs_mode = use_bfs_mode;
     context.is_undirected = is_undirected;
+    context.undirected_single_walk = undirected_single_walk;
 
     // Convert filters to CategorizedFilters format
     let filters = super::filter_pipeline::CategorizedFilters {
@@ -3494,6 +3496,7 @@ pub fn extract_ctes_with_context(
                     );
 
                     // Build VlpContext with all necessary information
+                    let mut doubled_edges_cte: Option<Cte> = None;
                     if let Some(vlp_ctx) = build_vlp_context(graph_rel, schema) {
                         // Generate inline JOINs using expand_fixed_length_joins_with_context
                         let (from_table, from_alias, joins) =
@@ -3513,6 +3516,47 @@ pub fn extract_ctes_with_context(
                             vlp_ctx.start_alias,
                             vlp_ctx.end_alias
                         );
+
+                        // #617: the chained joins now reference the doubled-edge
+                        // CTE — define it as a plain (non-recursive) sibling.
+                        // Content is a full `name AS (...)` definition, which the
+                        // RawSql CTE renderer passes through verbatim.
+                        if vlp_ctx.undirected_doubled {
+                            use crate::sql_generator::emitters::clickhouse::variable_length_cte as vlc;
+                            let cte_name = vlc::undirected_doubled_edges_cte_name(
+                                &vlp_ctx.start_alias,
+                                &vlp_ctx.end_alias,
+                                &vlp_ctx.rel_table,
+                            );
+                            let rel_type = graph_rel
+                                .labels
+                                .as_ref()
+                                .and_then(|l| l.first())
+                                .map(String::as_str);
+                            // Body FROM honors parameterized views (review
+                            // finding: the raw view reference errors in
+                            // server mode when the schema declares params);
+                            // the NAME stays parameter-free.
+                            let body_table_ref = vlp_ctx
+                                .rel_table_parameterized
+                                .as_ref()
+                                .unwrap_or(&vlp_ctx.rel_table);
+                            let body = vlc::build_doubled_edges_cte_body(
+                                body_table_ref,
+                                &vlp_ctx.rel_from_col,
+                                &vlp_ctx.rel_to_col,
+                                &vlc::doubled_edges_passthrough_columns(
+                                    schema,
+                                    rel_type,
+                                    &vlp_ctx.rel_table,
+                                ),
+                            );
+                            doubled_edges_cte = Some(Cte::new(
+                                cte_name.clone(),
+                                CteContent::RawSql(format!("{} AS (\n{}\n)", cte_name, body)),
+                                false,
+                            ));
+                        }
                     } else {
                         log::debug!(
                             "Failed to build VlpContext for fixed-length pattern - falling back to CTE"
@@ -3535,6 +3579,12 @@ pub fn extract_ctes_with_context(
                         schema,
                         plan_ctx,
                     )?);
+
+                    // #617: doubled-edge CTE first (referenced by the main
+                    // query's chained joins).
+                    if let Some(cte) = doubled_edges_cte {
+                        child_ctes.insert(0, cte);
+                    }
 
                     return Ok(child_ctes);
                 } else {
@@ -4353,6 +4403,15 @@ pub fn extract_ctes_with_context(
                     let is_undirected = graph_rel.direction
                         == crate::query_planner::logical_expr::Direction::Either
                         || graph_rel.was_undirected == Some(true);
+                    // #617: normalized single-walk undirected VLP (doubled-edge
+                    // set). Re-derives the analyzer's scope predicate — the
+                    // legacy split's arms also carry `was_undirected`, but they
+                    // never pass the core scope (if they did, the analyzer
+                    // would have normalized instead of splitting).
+                    let undirected_single_walk = graph_rel.was_undirected == Some(true)
+                        && crate::query_planner::analyzer::bidirectional_union::undirected_vlp_single_walk_core(
+                            graph_rel, schema,
+                        );
 
                     if needs_bfs_mode {
                         log::info!(
@@ -4384,6 +4443,7 @@ pub fn extract_ctes_with_context(
                         needs_path_rels,
                         needs_bfs_mode,
                         is_undirected,
+                        undirected_single_walk,
                     )?;
 
                     // TODO(multi-vlp): Per-VLP unique aliases (vt0, vt1) are used in
@@ -6970,6 +7030,13 @@ pub struct VlpContext {
 
     /// For FK-edge patterns: true if edge is represented by FK on node table
     pub is_fk_edge: bool,
+
+    /// #617: true when this is a normalized single-walk undirected exact-bound
+    /// VLP — the flat r1..rN chain joins a doubled-edge CTE (both orientations
+    /// of every edge, original identity in `__cg_orig_*` columns) instead of
+    /// the raw edge table, and pairwise relationship-uniqueness compares the
+    /// original-identity columns.
+    pub undirected_doubled: bool,
 }
 
 impl VlpContext {
@@ -7169,6 +7236,13 @@ pub fn build_vlp_context(
     // Detect FK-edge pattern
     let is_fk_edge = schema_type == VlpSchemaType::FkEdge;
 
+    // #617: normalized single-walk undirected VLP → the flat exact-bound chain
+    // must join the doubled-edge CTE with original-identity uniqueness.
+    let undirected_doubled = graph_rel.was_undirected == Some(true)
+        && crate::query_planner::analyzer::bidirectional_union::undirected_vlp_single_walk_core(
+            graph_rel, schema,
+        );
+
     Some(VlpContext {
         schema_type,
         is_fixed_length,
@@ -7193,6 +7267,7 @@ pub fn build_vlp_context(
         from_node_properties,
         to_node_properties,
         is_fk_edge,
+        undirected_doubled,
     })
 }
 
@@ -7525,10 +7600,20 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
         .end_table_parameterized
         .as_ref()
         .unwrap_or(&ctx.end_table);
-    let rel_table_ref = ctx
-        .rel_table_parameterized
-        .as_ref()
-        .unwrap_or(&ctx.rel_table);
+    // #617: single-walk undirected exact-bound chains hop over the doubled-edge
+    // CTE (both orientations per edge) instead of the raw edge table.
+    let doubled_cte_name = ctx.undirected_doubled.then(|| {
+        crate::sql_generator::emitters::clickhouse::variable_length_cte::undirected_doubled_edges_cte_name(
+            &ctx.start_alias,
+            &ctx.end_alias,
+            &ctx.rel_table,
+        )
+    });
+    let rel_table_ref = doubled_cte_name.as_ref().unwrap_or_else(|| {
+        ctx.rel_table_parameterized
+            .as_ref()
+            .unwrap_or(&ctx.rel_table)
+    });
 
     log::debug!(
         "expand_fixed_length_joins_with_context: schema_type={:?}, {} hops from {} to {}",

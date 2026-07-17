@@ -114,7 +114,7 @@ fn check_plan_size(plan: &LogicalPlan, pass_name: &str) -> AnalyzerResult<()> {
 }
 
 mod analyzer_pass;
-mod bidirectional_union;
+pub(crate) mod bidirectional_union;
 mod cte_column_resolver;
 mod cte_reference_populator;
 mod cte_schema_resolver;

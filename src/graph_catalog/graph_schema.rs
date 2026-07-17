@@ -18,6 +18,14 @@ use super::expression_parser::PropertyValue;
 use super::filter_parser::SchemaFilter;
 use super::schema_types::SchemaType;
 
+/// Original-orientation edge-identity column names projected by the #617
+/// doubled-edge CTE (each edge emitted in both orientations for undirected
+/// traversal). Defined here so the schema catalog can reject tables whose
+/// own columns collide with the reserved names; the SQL generator re-exports
+/// them.
+pub const DOUBLED_EDGES_ORIG_FROM: &str = "__cg_orig_from";
+pub const DOUBLED_EDGES_ORIG_TO: &str = "__cg_orig_to";
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NodeSchema {
     pub database: String,
@@ -511,6 +519,81 @@ pub struct RelationshipSchema {
 }
 
 impl RelationshipSchema {
+    /// True when the relationship is a plain (separate or polymorphic) edge
+    /// table: NOT an FK-edge (edge = FK column on a node table) and with no
+    /// embedded/denormalized node properties on either side. Schema-pattern
+    /// classification belongs here (axis-dispatch rule); callers outside
+    /// `graph_catalog` should use this instead of testing the raw flags.
+    pub fn is_plain_edge_table(&self) -> bool {
+        !self.is_fk_edge && self.from_node_properties.is_none() && self.to_node_properties.is_none()
+    }
+
+    /// #617: whether the undirected doubled-edge single-walk strategy can be
+    /// applied to this relationship. False when a mapped property TARGETS one
+    /// of the from/to id columns (a per-hop filter on such a property would
+    /// read the orientation-swapped value in reverse rows) or when the table
+    /// itself uses the reserved original-identity column names. Such schemas
+    /// stay on the legacy two-arm path.
+    pub fn doubled_edge_walk_compatible(&self) -> bool {
+        let endpoint_cols: Vec<&String> = match (&self.from_id, &self.to_id) {
+            (Identifier::Single(f), Identifier::Single(t)) => vec![f, t],
+            _ => return false,
+        };
+        let maps_onto_endpoint = self.property_mappings.values().any(
+            |pv| matches!(pv, PropertyValue::Column(c) if endpoint_cols.contains(&c)),
+        );
+        let reserved = [DOUBLED_EDGES_ORIG_FROM, DOUBLED_EDGES_ORIG_TO];
+        let reserved_collision =
+            self.column_names
+                .iter()
+                .any(|c| reserved.contains(&c.as_str()))
+                || self.property_mappings.values().any(
+                    |pv| matches!(pv, PropertyValue::Column(c) if reserved.contains(&c.as_str())),
+                );
+        !maps_onto_endpoint && !reserved_collision
+    }
+
+    /// #617: columns a doubled-edge CTE (each edge emitted in both
+    /// orientations for undirected traversal) must project besides the
+    /// swapped from/to id columns: the physical column list, mapped property
+    /// columns, polymorphic discriminator columns, and explicit edge-id
+    /// columns. Sorted + deduped for deterministic SQL; scalar from/to id
+    /// columns are excluded (they are projected — swapped — separately).
+    pub fn doubled_edge_passthrough_columns(&self) -> Vec<String> {
+        let mut cols: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        cols.extend(self.column_names.iter().cloned());
+        for pv in self.property_mappings.values() {
+            if let PropertyValue::Column(c) = pv {
+                cols.insert(c.clone());
+            }
+        }
+        for c in [
+            &self.type_column,
+            &self.from_label_column,
+            &self.to_label_column,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            cols.insert(c.clone());
+        }
+        if let Some(edge_id) = &self.edge_id {
+            match edge_id {
+                Identifier::Single(c) => {
+                    cols.insert(c.clone());
+                }
+                Identifier::Composite(cs) => cols.extend(cs.iter().cloned()),
+            }
+        }
+        if let Identifier::Single(f) = &self.from_id {
+            cols.remove(f);
+        }
+        if let Identifier::Single(t) = &self.to_id {
+            cols.remove(t);
+        }
+        cols.into_iter().collect()
+    }
+
     /// Determine if FINAL should be used for this relationship
     pub fn should_use_final(&self) -> bool {
         // 1. Check explicit override (user choice takes precedence)

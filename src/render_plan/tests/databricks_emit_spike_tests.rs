@@ -592,18 +592,27 @@ async fn vlp_endpoint_kept_in_cte_with_unwind() {
     );
 }
 
-/// Regression for issue #405: a bidirectional (undirected) variable-length path
-/// combined with an UNWIND in the same WITH segment produces a *structured* CTE
-/// body with an inline UNION (the two VLP direction branches). The plan-level
-/// UNWIND expansion must appear in EVERY union branch — previously the union
-/// branches of `Cte::to_sql` never emitted `array_join`, so `n` was referenced
-/// but never expanded, yielding invalid SQL.
+// Regression for issue #405: a bidirectional (undirected) variable-length path
+// NOTE (#405 → #617): the former `unwind_in_union_cte_body_per_dialect` test
+// asserted that an undirected VLP + UNWIND emitted `ARRAY JOIN` in BOTH
+// direction-Union branches of the structured WITH-CTE body. #617 replaced the
+// two-arm undirected VLP with a single doubled-edge walk, so that repro shape
+// no longer produces a Union at all — the per-branch UNWIND emission in
+// `Cte::to_sql` is retained for any remaining structured-union CTE bodies,
+// and the VLP shape is asserted below in its single-walk form. (The only
+// other candidate shapes — single/multi-hop non-VLP undirected + UNWIND +
+// WITH — are pre-existing broken on main: the pattern is silently dropped,
+// `FROM system.one`. Tracked separately.)
+
+/// #617: an undirected VLP compiles to ONE directed recursive walk over a
+/// doubled-edge CTE (`undir_edges_*`) instead of two monotone direction arms
+/// (which under-counted mixed-direction paths by 40-60%). The UNWIND expands
+/// once, in the WITH CTE over the single walk.
 #[tokio::test]
-async fn unwind_in_union_cte_body_per_dialect() {
+async fn unwind_over_undirected_vlp_single_walk() {
     let cypher =
         "MATCH (a:User)-[:FOLLOWS*1..2]-(b:User) UNWIND [1, 2] AS n WITH b, n RETURN b.id, n";
 
-    // ClickHouse: each of the two union branches needs its own ARRAY JOIN.
     let ch = with_query_context(
         QueryContext {
             dialect: SqlDialect::ClickHouse,
@@ -613,11 +622,26 @@ async fn unwind_in_union_cte_body_per_dialect() {
     )
     .await;
     assert!(
-        ch.contains("UNION ALL") && ch.matches("ARRAY JOIN [1, 2] AS n").count() >= 2,
-        "CH: each union branch must emit `ARRAY JOIN [1, 2] AS n`; got:\n{ch}"
+        ch.contains("undir_edges_a_b_"),
+        "CH: undirected VLP must walk the doubled-edge CTE; got:\n{ch}"
+    );
+    assert!(
+        !ch.contains("vlp_b_a"),
+        "CH: undirected VLP must NOT emit a reverse arm (vlp_b_a); got:\n{ch}"
+    );
+    assert_eq!(
+        ch.matches("ARRAY JOIN [1, 2] AS n").count(),
+        1,
+        "CH: UNWIND must expand exactly once over the single walk; got:\n{ch}"
+    );
+    // Trail-uniqueness must compare ORIGINAL-orientation edge identity.
+    assert!(
+        ch.contains("tuple(rel.__cg_orig_from, rel.__cg_orig_to)"),
+        "CH: path_edges identity must use __cg_orig_* columns; got:\n{ch}"
     );
 
-    // Databricks: each branch needs its own LATERAL VIEW explode.
+    // Databricks: same single walk, UNWIND explodes exactly once, dialect
+    // spellings for tuple/array-containment.
     let dbx = with_query_context(
         QueryContext {
             dialect: SqlDialect::Databricks,
@@ -627,9 +651,19 @@ async fn unwind_in_union_cte_body_per_dialect() {
     )
     .await;
     assert!(
-        dbx.contains("UNION ALL")
-            && dbx.matches("LATERAL VIEW explode(array(1, 2)) AS n").count() >= 2,
-        "Databricks: each union branch must emit `LATERAL VIEW explode(array(1, 2)) AS n`; got:\n{dbx}"
+        dbx.contains("undir_edges_a_b") && !dbx.contains("vlp_b_a"),
+        "Databricks: undirected VLP must be a single doubled-edge walk; got:\n{dbx}"
+    );
+    assert_eq!(
+        dbx.matches("LATERAL VIEW explode(array(1, 2)) AS n")
+            .count(),
+        1,
+        "Databricks: UNWIND must explode exactly once over the single walk; got:\n{dbx}"
+    );
+    assert!(
+        dbx.contains("struct(rel.__cg_orig_from, rel.__cg_orig_to)")
+            && dbx.contains("array_contains"),
+        "Databricks: identity must use struct()/array_contains spellings; got:\n{dbx}"
     );
 }
 

@@ -69,6 +69,11 @@ pub struct CteGenerationContext {
     /// True when the original edge direction is Either (undirected).
     /// BFS mode generates two UNION ALL branches for both traversal directions.
     pub is_undirected: bool,
+    /// #617: true when this undirected VLP was normalized by the analyzer to a
+    /// SINGLE directed walk over a doubled-edge set (instead of the legacy
+    /// two-monotone-arm Union split). Distinct from `is_undirected`, which is
+    /// also true for the individual arms of a legacy split.
+    pub undirected_single_walk: bool,
     /// Root plan reference for checking path variable usage across the entire query.
     /// Set at the top-level to_render_plan call so VLP extraction can check if path
     /// variables are used bare (preventing BFS optimization).
@@ -102,6 +107,7 @@ impl CteGenerationContext {
             needs_path_relationships: true,
             use_bfs_mode: false,
             is_undirected: false,
+            undirected_single_walk: false,
             root_plan: None,
         }
     }
