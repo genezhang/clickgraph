@@ -539,9 +539,10 @@ impl RelationshipSchema {
             (Identifier::Single(f), Identifier::Single(t)) => vec![f, t],
             _ => return false,
         };
-        let maps_onto_endpoint = self.property_mappings.values().any(
-            |pv| matches!(pv, PropertyValue::Column(c) if endpoint_cols.contains(&c)),
-        );
+        let maps_onto_endpoint = self
+            .property_mappings
+            .values()
+            .any(|pv| matches!(pv, PropertyValue::Column(c) if endpoint_cols.contains(&c)));
         let reserved = [DOUBLED_EDGES_ORIG_FROM, DOUBLED_EDGES_ORIG_TO];
         let reserved_collision =
             self.column_names

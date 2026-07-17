@@ -892,7 +892,28 @@ secrets/live warehouse aren't available to verify against. No alerting beyond
 default GitHub notifications, per the plan's explicit non-goal)
 
 Phase 1: ☐ P1.1 `children()`/`walk()` + mod.rs walkers · ☐ P1.2 five WITH fns
-characterize+unify (D4, D5) · ☐ P1.3 `transform_up` + first 3 passes ·
+characterize+unify (D4, D5) · ☑ P1.3 `transform_up` + first 3 passes
+(`refactor/p13-transform-up`: `LogicalPlan::transform_up` — exhaustive bottom-up
+driver on a new Arc-preserving `map_children_arc` (single no-catch-all rebuild
+site; `map_children`/`children()` now delegate to it/`child_arcs()`); lazy
+rebuild — the no-op path allocates nothing (review finding), recursion via
+borrowed `child_arcs()` with an identity test locking child set AND order across
+all three accessors since transform_up zips them. Migrated: ProjectionPushDown +
+FilterPushDown (both proved to be zero-rewrite pure-recursion walkers — now
+no-op driver calls, ~280 lines of hand-rolled dispatch deleted) and
+GroupByBuilding (logic kept verbatim in `rewrite_node`; the old walker's
+cross-arm visibility quirk — a pass-through-eliminated Projection returned as
+`Transformed::No` was visible to its direct Filter/mixed-agg-Projection parent
+but discarded by all other parents — reproduced explicitly via
+`passthrough_eliminated` recomputes at exactly those two arms; the stacked-P2/P1
+corner is documented unreachable since no `GroupBy(Projection)` exists before
+this pass). rebuild_or_clone divergences NOT carried over, review-verified
+unreachable for these passes: GraphRel `cte_references` reset (only populated
+by CteReferencePopulator, which runs later; the reset was itself a latent
+#518-class bug) and Cte Empty-input collapse (no arm ever produces Empty).
+Review: 1 real finding (the speculative-clone perf issue, fixed same-branch),
+0 blocking. Gate: fmt/clippy/`cargo test` green — goldens + 1,082-query corpus
+byte-identical, ratchet clean) ·
 ☐ P1.4+ remaining passes/walkers (batch per file) · ☐ P1.x ExprVisitor
 adoption slices
 

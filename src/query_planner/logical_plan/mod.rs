@@ -2104,10 +2104,23 @@ impl LogicalPlan {
     ///   `LogicalPlan`), so they are not plan-tree children — only `input` is.
     /// - `Empty` and `PageRank` are true leaves.
     pub fn children(&self) -> Vec<&LogicalPlan> {
+        self.child_arcs().into_iter().map(|a| a.as_ref()).collect()
+    }
+
+    /// The same exhaustive child set as [`LogicalPlan::children`], but as the
+    /// owning `Arc`s — for callers (like [`LogicalPlan::transform_up`]) that
+    /// need to re-install unchanged children without cloning the plan nodes.
+    ///
+    /// INVARIANT: visits children in the same order as
+    /// [`LogicalPlan::map_children_arc`] rebuilds them (`children()` is defined
+    /// on top of this method, and the identity test cross-checks all three).
+    /// NO catch-all arm — adding a `LogicalPlan` variant must fail compilation
+    /// here until handled.
+    pub fn child_arcs(&self) -> Vec<&Arc<LogicalPlan>> {
         match self {
             LogicalPlan::Empty => vec![],
             LogicalPlan::PageRank(_) => vec![],
-            LogicalPlan::ViewScan(vs) => vs.input.as_deref().into_iter().collect(),
+            LogicalPlan::ViewScan(vs) => vs.input.as_ref().into_iter().collect(),
             LogicalPlan::GraphNode(n) => vec![&n.input],
             LogicalPlan::GraphRel(r) => vec![&r.left, &r.center, &r.right],
             LogicalPlan::Filter(x) => vec![&x.input],
@@ -2118,7 +2131,7 @@ impl LogicalPlan {
             LogicalPlan::Limit(x) => vec![&x.input],
             LogicalPlan::Cte(x) => vec![&x.input],
             LogicalPlan::GraphJoins(x) => vec![&x.input],
-            LogicalPlan::Union(u) => u.inputs.iter().map(|c| c.as_ref()).collect(),
+            LogicalPlan::Union(u) => u.inputs.iter().collect(),
             LogicalPlan::Unwind(x) => vec![&x.input],
             LogicalPlan::CartesianProduct(cp) => vec![&cp.left, &cp.right],
             LogicalPlan::WithClause(w) => vec![&w.input],
@@ -2147,89 +2160,167 @@ impl LogicalPlan {
     /// each struct requires. Leaves (`Empty`, `PageRank`, and a childless
     /// `ViewScan`) return an equivalent clone.
     pub fn map_children(&self, mut f: impl FnMut(&LogicalPlan) -> LogicalPlan) -> LogicalPlan {
+        self.map_children_arc(|c| Arc::new(f(c)))
+    }
+
+    /// `Arc`-preserving variant of [`LogicalPlan::map_children`]: `f` receives
+    /// each child's `Arc` and returns the (possibly same) `Arc` to install, so
+    /// unchanged subtrees keep their sharing instead of being deep-rebuilt.
+    ///
+    /// This is the single exhaustive rebuild site — `map_children` delegates
+    /// here. NO catch-all arm: adding a `LogicalPlan` variant must fail
+    /// compilation here until handled.
+    pub fn map_children_arc(
+        &self,
+        mut f: impl FnMut(&Arc<LogicalPlan>) -> Arc<LogicalPlan>,
+    ) -> LogicalPlan {
         match self {
             LogicalPlan::Empty => LogicalPlan::Empty,
             LogicalPlan::PageRank(_) => self.clone(),
             LogicalPlan::ViewScan(vs) => {
                 let mut new_vs = (**vs).clone();
-                new_vs.input = vs.input.as_deref().map(|c| Arc::new(f(c)));
+                new_vs.input = vs.input.as_ref().map(&mut f);
                 LogicalPlan::ViewScan(Arc::new(new_vs))
             }
             LogicalPlan::GraphNode(n) => LogicalPlan::GraphNode(GraphNode {
-                input: Arc::new(f(&n.input)),
+                input: f(&n.input),
                 ..n.clone()
             }),
             LogicalPlan::GraphRel(r) => LogicalPlan::GraphRel(GraphRel {
-                left: Arc::new(f(&r.left)),
-                center: Arc::new(f(&r.center)),
-                right: Arc::new(f(&r.right)),
+                left: f(&r.left),
+                center: f(&r.center),
+                right: f(&r.right),
                 ..r.clone()
             }),
             LogicalPlan::Filter(x) => LogicalPlan::Filter(Filter {
-                input: Arc::new(f(&x.input)),
+                input: f(&x.input),
                 ..x.clone()
             }),
             LogicalPlan::Projection(x) => LogicalPlan::Projection(Projection {
-                input: Arc::new(f(&x.input)),
+                input: f(&x.input),
                 ..x.clone()
             }),
             LogicalPlan::GroupBy(x) => LogicalPlan::GroupBy(GroupBy {
-                input: Arc::new(f(&x.input)),
+                input: f(&x.input),
                 ..x.clone()
             }),
             LogicalPlan::OrderBy(x) => LogicalPlan::OrderBy(OrderBy {
-                input: Arc::new(f(&x.input)),
+                input: f(&x.input),
                 ..x.clone()
             }),
             LogicalPlan::Skip(x) => LogicalPlan::Skip(Skip {
-                input: Arc::new(f(&x.input)),
+                input: f(&x.input),
                 ..x.clone()
             }),
             LogicalPlan::Limit(x) => LogicalPlan::Limit(Limit {
-                input: Arc::new(f(&x.input)),
+                input: f(&x.input),
                 ..x.clone()
             }),
             LogicalPlan::Cte(x) => LogicalPlan::Cte(Cte {
-                input: Arc::new(f(&x.input)),
+                input: f(&x.input),
                 ..x.clone()
             }),
             LogicalPlan::GraphJoins(x) => LogicalPlan::GraphJoins(GraphJoins {
-                input: Arc::new(f(&x.input)),
+                input: f(&x.input),
                 ..x.clone()
             }),
             LogicalPlan::Union(u) => LogicalPlan::Union(Union {
-                inputs: u.inputs.iter().map(|c| Arc::new(f(c))).collect(),
+                inputs: u.inputs.iter().map(&mut f).collect(),
                 ..u.clone()
             }),
             LogicalPlan::Unwind(x) => LogicalPlan::Unwind(Unwind {
-                input: Arc::new(f(&x.input)),
+                input: f(&x.input),
                 ..x.clone()
             }),
             LogicalPlan::CartesianProduct(cp) => LogicalPlan::CartesianProduct(CartesianProduct {
-                left: Arc::new(f(&cp.left)),
-                right: Arc::new(f(&cp.right)),
+                left: f(&cp.left),
+                right: f(&cp.right),
                 ..cp.clone()
             }),
             LogicalPlan::WithClause(w) => LogicalPlan::WithClause(WithClause {
-                input: Arc::new(f(&w.input)),
+                input: f(&w.input),
                 ..w.clone()
             }),
             LogicalPlan::Create(c) => LogicalPlan::Create(Create {
-                input: Arc::new(f(&c.input)),
+                input: f(&c.input),
                 ..c.clone()
             }),
             LogicalPlan::SetProperties(sp) => LogicalPlan::SetProperties(SetProperties {
-                input: Arc::new(f(&sp.input)),
+                input: f(&sp.input),
                 ..sp.clone()
             }),
             LogicalPlan::Delete(d) => LogicalPlan::Delete(Delete {
-                input: Arc::new(f(&d.input)),
+                input: f(&d.input),
                 ..d.clone()
             }),
             LogicalPlan::Remove(r) => LogicalPlan::Remove(Remove {
-                input: Arc::new(f(&r.input)),
+                input: f(&r.input),
                 ..r.clone()
             }),
+        }
+    }
+
+    /// One exhaustive bottom-up rewrite driver (REFACTORING_SAFETY_PLAN §4.3).
+    ///
+    /// Recurses into all children first (via [`LogicalPlan::map_children_arc`],
+    /// so every variant — including `GraphRel.center`, `Cte.input`,
+    /// `ViewScan.input`, and the write variants — is recursed by construction),
+    /// then applies `f` to the node with its already-rewritten children.
+    ///
+    /// Passes implement only the arms they care about inside `f` and return
+    /// `Transformed::No(node)` for everything else; recursion and rebuilding
+    /// are generic, so a new `LogicalPlan` variant recurses by default instead
+    /// of being silently skipped by a hand-rolled `_ =>` arm.
+    ///
+    /// Contract mirrored from the `rebuild_or_clone` family it replaces:
+    /// - If neither `f` nor any descendant reports a change, the ORIGINAL
+    ///   `Arc` is returned as `Transformed::No` (pointer identity preserved;
+    ///   the no-op path performs no node rebuilds at all).
+    /// - If any descendant changed, the node is rebuilt with struct-update
+    ///   (`..x.clone()`), which preserves ALL non-child fields — unlike
+    ///   `GraphRel::rebuild_or_clone` (which reset `cte_references`) and
+    ///   `Cte::rebuild_or_clone` (which collapsed an `Empty` input). Migrating
+    ///   passes must confirm those divergences are unreachable for them (see
+    ///   the P1.3 slice notes) or handle them explicitly in `f`.
+    /// - `f` runs on every node exactly once, children before parents.
+    pub fn transform_up<E>(
+        plan: &Arc<LogicalPlan>,
+        f: &mut impl FnMut(&Arc<LogicalPlan>) -> Result<Transformed<Arc<LogicalPlan>>, E>,
+    ) -> Result<Transformed<Arc<LogicalPlan>>, E> {
+        // Recurse over the children FIRST (cheap &Arc walk), and only pay for
+        // map_children_arc's struct-update rebuild when a child actually
+        // changed — the no-op path allocates nothing but the Vec below.
+        // child_arcs() and map_children_arc visit children in the same order
+        // (cross-checked by the identity test), so zipping them is sound.
+        let mut new_children: Vec<Arc<LogicalPlan>> = Vec::new();
+        let mut any_child_changed = false;
+        for child in plan.child_arcs() {
+            match Self::transform_up(child, f)? {
+                Transformed::Yes(new_child) => {
+                    any_child_changed = true;
+                    new_children.push(new_child);
+                }
+                Transformed::No(same) => new_children.push(same),
+            }
+        }
+        let node = if any_child_changed {
+            let mut it = new_children.into_iter();
+            Arc::new(plan.map_children_arc(|_| {
+                it.next()
+                    .expect("child_arcs/map_children_arc child-count mismatch")
+            }))
+        } else {
+            Arc::clone(plan)
+        };
+        match f(&node)? {
+            Transformed::Yes(p) => Ok(Transformed::Yes(p)),
+            Transformed::No(p) => {
+                if any_child_changed {
+                    Ok(Transformed::Yes(p))
+                } else {
+                    Ok(Transformed::No(p))
+                }
+            }
         }
     }
 
@@ -2449,6 +2540,36 @@ mod tests {
             visited,
             plan.children().len(),
             "for_each_child call count must match children().len() for variant {:?}",
+            std::mem::discriminant(plan)
+        );
+
+        // child_arcs() must expose the SAME children in the SAME order as
+        // children() (which is defined on top of it) AND as map_children_arc's
+        // rebuild order — transform_up zips the two, so a mismatch would
+        // silently wire children into the wrong slots.
+        let arcs = plan.child_arcs();
+        assert_eq!(arcs.len(), plan.children().len());
+        for (arc, child) in arcs.iter().zip(plan.children()) {
+            assert!(
+                std::ptr::eq(
+                    arc.as_ref() as *const LogicalPlan,
+                    child as *const LogicalPlan
+                ),
+                "child_arcs/children order mismatch for variant {:?}",
+                std::mem::discriminant(plan)
+            );
+        }
+        let mut rebuild_order: Vec<*const LogicalPlan> = vec![];
+        plan.map_children_arc(|c| {
+            rebuild_order.push(c.as_ref() as *const LogicalPlan);
+            Arc::clone(c)
+        });
+        assert_eq!(
+            rebuild_order,
+            arcs.iter()
+                .map(|a| a.as_ref() as *const LogicalPlan)
+                .collect::<Vec<_>>(),
+            "map_children_arc rebuild order must match child_arcs() for variant {:?}",
             std::mem::discriminant(plan)
         );
     }
@@ -2714,6 +2835,96 @@ mod tests {
                 property: "age".to_string(),
             }],
         }));
+    }
+
+    /// A 3-level plan for transform_up contract tests:
+    /// Limit(Filter(Skip(Empty)))
+    fn transform_up_fixture() -> Arc<LogicalPlan> {
+        Arc::new(LogicalPlan::Limit(Limit {
+            input: Arc::new(LogicalPlan::Filter(Filter {
+                input: Arc::new(LogicalPlan::Skip(Skip {
+                    input: Arc::new(LogicalPlan::Empty),
+                    count: 3,
+                })),
+                predicate: LogicalExpr::Literal(Literal::Boolean(true)),
+            })),
+            count: 10,
+        }))
+    }
+
+    /// No-op callback ⇒ Transformed::No with the ORIGINAL Arc (pointer
+    /// identity, no speculative rebuild leaking out).
+    #[test]
+    fn test_transform_up_noop_preserves_pointer_identity() {
+        let plan = transform_up_fixture();
+        let result: Result<_, ()> =
+            LogicalPlan::transform_up(&plan, &mut |n| Ok(Transformed::No(Arc::clone(n))));
+        match result.unwrap() {
+            Transformed::No(out) => assert!(
+                Arc::ptr_eq(&out, &plan),
+                "no-op transform_up must return the original Arc"
+            ),
+            Transformed::Yes(_) => panic!("no-op transform must report Transformed::No"),
+        }
+    }
+
+    /// Visits every node exactly once, children before parents.
+    #[test]
+    fn test_transform_up_bottom_up_visit_order() {
+        let plan = transform_up_fixture();
+        let mut visited: Vec<&'static str> = vec![];
+        let result: Result<_, ()> = LogicalPlan::transform_up(&plan, &mut |n| {
+            visited.push(match n.as_ref() {
+                LogicalPlan::Empty => "Empty",
+                LogicalPlan::Skip(_) => "Skip",
+                LogicalPlan::Filter(_) => "Filter",
+                LogicalPlan::Limit(_) => "Limit",
+                _ => "other",
+            });
+            Ok(Transformed::No(Arc::clone(n)))
+        });
+        result.unwrap();
+        assert_eq!(visited, vec!["Empty", "Skip", "Filter", "Limit"]);
+    }
+
+    /// A leaf-level rewrite propagates: ancestors are rebuilt around the new
+    /// child (preserving their non-child fields) and the root reports Yes.
+    #[test]
+    fn test_transform_up_child_change_rebuilds_ancestors() {
+        let plan = transform_up_fixture();
+        let result: Result<_, ()> = LogicalPlan::transform_up(&plan, &mut |n| {
+            if let LogicalPlan::Filter(f) = n.as_ref() {
+                // Drop the Filter, splice its input upward.
+                return Ok(Transformed::Yes(Arc::clone(&f.input)));
+            }
+            Ok(Transformed::No(Arc::clone(n)))
+        });
+        match result.unwrap() {
+            Transformed::Yes(out) => match out.as_ref() {
+                LogicalPlan::Limit(limit) => {
+                    assert_eq!(limit.count, 10, "non-child fields must be preserved");
+                    assert!(
+                        matches!(limit.input.as_ref(), LogicalPlan::Skip(_)),
+                        "Filter must have been spliced out"
+                    );
+                }
+                other => panic!("expected Limit at root, got {:?}", other.variant_name()),
+            },
+            Transformed::No(_) => panic!("child rewrite must surface as Transformed::Yes"),
+        }
+    }
+
+    /// An error from the callback aborts the walk and propagates.
+    #[test]
+    fn test_transform_up_error_propagates() {
+        let plan = transform_up_fixture();
+        let result = LogicalPlan::transform_up(&plan, &mut |n| {
+            if matches!(n.as_ref(), LogicalPlan::Skip(_)) {
+                return Err("boom");
+            }
+            Ok(Transformed::No(Arc::clone(n)))
+        });
+        assert_eq!(result.unwrap_err(), "boom");
     }
 
     #[test]
