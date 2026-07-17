@@ -797,11 +797,10 @@ const FK_EDGE_CORPUS: &[(&str, &str)] = &[
         "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[r:PLACED_BY]->(c) WHERE r.order_date > '2024-01-01' RETURN c.customer_id, o.order_id",
     ),
     // Mixed conjunction: optional-node predicate AND pure-anchor predicate. The
-    // optional-node conjunct (o.total_amount) is now recovered into the LEFT JOIN
-    // pre_filter (#474); the pure-anchor conjunct (c.customer_id) stays in the
-    // outer WHERE and still drops NULL-extended anchor rows — the SAME pre-existing
-    // #472 disease (a pure-anchor OPTIONAL-WHERE conjunct belongs in the LEFT JOIN
-    // ON, always safe for a LEFT JOIN). Left as-is here; tracked by #472.
+    // optional-node conjunct (o.total_amount) is recovered into the LEFT JOIN
+    // pre_filter (#474); the pure-anchor conjunct (c.customer_id) is folded into
+    // the LEFT JOIN ON (#597 — a false ON just NULL-extends, preserving the
+    // anchor row, instead of the old outer-WHERE placement that dropped it).
     (
         "optional_where_no_with_mixed",
         "MATCH (c:Customer) OPTIONAL MATCH (o:Order)-[:PLACED_BY]->(c) WHERE o.total_amount > 100 AND c.customer_id > 101 RETURN c.customer_id, o.order_id",

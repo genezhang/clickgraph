@@ -608,6 +608,7 @@ impl TypeInference {
                         pattern_combinations: rel.pattern_combinations.clone(),
                         was_undirected: rel.was_undirected,
                         match_clause_index: rel.match_clause_index, // #586: preserve clause provenance
+                        optional_anchor_where: rel.optional_anchor_where.clone(), // #597: preserve
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphRel(new_rel))))
                 } else {
@@ -1850,6 +1851,7 @@ impl TypeInference {
             pattern_combinations: None,
             was_undirected: rel.was_undirected,
             match_clause_index: rel.match_clause_index, // #586: preserve clause provenance
+            optional_anchor_where: rel.optional_anchor_where.clone(), // #597: preserve
         };
 
         Ok(Arc::new(LogicalPlan::GraphRel(typed_rel)))
@@ -2574,6 +2576,7 @@ impl TypeInference {
             pattern_combinations: None, // No longer needed — single type
             was_undirected: child_rel.was_undirected,
             match_clause_index: child_rel.match_clause_index, // #586: preserve clause provenance
+            optional_anchor_where: child_rel.optional_anchor_where.clone(), // #597: preserve
         };
 
         Ok(Arc::new(LogicalPlan::GraphRel(new_rel)))

@@ -542,6 +542,7 @@ impl<'a> TryFrom<open_cypher_parser::ast::ExistsSubquery<'a>> for ExistsSubquery
                         // the outer first clause. If EXISTS patterns are ever inlined into
                         // the outer metadata, this must instead inherit the outer index.
                         match_clause_index: 0,
+                        optional_anchor_where: None, // #597: set by evaluate_optional_match_clause
                     }))
                 }
             }

@@ -154,6 +154,7 @@ impl CleanupViewScanFilters {
                                 pattern_combinations: graph_rel.pattern_combinations.clone(),
                                 was_undirected: graph_rel.was_undirected,
                                 match_clause_index: graph_rel.match_clause_index, // #586: preserve clause provenance
+                                optional_anchor_where: graph_rel.optional_anchor_where.clone(), // #597: preserve
                             },
                         )))
                     }

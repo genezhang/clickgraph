@@ -4554,6 +4554,73 @@ fn optional_node_shares_table_with_edge(gr: &crate::query_planner::logical_plan:
     !right_tables.is_disjoint(&edge_tables)
 }
 
+/// #597: the conjuncts of an OPTIONAL MATCH clause's own WHERE that reference
+/// ONLY a mandatory anchor variable, recorded on
+/// `GraphRel.optional_anchor_where` during lowering (the only stage where
+/// "this WHERE belongs to the OPTIONAL clause" is unambiguous — see the field
+/// doc). Per OPTIONAL MATCH semantics they must gate the match (fold into the
+/// pattern's gating LEFT JOIN ON, NULL-extending on failure), never filter
+/// the joined result set: the old outer-WHERE placement silently dropped
+/// every NULL-extended anchor row.
+///
+/// Placement is coordinated across two sites that MUST agree, both calling
+/// this helper so the classification can never diverge:
+///   - `collect_graphrel_predicates` (below) drops these conjuncts from the
+///     outer WHERE;
+///   - `apply_optional_node_pre_filters` (join_builder.rs) appends them to
+///     the gating LEFT JOIN's `joining_on` (a false LEFT-JOIN ON just
+///     NULL-extends — the #472 post-WITH precedent).
+///
+/// Scope gates — empty result (old placement preserved) for:
+///   - VLP / shortestPath GraphRels (their predicates are CTE-managed);
+///   - pattern-union CTEs (`pattern_combinations` — CTE-internal joins);
+///   - denormalized standalone-scan anchors (the #553 collector branch
+///     already embeds anchor-only conjuncts into the `__denorm_scan` CTE);
+///   - post-WITH patterns (`cte_references` non-empty — the #472 restructure
+///     in plan_builder_utils.rs already moves ALL conjuncts into the ON);
+///   - conjuncts that don't convert to a renderable `OperatorApplication`
+///     (`joining_on` can only hold those; they stay in the outer WHERE).
+pub(super) fn optional_anchor_gate_conjuncts(
+    gr: &crate::query_planner::logical_plan::GraphRel,
+) -> Vec<LogicalExpr> {
+    if !gr.is_optional.unwrap_or(false)
+        || gr.variable_length.is_some()
+        || gr.shortest_path_mode.is_some()
+        || gr.pattern_combinations.is_some()
+        || !gr.cte_references.is_empty()
+        // Undirected (BidirectionalUnion) excluded: folding the gate into the
+        // reversed arm's edge-join ON makes fold_optional_edge_node_join_with_
+        // predicate decline its combined-anchor rewrite, leaving that arm's
+        // out-of-order join layout unrepaired (Code 47). Directed only — the
+        // same scope precedent as #603.
+        || gr.was_undirected == Some(true)
+        || is_optional_denorm_union_graphrel(gr)
+    {
+        return Vec::new();
+    }
+    let Some(ref anchor_where) = gr.optional_anchor_where else {
+        return Vec::new();
+    };
+    // Apply the same property-mapping rewrite `collect_graphrel_predicates`
+    // applies to its predicate (#519 inline-map handling), so both sites
+    // classify identical post-rewrite conjuncts.
+    use crate::query_planner::logical_expr::expression_rewriter::{
+        rewrite_expression_with_property_mapping, ExpressionRewriteContext,
+    };
+    let plan = LogicalPlan::GraphRel(gr.clone());
+    let rewrite_ctx = ExpressionRewriteContext::new(&plan);
+    let mapped = rewrite_expression_with_property_mapping(anchor_where, &rewrite_ctx);
+    split_and_predicates_logical(&mapped)
+        .into_iter()
+        .filter(|p| {
+            matches!(
+                RenderExpr::try_from(p.clone()),
+                Ok(RenderExpr::OperatorApplicationExp(_))
+            )
+        })
+        .collect()
+}
+
 /// Collect all WHERE predicates from GraphRel nodes in the plan tree.
 /// For optional patterns, filters out predicates that reference ONLY optional aliases
 /// (those are moved to pre_filter for correct LEFT JOIN semantics).
@@ -4767,16 +4834,27 @@ pub(super) fn collect_graphrel_predicates(plan: &LogicalPlan) -> Vec<RenderExpr>
                     // drop behind `anchor_connection_is_set` so it stays
                     // EXACTLY as before for the `None` shape.
                     let optional_only_is_recoverable = optional_node_shares_table_with_edge(gr);
+                    // #597: anchor-only conjuncts of the OPTIONAL MATCH's own
+                    // WHERE move into the gating LEFT JOIN ON (see
+                    // `optional_anchor_gate_conjuncts`); emitting them in the
+                    // outer WHERE dropped the NULL-extended anchor rows.
+                    // `apply_optional_node_pre_filters` (join_builder.rs) adds
+                    // them to the join via the SAME helper, so dropping them
+                    // here can never lose a predicate.
+                    let anchor_gate_conjuncts = optional_anchor_gate_conjuncts(gr);
                     let all_preds = split_and_predicates_logical(&pred);
                     for p in all_preds {
                         let refs_only_rel = anchor_connection_is_set
                             && references_only_alias_logical(&p, &gr.alias);
                         let refs_only_optional = references_only_alias_logical(&p, optional)
                             && optional_only_is_recoverable;
+                        let moved_to_join_on = anchor_gate_conjuncts.contains(&p);
 
-                        // Keep if it references anchor or multiple aliases
-                        // Filter out if it references ONLY rel or ONLY optional node
-                        if !refs_only_rel && !refs_only_optional {
+                        // Keep if it references multiple aliases.
+                        // Filter out if it references ONLY rel, ONLY the
+                        // optional node, or (#597) is an OPTIONAL-clause
+                        // anchor conjunct moved into the gating JOIN ON.
+                        if !refs_only_rel && !refs_only_optional && !moved_to_join_on {
                             if let Ok(render_expr) = RenderExpr::try_from(p) {
                                 predicates.push(render_expr);
                             }

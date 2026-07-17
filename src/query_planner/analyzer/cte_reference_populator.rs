@@ -276,6 +276,7 @@ mod tests {
             pattern_combinations: None,
             was_undirected: None,
             match_clause_index: 0, // #586 (synthetic/test)
+            optional_anchor_where: None,
         }
     }
 

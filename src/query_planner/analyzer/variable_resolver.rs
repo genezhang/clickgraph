@@ -865,6 +865,7 @@ impl VariableResolver {
                         pattern_combinations: rel.pattern_combinations.clone(),
                         was_undirected: rel.was_undirected,
                         match_clause_index: rel.match_clause_index, // #586: preserve clause provenance
+                        optional_anchor_where: rel.optional_anchor_where.clone(), // #597: preserve
                     };
                     Ok(Transformed::Yes(Arc::new(LogicalPlan::GraphRel(new_rel))))
                 } else {
