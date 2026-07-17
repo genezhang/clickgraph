@@ -148,25 +148,56 @@ impl AnalyzerPass for ProjectionTagging {
     // in the final projection, put all explicit alias.*
 
     // If there is any projection on relationship then use edgelist of that relation.
+    //
+    // P1.4 migration note: this pass runs on `LogicalPlan::transform_up`, which
+    // recurses exhaustively (children before parents) via `map_children_arc` —
+    // so the rewrite hook below sees every node with its children already
+    // rewritten, exactly like the old hand-rolled walker's
+    // `self.analyze(child)?`-then-match arms. Only three arms carried real
+    // logic: Projection (star-expansion + per-item tag_projection with a local
+    // branch-label save/restore around plan_ctx), Unwind (denorm property
+    // rewrite of the UNWIND expression), and WithClause (tag aggregate WITH
+    // items). Every other arm was pure recursion, now supplied by the driver.
+    //
+    // Divergence: the old walker recursed into every non-leaf, so the ONLY child
+    // transform_up newly visits is `ViewScan.input` (the old walker's ViewScan
+    // arm was a leaf) — a no-op here since none of the three rewrite arms fire
+    // on a ViewScan subtree, and the goldens + 1,082-query corpus render
+    // byte-identical. (Contrast cte_schema_resolver, which was NOT migrated
+    // because it deliberately skips recursion into Unwind and relies on that.)
     fn analyze_with_graph_schema(
         &self,
         logical_plan: Arc<LogicalPlan>,
         plan_ctx: &mut PlanCtx,
         graph_schema: &GraphSchema,
     ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
+        LogicalPlan::transform_up(&logical_plan, &mut |node| {
+            self.rewrite_node(node, plan_ctx, graph_schema)
+        })
+    }
+}
+
+impl ProjectionTagging {
+    pub fn new() -> Self {
+        ProjectionTagging
+    }
+
+    /// Per-node rewrite applied bottom-up by `transform_up`. `node`'s children
+    /// have already been rewritten when this runs, so reading `.input` here sees
+    /// the transformed child — same as the old walker's recurse-then-rebuild.
+    fn rewrite_node(
+        &self,
+        node: &Arc<LogicalPlan>,
+        plan_ctx: &mut PlanCtx,
+        graph_schema: &GraphSchema,
+    ) -> AnalyzerResult<Transformed<Arc<LogicalPlan>>> {
+        let logical_plan = node;
         let transformed_plan = match logical_plan.as_ref() {
             LogicalPlan::Projection(projection) => {
                 crate::debug_println!(
                     "🔍 ProjectionTagging: BEFORE processing Projection - distinct={}",
                     projection.distinct
                 );
-                // First, recursively process the input child to preserve transformations
-                // from previous analyzer passes (like FilterTagging)
-                let child_tf = self.analyze_with_graph_schema(
-                    projection.input.clone(),
-                    plan_ctx,
-                    graph_schema,
-                )?;
 
                 // handler select all. e.g. -
                 //
@@ -244,7 +275,9 @@ impl AnalyzerPass for ProjectionTagging {
                 }
 
                 let result = Transformed::Yes(Arc::new(LogicalPlan::Projection(Projection {
-                    input: child_tf.get_plan(), // Use transformed child instead of original
+                    // transform_up has already rewritten the child; read it from
+                    // the current node (post-recursion), not the pre-pass Arc.
+                    input: projection.input.clone(),
                     items: proj_items_to_mutate,
                     distinct: projection.distinct,
                     pattern_comprehensions: projection.pattern_comprehensions.clone(),
@@ -255,85 +288,7 @@ impl AnalyzerPass for ProjectionTagging {
                 );
                 result
             }
-            LogicalPlan::GraphNode(graph_node) => {
-                let child_tf = self.analyze_with_graph_schema(
-                    graph_node.input.clone(),
-                    plan_ctx,
-                    graph_schema,
-                )?;
-                // let self_tf = self.analyze_with_graph_schema(graph_node.self_plan.clone(), plan_ctx);
-                graph_node.rebuild_or_clone(child_tf, logical_plan.clone())
-            }
-            LogicalPlan::GraphRel(graph_rel) => {
-                let left_tf =
-                    self.analyze_with_graph_schema(graph_rel.left.clone(), plan_ctx, graph_schema)?;
-                let center_tf = self.analyze_with_graph_schema(
-                    graph_rel.center.clone(),
-                    plan_ctx,
-                    graph_schema,
-                )?;
-                let right_tf = self.analyze_with_graph_schema(
-                    graph_rel.right.clone(),
-                    plan_ctx,
-                    graph_schema,
-                )?;
-                graph_rel.rebuild_or_clone(left_tf, center_tf, right_tf, logical_plan.clone())
-            }
-            LogicalPlan::Cte(cte) => {
-                let child_tf =
-                    self.analyze_with_graph_schema(cte.input.clone(), plan_ctx, graph_schema)?;
-                cte.rebuild_or_clone(child_tf, logical_plan.clone())
-            }
-
-            LogicalPlan::Empty => Transformed::No(logical_plan.clone()),
-            LogicalPlan::GraphJoins(graph_joins) => {
-                let child_tf = self.analyze_with_graph_schema(
-                    graph_joins.input.clone(),
-                    plan_ctx,
-                    graph_schema,
-                )?;
-                graph_joins.rebuild_or_clone(child_tf, logical_plan.clone())
-            }
-            LogicalPlan::Filter(filter) => {
-                let child_tf =
-                    self.analyze_with_graph_schema(filter.input.clone(), plan_ctx, graph_schema)?;
-                filter.rebuild_or_clone(child_tf, logical_plan.clone())
-            }
-            LogicalPlan::GroupBy(group_by) => {
-                let child_tf =
-                    self.analyze_with_graph_schema(group_by.input.clone(), plan_ctx, graph_schema)?;
-                group_by.rebuild_or_clone(child_tf, logical_plan.clone())
-            }
-            LogicalPlan::OrderBy(order_by) => {
-                let child_tf =
-                    self.analyze_with_graph_schema(order_by.input.clone(), plan_ctx, graph_schema)?;
-                order_by.rebuild_or_clone(child_tf, logical_plan.clone())
-            }
-            LogicalPlan::Skip(skip) => {
-                let child_tf =
-                    self.analyze_with_graph_schema(skip.input.clone(), plan_ctx, graph_schema)?;
-                skip.rebuild_or_clone(child_tf, logical_plan.clone())
-            }
-            LogicalPlan::Limit(limit) => {
-                let child_tf =
-                    self.analyze_with_graph_schema(limit.input.clone(), plan_ctx, graph_schema)?;
-                limit.rebuild_or_clone(child_tf, logical_plan.clone())
-            }
-            LogicalPlan::Union(union) => {
-                let mut inputs_tf: Vec<Transformed<Arc<LogicalPlan>>> = vec![];
-                for input_plan in union.inputs.iter() {
-                    let child_tf =
-                        self.analyze_with_graph_schema(input_plan.clone(), plan_ctx, graph_schema)?;
-                    inputs_tf.push(child_tf);
-                }
-                union.rebuild_or_clone(inputs_tf, logical_plan.clone())
-            }
-            LogicalPlan::PageRank(_) => Transformed::No(logical_plan.clone()),
-            LogicalPlan::ViewScan(_view_scan) => Transformed::No(logical_plan.clone()),
             LogicalPlan::Unwind(u) => {
-                let child_tf =
-                    self.analyze_with_graph_schema(u.input.clone(), plan_ctx, graph_schema)?;
-
                 // Transform the UNWIND expression - resolve property mappings for denormalized nodes
                 let transformed_expr =
                     self.transform_unwind_expression(&u.expression, plan_ctx, graph_schema)?;
@@ -341,17 +296,8 @@ impl AnalyzerPass for ProjectionTagging {
                 // Check if anything changed
                 let expr_changed = transformed_expr != u.expression;
 
-                match (&child_tf, expr_changed) {
-                    (Transformed::Yes(new_input), _) => Transformed::Yes(Arc::new(
-                        LogicalPlan::Unwind(crate::query_planner::logical_plan::Unwind {
-                            input: new_input.clone(),
-                            expression: transformed_expr,
-                            alias: u.alias.clone(),
-                            label: u.label.clone(),
-                            tuple_properties: u.tuple_properties.clone(),
-                        }),
-                    )),
-                    (Transformed::No(_), true) => Transformed::Yes(Arc::new(LogicalPlan::Unwind(
+                if expr_changed {
+                    Transformed::Yes(Arc::new(LogicalPlan::Unwind(
                         crate::query_planner::logical_plan::Unwind {
                             input: u.input.clone(),
                             expression: transformed_expr,
@@ -359,44 +305,12 @@ impl AnalyzerPass for ProjectionTagging {
                             label: u.label.clone(),
                             tuple_properties: u.tuple_properties.clone(),
                         },
-                    ))),
-                    (Transformed::No(_), false) => Transformed::No(logical_plan.clone()),
-                }
-            }
-            LogicalPlan::CartesianProduct(cp) => {
-                let transformed_left =
-                    self.analyze_with_graph_schema(cp.left.clone(), plan_ctx, graph_schema)?;
-                let transformed_right =
-                    self.analyze_with_graph_schema(cp.right.clone(), plan_ctx, graph_schema)?;
-
-                if matches!(
-                    (&transformed_left, &transformed_right),
-                    (Transformed::No(_), Transformed::No(_))
-                ) {
-                    Transformed::No(logical_plan.clone())
+                    )))
                 } else {
-                    let new_cp = crate::query_planner::logical_plan::CartesianProduct {
-                        left: match transformed_left {
-                            Transformed::Yes(p) => p,
-                            Transformed::No(p) => p,
-                        },
-                        right: match transformed_right {
-                            Transformed::Yes(p) => p,
-                            Transformed::No(p) => p,
-                        },
-                        is_optional: cp.is_optional,
-                        join_condition: cp.join_condition.clone(),
-                    };
-                    Transformed::Yes(Arc::new(LogicalPlan::CartesianProduct(new_cp)))
+                    Transformed::No(Arc::clone(logical_plan))
                 }
             }
             LogicalPlan::WithClause(with_clause) => {
-                let child_tf = self.analyze_with_graph_schema(
-                    with_clause.input.clone(),
-                    plan_ctx,
-                    graph_schema,
-                )?;
-
                 // Tag WITH items containing aggregates so that count(node) → count(node.id), etc.
                 // Skip bare TableAlias items — they are pass-through variables that get expanded
                 // later in build_chained_with_match_cte_plan via expand_table_alias_to_select_items.
@@ -415,28 +329,18 @@ impl AnalyzerPass for ProjectionTagging {
                     }
                 }
 
-                if matches!(&child_tf, Transformed::No(_)) && tagged_items == with_clause.items {
-                    Transformed::No(logical_plan.clone())
+                if tagged_items == with_clause.items {
+                    Transformed::No(Arc::clone(logical_plan))
                 } else {
-                    let new_input = child_tf.get_plan();
-                    let mut new_wc = with_clause.with_new_input(new_input);
+                    let mut new_wc = with_clause.clone();
                     new_wc.items = tagged_items;
                     Transformed::Yes(Arc::new(LogicalPlan::WithClause(new_wc)))
                 }
             }
-            // Write variants — read-side projection tagging does not apply.
-            LogicalPlan::Create(_)
-            | LogicalPlan::SetProperties(_)
-            | LogicalPlan::Delete(_)
-            | LogicalPlan::Remove(_) => Transformed::No(logical_plan.clone()),
+            // Every other variant is pure recursion, handled by transform_up.
+            _ => Transformed::No(Arc::clone(logical_plan)),
         };
         Ok(transformed_plan)
-    }
-}
-
-impl ProjectionTagging {
-    pub fn new() -> Self {
-        ProjectionTagging
     }
 
     fn select_all_present(&self, projection_items: &[ProjectionItem]) -> bool {
