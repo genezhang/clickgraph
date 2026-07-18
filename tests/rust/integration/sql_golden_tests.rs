@@ -3575,34 +3575,32 @@ async fn denorm_multi_anchor_disconnected_optionals_each_get_own_cte_590() {
 }
 
 /// #590 SAFETY GUARD (ground-rule-1): the planner fix
-/// (`combine_node_with_existing_plan`) now materializes BOTH anchors of a
-/// disconnected multi-anchor denormalized pattern so the second one is no longer
-/// silently dropped. Only ONE render shape — a DIRECTED pattern where every
-/// anchor has its own OPTIONAL MATCH — is fully handled (locked by
-/// `denorm_multi_anchor_disconnected_optionals_each_get_own_cte_590`). Every
-/// OTHER disconnected-multi-anchor-denorm shape reaches render with both anchors
-/// present but no correct path, and the generic path would emit either silently
-/// mis-attributed edge columns with `ON 1 = 1` (silent-wrong) or dangling anchor
-/// references (invalid SQL → ClickHouse Code 47). Both are strictly worse than
-/// the pre-fix honest error.
+/// (`combine_node_with_existing_plan`, gated by `is_bare_denorm_anchor_plan`)
+/// materializes BOTH anchors of a disconnected multi-anchor denormalized pattern
+/// ONLY when the pre-existing plan is itself a bare denorm anchor scan — i.e. the
+/// comma / separate-MATCH disconnected case. Of those, only ONE render shape — a
+/// DIRECTED pattern where every anchor has its own OPTIONAL MATCH — has a correct
+/// path (locked by `denorm_multi_anchor_disconnected_optionals_each_get_own_cte_590`).
+/// Every OTHER disconnected-multi-anchor-denorm shape reaches render with both
+/// anchors present but no correct path, and the generic path would emit either
+/// silently mis-attributed edge columns with `ON 1 = 1` (silent-wrong) or dangling
+/// anchor references (invalid SQL → ClickHouse Code 47). Both are strictly worse
+/// than an honest error.
 ///
-/// This test locks the guard: each unhandled shape must fail LOUDLY at render
-/// (`Err`), never silently produce SQL. The message must name the limitation so
-/// the failure is honest and actionable. Covers: one-optional-only (the
-/// live-verified silent-garbage `ON 1 = 1` case), undirected (issue #590's own
-/// literal example, which regressed to Code 47), 3-anchor, chained-through-optional,
-/// and base non-optional.
+/// This test locks the render guard (`contains_disconnected_denorm_cartesian`):
+/// each unhandled shape must fail LOUDLY at render (`Err`) with a message naming
+/// the limitation, never silently produce SQL. Covers: one-optional-only,
+/// undirected (issue #590's own literal example), 3-anchor,
+/// chained-through-optional, and base non-optional.
 #[tokio::test]
 async fn denorm_multi_anchor_unhandled_shapes_fail_loudly_not_silent_590() {
     let schema = load_schema(SchemaId::Denormalized.yaml_path());
 
     let unhandled = [
-        // MAJOR 1: only ONE anchor has an optional — live: 12 rows of
-        // city/state leaking into code columns + ON 1=1 (silent-wrong).
+        // Only ONE anchor has an optional.
         "MATCH (a:Airport), (x:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) \
          RETURN a.code, x.code, b.code",
-        // MAJOR 2: undirected (issue #590's literal repro) — live: Code 47
-        // dangling a.code/x.code.
+        // Undirected (issue #590's literal repro).
         "MATCH (a:Airport), (x:Airport) OPTIONAL MATCH (a)-[:FLIGHT]-(b) \
          OPTIONAL MATCH (x)-[:FLIGHT]-(y) RETURN a.code, x.code, b.code, y.code",
         // 3 disconnected anchors.
@@ -3611,7 +3609,7 @@ async fn denorm_multi_anchor_unhandled_shapes_fail_loudly_not_silent_590() {
         // Chained through the optional endpoint.
         "MATCH (a:Airport), (x:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b)-[:FLIGHT]->(c) \
          OPTIONAL MATCH (x)-[:FLIGHT]->(y) RETURN a.code, x.code, b.code, c.code, y.code",
-        // Base non-optional disconnected (errored Code 47 on base too).
+        // Base non-optional disconnected.
         "MATCH (a:Airport), (x:Airport) RETURN a.code, x.code",
     ];
 
@@ -3689,6 +3687,57 @@ async fn denorm_multi_anchor_guard_does_not_overfire_590() {
     assert!(
         non_denorm.contains("a.full_name") && non_denorm.contains("x.full_name"),
         "guard over-fired on the NON-denorm disconnected pattern (#601):\n{non_denorm}"
+    );
+}
+
+/// #590 SURGICAL-GATE lock: the planner materialization
+/// (`combine_node_with_existing_plan`, gated by `is_bare_denorm_anchor_plan`)
+/// must fire ONLY when the pre-existing plan is a BARE denorm anchor scan — the
+/// disconnected comma / separate-MATCH case. It must NOT fire when a denorm node
+/// arrives with a WITH-barrier or connected-pattern pre-existing plan, because
+/// those contexts render correctly on base via a different path and the
+/// materialization would divert them into the (unsupported) new path — a
+/// correct→broken regression (round-2 findings). This test locks that both such
+/// shapes still RENDER (do not hit the loud guard):
+///   - Connected + disconnected anchor in a single MATCH
+///     (`MATCH (a)-[:R]->(b), (x)`) — base emits an honest plan; must not be
+///     converted to a loud denorm-cartesian error.
+///   - WITH barrier between anchors
+///     (`MATCH (a) WITH a MATCH (x) OPTIONAL MATCH (a)-...->(b) OPTIONAL MATCH
+///     (x)-...->(y)`) — base renders this two-anchor denorm shape via the
+///     WITH-CTE path; the gate must leave it on that path (it renders, does not
+///     error).
+#[tokio::test]
+async fn denorm_multi_anchor_surgical_gate_preserves_with_and_connected_590() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+
+    // WITH-barrier two-anchor both-optional (round-2 MAJOR 2): must RENDER, not
+    // hit the loud guard. Base produces SQL here; the gate must not divert it.
+    let with_barrier = try_render(
+        &schema,
+        "MATCH (a:Airport) WITH a MATCH (x:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) \
+         OPTIONAL MATCH (x)-[:FLIGHT]->(y) RETURN a.code, x.code, b.code, y.code",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        with_barrier.is_ok(),
+        "#590 surgical gate: WITH-barrier two-anchor denorm must still render \
+         (round-2 correct→broken regression), got: {with_barrier:?}"
+    );
+
+    // Connected + disconnected anchor in a single MATCH (round-2 MAJOR 1): must
+    // render its (base-identical) plan, not be converted to a loud error.
+    let conn_disc = try_render(
+        &schema,
+        "MATCH (a:Airport)-[:FLIGHT]->(b:Airport), (x:Airport) RETURN a.code, b.code, x.code",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        conn_disc.is_ok(),
+        "#590 surgical gate: connected+disconnected single-MATCH must render \
+         (base behavior preserved), got: {conn_disc:?}"
     );
 }
 

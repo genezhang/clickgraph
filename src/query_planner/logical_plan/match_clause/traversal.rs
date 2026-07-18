@@ -1922,11 +1922,67 @@ pub(super) fn traverse_node_pattern(
             Arc::new(LogicalPlan::GraphNode(graph_node))
         };
 
-        Ok(combine_node_with_existing_plan(
-            new_node_plan,
-            plan,
-            &node_alias,
-        ))
+        // #590 (surgical): the denormalized from/to-Union node shape historically
+        // RETURNED EARLY here, dropping `plan` (the existing pre-built plan). That
+        // silently lost the FIRST anchor of a disconnected comma / separate-MATCH
+        // denorm pattern (`MATCH (a:Airport),(x:Airport)` — `a` vanished). But the
+        // early return was CORRECT for every OTHER context in which a denorm node
+        // arrives with a non-empty `plan`: a WITH barrier (`MATCH (a) WITH a MATCH
+        // (x)`) or a connected pattern in the same clause (`MATCH (a)-[:R]->(b),
+        // (x)`) both carry `plan` as a WithClause / GraphRel whose combination with
+        // this node is performed elsewhere; combining here instead breaks them
+        // (dangling refs / silent-wrong — the round-2 regressions). So gate the
+        // combine to the EXACT shape it must fix: `plan` is itself a BARE
+        // denormalized anchor scan (a from/to Union of denorm GraphNodes, or a
+        // CartesianProduct built purely from such anchors for the 3+-anchor case).
+        // For anything else, preserve the historical early-return (drop `plan`)
+        // byte-for-byte. The single-scan (non-denorm) shape below is unaffected —
+        // it keeps base's unconditional combine (#601).
+        let combine = match new_node_plan.as_ref() {
+            // Denorm from/to Union anchor: only combine with another bare denorm
+            // anchor (the disconnected comma/separate-MATCH case). Otherwise
+            // replicate base's early return (drop `plan`).
+            LogicalPlan::Union(_) => is_bare_denorm_anchor_plan(&plan),
+            // Single-scan GraphNode: unchanged base behavior (always combine).
+            _ => true,
+        };
+        if combine {
+            Ok(combine_node_with_existing_plan(
+                new_node_plan,
+                plan,
+                &node_alias,
+            ))
+        } else {
+            // Historical early-return: denorm Union in a WITH / connected context.
+            Ok(new_node_plan)
+        }
+    }
+}
+
+/// #590: true when `plan` is a BARE disconnected denormalized anchor scan — a
+/// from/to Union of denormalized GraphNodes (`MATCH (a:Airport)` on a denorm
+/// schema), or a `CartesianProduct` composed purely of such anchors (the 3+-anchor
+/// chain). This is the ONLY `existing`-plan shape for which the denorm from/to-
+/// Union node branch must combine rather than drop (see the gate at its call
+/// site). WithClause / GraphRel / CTE existing-plans are deliberately excluded —
+/// those contexts combine the new node elsewhere, and combining here regresses
+/// previously-correct output.
+fn is_bare_denorm_anchor_plan(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::Union(u) => {
+            !u.inputs.is_empty()
+                && u.inputs.iter().all(|b| {
+                    matches!(
+                        b.as_ref(),
+                        LogicalPlan::GraphNode(gn)
+                            if crate::graph_catalog::pattern_schema::node_denormalized_flag(gn)
+                    )
+                })
+        }
+        LogicalPlan::CartesianProduct(cp) => {
+            is_bare_denorm_anchor_plan(&cp.left) && is_bare_denorm_anchor_plan(&cp.right)
+        }
+        _ => false,
     }
 }
 
