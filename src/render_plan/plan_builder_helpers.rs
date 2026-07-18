@@ -548,7 +548,102 @@ pub(super) fn find_inner_optional_denorm_graphrel(plan: &LogicalPlan) -> Option<
     }
 }
 
-/// #510: when `alias` is the anchor of an OPTIONAL denorm CTE + LEFT JOIN
+/// #590: locate a `CartesianProduct` (through the same query-modifier wrappers as
+/// `find_inner_optional_denorm_graphrel`) whose BOTH arms are independent
+/// denormalized OPTIONAL subtrees — the product of the
+/// `OptionalCartesianDistribution` analyzer pass on a disconnected multi-anchor
+/// query like `MATCH (a:Airport),(x:Airport) OPTIONAL MATCH (a)-[:FLIGHT]-(b)
+/// OPTIONAL MATCH (x)-[:FLIGHT]-(y)`. Returns the `CartesianProduct` plan node so
+/// the render layer can render each arm through the single-anchor
+/// `__denorm_scan_{alias}` machinery and merge (CTEs + CROSS JOIN).
+///
+/// An "independent denormalized OPTIONAL subtree" is a subtree that itself
+/// contains a denorm-optional GraphRel (`find_inner_optional_denorm_graphrel`
+/// succeeds) — this covers both a single optional hop (`GraphRel(opt){Union}`)
+/// and a chained one (`GraphRel(opt){GraphRel(opt){Union}}`). Deliberately
+/// requires the pattern on BOTH arms so the single-anchor path (which has no
+/// CartesianProduct) is never diverted here.
+pub(super) fn find_cartesian_of_denorm_optionals(plan: &LogicalPlan) -> Option<&LogicalPlan> {
+    match plan {
+        // Require each arm to be a DIRECTED single-anchor optional-denorm subtree
+        // (`find_inner_optional_denorm_graphrel` — which deliberately has NO Union
+        // arm, so a direction-split UNDIRECTED arm never matches). The undirected
+        // multi-anchor shape (`CP(Union[GR_out,GR_in], …)`) is intentionally left to
+        // the generic path rather than composed here — composing two per-arm UNION
+        // renders under a CROSS JOIN needs machinery this arm doesn't have, and a
+        // partial attempt emits invalid SQL. See #590 notes.
+        LogicalPlan::CartesianProduct(cp)
+            if find_inner_optional_denorm_graphrel(&cp.left).is_some()
+                && find_inner_optional_denorm_graphrel(&cp.right).is_some() =>
+        {
+            Some(plan)
+        }
+        LogicalPlan::GraphJoins(gj) => find_cartesian_of_denorm_optionals(&gj.input),
+        LogicalPlan::Projection(p) => find_cartesian_of_denorm_optionals(&p.input),
+        LogicalPlan::GroupBy(gb) => find_cartesian_of_denorm_optionals(&gb.input),
+        LogicalPlan::Filter(f) => find_cartesian_of_denorm_optionals(&f.input),
+        LogicalPlan::OrderBy(o) => find_cartesian_of_denorm_optionals(&o.input),
+        LogicalPlan::Limit(l) => find_cartesian_of_denorm_optionals(&l.input),
+        LogicalPlan::Skip(s) => find_cartesian_of_denorm_optionals(&s.input),
+        _ => None,
+    }
+}
+
+/// #590 SAFETY GUARD: true when the plan contains a `CartesianProduct` at least
+/// one of whose arms is (or wraps, as its anchor) a DENORMALIZED standalone
+/// node-scan Union — i.e. a *disconnected multi-anchor denormalized* pattern, the
+/// exact shape `combine_node_with_existing_plan` now materializes so BOTH anchors
+/// survive into the plan (#590 planner fix).
+///
+/// Only ONE such shape — a directed CartesianProduct whose BOTH arms are
+/// single-anchor optional-denorm subtrees — has a correct render path
+/// (`find_cartesian_of_denorm_optionals` + the #590 render arm, which returns
+/// BEFORE this guard is consulted). EVERY other disconnected-multi-anchor
+/// denormalized shape (one anchor optional, undirected, 3+ anchors, chained
+/// through the optional endpoint, base non-optional) currently falls to the
+/// generic render path, which either silently mis-attributes edge columns onto
+/// anchor aliases with `ON 1 = 1` (silent-wrong — ground-rule-1 violation) or
+/// emits dangling anchor references (`Code 47` from ClickHouse). Before the
+/// planner fix these all failed loudly (the second anchor was dropped, so the
+/// generic path produced an honest `UNKNOWN_IDENTIFIER`); the fix must not
+/// convert an honest error into silent-wrong output.
+///
+/// The render layer consults this AFTER the one handled shape has returned, and
+/// raises a loud `InvalidRenderPlan` when it fires — preserving the
+/// honest-failure contract for every not-yet-supported denormalized disconnected
+/// shape. NON-denormalized disconnected patterns (`MATCH (a:User),(x:User)`,
+/// #601) never carry a denorm node-scan Union, so this never fires for them.
+pub(super) fn contains_disconnected_denorm_cartesian(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::CartesianProduct(cp) => {
+            // A disconnected denorm anchor pattern: at least one arm's subtree
+            // carries a denormalized standalone node-scan Union.
+            subtree_contains_denormalized_union(&cp.left)
+                || subtree_contains_denormalized_union(&cp.right)
+                // …or a denorm cartesian nested deeper in either arm (3+ anchors).
+                || contains_disconnected_denorm_cartesian(&cp.left)
+                || contains_disconnected_denorm_cartesian(&cp.right)
+        }
+        LogicalPlan::GraphRel(gr) => {
+            contains_disconnected_denorm_cartesian(&gr.left)
+                || contains_disconnected_denorm_cartesian(&gr.center)
+                || contains_disconnected_denorm_cartesian(&gr.right)
+        }
+        LogicalPlan::GraphNode(gn) => contains_disconnected_denorm_cartesian(&gn.input),
+        LogicalPlan::GraphJoins(gj) => contains_disconnected_denorm_cartesian(&gj.input),
+        LogicalPlan::Projection(p) => contains_disconnected_denorm_cartesian(&p.input),
+        LogicalPlan::GroupBy(gb) => contains_disconnected_denorm_cartesian(&gb.input),
+        LogicalPlan::Filter(f) => contains_disconnected_denorm_cartesian(&f.input),
+        LogicalPlan::OrderBy(o) => contains_disconnected_denorm_cartesian(&o.input),
+        LogicalPlan::Limit(l) => contains_disconnected_denorm_cartesian(&l.input),
+        LogicalPlan::Skip(s) => contains_disconnected_denorm_cartesian(&s.input),
+        LogicalPlan::Union(u) => u
+            .inputs
+            .iter()
+            .any(|i| contains_disconnected_denorm_cartesian(i)),
+        _ => false,
+    }
+}
 /// pattern (the `__denorm_scan_{alias}` CTE built in `plan_builder.rs`,
 /// shared machinery with #502/#505/#506/#507), return the Cypher property
 /// name that CTE exposes for the node's identity column — the SAME
@@ -5392,6 +5487,222 @@ fn extract_referenced_aliases_from_expr(expr: &RenderExpr, refs: &mut HashSet<St
             refs.insert(alias.0.clone());
         }
         // Literals, Star, CastExpr, etc. don't reference aliases
+        _ => {}
+    }
+}
+
+/// #590: Recursively rewrite property-access references on `edge_alias` to the
+/// `(target_alias, cypher_prop)` the `col_map` maps their db column to. Shared
+/// by the single-anchor OPTIONAL-denorm shim and the multi-anchor
+/// CartesianProduct composition in `plan_builder.rs` so both apply the SAME
+/// edge→anchor-CTE rewrite (formerly an inline nested fn in the single-anchor
+/// shim).
+pub(super) fn rewrite_denorm_refs(
+    expr: &mut RenderExpr,
+    edge_alias: &str,
+    col_map: &DenormAnchorColMap,
+) {
+    match expr {
+        RenderExpr::PropertyAccessExp(ref pa) if pa.table_alias.0 == edge_alias => {
+            let db_col = pa.column.raw().to_string();
+            if let Some((target_alias, cypher_prop)) = col_map.get(&db_col) {
+                *expr = RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: TableAlias(target_alias.clone()),
+                    column: PropertyValue::Column(cypher_prop.clone()),
+                });
+            }
+        }
+        RenderExpr::AggregateFnCall(agg) => {
+            for arg in &mut agg.args {
+                rewrite_denorm_refs(arg, edge_alias, col_map);
+            }
+        }
+        RenderExpr::ScalarFnCall(sf) => {
+            for arg in &mut sf.args {
+                rewrite_denorm_refs(arg, edge_alias, col_map);
+            }
+        }
+        RenderExpr::OperatorApplicationExp(op) => {
+            for operand in &mut op.operands {
+                rewrite_denorm_refs(operand, edge_alias, col_map);
+            }
+        }
+        RenderExpr::Case(case) => {
+            if let Some(ref mut e) = case.expr {
+                rewrite_denorm_refs(e, edge_alias, col_map);
+            }
+            for (cond, result) in &mut case.when_then {
+                rewrite_denorm_refs(cond, edge_alias, col_map);
+                rewrite_denorm_refs(result, edge_alias, col_map);
+            }
+            if let Some(ref mut e) = case.else_expr {
+                rewrite_denorm_refs(e, edge_alias, col_map);
+            }
+        }
+        RenderExpr::List(items) => {
+            for item in items {
+                rewrite_denorm_refs(item, edge_alias, col_map);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// #590: `db_column → (target_alias, cypher_property)` rewrite map produced by
+/// [`build_denorm_anchor_col_map`] and consumed by [`rewrite_denorm_refs`].
+pub(super) type DenormAnchorColMap = std::collections::HashMap<String, (String, String)>;
+
+/// #590: Build the `edge_alias.db_col → (anchor_node_alias, cypher_prop)` rewrite
+/// map for an OPTIONAL-denorm GraphRel `gr` (the map the SELECT/GROUP BY/ORDER BY
+/// rewrite in the single-anchor shim applies). Returns `(edge_alias, col_map)`, or
+/// `None` when `gr` isn't the special OPTIONAL-denorm-Union pattern (caller then
+/// leaves references untouched).
+///
+/// Factored verbatim out of the single-anchor shim in `plan_builder.rs` so the
+/// multi-anchor CartesianProduct composition can apply the identical rewrite
+/// per-arm. `plan_ctx` supplies the pattern's edge-owned column set for the #475
+/// guard (skip when absent, conservatively pre-#475).
+pub(super) fn build_denorm_anchor_col_map(
+    gr: &crate::query_planner::logical_plan::GraphRel,
+    plan_ctx: Option<&crate::query_planner::plan_ctx::PlanCtx>,
+) -> Option<(String, DenormAnchorColMap)> {
+    // #506: the anchor Union can be on either side; default to the left/from-side
+    // (outgoing) shape when unrecognized, matching prior behavior.
+    let anchor_is_left = optional_denorm_union_anchor_is_left(gr).unwrap_or(true);
+    let anchor_side_plan: &LogicalPlan = if anchor_is_left {
+        gr.left.as_ref()
+    } else {
+        gr.right.as_ref()
+    };
+
+    let LogicalPlan::ViewScan(edge_vs) = gr.center.as_ref() else {
+        return None;
+    };
+    let edge_alias = gr.alias.clone();
+    let node_alias = if let LogicalPlan::Union(u) = anchor_side_plan {
+        u.inputs.first().and_then(|i| {
+            if let LogicalPlan::GraphNode(gn) = i.as_ref() {
+                Some(gn.alias.clone())
+            } else {
+                None
+            }
+        })
+    } else {
+        None
+    }?;
+
+    // #508: resolve which edge side (from/to) the anchor actually occupies.
+    let anchor_is_from_side =
+        resolve_anchor_is_from_side(anchor_side_plan, edge_vs, anchor_is_left);
+
+    let mut col_map: std::collections::HashMap<String, (String, String)> =
+        std::collections::HashMap::new();
+
+    let anchor_side_props = crate::graph_catalog::pattern_schema::edge_side_node_properties(
+        edge_vs,
+        anchor_is_from_side,
+    );
+    if let Some(side_props) = anchor_side_props {
+        // Sorted so the winner is deterministic when two properties map to the
+        // same db column (HashMap iteration is per-process random, #480 class).
+        let mut side_props: Vec<_> = side_props.iter().collect();
+        side_props.sort_by(|a, b| a.0.cmp(b.0));
+        for (prop, val) in side_props {
+            col_map.insert(val.raw().to_string(), (node_alias.clone(), prop.clone()));
+        }
+    }
+
+    // ALSO map the anchor's own from-side property columns (#475), guarded so an
+    // edge-owned column name is never hijacked onto the anchor CTE. See the
+    // single-anchor shim's own long comment for the full rationale.
+    let edge_owned_columns = plan_ctx
+        .and_then(|ctx| ctx.get_pattern_context(&gr.alias))
+        .map(|pc| pc.edge_owned_columns());
+    if let (LogicalPlan::Union(u), Some(edge_owned_columns)) =
+        (anchor_side_plan, edge_owned_columns)
+    {
+        let anchor_gn = u.inputs.iter().find_map(|i| {
+            if let LogicalPlan::GraphNode(gn) = i.as_ref() {
+                if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                    if crate::graph_catalog::pattern_schema::edge_side_node_properties(
+                        vs,
+                        anchor_is_from_side,
+                    )
+                    .is_some()
+                    {
+                        return Some(gn);
+                    }
+                }
+                None
+            } else {
+                None
+            }
+        });
+        if let Some(gn) = anchor_gn {
+            if let LogicalPlan::ViewScan(anchor_vs) = gn.input.as_ref() {
+                let mut anchor_props: Vec<_> = anchor_vs.property_mapping.iter().collect();
+                anchor_props.sort_by(|a, b| a.0.cmp(b.0));
+                for (prop, val) in anchor_props {
+                    let db_col = val.raw().to_string();
+                    if edge_owned_columns.contains(&db_col) {
+                        log::debug!(
+                            "OPTIONAL denorm rewrite: skipping anchor property '{}' — its db column '{}' is edge-owned (#475 guard)",
+                            prop,
+                            db_col
+                        );
+                        continue;
+                    }
+                    col_map.insert(db_col, (node_alias.clone(), prop.clone()));
+                }
+            }
+        }
+    }
+
+    Some((edge_alias, col_map))
+}
+
+/// #590: collect every OPTIONAL-denorm GraphRel in a rendered arm subtree (a
+/// chained OPTIONAL produces more than one), so the multi-anchor composition can
+/// apply each hop's edge→anchor-CTE rewrite. Order is outer-first.
+pub(super) fn collect_optional_denorm_graphrels(plan: &LogicalPlan) -> Vec<&LogicalPlan> {
+    let mut out = Vec::new();
+    collect_optional_denorm_graphrels_into(plan, &mut out, 0);
+    out
+}
+
+fn collect_optional_denorm_graphrels_into<'a>(
+    plan: &'a LogicalPlan,
+    out: &mut Vec<&'a LogicalPlan>,
+    depth: usize,
+) {
+    if depth > crate::render_plan::MAX_TRAVERSAL_DEPTH {
+        return;
+    }
+    match plan {
+        LogicalPlan::GraphRel(gr) => {
+            if is_optional_denorm_union_graphrel(gr) {
+                out.push(plan);
+            }
+            collect_optional_denorm_graphrels_into(&gr.left, out, depth + 1);
+            collect_optional_denorm_graphrels_into(&gr.right, out, depth + 1);
+        }
+        LogicalPlan::GraphJoins(gj) => {
+            collect_optional_denorm_graphrels_into(&gj.input, out, depth + 1)
+        }
+        LogicalPlan::Projection(p) => {
+            collect_optional_denorm_graphrels_into(&p.input, out, depth + 1)
+        }
+        LogicalPlan::GroupBy(gb) => {
+            collect_optional_denorm_graphrels_into(&gb.input, out, depth + 1)
+        }
+        LogicalPlan::Filter(f) => collect_optional_denorm_graphrels_into(&f.input, out, depth + 1),
+        LogicalPlan::OrderBy(o) => collect_optional_denorm_graphrels_into(&o.input, out, depth + 1),
+        LogicalPlan::Limit(l) => collect_optional_denorm_graphrels_into(&l.input, out, depth + 1),
+        LogicalPlan::Skip(s) => collect_optional_denorm_graphrels_into(&s.input, out, depth + 1),
+        LogicalPlan::CartesianProduct(cp) => {
+            collect_optional_denorm_graphrels_into(&cp.left, out, depth + 1);
+            collect_optional_denorm_graphrels_into(&cp.right, out, depth + 1);
+        }
         _ => {}
     }
 }
