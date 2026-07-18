@@ -3401,12 +3401,16 @@ fn render_expr_contains_aggregate(expr: &RenderExpr) -> bool {
         RenderExpr::AggregateFnCall(_) => true,
         RenderExpr::ScalarFnCall(f) => f.args.iter().any(render_expr_contains_aggregate),
         RenderExpr::Case(c) => {
-            c.when_then.iter().any(|(cond, val)| {
-                render_expr_contains_aggregate(cond) || render_expr_contains_aggregate(val)
-            }) || c
-                .else_expr
+            // #576: a simple CASE can carry an aggregate in its scrutinee too.
+            c.expr
                 .as_ref()
                 .is_some_and(|e| render_expr_contains_aggregate(e))
+                || c.when_then.iter().any(|(cond, val)| {
+                    render_expr_contains_aggregate(cond) || render_expr_contains_aggregate(val)
+                })
+                || c.else_expr
+                    .as_ref()
+                    .is_some_and(|e| render_expr_contains_aggregate(e))
         }
         RenderExpr::OperatorApplicationExp(op) => {
             op.operands.iter().any(render_expr_contains_aggregate)
@@ -3434,6 +3438,10 @@ fn collect_nested_aggregate_args(expr: &RenderExpr, agg_arg_cols: &mut Vec<Strin
             }
         }
         RenderExpr::Case(c) => {
+            // #576: also collect from the simple-CASE scrutinee.
+            if let Some(e) = &c.expr {
+                collect_nested_aggregate_args(e, agg_arg_cols);
+            }
             for (cond, val) in &c.when_then {
                 collect_nested_aggregate_args(cond, agg_arg_cols);
                 collect_nested_aggregate_args(val, agg_arg_cols);

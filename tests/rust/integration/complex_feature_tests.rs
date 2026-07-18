@@ -1763,3 +1763,72 @@ async fn test_expression_property_preserved_through_render_phase() {
         sql2
     );
 }
+
+/// Regression test for #576: a node referenced ONLY through a simple-CASE
+/// scrutinee (`CASE b.prop WHEN ... END`) must not be pruned.
+///
+/// The optional node `b` appears nowhere except the scrutinee of a simple CASE.
+/// Several RenderExpr walkers (`references_alias`, `has_non_id_column_ref`,
+/// `has_unresolved_bare_ref`) previously recursed into the CASE's WHEN/THEN/ELSE
+/// branches but skipped `case.expr` (the scrutinee), so `b` looked unreferenced and
+/// its LEFT JOIN was dropped by join/bridge elimination — leaving `b.full_name`
+/// dangling in the SELECT (ClickHouse Code 47, UNKNOWN_IDENTIFIER). The `b` LEFT
+/// JOIN must survive.
+#[tokio::test]
+async fn test_optional_node_referenced_only_in_case_scrutinee() {
+    let schema = create_test_schema();
+
+    let cypher = r#"
+        MATCH (a:User)
+        OPTIONAL MATCH (a)-[:FOLLOWS]->(b:User)
+        RETURN a.name, CASE b.name WHEN 'Alice' THEN 1 ELSE 0 END AS g
+    "#;
+
+    let ast = parse_query(cypher).expect("Failed to parse simple-CASE-scrutinee query");
+    let result = evaluate_read_query(ast, &schema, None, None);
+    assert!(
+        result.is_ok(),
+        "Failed to build logical plan: {:?}",
+        result.err()
+    );
+
+    let (logical_plan, plan_ctx) = result.unwrap();
+    let render_result =
+        logical_plan_to_render_plan_with_ctx(logical_plan, &schema, Some(&plan_ctx));
+    assert!(
+        render_result.is_ok(),
+        "Failed to render SQL: {:?}",
+        render_result.err()
+    );
+
+    let sql = render_result.unwrap().to_sql();
+    println!("Generated SQL:\n{}", sql);
+
+    // The b NODE LEFT JOIN specifically must survive. Two LEFT JOINs are expected:
+    // the FOLLOWS edge (t1) AND the b node (`... AS b ON ...`). On the pre-fix code the
+    // b node join is DROPPED (b looked unreferenced because the walkers skipped the CASE
+    // scrutinee), leaving a dangling `b.full_name` → ClickHouse Code 47. Asserting only
+    // "contains LEFT JOIN" is insufficient — the edge join t1 survives regardless, so we
+    // must assert the b node binding specifically.
+    let lower = sql.to_lowercase();
+    let left_join_count = lower.matches("left join").count();
+    assert_eq!(
+        left_join_count, 2,
+        "#576: expected 2 LEFT JOINs (FOLLOWS edge + b node), found {}. The b node join is \
+         dropped when a walker skips the simple-CASE scrutinee (`CASE b.name WHEN ...`).\nSQL:\n{}",
+        left_join_count, sql
+    );
+    assert!(
+        lower.contains("as b on"),
+        "#576: the b NODE LEFT JOIN (`... AS b ON ...`) must survive — b is referenced only \
+         in the simple-CASE scrutinee.\nSQL:\n{}",
+        sql
+    );
+    // And the scrutinee must render against the joined b node, not be left dangling.
+    assert!(
+        lower.contains("casewithexpression(b."),
+        "#576: the simple CASE scrutinee must resolve to the joined b node \
+         (`caseWithExpression(b.<col>, ...)`).\nSQL:\n{}",
+        sql
+    );
+}

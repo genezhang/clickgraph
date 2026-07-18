@@ -277,10 +277,17 @@ pub fn references_alias(expr: &RenderExpr, alias: &str) -> bool {
         RenderExpr::AggregateFnCall(agg) => agg.args.iter().any(|arg| references_alias(arg, alias)),
         RenderExpr::List(exprs) => exprs.iter().any(|expr| references_alias(expr, alias)),
         RenderExpr::Case(case_expr) => {
+            // #576: a simple CASE (`CASE x WHEN … `) references its scrutinee
+            // `case_expr.expr`; missing it made an alias used ONLY there look
+            // unreferenced, so remove_unreferenced_joins pruned its join and the
+            // scrutinee then referenced a dropped table (Code 47).
             case_expr
-                .when_then
-                .iter()
-                .any(|(when, then)| references_alias(when, alias) || references_alias(then, alias))
+                .expr
+                .as_ref()
+                .is_some_and(|scrutinee| references_alias(scrutinee, alias))
+                || case_expr.when_then.iter().any(|(when, then)| {
+                    references_alias(when, alias) || references_alias(then, alias)
+                })
                 || case_expr
                     .else_expr
                     .as_ref()
@@ -364,6 +371,12 @@ pub fn rewrite_aliases(
             }
         }
         RenderExpr::Case(case_expr) => {
+            // #576: a simple CASE's scrutinee (`CASE <expr> WHEN ...`) must be rewritten
+            // too, else its alias keeps the pre-rewrite name (e.g. a dangling optional-node
+            // alias with no scan in the target subquery) → Code 47.
+            if let Some(scrutinee) = &mut case_expr.expr {
+                rewrite_aliases(scrutinee, alias_map);
+            }
             for (when, then) in &mut case_expr.when_then {
                 rewrite_aliases(when, alias_map);
                 rewrite_aliases(then, alias_map);

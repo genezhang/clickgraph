@@ -495,6 +495,10 @@ pub fn rewrite_render_expr_for_vlp_with_from_alias(
             rewrite_render_expr_for_vlp_with_from_alias(&mut in_exp.expr, mappings, vlp_from_alias);
         }
         RenderExpr::Case(case_exp) => {
+            // #576: also rewrite the simple-CASE scrutinee.
+            if let Some(scrutinee) = &mut case_exp.expr {
+                rewrite_render_expr_for_vlp_with_from_alias(scrutinee, mappings, vlp_from_alias);
+            }
             for (when_expr, then_expr) in &mut case_exp.when_then {
                 rewrite_render_expr_for_vlp_with_from_alias(when_expr, mappings, vlp_from_alias);
                 rewrite_render_expr_for_vlp_with_from_alias(then_expr, mappings, vlp_from_alias);
@@ -554,6 +558,10 @@ fn translate_db_columns_to_cypher_properties(
             }
         }
         RenderExpr::Case(case_exp) => {
+            // #576: also translate the simple-CASE scrutinee.
+            if let Some(scrutinee) = &mut case_exp.expr {
+                translate_db_columns_to_cypher_properties(scrutinee, db_to_cypher);
+            }
             for (when_expr, then_expr) in &mut case_exp.when_then {
                 translate_db_columns_to_cypher_properties(when_expr, db_to_cypher);
                 translate_db_columns_to_cypher_properties(then_expr, db_to_cypher);
@@ -703,6 +711,16 @@ pub fn rewrite_render_expr_for_vlp_with_endpoint_info(
         }
         RenderExpr::Case(case_expr) => {
             // Recursively rewrite expressions in the CASE
+            // #576: also rewrite the simple-CASE scrutinee.
+            if let Some(scrutinee) = &mut case_expr.expr {
+                rewrite_render_expr_for_vlp_with_endpoint_info(
+                    scrutinee,
+                    mappings,
+                    vlp_from_alias,
+                    endpoint_position,
+                    cte_column_mapping,
+                );
+            }
             for (when_expr, then_expr) in &mut case_expr.when_then {
                 rewrite_render_expr_for_vlp_with_endpoint_info(
                     when_expr,
@@ -6429,9 +6447,11 @@ fn expr_contains_aggregate(expr: &crate::query_planner::logical_expr::LogicalExp
             op.operands.iter().any(expr_contains_aggregate)
         }
         LogicalExpr::Case(c) => {
-            c.when_then
-                .iter()
-                .any(|(cond, val)| expr_contains_aggregate(cond) || expr_contains_aggregate(val))
+            // #576: a simple CASE can carry an aggregate in its scrutinee too.
+            c.expr.as_ref().is_some_and(|e| expr_contains_aggregate(e))
+                || c.when_then.iter().any(|(cond, val)| {
+                    expr_contains_aggregate(cond) || expr_contains_aggregate(val)
+                })
                 || c.else_expr
                     .as_ref()
                     .is_some_and(|e| expr_contains_aggregate(e))
