@@ -2134,49 +2134,26 @@ fn collect_with_cte_table_aliases(
 fn strip_table_alias_from_resolved(expr: &RenderExpr) -> RenderExpr {
     use super::render_expr::*;
     use crate::graph_catalog::expression_parser::PropertyValue;
-    match expr {
+    // Exhaustive combinator: drop the table alias off each resolved property
+    // access (PropertyAccess → bare Column), recurse structurally into every
+    // value-wrapper. The former hand-rolled walk handled
+    // PropertyAccess/Operator/ScalarFn/Aggregate and fell through
+    // `_ => expr.clone()` for List/Case/ArraySubscript/…, silently leaving a
+    // qualified column inside those wrappers (e.g. `ORDER BY [x.a][0]` over a
+    // CTE-scoped WITH). Latent (no corpus query reached it; byte-identical on
+    // migration), now structurally impossible.
+    map_render_expr(expr, &mut |node| match node {
         RenderExpr::PropertyAccessExp(pa) => {
             if let PropertyValue::Column(col) = &pa.column {
-                RenderExpr::Column(Column(PropertyValue::Column(col.clone())))
+                RenderRewrite::Replace(RenderExpr::Column(Column(PropertyValue::Column(
+                    col.clone(),
+                ))))
             } else {
-                expr.clone()
+                RenderRewrite::Replace(node.clone())
             }
         }
-        RenderExpr::OperatorApplicationExp(oa) => {
-            let new_ops: Vec<RenderExpr> = oa
-                .operands
-                .iter()
-                .map(strip_table_alias_from_resolved)
-                .collect();
-            RenderExpr::OperatorApplicationExp(OperatorApplication {
-                operator: oa.operator,
-                operands: new_ops,
-            })
-        }
-        RenderExpr::ScalarFnCall(sf) => {
-            let new_args: Vec<RenderExpr> = sf
-                .args
-                .iter()
-                .map(strip_table_alias_from_resolved)
-                .collect();
-            RenderExpr::ScalarFnCall(ScalarFnCall {
-                name: sf.name.clone(),
-                args: new_args,
-            })
-        }
-        RenderExpr::AggregateFnCall(agg) => {
-            let new_args: Vec<RenderExpr> = agg
-                .args
-                .iter()
-                .map(strip_table_alias_from_resolved)
-                .collect();
-            RenderExpr::AggregateFnCall(AggregateFnCall {
-                name: agg.name.clone(),
-                args: new_args,
-            })
-        }
-        _ => expr.clone(),
-    }
+        _ => RenderRewrite::Recurse,
+    })
 }
 
 /// Rewrite join conditions in a rendered plan that reference CTE aliases.
@@ -2293,59 +2270,26 @@ fn rewrite_table_alias_in_render_plan(
     use crate::render_plan::render_expr::RenderExpr;
 
     fn rewrite_expr(expr: RenderExpr, old: &str, new: &str) -> RenderExpr {
-        match expr {
-            RenderExpr::PropertyAccessExp(mut pa) => {
+        use super::render_expr::{map_render_expr, RenderRewrite};
+        // Exhaustive combinator: rename a table alias on each property access,
+        // recurse structurally into every value-wrapper. The former hand-rolled
+        // walk handled PropertyAccess/Operator/ScalarFn/Aggregate/Case/List and
+        // fell through `other => other` for ArraySubscript/ArraySlicing/
+        // ReduceExpr/MapLiteral, silently leaving a stale alias inside those
+        // wrappers. Latent (no corpus query reached it; byte-identical on
+        // migration). Subqueries are still NOT descended (map_render_expr's
+        // policy) — matching the old code, which cloned them too.
+        map_render_expr(&expr, &mut |node| {
+            if let RenderExpr::PropertyAccessExp(pa) = node {
                 if pa.table_alias.0 == old {
+                    let mut pa = pa.clone();
                     pa.table_alias.0 = new.to_string();
+                    return RenderRewrite::Replace(RenderExpr::PropertyAccessExp(pa));
                 }
-                RenderExpr::PropertyAccessExp(pa)
+                return RenderRewrite::Replace(node.clone());
             }
-            RenderExpr::OperatorApplicationExp(mut op) => {
-                op.operands = op
-                    .operands
-                    .into_iter()
-                    .map(|o| rewrite_expr(o, old, new))
-                    .collect();
-                RenderExpr::OperatorApplicationExp(op)
-            }
-            RenderExpr::ScalarFnCall(mut f) => {
-                f.args = f
-                    .args
-                    .into_iter()
-                    .map(|a| rewrite_expr(a, old, new))
-                    .collect();
-                RenderExpr::ScalarFnCall(f)
-            }
-            RenderExpr::AggregateFnCall(mut f) => {
-                f.args = f
-                    .args
-                    .into_iter()
-                    .map(|a| rewrite_expr(a, old, new))
-                    .collect();
-                RenderExpr::AggregateFnCall(f)
-            }
-            RenderExpr::Case(mut c) => {
-                if let Some(e) = c.expr {
-                    c.expr = Some(Box::new(rewrite_expr(*e, old, new)));
-                }
-                c.when_then = c
-                    .when_then
-                    .into_iter()
-                    .map(|(w, t)| (rewrite_expr(w, old, new), rewrite_expr(t, old, new)))
-                    .collect();
-                if let Some(e) = c.else_expr {
-                    c.else_expr = Some(Box::new(rewrite_expr(*e, old, new)));
-                }
-                RenderExpr::Case(c)
-            }
-            RenderExpr::List(items) => RenderExpr::List(
-                items
-                    .into_iter()
-                    .map(|i| rewrite_expr(i, old, new))
-                    .collect(),
-            ),
-            other => other,
-        }
+            RenderRewrite::Recurse
+        })
     }
 
     // SELECT items

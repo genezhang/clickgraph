@@ -3265,38 +3265,42 @@ fn extract_path_context_from_select(select: &SelectItems) -> Option<PathBranchCo
 /// by checking node position in path and schema from_node/to_node properties.
 fn resolve_denormalized_order_by_expr(expr: &RenderExpr, ctx: &PathBranchContext) -> RenderExpr {
     use crate::graph_catalog::expression_parser::PropertyValue;
+    use crate::render_plan::render_expr::{map_render_expr, RenderRewrite};
 
-    match expr {
+    // Exhaustive combinator: resolve virtual denormalized path-node properties
+    // (and `id(alias)`) to the owning edge's physical column; recurse
+    // structurally into every value-wrapper. The former hand-rolled walk handled
+    // only PropertyAccess/ScalarFn and fell through `other => other.clone()` for
+    // Operator/List/Case/ArraySubscript/…, silently leaving a virtual-node column
+    // unresolved inside those wrappers (e.g. `ORDER BY a.city + b.city` over a
+    // denormalized path). Latent (no corpus query reached it; byte-identical on
+    // migration), now structurally impossible.
+    map_render_expr(expr, &mut |node| match node {
         RenderExpr::PropertyAccessExp(pa) => {
             let alias = &pa.table_alias.0;
             let prop_name = pa.column.raw();
 
-            // Check if this alias is a virtual denormalized node (start or end of path)
-            // and NOT the relationship alias (which is a real table)
+            // Real relationship table alias — no virtual-node resolution needed.
             if alias == &ctx.rel_alias {
-                return expr.clone(); // Real table alias, no resolution needed
+                return RenderRewrite::Replace(node.clone());
             }
 
-            // Determine if this alias is start_node or end_node
             let is_start = alias == &ctx.start_alias;
             let is_end = alias == &ctx.end_alias;
-
             if !is_start && !is_end {
-                return expr.clone(); // Not a path node, leave as-is
+                return RenderRewrite::Replace(node.clone());
             }
 
-            // Look up denormalized property mapping from schema
-            // For "id" property (from id() function transformation), resolve to node_id first
+            // For "id" (from id() transformation), resolve to node_id first.
             let effective_prop_name = if prop_name == "id" {
                 lookup_denorm_node_id_property().unwrap_or_else(|| prop_name.to_string())
             } else {
                 prop_name.to_string()
             };
 
-            if let Some(resolved_col) = resolve_denorm_property_from_schema(
-                &effective_prop_name,
-                is_start, // if start, use from_node_properties; if end, use to_node_properties
-            ) {
+            if let Some(resolved_col) =
+                resolve_denorm_property_from_schema(&effective_prop_name, is_start)
+            {
                 log::info!(
                     "🔧 ORDER BY: Resolved denorm {}.{} → {}.{}",
                     alias,
@@ -3304,23 +3308,22 @@ fn resolve_denormalized_order_by_expr(expr: &RenderExpr, ctx: &PathBranchContext
                     ctx.rel_alias,
                     resolved_col
                 );
-                RenderExpr::PropertyAccessExp(PropertyAccess {
+                RenderRewrite::Replace(RenderExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: TableAlias(ctx.rel_alias.clone()),
                     column: PropertyValue::Column(resolved_col),
-                })
+                }))
             } else {
-                expr.clone()
+                RenderRewrite::Replace(node.clone())
             }
         }
         RenderExpr::ScalarFnCall(func) => {
-            // Special handling for id(alias) — resolve to the node's ID column
+            // Special handling for id(alias) — resolve to the node's ID column.
             if func.name.eq_ignore_ascii_case("id") && func.args.len() == 1 {
                 if let RenderExpr::TableAlias(alias) = &func.args[0] {
                     let alias_name = &alias.0;
                     let is_start = alias_name == &ctx.start_alias;
                     let is_end = alias_name == &ctx.end_alias;
                     if is_start || is_end {
-                        // Look up the node_id property name from schema, then resolve it
                         if let Some(id_prop) = lookup_denorm_node_id_property() {
                             if let Some(resolved_col) =
                                 resolve_denorm_property_from_schema(&id_prop, is_start)
@@ -3331,27 +3334,22 @@ fn resolve_denormalized_order_by_expr(expr: &RenderExpr, ctx: &PathBranchContext
                                     ctx.rel_alias,
                                     resolved_col
                                 );
-                                return RenderExpr::PropertyAccessExp(PropertyAccess {
-                                    table_alias: TableAlias(ctx.rel_alias.clone()),
-                                    column: PropertyValue::Column(resolved_col),
-                                });
+                                return RenderRewrite::Replace(RenderExpr::PropertyAccessExp(
+                                    PropertyAccess {
+                                        table_alias: TableAlias(ctx.rel_alias.clone()),
+                                        column: PropertyValue::Column(resolved_col),
+                                    },
+                                ));
                             }
                         }
                     }
                 }
             }
-            let new_args: Vec<_> = func
-                .args
-                .iter()
-                .map(|a| resolve_denormalized_order_by_expr(a, ctx))
-                .collect();
-            RenderExpr::ScalarFnCall(ScalarFnCall {
-                name: func.name.clone(),
-                args: new_args,
-            })
+            // Not an id() form — recurse into the call's args.
+            RenderRewrite::Recurse
         }
-        other => other.clone(),
-    }
+        _ => RenderRewrite::Recurse,
+    })
 }
 
 /// Look up a denormalized property from the active query's schema edge definitions.

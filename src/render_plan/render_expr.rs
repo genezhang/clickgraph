@@ -970,6 +970,119 @@ pub enum RenderExpr {
     CteEntityRef(CteEntityRef),
 }
 
+/// Decision returned by a [`map_render_expr`] rewrite closure for a node.
+pub enum RenderRewrite {
+    /// Replace this node with `expr` and stop — do NOT recurse into it.
+    Replace(RenderExpr),
+    /// Rebuild this node by recursing structurally into its children.
+    Recurse,
+}
+
+/// Structurally rewrite a [`RenderExpr`] tree top-down.
+///
+/// For each node `f` decides: [`RenderRewrite::Replace`] (stop) or
+/// [`RenderRewrite::Recurse`] into children (via [`map_render_expr_children`],
+/// whose match is EXHAUSTIVE with no `_` catch-all — a new variant is a compile
+/// error, not a silent identity-clone). Render-side dual of the query-planner
+/// `map_expression`; exists to retire the hand-rolled
+/// `match … _ => expr.clone()` `RenderExpr` rewriters whose catch-alls silently
+/// dropped rewrites inside `List`/`Case`/`ArraySubscript`/`ReduceExpr`/… wrappers.
+///
+/// DESCENT POLICY: recurses into value-carrying wrappers only. It does NOT
+/// descend into `InSubquery`/`ExistsSubquery` (a correlated subquery owns a
+/// separate FROM/alias scope — blindly rewriting into it is a different, riskier
+/// operation) nor `PatternCount` (pre-rendered SQL) nor `CteEntityRef` — those
+/// are cloned, matching every current caller's intent. A rewriter that DOES want
+/// to enter a subquery must handle it explicitly in `f` before returning Recurse.
+pub fn map_render_expr<F>(expr: &RenderExpr, f: &mut F) -> RenderExpr
+where
+    F: FnMut(&RenderExpr) -> RenderRewrite,
+{
+    match f(expr) {
+        RenderRewrite::Replace(e) => e,
+        RenderRewrite::Recurse => map_render_expr_children(expr, f),
+    }
+}
+
+/// Rebuild `expr` by recursing `f` into each value-wrapper child; clone leaves,
+/// subqueries, `PatternCount`, and `CteEntityRef` (see [`map_render_expr`]
+/// descent policy). EXHAUSTIVE — no `_` catch-all, so a new [`RenderExpr`]
+/// variant fails to compile here until its child structure is spelled out.
+pub fn map_render_expr_children<F>(expr: &RenderExpr, f: &mut F) -> RenderExpr
+where
+    F: FnMut(&RenderExpr) -> RenderRewrite,
+{
+    match expr {
+        RenderExpr::ScalarFnCall(sf) => RenderExpr::ScalarFnCall(ScalarFnCall {
+            name: sf.name.clone(),
+            args: sf.args.iter().map(|a| map_render_expr(a, f)).collect(),
+        }),
+        RenderExpr::AggregateFnCall(agg) => RenderExpr::AggregateFnCall(AggregateFnCall {
+            name: agg.name.clone(),
+            args: agg.args.iter().map(|a| map_render_expr(a, f)).collect(),
+        }),
+        RenderExpr::OperatorApplicationExp(op) => {
+            RenderExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator,
+                operands: op.operands.iter().map(|o| map_render_expr(o, f)).collect(),
+            })
+        }
+        RenderExpr::Case(case) => RenderExpr::Case(RenderCase {
+            expr: case.expr.as_ref().map(|e| Box::new(map_render_expr(e, f))),
+            when_then: case
+                .when_then
+                .iter()
+                .map(|(w, t)| (map_render_expr(w, f), map_render_expr(t, f)))
+                .collect(),
+            else_expr: case
+                .else_expr
+                .as_ref()
+                .map(|e| Box::new(map_render_expr(e, f))),
+        }),
+        RenderExpr::ReduceExpr(reduce) => RenderExpr::ReduceExpr(ReduceExpr {
+            accumulator: reduce.accumulator.clone(),
+            initial_value: Box::new(map_render_expr(&reduce.initial_value, f)),
+            variable: reduce.variable.clone(),
+            list: Box::new(map_render_expr(&reduce.list, f)),
+            expression: Box::new(map_render_expr(&reduce.expression, f)),
+        }),
+        RenderExpr::List(items) => {
+            RenderExpr::List(items.iter().map(|i| map_render_expr(i, f)).collect())
+        }
+        RenderExpr::MapLiteral(entries) => RenderExpr::MapLiteral(
+            entries
+                .iter()
+                .map(|(k, v)| (k.clone(), map_render_expr(v, f)))
+                .collect(),
+        ),
+        RenderExpr::ArraySubscript { array, index } => RenderExpr::ArraySubscript {
+            array: Box::new(map_render_expr(array, f)),
+            index: Box::new(map_render_expr(index, f)),
+        },
+        RenderExpr::ArraySlicing { array, from, to } => RenderExpr::ArraySlicing {
+            array: Box::new(map_render_expr(array, f)),
+            from: from.as_ref().map(|x| Box::new(map_render_expr(x, f))),
+            to: to.as_ref().map(|x| Box::new(map_render_expr(x, f))),
+        },
+
+        // Leaves + deliberately-not-descended nodes (subqueries own a separate
+        // scope; PatternCount is pre-rendered SQL). NO `_` catch-all — every
+        // variant is named so a new one forces a compile error here.
+        RenderExpr::PropertyAccessExp(_)
+        | RenderExpr::Literal(_)
+        | RenderExpr::Raw(_)
+        | RenderExpr::Star
+        | RenderExpr::TableAlias(_)
+        | RenderExpr::ColumnAlias(_)
+        | RenderExpr::Column(_)
+        | RenderExpr::Parameter(_)
+        | RenderExpr::InSubquery(_)
+        | RenderExpr::ExistsSubquery(_)
+        | RenderExpr::PatternCount(_)
+        | RenderExpr::CteEntityRef(_) => expr.clone(),
+    }
+}
+
 /// CTE Entity Reference for render plan
 /// Represents a node or relationship that was exported through a WITH clause
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -1693,5 +1806,115 @@ mod tests {
     fn test_no_parens_literal() {
         // a - 5 does NOT need parens (right is literal, not operator)
         assert!(!needs_right_parens(Operator::Subtraction, &lit_int(5)));
+    }
+
+    // -------------------------------------------------------------------------
+    // map_render_expr combinator
+    // -------------------------------------------------------------------------
+
+    fn rprop(col: &str) -> RenderExpr {
+        RenderExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: TableAlias("a".to_string()),
+            column: crate::graph_catalog::expression_parser::PropertyValue::Column(col.to_string()),
+        })
+    }
+
+    /// Suffix every property access column with `_x`, recursing everywhere.
+    fn suffix(expr: &RenderExpr) -> RenderExpr {
+        map_render_expr(expr, &mut |node| {
+            if let RenderExpr::PropertyAccessExp(pa) = node {
+                RenderRewrite::Replace(RenderExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: pa.table_alias.clone(),
+                    column: crate::graph_catalog::expression_parser::PropertyValue::Column(
+                        format!("{}_x", pa.column.raw()),
+                    ),
+                }))
+            } else {
+                RenderRewrite::Recurse
+            }
+        })
+    }
+
+    /// The regression this slice targets: the old hand-rolled `RenderExpr`
+    /// rewriters' `_ => expr.clone()` catch-all silently skipped property
+    /// accesses nested inside List/Case/ArraySubscript/ArraySlicing/ReduceExpr/
+    /// MapLiteral wrappers. map_render_expr must reach ALL of them.
+    #[test]
+    fn map_render_expr_reaches_previously_skipped_wrappers() {
+        assert_eq!(
+            suffix(&RenderExpr::List(vec![rprop("c1"), rprop("c2")])),
+            RenderExpr::List(vec![rprop("c1_x"), rprop("c2_x")])
+        );
+        assert_eq!(
+            suffix(&RenderExpr::MapLiteral(vec![("k".to_string(), rprop("c"))])),
+            RenderExpr::MapLiteral(vec![("k".to_string(), rprop("c_x"))])
+        );
+        assert_eq!(
+            suffix(&RenderExpr::ArraySubscript {
+                array: Box::new(rprop("arr")),
+                index: Box::new(rprop("i")),
+            }),
+            RenderExpr::ArraySubscript {
+                array: Box::new(rprop("arr_x")),
+                index: Box::new(rprop("i_x")),
+            }
+        );
+        assert_eq!(
+            suffix(&RenderExpr::ArraySlicing {
+                array: Box::new(rprop("arr")),
+                from: Some(Box::new(rprop("lo"))),
+                to: Some(Box::new(rprop("hi"))),
+            }),
+            RenderExpr::ArraySlicing {
+                array: Box::new(rprop("arr_x")),
+                from: Some(Box::new(rprop("lo_x"))),
+                to: Some(Box::new(rprop("hi_x"))),
+            }
+        );
+        assert_eq!(
+            suffix(&RenderExpr::ReduceExpr(ReduceExpr {
+                accumulator: "acc".to_string(),
+                initial_value: Box::new(rprop("init")),
+                variable: "v".to_string(),
+                list: Box::new(rprop("lst")),
+                expression: Box::new(rprop("body")),
+            })),
+            RenderExpr::ReduceExpr(ReduceExpr {
+                accumulator: "acc".to_string(),
+                initial_value: Box::new(rprop("init_x")),
+                variable: "v".to_string(),
+                list: Box::new(rprop("lst_x")),
+                expression: Box::new(rprop("body_x")),
+            })
+        );
+    }
+
+    /// Descent policy: subqueries own a separate scope and are NOT recursed
+    /// into. `map_render_expr_children` clones `InSubquery`/`ExistsSubquery`
+    /// intact (verified structurally here via the exhaustive leaf arm; the full
+    /// subquery-rendering path is covered byte-identically by the corpus).
+    #[test]
+    fn map_render_expr_replace_stops() {
+        let hit = std::cell::Cell::new(0);
+        let out = map_render_expr(&RenderExpr::List(vec![rprop("c1")]), &mut |node| {
+            hit.set(hit.get() + 1);
+            if matches!(node, RenderExpr::List(_)) {
+                RenderRewrite::Replace(RenderExpr::Star)
+            } else {
+                RenderRewrite::Recurse
+            }
+        });
+        assert_eq!(out, RenderExpr::Star);
+        assert_eq!(hit.get(), 1); // only the List node visited, no child descent
+    }
+
+    /// A pure Recurse over a leaf-heavy tree is an identity clone.
+    #[test]
+    fn map_render_expr_identity_on_recurse() {
+        let expr = make_binop(Operator::Addition, rprop("a"), lit_int(1));
+        assert_eq!(
+            map_render_expr(&expr, &mut |_| RenderRewrite::Recurse),
+            expr
+        );
     }
 }
