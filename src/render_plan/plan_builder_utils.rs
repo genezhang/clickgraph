@@ -6442,23 +6442,6 @@ fn expr_contains_aggregate(expr: &crate::query_planner::logical_expr::LogicalExp
     }
 }
 
-/// Check if a LogicalExpr contains an aggregate function (recursively).
-/// Narrower variant used to exclude aggregate-bearing items from GROUP BY.
-fn group_by_contains_aggregate(expr: &crate::query_planner::logical_expr::LogicalExpr) -> bool {
-    use crate::query_planner::logical_expr::LogicalExpr;
-    match expr {
-        LogicalExpr::AggregateFnCall(_) => true,
-        LogicalExpr::OperatorApplicationExp(op) => {
-            op.operands.iter().any(group_by_contains_aggregate)
-        }
-        LogicalExpr::ScalarFnCall(f) => f.args.iter().any(group_by_contains_aggregate),
-        LogicalExpr::ArraySubscript { array, index } => {
-            group_by_contains_aggregate(array) || group_by_contains_aggregate(index)
-        }
-        _ => false,
-    }
-}
-
 fn rewrite_person_to_fk(expr: &mut RenderExpr, person_alias: &str, rel_alias: &str, fk_col: &str) {
     match expr {
         RenderExpr::PropertyAccessExp(pa) if pa.table_alias.0 == person_alias => {
@@ -8100,9 +8083,12 @@ pub(crate) fn build_chained_with_match_cte_plan(
                                 let group_by_exprs: Vec<RenderExpr> = items.iter()
                                             .filter(|item| {
                                                 // Exclude: direct aggregates, literals, and expressions containing aggregates
+                                                // (#591: use expr_contains_aggregate, which recurses into
+                                                // Case/List/legacy-Operator — a narrower helper here silently
+                                                // pushed CASE/List-wrapped aggregates into GROUP BY → Code 184).
                                                 !matches!(&item.expression, crate::query_planner::logical_expr::LogicalExpr::AggregateFnCall(_))
                                                 && !is_literal_expr(&item.expression)
-                                                && !group_by_contains_aggregate(&item.expression)
+                                                && !expr_contains_aggregate(&item.expression)
                                             })
                                             .flat_map(|item| {
                                                 // For TableAlias, only GROUP BY the ID column

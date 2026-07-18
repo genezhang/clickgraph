@@ -2101,6 +2101,39 @@ async fn composite_group_by_whole_node_behind_with_barrier_457() {
     }
 }
 
+/// Regression for #591: a WITH-clause projection item that wraps an aggregate in
+/// `CASE` (or `List`) must NOT be pushed into the CTE's GROUP BY key. The old
+/// `group_by_contains_aggregate` helper missed the `Case`/`List` arms its sibling
+/// `expr_contains_aggregate` had, so `CASE WHEN count(f) > 5 THEN … END` was
+/// wrongly emitted as a GROUP BY key → ClickHouse Code 184 ILLEGAL_AGGREGATION.
+/// The two helpers are now one (`expr_contains_aggregate`).
+#[tokio::test]
+async fn with_case_wrapped_aggregate_not_pushed_into_group_by_591() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (u:User)-[:FOLLOWS]->(f:User) \
+         WITH u, CASE WHEN count(f) > 5 THEN 'many' ELSE 'few' END AS bucket \
+         RETURN u.name, bucket";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(&schema, cypher, dialect).await;
+
+        // The single GROUP BY clause must key on the node id ONLY — never on the
+        // aggregate-bearing CASE. Assert the exact GROUP BY line rather than a
+        // substring/regex, so a stray extra key (a re-introduced #591) can't slip
+        // past.
+        let group_by_lines: Vec<&str> = sql
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("GROUP BY"))
+            .collect();
+        assert_eq!(
+            group_by_lines,
+            vec!["GROUP BY u.user_id"],
+            "#591: the WITH-CTE must GROUP BY the node id ONLY (no aggregate-bearing CASE) for {dialect:?}, got:\n{sql}"
+        );
+    }
+}
+
 /// Regression for #452: on the FK-edge schema the PLACED_BY edge IS the
 /// `orders_fk` node table, so `MATCH (c:Customer) OPTIONAL MATCH
 /// (c)<-[:PLACED_BY]-(o:Order)` must reach the optional Order with a SINGLE
