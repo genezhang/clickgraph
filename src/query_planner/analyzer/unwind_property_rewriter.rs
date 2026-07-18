@@ -165,9 +165,17 @@ fn rewrite_plan(plan: Arc<LogicalPlan>) -> Arc<LogicalPlan> {
 
 /// Rewrite a single expression, replacing property accesses with tuple indices where applicable
 fn rewrite_expr(expr: &LogicalExpr, plan: &Arc<LogicalPlan>) -> LogicalExpr {
-    match expr {
-        LogicalExpr::PropertyAccessExp(pa) => {
-            // Check if this property access references an Unwind with tuple_properties
+    use crate::query_planner::logical_expr::visitors::{map_expression, ExprRewrite};
+    // Route through the exhaustive `map_expression` combinator: rewrite tuple
+    // property accesses, recurse structurally into everything else. The former
+    // hand-rolled walk handled only Operator/ScalarFn/Case (and CLONED
+    // AggregateFnCall without recursing — an admitted gap), falling through
+    // `_ => expr.clone()` for List/MapLiteral/ArraySubscript/ReduceExpr/…,
+    // silently skipping the rewrite inside those wrappers. Latent (no corpus
+    // query reached it; verified byte-identical on migration), but now
+    // structurally impossible.
+    map_expression(expr, &mut |node| {
+        if let LogicalExpr::PropertyAccessExp(pa) = node {
             if let Some((new_column, _tuple_props)) =
                 find_tuple_property_index(&pa.table_alias.0, &pa.column, plan)
             {
@@ -178,73 +186,16 @@ fn rewrite_expr(expr: &LogicalExpr, plan: &Arc<LogicalPlan>) -> LogicalExpr {
                     pa.table_alias.0,
                     new_column
                 );
-
-                return LogicalExpr::PropertyAccessExp(
+                return ExprRewrite::Replace(LogicalExpr::PropertyAccessExp(
                     crate::query_planner::logical_expr::PropertyAccess {
                         table_alias: pa.table_alias.clone(),
                         column: PropertyValue::Column(new_column),
                     },
-                );
+                ));
             }
-
-            expr.clone()
         }
-
-        LogicalExpr::Operator(op) => {
-            let new_operands = op
-                .operands
-                .iter()
-                .map(|operand| rewrite_expr(operand, plan))
-                .collect();
-
-            LogicalExpr::Operator(crate::query_planner::logical_expr::OperatorApplication {
-                operator: op.operator,
-                operands: new_operands,
-            })
-        }
-
-        LogicalExpr::ScalarFnCall(func) => {
-            let new_args = func
-                .args
-                .iter()
-                .map(|arg| rewrite_expr(arg, plan))
-                .collect();
-
-            LogicalExpr::ScalarFnCall(crate::query_planner::logical_expr::ScalarFnCall {
-                name: func.name.clone(),
-                args: new_args,
-            })
-        }
-
-        LogicalExpr::AggregateFnCall(agg) => {
-            // Just clone aggregate functions for now (they rarely contain property accesses)
-            LogicalExpr::AggregateFnCall(agg.clone())
-        }
-
-        LogicalExpr::Case(case) => {
-            let new_expr = case.expr.as_ref().map(|e| Box::new(rewrite_expr(e, plan)));
-
-            let new_when_then = case
-                .when_then
-                .iter()
-                .map(|(when, then)| (rewrite_expr(when, plan), rewrite_expr(then, plan)))
-                .collect();
-
-            let new_else = case
-                .else_expr
-                .as_ref()
-                .map(|e| Box::new(rewrite_expr(e, plan)));
-
-            LogicalExpr::Case(crate::query_planner::logical_expr::LogicalCase {
-                expr: new_expr,
-                when_then: new_when_then,
-                else_expr: new_else,
-            })
-        }
-
-        // Literals, columns without table alias, etc. - pass through
-        _ => expr.clone(),
-    }
+        ExprRewrite::Recurse
+    })
 }
 
 /// Find tuple property index for a given alias.property, returns (column_index_as_string, tuple_properties)

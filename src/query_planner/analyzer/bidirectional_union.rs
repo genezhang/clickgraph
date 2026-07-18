@@ -1644,74 +1644,30 @@ fn swap_projection_item_columns(
     }
 }
 
-/// Recursively swap column references in a LogicalExpr
+/// Recursively swap column references in a LogicalExpr.
+///
+/// Routes through the exhaustive `map_expression` combinator so the swap
+/// reaches property accesses nested inside ANY expression wrapper (`List`,
+/// `ArraySubscript`, `MapLiteral`, `ReduceExpr`, …). The previous hand-rolled
+/// walk handled only PropertyAccess/Operator/ScalarFn/Case and fell through
+/// `_ => expr.clone()` for everything else, silently skipping the swap inside
+/// unhandled wrappers (#495/#535 family; latent — no corpus query reached it,
+/// verified byte-identical on migration).
 fn swap_expr_columns(expr: &LogicalExpr, column_swaps: &ColumnSwapMap) -> LogicalExpr {
-    match expr {
-        LogicalExpr::PropertyAccessExp(pa) => {
-            // Check if this property access needs column swapping
-            // The table_alias is the node alias (e.g., "a", "b", "c")
-            // column_swaps maps (node_alias, column_name) -> swapped_column_name
-
-            let current_col = pa.column.raw();
-            let node_alias = &pa.table_alias.0;
-
-            // Look up if this (node, column) needs swapping
-            let key = (node_alias.clone(), current_col.to_string());
+    use crate::query_planner::logical_expr::visitors::{map_expression, ExprRewrite};
+    map_expression(expr, &mut |node| {
+        if let LogicalExpr::PropertyAccessExp(pa) = node {
+            // Look up if this (node_alias, column) needs swapping.
+            let key = (pa.table_alias.0.clone(), pa.column.raw().to_string());
             if let Some(swapped_col) = column_swaps.get(&key) {
-                return LogicalExpr::PropertyAccessExp(PropertyAccess {
+                return ExprRewrite::Replace(LogicalExpr::PropertyAccessExp(PropertyAccess {
                     table_alias: pa.table_alias.clone(),
                     column: PropertyValue::Column(swapped_col.clone()),
-                });
+                }));
             }
-
-            // No swap needed, return as-is
-            expr.clone()
         }
-        LogicalExpr::OperatorApplicationExp(op) => LogicalExpr::OperatorApplicationExp(
-            crate::query_planner::logical_expr::OperatorApplication {
-                operator: op.operator,
-                operands: op
-                    .operands
-                    .iter()
-                    .map(|o| swap_expr_columns(o, column_swaps))
-                    .collect(),
-            },
-        ),
-        LogicalExpr::ScalarFnCall(call) => {
-            LogicalExpr::ScalarFnCall(crate::query_planner::logical_expr::ScalarFnCall {
-                name: call.name.clone(),
-                args: call
-                    .args
-                    .iter()
-                    .map(|a| swap_expr_columns(a, column_swaps))
-                    .collect(),
-            })
-        }
-        LogicalExpr::Case(case) => {
-            LogicalExpr::Case(crate::query_planner::logical_expr::LogicalCase {
-                expr: case
-                    .expr
-                    .as_ref()
-                    .map(|e| Box::new(swap_expr_columns(e, column_swaps))),
-                when_then: case
-                    .when_then
-                    .iter()
-                    .map(|(w, t)| {
-                        (
-                            swap_expr_columns(w, column_swaps),
-                            swap_expr_columns(t, column_swaps),
-                        )
-                    })
-                    .collect(),
-                else_expr: case
-                    .else_expr
-                    .as_ref()
-                    .map(|e| Box::new(swap_expr_columns(e, column_swaps))),
-            })
-        }
-        // For other expression types, return as-is
-        _ => expr.clone(),
-    }
+        ExprRewrite::Recurse
+    })
 }
 
 /// Check if a plan subtree contains a VLP multi-type GraphRel that handles
