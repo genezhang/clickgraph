@@ -32,77 +32,54 @@ pub struct CollectUnwindElimination;
 
 /// Rewrite alias references in a single expression
 fn rewrite_aliases_in_expr(expr: &LogicalExpr, alias_map: &HashMap<String, String>) -> LogicalExpr {
-    match expr {
+    use crate::query_planner::logical_expr::visitors::{map_expression, ExprRewrite};
+    // Exhaustive combinator: rewrite bare TableAlias and PropertyAccess table
+    // aliases, recurse structurally into everything else. The former hand-rolled
+    // walk handled TableAlias/PropertyAccess/Operator/ScalarFn/Aggregate/List
+    // and fell through `_ => expr.clone()` for MapLiteral/Case/ArraySubscript/
+    // ReduceExpr/Lambda/InSubquery — silently leaving stale aliases inside those
+    // wrappers. Latent (no corpus query reached it; byte-identical on
+    // migration), now structurally impossible.
+    map_expression(expr, &mut |node| match node {
         LogicalExpr::TableAlias(ta) => {
             if let Some(new_alias) = alias_map.get(&ta.0) {
-                LogicalExpr::TableAlias(crate::query_planner::logical_expr::TableAlias(
-                    new_alias.clone(),
+                ExprRewrite::Replace(LogicalExpr::TableAlias(
+                    crate::query_planner::logical_expr::TableAlias(new_alias.clone()),
                 ))
             } else {
-                expr.clone()
+                ExprRewrite::Recurse
             }
         }
-
         LogicalExpr::PropertyAccessExp(pa) => {
             if let Some(new_alias) = alias_map.get(&pa.table_alias.0) {
-                LogicalExpr::PropertyAccessExp(crate::query_planner::logical_expr::PropertyAccess {
-                    table_alias: crate::query_planner::logical_expr::TableAlias(new_alias.clone()),
-                    column: pa.column.clone(),
-                })
+                ExprRewrite::Replace(LogicalExpr::PropertyAccessExp(
+                    crate::query_planner::logical_expr::PropertyAccess {
+                        table_alias: crate::query_planner::logical_expr::TableAlias(
+                            new_alias.clone(),
+                        ),
+                        column: pa.column.clone(),
+                    },
+                ))
             } else {
-                expr.clone()
+                ExprRewrite::Recurse
             }
         }
-
-        LogicalExpr::Operator(op) | LogicalExpr::OperatorApplicationExp(op) => {
-            let new_operands: Vec<_> = op
-                .operands
-                .iter()
-                .map(|operand| rewrite_aliases_in_expr(operand, alias_map))
-                .collect();
-            LogicalExpr::OperatorApplicationExp(
-                crate::query_planner::logical_expr::OperatorApplication {
-                    operator: op.operator,
-                    operands: new_operands,
-                },
-            )
-        }
-
-        LogicalExpr::ScalarFnCall(fc) => {
-            let new_args: Vec<_> = fc
-                .args
-                .iter()
-                .map(|arg| rewrite_aliases_in_expr(arg, alias_map))
-                .collect();
-            LogicalExpr::ScalarFnCall(crate::query_planner::logical_expr::ScalarFnCall {
-                name: fc.name.clone(),
-                args: new_args,
-            })
-        }
-
-        LogicalExpr::AggregateFnCall(afc) => {
-            let new_args: Vec<_> = afc
-                .args
-                .iter()
-                .map(|arg| rewrite_aliases_in_expr(arg, alias_map))
-                .collect();
-            LogicalExpr::AggregateFnCall(crate::query_planner::logical_expr::AggregateFnCall {
-                name: afc.name.clone(),
-                args: new_args,
-            })
-        }
-
-        LogicalExpr::List(items) => {
-            let new_items: Vec<_> = items
-                .iter()
-                .map(|item| rewrite_aliases_in_expr(item, alias_map))
-                .collect();
-            LogicalExpr::List(new_items)
-        }
-
-        // For all other expressions, return as-is
-        _ => expr.clone(),
-    }
+        // Preserve the legacy-Operator → OperatorApplicationExp normalization the
+        // old walk performed: rebuild operands via the combinator, then emit the
+        // canonical variant. (map_expression_children alone would keep it as
+        // `Operator`.)
+        LogicalExpr::Operator(op) => ExprRewrite::Replace(LogicalExpr::OperatorApplicationExp(
+            crate::query_planner::logical_expr::OperatorApplication {
+                operator: op.operator,
+                operands: op
+                    .operands
+                    .iter()
+                    .map(|o| rewrite_aliases_in_expr(o, alias_map))
+                    .collect(),
+            },
+        )),
+        _ => ExprRewrite::Recurse,
+    })
 }
 
 impl OptimizerPass for CollectUnwindElimination {

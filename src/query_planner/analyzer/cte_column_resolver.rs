@@ -16,10 +16,7 @@ use crate::{
     graph_catalog::graph_schema::GraphSchema,
     query_planner::{
         analyzer::analyzer_pass::{AnalyzerPass, AnalyzerResult},
-        logical_expr::{
-            AggregateFnCall, LogicalCase, LogicalExpr, OperatorApplication, PropertyAccess,
-            ScalarFnCall,
-        },
+        logical_expr::{LogicalExpr, PropertyAccess},
         logical_plan::{
             Filter, GraphJoins, GroupBy, LogicalPlan, OrderBy, OrderByItem, Projection,
             ProjectionItem, WithClause,
@@ -198,79 +195,24 @@ impl CteColumnResolver {
 
     /// Recursively resolve PropertyAccess expressions in a LogicalExpr
     fn resolve_expr(expr: &LogicalExpr, plan_ctx: &PlanCtx) -> LogicalExpr {
-        match expr {
-            LogicalExpr::PropertyAccessExp(prop_access) => {
-                LogicalExpr::PropertyAccessExp(Self::resolve_property_access(prop_access, plan_ctx))
+        use crate::query_planner::logical_expr::visitors::{map_expression, ExprRewrite};
+        // Exhaustive combinator: resolve each PropertyAccess against CTE columns,
+        // recurse structurally into everything else. The former hand-rolled walk
+        // handled Operator/Aggregate/ScalarFn/Case/Lambda and fell through
+        // `_ => expr.clone()` for List/MapLiteral/ArraySubscript/ReduceExpr/
+        // InSubquery — its comment claimed "other types don't contain
+        // PropertyAccess", but List/subscript/reduce plainly can. Latent (no
+        // corpus query reached it; byte-identical on migration), now
+        // structurally impossible.
+        map_expression(expr, &mut |node| {
+            if let LogicalExpr::PropertyAccessExp(prop_access) = node {
+                ExprRewrite::Replace(LogicalExpr::PropertyAccessExp(
+                    Self::resolve_property_access(prop_access, plan_ctx),
+                ))
+            } else {
+                ExprRewrite::Recurse
             }
-            LogicalExpr::OperatorApplicationExp(op_app) => {
-                let resolved_operands = op_app
-                    .operands
-                    .iter()
-                    .map(|operand| Self::resolve_expr(operand, plan_ctx))
-                    .collect();
-                LogicalExpr::OperatorApplicationExp(OperatorApplication {
-                    operator: op_app.operator,
-                    operands: resolved_operands,
-                })
-            }
-            LogicalExpr::AggregateFnCall(agg) => {
-                let resolved_args = agg
-                    .args
-                    .iter()
-                    .map(|arg| Self::resolve_expr(arg, plan_ctx))
-                    .collect();
-                LogicalExpr::AggregateFnCall(AggregateFnCall {
-                    name: agg.name.clone(),
-                    args: resolved_args,
-                })
-            }
-            LogicalExpr::ScalarFnCall(func) => {
-                let resolved_args = func
-                    .args
-                    .iter()
-                    .map(|arg| Self::resolve_expr(arg, plan_ctx))
-                    .collect();
-                LogicalExpr::ScalarFnCall(ScalarFnCall {
-                    name: func.name.clone(),
-                    args: resolved_args,
-                })
-            }
-            LogicalExpr::Case(case_expr) => {
-                let resolved_expr = case_expr
-                    .expr
-                    .as_ref()
-                    .map(|e| Box::new(Self::resolve_expr(e, plan_ctx)));
-                let resolved_when_then = case_expr
-                    .when_then
-                    .iter()
-                    .map(|(when, then)| {
-                        (
-                            Self::resolve_expr(when, plan_ctx),
-                            Self::resolve_expr(then, plan_ctx),
-                        )
-                    })
-                    .collect();
-                let resolved_else = case_expr
-                    .else_expr
-                    .as_ref()
-                    .map(|e| Box::new(Self::resolve_expr(e, plan_ctx)));
-                LogicalExpr::Case(LogicalCase {
-                    expr: resolved_expr,
-                    when_then: resolved_when_then,
-                    else_expr: resolved_else,
-                })
-            }
-            LogicalExpr::Lambda(lambda) => {
-                // Lambda expressions contain inner expressions that may reference CTEs
-                let resolved_body = Box::new(Self::resolve_expr(&lambda.body, plan_ctx));
-                LogicalExpr::Lambda(crate::query_planner::logical_expr::LambdaExpr {
-                    params: lambda.params.clone(),
-                    body: resolved_body,
-                })
-            }
-            // Other expression types don't contain PropertyAccess, return as-is
-            _ => expr.clone(),
-        }
+        })
     }
 }
 

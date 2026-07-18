@@ -211,6 +211,156 @@ pub fn walk_expression<V: ExpressionVisitor>(expr: &LogicalExpr, visitor: &mut V
 }
 
 // =============================================================================
+// Rewriter combinator (structural, exhaustive)
+// =============================================================================
+
+/// Decision returned by a [`map_expression`] rewrite closure for a given node.
+pub enum ExprRewrite {
+    /// Replace this node with `expr` and stop — do NOT recurse into it. Use
+    /// when the closure has fully handled the node (e.g. resolved a
+    /// `PropertyAccess` to its mapped column).
+    Replace(LogicalExpr),
+    /// Leave this node's own identity but rebuild it by recursing structurally
+    /// into its children. For a leaf this is an identity clone.
+    Recurse,
+}
+
+/// Structurally rewrite an expression tree top-down.
+///
+/// For each node, `f` decides: [`ExprRewrite::Replace`] it (stop), or
+/// [`ExprRewrite::Recurse`] into its children. Recursion is delegated to
+/// [`map_expression_children`], whose match is **exhaustive with no `_`
+/// catch-all** — so adding a new [`LogicalExpr`] variant is a compile error
+/// rather than a silent identity-clone. This is the rewrite-side dual of
+/// [`walk_expression`] and exists specifically to retire the hand-rolled
+/// `match … _ => expr.clone()` rewriters whose catch-alls silently dropped
+/// rewrites inside `List`/`Case`/`ArraySubscript`/… wrappers (the #495/#535
+/// bug family).
+pub fn map_expression<F>(expr: &LogicalExpr, f: &mut F) -> LogicalExpr
+where
+    F: FnMut(&LogicalExpr) -> ExprRewrite,
+{
+    match f(expr) {
+        ExprRewrite::Replace(e) => e,
+        ExprRewrite::Recurse => map_expression_children(expr, f),
+    }
+}
+
+/// Rebuild `expr` by recursing `f` into each of its direct `LogicalExpr`
+/// children. Recurses into exactly the same children [`walk_expression`] visits
+/// (the established, proven-consistent reference), and clones every leaf.
+///
+/// EXHAUSTIVE BY DESIGN: no `_` catch-all. A new `LogicalExpr` variant will fail
+/// to compile here until its child structure is spelled out — the whole point
+/// of routing rewriters through this combinator.
+///
+/// Note on subtree-bearing leaves: `ExistsSubquery`/`InSubquery` carry an
+/// `Arc<LogicalPlan>` (a different tree the expression rewriters do not own),
+/// and `PatternCount`/`PatternComprehension` carry a `PathPattern`; these match
+/// `walk_expression`'s leaf treatment (`InSubquery.expr` IS recursed, matching
+/// `walk_expression`).
+pub fn map_expression_children<F>(expr: &LogicalExpr, f: &mut F) -> LogicalExpr
+where
+    F: FnMut(&LogicalExpr) -> ExprRewrite,
+{
+    match expr {
+        LogicalExpr::ScalarFnCall(fn_call) => LogicalExpr::ScalarFnCall(ScalarFnCall {
+            name: fn_call.name.clone(),
+            args: fn_call.args.iter().map(|a| map_expression(a, f)).collect(),
+        }),
+
+        LogicalExpr::AggregateFnCall(agg) => LogicalExpr::AggregateFnCall(AggregateFnCall {
+            name: agg.name.clone(),
+            args: agg.args.iter().map(|a| map_expression(a, f)).collect(),
+        }),
+
+        LogicalExpr::OperatorApplicationExp(op) => {
+            LogicalExpr::OperatorApplicationExp(OperatorApplication {
+                operator: op.operator,
+                operands: op.operands.iter().map(|o| map_expression(o, f)).collect(),
+            })
+        }
+
+        // Legacy Operator variant — same handling as OperatorApplicationExp.
+        LogicalExpr::Operator(op) => LogicalExpr::Operator(OperatorApplication {
+            operator: op.operator,
+            operands: op.operands.iter().map(|o| map_expression(o, f)).collect(),
+        }),
+
+        LogicalExpr::Case(case) => LogicalExpr::Case(LogicalCase {
+            expr: case.expr.as_ref().map(|e| Box::new(map_expression(e, f))),
+            when_then: case
+                .when_then
+                .iter()
+                .map(|(w, t)| (map_expression(w, f), map_expression(t, f)))
+                .collect(),
+            else_expr: case
+                .else_expr
+                .as_ref()
+                .map(|e| Box::new(map_expression(e, f))),
+        }),
+
+        LogicalExpr::ReduceExpr(reduce) => LogicalExpr::ReduceExpr(ReduceExpr {
+            accumulator: reduce.accumulator.clone(),
+            initial_value: Box::new(map_expression(&reduce.initial_value, f)),
+            variable: reduce.variable.clone(),
+            list: Box::new(map_expression(&reduce.list, f)),
+            expression: Box::new(map_expression(&reduce.expression, f)),
+        }),
+
+        LogicalExpr::List(items) => {
+            LogicalExpr::List(items.iter().map(|i| map_expression(i, f)).collect())
+        }
+
+        LogicalExpr::MapLiteral(entries) => LogicalExpr::MapLiteral(
+            entries
+                .iter()
+                .map(|(k, v)| (k.clone(), map_expression(v, f)))
+                .collect(),
+        ),
+
+        LogicalExpr::ArraySubscript { array, index } => LogicalExpr::ArraySubscript {
+            array: Box::new(map_expression(array, f)),
+            index: Box::new(map_expression(index, f)),
+        },
+
+        LogicalExpr::ArraySlicing { array, from, to } => LogicalExpr::ArraySlicing {
+            array: Box::new(map_expression(array, f)),
+            from: from.as_ref().map(|x| Box::new(map_expression(x, f))),
+            to: to.as_ref().map(|x| Box::new(map_expression(x, f))),
+        },
+
+        LogicalExpr::Lambda(lambda) => LogicalExpr::Lambda(super::LambdaExpr {
+            params: lambda.params.clone(),
+            body: Box::new(map_expression(&lambda.body, f)),
+        }),
+
+        LogicalExpr::InSubquery(subq) => LogicalExpr::InSubquery(super::InSubquery {
+            expr: Box::new(map_expression(&subq.expr, f)),
+            subplan: subq.subplan.clone(),
+        }),
+
+        // Leaves and subtree-bearing nodes the expression rewriters do not
+        // descend (matching walk_expression) — cloned. NO `_` catch-all: every
+        // variant is named so a new one forces a compile error here.
+        LogicalExpr::PropertyAccessExp(_)
+        | LogicalExpr::TableAlias(_)
+        | LogicalExpr::Literal(_)
+        | LogicalExpr::Raw(_)
+        | LogicalExpr::Star
+        | LogicalExpr::ColumnAlias(_)
+        | LogicalExpr::Column(_)
+        | LogicalExpr::Parameter(_)
+        | LogicalExpr::PathPattern(_)
+        | LogicalExpr::ExistsSubquery(_)
+        | LogicalExpr::LabelExpression { .. }
+        | LogicalExpr::PatternCount(_)
+        | LogicalExpr::PatternComprehension(_)
+        | LogicalExpr::CteEntityRef(_) => expr.clone(),
+    }
+}
+
+// =============================================================================
 // Common Visitor Implementations
 // =============================================================================
 
@@ -404,5 +554,130 @@ mod tests {
         assert_eq!(props.len(), 2);
         assert!(props.contains(&("u".to_string(), "age".to_string())));
         assert!(props.contains(&("u".to_string(), "active".to_string())));
+    }
+
+    // -------------------------------------------------------------------------
+    // map_expression combinator
+    // -------------------------------------------------------------------------
+
+    use crate::graph_catalog::expression_parser::PropertyValue;
+    use crate::query_planner::logical_expr::Operator;
+
+    /// Rewrite every `a.<col>` to `a.<col>_x`, recursing everywhere.
+    fn suffix_rewriter(expr: &LogicalExpr) -> LogicalExpr {
+        map_expression(expr, &mut |node| {
+            if let LogicalExpr::PropertyAccessExp(pa) = node {
+                ExprRewrite::Replace(LogicalExpr::PropertyAccessExp(PropertyAccess {
+                    table_alias: pa.table_alias.clone(),
+                    column: PropertyValue::Column(format!("{}_x", pa.column.raw())),
+                }))
+            } else {
+                ExprRewrite::Recurse
+            }
+        })
+    }
+
+    fn prop(col: &str) -> LogicalExpr {
+        LogicalExpr::PropertyAccessExp(PropertyAccess {
+            table_alias: TableAlias("a".to_string()),
+            column: PropertyValue::Column(col.to_string()),
+        })
+    }
+
+    /// The regression this whole slice targets: the old hand-rolled rewriters'
+    /// `_ => expr.clone()` catch-all silently skipped property accesses nested
+    /// inside List/MapLiteral/ArraySubscript/ArraySlicing/ReduceExpr wrappers.
+    /// map_expression must reach ALL of them.
+    #[test]
+    fn map_expression_reaches_previously_skipped_wrappers() {
+        // List — the #464/#495 shape.
+        let out = suffix_rewriter(&LogicalExpr::List(vec![prop("c1"), prop("c2")]));
+        assert_eq!(out, LogicalExpr::List(vec![prop("c1_x"), prop("c2_x")]));
+
+        // MapLiteral.
+        let out = suffix_rewriter(&LogicalExpr::MapLiteral(vec![("k".to_string(), prop("c"))]));
+        assert_eq!(
+            out,
+            LogicalExpr::MapLiteral(vec![("k".to_string(), prop("c_x"))])
+        );
+
+        // ArraySubscript — both array and index.
+        let out = suffix_rewriter(&LogicalExpr::ArraySubscript {
+            array: Box::new(prop("arr")),
+            index: Box::new(prop("i")),
+        });
+        assert_eq!(
+            out,
+            LogicalExpr::ArraySubscript {
+                array: Box::new(prop("arr_x")),
+                index: Box::new(prop("i_x")),
+            }
+        );
+
+        // ArraySlicing — array + both optional bounds.
+        let out = suffix_rewriter(&LogicalExpr::ArraySlicing {
+            array: Box::new(prop("arr")),
+            from: Some(Box::new(prop("lo"))),
+            to: Some(Box::new(prop("hi"))),
+        });
+        assert_eq!(
+            out,
+            LogicalExpr::ArraySlicing {
+                array: Box::new(prop("arr_x")),
+                from: Some(Box::new(prop("lo_x"))),
+                to: Some(Box::new(prop("hi_x"))),
+            }
+        );
+
+        // ReduceExpr — initial/list/expression all recursed.
+        let out = suffix_rewriter(&LogicalExpr::ReduceExpr(ReduceExpr {
+            accumulator: "acc".to_string(),
+            initial_value: Box::new(prop("init")),
+            variable: "v".to_string(),
+            list: Box::new(prop("lst")),
+            expression: Box::new(prop("body")),
+        }));
+        assert_eq!(
+            out,
+            LogicalExpr::ReduceExpr(ReduceExpr {
+                accumulator: "acc".to_string(),
+                initial_value: Box::new(prop("init_x")),
+                variable: "v".to_string(),
+                list: Box::new(prop("lst_x")),
+                expression: Box::new(prop("body_x")),
+            })
+        );
+    }
+
+    /// Replace stops recursion at that node; siblings still recurse.
+    #[test]
+    fn map_expression_replace_stops_at_node() {
+        // Rewrite the whole List to a literal on first visit — no child descent.
+        let hit = std::cell::Cell::new(0);
+        let out = map_expression(
+            &LogicalExpr::List(vec![prop("c1"), prop("c2")]),
+            &mut |node| {
+                hit.set(hit.get() + 1);
+                if matches!(node, LogicalExpr::List(_)) {
+                    ExprRewrite::Replace(LogicalExpr::Literal(Literal::Integer(0)))
+                } else {
+                    ExprRewrite::Recurse
+                }
+            },
+        );
+        assert_eq!(out, LogicalExpr::Literal(Literal::Integer(0)));
+        // Only the List node was visited; children never were.
+        assert_eq!(hit.get(), 1);
+    }
+
+    /// A pure Recurse over a leaf-heavy tree is an identity clone.
+    #[test]
+    fn map_expression_identity_on_recurse() {
+        let expr = LogicalExpr::OperatorApplicationExp(OperatorApplication {
+            operator: Operator::And,
+            operands: vec![prop("a"), LogicalExpr::Literal(Literal::Boolean(true))],
+        });
+        let out = map_expression(&expr, &mut |_| ExprRewrite::Recurse);
+        assert_eq!(out, expr);
     }
 }
