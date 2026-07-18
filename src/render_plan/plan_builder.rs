@@ -4309,6 +4309,34 @@ impl RenderPlanBuilder for LogicalPlan {
 
                     return Ok(base);
                 }
+
+                // #590 SAFETY GUARD (ground-rule-1): the one directed
+                // both-optional disconnected-denorm shape handled above has
+                // already returned. Any OTHER disconnected multi-anchor
+                // DENORMALIZED pattern (one-optional, undirected, 3+ anchors,
+                // chained-through-optional, base non-optional) still reaches
+                // render because the #590 planner fix
+                // (`combine_node_with_existing_plan`) now materializes every
+                // disconnected anchor — but the generic render path handles
+                // none of them, emitting either silently mis-attributed edge
+                // columns with `ON 1 = 1` (silent-wrong) or dangling anchor
+                // references (invalid SQL → ClickHouse Code 47). Both are
+                // strictly worse than the pre-fix honest error. Fail LOUDLY
+                // here instead, converting silent-wrong / invalid-SQL back into
+                // an explicit, honest error until each shape has a correct
+                // render path. Never fires for non-denormalized disconnected
+                // patterns (#601) — they carry no denorm node-scan Union.
+                if super::plan_builder_helpers::contains_disconnected_denorm_cartesian(self) {
+                    return Err(RenderBuildError::InvalidRenderPlan(
+                        "Disconnected multi-anchor pattern over a denormalized schema is not yet \
+                         supported for this shape. Only a directed pattern where every anchor has \
+                         its own OPTIONAL MATCH is supported (e.g. `MATCH (a:T),(x:T) OPTIONAL \
+                         MATCH (a)-[:R]->(b) OPTIONAL MATCH (x)-[:R]->(y)`). Rewrite the query to \
+                         that shape, or connect the anchors with a relationship."
+                            .to_string(),
+                    ));
+                }
+
                 if let Some(inner) =
                     super::plan_builder_helpers::find_inner_optional_denorm_graphrel(self)
                 {

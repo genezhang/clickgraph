@@ -588,6 +588,62 @@ pub(super) fn find_cartesian_of_denorm_optionals(plan: &LogicalPlan) -> Option<&
         _ => None,
     }
 }
+
+/// #590 SAFETY GUARD: true when the plan contains a `CartesianProduct` at least
+/// one of whose arms is (or wraps, as its anchor) a DENORMALIZED standalone
+/// node-scan Union — i.e. a *disconnected multi-anchor denormalized* pattern, the
+/// exact shape `combine_node_with_existing_plan` now materializes so BOTH anchors
+/// survive into the plan (#590 planner fix).
+///
+/// Only ONE such shape — a directed CartesianProduct whose BOTH arms are
+/// single-anchor optional-denorm subtrees — has a correct render path
+/// (`find_cartesian_of_denorm_optionals` + the #590 render arm, which returns
+/// BEFORE this guard is consulted). EVERY other disconnected-multi-anchor
+/// denormalized shape (one anchor optional, undirected, 3+ anchors, chained
+/// through the optional endpoint, base non-optional) currently falls to the
+/// generic render path, which either silently mis-attributes edge columns onto
+/// anchor aliases with `ON 1 = 1` (silent-wrong — ground-rule-1 violation) or
+/// emits dangling anchor references (`Code 47` from ClickHouse). Before the
+/// planner fix these all failed loudly (the second anchor was dropped, so the
+/// generic path produced an honest `UNKNOWN_IDENTIFIER`); the fix must not
+/// convert an honest error into silent-wrong output.
+///
+/// The render layer consults this AFTER the one handled shape has returned, and
+/// raises a loud `InvalidRenderPlan` when it fires — preserving the
+/// honest-failure contract for every not-yet-supported denormalized disconnected
+/// shape. NON-denormalized disconnected patterns (`MATCH (a:User),(x:User)`,
+/// #601) never carry a denorm node-scan Union, so this never fires for them.
+pub(super) fn contains_disconnected_denorm_cartesian(plan: &LogicalPlan) -> bool {
+    match plan {
+        LogicalPlan::CartesianProduct(cp) => {
+            // A disconnected denorm anchor pattern: at least one arm's subtree
+            // carries a denormalized standalone node-scan Union.
+            subtree_contains_denormalized_union(&cp.left)
+                || subtree_contains_denormalized_union(&cp.right)
+                // …or a denorm cartesian nested deeper in either arm (3+ anchors).
+                || contains_disconnected_denorm_cartesian(&cp.left)
+                || contains_disconnected_denorm_cartesian(&cp.right)
+        }
+        LogicalPlan::GraphRel(gr) => {
+            contains_disconnected_denorm_cartesian(&gr.left)
+                || contains_disconnected_denorm_cartesian(&gr.center)
+                || contains_disconnected_denorm_cartesian(&gr.right)
+        }
+        LogicalPlan::GraphNode(gn) => contains_disconnected_denorm_cartesian(&gn.input),
+        LogicalPlan::GraphJoins(gj) => contains_disconnected_denorm_cartesian(&gj.input),
+        LogicalPlan::Projection(p) => contains_disconnected_denorm_cartesian(&p.input),
+        LogicalPlan::GroupBy(gb) => contains_disconnected_denorm_cartesian(&gb.input),
+        LogicalPlan::Filter(f) => contains_disconnected_denorm_cartesian(&f.input),
+        LogicalPlan::OrderBy(o) => contains_disconnected_denorm_cartesian(&o.input),
+        LogicalPlan::Limit(l) => contains_disconnected_denorm_cartesian(&l.input),
+        LogicalPlan::Skip(s) => contains_disconnected_denorm_cartesian(&s.input),
+        LogicalPlan::Union(u) => u
+            .inputs
+            .iter()
+            .any(|i| contains_disconnected_denorm_cartesian(i)),
+        _ => false,
+    }
+}
 /// pattern (the `__denorm_scan_{alias}` CTE built in `plan_builder.rs`,
 /// shared machinery with #502/#505/#506/#507), return the Cypher property
 /// name that CTE exposes for the node's identity column — the SAME

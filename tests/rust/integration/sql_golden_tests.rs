@@ -3486,13 +3486,17 @@ async fn denorm_optional_match_resolves_to_node_onto_edge_456() {
 /// This structural lock asserts: BOTH `__denorm_scan_a` and `__denorm_scan_x`
 /// CTEs are built, each anchor's `.code` resolves through its OWN CTE alias
 /// (`a.code` / `x.code`, not the edge table), and no OPTIONAL degrades to
-/// `ON 1 = 1`. Scope: the DIRECTED shape (`-[:FLIGHT]->`), where the #590
-/// conflation was reported and is now live-verified. The UNDIRECTED
-/// (`-[:FLIGHT]-`) disconnected-multi-anchor shape is deliberately left to the
-/// generic path (a KNOWN LIMITATION — composing two per-arm direction-UNION
-/// renders under a CROSS JOIN needs render machinery this fix does not add;
-/// `OptionalCartesianDistribution` skips `Direction::Either` so it never emits
-/// the malformed-UNION SQL a partial attempt produced).
+/// `ON 1 = 1`. Scope: the DIRECTED shape (`-[:FLIGHT]->`), where every anchor
+/// has its own OPTIONAL MATCH — the one shape with a correct render path, and
+/// now live-verified (9 rows, each anchor's own code + its own optional
+/// endpoint). EVERY other disconnected-multi-anchor-denorm shape (undirected,
+/// one-optional-only, 3+ anchors, chained-through-optional, base non-optional)
+/// is NOT supported and now fails LOUDLY at render (see
+/// `denorm_multi_anchor_unhandled_shapes_fail_loudly_not_silent_590`) — the
+/// planner fix materializes every anchor, so a render-side guard
+/// (`contains_disconnected_denorm_cartesian`) rejects the shapes without a
+/// correct path rather than let the generic path emit silent-wrong or invalid
+/// SQL (ground-rule-1).
 #[tokio::test]
 async fn denorm_multi_anchor_disconnected_optionals_each_get_own_cte_590() {
     let schema = load_schema(SchemaId::Denormalized.yaml_path());
@@ -3567,6 +3571,124 @@ async fn denorm_multi_anchor_disconnected_optionals_each_get_own_cte_590() {
     assert!(
         y_endpoint.is_match(&sql),
         "#590: `y` (x's optional endpoint) must resolve to the edge's dest_code:\n{sql}"
+    );
+}
+
+/// #590 SAFETY GUARD (ground-rule-1): the planner fix
+/// (`combine_node_with_existing_plan`) now materializes BOTH anchors of a
+/// disconnected multi-anchor denormalized pattern so the second one is no longer
+/// silently dropped. Only ONE render shape — a DIRECTED pattern where every
+/// anchor has its own OPTIONAL MATCH — is fully handled (locked by
+/// `denorm_multi_anchor_disconnected_optionals_each_get_own_cte_590`). Every
+/// OTHER disconnected-multi-anchor-denorm shape reaches render with both anchors
+/// present but no correct path, and the generic path would emit either silently
+/// mis-attributed edge columns with `ON 1 = 1` (silent-wrong) or dangling anchor
+/// references (invalid SQL → ClickHouse Code 47). Both are strictly worse than
+/// the pre-fix honest error.
+///
+/// This test locks the guard: each unhandled shape must fail LOUDLY at render
+/// (`Err`), never silently produce SQL. The message must name the limitation so
+/// the failure is honest and actionable. Covers: one-optional-only (the
+/// live-verified silent-garbage `ON 1 = 1` case), undirected (issue #590's own
+/// literal example, which regressed to Code 47), 3-anchor, chained-through-optional,
+/// and base non-optional.
+#[tokio::test]
+async fn denorm_multi_anchor_unhandled_shapes_fail_loudly_not_silent_590() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+
+    let unhandled = [
+        // MAJOR 1: only ONE anchor has an optional — live: 12 rows of
+        // city/state leaking into code columns + ON 1=1 (silent-wrong).
+        "MATCH (a:Airport), (x:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) \
+         RETURN a.code, x.code, b.code",
+        // MAJOR 2: undirected (issue #590's literal repro) — live: Code 47
+        // dangling a.code/x.code.
+        "MATCH (a:Airport), (x:Airport) OPTIONAL MATCH (a)-[:FLIGHT]-(b) \
+         OPTIONAL MATCH (x)-[:FLIGHT]-(y) RETURN a.code, x.code, b.code, y.code",
+        // 3 disconnected anchors.
+        "MATCH (a:Airport), (x:Airport), (z:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) \
+         OPTIONAL MATCH (x)-[:FLIGHT]->(y) RETURN a.code, x.code, z.code, b.code, y.code",
+        // Chained through the optional endpoint.
+        "MATCH (a:Airport), (x:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b)-[:FLIGHT]->(c) \
+         OPTIONAL MATCH (x)-[:FLIGHT]->(y) RETURN a.code, x.code, b.code, c.code, y.code",
+        // Base non-optional disconnected (errored Code 47 on base too).
+        "MATCH (a:Airport), (x:Airport) RETURN a.code, x.code",
+    ];
+
+    for cypher in unhandled {
+        let result = try_render(&schema, cypher, SqlDialect::ClickHouse).await;
+        assert!(
+            result.is_err(),
+            "#590 guard: unhandled disconnected-multi-anchor-denorm shape MUST fail \
+             loudly, not silently render SQL. Query:\n  {cypher}\nGot Ok(sql):\n{}",
+            result.unwrap_or_default()
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("Disconnected multi-anchor pattern over a denormalized schema"),
+            "#590 guard: error must name the limitation honestly. Query:\n  {cypher}\nGot: {msg}"
+        );
+    }
+}
+
+/// #590 guard NEGATIVE control: the guard must NOT fire for shapes it has no
+/// business rejecting — the one handled denorm shape, the single-anchor denorm
+/// OPTIONAL path, connected denorm patterns, and the NON-denormalized
+/// disconnected multi-anchor pattern (#601, which carries no denorm node-scan
+/// Union). Each must still render to SQL.
+#[tokio::test]
+async fn denorm_multi_anchor_guard_does_not_overfire_590() {
+    let denorm = load_schema(SchemaId::Denormalized.yaml_path());
+    let standard = load_schema(SchemaId::Standard.yaml_path());
+
+    // Handled directed both-optional denorm shape — renders (two __denorm_scan CTEs).
+    let handled = render(
+        &denorm,
+        "MATCH (a:Airport), (x:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) \
+         OPTIONAL MATCH (x)-[:FLIGHT]->(y) RETURN a.code, x.code, b.code, y.code",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        handled.contains("__denorm_scan_a") && handled.contains("__denorm_scan_x"),
+        "guard over-fired on the HANDLED directed shape:\n{handled}"
+    );
+
+    // Single-anchor denorm OPTIONAL — no CartesianProduct, must render.
+    let single = render(
+        &denorm,
+        "MATCH (a:Airport) OPTIONAL MATCH (a)-[:FLIGHT]->(b) RETURN a.code, b.code",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        single.contains("__denorm_scan_a"),
+        "guard over-fired on single-anchor denorm OPTIONAL:\n{single}"
+    );
+
+    // Connected denorm pattern — no disconnected cartesian, must render.
+    let connected = render(
+        &denorm,
+        "MATCH (a:Airport)-[:FLIGHT]->(b:Airport) RETURN a.code, b.code",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        !connected.is_empty(),
+        "guard over-fired on a connected denorm pattern"
+    );
+
+    // NON-denormalized disconnected multi-anchor (#601) — must render (no denorm
+    // Union in the cartesian, so the denorm guard must stay silent).
+    let non_denorm = render(
+        &standard,
+        "MATCH (a:User), (x:User) RETURN a.name, x.name",
+        SqlDialect::ClickHouse,
+    )
+    .await;
+    assert!(
+        non_denorm.contains("a.full_name") && non_denorm.contains("x.full_name"),
+        "guard over-fired on the NON-denorm disconnected pattern (#601):\n{non_denorm}"
     );
 }
 

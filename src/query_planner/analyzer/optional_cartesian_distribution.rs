@@ -62,11 +62,17 @@
 //!    distributing it over the CartesianProduct yields `CP(Union[…], Union[…])` —
 //!    a shape whose two per-arm UNION renders cannot be composed under a CROSS JOIN
 //!    by the #590 render arm without emitting invalid SQL (branches missing their
-//!    SELECT). Undirected disconnected-multi-anchor OPTIONAL patterns are therefore
-//!    a KNOWN LIMITATION: `try_distribute_graphrel` skips them, so they fall
-//!    through to the generic path (which correctly emits per-anchor OR-keyed LEFT
-//!    JOINs — no `ON 1=1` conflation) unchanged. The DIRECTED shape, where the #590
-//!    conflation was reported and is live-verified, is fully handled here.
+//!    SELECT). `try_distribute_graphrel` therefore skips undirected hops, leaving
+//!    the plan for the generic path. That path does NOT render the undirected
+//!    disconnected-multi-anchor denorm shape correctly either — it emits dangling
+//!    anchor references (`… ON (t1.origin_code = a.code) OR …` with `a` unbound in
+//!    FROM → ClickHouse Code 47). To avoid passing that (or the silent-wrong output
+//!    other unhandled shapes produce) to ClickHouse, the RENDER layer carries a
+//!    guard (`contains_disconnected_denorm_cartesian`, plan_builder_helpers.rs) that
+//!    fails LOUDLY with a clear `InvalidRenderPlan` for every unhandled
+//!    disconnected-multi-anchor denorm shape. Only the DIRECTED both-optional shape
+//!    (handled here + composed by the #590 render arm) renders — everything else is
+//!    an honest error (ground-rule-1).
 
 use std::sync::Arc;
 
