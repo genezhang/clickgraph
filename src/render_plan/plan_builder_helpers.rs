@@ -1443,6 +1443,11 @@ pub(super) fn is_standalone_expression(expr: &RenderExpr) -> bool {
         }
         RenderExpr::Case(case_expr) => {
             // CASE is standalone if all branches are standalone
+            // #576: a simple CASE is only standalone if its scrutinee is too.
+            let scrutinee_standalone = case_expr
+                .expr
+                .as_ref()
+                .is_none_or(|e| is_standalone_expression(e));
             let when_then_standalone = case_expr.when_then.iter().all(|(cond, result)| {
                 is_standalone_expression(cond) && is_standalone_expression(result)
             });
@@ -1450,7 +1455,7 @@ pub(super) fn is_standalone_expression(expr: &RenderExpr) -> bool {
                 .else_expr
                 .as_ref()
                 .is_none_or(|e| is_standalone_expression(e));
-            when_then_standalone && else_standalone
+            scrutinee_standalone && when_then_standalone && else_standalone
         }
         RenderExpr::List(list) => {
             // List is standalone if all elements are standalone

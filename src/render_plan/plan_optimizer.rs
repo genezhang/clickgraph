@@ -2548,12 +2548,19 @@ fn has_unresolved_bare_ref(expr: &RenderExpr, alias: &str) -> bool {
             agg.args.iter().any(|a| has_unresolved_bare_ref(a, alias))
         }
         RenderExpr::Case(case) => {
-            case.when_then.iter().any(|(w, t)| {
-                has_unresolved_bare_ref(w, alias) || has_unresolved_bare_ref(t, alias)
-            }) || case
-                .else_expr
+            // #576: a simple CASE references its scrutinee (`CASE <expr> WHEN ...`).
+            // Missing it lets a bare alias appearing ONLY in the scrutinee escape this
+            // guard, so bridge elimination proceeds and leaves an unresolved bare ref.
+            case.expr
                 .as_ref()
-                .is_some_and(|e| has_unresolved_bare_ref(e, alias))
+                .is_some_and(|s| has_unresolved_bare_ref(s, alias))
+                || case.when_then.iter().any(|(w, t)| {
+                    has_unresolved_bare_ref(w, alias) || has_unresolved_bare_ref(t, alias)
+                })
+                || case
+                    .else_expr
+                    .as_ref()
+                    .is_some_and(|e| has_unresolved_bare_ref(e, alias))
         }
         RenderExpr::List(items) => items.iter().any(|i| has_unresolved_bare_ref(i, alias)),
         RenderExpr::InSubquery(subq) => has_unresolved_bare_ref(&subq.expr, alias),
@@ -2861,13 +2868,21 @@ fn has_non_id_column_ref(expr: &RenderExpr, alias: &str, id_column: &str) -> boo
             .iter()
             .any(|a| has_non_id_column_ref(a, alias, id_column)),
         RenderExpr::Case(case) => {
-            case.when_then.iter().any(|(w, t)| {
-                has_non_id_column_ref(w, alias, id_column)
-                    || has_non_id_column_ref(t, alias, id_column)
-            }) || case
-                .else_expr
+            // #576: a simple CASE (`CASE x WHEN …`) references its scrutinee
+            // `case.expr`; missing it let bridge elimination treat an alias used
+            // ONLY there as id-only-referenced and drop its node join, leaving the
+            // scrutinee `alias.col` dangling (Code 47).
+            case.expr
                 .as_ref()
-                .is_some_and(|e| has_non_id_column_ref(e, alias, id_column))
+                .is_some_and(|s| has_non_id_column_ref(s, alias, id_column))
+                || case.when_then.iter().any(|(w, t)| {
+                    has_non_id_column_ref(w, alias, id_column)
+                        || has_non_id_column_ref(t, alias, id_column)
+                })
+                || case
+                    .else_expr
+                    .as_ref()
+                    .is_some_and(|e| has_non_id_column_ref(e, alias, id_column))
         }
         RenderExpr::List(items) => items
             .iter()

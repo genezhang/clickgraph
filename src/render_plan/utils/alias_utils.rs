@@ -133,12 +133,19 @@ pub fn cond_references_alias(expr: &RenderExpr, alias: &str) -> bool {
             .iter()
             .any(|arg| cond_references_alias(arg, alias)),
         RenderExpr::Case(case_expr) => {
-            case_expr.when_then.iter().any(|(when, then)| {
-                cond_references_alias(when, alias) || cond_references_alias(then, alias)
-            }) || case_expr
-                .else_expr
+            // #576: a simple CASE references its scrutinee (`CASE <expr> WHEN ...`) — parity
+            // with `references_alias`; missing it under-reports the alias.
+            case_expr
+                .expr
                 .as_ref()
-                .is_some_and(|else_expr| cond_references_alias(else_expr, alias))
+                .is_some_and(|scrutinee| cond_references_alias(scrutinee, alias))
+                || case_expr.when_then.iter().any(|(when, then)| {
+                    cond_references_alias(when, alias) || cond_references_alias(then, alias)
+                })
+                || case_expr
+                    .else_expr
+                    .as_ref()
+                    .is_some_and(|else_expr| cond_references_alias(else_expr, alias))
         }
         // Other expression types don't reference aliases
         RenderExpr::ColumnAlias(_)
