@@ -1399,6 +1399,31 @@ impl GraphJoinInference {
                     }
                 }
 
+                // #601: symmetric handling for the RIGHT side. A DISCONNECTED
+                // comma-cartesian of bare nodes (`MATCH (a),(c)`) produces empty
+                // joins on BOTH sides — the left becomes the FROM anchor (above),
+                // but without this the right node (`c`) is never materialized and
+                // `c.<prop>` renders against an unbound alias (Code 47). Emit it as
+                // a CROSS JOIN (empty `joining_on` → rendered `JOIN … ON 1=1` /
+                // CROSS JOIN). Only fires when there is genuinely no bridging join
+                // and no correlation predicate (a plain disconnected cartesian);
+                // the WITH…MATCH and OPTIONAL shapes carry a join_condition or
+                // non-empty joins and are unaffected.
+                if right_joins.is_empty() && cp.join_condition.is_none() && !cp.is_optional {
+                    if let LogicalPlan::GraphNode(gn) = cp.right.as_ref() {
+                        if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                            log::info!(
+                                "📦 CartesianProduct: Creating CROSS JOIN for disconnected right GraphNode '{}' (table='{}') (#601)",
+                                gn.alias,
+                                vs.source_table
+                            );
+                            helpers::JoinBuilder::from_marker(&vs.source_table, &gn.alias)
+                                .join_type(JoinType::Join)
+                                .build_and_push(&mut right_joins);
+                        }
+                    }
+                }
+
                 // CRITICAL: Bubble up all joins to the parent collected_graph_joins
                 // The left side joins need to come first
                 collected_graph_joins.extend(left_joins.clone());
