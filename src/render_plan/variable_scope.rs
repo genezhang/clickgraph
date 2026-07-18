@@ -74,6 +74,13 @@ pub struct VariableScope<'a> {
 
     /// The current plan tree (for alias → label resolution of table variables)
     plan: &'a LogicalPlan,
+
+    /// Names that are lambda-bound in the current sub-expression and must NOT be
+    /// resolved as bare variables — a `reduce(t = 0, x IN … | …)` binds `t`/`x`
+    /// inside its body, so a body reference to `x` is the fold element, not a
+    /// same-named WITH/node variable. Empty except while recursing a reduce
+    /// body. See [`VariableScope::shielding`].
+    shielded_names: HashSet<String>,
 }
 
 impl<'a> VariableScope<'a> {
@@ -83,6 +90,7 @@ impl<'a> VariableScope<'a> {
             schema,
             cte_variables: HashMap::new(),
             plan,
+            shielded_names: HashSet::new(),
         }
     }
 
@@ -97,6 +105,7 @@ impl<'a> VariableScope<'a> {
             schema,
             cte_variables,
             plan,
+            shielded_names: HashSet::new(),
         }
     }
 
@@ -125,7 +134,31 @@ impl<'a> VariableScope<'a> {
             schema: self.schema,
             cte_variables,
             plan: self.plan,
+            shielded_names: self.shielded_names.clone(),
         }
+    }
+
+    /// Return a copy of this scope with `names` additionally shielded from
+    /// bare-variable resolution — used when recursing into a `reduce(...)` body
+    /// so its lambda-bound accumulator/element names are treated as local, not
+    /// resolved against same-named WITH/node variables. Shielding is additive
+    /// (nested reduces stack their bindings). The schema/plan borrows are shared,
+    /// so the result is valid for the same lifetime as `self`.
+    pub fn shielding<I: IntoIterator<Item = String>>(&self, names: I) -> VariableScope<'a> {
+        let mut shielded_names = self.shielded_names.clone();
+        shielded_names.extend(names);
+        VariableScope {
+            schema: self.schema,
+            cte_variables: self.cte_variables.clone(),
+            plan: self.plan,
+            shielded_names,
+        }
+    }
+
+    /// Is `name` lambda-bound in the current sub-expression (and so must not be
+    /// resolved as a bare variable)?
+    pub fn is_shielded(&self, name: &str) -> bool {
+        self.shielded_names.contains(name)
     }
 
     /// Resolve alias.property → actual column reference.
@@ -686,6 +719,10 @@ fn rewrite_bare_variables(expr: &RenderExpr, scope: &VariableScope) -> RenderExp
         // Resolve to node ID column, same as TableAlias handling below.
         RenderExpr::PropertyAccessExp(pa) if pa.column.raw() == "*" => {
             let alias_name = &pa.table_alias.0;
+            // Lambda-bound (reduce) name in scope — leave the local reference.
+            if scope.is_shielded(alias_name) {
+                return expr.clone();
+            }
             if let Some(cte_info) = scope.get_cte_info(alias_name) {
                 let from_alias = cte_info.effective_from_alias();
                 if cte_info.property_mapping.is_empty() {
@@ -730,6 +767,10 @@ fn rewrite_bare_variables(expr: &RenderExpr, scope: &VariableScope) -> RenderExp
         // Check for map property access on other PropertyAccessExp
         RenderExpr::PropertyAccessExp(pa) => {
             let alias = &pa.table_alias.0;
+            // Lambda-bound (reduce) name in scope — leave the local reference.
+            if scope.is_shielded(alias) {
+                return expr.clone();
+            }
             let property_name = match &pa.column {
                 PropertyValue::Column(col) => col.as_str(),
                 PropertyValue::Expression(_) => return expr.clone(),
@@ -825,9 +866,31 @@ fn rewrite_bare_variables(expr: &RenderExpr, scope: &VariableScope) -> RenderExp
                 .collect();
             RenderExpr::MapLiteral(rewritten)
         }
+        // `reduce(acc = init, x IN list | expr)` — its three sub-expressions can
+        // each reference a bare variable (`reduce(t = 0, x IN likes | t + x)`);
+        // the old catch-all skipped them. `initial_value` and `list` are
+        // evaluated in the OUTER scope, but the body `expression` runs with
+        // `accumulator`/`variable` lambda-bound, so those names must be shielded
+        // there — otherwise a reduce lambda name that collides with a WITH/node
+        // variable (`WITH … AS x … reduce(t=0, x IN … | t + x)`) would wrongly
+        // resolve the body's `x` to the outer variable's column.
+        RenderExpr::ReduceExpr(reduce) => {
+            let body_scope = scope.shielding([reduce.accumulator.clone(), reduce.variable.clone()]);
+            RenderExpr::ReduceExpr(crate::render_plan::render_expr::ReduceExpr {
+                accumulator: reduce.accumulator.clone(),
+                initial_value: Box::new(rewrite_bare_variables(&reduce.initial_value, scope)),
+                variable: reduce.variable.clone(),
+                list: Box::new(rewrite_bare_variables(&reduce.list, scope)),
+                expression: Box::new(rewrite_bare_variables(&reduce.expression, &body_scope)),
+            })
+        }
         // Bare variable references — rewrite CTE variables to qualified column references
         RenderExpr::TableAlias(TableAlias(alias_name))
         | RenderExpr::ColumnAlias(ColumnAlias(alias_name)) => {
+            // Lambda-bound (reduce) name in scope — a local, not a WITH/node var.
+            if scope.is_shielded(alias_name) {
+                return expr.clone();
+            }
             if let Some(cte_info) = scope.get_cte_info(alias_name) {
                 let from_alias = cte_info.effective_from_alias();
                 if cte_info.property_mapping.is_empty() {
@@ -872,6 +935,12 @@ fn rewrite_bare_variables(expr: &RenderExpr, scope: &VariableScope) -> RenderExp
             }
         }
         RenderExpr::Column(col) => {
+            // No is_shielded guard here (unlike the other three resolution arms):
+            // a reduce lambda name always reaches this walk as a `TableAlias`
+            // (parser: Variable → LogicalExpr::TableAlias → RenderExpr::TableAlias),
+            // so it hits the guarded TableAlias arm above. `RenderExpr::Column` is
+            // only produced by analyzer graph-traversal passes, never for a
+            // lambda-bound name — so a shielded name cannot arrive here.
             if let PropertyValue::Column(col_name) = &col.0 {
                 if let Some(cte_info) = scope.get_cte_info(col_name) {
                     let from_alias = cte_info.effective_from_alias();
@@ -1707,5 +1776,91 @@ mod tests {
         assert_eq!(extract_from_alias_from_cte_name("with_a_cte_1"), "a");
         assert_eq!(extract_from_alias_from_cte_name("with_a_b_cte"), "a_b");
         assert_eq!(extract_from_alias_from_cte_name("plain_name"), "plain_name");
+    }
+
+    #[test]
+    fn test_scope_shielding_additive_and_isolated() {
+        let schema = crate::graph_catalog::graph_schema::GraphSchema::build(
+            1,
+            "s".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+        );
+        let plan = LogicalPlan::Empty;
+        let base = VariableScope::new(&schema, &plan);
+        assert!(!base.is_shielded("x"));
+
+        // `shielding` returns a copy with the names hidden; the original is
+        // untouched (so siblings of a reduce keep resolving normally).
+        let body = base.shielding(["t".to_string(), "x".to_string()]);
+        assert!(body.is_shielded("t"));
+        assert!(body.is_shielded("x"));
+        assert!(!body.is_shielded("y"));
+        assert!(!base.is_shielded("t")); // original unchanged
+
+        // Additive: a nested reduce stacks its bindings on top.
+        let nested = body.shielding(["acc".to_string()]);
+        assert!(nested.is_shielded("acc"));
+        assert!(nested.is_shielded("t")); // outer binding still shielded
+    }
+
+    /// A reduce lambda name that collides with a WITH/node variable must NOT be
+    /// resolved inside the body: `rewrite_bare_variables` short-circuits on a
+    /// shielded alias, leaving the local reference intact. (End-to-end SQL for
+    /// this shape is covered by the corpus; this locks the mechanism.)
+    #[test]
+    fn test_rewrite_bare_variables_shields_reduce_lambda_names() {
+        let schema = crate::graph_catalog::graph_schema::GraphSchema::build(
+            1,
+            "s".to_string(),
+            HashMap::new(),
+            HashMap::new(),
+        );
+        let plan = LogicalPlan::Empty;
+        // Give the scope a CTE variable named `x` that WOULD be rewritten if the
+        // reduce body's `x` were resolved.
+        let mut cte_vars = HashMap::new();
+        cte_vars.insert(
+            "x".to_string(),
+            CteVariableInfo {
+                cte_name: "with_x_cte_0".to_string(),
+                property_mapping: HashMap::new(),
+                labels: vec![],
+                from_alias_override: None,
+                map_keys: None,
+            },
+        );
+        let scope = VariableScope::with_cte_variables(&schema, &plan, cte_vars);
+
+        // Bare `x` at top level DOES resolve (proves the CTE var is live)...
+        let bare_x = RenderExpr::TableAlias(TableAlias("x".to_string()));
+        assert_ne!(
+            rewrite_bare_variables(&bare_x, &scope),
+            bare_x,
+            "top-level bare CTE var should resolve"
+        );
+
+        // ...but the SAME `x` bound as a reduce element is left untouched.
+        let reduce = RenderExpr::ReduceExpr(crate::render_plan::render_expr::ReduceExpr {
+            accumulator: "t".to_string(),
+            initial_value: Box::new(RenderExpr::Literal(
+                crate::render_plan::render_expr::Literal::Integer(0),
+            )),
+            variable: "x".to_string(),
+            list: Box::new(RenderExpr::List(vec![RenderExpr::Literal(
+                crate::render_plan::render_expr::Literal::Integer(1),
+            )])),
+            expression: Box::new(RenderExpr::TableAlias(TableAlias("x".to_string()))),
+        });
+        let out = rewrite_bare_variables(&reduce, &scope);
+        if let RenderExpr::ReduceExpr(r) = out {
+            assert_eq!(
+                *r.expression,
+                RenderExpr::TableAlias(TableAlias("x".to_string())),
+                "reduce lambda element `x` must not be resolved in the body"
+            );
+        } else {
+            panic!("expected ReduceExpr");
+        }
     }
 }
