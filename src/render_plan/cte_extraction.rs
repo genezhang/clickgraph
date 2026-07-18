@@ -7666,6 +7666,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                     from_id_column: None,
                     to_id_column: None,
                     graph_rel: None,
+                    is_cartesian: false,
                 });
             }
 
@@ -7718,6 +7719,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                     from_id_column: None,
                     to_id_column: None,
                     graph_rel: None,
+                    is_cartesian: false,
                 });
             }
 
@@ -7744,6 +7746,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                 from_id_column: None,
                 to_id_column: None,
                 graph_rel: None,
+                is_cartesian: false,
             });
 
             log::debug!(
@@ -7805,6 +7808,7 @@ pub fn expand_fixed_length_joins_with_context(ctx: &VlpContext) -> (String, Stri
                     from_id_column: None,
                     to_id_column: None,
                     graph_rel: None,
+                    is_cartesian: false,
                 });
             }
 

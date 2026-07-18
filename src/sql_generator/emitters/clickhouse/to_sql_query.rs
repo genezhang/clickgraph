@@ -1386,6 +1386,7 @@ fn rewrite_vlp_select_aliases(mut plan: RenderPlan) -> RenderPlan {
                     from_id_column: None,
                     to_id_column: None,
                     graph_rel: None,
+                    is_cartesian: false,
                 };
                 plan.joins.0.push(join);
             }
@@ -8429,6 +8430,7 @@ mod tests {
             from_id_column: None,
             to_id_column: None,
             graph_rel: None,
+            is_cartesian: false,
         }]);
         b.filters = FilterItems(Some(filter));
         b

@@ -241,6 +241,7 @@ mod tests {
                 from_id_column: None,
                 to_id_column: None,
                 graph_rel: None,
+                is_cartesian: false,
             },
             Join {
                 table_name: "table2".to_string(),
@@ -251,6 +252,7 @@ mod tests {
                 from_id_column: None,
                 to_id_column: None,
                 graph_rel: None,
+                is_cartesian: false,
             },
         ];
 
@@ -272,6 +274,7 @@ mod tests {
                 from_id_column: None,
                 to_id_column: None,
                 graph_rel: None,
+                is_cartesian: false,
             },
             Join {
                 table_name: "table2".to_string(),
@@ -282,6 +285,7 @@ mod tests {
                 from_id_column: None,
                 to_id_column: None,
                 graph_rel: None,
+                is_cartesian: false,
             },
         ];
 
@@ -303,6 +307,7 @@ mod tests {
                 from_id_column: None,
                 to_id_column: None,
                 graph_rel: None,
+                is_cartesian: false,
             },
             Join {
                 table_name: "table2".to_string(),
@@ -313,6 +318,7 @@ mod tests {
                 from_id_column: None,
                 to_id_column: None,
                 graph_rel: None,
+                is_cartesian: false,
             },
             Join {
                 table_name: "table3".to_string(),
@@ -323,6 +329,7 @@ mod tests {
                 from_id_column: None,
                 to_id_column: None,
                 graph_rel: None,
+                is_cartesian: false,
             },
         ];
 

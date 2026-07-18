@@ -1170,6 +1170,14 @@ pub struct Join {
     /// For VLP joins, the original GraphRel for CTE generation
     #[serde(skip)]
     pub graph_rel: Option<Arc<GraphRel>>,
+    /// #601: marks a cardinality-significant cross join emitted for a genuine
+    /// user-written DISCONNECTED comma-cartesian (e.g. `MATCH (a),(c)`), rendered
+    /// as `JOIN … ON 1=1`. Distinguishes it from spurious internal `ON 1=1` joins
+    /// (bridge/VLP/orphan-CTE artifacts) so `remove_unreferenced_joins` does NOT
+    /// prune it even when its alias is unreferenced (doing so would drop rows,
+    /// e.g. `count(*)` collapsing 64→8).
+    #[serde(default)]
+    pub is_cartesian: bool,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, Default)]
@@ -2734,6 +2742,7 @@ mod tests {
                 from_id_column: Some("id".to_string()),
                 to_id_column: None,
                 graph_rel: None,
+                is_cartesian: false,
             }],
             optional_aliases: std::collections::HashSet::from(["a".to_string()]),
             anchor_table: Some("Person".to_string()),

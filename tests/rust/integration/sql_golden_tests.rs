@@ -12695,3 +12695,100 @@ async fn union_arms_differing_agg_alias_not_chained_or_crossjoined_594() {
         "expected two independent per-arm aggregations:\n{sql}"
     );
 }
+
+/// Regression for #601 (facet 1): a bare DISCONNECTED comma-cartesian
+/// `MATCH (a:User),(c:User)` must materialize BOTH anchors — `a` as the FROM
+/// table and `c` as a cross join. The pre-fix analyzer emitted a FROM marker for
+/// the LEFT side only (`FROM users AS a`), so `c.user_id` referenced an unbound
+/// alias and ClickHouse failed with Code 47 (unknown identifier). Root cause was
+/// the missing symmetric RIGHT-side handling in the `CartesianProduct` arm of
+/// `build_graph_joins` (`analyzer/graph_join/inference.rs`).
+#[tokio::test]
+async fn disconnected_comma_cartesian_materializes_both_nodes_601() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (a:User),(c:User) RETURN a.user_id, c.user_id";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(&schema, cypher, dialect).await;
+
+        // `a` is the FROM anchor.
+        assert!(
+            sql.contains("FROM social.users_bench AS a"),
+            "#601: left anchor `a` must be the FROM table for {dialect:?}, got:\n{sql}"
+        );
+        // `c` must be materialized as a cross join (empty ON → `ON 1 = 1`), NOT
+        // dropped. Without it `c.user_id` is unbound.
+        assert!(
+            sql.contains("social.users_bench AS c"),
+            "#601: right anchor `c` must be materialized (cross join), not dropped, for {dialect:?}, got:\n{sql}"
+        );
+        assert!(
+            sql.contains("ON 1 = 1"),
+            "#601: the disconnected cartesian must render as a cross join (`ON 1 = 1`) for {dialect:?}, got:\n{sql}"
+        );
+    }
+}
+
+/// Regression for #601 (facet 2): the WHERE-wrapped separate-MATCH shape
+/// `MATCH (a:User) WHERE … MATCH (c:User) WHERE …`. Here each CartesianProduct
+/// side is `Filter(GraphNode(ViewScan))`, not a bare `GraphNode`, so the original
+/// GraphNode-only checks missed both anchors — the partial fix even FLIPPED which
+/// node was dropped. `find_bare_graph_node_through_wrappers` now unwraps the
+/// `Filter`/`Projection` wrappers on BOTH sides, materializing both nodes; both
+/// WHERE predicates survive into the outer WHERE.
+#[tokio::test]
+async fn disconnected_separate_match_with_where_materializes_both_601() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (a:User) WHERE a.user_id = 1 \
+                  MATCH (c:User) WHERE c.user_id = 2 \
+                  RETURN a.user_id, c.user_id";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(&schema, cypher, dialect).await;
+
+        // Both nodes materialized: `a` as FROM, `c` as cross join.
+        assert!(
+            sql.contains("FROM social.users_bench AS a"),
+            "#601 facet2: `a` must be the FROM table for {dialect:?}, got:\n{sql}"
+        );
+        assert!(
+            sql.contains("social.users_bench AS c") && sql.contains("ON 1 = 1"),
+            "#601 facet2: `c` must be materialized as a cross join for {dialect:?}, got:\n{sql}"
+        );
+        // Both side predicates survive into the outer WHERE.
+        assert!(
+            sql.contains("a.user_id = 1") && sql.contains("c.user_id = 2"),
+            "#601 facet2: both WHERE predicates must render for {dialect:?}, got:\n{sql}"
+        );
+    }
+}
+
+/// Regression for #601 (facet 3): `count(*)` (or any aggregate) over a
+/// disconnected cartesian must NOT prune the cross join. The analyzer emits the
+/// cross join for `c`, but `remove_unreferenced_joins` (`plan_optimizer.rs`) used
+/// to remove any unreferenced `ON 1=1` join — correct for spurious internal
+/// tautology joins, WRONG here, since `count(*)` references neither alias yet the
+/// cross product is cardinality-significant (8×8 = 64, not 8). The analyzer now
+/// marks the genuine user cartesian join `is_cartesian = true` and the prune pass
+/// skips marked joins.
+#[tokio::test]
+async fn disconnected_cartesian_count_star_keeps_cross_join_601() {
+    let schema = load_schema(SchemaId::Standard.yaml_path());
+    let cypher = "MATCH (a:User),(c:User) RETURN count(*)";
+
+    for dialect in [SqlDialect::ClickHouse, SqlDialect::Databricks] {
+        let sql = render(&schema, cypher, dialect).await;
+
+        // The cross join for `c` must survive the prune pass even though neither
+        // alias is referenced in SELECT/WHERE. Pre-fix: `FROM users AS a` only,
+        // collapsing 64 rows to 8.
+        assert!(
+            sql.contains("FROM social.users_bench AS a"),
+            "#601 facet3: `a` must be the FROM table for {dialect:?}, got:\n{sql}"
+        );
+        assert!(
+            sql.contains("social.users_bench AS c") && sql.contains("ON 1 = 1"),
+            "#601 facet3: the cardinality-significant cross join must NOT be pruned for {dialect:?}, got:\n{sql}"
+        );
+    }
+}

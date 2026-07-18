@@ -447,6 +447,29 @@ pub fn find_graph_rel_in_plan(
     }
 }
 
+/// #601: Unwrap single-input wrappers (`Filter`, `Projection`) to find a *bare*
+/// node-only pattern — a `GraphNode` whose input is a `ViewScan` — returning
+/// `(source_table, alias)`. Returns `None` if a `GraphRel` (a real edge pattern,
+/// which materializes its own FROM/JOINs) is encountered on the way down, so this
+/// only ever fires for a genuinely disconnected node side of a comma-cartesian.
+/// Used by the CartesianProduct arm to materialize both the left FROM anchor and
+/// the right CROSS JOIN even when each side is WHERE-wrapped
+/// (`MATCH (c) WHERE … MATCH (p) WHERE …`).
+pub fn find_bare_graph_node_through_wrappers(plan: &LogicalPlan) -> Option<(String, String)> {
+    match plan {
+        LogicalPlan::GraphNode(gn) => {
+            if let LogicalPlan::ViewScan(vs) = gn.input.as_ref() {
+                Some((vs.source_table.clone(), gn.alias.clone()))
+            } else {
+                None
+            }
+        }
+        LogicalPlan::Filter(f) => find_bare_graph_node_through_wrappers(f.input.as_ref()),
+        LogicalPlan::Projection(p) => find_bare_graph_node_through_wrappers(p.input.as_ref()),
+        _ => None,
+    }
+}
+
 // =============================================================================
 // Table Name Helpers
 // =============================================================================
@@ -527,6 +550,7 @@ pub struct JoinBuilder {
     pre_filter: Option<LogicalExpr>,
     from_id_column: Option<String>,
     to_id_column: Option<String>,
+    is_cartesian: bool,
 }
 
 impl JoinBuilder {
@@ -540,6 +564,7 @@ impl JoinBuilder {
             pre_filter: None,
             from_id_column: None,
             to_id_column: None,
+            is_cartesian: false,
         }
     }
 
@@ -551,6 +576,13 @@ impl JoinBuilder {
     /// Set the join type
     pub fn join_type(mut self, jt: JoinType) -> Self {
         self.join_type = jt;
+        self
+    }
+
+    /// #601: mark this join as a cardinality-significant user cartesian cross join
+    /// (disconnected comma-cartesian), so the render-side prune pass leaves it alone.
+    pub fn cartesian(mut self, is_cartesian: bool) -> Self {
+        self.is_cartesian = is_cartesian;
         self
     }
 
@@ -662,6 +694,7 @@ impl JoinBuilder {
             from_id_column: self.from_id_column,
             to_id_column: self.to_id_column,
             graph_rel: None,
+            is_cartesian: self.is_cartesian,
         }
     }
 

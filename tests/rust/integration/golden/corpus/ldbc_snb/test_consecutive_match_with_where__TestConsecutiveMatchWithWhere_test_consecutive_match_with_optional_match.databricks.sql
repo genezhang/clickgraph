@@ -2,6 +2,7 @@ SELECT
       c.commentId AS `c.commentId`, 
       p.personId AS `p.personId`, 
       t0.person2Id AS `friend.personId`
-FROM ldbc.person AS p
+FROM ldbc.comment AS c
+JOIN ldbc.person AS p ON 1 = 1
 LEFT JOIN ldbc.person_knows_person AS t0 ON t0.person1Id = p.personId
 WHERE (p.personId = 1 AND c.commentId = 100)

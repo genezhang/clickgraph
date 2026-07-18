@@ -240,6 +240,13 @@ pub struct Join {
     /// For VLP joins, the original GraphRel for CTE generation
     #[serde(skip)]
     pub graph_rel: Option<std::sync::Arc<crate::query_planner::logical_plan::GraphRel>>,
+    /// #601: marks a cardinality-significant cross join for a genuine user-written
+    /// DISCONNECTED comma-cartesian (`MATCH (a),(c)`), rendered `JOIN … ON 1=1`.
+    /// Set on the logical Join by the analyzer and carried through here so
+    /// `remove_unreferenced_joins` will NOT prune it (pruning would change row
+    /// count). Spurious internal `ON 1=1` joins leave this false and stay prunable.
+    #[serde(default)]
+    pub is_cartesian: bool,
 }
 
 impl Join {
@@ -338,6 +345,7 @@ impl TryFrom<LogicalJoin> for Join {
             from_id_column: value.from_id_column,
             to_id_column: value.to_id_column,
             graph_rel: None,
+            is_cartesian: value.is_cartesian,
         };
         Ok(join)
     }

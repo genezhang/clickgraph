@@ -1796,6 +1796,7 @@ fn fold_optional_edge_node_join_with_predicate(plan: &mut RenderPlan) {
                 from_id_column: None,
                 to_id_column: None,
                 graph_rel: None,
+                is_cartesian: false,
             };
 
             // Replace the node join in place, drop the edge join.
@@ -2266,6 +2267,16 @@ fn remove_unreferenced_joins(plan: &mut RenderPlan, protected_aliases: &HashSet<
             _ => false,
         };
         if !is_safe_to_remove {
+            continue;
+        }
+
+        // #601: never prune a genuine user-written disconnected-cartesian cross
+        // join. Its alias may be unreferenced (e.g. `MATCH (a),(c) RETURN count(*)`
+        // references neither) yet it is cardinality-significant — removing it would
+        // collapse the cross product (64 → 8 rows). The analyzer marks only these
+        // (via JoinBuilder::cartesian); spurious internal `ON 1=1` joins (bridge/
+        // VLP/orphan-CTE artifacts) leave the flag false and stay prunable.
+        if join.is_cartesian {
             continue;
         }
 
@@ -3211,6 +3222,7 @@ mod tests {
             from_id_column: None,
             to_id_column: None,
             graph_rel: None,
+            is_cartesian: false,
         }
     }
 
@@ -3231,6 +3243,7 @@ mod tests {
             from_id_column: Some(from_id.to_string()),
             to_id_column: Some(to_id.to_string()),
             graph_rel: None,
+            is_cartesian: false,
         }
     }
 
@@ -3953,6 +3966,7 @@ mod tests {
             from_id_column: None,
             to_id_column: None,
             graph_rel: None,
+            is_cartesian: false,
         }
     }
 
@@ -4240,6 +4254,7 @@ fn reorder_from_for_selective_predicate(plan: &mut RenderPlan) {
                 from_id_column: None,
                 to_id_column: None,
                 graph_rel: None,
+                is_cartesian: false,
             };
             plan.joins.0.push(new_join);
         } else if let Some(join) = plan.joins.0.iter_mut().find(|j| j.table_alias == *alias) {
