@@ -3464,12 +3464,113 @@ async fn denorm_optional_match_resolves_to_node_onto_edge_456() {
     }
 }
 
+/// #590: a disconnected multi-anchor denormalized OPTIONAL query
+/// (`MATCH (a:Airport), (x:Airport) OPTIONAL MATCH (a)-[:FLIGHT]-(b)
+///  OPTIONAL MATCH (x)-[:FLIGHT]-(y) RETURN a.code, x.code, b.code, y.code`)
+/// used to build only ONE `__denorm_scan_x` CTE (for the last-declared anchor)
+/// and alias the FIRST anchor `a` onto it (`FROM __denorm_scan_x AS x`), so
+/// `a.code` silently rendered as `x.code` and `y`'s OPTIONAL degraded to
+/// `ON 1 = 1` — both anchors' identities conflated onto one (silent wrong
+/// results, ground-rule-1). Root cause was TWO-layered:
+///   1. Planner: `traverse_node_pattern`'s denormalized from/to-Union early
+///      return never combined the new anchor with the existing plan, so the
+///      second denorm anchor REPLACED the first (`a` vanished from the plan).
+///   2. Render: even once both anchors materialize, the single-anchor
+///      `__denorm_scan` delegation only recognized ONE inner anchor.
+/// Fixed by materializing every disconnected denorm anchor
+/// (`combine_node_with_existing_plan`), distributing each OPTIONAL hop over the
+/// CartesianProduct into its own anchor arm (`OptionalCartesianDistribution`),
+/// and composing the two independent single-anchor renders
+/// (`find_cartesian_of_denorm_optionals`).
+///
+/// This structural lock asserts: BOTH `__denorm_scan_a` and `__denorm_scan_x`
+/// CTEs are built, each anchor's `.code` resolves through its OWN CTE alias
+/// (`a.code` / `x.code`, not the edge table), and no OPTIONAL degrades to
+/// `ON 1 = 1`. Scope: the DIRECTED shape (`-[:FLIGHT]->`), where the #590
+/// conflation was reported and is now live-verified. The UNDIRECTED
+/// (`-[:FLIGHT]-`) disconnected-multi-anchor shape is deliberately left to the
+/// generic path (a KNOWN LIMITATION — composing two per-arm direction-UNION
+/// renders under a CROSS JOIN needs render machinery this fix does not add;
+/// `OptionalCartesianDistribution` skips `Direction::Either` so it never emits
+/// the malformed-UNION SQL a partial attempt produced).
+#[tokio::test]
+async fn denorm_multi_anchor_disconnected_optionals_each_get_own_cte_590() {
+    let schema = load_schema(SchemaId::Denormalized.yaml_path());
+    // Directed form: one body, no bidirectional UNION, so the assertions read
+    // cleanly.
+    let cypher = "MATCH (a:Airport), (x:Airport) \
+                  OPTIONAL MATCH (a)-[:FLIGHT]->(b) \
+                  OPTIONAL MATCH (x)-[:FLIGHT]->(y) \
+                  RETURN a.code, x.code, b.code, y.code";
+
+    let sql = render(&schema, cypher, SqlDialect::ClickHouse).await;
+
+    // Both anchors must be materialized as their OWN from/to-scan CTE.
+    assert!(
+        sql.contains("__denorm_scan_a"),
+        "#590: first anchor `a` must get its own __denorm_scan_a CTE (was \
+         conflated onto x's CTE):\n{sql}"
+    );
+    assert!(
+        sql.contains("__denorm_scan_x"),
+        "#590: second anchor `x` must get its own __denorm_scan_x CTE:\n{sql}"
+    );
+    assert!(
+        sql.contains("__denorm_scan_a AS a"),
+        "#590: `a` must alias to its OWN CTE, not x's:\n{sql}"
+    );
+    assert!(
+        sql.contains("__denorm_scan_x AS x"),
+        "#590: `x` must alias to its OWN CTE:\n{sql}"
+    );
+
+    // Each anchor's `.code` must resolve through its own CTE alias, NOT the
+    // OPTIONAL edge table (the pre-fix `a.code`→`x.code` conflation).
+    assert!(
+        sql.contains("a.code AS \"a.code\""),
+        "#590: a.code must resolve through the __denorm_scan_a CTE alias `a`:\n{sql}"
+    );
+    assert!(
+        sql.contains("x.code AS \"x.code\""),
+        "#590: x.code must resolve through the __denorm_scan_x CTE alias `x`:\n{sql}"
+    );
+
+    // Neither OPTIONAL hop may degrade to `ON 1 = 1` — each must correlate to
+    // its OWN anchor's identity column.
+    assert!(
+        !sql.contains("ON 1 = 1"),
+        "#590: no OPTIONAL join may degrade to `ON 1 = 1` (both must correlate \
+         to their own anchor):\n{sql}"
+    );
+    // Both OPTIONAL edges must LEFT JOIN, each keyed off its OWN anchor's
+    // identity column. The edge alias (`t<N>`) is a global monotonic counter, so
+    // its number is nondeterministic under parallel tests — match on the anchor
+    // side (`a.code` / `x.code`), which is what the #590 conflation corrupted.
+    let a_edge = regex::Regex::new(r"ON a\.code = t\d+\.origin_code").unwrap();
+    let x_edge = regex::Regex::new(r"ON x\.code = t\d+\.origin_code").unwrap();
+    assert!(
+        a_edge.is_match(&sql),
+        "#590: `a`'s OPTIONAL edge must correlate to a.code:\n{sql}"
+    );
+    assert!(
+        x_edge.is_match(&sql),
+        "#590: `x`'s OPTIONAL edge must correlate to x.code:\n{sql}"
+    );
+    // The non-anchor endpoints stay on their LEFT-JOINed edge rows (again
+    // alias-number-agnostic).
+    let b_endpoint = regex::Regex::new(r#"t\d+\.dest_code AS "b\.code""#).unwrap();
+    let y_endpoint = regex::Regex::new(r#"t\d+\.dest_code AS "y\.code""#).unwrap();
+    assert!(
+        b_endpoint.is_match(&sql),
+        "#590: `b` (a's optional endpoint) must resolve to the edge's dest_code:\n{sql}"
+    );
+    assert!(
+        y_endpoint.is_match(&sql),
+        "#590: `y` (x's optional endpoint) must resolve to the edge's dest_code:\n{sql}"
+    );
+}
+
 /// #459 structural lock for the denorm `path_return` case
-/// (`MATCH p = (a:Airport)-[:FLIGHT]->(b:Airport) RETURN p`), which is NOT a
-/// byte-golden: production materializes the path's node/edge property columns off
-/// the single `flights_denorm` scan in nondeterministic HashMap column order, so
-/// the byte layout flips across runs (see the denorm known-suspicious block). The
-/// pre-#459 ctx-less path emitted ONLY the `tuple('fixed_path', …)` marker with no
 /// underlying columns — a path with no reconstructable data. This locks the stable
 /// invariants: the fixed-path tuple is present, the node endpoints resolve to the
 /// denorm virtual-id columns (`origin_code AS "a.code"` / `dest_code AS "b.code"`),

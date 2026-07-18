@@ -1834,60 +1834,69 @@ pub(super) fn traverse_node_pattern(
 
         let scan = generate_scan(node_alias.clone(), node_label.clone(), plan_ctx)?;
 
-        // Check if this is a Union (denormalized node with BOTH positions)
-        // In that case, wrap EACH branch in its own GraphNode, then return the Union
-        if let LogicalPlan::Union(union) = scan.as_ref() {
+        // Build the new node's plan (a Union of GraphNodes for a denormalized
+        // node scanned in BOTH from/to positions, or a single GraphNode
+        // otherwise), then combine it with any pre-existing plan via a
+        // CartesianProduct for disconnected comma / separate-MATCH patterns
+        // (`MATCH (a), (x)` — see `combine_node_with_existing_plan`). BOTH the
+        // Union and single-scan shapes MUST go through the shared combine tail:
+        // the denorm Union branch formerly returned early, dropping the
+        // existing plan (e.g. the first anchor `a`) so a second denorm anchor
+        // `x` silently replaced it — #590.
+        let new_node_plan: Arc<LogicalPlan> = if let LogicalPlan::Union(union) = scan.as_ref() {
+            // Check if this is a Union (denormalized node with BOTH positions)
+            // In that case, wrap EACH branch in its own GraphNode.
             log::info!(
                 "✓ Wrapping Union branches in GraphNodes for alias '{}'",
                 node_alias
             );
             let wrapped_inputs: Vec<Arc<LogicalPlan>> = union
-                .inputs
-                .iter()
-                .map(|branch| {
-                    let is_denorm = is_denormalized_scan(branch);
-                    // For UNION branches from untyped patterns (MATCH (n)), extract the label
-                    // from the ViewScan source_table to enable property mapping in FilterTagging.
-                    // The ViewScan was created by generate_scan with a specific node type.
-                    let branch_label = if node_label.is_none() {
-                        // Extract label from ViewScan's source_table
-                        // The source_table format is "database.table_name" e.g. "brahmand.users_bench"
-                        if let LogicalPlan::ViewScan(vs) = branch.as_ref() {
-                            // Try to find the node label by looking up which node type uses this table
-                            let table_name = vs.source_table.split('.').next_back().unwrap_or(&vs.source_table);
-                            plan_ctx.schema().all_node_schemas()
-                                .iter()
-                                .find_map(|(label, schema)| {
-                                    // Check if this schema's table matches
-                                    let schema_table = schema.table_name.split('.').next_back().unwrap_or(&schema.table_name);
-                                    if schema_table == table_name {
-                                        Some(label.clone())
-                                    } else {
-                                        None
-                                    }
-                                })
+                    .inputs
+                    .iter()
+                    .map(|branch| {
+                        let is_denorm = is_denormalized_scan(branch);
+                        // For UNION branches from untyped patterns (MATCH (n)), extract the label
+                        // from the ViewScan source_table to enable property mapping in FilterTagging.
+                        // The ViewScan was created by generate_scan with a specific node type.
+                        let branch_label = if node_label.is_none() {
+                            // Extract label from ViewScan's source_table
+                            // The source_table format is "database.table_name" e.g. "brahmand.users_bench"
+                            if let LogicalPlan::ViewScan(vs) = branch.as_ref() {
+                                // Try to find the node label by looking up which node type uses this table
+                                let table_name = vs.source_table.split('.').next_back().unwrap_or(&vs.source_table);
+                                plan_ctx.schema().all_node_schemas()
+                                    .iter()
+                                    .find_map(|(label, schema)| {
+                                        // Check if this schema's table matches
+                                        let schema_table = schema.table_name.split('.').next_back().unwrap_or(&schema.table_name);
+                                        if schema_table == table_name {
+                                            Some(label.clone())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                            } else {
+                                None
+                            }
                         } else {
-                            None
-                        }
-                    } else {
-                        node_label.clone().map(|s| s.to_string())
-                    };
+                            node_label.clone().map(|s| s.to_string())
+                        };
 
-                    log::info!(
-                        "  ✓ Wrapping branch with alias='{}', label={:?} (original node_label={:?})",
-                        node_alias, branch_label, node_label
-                    );
+                        log::info!(
+                            "  ✓ Wrapping branch with alias='{}', label={:?} (original node_label={:?})",
+                            node_alias, branch_label, node_label
+                        );
 
-                    Arc::new(LogicalPlan::GraphNode(GraphNode {
-                        input: branch.clone(),
-                        alias: node_alias.clone(),
-                        label: branch_label,
-                        is_denormalized: is_denorm,
-                        projected_columns: None,
-                        node_types: None,
-                    }))
-                })
-                .collect();
+                        Arc::new(LogicalPlan::GraphNode(GraphNode {
+                            input: branch.clone(),
+                            alias: node_alias.clone(),
+                            label: branch_label,
+                            is_denormalized: is_denorm,
+                            projected_columns: None,
+                            node_types: None,
+                        }))
+                    })
+                    .collect();
 
             let wrapped_union = Union {
                 inputs: wrapped_inputs,
@@ -1898,55 +1907,77 @@ pub(super) fn traverse_node_pattern(
                 "✓✓✓ WRAPPING UNION: {} branches being wrapped in GraphNodes ✓✓✓",
                 wrapped_union.inputs.len()
             );
-            return Ok(Arc::new(LogicalPlan::Union(wrapped_union)));
-        }
-
-        // Normal case: single ViewScan wrapped in GraphNode
-        let is_denorm = is_denormalized_scan(&scan);
-        let new_node_alias = node_alias.clone(); // Clone for logging
-        let graph_node = GraphNode {
-            input: scan,
-            alias: node_alias,
-            label: node_label.map(|s| s.to_string()),
-            is_denormalized: is_denorm,
-            projected_columns: None,
-            node_types: None,
-        };
-        let new_node_plan = Arc::new(LogicalPlan::GraphNode(graph_node));
-
-        // Check if we need to create a CartesianProduct
-        // For comma patterns like (a:User), (b:User), we need CROSS JOIN
-        let has_existing_plan = !matches!(plan.as_ref(), LogicalPlan::Empty);
-
-        if has_existing_plan {
-            // CRITICAL FIX: When existing plan is OPTIONAL and new node is from REQUIRED MATCH,
-            // swap them so the required node becomes the anchor (FROM clause).
-            let existing_is_optional = plan.is_optional_pattern();
-            let (left, right, cp_is_optional) = if existing_is_optional {
-                // Swap: required node becomes left (anchor), optional becomes right
-                log::info!(
-                    "🔄 CartesianProduct (node): Swapping - existing plan is optional, node '{}' is required",
-                    new_node_alias
-                );
-                (new_node_plan.clone(), plan.clone(), true) // is_optional=true means RIGHT is optional
-            } else {
-                // Normal case: existing plan is anchor
-                (plan.clone(), new_node_plan.clone(), false)
-            };
-
-            log::info!(
-                "Creating CartesianProduct for comma pattern: existing plan + node '{}'",
-                new_node_alias
-            );
-            Ok(Arc::new(LogicalPlan::CartesianProduct(CartesianProduct {
-                left,
-                right,
-                is_optional: cp_is_optional,
-                join_condition: None,
-            })))
+            Arc::new(LogicalPlan::Union(wrapped_union))
         } else {
-            Ok(new_node_plan)
-        }
+            // Normal case: single ViewScan wrapped in GraphNode
+            let is_denorm = is_denormalized_scan(&scan);
+            let graph_node = GraphNode {
+                input: scan,
+                alias: node_alias.clone(),
+                label: node_label.map(|s| s.to_string()),
+                is_denormalized: is_denorm,
+                projected_columns: None,
+                node_types: None,
+            };
+            Arc::new(LogicalPlan::GraphNode(graph_node))
+        };
+
+        Ok(combine_node_with_existing_plan(
+            new_node_plan,
+            plan,
+            &node_alias,
+        ))
+    }
+}
+
+/// Combine a freshly-built node plan (`new_node_plan`) with any pre-existing
+/// plan (`existing`, e.g. an earlier disconnected anchor from a comma pattern
+/// or a previous MATCH clause). Returns `new_node_plan` unchanged when there is
+/// no existing plan (`Empty`); otherwise wraps both in a `CartesianProduct`
+/// (CROSS JOIN for disconnected patterns), swapping so a REQUIRED node becomes
+/// the anchor when the existing plan is OPTIONAL.
+///
+/// Shared by both the single-scan and denormalized from/to-Union shapes of
+/// `traverse_node_pattern` so a denormalized anchor never drops the existing
+/// plan (#590 — previously the Union shape returned early without this combine,
+/// collapsing `MATCH (a:Airport),(x:Airport)` onto a single anchor).
+fn combine_node_with_existing_plan(
+    new_node_plan: Arc<LogicalPlan>,
+    existing: Arc<LogicalPlan>,
+    node_alias: &str,
+) -> Arc<LogicalPlan> {
+    // Check if we need to create a CartesianProduct
+    // For comma patterns like (a:User), (b:User), we need CROSS JOIN
+    let has_existing_plan = !matches!(existing.as_ref(), LogicalPlan::Empty);
+
+    if has_existing_plan {
+        // CRITICAL FIX: When existing plan is OPTIONAL and new node is from REQUIRED MATCH,
+        // swap them so the required node becomes the anchor (FROM clause).
+        let existing_is_optional = existing.is_optional_pattern();
+        let (left, right, cp_is_optional) = if existing_is_optional {
+            // Swap: required node becomes left (anchor), optional becomes right
+            log::info!(
+                "🔄 CartesianProduct (node): Swapping - existing plan is optional, node '{}' is required",
+                node_alias
+            );
+            (new_node_plan, existing, true) // is_optional=true means RIGHT is optional
+        } else {
+            // Normal case: existing plan is anchor
+            (existing, new_node_plan, false)
+        };
+
+        log::info!(
+            "Creating CartesianProduct for comma pattern: existing plan + node '{}'",
+            node_alias
+        );
+        Arc::new(LogicalPlan::CartesianProduct(CartesianProduct {
+            left,
+            right,
+            is_optional: cp_is_optional,
+            join_condition: None,
+        }))
+    } else {
+        new_node_plan
     }
 }
 

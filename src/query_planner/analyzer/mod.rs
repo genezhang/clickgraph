@@ -127,6 +127,7 @@ pub use graph_join as graph_join_inference;
 mod graph_traversal_planning;
 mod group_by_building;
 pub mod match_type_inference;
+mod optional_cartesian_distribution;
 mod plan_sanitization;
 mod projected_columns_resolver;
 mod projection_tagging;
@@ -224,6 +225,26 @@ pub fn initial_analyzing(
     } else {
         plan
     };
+
+    // Step 3.45: OptionalCartesianDistribution (#590) - distribute an OPTIONAL
+    // GraphRel over a disconnected denormalized-anchor CartesianProduct, hoisting
+    // the non-participating anchor arm ABOVE the optional hop, yielding one
+    // independent single-anchor denormalized OPTIONAL subtree per anchor. MUST run
+    // BEFORE BidirectionalUnion: an undirected disconnected multi-anchor OPTIONAL
+    // query (`MATCH (a),(x) OPTIONAL MATCH (a)-[:R]-(b) OPTIONAL MATCH (x)-[:R]-(y)`)
+    // otherwise reaches BidirectionalUnion as a single CHAINED-optional GraphRel
+    // over a CartesianProduct, which `has_optional_nested_undirected_edge` gates
+    // OUT of the direction split (silently dropping one direction). After
+    // distribution each anchor arm is an INDEPENDENT single-hop optional that
+    // BidirectionalUnion then splits into its own `Union[Outgoing, Incoming]`; the
+    // render layer composes the two arms' direction branches (see
+    // `find_cartesian_of_denorm_optionals` / the #590 render arm). No-op unless the
+    // plan has an optional GraphRel wrapping a CartesianProduct whose hoisted arm is
+    // a bare denormalized node-scan Union, so standard/FK-edge and single-anchor
+    // shapes are untouched. See the module docs.
+    log::info!("🔍 ANALYZER: Running OptionalCartesianDistribution (#590)");
+    let plan = optional_cartesian_distribution::distribute_optional_over_cartesian(plan);
+    check_plan_size(&plan, "OptionalCartesianDistribution")?;
 
     // Step 3.5: BidirectionalUnion - Transform undirected patterns (Direction::Either) into UNION ALL
     // CRITICAL: This MUST run BEFORE GraphJoinInference to avoid OR-based JOINs that ClickHouse handles incorrectly

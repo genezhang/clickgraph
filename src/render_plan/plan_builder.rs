@@ -4165,6 +4165,150 @@ impl RenderPlanBuilder for LogicalPlan {
             // Uses unified find_inner_optional_denorm_graphrel to both detect and locate
             // the inner GraphRel, avoiding divergent detection/unwrap logic.
             {
+                // #590: a disconnected multi-anchor denormalized OPTIONAL query
+                // (`MATCH (a:Airport),(x:Airport) OPTIONAL MATCH (a)-[:FLIGHT]-(b)
+                // OPTIONAL MATCH (x)-[:FLIGHT]-(y)`) is lowered by the
+                // `OptionalCartesianDistribution` analyzer pass into a
+                // `CartesianProduct` whose two arms are each an INDEPENDENT
+                // single-anchor denorm OPTIONAL subtree. Render each arm through
+                // THIS same `to_render_plan_with_ctx` (so each hits the
+                // single-anchor `__denorm_scan_{alias}` machinery below,
+                // byte-identically), then compose: the left arm is the base, the
+                // right arm's FROM becomes a CROSS JOIN, and both arms' CTEs +
+                // JOINs merge — the same composition the `CartesianProduct` arm of
+                // `to_render_plan` already performs for disconnected patterns. The
+                // outer SELECT/WHERE/GROUP BY/ORDER BY (which reference all anchors
+                // and their optional endpoints) are re-extracted from the full
+                // `self`, exactly as the single-anchor shim does.
+                if let Some(cp_plan) =
+                    super::plan_builder_helpers::find_cartesian_of_denorm_optionals(self)
+                {
+                    let LogicalPlan::CartesianProduct(cp) = cp_plan else {
+                        unreachable!(
+                            "find_cartesian_of_denorm_optionals returns a CartesianProduct"
+                        )
+                    };
+                    log::info!(
+                        "🎯 #590: CartesianProduct of denormalized OPTIONAL subtrees — rendering each anchor arm independently and composing"
+                    );
+
+                    let mut base = {
+                        let _scope_guard =
+                            crate::server::query_context::CteScopeGenerationGuard::enter();
+                        cp.left.to_render_plan_with_ctx(schema, plan_ctx, scope)?
+                    };
+                    let mut joined = {
+                        let _scope_guard =
+                            crate::server::query_context::CteScopeGenerationGuard::enter();
+                        cp.right.to_render_plan_with_ctx(schema, plan_ctx, scope)?
+                    };
+
+                    // Compose the joined arm's FROM as a CROSS JOIN on the base,
+                    // then bring over its JOINs and CTEs (mirrors the CROSS-JOIN
+                    // composition in the `CartesianProduct` arm of `to_render_plan`
+                    // and the disconnected-anchor materialization of #601).
+                    if let FromTableItem(Some(joined_from)) = &joined.from {
+                        base.joins.0.push(super::Join {
+                            join_type: super::JoinType::Join, // CROSS JOIN (ON 1=1)
+                            table_name: joined_from.name.clone(),
+                            table_alias: joined_from
+                                .alias
+                                .clone()
+                                .unwrap_or_else(|| joined_from.name.clone()),
+                            joining_on: vec![],
+                            pre_filter: None,
+                            from_id_column: None,
+                            to_id_column: None,
+                            graph_rel: None,
+                            // #601: a genuine user-written disconnected cartesian —
+                            // keep the cross join even if its alias looks
+                            // unreferenced, so row cardinality is preserved.
+                            is_cartesian: true,
+                        });
+                    }
+                    base.joins.0.extend(std::mem::take(&mut joined.joins.0));
+                    let mut merged_ctes = std::mem::take(&mut base.ctes.0);
+                    merged_ctes.extend(std::mem::take(&mut joined.ctes.0));
+                    base.ctes = CteItems(merged_ctes);
+
+                    // Re-extract the outer projection/filters/grouping from the full
+                    // plan (references every anchor + optional endpoint). `self` is
+                    // the top of the disconnected DIRECTED pattern
+                    // (`Projection → CartesianProduct`), so `extract_select_items`
+                    // (with `plan_ctx`) resolves all output columns; the per-anchor
+                    // CTE rewrite below re-points each anchor's own properties from
+                    // the OPTIONAL edge table to its `__denorm_scan_{alias}` CTE.
+                    base.select = SelectItems {
+                        items: <LogicalPlan as SelectBuilder>::extract_select_items(
+                            self, plan_ctx,
+                        )?,
+                        distinct: FilterBuilder::extract_distinct(self),
+                    };
+                    base.filters = FilterItems(FilterBuilder::extract_filters(self)?);
+                    base.group_by = GroupByExpressions(
+                        <LogicalPlan as GroupByBuilder>::extract_group_by(self)?,
+                    );
+                    base.order_by =
+                        OrderByItems(super::plan_builder_utils::extract_order_by(self)?);
+                    base.skip = SkipItem(super::plan_builder_utils::extract_skip(self));
+                    base.limit = LimitItem(super::plan_builder_utils::extract_limit(self));
+
+                    // The outer SELECT/GROUP BY/ORDER BY were extracted from the full
+                    // plan, so each anchor's own denormalized properties still resolve
+                    // through the OPTIONAL edge table (e.g. `t1.origin_code`). After the
+                    // per-arm CTE + LEFT JOIN restructuring those come from the anchor's
+                    // `__denorm_scan_{alias}` CTE instead — apply the SAME edge→CTE
+                    // rewrite the single-anchor shim applies, once per OPTIONAL-denorm
+                    // hop across BOTH arms (a chained arm has more than one). The
+                    // non-anchor endpoint's columns (`b.code`) correctly stay on the
+                    // edge alias, untouched by the rewrite (#456).
+                    for opt_gr in
+                        super::plan_builder_helpers::collect_optional_denorm_graphrels(cp_plan)
+                    {
+                        if let LogicalPlan::GraphRel(gr) = opt_gr {
+                            if let Some((edge_alias, col_map)) =
+                                super::plan_builder_helpers::build_denorm_anchor_col_map(
+                                    gr, plan_ctx,
+                                )
+                            {
+                                for item in &mut base.select.items {
+                                    super::plan_builder_helpers::rewrite_denorm_refs(
+                                        &mut item.expression,
+                                        &edge_alias,
+                                        &col_map,
+                                    );
+                                }
+                                for expr in &mut base.group_by.0 {
+                                    super::plan_builder_helpers::rewrite_denorm_refs(
+                                        expr,
+                                        &edge_alias,
+                                        &col_map,
+                                    );
+                                }
+                                for item in &mut base.order_by.0 {
+                                    super::plan_builder_helpers::rewrite_denorm_refs(
+                                        &mut item.expression,
+                                        &edge_alias,
+                                        &col_map,
+                                    );
+                                }
+                                if let Some(ref mut having) = base.having_clause {
+                                    super::plan_builder_helpers::rewrite_denorm_refs(
+                                        having,
+                                        &edge_alias,
+                                        &col_map,
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(s) = scope {
+                        super::variable_scope::rewrite_render_plan_with_scope(&mut base, s);
+                    }
+
+                    return Ok(base);
+                }
                 if let Some(inner) =
                     super::plan_builder_helpers::find_inner_optional_denorm_graphrel(self)
                 {
